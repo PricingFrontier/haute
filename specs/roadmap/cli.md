@@ -15,9 +15,9 @@ family (Codex) over the code changed since the 31 October audit, and was
 reproduced with the real executable on 13 November. `CLI-07` comes from
 the plan's phase 4, which carried projects made on Windows to Linux.
 
-`CLI-08` to `CLI-09` come from the review plan's phase 5, a reader from a second
+`CLI-09` comes from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
-worker built each run and the main session ran each again on 14 November
+worker built its run and the main session ran it again on 14 November
 2026.
 
 `CLI-10` and `CLI-11` come from the review plan's phase 4, a sweep
@@ -29,72 +29,17 @@ signals and pipes. The main session ran each case again on 15 November
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CLI-01 | Planned | P3 | A mistake in `haute.toml`, missing credentials and a file that cannot be written each end a command in one message, not a traceback. |
 | CLI-02 | Planned | P3 | Every command finds the project from a folder inside it, as `run`, `lint`, `deploy` and `serve` do. |
 | CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target or table is named where it is. |
 | CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 | CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
-| CLI-08 | Planned | P3 | `haute run` refused for memory prints one line with the limit and the setting that raises it, not a traceback. |
 | CLI-09 | Planned | P3 | A second `haute init` lists the `.gitattributes` it writes, and the file is recorded like the others. |
 | CLI-10 | Planned | P3 | `haute serve` starts on its port straight after the last server there was stopped, with a browser tab still open. |
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
-
-### CLI-01 — An expected failure is one message, not a traceback
-**Why:** Reproduced on 11 November 2026 by running the commands. Each of
-these ordinary situations ends in a Python traceback, with the useful
-sentence as its last line:
-
-- `haute status`, and `haute status --version-only`, before the Databricks
-  credentials are in `.env`: "Databricks MLflow is not ready for deploy:
-  Databricks is not configured for MLflow", for a command that deploys
-  nothing.
-- A key misspelt by one letter in `haute.toml`, under
-  `haute deploy --dry-run`, `haute impact` and `haute smoke`, and a misspelt
-  table under `haute status`: "Check for typos in your configuration keys."
-- A number written in quotes, `min_approvers = "2"`, under the dry run:
-  "[safety.approval] min_approvers must be an integer; got '2'."
-- A `haute.toml` that is not TOML, under `haute impact`, `haute smoke` and
-  `haute serve` (run through a wrapper that keeps it out of development
-  mode). `haute run` and the dry run give the same file one line.
-- A `haute.toml` marked read-only when `haute init` runs again, and a
-  workflow file marked read-only under `haute ci update`: "Permission
-  denied" and the path.
-- A port out of range, `haute serve --port 70000`: an `OverflowError`
-  (seen by the sweep, not run again).
-- A file of the built release open in another program when
-  `haute app build` runs again: "Access is denied", once the folder
-  rename's four seconds of waiting are over. The old release is kept and
-  the next build succeeds.
-
-The specification lets some errors reach the terminal with their traceback,
-and names where a command turns the expected ones into one line: Haute's
-own errors, `ValueError` and `OSError`. Every case above is one of those
-three, raised just outside the place that catches it. `DPL-03` records the
-same for a missing pipeline file.
-
-**Plan:** Put each command's reading of `haute.toml`, its credential check
-and its file writes inside the catch the command already has for expected
-failures, so that each prints its sentence and exits 1. Word the status
-check for what it is, not "for deploy".
-
-**Acceptance:** Each case above prints one message naming the key, the file
-or the missing setting, exits 1 and prints no traceback. A test runs the
-commands whole (`EQ-04`).
-
-**Dependencies:** `DPL-03` covers the missing pipeline file in the same
-branch of `haute deploy`.
-
-**Evidence:** `src/haute/cli/_helpers.py::EXPECTED_FAILURES`;
-`src/haute/cli/_status.py::handle_status`;
-`src/haute/deploy/_config.py::_validate_toml_keys`;
-`src/haute/cli/_serve.py::_load_toml_server_host`;
-`src/haute/_scaffold_files.py::write_lf`; `src/haute/cli/_impact.py`;
-`src/haute/cli/_deploy.py`; `src/haute/cli/_app.py`;
-`src/haute/_file_ops.py::rename_directory`.
 
 ### CLI-02 — Every command finds the project from a folder inside it
 **Why:** Reproduced on 11 November 2026. With the shell in the project's
@@ -277,29 +222,6 @@ an executable hook.
 
 **Evidence:** `src/haute/cli/_init_cmd.py::handle_init`;
 `src/haute/_scaffold.py::pre_commit_hook`.
-
-### CLI-08 — `haute run` refused for memory says so in one line
-**Why:** Reproduced on 14 November 2026 with the real command on a
-two-node pipeline. With the process memory cap of the run's profile set
-below what the command already holds
-(`HAUTE_SINK_PROCESS_RSS_LIMIT_MB=50`), the run is not admitted and the
-command prints a 34-line Python traceback ending "Execution 'cli_run' was
-not admitted for profile 'lazy_sink': process_rss_limit_exceeded", with no
-limit and no remedy. The editor's server turns the same refusal into a
-memory message. The command catches Haute's own errors, `ValueError` and
-`OSError`; the admission refusal is a `MemoryError`, so it passes through.
-
-**Plan:** Catch the admission refusal in the command and print one line
-with the limit that refused it, what was measured, and the setting that
-raises it.
-
-**Acceptance:** The run above exits 1 with one line naming the limit and
-the setting, and no traceback.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_run.py`; `src/haute/cli/_helpers.py`;
-`src/haute/_execution_admission.py`.
 
 ### CLI-09 — A second `haute init` lists and records the `.gitattributes` it writes
 **Why:** Reproduced on 14 November 2026. In a project whose

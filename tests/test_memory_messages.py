@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionProfile
-from haute.routes._memory_messages import memory_limit_user_message, solver_session_memory_message
+from haute._memory_messages import memory_limit_user_message, solver_session_memory_message
 
 _MIB = 1024 * 1024
 

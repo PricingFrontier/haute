@@ -19,7 +19,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from haute.errors import ConfigError, InvalidPathError, PathOutsideProjectError
+from haute.errors import ConfigError, InvalidPathError, PathOutsideProjectError, PipelineFileError
 
 # Files that look like Python modules but are never pipeline entry points.
 # Kept in sync with :mod:`haute.discovery` so resolver and discovery don't
@@ -218,17 +218,9 @@ def _resolve_default_in(root: Path) -> Path:
     configured = _toml_configured_pipeline(root)
     if configured is not None:
         if not configured.exists():
-            raise FileNotFoundError(
-                f"Pipeline file configured in haute.toml [project].pipeline "
-                f"does not exist: {configured}. "
-                "Fix the path in haute.toml or create the file."
-            )
+            raise PipelineFileError(str(configured), reason="missing")
         if not _looks_like_pipeline_file(configured):
-            raise FileNotFoundError(
-                f"Pipeline file configured in haute.toml [project].pipeline "
-                f"does not look like a Haute pipeline: {configured}. "
-                "Point [project].pipeline at a .py file containing 'haute.Pipeline'."
-            )
+            raise PipelineFileError(str(configured), reason="not_a_pipeline")
         return configured.resolve()
 
     discovered = _discover_root_pipelines(root)

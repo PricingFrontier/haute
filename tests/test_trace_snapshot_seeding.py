@@ -440,10 +440,8 @@ def test_trace_of_column_projected_capture_executes_that_point(
 
 
 def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
-    from fastapi import HTTPException
-
     from haute._worker_failures import WorkerRemoteError
-    from haute.errors import SeedPlanExpiredError
+    from haute.errors import RequestRefusedError, SeedPlanExpiredError
 
     payload = SeedPlanExpiredError(node_id="join").to_payload()
     error = WorkerRemoteError(
@@ -455,7 +453,7 @@ def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
         is_memory=False,
     )
 
-    with pytest.raises(HTTPException) as raised:
+    with pytest.raises(RequestRefusedError) as raised:
         raise_worker_http(error, operation="pipeline_trace")
 
     assert raised.value.status_code == 409

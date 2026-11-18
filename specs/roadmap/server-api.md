@@ -7,9 +7,9 @@ specification](../server-api/high-level.md) describes them: what a route
 answers when a node of the analyst's own fails, what the file watcher does on
 the event loop, what a save answers once its files are written or when it
 cannot write them, and what it leaves when the server dies in the middle.
-`SRV-01` to `SRV-03` come from the 9 November 2026 codebase review:
-`SRV-02` carries a measurement taken on that day and `SRV-01` is read from
-the source. `SRV-03` was read from the source then and reproduced on 10
+`SRV-02` and `SRV-03` come from the 9 November 2026 codebase review:
+`SRV-02` carries a measurement taken on that day. `SRV-03` was read from the
+source then and reproduced on 10
 November by the review plan's sweep of failed writes, which failed every
 step of 17 writing operations in turn, held their files open and killed the
 server at three points. `SRV-04` and `SRV-05` come from that sweep and were
@@ -21,68 +21,19 @@ comes from the plan's sweep of damaged requests and the main session's
 runs behind it on 11 November. `SRV-08` comes from the main session's own
 run, that day, of a submodel's whole life through the routes.
 
-`SRV-01` changes an accepted decision, [the optimiser's error-detail
-policy](../optimiser/error-detail-policy.md), so it is a `Decision`.
-
-A cause several packages here share has its own file and is taken first:
-[failures answered without words](root-cause-error-boundaries.md).
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SRV-01 | Decision | P2 | A write, a training run or a solve stopped by one of the analyst's own nodes says which node and why, as preview and trace do. |
 | SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
 | SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails, and the next save clears it. |
-| SRV-04 | Planned | P2 | A save, a settings change, a Data Output's Write, an optimiser's save or a model save that cannot replace its file answers naming the file and why, as the utility editor and the Pipeline files routes do. |
+| SRV-04 | Planned | P2 | A node or submodel name that makes its file's path too long for Windows is refused when it is typed, naming the node and the limit, not by the save. |
 | SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
-| SRV-06 | Planned | P2 | A pipeline file that is missing is reported in one line naming the file and the remedy, when the editor starts and while it runs. |
+| SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, and stops `haute serve` at start in one line, not a traceback. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 | SRV-08 | Planned | P2 | A save deletes a dissolved submodel's file only when no pipeline beside the saved one still uses it, as the submodel specification says. |
 
 ## Planned improvements
-
-### SRV-01 — A node's own failure is named by Write, Train and the optimiser
-**Why:** Read from the source. When a node's code fails, the walker marks the
-failure with its node. Preview shows it on the node, trace answers "Node 'x'
-failed: ..." and `haute run` names the node. Three other routes discard it.
-A Data Output write builds "Writing Data Output 'x' failed while computing
-its rows: ..." and marks the node, but the failure leaves the worker as a
-remote error and the route answers it with no public detail: "Operation
-failed. Check the server logs for details." Training's data preparation
-answers any failure it does not classify, an upstream node's own error
-included, with "Pipeline execution failed. Check the server logs for
-details." Optimiser setup records the real message on the job and raises the
-same generic text as its answer. The generic text is deliberate for unknown
-failures: the accepted policy keeps library text and file paths out of
-answers. But a failure in the analyst's own node, whose message preview
-already shows in full, is not unknown, and an analyst on a hosted editor has
-no server log to check.
-
-**Plan:** Decide that a failure the walker marked with a node is the
-analyst's own and public. Then convert it once, with the trace's conversion,
-at the worker boundary of the write, the training preparation and the
-optimiser setup: "Node 'x' failed: <message>" with the node id on the
-payload, so the canvas can mark the node. Failures with no node stay
-generic. Amend the policy document in the same change.
-
-**Acceptance:** With a Transform that raises upstream of a Data Output, a
-Model Training node and an Optimiser, each of Write, Train and Solve answers
-with the node's name and its message and carries the node id; the same
-pipeline's preview shows the same message. A failure raised outside any node
-still answers the generic text, and no answer carries a file path.
-
-**Dependencies:** The decision above, which amends the optimiser's
-error-detail policy.
-
-**Evidence:** `src/haute/errors.py::mark_failing_node`;
-`src/haute/routes/pipeline.py::_trace_node_failures` is the conversion to
-reuse; `src/haute/routes/pipeline.py::_prepare_data_output_worker` and
-`src/haute/routes/pipeline.py::write_output_node`;
-`src/haute/routes/_worker_failure_http.py::_remote_http_exception`;
-`src/haute/routes/_training_preparation.py::preparation_failure_outcome`;
-`src/haute/routes/_training_preparation.py::prepare_training_data_worker`;
-`src/haute/routes/_optimiser_service.py`; `src/haute/cli/_run.py`.
 
 ### SRV-02 — Live sync watches what it reads and parses off the event loop
 **Why:** Measured cost, reach read from the source. The file watcher watches
@@ -167,106 +118,37 @@ ledger records the removal.
 `src/haute/routes/pipeline.py::save_pipeline` records the commit only after
 the service returns.
 
-### SRV-04 — A write that cannot replace its file says which file and why
-**Why:** Reproduced on 10 November 2026 with real second handles holding
-the files, and nothing injected. The commonest case first: a Data Output
-writes its results to a CSV file, the analyst opens the file in Excel, and
-presses Write again with Replace existing file. The answer is 500 "Operation
-failed. Check the server logs for details.", for CSV and for Parquet (run
-with the file held as Excel holds a workbook: others may read it, nobody may
-write or replace it). A pipeline save while another program holds `main.py`
-or its sidecar, a change to the pipeline settings, a change to the MLflow
-settings (`haute.toml` held) and a change to the git preferences answer the
-same. In every case the held file is unchanged and nothing is left beside
-it, and in the sweep a save rolled its other files back, so nothing is lost.
-But the analyst is told nothing they can act on. A save whose staging write
-is refused for a full disk answers the same (run with the write made to
-raise "No space left on device").
-
-The words for both cases exist. The utility editor's save, run beside the
-others with its file held, answered 409 "utility/helpers.py is open in Haute
-or another program. Try again once it's closed.", and the Pipeline files
-routes answer a full disk with 507 "There isn't room on disk for" and the
-file's name (read from the source). The shared atomic writer already retries
-a file held for a moment, so what reaches the analyst is a file held for
-longer: a spreadsheet left open, a script reading it, a sync or backup
-client, a virus scan.
-
-A third cause has its own error and still no answer: a path too long for
-the file system. A node's settings file is named from the node's name, with
-every character outside ASCII written as six or seven (a Cyrillic or Greek
-letter as six, a Japanese or Chinese character as seven). A name of 36
-Japanese characters is accepted by the editor's rename rule, which allows
-200 characters and looks only at their shape, and makes a file name of 257
-characters; some 42 Cyrillic or Greek letters do the same by that
-arithmetic (measured on the encoding, not saved). The save answers the same
-500. The writer raised its own `PathTooLongError`, which no route
-translates. On Windows without long paths the whole path counts, so fewer
-characters are already too many. A submodel's name reaches the same error
-through its module file: a name of 200 letters makes the box, the create
-route answering 200, and the Save then answers this 500 with the box still
+### SRV-04 — A name that makes its file's path too long is refused when it is typed
+**Why:** Reproduced on 10 and 11 November 2026. A node's settings file is
+named from the node's name, with every character outside ASCII written as
+six or seven (a Cyrillic or Greek letter as six, a Japanese or Chinese
+character as seven). A name of 36 Japanese characters is accepted by the
+editor's rename rule, which allows 200 characters and looks only at their
+shape, and makes a file name of 257 characters; some 42 Cyrillic or Greek
+letters do the same by that arithmetic (measured on the encoding, not
+saved). The save is then refused: Windows refuses the path for its length,
+and the answer names the settings file and the remedy (move the project,
+enable long paths), not the node whose name made it, so the analyst is not
+told what to rename. On Windows without long paths the whole path counts, so
+fewer characters are already too many. A submodel's name reaches the same
+refusal through its module file: a name of 200 letters makes the box, the
+create route answering 200, and the Save is then refused with the box still
 on the canvas (run on 11 November).
 
-A fourth cause is a file marked read-only: a rates file protected on
-purpose, or a project unpacked from an archive. Run on 11 November with
-nothing holding any file. A pipeline save with the pipeline file or its
-layout file read-only, a change to the pipeline settings and a change to
-the MLflow settings answer the same 500. The two routes that have words
-use the wrong ones: saving or deleting a utility module, and replacing or
-deleting a Pipeline file, answer 409 naming the file and saying that it "is
-open in Haute or another program. Try again once it's closed." Nothing has
-it open, so trying again never works. A Restore over a read-only pipeline
-file succeeds.
+**Plan:** Have the rename rule count a name as its file will hold it, and
+refuse a node name, or a submodel's, whose file's path would be too long for
+the platform, naming the node and the limit, when it is typed and when the
+submodel is made.
 
-The optimiser's save and the model save answer in the same way, in their
-own words. Run on 11 November by the third sweep of failed writes and again
-by the main session. After a real solve, the optimiser's save with Replace
-onto a file open in another program, or marked read-only, answers 500
-"Filesystem error saving optimiser result. Check the server logs for
-details."; the file is unchanged. The model save's copy onto a model file
-open in another program fails in the same way, and its route answers
-"Filesystem error saving the model. Check the server logs for details."
-(the copy was run directly; the answer is read from the route).
-
-**Plan:** Translate the two failures once, where the save, the settings
-routes, the Data Output's write, the optimiser's save and the model save
-can share it: a destination another
-program holds becomes the 409 naming the file relative to the project, and
-a write refused for space becomes the 507 naming it, in the words the
-utility and Pipeline files routes use. Translate the writer's too-long-path
-error as well, naming the node whose name makes the path too long, and have
-the rename rule count a name as its file will hold it. Tell a read-only
-file apart from a held one before answering (its attribute says which),
-on these routes and on the two that word the held file already, and say
-that the file is read-only. Other `OSError`s keep the generic answer.
-
-**Acceptance:** With its file held open by a real second handle on Windows,
-each of the pipeline save, the pipeline settings, the MLflow settings, the
-git preferences, a Data Output's Write, the optimiser's save and the model
-save answers 409 naming the file, and the file is unchanged. With the
-staging write refused for space, each answers 507 naming the file. A node
-name that makes its settings file's path too long is refused when it is
-typed, or by the save, in a message naming the node and the limit, and a
+**Acceptance:** A node name that makes its settings file's path too long is
+refused when it is typed, in a message naming the node and the limit, and a
 submodel's name that does so to its module file is refused when the
-submodel is made. With its file marked read-only and nothing holding it,
-each of those writes, the utility editor's save and delete and the Pipeline
-files' replace and delete answer naming the file and saying that it is
-read-only.
+submodel is made.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/routes/pipeline.py::write_output_node`;
-`src/haute/routes/pipeline.py::save_pipeline`;
-`src/haute/routes/pipeline.py::patch_pipeline_settings`;
-`src/haute/routes/mlflow.py::put_mlflow_settings`;
-`src/haute/routes/git.py::git_set_prefs`;
-`src/haute/_file_ops.py::atomic_path`;
+**Evidence:** `src/haute/_graph_utils.py::_sanitize_func_name`;
 `src/haute/_file_ops.py::PathTooLongError`;
-`src/haute/_graph_utils.py::_sanitize_func_name`;
-`src/haute/routes/utility.py::_replace_or_remove`;
-`src/haute/routes/project_files.py::_publish_write`;
-`src/haute/routes/optimiser.py::save_result`;
-`src/haute/routes/modelling.py::save_model`;
 `src/haute/routes/submodel.py::create_submodel`.
 
 ### SRV-05 — A save the server died in is noticed and its leftovers collected
@@ -348,78 +230,47 @@ model and its contract alone in theirs.
 `src/haute/executor.py::commit_prepared_data_output`;
 `src/haute/_file_ops.py::atomic_copy_files`.
 
-### SRV-06 — A missing pipeline file is reported in one line
-**Why:** Reproduced on 10 November 2026, in two forms.
-
-While the editor is running, the pipeline file is renamed or deleted in the
-file manager (or by a branch switched in a terminal). Loading the pipeline
-then answers 500 "Operation failed. Check the server logs for details.",
-every time. A save from the open editor answers "stale_document_revision:
-The pipeline changed on disk after this document was loaded. Reload it
-before saving.", and the reload it asks for fails with the same 500. The
-analyst is sent round a loop, and the one sentence that would end it stays
-in the log. A `haute.toml` left half-edited while the editor runs, with a
-table header not yet closed, makes every load answer the same 500, and so
-do a `haute.toml` that names a file which is not there and a pipeline file
-emptied to nothing (run on 11 November).
-
-The page then hides even that. The client gives every failed response the
-message `HTTP 500`, with the server's words kept beside it, and the page's
-own load is the one caller that shows the message instead of the words:
-after twelve to fourteen seconds of "Loading pipeline..." the screen reads
-"Haute could not open this pipeline", an explanation, and "HTTP 500",
-under the toast "Failed to load pipeline: HTTP 500" (seen in a browser on
-11 November by the review plan's sweep of failed calls, with the failure
-injected, and by the main session with a `haute.toml` left half-edited and
-with the pipeline file emptied). With the half-edited `haute.toml` a second
-toast, from the call that reads the workbench's status, names the cause the
-load does not: "haute.toml is malformed and could not be parsed". Whatever
-sentence the load route is given will not reach the analyst until the page
-shows it.
+### SRV-06 — A missing pipeline file is shown on the page and stops `haute serve` in one line
+**Why:** Reproduced on 10 and 11 November 2026, in two forms. The load route
+now answers a pipeline file renamed or deleted while the editor runs, a
+`haute.toml` left half-edited and a pipeline file emptied to nothing in one
+line naming the file and the remedy (404 `pipeline_file_missing`, or the
+configuration's own words). The page does not show it. The client gives
+every failed response the message `HTTP <status>`, with the server's words
+kept beside it, and the page's own load is the one caller that shows the
+message instead of the words: after twelve to fourteen seconds of "Loading
+pipeline..." the screen reads "Haute could not open this pipeline", an
+explanation, and "HTTP 500", under the toast "Failed to load pipeline: HTTP
+500" (seen in a browser on 11 November by the review plan's sweep of failed
+calls, with the failure injected, and by the main session with a
+`haute.toml` left half-edited and with the pipeline file emptied).
 
 At start-up, with `haute.toml` naming a pipeline file that is not there (a
 mistyped path, or the file renamed while the editor was closed), the server
 does not start: it prints 123 lines, 115 of them a Python traceback through
-the application's start-up, then that sentence, "Pipeline file configured in
-haute.toml [project].pipeline does not exist: ... Fix the path in haute.toml
-or create the file.", then "Application startup failed. Exiting." A file
-that is there but holds no pipeline, such as an empty one, ends the same way
-with "does not look like a Haute pipeline". The server was started as the
-serve command's production mode starts it, since inside this checkout the
-command picks its development mode; the command makes no check of the
-pipeline file before it starts the server (read).
+the application's start-up, then that sentence, then "Application startup
+failed. Exiting." A file that is there but holds no pipeline, such as an
+empty one, ends the same way with "does not look like a Haute pipeline".
+The server was started as the serve command's production mode starts it,
+since inside this checkout the command picks its development mode; the
+command makes no check of the pipeline file before it starts the server
+(read). Without a `haute.toml` the editor starts and the first save creates
+the file.
 
-The message is good and names the remedy in both forms; it is the last thing
-an analyst will find. The same resolver's error reaches the deploy dry run
-uncaught as well (`DPL-03`). Without a `haute.toml` the editor starts and
-the first save creates the file.
+**Plan:** Show the load's own words on the page with the file's name instead
+of an empty canvas and "HTTP <status>". Check the pipeline file in
+`haute serve` before the server starts, so a missing or empty one ends the
+command in one line.
 
-**Plan:** Give the resolver's refusal a place in the answers: loading the
-pipeline answers it as a refusal with its own code and the resolver's
-sentence, and the editor shows it with the file's name instead of an empty
-canvas. A `haute.toml` that cannot be read is answered the same way, naming
-its line. The page's load takes its text from the one error-text helper, as
-every other caller does, so that it shows the answer's words. Resolve the
-pipeline in the serve command before the server is started, and print the
-sentence as the command prints its other errors, with exit code 1; keep the
-start-up check for a server started any other way, caught there and logged
-as one line.
+**Acceptance:** With the pipeline file deleted while the editor runs, the
+page says the file's name and the remedy; `haute serve` with `haute.toml`
+naming a missing or empty pipeline file prints one line and exits 1, with no
+traceback.
 
-**Acceptance:** With the pipeline file renamed away under a running editor,
-loading the pipeline answers a 4xx naming the file and the remedy, and the
-editor shows that sentence, in a browser test, where it shows "HTTP 500"
-today. With `haute.toml` left half-edited the load names the file and the
-line. `haute serve` on a project whose `haute.toml` names a missing file, or
-a file with no pipeline in it, prints one error line naming the file and the
-remedy, with no traceback, and exits 1.
+**Dependencies:** `DPL-03` covers the deploy dry run's same resolver error.
 
-**Dependencies:** None.
-
-**Evidence:** `src/haute/discovery.py::discover_pipelines`;
-`src/haute/routes/_helpers.py::_ensure_pipeline_index`;
-`src/haute/cli/_serve.py::handle_serve`;
-`frontend/src/api/client.ts::throwApiError`;
-`frontend/src/hooks/usePipelineAPI.ts::usePipelineAPI`.
+**Evidence:** `frontend/src/api/client.ts`; the page's pipeline load in
+`frontend/src`; `src/haute/cli/_serve.py`; `src/haute/server.py::_lifespan`.
 
 ### SRV-07 — A file name Windows cannot hold is refused by name
 **Why:** Reproduced on 11 November 2026 on three paths an analyst types:

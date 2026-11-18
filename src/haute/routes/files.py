@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 from polars.exceptions import PolarsError
 
@@ -18,7 +18,7 @@ from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._project_context import current_project
 from haute._sandbox import contained_path
-from haute.errors import SchemaMismatchError
+from haute.errors import InvalidRequestError, NotFoundError, SchemaMismatchError
 from haute.schemas import (
     BrowseFilesResponse,
     FileItem,
@@ -91,7 +91,7 @@ def _browse_files_blocking(
 ) -> BrowseFilesResponse:
     """Enumerate one directory without blocking the async event loop."""
     if not target.is_dir():
-        raise HTTPException(status_code=404, detail=f"Directory not found: {requested_dir}")
+        raise NotFoundError(f"Directory not found: {requested_dir}")
 
     items: list[FileItem] = []
     for entry in sorted(target.iterdir(), key=lambda candidate: candidate.name.casefold()):
@@ -308,11 +308,11 @@ def _inspect_model_file_blocking(
 ) -> ModelFileInspectionResponse:
     from dataclasses import asdict
 
+    from haute._failure_answers import failure_refusal
     from haute._model_source import inspect_model_file as inspect
     from haute._path_resolution import RuntimePathError
     from haute._project_context import current_project
     from haute.errors import ConfigError, FeatureMismatchError
-    from haute.routes._runtime_path_errors import runtime_path_http_exception
 
     try:
         inspection = inspect(
@@ -321,9 +321,9 @@ def _inspect_model_file_blocking(
             base_dir=current_project().pipeline_dir,
         )
     except RuntimePathError as exc:
-        raise runtime_path_http_exception(exc) from None
+        raise failure_refusal(exc) from None
     except (ConfigError, FeatureMismatchError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
     return ModelFileInspectionResponse(**asdict(inspection))
 
 
@@ -348,16 +348,16 @@ async def get_schema(
         except json.JSONDecodeError:
             parsed = None
         if not isinstance(parsed, dict):
-            raise HTTPException(status_code=400, detail="Reader arguments must be a JSON object.")
+            raise InvalidRequestError("Reader arguments must be a JSON object.")
         reader = {"format": format, "arguments": parsed}
     elif arguments is not None:
-        raise HTTPException(status_code=400, detail="Reader arguments need a format.")
+        raise InvalidRequestError("Reader arguments need a format.")
     # Resolve the base for the same reason as ``browse_files`` — keep cwd in its
     # canonical form so path handling is consistent on Windows short paths.
     base = current_project().root
     target = contained_path(base, path)
     if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+        raise NotFoundError(f"File not found: {path}")
 
     try:
         return await run_in_threadpool(_read_schema_blocking, path, target, reader)
@@ -368,13 +368,10 @@ async def get_schema(
             suffix=exc.suffix,
         )
         observed = exc.suffix or "(no extension)"
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported source format {observed}. Supported formats: "
-                + ", ".join(exc.supported_suffixes)
-                + "."
-            ),
+        raise InvalidRequestError(
+            f"Unsupported source format {observed}. Supported formats: "
+            + ", ".join(exc.supported_suffixes)
+            + "."
         ) from None
     except PolarsError as exc:
         logger.warning(
@@ -393,15 +390,12 @@ async def get_schema(
             ),
             target.suffix.casefold() or "selected",
         )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Could not decode the {suffix} file. Check that it is valid and "
-                "matches its file extension."
-            ),
+        raise InvalidRequestError(
+            f"Could not decode the {suffix} file. Check that it is valid and "
+            "matches its file extension."
         ) from None
     except (ApiInputSchemaError, PolarsIoConfigError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
     except SchemaMismatchError as exc:
         # The message without its context, which holds the absolute path.
-        raise HTTPException(status_code=400, detail=exc.message) from None
+        raise InvalidRequestError(exc.message) from None

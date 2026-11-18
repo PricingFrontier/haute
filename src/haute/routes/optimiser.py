@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import TypeAdapter
 
 from haute._execution_admission import (
@@ -25,6 +25,7 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
 )
+from haute._failure_answers import failure_refusal
 from haute._file_ops import atomic_write_text
 from haute._interactive_workers import interactive_worker_pool, resolve_interactive_execution_mode
 from haute._logging import get_logger
@@ -47,11 +48,11 @@ from haute._sandbox import contained_path
 from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_failures import WorkerError
 from haute._worker_isolation import resolve_worker_memory_enforcement
-from haute.errors import RequestRefusedError
+from haute.errors import ConflictError, InvalidRequestError, RequestRefusedError
 from haute.routes._frontier_point_summary import constraint_kinds, frontier_point_library_row
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
-from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
+from haute.routes._mlflow_log_errors import mlflow_log_refusal, require_mlflow_installed
 from haute.routes._optimiser_adjustments import (
     ADJUSTMENT_REPORTS_KEY,
     adjustment_report,
@@ -89,7 +90,7 @@ from haute.routes._optimiser_service import OptimiserSolveService, _with_flatten
 from haute.routes._optimiser_solver import _job_elapsed_seconds, frontier_point_history_payload
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
 from haute.routes._synchronous_analysis import run_until_disconnected
-from haute.routes._worker_failure_http import worker_failure_http_exception
+from haute.routes._worker_failure_refusals import worker_failure_refusal
 from haute.routes.pipeline import (
     _interactive_affinity_key,
     _prepare_runtime_graph,
@@ -203,7 +204,7 @@ def _optimiser_input_metrics_in_worker(
             require_memory_limit=resolve_worker_memory_enforcement() == "required",
         )
     except WorkerError as exc:
-        raise worker_failure_http_exception(
+        raise worker_failure_refusal(
             exc,
             operation="optimiser_estimate",
             timed_out=f"Optimiser estimate timed out ({_estimate_timeout():.0f}s limit)",
@@ -212,7 +213,7 @@ def _optimiser_input_metrics_in_worker(
         raise RuntimeError(f"Optimiser estimate worker returned {type(outcome).__name__}")
     if outcome.failure is not None:
         status_code, detail = outcome.failure
-        raise HTTPException(status_code=status_code, detail=detail)
+        raise RequestRefusedError(detail, status_code=status_code)
     if outcome.metrics is None:
         raise RuntimeError("Optimiser estimate worker returned neither counts nor a failure")
     return outcome.metrics
@@ -698,60 +699,38 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
     """
     lambdas = payload.get("lambdas")
     if not isinstance(lambdas, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Solve result has no lambda mapping. Re-run the solve.",
-        )
+        raise InvalidRequestError("Solve result has no lambda mapping. Re-run the solve.")
     if payload.get("total_objective") is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Solve result has no total objective. Re-run the solve.",
-        )
+        raise InvalidRequestError("Solve result has no total objective. Re-run the solve.")
     if payload.get("mode") == "ratebook":
         factor_tables = payload.get("factor_tables")
         if not isinstance(factor_tables, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Ratebook solve result has no factor tables, so the artifact "
-                    "could not be applied for pricing. Re-run the solve."
-                ),
+            raise InvalidRequestError(
+                "Ratebook solve result has no factor tables, so the artifact "
+                "could not be applied for pricing. Re-run the solve."
             )
         factor_dtypes = payload.get("factor_dtypes")
         if not isinstance(factor_dtypes, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Ratebook solve result has no factor dtype metadata, so the "
-                    "artifact could not be applied safely. Re-run the solve."
-                ),
+            raise InvalidRequestError(
+                "Ratebook solve result has no factor dtype metadata, so the "
+                "artifact could not be applied safely. Re-run the solve."
             )
         if list(factor_dtypes) != list(factor_tables):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Ratebook factor_dtypes tables do not match factor_tables in "
-                    "the same order. Re-run the solve."
-                ),
+            raise InvalidRequestError(
+                "Ratebook factor_dtypes tables do not match factor_tables in "
+                "the same order. Re-run the solve."
             )
         for table_name, records in factor_dtypes.items():
             if not isinstance(records, list) or not records:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Ratebook factor_dtypes for {table_name!r} must be a "
-                        "non-empty ordered list."
-                    ),
+                raise InvalidRequestError(
+                    f"Ratebook factor_dtypes for {table_name!r} must be a non-empty ordered list."
                 )
             seen_columns: set[str] = set()
             for index, record in enumerate(records):
                 if not isinstance(record, dict):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"Ratebook factor_dtypes for {table_name!r} has a "
-                            f"malformed record at index {index}."
-                        ),
+                    raise InvalidRequestError(
+                        f"Ratebook factor_dtypes for {table_name!r} has a "
+                        f"malformed record at index {index}."
                     )
                 column = record.get("column")
                 descriptor = record.get("dtype")
@@ -762,12 +741,9 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
                     or column in seen_columns
                     or not is_rating_dtype_descriptor(descriptor)
                 ):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"Ratebook factor_dtypes for {table_name!r} has a "
-                            f"malformed record at index {index}."
-                        ),
+                    raise InvalidRequestError(
+                        f"Ratebook factor_dtypes for {table_name!r} has a "
+                        f"malformed record at index {index}."
                     )
                 seen_columns.add(column)
         clamp_rate = payload.get("clamp_rate")
@@ -776,35 +752,26 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
             or not isinstance(clamp_rate, (int, float))
             or not math.isfinite(clamp_rate)
         ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Ratebook solve result has no finite clamp_rate (got {clamp_rate!r}). "
-                    "Re-run the solve."
-                ),
+            raise InvalidRequestError(
+                f"Ratebook solve result has no finite clamp_rate (got {clamp_rate!r}). "
+                "Re-run the solve."
             )
         try:
             parse_combined_factor_bounds(payload.get(COMBINED_FACTOR_BOUNDS_KEY))
         except CombinedFactorBoundsError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Ratebook solve result has no valid combined-factor collar: {exc}. "
-                    "Re-run the solve."
-                ),
+            raise InvalidRequestError(
+                f"Ratebook solve result has no valid combined-factor collar: {exc}. "
+                "Re-run the solve."
             ) from exc
     bad_paths = _non_finite_paths(payload)
     if bad_paths:
         shown = ", ".join(bad_paths[:5])
         if len(bad_paths) > 5:
             shown += f", … ({len(bad_paths)} in total)"
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Solve result contains non-finite values ({shown}); the artifact was "
-                "not written. Check the solve inputs and constraints, then re-run the "
-                "solve — a pricing artifact must not contain NaN or Infinity."
-            ),
+        raise InvalidRequestError(
+            f"Solve result contains non-finite values ({shown}); the artifact was "
+            "not written. Check the solve inputs and constraints, then re-run the "
+            "solve — a pricing artifact must not contain NaN or Infinity."
         )
 
 
@@ -878,7 +845,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
                     "error_code": "optimiser_result_exists",
                     "message": f"Optimiser result already exists: {apply_path}",
                 }
-                raise HTTPException(status_code=409, detail=result_exists)
+                raise ConflictError(result_exists)
             out.parent.mkdir(parents=True, exist_ok=True)
             # Atomic write (same posture as the schema-mapping save in
             # `_helpers.save_sidecar`): stage to a sibling temp then rename, so a
@@ -888,11 +855,9 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
             # non-finite may ever reach disk.
             atomic_write_text(out, json.dumps(payload, indent=2, default=str, allow_nan=False))
     except OSError as exc:
-        logger.error("save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Filesystem error saving optimiser result. Check the server logs for details.",
-        ) from None
+        # A result file another program holds, a read-only one or a full disk, named;
+        # anything else an incident.
+        raise failure_refusal(exc, operation="optimiser_result_save") from None
     logger.info("result_saved", path=str(out), job_id=body.job_id)
     return OptimiserSaveResponse(
         status="ok",
@@ -916,12 +881,9 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
     if body.point_index is None:
         publish_summary = job.get("publish_summary")
         if not isinstance(publish_summary, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "The MLflow summary for this solve is not available. "
-                    "Re-run the solve to log results to MLflow."
-                ),
+            raise InvalidRequestError(
+                "The MLflow summary for this solve is not available. "
+                "Re-run the solve to log results to MLflow."
             )
         summary = publish_summary
     else:
@@ -938,10 +900,10 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
             solve_result=solve_result,
             summary=summary,
         )
-    except (HTTPException, RequestRefusedError):
+    except RequestRefusedError:
         raise
     except Exception as exc:
-        raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
+        raise mlflow_log_refusal(exc, job_id=body.job_id) from None
 
 
 def _require_finite_summary_artifacts(summary: Mapping[str, Any]) -> None:
@@ -951,12 +913,9 @@ def _require_finite_summary_artifacts(summary: Mapping[str, Any]) -> None:
         shown = ", ".join(bad_paths[:5])
         if len(bad_paths) > 5:
             shown += f", … ({len(bad_paths)} in total)"
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"The MLflow summary contains non-finite values ({shown}); nothing was "
-                "logged. Check the solve inputs and constraints, then re-run the solve."
-            ),
+        raise InvalidRequestError(
+            f"The MLflow summary contains non-finite values ({shown}); nothing was "
+            "logged. Check the solve inputs and constraints, then re-run the solve."
         )
 
 

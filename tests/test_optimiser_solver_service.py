@@ -1194,10 +1194,11 @@ class TestApplyLambdasUnit:
             make_online_apply_frame(["q1"]).drop("optimal_volume"),
         )
 
-        with patch("haute.server.logger.error") as log_error:
+        with patch("haute._failure_answers.logger.error") as log_error:
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_damaged"})
 
         assert resp.status_code == 500
+        assert log_error.call_args.args == ("unexpected_failure",)
         assert log_error.call_args.kwargs["error_class"] == ChoiceJoinError.__name__
 
     def test_apply_after_heavy_result_policy_expiry_without_handle_returns_400(

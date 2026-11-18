@@ -1180,18 +1180,21 @@ class TestHandleRunCallable:
         assert walk.call_args.kwargs["source"] == "batch"
         assert walk.call_args.kwargs["target_node_id"] == "quote_response"
 
-    def test_a_defect_inside_the_walk_keeps_its_traceback(
+    def test_a_failure_inside_the_walk_names_its_node_and_ends_the_run(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """The walk names the node a defect surfaced at, and the defect still propagates."""
+        """The walk names the node a failure surfaced at, whatever it is, and the run ends
+        there with exit 1."""
         from haute._graph_walker import _Walk
         from haute.cli._run import RunConfig, handle_run
 
         with (
             patch.object(_Walk, "_as_frame", side_effect=TypeError("internal builder defect")),
-            pytest.raises(TypeError, match="internal builder defect"),
+            pytest.raises(SystemExit) as stopped,
         ):
             handle_run(RunConfig(pipeline_file=self._pipeline(tmp_path), node="doubled"))
+
+        assert stopped.value.code == 1
 
         assert "\u2717 source: internal builder defect" in capsys.readouterr().err
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 
@@ -20,11 +21,67 @@ from haute.errors import HauteError
 
 logger = get_logger(component="cli")
 
-#: The failures a command reports as one line and exit 1: Haute's own errors (a refused
-#: configuration, a pipeline that does not parse, a deploy that cannot go ahead), a value
-#: that cannot be used and a file that cannot be read. Anything else is a defect and
-#: reaches the terminal with its traceback.
+#: The failures a command reports in its own words, as one line and exit 1, when Haute names
+#: nothing more of them: Haute's own errors (a refused configuration, a pipeline that does
+#: not parse, a deploy that cannot go ahead), a value that cannot be used and a file that
+#: cannot be read. A terminal is the analyst's own, so their text is said as it is.
 EXPECTED_FAILURES: tuple[type[Exception], ...] = (HauteError, ValueError, OSError)
+
+#: Where a command's incidents are recorded, under the project's untracked state folder.
+INCIDENTS_FOLDER = (".haute", "incidents")
+
+
+def answer_command_failure(exc: Exception, *, command: str) -> NoReturn:
+    """End *command* on *exc* with one line and exit 1, as every command ends on a failure.
+
+    A failure Haute names (``haute._failure_answers.classify_failure``: memory, a file the
+    operating system refused, a node's own code, a refusal) is said in the words every
+    edge gives it; an expected failure (:data:`EXPECTED_FAILURES`) in its own; anything
+    else names an incident whose traceback is written to the project's
+    ``.haute/incidents/<id>.txt``, or the system's temporary folder outside a project,
+    never to the terminal.
+    """
+    from haute._failure_answers import classify_failure, unexpected_failure
+
+    answer = classify_failure(exc)
+    if answer is not None:
+        message = answer.message
+    elif isinstance(exc, EXPECTED_FAILURES):
+        message = str(exc)
+    else:
+        written: list[str] = []
+
+        def record(incident: str, failed: BaseException, **_known: object) -> None:
+            written.append(_write_incident(incident, failed, command=command))
+
+        message = f"{unexpected_failure(exc, operation=command, record=record).message} "
+        message += written[0]
+    click.echo(f"Error: {message}", err=True)
+    raise SystemExit(1) from exc
+
+
+def _write_incident(incident: str, exc: BaseException, *, command: str) -> str:
+    """Write *exc*'s traceback as *incident*'s record and say where; a record that cannot be
+    written is said with its reason, and the traceback follows on the terminal instead."""
+    from haute._failure_answers import failure_traceback
+    from haute._file_ops import atomic_write_text
+    from haute._project_context import installed_project
+
+    project = installed_project()
+    folder = (
+        project.root.joinpath(*INCIDENTS_FOLDER)
+        if project is not None
+        else Path(tempfile.gettempdir()) / "haute-incidents"
+    )
+    target = folder / f"{incident}.txt"
+    record = f"haute {command}\nincident {incident}\n\n{failure_traceback(exc)}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(target, record)
+    except OSError as cannot:
+        return f"Its details could not be written to {target} ({cannot}), so they follow.\n{record}"
+    shown = target.relative_to(project.root).as_posix() if project is not None else str(target)
+    return f"The details are in {shown}."
 
 
 # ---------------------------------------------------------------------------

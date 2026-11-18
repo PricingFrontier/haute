@@ -360,8 +360,8 @@ Invariants that hold across every command:
 
 Expected operational failures explicitly caught by a handler normally raise `SystemExit(1)`
 after explanatory stderr; Click's own invocation errors exit 2, and `status --version-only`
-uses `ClickException` (exit 1). Some configuration, SDK, filesystem, scoring, and programming
-errors deliberately propagate instead, producing exit 1 with the original exception/traceback.
+uses `ClickException` (exit 1). Every other failure ends at the `haute` group in one line and
+exit 1, as below.
 A missing `haute.toml` where the command requires one (`smoke`/`impact`), an unresolvable
 required model name, a missing frontend build, a missing training `job` variable, a failed
 validation, or a deploy exception is terminal. Ordinary
@@ -372,23 +372,36 @@ Exceptions are handled with narrow, explicit catches rather than blanket `except
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,
 `_is_http_not_found` in `src/haute/cli/_impact.py`) exist specifically so that only the exact "not found" shape is
 swallowed and reclassified — everything else re-raises. Where a command turns a failure into
-one line and `SystemExit(1)` (around `resolve_config` in `deploy`, parsing and execution in
+one line with its own context (around `resolve_config` in `deploy`, parsing and execution in
 `run` and `lint`, the script and `job.run` in `train`), it catches only the expected ones,
 `EXPECTED_FAILURES` in `src/haute/cli/_helpers.py`: Haute's own errors (`HauteError`:
 `DeployError`, `ConfigError`, `ParseError` and the rest), `ValueError` and `OSError`
-(`FileNotFoundError` among them). Anything else, a `TypeError` say, is a defect and reaches
-the terminal with its traceback. Helpers raise rather than exit: `resolve_transport` raises a
+(`FileNotFoundError` among them). Helpers raise rather than exit: `resolve_transport` raises a
 `ClickException` for a container target without a staging endpoint URL.
+
+Whatever a command raises past its own catches ends at the command line's one edge, the
+`haute` group (`HauteGroup.invoke`, through `answer_command_failure`), in one line and exit 1,
+never a traceback: a failure Haute names (memory, a file the operating system refused, a node's
+own code, a refusal) in the words every edge gives it (`haute._failure_answers`), as `haute run`
+refused for its process memory cap names the cap, what it holds and the setting that raises
+it; an expected failure in its own words, so a misspelt `haute.toml` key, a value of the wrong
+type and a read-only file each end in their sentence; and anything else, a `TypeError` say,
+as "Haute hit a failure it does not recognise (incident <id>) …" and where its traceback was
+written, `.haute/incidents/<id>.txt` in the project, or `haute-incidents/` in the system's
+temporary folder outside one. A record that cannot be written is said with its reason, and
+the traceback follows. Click's own usage errors (a port out of range among them) exit 2, an
+abort and a reader that stopped reading (`| head`) end as Click ends them.
 
 The Databricks smoke readiness loop retries only the SDK's explicit not-found response while an
 endpoint is being created. Authentication, permission, transport, and other SDK failures stop
 immediately with the original exception chained. Training execution and result rendering are
 separate failure boundaries: once `job.run()` has returned successfully, a formatting problem is
-reported as a result-reporting failure, with its traceback, and never as “Training failed”.
+reported as a result-reporting failure, in the `haute` group's line, and never as “Training failed”.
 
 `handle_deploy` renders `DeployError` as an expected target/configuration failure and keeps
 the explicit missing-dependency and not-implemented messages. It does not catch the
-backend with `except Exception`: an unexpected implementation exception retains its
-original type and traceback, while target adapters are responsible for raising
+backend with `except Exception`: an unexpected implementation exception ends at the
+`haute` group, an incident whose record keeps its original type and traceback, while target
+adapters are responsible for raising
 `DeployError` for expected operational failures such as missing credentials, unavailable
 Docker, or rejected build/push operations.

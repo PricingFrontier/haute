@@ -6,6 +6,7 @@ import haute.cli._polars_startup  # noqa: F401
 
 # isort: split
 
+import errno
 from pathlib import Path
 
 import click
@@ -16,6 +17,7 @@ from haute.cli._app import app
 from haute.cli._ci import ci
 from haute.cli._deploy import deploy
 from haute.cli._gpu_setup import gpu_setup
+from haute.cli._helpers import answer_command_failure
 from haute.cli._impact import impact
 from haute.cli._init_cmd import init
 from haute.cli._lint import lint
@@ -27,7 +29,29 @@ from haute.cli._status import status
 from haute.cli._train import train
 
 
-@click.group()
+class HauteGroup(click.Group):
+    """The ``haute`` command group: the command line's one edge for failures.
+
+    Whatever a command raises that Click does not answer itself (its usage errors, an
+    abort, an exit) ends the command here in one line and exit 1, through
+    :func:`haute.cli._helpers.answer_command_failure`; no command ends in a traceback.
+    """
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except (click.ClickException, click.exceptions.Abort, click.exceptions.Exit):
+            raise
+        except OSError as exc:
+            if exc.errno == errno.EPIPE:
+                # A reader that stopped reading (``| head``): Click ends that quietly.
+                raise
+            answer_command_failure(exc, command=ctx.invoked_subcommand or "haute")
+        except Exception as exc:
+            answer_command_failure(exc, command=ctx.invoked_subcommand or "haute")
+
+
+@click.group(cls=HauteGroup)
 @click.version_option(package_name="haute")
 @click.pass_context
 def cli(ctx: click.Context) -> None:

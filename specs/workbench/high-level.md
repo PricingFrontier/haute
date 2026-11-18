@@ -2054,8 +2054,16 @@ Out of scope:
   page asks `GET /api/app/release` again on the same bound, so tables put right in SQL open
   the quotes with no restart, no new image and no reload. A statement the database refuses
   because a table or column is not as the check found it makes the app check again at once:
-  the request is refused as above when the check finds a difference, and fails as it would
-  have when it finds none. `GET /health` answers throughout.
+  the request is refused as above when the check finds a difference, and when it finds none
+  is answered 422 `quote_store_refused`, saying the store refused the change and the quote's
+  values are kept, with an incident under which the database's own message is logged (a
+  trigger's, a constraint's). What the database does is said in words, by the failure
+  answers every edge uses: a SQLite file another program holds is `quote_store_busy` and a
+  read-only one `quote_store_read_only` (409, the change not saved, the quote's values kept,
+  the quotes left open), a file that is not a database `quote_store_damaged`, and a connection
+  lost part-way through a write `quote_store_connection_lost` (503: nothing was saved, send it
+  again; the retry lands once). Any other failure of the app's own is answered with words and
+  an incident, never a bare "Internal Server Error". `GET /health` answers throughout.
   A quote is named by its reference and option, the reference URL-encoded. The quote routes
   list a page of quotes (`GET /api/app/quotes`: the list, stage, search, assignee, order,
   cursor and size), create one (`POST /api/app/quotes`, made from another quote when it names
@@ -3490,8 +3498,9 @@ Out of scope:
 ## Interactions
 
 - [server-api](../server-api/high-level.md): `haute.server` includes the workbench router
-  with its feature routers and owns the response and request models; the application's
-  exception handlers answer a workbench problem as 409, and a stale save answers the
+  with its feature routers and owns the response and request models; the failure answers
+  (`haute._failure_answers`) answer a workbench problem as 409, and the underwriter app
+  answers every failure through them as the editor does (`install_failure_answers`), and a stale save answers the
   pipeline save's `stale_document_revision` code.
 - [cli](../cli/high-level.md): `haute init --workbench` writes the table and the blank form
   folder, in a new project or in one that has a `haute.toml` without them.

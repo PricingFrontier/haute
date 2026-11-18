@@ -21,6 +21,7 @@ from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError, RequestRefusedError
 from haute.routes._training_lifecycle import TrainService
 from tests import _modelling_route_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._modelling_route_helpers import (
     _admitted_training_context_for_launch,
     _completed_train_response,
@@ -455,7 +456,7 @@ class TestTrainBackgroundLaunchFailures:
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert "Failed to start isolated supervisor" in job["message"]
+        assert_unnamed(job["message"])
         assert not tmp_parquet.exists()
 
     def test_non_finite_training_result_marks_job_error(self, tmp_path: Path) -> None:

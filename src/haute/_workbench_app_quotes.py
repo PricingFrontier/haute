@@ -15,10 +15,13 @@ showed. Every other change names the version of the quote it was made on. The st
 refusals answer as the app's: a quote it does not keep 404; a quote moved on 409 with the
 quote as it is now; a quote that does not take the change, one not ready to be marked final,
 a repeated save superseded and a reference held 409; values not of their columns' types, and
-anything else it refuses, 422. A store the app cannot reach, or that refuses its sign-in, 503,
-said and logged without what the driver said of where it is, closing the quotes; and a
-statement the database refuses makes the gate check the tables again at once, 503 when they
-no longer fit.
+anything else it refuses, 422. What the database itself does is said by
+``haute._failure_answers``: a store the app cannot reach, or that refuses its sign-in, 503,
+without what the driver said of where it is, closing the quotes; a connection lost part-way
+through a write 503, to be sent again; a SQLite file another program holds or that is
+read-only 409, the quotes left open; and a statement the database refuses for its own
+reason 422 with an incident under which its message is logged, after the gate checks the
+tables again at once, 503 when they no longer fit.
 """
 
 from __future__ import annotations
@@ -27,12 +30,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.exc import DBAPIError
 from starlette.concurrency import run_in_threadpool
 
+from haute._failure_answers import answer_failure
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._quote_store import (
@@ -55,7 +58,6 @@ from haute._quote_store import (
     input_rows,
 )
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
-from haute._quote_store._store import unreached
 from haute._workbench_app import Pricing
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate
 from haute._workbench_form import QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, FormSpec
@@ -73,6 +75,13 @@ from haute.deploy._request_limits import (
     read_limited_json_body,
 )
 from haute.deploy._validators import response_changes
+from haute.errors import (
+    ConflictError,
+    ForbiddenError,
+    InvalidRequestError,
+    RequestRefusedError,
+    UnprocessableError,
+)
 from haute.schemas import (
     WorkbenchAppPeopleResponse,
     WorkbenchAppQuote,
@@ -159,9 +168,10 @@ def quote_model(quote: AppQuote) -> WorkbenchAppQuote:
 logger = get_logger(component="workbench.app.quotes")
 
 
-def _refusal(status: int, exc: QuoteStoreError, **extra: Any) -> HTTPException:
-    return HTTPException(
-        status, detail={"message": exc.message or str(exc), "error_code": exc.error_code, **extra}
+def _refusal(status: int, exc: QuoteStoreError, **extra: Any) -> RequestRefusedError:
+    return RequestRefusedError(
+        {"message": exc.message or str(exc), "error_code": exc.error_code, **extra},
+        status_code=status,
     )
 
 
@@ -171,7 +181,7 @@ async def _book(app: QuoteApp) -> QuoteBook:
     try:
         return await run_in_threadpool(app.gate.book)
     except QuoteStoreClosedError as refusal:
-        raise HTTPException(503, detail=refusal.detail) from None
+        raise RequestRefusedError(refusal.detail, status_code=503) from None
 
 
 async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] | None = None) -> T:
@@ -209,37 +219,30 @@ async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] 
     except QuoteStoreError as exc:
         raise _refusal(422, exc) from None
     except Exception as exc:
-        if unreached(exc):
-            # The driver's own text names the server, its port and who signs in: none of it
-            # said. The quotes close until a check reaches the store again.
-            logger.warning("quote_store_unreachable", error_type=type(exc).__name__)
-            # On a worker thread: the gate's lock may be held by a check still waiting.
+        # The store's database said in words (haute._failure_answers): a store it cannot
+        # reach, a connection lost part-way, a file another program holds or that is
+        # read-only, a statement it refused for its own reason; anything else an incident.
+        answer = answer_failure(exc, operation="workbench_app_quote")
+        if answer.code == "quote_store_unreachable":
+            # The quotes close until a check reaches the store again. On a worker thread:
+            # the gate's lock may be held by a check still waiting.
             await run_in_threadpool(app.gate.unreachable)
-            raise HTTPException(
-                503,
-                detail={
-                    "message": "The app cannot reach its quote store just now.",
-                    "error_code": "quote_store_unreachable",
-                    "differences": [],
-                },
-            ) from None
-        if isinstance(exc, DBAPIError):
+        elif answer.code == "quote_store_refused":
             # A statement refused: the tables may have changed under the running app.
             refusal = await run_in_threadpool(app.gate.recheck)
             if refusal is not None:
-                raise HTTPException(503, detail=refusal.detail) from None
-        raise
+                raise RequestRefusedError(refusal.detail, status_code=503) from None
+        raise answer.refusal() from None
 
 
 def _editor(http: Request) -> str:
     """The principal changing a quote; refused (403) when they may only read quotes."""
     if not http.state.can_edit:
-        raise HTTPException(
-            403,
-            detail={
+        raise ForbiddenError(
+            {
                 "message": "You can read quotes in this app; changing them needs its edit role.",
                 "error_code": "quote_read_only",
-            },
+            }
         )
     principal: str = http.state.principal
     return principal
@@ -254,11 +257,11 @@ async def _body(http: Request, model: type[M]) -> M:
             limit_bytes=deploy_quote_request_body_limit_bytes(),
         )
     except RequestBodyLimitError as exc:
-        raise HTTPException(413, detail=exc.to_payload()) from None
+        raise RequestRefusedError(exc.to_payload(), status_code=413) from None
     except RequestBodyHeaderError as exc:
-        raise HTTPException(400, detail=exc.to_payload()) from None
+        raise InvalidRequestError(exc.to_payload()) from None
     except RequestBodyParseError as exc:
-        raise HTTPException(422, detail=exc.to_payload()) from None
+        raise UnprocessableError(exc.to_payload()) from None
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
@@ -270,9 +273,8 @@ def _drawn_for(
 ) -> None:
     """Refuse (409) a write from a page drawn for another release or other sheets."""
     if body.form_revision != app.form_revision or body.release != app.release_id:
-        raise HTTPException(
-            409,
-            "This page was drawn for another release of the app: reload it to save on this one.",
+        raise ConflictError(
+            "This page was drawn for another release of the app: reload it to save on this one."
         )
 
 
@@ -420,7 +422,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         values = as_written(body.values, book.managed(current, at=at, actor=actor))
         # The details the app sets show on the sheets as any value does, but are no typing.
         if not quote_request(app.form, values, untyped=_APP_SET_CELLS):
-            raise HTTPException(422, "Type the quote first")
+            raise UnprocessableError("Type the quote first")
         priced = None
         if body.shown is not None:
             # A value not of its column's type refuses the save before it is priced, naming each.

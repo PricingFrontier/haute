@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +41,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from haute._env import int_env
 from haute._execution_admission import ExecutionAdmissionError
-from haute._execution_context import ExecutionMemoryLimitExceededError
+from haute._failure_answers import answer_failure, answer_pipeline_failure
 from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
 from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddleware
@@ -61,8 +61,14 @@ from haute.deploy._request_limits import (
     read_limited_json_body,
 )
 from haute.deploy._scorer import QuoteRequest, admit_deploy_execution, score_graph
-from haute.errors import HauteError, is_public_contract_error
-from haute.routes._validation_errors import request_validation_error_handler
+from haute.errors import (
+    ConflictError,
+    ForbiddenError,
+    HauteError,
+    RequestRefusedError,
+    UnprocessableError,
+)
+from haute.routes._error_handlers import install_failure_answers
 from haute.schemas import (
     WorkbenchAppFormResponse,
     WorkbenchAppPriceRequest,
@@ -814,7 +820,6 @@ def create_app(
             gate.close()
 
     app = FastAPI(title=f"{release.pipeline_name or 'Haute'} underwriter app", lifespan=lifespan)
-    app.add_exception_handler(RequestValidationError, request_validation_error_handler)
 
     @app.middleware("http")
     async def signed_in(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -822,25 +827,24 @@ def create_app(
             return await call_next(request)
         who = principal(request)
         if who is None:
-            return JSONResponse(status_code=401, content={"detail": refusal()})
+            raise RequestRefusedError(refusal(), status_code=401)
         if _cross_site(request):
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "A change to the app's quotes comes from the app's own page."},
-            )
+            raise ForbiddenError("A change to the app's quotes comes from the app's own page.")
         can_edit = may_edit(request)
         if can_edit is None:
-            return JSONResponse(
+            raise RequestRefusedError(
+                f"This app lets the {release.edit_role} role change quotes, and "
+                "Azure's built-in authentication passed no roles it can read "
+                f"({EASY_AUTH_PRINCIPAL}): check the app's authentication settings.",
                 status_code=401,
-                content={
-                    "detail": f"This app lets the {release.edit_role} role change quotes, and "
-                    "Azure's built-in authentication passed no roles it can read "
-                    f"({EASY_AUTH_PRINCIPAL}): check the app's authentication settings."
-                },
             )
         request.state.principal = who
         request.state.can_edit = can_edit
         return await call_next(request)
+
+    # Installed after the sign-in check, so it wraps it: every failure the app answers,
+    # a refused sign-in included, is put into words by haute._failure_answers.
+    install_failure_answers(app)
 
     if local_principal is not None:
         # Every request is signed in as the analyst, so a page of a site whose name resolves
@@ -873,7 +877,7 @@ def create_app(
         """*values* priced through the release's pipeline, or an HTTP error saying why not."""
         request = quote_request(form, values)
         if not request:
-            raise HTTPException(422, "Type the quote first")
+            raise UnprocessableError("Type the quote first")
 
         def score() -> Mapping[str, Any]:
             # The admission is held until the answer is the document sent back: rendering
@@ -902,9 +906,9 @@ def create_app(
                 context.release_admission(preserve_primary_error=failed)
 
         if not places.acquire(blocking=False):
-            raise HTTPException(
-                503,
+            raise RequestRefusedError(
                 "The app is busy pricing other quotes: try again in a few seconds.",
+                status_code=503,
                 headers={"Retry-After": str(BUSY_RETRY_SECONDS)},
             )
         # The request gives up waiting at the timeout; the pricing left running ends on its
@@ -914,23 +918,22 @@ def create_app(
         try:
             document = await asyncio.wait_for(asyncio.wrap_future(running), PRICE_TIMEOUT_SECONDS)
         except TimeoutError:
-            raise HTTPException(504, "Pricing the quote took too long; try again.") from None
-        except ExecutionAdmissionError as exc:
-            raise HTTPException(503, f"The app is busy pricing other quotes: {exc}") from None
-        except ExecutionMemoryLimitExceededError as exc:
-            raise HTTPException(
-                507, f"The quote needed more memory than the app has: {exc}"
+            raise RequestRefusedError(
+                "Pricing the quote took too long; try again.", status_code=504
             ) from None
-        except HauteError as exc:
-            if is_public_contract_error(exc):
-                raise HTTPException(422, exc.message or str(exc)) from None
-            logger.exception("workbench_app_price_failed")
-            raise HTTPException(500, f"The pipeline failed on this quote: {exc}") from None
+        except ExecutionAdmissionError as exc:
+            # Busy, not out of memory for good: the same pricing can be sent again shortly.
+            said = answer_failure(exc, operation="workbench_app_price").message
+            raise RequestRefusedError(
+                f"The app is busy pricing other quotes: {said}",
+                status_code=503,
+                headers={"Retry-After": str(BUSY_RETRY_SECONDS)},
+            ) from None
         except Exception as exc:
-            # A node's own code failing on the values typed, said as the deployed pricing
-            # API says it, so the underwriter can tell the analyst what broke.
-            logger.exception("workbench_app_price_failed")
-            raise HTTPException(500, f"The pipeline failed on this quote: {exc}") from None
+            # A node's own code failing on the values typed is named with its node, as the
+            # deployed pricing API names it, so the underwriter can tell the analyst what
+            # broke; memory and the pipeline's own contracts are said as every edge says them.
+            raise answer_pipeline_failure(exc, operation="workbench_app_price").refusal() from exc
         return Pricing(
             tables=priced_tables(document), request=to_json_safe(request), document=document
         )
@@ -941,6 +944,7 @@ def create_app(
             raw = await read_limited_json_body(
                 http, operation="workbench_app_price", limit_bytes=body_limit
             )
+        # Refused as the deployed /quote route refuses the same body, its payload whole.
         except RequestBodyLimitError as exc:
             return JSONResponse(status_code=413, content=exc.to_payload())
         except RequestBodyHeaderError as exc:
@@ -952,16 +956,15 @@ def create_app(
         except ValidationError as exc:
             raise RequestValidationError(exc.errors()) from None
         if body.form_revision != release.form_revision or body.release != release.id:
-            raise HTTPException(
-                409,
+            raise ConflictError(
                 "This page was drawn for another release of the app: reload it to price on "
-                "this one.",
+                "this one."
             )
         # Nothing is priced that could not be saved: a closed store prices no quote.
         try:
             await run_in_threadpool(gate.book)
         except QuoteStoreClosedError as refusal:
-            raise HTTPException(503, detail=refusal.detail) from None
+            raise RequestRefusedError(refusal.detail, status_code=503) from None
         pricing = await price_values(body.values)
         return WorkbenchAppPriceResponse(tables=pricing.tables, request=pricing.request)
 
@@ -985,9 +988,8 @@ def create_app(
     async def page() -> Response:
         built = static / APP_PAGE
         if not built.is_file():
-            return JSONResponse(
-                status_code=503,
-                content={"detail": "The app's page is not built: build Haute's frontend first."},
+            raise RequestRefusedError(
+                "The app's page is not built: build Haute's frontend first.", status_code=503
             )
         return FileResponse(built)
 

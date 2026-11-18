@@ -220,8 +220,7 @@ def test_http_graph_cannot_select_an_external_pipeline_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fastapi import HTTPException
-
+    from haute.errors import RequestRefusedError
     from haute.routes.pipeline import _validate_runtime_input_paths
 
     use_project(tmp_path)
@@ -233,7 +232,7 @@ def test_http_graph_cannot_select_an_external_pipeline_root(
     data_path.write_text(_CSV_TEXT, encoding="utf-8")
     graph = _data_input_graph("customers.csv").model_copy(update={"source_file": str(source_file)})
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         _validate_runtime_input_paths(graph)
 
     assert exc_info.value.status_code == 403

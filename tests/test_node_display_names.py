@@ -121,7 +121,7 @@ def test_a_trace_of_a_failing_child_names_it_and_carries_its_reference(client: A
     assert traced.status_code == 422, traced.text
     detail = traced.json()["detail"]
     key = qualified_runtime_node_id("rating_ie", "scale")
-    assert detail["error_code"] == "trace_node_failed"
+    assert detail["error_code"] == "node_failed"
     assert detail["message"].startswith("'scale in rating_ie' failed: ")
     assert detail["node"] == {
         "key": key,

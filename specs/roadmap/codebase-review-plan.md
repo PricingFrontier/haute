@@ -68,9 +68,9 @@ Pilot a few representative cases before estimating the rest.
    value changed with nothing said.
 
 The third and fourth are candidates, with two limits. An outcome the
-specification prescribes is not a new candidate: the optimiser's fixed text
-for an unexpected failure is the accepted error-detail policy, and `SRV-01`
-and `IOL-01` already carry the question of whether such texts should say
+specification prescribes is not a new candidate: an unexpected failure's
+words and incident id are the accepted error-detail policy, and `IOL-01`
+already carries the question of whether an input's fixed text should say
 more. An injected failure passes when its classification, what it hides,
 what it logs and how the operation recovers all match the contract.
 

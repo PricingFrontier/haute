@@ -22,9 +22,9 @@ from haute.routes._contract_errors import (
     CONTRACT_ERROR_HTTP_STATUS,
     CONTRACT_ERROR_TERMINAL_REASON,
     PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
     contract_error_job_fields,
     contract_error_payload,
+    contract_error_refusal,
     contract_error_terminal_reason,
 )
 
@@ -189,7 +189,7 @@ def test_shared_contract_error_adapter_preserves_sync_and_background_payloads(
     assert isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES)
     assert contract_error_payload(exc) == expected
 
-    http_exc = contract_error_http_exception(exc)
+    http_exc = contract_error_refusal(exc)
     assert http_exc.status_code == CONTRACT_ERROR_HTTP_STATUS == 422
     assert http_exc.detail == expected
 
@@ -227,7 +227,7 @@ def test_input_preparation_error_is_a_public_contract_error() -> None:
         "reason_code": "build_failed",
         "remediation": "Build the snapshot and try again.",
     }
-    assert contract_error_http_exception(exc).status_code == 422
+    assert contract_error_refusal(exc).status_code == 422
     assert contract_error_terminal_reason(exc) == CONTRACT_ERROR_TERMINAL_REASON
     assert contract_error_job_fields(exc)["http_status_code"] == 422
 
@@ -235,7 +235,7 @@ def test_input_preparation_error_is_a_public_contract_error() -> None:
 def test_a_memory_limited_preparation_records_the_memory_limited_terminal_state() -> None:
     exc = _input_preparation_error("memory_limited")
     # A synchronous route answers 507, matching the background job's status.
-    assert contract_error_http_exception(exc).status_code == 507
+    assert contract_error_refusal(exc).status_code == 507
     assert contract_error_terminal_reason(exc) == "memory_limited"
     fields = contract_error_job_fields(exc)
     assert fields["error_code"] == "memory_limit"
@@ -256,7 +256,7 @@ def test_an_expired_seed_plan_is_a_conflict() -> None:
         ),
         "node_id": "join",
     }
-    http_exc = contract_error_http_exception(exc)
+    http_exc = contract_error_refusal(exc)
     assert http_exc.status_code == 409
     assert http_exc.detail == payload
     assert contract_error_terminal_reason(exc) == CONTRACT_ERROR_TERMINAL_REASON

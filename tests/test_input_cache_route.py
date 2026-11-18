@@ -74,14 +74,15 @@ def _threaded_spawn(function: Any, *args: Any, config: Any, **kwargs: Any) -> An
         if time.monotonic() > deadline:
             raise WorkerTimeoutError(timeout_seconds=config.timeout_seconds)
     if "error" in outcome:
-        _status, (remote_type, message, remote_traceback, is_memory) = _worker_error_envelope(
-            outcome["error"]
+        _status, (remote_type, message, remote_traceback, is_memory, public_payload) = (
+            _worker_error_envelope(outcome["error"])
         )
         raise WorkerRemoteError(
             remote_type=remote_type,
             remote_message=message,
             remote_traceback=remote_traceback,
             is_memory=is_memory,
+            public_payload=public_payload,
         )
     return outcome["result"]
 
@@ -961,7 +962,7 @@ def test_admitted_eager_memory_refusal_has_a_stable_safe_status(
     assert terminal["status"] == "memory_limited"
     assert terminal["terminal_reason"] == "memory_limited"
     assert terminal["error_code"] == "memory_limit"
-    # The shared memory-message shape (see routes/_memory_messages.py): the
+    # The shared memory-message shape (see _memory_messages.py): the
     # generic admission refusal, never the internal reason string; sizes are
     # rendered only for the reasons whose attributes are known comparable.
     assert terminal["message"] == (

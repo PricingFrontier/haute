@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from haute._failure_answers import record_incident
 from haute._git_core import (
     _ARCHIVE_PREFIX,
     _CLONE_TIMEOUT_SECONDS,
@@ -549,10 +550,11 @@ def _push_failed(remote: str, stderr: str) -> GitDomainError:
             "Push again."
         )
     if "[remote rejected]" in stderr:
+        incident = record_incident(event="git_push_rejected", remote=remote, stderr=stderr)
         return GitDomainError(
             f"'{remote}' refused the push, so nothing was published and your work is "
-            "unchanged. The Haute server log has its reason, for example a branch rule or "
-            "missing write access."
+            f"unchanged. Its reason, for example a branch rule or missing write access, is "
+            f"recorded under incident {incident}."
         )
     return _could_not_push(remote)
 
@@ -806,13 +808,15 @@ def _bootstrap_incomplete(
     remote: str, default: str, *, refused: bool
 ) -> GitBootstrapIncompleteError:
     """The hand-written error for a bootstrap whose default landed but whose pair did not."""
-    logger.warning("git_bootstrap_incomplete", remote=remote, branch=default, refused=refused)
+    incident = record_incident(
+        event="git_bootstrap_incomplete", remote=remote, branch=default, refused=refused
+    )
     if refused:
         outcome = (
             f"'{remote}' did not accept your branch and save history. Nothing was "
             "overwritten and your work is unchanged. Try again; if it fails the same "
             f"way, '{remote}' is refusing these branches (for example a branch rule or "
-            "missing write access) and the Haute server log has its reason."
+            f"missing write access), and its reason is recorded under incident {incident}."
         )
     else:
         outcome = (

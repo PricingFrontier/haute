@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests import _server_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._server_helpers import (
@@ -1349,7 +1350,7 @@ class TestPipelineExceptions:
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 500
         assert error_msg not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
+        assert_unnamed(resp.json()["detail"])
 
     @pytest.mark.parametrize(
         ("error_type", "detail_fragment"),

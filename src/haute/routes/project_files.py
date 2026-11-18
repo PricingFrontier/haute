@@ -10,7 +10,6 @@ files there because its disk does not survive a restart. See specs/server-api.
 
 from __future__ import annotations
 
-import errno
 import os
 import stat
 import time
@@ -18,12 +17,13 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from haute import _git
 from haute._artifact_paths import PathProblem, ordinary_path_problem
+from haute._failure_answers import answer_failure, file_answer
 from haute._file_ops import ensure_disk_headroom, file_revision, publish_staged_file
 from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_read_models import FileState
@@ -37,6 +37,7 @@ from haute._project_layout import (
     pipeline_files_folder,
     versioned_name,
 )
+from haute.errors import RequestRefusedError
 from haute.hosted import databricks_app_environment
 from haute.routes._helpers import project_write
 from haute.routes._save_pipeline import LedgerCapture, capture_save_in_ledger
@@ -73,11 +74,22 @@ _PROBLEMS: dict[PathProblem, str] = {
 }
 
 
-def _refusal(status: int, code: str, message: str) -> HTTPException:
+def _refusal(status: int, code: str, message: str) -> RequestRefusedError:
     """A refusal in the flat error contract (#76): the message is the detail, and the case's
     code goes to the log."""
     logger.info("project_file_refused", code=code, status=status)
-    return HTTPException(status_code=status, detail=message)
+    return RequestRefusedError(message, status_code=status)
+
+
+def _file_refusal(exc: OSError, display: str) -> RequestRefusedError:
+    """A file the operating system refused, said as every edge says it (held open by another
+    program, read-only, a full disk) and naming *display*, the file as the request named it;
+    any other ``OSError`` an incident."""
+    answer = file_answer(exc, named=display)
+    if answer is None:
+        return answer_failure(exc, operation="project_file_write").refusal()
+    logger.info("project_file_refused", code=answer.code, status=answer.status)
+    return answer.refusal()
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,9 +351,7 @@ def _plan_write(place: ProjectFilePlace, path: str, length_header: str | None) -
     try:
         ensure_disk_headroom(nearest, length)
     except OSError as exc:
-        if exc.errno == errno.ENOSPC:
-            raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
-        raise
+        raise _file_refusal(exc, display) from None
     branch = read_working_branch(project_root) if target.place.name == "pipeline" else None
     return _WritePlan(target, length, branch, _staging_path(project_root))
 
@@ -433,12 +443,8 @@ def _publish_write(
         publish_staged_file(staging, target.path, replace=replace_revision is not None)
     except FileExistsError:
         raise _refusal(409, "file_exists", f"{display} already exists.") from None
-    except PermissionError:
-        raise _refusal(
-            409,
-            "file_in_use",
-            f"{display} is open in Haute or another program. Try again once it's closed.",
-        ) from None
+    except OSError as exc:
+        raise _file_refusal(exc, display) from None
     written = target.path.stat()
     warnings: list[str] = []
     captured = LedgerCapture(None, False, [])
@@ -499,9 +505,7 @@ async def write_project_file(
             current_project().root, lambda: _publish_write(plan, staging, replace_revision)
         )
     except OSError as exc:
-        if exc.errno == errno.ENOSPC:
-            raise _refusal(507, "disk_full", f"There isn't room on disk for {display}.") from None
-        raise
+        raise _file_refusal(exc, display) from None
     finally:
         await run_in_threadpool(staging.unlink, missing_ok=True)
 
@@ -542,12 +546,8 @@ def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDel
         )
     try:
         target.path.unlink()
-    except PermissionError:
-        raise _refusal(
-            409,
-            "file_in_use",
-            f"{display} is open in Haute or another program. Try again once it's closed.",
-        ) from None
+    except OSError as exc:
+        raise _file_refusal(exc, display) from None
     warnings: list[str] = []
     captured = LedgerCapture(None, False, [])
     if target.place.name == "pipeline":

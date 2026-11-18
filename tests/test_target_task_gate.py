@@ -43,6 +43,7 @@ from haute.routes._background_jobs import IsolatedJobSupervisor
 from haute.routes._training_lifecycle import TrainService
 from haute.routes._training_preparation import _validate_target_task_pairing
 from haute.routes._training_worker import _worker_failure_payload
+from tests._failure_assertions import assert_unnamed
 from tests._training_helpers import join_training_preparation
 from tests.conftest import make_ram_estimate
 
@@ -908,7 +909,7 @@ class TestWorkerBoundaryUserMessage:
         size omission when a bound is missing — a partially-populated
         exception must degrade to omitting sizes, never TypeError."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         sampler_lost = ExecutionMemoryLimitExceededError(
             "training_job",
@@ -964,7 +965,7 @@ class TestWorkerBoundaryUserMessage:
         unknown reason degrades to the generic refusal with no sizes."""
         from haute._execution_admission import ExecutionAdmissionError
         from haute._execution_context import ExecutionProfile
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         process_cap = ExecutionAdmissionError(
             "training_job",
@@ -978,7 +979,7 @@ class TestWorkerBoundaryUserMessage:
         assert message.startswith("Training was not started")
         # Not the runtime "(X used, Y allowed)" pair: nothing ran yet, so the
         # sizes are attributed to the server, not the refused operation.
-        assert "the server is already using 2.0 GiB of its 1.0 GiB memory cap" in message
+        assert "Haute is already using 2.0 GiB of its 1.0 GiB memory cap" in message
         assert "process_rss_limit_exceeded" not in message
 
         sampler_lost = ExecutionAdmissionError(
@@ -1027,7 +1028,7 @@ class TestWorkerBoundaryUserMessage:
         must pair with the absolute enforced bound (rss_limit_bytes), never
         the growth budget, and omit sizes when no absolute bound is known."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         absolute_bound = ExecutionMemoryLimitExceededError(
             "training_job",
@@ -1149,7 +1150,7 @@ class TestWorkerBoundaryUserMessage:
         assert payload.fields[WORKER_USER_MESSAGE_FIELD] == "Cancelled"
         assert "training_job" in payload.fields["error"]
 
-    def test_supervisor_keeps_wrapper_for_uncurated_failures(self) -> None:
+    def test_an_uncurated_child_failure_is_an_incident(self) -> None:
         payload = WorkerFailurePayload(
             terminal_reason="error",
             error_type="KeyError",
@@ -1166,7 +1167,8 @@ class TestWorkerBoundaryUserMessage:
             completed_fields=lambda result: {"result": result},
             completed_message="Completed",
         )
-        assert outcome.message == "The worker raised KeyError: 'frame'"
+        assert_unnamed(outcome.message)
+        assert "frame" not in outcome.message
 
     def test_child_error_text_survives_the_wrapper_overwrite(self) -> None:
         """The supervisor claims the "error" field for the typed wrapper text;
@@ -1194,18 +1196,16 @@ class TestWorkerBoundaryUserMessage:
     @pytest.mark.parametrize(
         ("make_exc", "expected_fragment", "expected_reason"),
         [
-            (
-                lambda: WorkerCrashedError(-9),
-                "stopped unexpectedly before returning a result",
-                "error",
-            ),
+            # A crash with no memory evidence names nothing: an incident, its exit code
+            # recorded under it.
+            (lambda: WorkerCrashedError(-9), "does not recognise (incident ", "error"),
             (
                 # SIGKILL under a configured cap: the OOM wording is hedged —
                 # the exit-code heuristic is indicative, not proof.
                 lambda: WorkerCrashedError(
                     -9, memory_limited=exitcode_looks_memory_limited(-9, 100)
                 ),
-                "may have run out of memory",
+                "most likely because it ran out of memory",
                 "memory_limited",
             ),
             (
@@ -1221,7 +1221,7 @@ class TestWorkerBoundaryUserMessage:
         expected_fragment: str,
         expected_reason: str,
     ) -> None:
-        """Failures that never produce a payload keep the typed wrapper text."""
+        """Failures that never produce a payload are worded by the parent."""
 
         def execute() -> None:
             raise make_exc()

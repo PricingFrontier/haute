@@ -10,8 +10,9 @@ them in a thread pool, avoiding event-loop blocking on slow git operations.
 
 ``_git`` returns Pydantic response models directly, so each route body
 collapses to a single ``return _git.<op>(...)`` — no dataclass-to-dict-to-model
-shim here. A ``GitError`` a route does not map itself reaches the application
-handler, which answers through :func:`git_error_http_exception`.
+shim here. A ``GitError`` a route does not map itself is answered by
+``haute._failure_answers``: a guardrail 403 and a domain refusal 400 with their own words,
+git's own refusal 400 with an incident under which its message is recorded.
 """
 
 from __future__ import annotations
@@ -19,16 +20,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Query, Request
 
 from haute import _project_storage
 from haute._artifact_paths import ordinary_path_problem
 from haute._ci_secrets import CiSecretsError, push_with_ci_secrets, set_missing_ci_secrets
 from haute._event_bus import default_bus
 from haute._git import (
-    GitDomainError,
-    GitError,
-    GitGuardrailError,
     GitMilestoneForkError,
     GitPushRejectedError,
     archive_working_pair,
@@ -59,11 +57,15 @@ from haute._git_lock import repository_mutation
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._project_layout import pipeline_folder
-from haute.errors import ConfigError
+from haute.errors import (
+    ConfigError,
+    ConflictError,
+    InvalidRequestError,
+    RequestRefusedError,
+)
 from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
-    _INTERNAL_ERROR_DETAIL,
     commit_pipeline_graph,
     discover_pipelines,
     pause_watcher,
@@ -123,33 +125,6 @@ from haute.schemas import (
 logger = get_logger(component="server.git")
 
 router = APIRouter(prefix="/api/git", tags=["git"])
-
-
-def git_error_http_exception(e: GitError) -> HTTPException:
-    """Map a git error to its HTTP response.
-
-    Three error families are distinguished:
-
-    * :class:`GitGuardrailError` — hand-written guardrail block
-      (protected branch, already-archived branch) → 403 with verbatim
-      message.
-    * :class:`GitDomainError` — other hand-written user-facing messages
-      (missing repo, duplicate branch, no changes to save) → 400 with
-      verbatim message.  Safe because we author the text and never
-      forward raw subprocess stderr through this class.
-    * Plain :class:`GitError` — raw ``git`` subprocess stderr from
-      :func:`_run_git`.  Unsafe: may embed absolute paths, remote
-      URLs, SSL error text, or credential fragments.  Full detail is
-      logged server-side, HTTP body gets the sanitized constant → 400.
-    """
-    if isinstance(e, GitGuardrailError):
-        logger.warning("git_guardrail_error", error=str(e))
-        return HTTPException(status_code=403, detail=str(e))
-    if isinstance(e, GitDomainError):
-        logger.warning("git_domain_error", error=str(e))
-        return HTTPException(status_code=400, detail=str(e))
-    logger.warning("git_error", error=str(e))
-    return HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL)
 
 
 def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchResponse:
@@ -315,7 +290,7 @@ def git_capture(body: GitCaptureRequest) -> SaveCapture:
     root = current_project().root
     for path in body.paths:
         if ordinary_path_problem(root, path)[1] is not None:
-            raise HTTPException(status_code=400, detail=f"{path} is not a file in the project.")
+            raise InvalidRequestError(f"{path} is not a file in the project.")
     warnings: list[str] = []
     with repository_mutation(root):
         captured = capture_save_in_ledger(root, list(dict.fromkeys(body.paths)), warnings)
@@ -353,7 +328,7 @@ def git_commit(body: GitCommitRequest) -> GitCommitResponse:
         return response
     except GitMilestoneForkError as e:
         logger.info("git_commit_would_fork", remote=e.fork.remote)
-        raise HTTPException(status_code=409, detail=e.fork.model_dump())
+        raise ConflictError(e.fork.model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +552,7 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
         return push_with_ci_secrets(body.remote, current_project().root)
     except GitPushRejectedError as e:
         logger.warning("git_push_rejected", remote=body.remote, message=e.rejection.message)
-        raise HTTPException(status_code=409, detail=e.rejection.model_dump())
+        raise ConflictError(e.rejection.model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +571,7 @@ def git_set_ci_secrets(body: GitCiSecretsRequest) -> GitCiSecrets:
         return set_missing_ci_secrets(body.remote, current_project().root)
     except CiSecretsError as e:
         logger.info("git_ci_secrets_not_set", remote=body.remote)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise InvalidRequestError(str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -625,9 +600,9 @@ def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindSt
             bound_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
         )
     except _project_storage.StorageConfigError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise InvalidRequestError(str(e))
     except _project_storage.StorageUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise RequestRefusedError(str(e), status_code=503)
 
     return GitBindStorageResponse(
         remote_url=remote_url,
@@ -670,9 +645,9 @@ def git_fork_storage(body: GitForkStorageRequest, request: Request) -> GitForkSt
             forked_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
         )
     except _project_storage.StorageConfigError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise InvalidRequestError(str(e))
     except _project_storage.StorageUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise RequestRefusedError(str(e), status_code=503)
 
     target = _project_storage.validate_remote_url(body.target_url)
     return GitForkStorageResponse(
@@ -740,9 +715,9 @@ def git_check_upstream() -> GitUpstreamStatusResponse:
     try:
         status = _project_storage.check_upstream(current_project().root)
     except _project_storage.StorageConfigError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise InvalidRequestError(str(e))
     except _project_storage.StorageUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise RequestRefusedError(str(e), status_code=503)
 
     return GitUpstreamStatusResponse(
         parent_url=status.parent_url,
@@ -766,9 +741,9 @@ def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
             response = _project_storage.pull_upstream(current_project().root)
         return response
     except _project_storage.StorageConfigError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise InvalidRequestError(str(e))
     except _project_storage.StorageUnavailableError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise RequestRefusedError(str(e), status_code=503)
 
 
 # ---------------------------------------------------------------------------

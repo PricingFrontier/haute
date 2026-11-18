@@ -685,14 +685,14 @@ class TestGlmInputSchemaGate:
         assert not store.list_jobs()
 
     @pytest.mark.parametrize(
-        ("code", "error_name"),
+        "code",
         [
-            ("df = source.with_columns(x2=undefined_name)", "NameError"),
-            ("", "NotImplementedError"),
+            pytest.param("df = source.with_columns(x2=undefined_name)", id="NameError"),
+            pytest.param("", id="NotImplementedError"),
         ],
     )
     def test_user_transform_error_becomes_422_on_training_and_dispersion_routes(
-        self, glm_collision_data, code, error_name
+        self, glm_collision_data, code
     ):
         """The schema-only build runs the user's own transform code, so any
         exception that code raises is the user's to fix — a named 422, never a
@@ -718,9 +718,10 @@ class TestGlmInputSchemaGate:
                     )
                 )
             )
+        # The user's own transform failing is named with its node (SRV-01's node_failed).
         assert raised.value.status_code == 422
-        assert "could not be resolved" in str(raised.value.detail)
-        assert error_name in str(raised.value.detail)
+        assert raised.value.detail["error_code"] == "node_failed"
+        assert raised.value.detail["message"].startswith("'prep' failed: ")
 
         with pytest.raises(RequestRefusedError) as raised:
             service.start_dispersion_estimate(
@@ -734,9 +735,10 @@ class TestGlmInputSchemaGate:
                     )
                 )
             )
+        # The user's own transform failing is named with its node (SRV-01's node_failed).
         assert raised.value.status_code == 422
-        assert "could not be resolved" in str(raised.value.detail)
-        assert error_name in str(raised.value.detail)
+        assert raised.value.detail["error_code"] == "node_failed"
+        assert raised.value.detail["message"].startswith("'prep' failed: ")
         assert not store.list_jobs()
 
 

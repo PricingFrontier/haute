@@ -80,7 +80,7 @@ class TestTrain:
         assert isinstance(result.exception, SystemExit)
         assert "Error executing script: boom" in result.output
 
-    def test_a_defect_in_the_script_keeps_its_traceback(
+    def test_a_defect_in_the_script_is_an_incident_with_its_traceback_recorded(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
         script = tmp_path / "bad.py"
@@ -88,7 +88,11 @@ class TestTrain:
 
         result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
-        assert isinstance(result.exception, TypeError)
+        assert "does not recognise (incident " in result.output
+        assert "Traceback" not in result.output
+        [record] = (tmp_path / ".haute" / "incidents").iterdir()
+        assert record.stem in result.output
+        assert "TypeError" in record.read_text(encoding="utf-8")
 
     def test_no_job_variable(self, runner: CliRunner, tmp_path: Path) -> None:
         script = tmp_path / "no_job.py"
@@ -139,7 +143,7 @@ class TestTrain:
         assert isinstance(result.exception, SystemExit)
         assert "Training failed: no rows left after the holdout" in result.output
 
-    def test_an_unexpected_training_error_keeps_its_traceback(
+    def test_an_unexpected_training_error_is_an_incident(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
         script = tmp_path / "fail_train.py"
@@ -151,7 +155,8 @@ class TestTrain:
 
         result = runner.invoke(cli, ["train", str(script)])
         assert result.exit_code == 1
-        assert isinstance(result.exception, RuntimeError)
+        assert "does not recognise (incident " in result.output
+        assert "CUDA out of memory" not in result.output
 
     def test_result_formatting_failure_does_not_relabel_training(
         self, runner: CliRunner, tmp_path: Path
@@ -177,8 +182,9 @@ class TestTrain:
         assert "training succeeded" in result.output.lower()
         assert "reporting failed" in result.output.lower()
         assert "training failed" not in result.output.lower()
-        # The formatting defect keeps its traceback.
-        assert isinstance(result.exception, TypeError)
+        # The formatting defect is an incident, never a traceback on the terminal.
+        assert "does not recognise (incident " in result.output
+        assert "Traceback" not in result.output
 
     def test_progress_callback_output(self, runner: CliRunner, tmp_path: Path) -> None:
         """Progress callback should produce bar output with percentage."""

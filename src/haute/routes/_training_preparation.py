@@ -30,8 +30,8 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._failure_answers import answer_pipeline_failure, memory_answer
 from haute._logging import get_logger
-from haute._memory_errors import memory_error_in
 from haute._polars_dtypes import wide_integer_column, wide_integer_message
 from haute._ram_estimate import RamEstimate
 from haute._seed_plans import (
@@ -48,7 +48,6 @@ from haute.errors import (
     InsufficientMemoryError,
     RequestRefusedError,
     SchemaMismatchError,
-    ServiceFailedError,
     UnprocessableError,
 )
 from haute.execution import (
@@ -76,10 +75,7 @@ from haute.routes._contract_errors import (
     contract_error_job_fields,
     contract_error_refusal,
     contract_error_terminal_reason,
-    is_pipeline_error,
-    memory_error_refusal,
     memory_limit_refusal,
-    pipeline_error_message,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._synchronous_analysis import CLIENT_CLOSED_REQUEST_STATUS
@@ -917,44 +913,45 @@ def preparation_failure_outcome(
     request: TrainingPreparationRequest,
     *,
     execution_metrics: dict[str, Any] | None,
+    memory_limit_bytes: int | None = None,
 ) -> TrainingPreparationOutcome:
     """The job outcome of one preparation failure, wherever it happened.
 
     Shared by the preparation child and its supervising parent, which prepares
     inputs and resolves the seed plan before the child starts, so a failure is
-    reported the same way on either side of the process boundary. Every
-    outcome removes the parquet.
+    reported the same way on either side of the process boundary. Running out of
+    memory in any form ends ``memory_limited`` naming *memory_limit_bytes*, the
+    limit in force, when the caller knows it; training's own column and streaming
+    refusals are worded here; every other failure is put into words by
+    :func:`haute._failure_answers.answer_pipeline_failure`, a node's own failure
+    naming its node and anything unnamed an incident. Every outcome removes the
+    parquet.
     """
     job_id = request.job_id
     tmp_parquet = request.parquet_path
     if isinstance(exc, ExecutionCancelledError):
         # A cancelled run is not a failed one. Without this it falls to the
-        # generic branch and the user is told the pipeline failed and to go
-        # read the server logs, while the log beside it says cancelled.
+        # generic branch and the user is told the pipeline failed, while the log
+        # beside it says cancelled.
         failure = TrainingPreparationFailure(
             terminal_reason="cancelled",
             message="Cancelled",
             http_status_code=CLIENT_CLOSED_REQUEST_STATUS,
             http_detail="Training preparation was cancelled",
         )
-    elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-        logger.warning(
-            "pipeline_exec_memory_limited",
-            error=str(exc),
-            node_id=request.node_id,
+    elif (
+        memory := memory_answer(
+            exc,
+            operation="training_preparation",
+            memory_limit_bytes=memory_limit_bytes,
+            noun="Training",
         )
-        failure = _preparation_failure_from_refusal(
-            _memory_limit_refusal(exc),
-            job_id=job_id,
-            terminal_reason="memory_limited",
-        )
-    elif memory_error_in(exc) is not None:
-        # Out of memory behind any translation (a Polars error over a failed allocation).
+    ) is not None:
+        # Out of memory behind any translation: a budget refused, a Polars error over an
+        # allocation the operating system refused, or ENOMEM itself.
         logger.warning("pipeline_exec_memory_limited", error=str(exc), node_id=request.node_id)
         failure = _preparation_failure_from_refusal(
-            memory_error_refusal(exc, operation="training_preparation"),
-            job_id=job_id,
-            terminal_reason="memory_limited",
+            memory.refusal(), job_id=job_id, terminal_reason="memory_limited"
         )
     elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
         refusal = contract_error_refusal(exc)
@@ -993,23 +990,11 @@ def preparation_failure_outcome(
             job_id=job_id,
             terminal_reason="contract_error",
         )
-    elif is_pipeline_error(exc):
-        # The pipeline's own code, contracts or data, as a preview of the node shows it.
-        logger.warning("pipeline_exec_pipeline_error", error=str(exc), node_id=request.node_id)
-        failure = _preparation_failure_from_refusal(
-            UnprocessableError(f"Pipeline execution failed: {pipeline_error_message(exc)}"),
-            job_id=job_id,
-            terminal_reason="contract_error",
-        )
-    elif isinstance(exc, RequestRefusedError):
-        failure = _preparation_failure_from_refusal(exc, job_id=job_id)
     else:
-        logger.error("pipeline_exec_failed", error=str(exc), node_id=request.node_id)
-        failure = _preparation_failure_from_refusal(
-            ServiceFailedError("Pipeline execution failed. Check the server logs for details."),
-            job_id=job_id,
-            terminal_reason="error",
-        )
+        # The pipeline's own code, contracts or data, as a preview of the node shows it, a
+        # file the operating system refused, a service's refusal, or an incident.
+        answer = answer_pipeline_failure(exc, operation="training_preparation")
+        failure = _preparation_failure_from_refusal(answer.refusal(), job_id=job_id)
     return _finalise_preparation_failure(
         failure,
         parquet_path=tmp_parquet,
@@ -1044,7 +1029,10 @@ def prepare_training_data(
         )
     except Exception as exc:
         return preparation_failure_outcome(
-            exc, request, execution_metrics=execution_context.metrics_payload()
+            exc,
+            request,
+            execution_metrics=execution_context.metrics_payload(),
+            memory_limit_bytes=execution_context.memory_limit_bytes,
         )
     execution_context.checkpoint(label="training_preparation_complete")
     return TrainingPreparationOutcome(
@@ -1070,44 +1058,14 @@ def prepare_training_data_worker(
         context = create_isolated_execution_context(budget)
         context.checkpoint(label="training_preparation")
         return prepare_training_data(request, execution_context=context)
-    except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-        return _finalise_preparation_failure(
-            _preparation_failure_from_refusal(
-                _memory_limit_refusal(exc),
-                job_id=request.job_id,
-                terminal_reason="memory_limited",
-            ),
-            parquet_path=request.parquet_path,
-            execution_metrics=None,
-        )
-    except ExecutionCancelledError:
-        # Before the generic branch, which would report a cancelled run as a
-        # pipeline failure pointing the user at the server logs.
-        return _finalise_preparation_failure(
-            TrainingPreparationFailure(
-                terminal_reason="cancelled",
-                message="Cancelled",
-                http_status_code=CLIENT_CLOSED_REQUEST_STATUS,
-                http_detail="Training preparation was cancelled",
-            ),
-            parquet_path=request.parquet_path,
-            execution_metrics=None,
-        )
     except Exception as exc:
-        logger.error(
-            "training_preparation_worker_error",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            node_id=request.node_id,
-        )
-        return _finalise_preparation_failure(
-            _preparation_failure_from_refusal(
-                ServiceFailedError("Pipeline execution failed. Check the server logs for details."),
-                job_id=request.job_id,
-                terminal_reason="error",
-            ),
-            parquet_path=request.parquet_path,
+        # The child's own context could not be made, or failed: the same outcomes as a
+        # failure inside preparation, a cancellation and memory included.
+        return preparation_failure_outcome(
+            exc,
+            request,
             execution_metrics=None,
+            memory_limit_bytes=budget.memory_limit_bytes,
         )
     finally:
         if context is not None:

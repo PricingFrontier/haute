@@ -58,15 +58,27 @@ class QuoteStoreClosedError(WorkbenchError):
         }
 
 
+#: The failure answers' codes for a SQLite store's file the app cannot use as it is.
+_SQLITE_FILE_REFUSALS = frozenset(
+    {"quote_store_damaged", "quote_store_busy", "quote_store_read_only"}
+)
+
+
 def _closed_by(exc: BaseException) -> QuoteStoreClosedError | None:
     """The refusal *exc* closes the quotes with, None for an error that is no store's: the
     store's own refusals, a location that cannot be resolved among them, keep their error code
     and differences, and a driver's error before any statement is a store not reached."""
     if isinstance(exc, QuoteStoreClosedError):
         return exc
+    from haute._failure_answers import classify_failure
     from haute._quote_store import QuoteStoreError
     from haute._quote_store._store import unreached
 
+    # A SQLite file that is damaged, held by another program or read-only is called what it
+    # is, in the words every edge gives it, never "cannot reach".
+    answer = classify_failure(exc)
+    if answer is not None and answer.code in _SQLITE_FILE_REFUSALS:
+        return QuoteStoreClosedError(answer.message, code=answer.code)
     if unreached(exc):
         return QuoteStoreClosedError(UNREACHABLE, code="quote_store_unreachable")
     if not isinstance(exc, QuoteStoreError):

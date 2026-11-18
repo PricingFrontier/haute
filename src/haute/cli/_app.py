@@ -349,7 +349,13 @@ def impact_command(sample: int) -> None:
 
 
 @app.command()
-@click.option("--port", default=8001, show_default=True, help="Port to serve on, on 127.0.0.1.")
+@click.option(
+    "--port",
+    default=8001,
+    type=click.IntRange(0, 65535),
+    show_default=True,
+    help="Port to serve on, on 127.0.0.1.",
+)
 @click.option(
     "--static-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),

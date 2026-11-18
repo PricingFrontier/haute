@@ -4,10 +4,12 @@ import asyncio
 from typing import cast
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from haute._node_addresses import ResolvedTarget, resolve_target
+from haute.errors import RequestRefusedError
+from tests._failure_assertions import assert_unnamed, without_message
 from tests._preview_targets import node_target
 from tests._project import project_app, use_project
 from tests._source_files import REPO_ROOT
@@ -239,7 +241,7 @@ def test_remote_error_payload_requires_exact_allow_list_identity_and_code() -> N
         public_payload={"error_code": "memory_limit", "secret": "must not escape"},
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(forged, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 500
@@ -256,7 +258,7 @@ def test_remote_public_error_payload_requires_the_declared_error_code() -> None:
         public_payload={"error_code": "forged", "message": "must not escape"},
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(forged_code, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 500
@@ -267,11 +269,11 @@ def test_memory_classified_crash_maps_to_a_parent_authored_507_detail() -> None:
 
     crash = WorkerCrashedError(-9, memory_limited=True)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(crash, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 507
-    assert exc_info.value.detail == {
+    assert without_message(exc_info.value.detail) == {
         "error_code": "memory_limit",
         "operation": "pipeline_preview",
         "reason": "worker_may_have_exceeded_memory_limit",
@@ -286,11 +288,11 @@ def test_remote_builtin_memory_error_maps_to_a_data_free_507_detail() -> None:
         public_payload=None,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(remote, operation="pipeline_trace")
 
     assert exc_info.value.status_code == 507
-    assert exc_info.value.detail == {
+    assert without_message(exc_info.value.detail) == {
         "error_code": "memory_limit",
         "operation": "pipeline_trace",
         "reason": "worker_memory_exhausted",
@@ -299,10 +301,7 @@ def test_remote_builtin_memory_error_maps_to_a_data_free_507_detail() -> None:
 
 
 def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_500() -> None:
-    from fastapi import HTTPException
-
-    from haute.errors import NodeConfigError
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+    from haute.errors import NodeConfigError, RequestRefusedError
 
     payload = NodeConfigError("step_count is required", setting="step_count").to_payload()
     config_error = _remote_error(
@@ -310,7 +309,7 @@ def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_5
         remote_type=NodeConfigError.__name__,
         public_payload=payload,
     )
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(config_error, operation="pipeline_preview")
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == payload
@@ -320,10 +319,10 @@ def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_5
         remote_type="ValueError",
         public_payload=None,
     )
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(bare, operation="pipeline_preview")
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == _INTERNAL_ERROR_DETAIL
+    assert_unnamed(exc_info.value.detail)
 
 
 def test_known_remote_memory_error_keeps_its_public_payload() -> None:
@@ -336,19 +335,21 @@ def test_known_remote_memory_error_keeps_its_public_payload() -> None:
         public_payload=payload,
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(known, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 507
-    assert exc_info.value.detail == payload
+    assert without_message(exc_info.value.detail) == payload
 
 
 def test_remote_error_translation_covers_each_closed_public_identity() -> None:
-    import haute.routes._worker_failure_http as worker_http
     import haute.routes.pipeline as pipeline_mod
     from haute.errors import TraceRowMismatchError
+    from haute.routes._contract_errors import PUBLIC_CONTRACT_ERROR_TYPES
 
-    public_identity, public_code = next(iter(worker_http._PUBLIC_REMOTE_ERROR_CODES.items()))
+    public_type = PUBLIC_CONTRACT_ERROR_TYPES[0]
+    public_identity = (public_type.__module__, public_type.__name__)
+    public_code = public_type.error_code
     cases = [
         (
             "pipeline_preview",
@@ -412,7 +413,7 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
         )
         error.remote_message = message
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RequestRefusedError) as exc_info:
             raise_worker_http(error, operation=operation)
 
         assert exc_info.value.status_code == expected_status
@@ -434,7 +435,7 @@ def test_a_trace_worker_s_missing_contract_columns_are_a_422() -> None:
     )
     error.remote_message = "'band' needs the column 'age'. (node_id=band)"
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         raise_worker_http(error, operation="pipeline_trace")
 
     assert exc_info.value.status_code == 422
@@ -666,7 +667,7 @@ def test_interactive_route_worker_failures_have_stable_http_status(
         monkeypatch.setattr(pipeline_mod, "_trace_supersession", _RaisingCoordinator(error))
         invocation = pipeline_mod.trace_row(body)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RequestRefusedError) as exc_info:
         asyncio.run(invocation)
 
     assert exc_info.value.status_code == expected_status
@@ -753,12 +754,16 @@ def test_an_unclassified_remote_failure_is_logged_with_what_the_worker_raised() 
         public_payload=None,
     )
 
-    with structlog.testing.capture_logs() as captured, pytest.raises(HTTPException) as exc_info:
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(RequestRefusedError) as exc_info,
+    ):
         raise_worker_http(remote, operation="pipeline_preview")
 
     assert exc_info.value.status_code == 500
     assert "private child detail" not in str(exc_info.value.detail)
-    (event,) = [entry for entry in captured if entry["event"] == "worker_remote_failure"]
-    assert event["remote_type"] == "PermissionError"
+    (event,) = [entry for entry in captured if entry["event"] == "unexpected_failure"]
+    assert event["error_class"] == "PermissionError"
     assert event["remote_message"] == "private child detail"
-    assert event["remote_traceback"] == "private traceback"
+    assert event["traceback"] == "private traceback"
+    assert event["incident"] in exc_info.value.detail

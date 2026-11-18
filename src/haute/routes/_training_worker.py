@@ -23,6 +23,7 @@ from haute._execution_context import (
     current_rss_bytes,
 )
 from haute._logging import get_logger
+from haute._memory_messages import memory_limit_user_message
 from haute._native_memory_limit import (
     current_native_memory_backend,
     memory_error_for_thread_start_failure,
@@ -44,7 +45,6 @@ from haute.routes._contract_errors import (
     contract_error_job_fields,
     contract_error_terminal_reason,
 )
-from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._training_artifacts import (
     _EVALUATION_ARTIFACT_PATHS,
     _TUNING_ARTIFACT_PATHS,

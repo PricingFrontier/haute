@@ -24,6 +24,7 @@ from haute.routes._optimiser_service import (
     _estimate_scenario_frontier_ranges,
 )
 from tests import _optimiser_route_helpers
+from tests._failure_assertions import UNNAMED, assert_detail, assert_unnamed, message_of
 from tests._optimiser_route_helpers import (
     _TERMINAL_JOB_STATUSES,
     _make_optimiser_graph,
@@ -621,7 +622,8 @@ class TestEstimateRoute:
             json={"graph": graph, "target": {"occurrence": None, "node_id": "opt"}},
         )
 
-        assert resp.status_code == 400
+        # The pipeline's own contract, answered as every edge answers it.
+        assert resp.status_code == 422
         assert "Source projection references columns missing" in resp.json()["detail"]
         assert "volume" in resp.json()["detail"]
 
@@ -824,7 +826,7 @@ class TestEstimateRoute:
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
-        detail = status["error_detail"]
+        detail = message_of(status["error_detail"])
         assert "Source projection references columns missing" in detail
         assert "scenario_index" in detail
         assert "scenario_value" in detail
@@ -1387,7 +1389,7 @@ class TestEstimateRoute:
         job = next(iter(store.list_jobs().values()))
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert "Failed to start auto-range worker" in job["message"]
+        assert_unnamed(job["message"])
 
     def test_solve_conflicts_with_running_auto_range_for_same_graph_node(self, scored_data):
         """Solve setup cannot overlap a running auto-range for the same graph/node."""
@@ -1793,7 +1795,7 @@ class TestEstimateRoute:
                 ValueError("bad lazy range"),
                 500,
                 "error",
-                "Auto-range failed. Check the server logs for details.",
+                UNNAMED,
                 id="library-value-error",
             ),
         ],
@@ -1834,12 +1836,12 @@ class TestEstimateRoute:
             service._run_frontier_auto_range_job(body, job_id, **prepared)
 
         assert exc_info.value.status_code == status_code
-        assert exc_info.value.detail == detail
+        assert_detail(exc_info.value.detail, detail)
         job = store.require_job(job_id)
         assert job["status"] == terminal_reason
         assert job["terminal_reason"] == terminal_reason
         assert job["http_status_code"] == status_code
-        assert job["error_detail"] == detail
+        assert_detail(message_of(job["error_detail"]), detail)
         assert job["execution_metrics"]["terminal_reason"] == terminal_reason
 
     def test_frontier_auto_range_reducer_budget_below_minimum_is_memory_limited(
@@ -2269,12 +2271,12 @@ class TestEstimateRoute:
         assert start_resp.status_code == 200
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
-        detail = status["error_detail"]
+        detail = message_of(status["error_detail"])
         assert "Null quote_id values found in optimiser input" in detail
         assert "(2 rows)" in detail
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_frontier_auto_range_missing_required_column_returns_400(
+    def test_frontier_auto_range_missing_required_column_is_a_contract_error(
         self,
         client,
         tmp_path,
@@ -2307,8 +2309,9 @@ class TestEstimateRoute:
         status = _poll_auto_range_until_done(client, start_resp.json()["job_id"])
         assert status["status"] == "contract_error"
         # The source scan refuses the projection before anything reads it.
-        assert "Source projection references columns missing" in status["error_detail"]
-        assert "expected_margin" in status["error_detail"]
+        said = message_of(status["error_detail"])
+        assert "Source projection references columns missing" in said
+        assert "expected_margin" in said
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_ratebook_returns_no_warning(

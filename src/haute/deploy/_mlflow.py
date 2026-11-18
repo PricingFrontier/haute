@@ -140,7 +140,7 @@ def deploy_to_mlflow(
     # MLflow credentials first, before any request: the MLflow pair or a selected
     # profile (never the data-access pair). The connectivity pre-check and the
     # serving endpoint use the rating pair.
-    tracking_uri, registry_uri = _resolve_mlflow_databricks()
+    tracking_uri, registry_uri = _resolve_mlflow_databricks("for deploy")
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
     _check_registry_schema(config, registry_uri)
@@ -254,7 +254,7 @@ def get_deploy_status(
     Returns:
         Dict with keys: model_name, latest_version, latest_stage, status.
     """
-    tracking_uri, registry_uri = _resolve_mlflow_databricks()
+    tracking_uri, registry_uri = _resolve_mlflow_databricks("to read the model's status")
 
     import mlflow
 
@@ -658,8 +658,9 @@ def _profile_problem(tracking_uri: str) -> str | None:
     return None
 
 
-def _resolve_mlflow_databricks() -> tuple[str, str]:
-    """``(tracking_uri, registry_uri)`` for deploy's MLflow calls, or ``DeployError``.
+def _resolve_mlflow_databricks(purpose: str) -> tuple[str, str]:
+    """``(tracking_uri, registry_uri)`` for the MLflow calls made *purpose* ("for deploy",
+    "to read the model's status"), or ``DeployError`` naming it.
 
     Resolves the Databricks MLflow destination (which binds MLflow's credentials and
     rejects ``MLFLOW_ENABLE_DB_SDK=true`` or a conflicting ``DATABRICKS_CONFIG_PROFILE``)
@@ -672,7 +673,7 @@ def _resolve_mlflow_databricks() -> tuple[str, str]:
     try:
         config = resolve_destination("databricks")
     except MlflowConfigError as exc:
-        raise DeployError(f"Databricks MLflow is not ready for deploy: {exc}") from None
+        raise DeployError(f"Databricks MLflow is not ready {purpose}: {exc}") from None
     return config.tracking_uri, registry_uri_for_tracking(config.tracking_uri)
 
 

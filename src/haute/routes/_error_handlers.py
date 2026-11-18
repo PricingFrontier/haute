@@ -1,128 +1,103 @@
-"""Application exception handlers: each error family is translated once.
+"""The HTTP edge of every failure answer (``haute._failure_answers``), for both applications.
 
-A route raises and these handlers answer, the same way for every route. A
-route keeps its own ``except`` clause only where it genuinely maps an error
-differently (a preview embeds a schema mismatch in its node result, a trace
-answers its refusals by type). Anything no handler claims is an unexpected
-failure: ``_RequestIdMiddleware`` in ``haute.server`` logs it with its
-traceback and answers 500 with ``_INTERNAL_ERROR_DETAIL``.
+The editor's server and the underwriter app each install it with :func:`install_failure_answers`.
+A route raises and :class:`RequestFailureMiddleware` answers: whatever reaches it is put into
+words by :func:`haute._failure_answers.answer_failure`, a failure nothing names with an
+incident id and its traceback logged under it, so no route answers a bare 500, a traceback or
+"check the server logs". This module is the only place a failure becomes an HTTP response;
+routes and services raise Haute's refusals (``RequestRefusedError`` and its kinds), never an
+HTTP type (``tests/test_failure_boundaries.py``).
+
+The middleware also binds each request's id, logs the request with its timing and sets the
+``x-request-id`` header on every answer. A request its models refuse keeps FastAPI's 422 list
+(``request_validation_error_handler``), registered as an exception handler.
 """
 
 from __future__ import annotations
 
-from typing import cast
+import re
+import time
+import uuid
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.exception_handlers import http_exception_handler
+import structlog
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from starlette.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-from haute._execution_admission import ExecutionAdmissionError
-from haute._execution_context import ExecutionMemoryLimitExceededError
-from haute._git import GitError
+from haute._failure_answers import FailureAnswer, answer_failure
 from haute._logging import get_logger
-from haute._pipeline_settings import PipelineSettingsError
-from haute._workbench_config import WorkbenchError
-from haute.errors import (
-    HauteValidationError,
-    InvalidPathError,
-    ParseError,
-    PathOutsideProjectError,
-    RequestRefusedError,
-)
-from haute.routes._contract_errors import (
-    PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
-    contract_error_payload,
-    memory_limit_http_exception,
-)
+from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._validation_errors import request_validation_error_handler
-from haute.routes.git import git_error_http_exception
 
 logger = get_logger(component="server")
 
-
-async def _respond(request: Request, exc: Exception, http_exc: HTTPException) -> Response:
-    # Starlette also routes WebSocket failures through these handlers, and an
-    # HTTP response cannot answer a WebSocket; let the connection fail as it
-    # would with no handler registered.
-    if request.scope["type"] != "http":
-        raise exc
-    return await http_exception_handler(request, http_exc)
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\Z", re.ASCII)
 
 
-async def _public_contract_error_handler(request: Request, exc: Exception) -> Response:
-    logger.warning("public_contract_error", **contract_error_payload(exc))
-    return await _respond(request, exc, contract_error_http_exception(exc))
+def select_request_id(value: str | None) -> tuple[str, dict[str, str | int] | None]:
+    """Return a safe correlation token plus bounded rejection metadata."""
+    if value is None:
+        return uuid.uuid4().hex[:12], None
+    length = len(value)
+    if length > 64:
+        return uuid.uuid4().hex[:12], {"reason": "too_long", "length": length}
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        return uuid.uuid4().hex[:12], {"reason": "non_ascii", "length": length}
+    if _REQUEST_ID_RE.fullmatch(value) is None:
+        return uuid.uuid4().hex[:12], {"reason": "invalid_format", "length": length}
+    return value, None
 
 
-async def _memory_limit_error_handler(request: Request, exc: Exception) -> Response:
-    # Registered only for these two types, so the narrowing always holds.
-    memory_exc = cast(ExecutionAdmissionError | ExecutionMemoryLimitExceededError, exc)
-    return await _respond(request, exc, memory_limit_http_exception(memory_exc))
-
-
-async def _git_error_handler(request: Request, exc: Exception) -> Response:
-    return await _respond(request, exc, git_error_http_exception(cast(GitError, exc)))
-
-
-async def _pipeline_settings_error_handler(request: Request, exc: Exception) -> Response:
-    # The message names the settings file and the key, which is what to fix.
-    logger.warning("pipeline_settings_invalid", error=str(exc))
-    return await _respond(request, exc, HTTPException(status_code=409, detail=str(exc)))
-
-
-async def _workbench_error_handler(request: Request, exc: Exception) -> Response:
-    # The message names the haute.toml key or the form file and what to set; the path
-    # stays in the error's context for the log.
-    workbench_exc = cast(WorkbenchError, exc)
-    logger.warning("workbench_invalid", error=str(workbench_exc))
-    return await _respond(
-        request, exc, HTTPException(status_code=409, detail=workbench_exc.message)
+def failure_response(answer: FailureAnswer) -> JSONResponse:
+    """*answer* as an HTTP response: its status, its detail under ``detail``, its headers."""
+    return JSONResponse(
+        status_code=answer.status, content={"detail": answer.detail}, headers=dict(answer.headers)
     )
 
 
-async def _parse_error_handler(request: Request, exc: Exception) -> Response:
-    # A graph the user can fix (a name collision, an undeclared handle): the message says
-    # what to change and its context which element (the edge, the definition) it is.
-    logger.warning("graph_refused", error=str(exc))
-    return await _respond(request, exc, HTTPException(status_code=400, detail=str(exc)))
+class RequestFailureMiddleware(BaseHTTPMiddleware):
+    """Bind the request's id, log the request with its timing, and answer every failure a
+    route raises through :func:`haute._failure_answers.answer_failure`."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        rid, rejection = select_request_id(request.headers.get("x-request-id"))
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=rid)
+        if rejection is not None:
+            logger.warning("request_id_rejected", **rejection)
+
+        method = request.method
+        path = request.url.path
+        t0 = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            response = failure_response(answer_failure(exc, operation=f"{method} {path}"))
+        duration_ms = round((time.monotonic() - t0) * 1000, 1)
+        status = response.status_code
+        response.headers["x-request-id"] = rid
+
+        kw: dict[str, Any] = dict(method=method, path=path, status=status, duration_ms=duration_ms)
+        forwarded_user = request.scope.get(FORWARDED_USER_SCOPE_KEY)
+        if forwarded_user is not None:
+            kw["user"] = forwarded_user
+        if status >= 500:
+            logger.error("request_error", **kw)
+        elif status >= 400:
+            logger.warning("request_client_error", **kw)
+        elif path.startswith("/api/"):
+            logger.info("request_ok", **kw)
+        return response
 
 
-async def _validation_error_handler(request: Request, exc: Exception) -> Response:
-    # A message Haute wrote for the user about what was sent (a setting a parser or a
-    # sidecar writer refuses): the request is refused, never an internal failure.
-    logger.warning("validation_refused", error=str(exc))
-    return await _respond(request, exc, HTTPException(status_code=400, detail=str(exc)))
-
-
-async def _request_refused_handler(request: Request, exc: Exception) -> Response:
-    # A service's refusal says its own status and detail; services never raise HTTP types.
-    refused = cast(RequestRefusedError, exc)
-    return await _respond(
-        request, exc, HTTPException(status_code=refused.status_code, detail=refused.detail)
-    )
-
-
-async def _path_error_handler(request: Request, exc: Exception) -> Response:
-    # The detail is the bare message: the refused path stays in the log context.
-    status_code = 400 if isinstance(exc, InvalidPathError) else 403
-    detail = cast(InvalidPathError | PathOutsideProjectError, exc).message
-    return await _respond(request, exc, HTTPException(status_code=status_code, detail=detail))
-
-
-def install_exception_handlers(app: FastAPI) -> None:
-    """Register the application's exception handlers on *app*."""
+def install_failure_answers(app: FastAPI) -> None:
+    """Answer *app*'s failures here: FastAPI's 422 for a request its models refuse, and
+    :class:`RequestFailureMiddleware` for everything else. Middleware added after this wraps
+    it, so whatever it answers itself (a host or a session refused) is answered before the
+    request is let in."""
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
-    for error_type in PUBLIC_CONTRACT_ERROR_TYPES:
-        app.add_exception_handler(error_type, _public_contract_error_handler)
-    for memory_error_type in (ExecutionAdmissionError, ExecutionMemoryLimitExceededError):
-        app.add_exception_handler(memory_error_type, _memory_limit_error_handler)
-    app.add_exception_handler(GitError, _git_error_handler)
-    app.add_exception_handler(PipelineSettingsError, _pipeline_settings_error_handler)
-    app.add_exception_handler(WorkbenchError, _workbench_error_handler)
-    app.add_exception_handler(ParseError, _parse_error_handler)
-    app.add_exception_handler(RequestRefusedError, _request_refused_handler)
-    app.add_exception_handler(HauteValidationError, _validation_error_handler)
-    for path_error_type in (PathOutsideProjectError, InvalidPathError):
-        app.add_exception_handler(path_error_type, _path_error_handler)
+    app.add_middleware(RequestFailureMiddleware)

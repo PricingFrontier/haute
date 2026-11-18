@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from tests._failure_assertions import assert_unnamed
 from tests._preview_targets import node_target
 from tests._project import use_project
 from tests._worker_http import raise_worker_http
@@ -425,7 +426,7 @@ class TestResponseShape:
         resp = _trace_post(client, graph, row_index=0, target=node_target("t"))
 
         assert resp.status_code == 500
-        assert resp.json()["detail"] == "Operation failed. Check the server logs for details."
+        assert_unnamed(resp.json()["detail"])
 
     @pytest.mark.in_process
     def test_route_answers_every_field_its_model_declares(self, client, tmp_path, monkeypatch):
@@ -555,7 +556,7 @@ class TestPipelineIntegration:
 
         assert resp.status_code == 422
         detail = resp.json()["detail"]
-        assert detail["error_code"] == "trace_node_failed"
+        assert detail["error_code"] == "node_failed"
         assert detail["node_id"] == "t"
         assert detail["message"].startswith("'t' failed: invalid syntax")
 
@@ -669,10 +670,9 @@ class TestErrorHandling:
     def test_a_refusal_out_of_a_worker_is_answered_by_the_code_it_carries(
         self, refusal: str, status: int
     ):
-        from fastapi import HTTPException
-
         import haute.errors
         from haute._worker_failures import WorkerRemoteError
+        from haute.errors import RequestRefusedError
 
         refused = getattr(haute.errors, refusal)("Worded any way at all.")
         remote = WorkerRemoteError(
@@ -684,7 +684,7 @@ class TestErrorHandling:
             is_memory=False,
         )
 
-        with pytest.raises(HTTPException) as answered:
+        with pytest.raises(RequestRefusedError) as answered:
             raise_worker_http(remote, operation="pipeline_trace")
 
         assert answered.value.status_code == status

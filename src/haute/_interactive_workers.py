@@ -20,6 +20,7 @@ from typing import Any, Literal, TypeVar, cast
 
 from haute._cpu_performance import configure_process_high_qos
 from haute._env import int_env
+from haute._failure_answers import worker_failure_payload
 from haute._logging import get_logger
 from haute._native_memory_limit import (
     NativeMemoryLease,
@@ -123,7 +124,7 @@ def failure_evidence(exc: BaseException, *, message: str | None = None) -> Failu
         type(exc).__module__,
         str(exc) if message is None else message,
         "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-        _public_exception_payload(exc),
+        worker_failure_payload(exc),
         isinstance(exc, MemoryError),
     )
 
@@ -145,20 +146,6 @@ def remote_error_from_evidence(evidence: Any) -> WorkerRemoteError:
         public_payload=public_payload if isinstance(public_payload, dict) else None,
         is_memory=is_memory,
     )
-
-
-def _public_exception_payload(exc: BaseException) -> dict[str, object] | None:
-    to_payload = getattr(exc, "to_payload", None)
-    if not callable(to_payload):
-        return None
-    try:
-        payload = to_payload()
-        pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-    except BaseException:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return {str(key): value for key, value in payload.items()}
 
 
 def _interactive_worker_entrypoint(

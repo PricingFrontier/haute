@@ -25,6 +25,7 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
 )
+from haute._failure_answers import answer_failure
 from haute._graph_utils import (
     incoming_edge_bindings,
     incoming_edge_for_name,
@@ -1151,11 +1152,14 @@ def grid_construction_failures(node_id: str) -> Iterator[None]:
             422, f"Grid construction cannot run in bounded streaming mode: {exc}"
         ) from exc
     except Exception as exc:
-        logger.error("grid_build_failed", error=str(exc), node_id=node_id, exc_info=True)
+        # A file the operating system refused, a node's own failure, or an incident.
+        answer = answer_failure(exc, operation="optimiser_grid_build")
         raise OptimiserSetupError(
-            500,
-            "Grid construction failed. Check the server logs for details.",
-            reason="error",
+            answer.status,
+            answer.detail,
+            reason=answer.terminal_reason,
+            message=answer.message,
+            fields=answer.job_fields(),
         ) from exc
 
 

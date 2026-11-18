@@ -9,10 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import structlog.testing
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from haute.errors import RequestRefusedError
 from tests._databricks_workspace_stub import workspace_stub
 from tests._project import project_app, use_project
 
@@ -231,8 +231,8 @@ def test_any_other_sdk_failure_answers_502_and_logs_its_scrubbed_text(
         response = _browse(client, workspace, "/api/databricks/catalogs")
 
     assert response.status_code == 502
-    assert response.json()["detail"] == (
-        "Databricks could not list the catalogs. Check the server logs for details."
+    assert response.json()["detail"].startswith(
+        "Databricks could not list the catalogs. Its reason is recorded under incident "
     )
     (entry,) = [log for log in logs if log["event"] == "databricks_browsing_failed"]
     assert entry["error_type"] == "TemporarilyUnavailable"
@@ -245,7 +245,7 @@ def test_get_databricks_client_failure_is_exposed_as_service_unavailable(
 ) -> None:
     with patch(
         "haute.routes.databricks._get_databricks_client",
-        side_effect=HTTPException(status_code=503, detail="unavailable"),
+        side_effect=RequestRefusedError("unavailable", status_code=503),
     ):
         response = client.get("/api/databricks/warehouses")
     assert response.status_code == 503

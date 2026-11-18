@@ -29,6 +29,12 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._failure_answers import (
+    answer_failure,
+    answer_pipeline_failure,
+    failure_refusal,
+    node_failed_error,
+)
 from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
@@ -42,8 +48,6 @@ from haute._worker_failures import (
     WorkerProtocolError,
     WorkerStoppedError,
     WorkerTimeoutError,
-    worker_failure_is_memory,
-    worker_memory_detail,
 )
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
@@ -56,7 +60,6 @@ from haute.errors import (
     ConfigError,
     ConflictError,
     HauteValidationError,
-    InsufficientMemoryError,
     InvalidRequestError,
     NotFoundError,
     ParseError,
@@ -162,6 +165,7 @@ from haute.routes._training_worker import (
     _run_training_process_job,
     _training_context_phrase,
 )
+from haute.routes._worker_failure_refusals import worker_failure_refusal
 from haute.schemas import (
     DispersionEstimateRequest,
     DispersionEstimateResponse,
@@ -379,26 +383,31 @@ class TrainService:
         def run() -> None:
             try:
                 prepare()
-            except Exception:
-                # The preparation owner converts expected failures to terminal
-                # job state itself. This final boundary prevents teardown/store
-                # infrastructure races from escaping as an unhandled daemon-thread
-                # exception while still leaving a server-side diagnostic.
-                logger.exception(f"{kind}_preparation_thread_failed", job_id=job_id)
+            except Exception as exc:
+                # The preparation owner converts expected failures to terminal job
+                # state itself. Anything that escaped it (a teardown or store race)
+                # ends the job in words here, and never escapes the daemon thread.
+                answer = answer_failure(exc, operation=f"{kind}_preparation")
+                self._lifecycle.transition(
+                    job_id,
+                    to=answer.terminal_reason,
+                    message=answer.message,
+                    fields=answer.job_fields(),
+                )
 
         thread = context_thread(run, name=f"haute-{kind}-prep-{job_id}", daemon=True)
         try:
             start_job_thread(thread)
         except Exception as exc:
             self._training_jobs.release(job_id)
-            logger.exception(f"{kind}_preparation_thread_start_failed", job_id=job_id)
-            message = (
-                f"{operation_noun} preparation failed to start. Check the server logs for details."
-            )
+            answer = answer_failure(exc, operation=f"{kind}_preparation_start")
             self._lifecycle.transition(
-                job_id, to="error", message=message, fields={"error": str(exc)}
+                job_id,
+                to=answer.terminal_reason,
+                message=answer.message,
+                fields={**answer.job_fields(), "error": str(exc)},
             )
-            raise ServiceFailedError(message) from exc
+            raise answer.refusal() from exc
 
     def evaluation_preview(
         self,
@@ -1086,10 +1095,7 @@ class TrainService:
             )
         except Exception as exc:
             cleanup()
-            logger.error("dispersion_worker_start_failed", error=str(exc), node_id=node_id)
-            raise ServiceFailedError(
-                "Dispersion estimation worker failed to start. Check the server logs for details."
-            ) from exc
+            raise failure_refusal(exc, operation="dispersion_worker_start") from exc
 
     def _launch_dispersion_background(
         self,
@@ -1314,11 +1320,13 @@ class TrainService:
         except RequestRefusedError:
             raise
         except Exception as exc:
-            # The schema-only build runs the user's own transform code, which
-            # can raise anything at all — an undefined name is a NameError, an
-            # empty transform a NotImplementedError. Those are the user's to
-            # fix exactly like a parse failure, so name the class and the node
-            # in a 422 rather than let an arbitrary exception become a 500.
+            # The schema-only build runs the user's own transform code, which can raise
+            # anything at all: an undefined name is a NameError, an empty transform a
+            # NotImplementedError. A node's own failure names its node, as every edge
+            # names it; anything else keeps the modelling node and the class in a 422.
+            failed = node_failed_error(exc)
+            if failed is not None:
+                raise contract_error_refusal(failed) from exc
             logger.warning(
                 "glm_input_schema_unresolvable",
                 node_id=body.node_id,
@@ -1372,17 +1380,16 @@ class TrainService:
                 source=source,
             )
         except Exception as exc:
-            logger.warning("ram_estimate_failed", error=str(exc), exc_info=True)
+            # What stopped the estimate, said as every edge says it: a node's own failure
+            # naming its node, anything unnamed an incident.
+            answer = answer_pipeline_failure(exc, operation="training_ram_estimate")
             detail = {
                 "error_code": "training_memory_estimate_failed",
                 "operation": "training_pipeline",
                 "job_id": job_id,
                 "reason": "memory_estimate_failed",
-                "message": (
-                    "Training memory estimate failed before execution. "
-                    "Fix the estimate error or simplify the upstream graph."
-                ),
-                "error": str(exc),
+                "message": f"Training memory estimate failed before execution: {answer.message}",
+                "incident": answer.incident,
             }
             raise UnprocessableError(detail) from None
 
@@ -1534,8 +1541,7 @@ class TrainService:
                 error=str(exc),
             )
             raise self._fail_preparation_worker(
-                job_id,
-                message=f"Training preparation cleanup failed: {exc}",
+                job_id, ServiceFailedError(f"Training preparation cleanup failed: {exc}")
             ) from exc
 
     def _supervise_preparation_worker(
@@ -1633,41 +1639,25 @@ class TrainService:
                     raise timed_out() from None
                 except WorkerError as exc:
                     self._discard_prepared_parquet(job_id, tmp_parquet)
-                    if worker_failure_is_memory(exc):
-                        refusal = InsufficientMemoryError(
-                            worker_memory_detail(
-                                exc,
-                                operation=budget.operation,
-                                memory_limit_bytes=budget.memory_limit_bytes,
-                            )
-                        )
-                        message, fields = _refusal_job_parts(refusal, job_id=job_id)
-                        self._lifecycle.transition(
-                            job_id,
-                            to="memory_limited",
-                            message=message,
-                            fields=fields,
-                        )
-                        raise refusal from None
-                    logger.error(
-                        "training_preparation_worker_failed",
-                        job_id=job_id,
-                        node_id=body.node_id,
-                        error=str(exc),
-                        error_type=type(exc).__name__,
-                    )
-                    raise self._fail_preparation_worker(job_id) from None
+                    raise self._fail_preparation_worker(
+                        job_id,
+                        worker_failure_refusal(
+                            exc,
+                            operation=budget.operation,
+                            timed_out="Training preparation took too long.",
+                            memory_limit_bytes=budget.memory_limit_bytes,
+                        ),
+                    ) from None
 
         if not isinstance(outcome, TrainingPreparationOutcome):
             self._discard_prepared_parquet(job_id, tmp_parquet)
-            logger.error(
-                "training_preparation_worker_failed",
-                job_id=job_id,
-                node_id=body.node_id,
-                error="worker returned an invalid outcome",
-                error_type=type(outcome).__name__,
+            invalid = TypeError(
+                f"The training preparation worker returned {type(outcome).__name__}, not an "
+                "outcome."
             )
-            raise self._fail_preparation_worker(job_id)
+            raise self._fail_preparation_worker(
+                job_id, failure_refusal(invalid, operation="training_preparation")
+            )
 
         # The job records the child's metrics carrying the parent's preparation
         # and plan evidence ahead of the child's own, or the parent's metrics
@@ -1701,7 +1691,9 @@ class TrainService:
             self._discard_prepared_parquet(job_id, tmp_parquet)
             raise self._fail_preparation_worker(
                 job_id,
-                message="Training preparation worker did not produce its prepared data.",
+                ServiceFailedError(
+                    "Training preparation worker did not produce its prepared data."
+                ),
             )
 
         if outcome.feature_selection is not None:
@@ -1714,17 +1706,18 @@ class TrainService:
         return tmp_parquet
 
     def _fail_preparation_worker(
-        self,
-        job_id: str,
-        *,
-        message: str = "Training preparation failed. Check the server logs for details.",
+        self, job_id: str, refusal: RequestRefusedError
     ) -> RequestRefusedError:
-        """Record a supervisor-side preparation failure and return its 500."""
-        refusal = ServiceFailedError(message)
+        """Record a supervisor-side preparation failure and return its refusal: ended
+        ``memory_limited`` for a 507, ``contract_error`` for a refusal the user can act on,
+        ``error`` otherwise."""
         job_message, fields = _refusal_job_parts(refusal, job_id=job_id)
+        status = refusal.status_code
         self._lifecycle.transition(
             job_id,
-            to="error",
+            to="memory_limited"
+            if status == 507
+            else ("error" if status >= 500 else "contract_error"),
             message=job_message,
             fields=fields,
         )
@@ -2108,10 +2101,7 @@ class TrainService:
             )
         except Exception as exc:
             cleanup()
-            logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
-            raise ServiceFailedError(
-                "Training worker failed to start. Check the server logs for details."
-            ) from exc
+            raise failure_refusal(exc, operation="training_worker_start") from exc
 
     def _launch_background(
         self,

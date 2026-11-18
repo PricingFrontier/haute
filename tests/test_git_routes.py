@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests._failure_assertions import assert_unnamed
 from tests._git_helpers import git_run as _git
 from tests._git_helpers import init_repo as _init_repo
 from tests._project import use_project
@@ -448,44 +449,43 @@ class TestGeneralExceptionHandling:
 
         assert res.status_code == 500
         detail = res.json()["detail"]
-        assert detail == self._SAFE_DETAIL
+        assert_unnamed(detail)
         # Must NOT leak the raw exception message
         assert "disk on fire" not in detail
 
 
 # ---------------------------------------------------------------------------
-# E6: git_error_http_exception logs warnings
+# Git's refusals as the failure answers say them
 # ---------------------------------------------------------------------------
 
 
-class TestGitErrorHttpExceptionLogging:
-    """git_error_http_exception should log warnings for GitError and GitGuardrailError."""
+class TestGitFailureAnswers:
+    """A git refusal is answered by haute._failure_answers: a guardrail 403 and a domain
+    refusal 400 in their own words; git's own refusal 400 naming the incident under which
+    its message, never said, is logged."""
 
-    def test_logs_git_error(self) -> None:
-        from unittest.mock import patch
+    def test_gits_own_refusal_is_400_naming_its_incident_with_its_message_logged(self) -> None:
+        from structlog.testing import capture_logs
 
+        from haute._failure_answers import answer_failure
         from haute._git import GitError
-        from haute.routes.git import git_error_http_exception
 
-        with patch("haute.routes.git.logger") as mock_logger:
-            http_exc = git_error_http_exception(GitError("something broke"))
-            mock_logger.warning.assert_called_once()
-            call_args = mock_logger.warning.call_args
-            assert call_args[0][0] == "git_error"
-        assert http_exc.status_code == 400
+        with capture_logs() as logs:
+            answer = answer_failure(GitError("fatal: bad ref /home/admin/repo"))
 
-    def test_logs_guardrail_error(self) -> None:
-        from unittest.mock import patch
+        assert (answer.status, answer.code) == (400, "git_failed")
+        assert "/home/admin" not in answer.message
+        assert_unnamed(answer.message)
+        [record] = [log for log in logs if log.get("incident") == answer.incident]
+        assert "bad ref" in record["git_message"]
 
+    def test_a_guardrail_is_403_verbatim(self) -> None:
+        from haute._failure_answers import answer_failure
         from haute._git import GitGuardrailError
-        from haute.routes.git import git_error_http_exception
 
-        with patch("haute.routes.git.logger") as mock_logger:
-            http_exc = git_error_http_exception(GitGuardrailError("not allowed"))
-            mock_logger.warning.assert_called_once()
-            call_args = mock_logger.warning.call_args
-            assert call_args[0][0] == "git_guardrail_error"
-        assert http_exc.status_code == 403
+        answer = answer_failure(GitGuardrailError("protected branch"))
+
+        assert (answer.status, answer.detail) == (403, "protected branch")
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +705,6 @@ class TestGitRemotesAndPush:
     ) -> None:
         from haute import _git
         from haute._git import GitError
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
         raw_detail = "authentication failed for https://token-secret@example.test/repo.git"
         monkeypatch.setattr(
@@ -717,7 +716,7 @@ class TestGitRemotesAndPush:
         response = client.post("/api/git/push", json={"remote": "origin"})
 
         assert response.status_code == 400
-        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(response.json()["detail"])
         assert "token-secret" not in response.text
 
     def test_push_against_an_unreachable_remote_answers_the_refresh_message(
@@ -860,42 +859,6 @@ class TestGitRemotesAndPush:
 
 
 # ---------------------------------------------------------------------------
-# git_error_http_exception HTTP status codes
-# ---------------------------------------------------------------------------
-
-
-class TestGitErrorHttpExceptionStatusCodes:
-    """git_error_http_exception must map GitError to 400 and GitGuardrailError to 403."""
-
-    def test_git_error_raises_400(self) -> None:
-        """Phase 1C #11: ``GitError`` messages may contain raw git stderr
-        (absolute paths, remote URLs, SSL errors, credentials) so they
-        are no longer echoed to the HTTP body.  The handler returns a
-        400 with the sanitized ``_INTERNAL_ERROR_DETAIL`` constant; the
-        full exception text stays in the structured log.
-        """
-        from haute._git import GitError
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-        from haute.routes.git import git_error_http_exception
-
-        http_exc = git_error_http_exception(GitError("bad ref"))
-        assert http_exc.status_code == 400
-        assert http_exc.detail == _INTERNAL_ERROR_DETAIL
-
-    def test_guardrail_error_raises_403(self) -> None:
-        """Guardrail errors are hand-written, user-facing, and preserved
-        verbatim (they describe intentional blocks rather than internal
-        failures).
-        """
-        from haute._git import GitGuardrailError
-        from haute.routes.git import git_error_http_exception
-
-        http_exc = git_error_http_exception(GitGuardrailError("protected branch"))
-        assert http_exc.status_code == 403
-        assert http_exc.detail == "protected branch"
-
-
-# ---------------------------------------------------------------------------
 # GitError (non-guardrail) through endpoints
 # ---------------------------------------------------------------------------
 
@@ -943,10 +906,9 @@ class TestGitErrorEndpointResponses:
 
         # Phase 1C #11: raw GitError detail is sanitized to a constant
         # before reaching the HTTP body.  Full detail is logged.
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
         assert res.status_code == 400
-        assert res.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(res.json()["detail"])
 
     @pytest.mark.parametrize(
         "git_func,method,path,body",

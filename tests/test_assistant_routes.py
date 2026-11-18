@@ -786,10 +786,9 @@ class TestTurnReservation:
         import threading
         import time as time_module
 
-        from fastapi import HTTPException
-
         import haute.routes.assistant as assistant_routes
         from haute.assistant._providers import ProviderUsage
+        from haute.errors import RequestRefusedError
         from haute.schemas import AssistantMessageRequest
 
         store = SessionStore()
@@ -817,7 +816,7 @@ class TestTurnReservation:
         first_task = asyncio.create_task(assistant_routes.post_assistant_message(body))
         assert await asyncio.to_thread(parse_started.wait, 2)
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             await assistant_routes.post_assistant_message(body)
         assert excinfo.value.status_code == 409
 
@@ -970,10 +969,9 @@ class TestTurnReservation:
     async def test_pre_stream_failure_after_reservation_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from fastapi import HTTPException
-
         import haute.routes.assistant as assistant_routes
         from haute.assistant._providers import ProviderUsage
+        from haute.errors import RequestRefusedError
         from haute.schemas import AssistantMessageRequest
 
         store = SessionStore()
@@ -992,7 +990,7 @@ class TestTurnReservation:
 
         monkeypatch.setattr(assistant_routes._loop, "build_system_prompt", broken_prompt)
         body = AssistantMessageRequest(session_id=session_id, message="hi", source_file="main.py")
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             await assistant_routes.post_assistant_message(body)
         assert excinfo.value.status_code == 500
 
@@ -1136,15 +1134,14 @@ class TestTurnContext:
     async def test_a_selection_the_saved_pipeline_lacks_is_refused_before_the_turn(
         self, internal: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from fastapi import HTTPException
-
         import haute.routes.assistant as assistant_routes
+        from haute.errors import RequestRefusedError
 
         store = SessionStore()
         monkeypatch.setattr(assistant_routes, "session_store", store)
         session_id = store.create("main.py").id
 
-        with pytest.raises(HTTPException) as excinfo:
+        with pytest.raises(RequestRefusedError) as excinfo:
             await self._turn(monkeypatch, store, session_id, {"selected_node_ids": ["ghost"]})
 
         assert excinfo.value.status_code == 409

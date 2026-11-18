@@ -45,7 +45,9 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._failure_answers import answer_failure
 from haute._logging import get_logger
+from haute._memory_messages import memory_limit_user_message
 from haute._node_address_schemas import NodeAddressEntry
 from haute._node_addresses import node_addresses
 from haute._node_snapshots import (
@@ -93,14 +95,12 @@ from haute.routes._contract_errors import (
     pipeline_error_message,
     raise_memory_behind,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import (
     JobLifecycle,
     TerminalReason,
     bind_running_execution_metrics_publisher,
 )
 from haute.routes._job_store import JobStore, RunningJobFields
-from haute.routes._memory_messages import memory_limit_user_message
 from haute.schemas import (
     ExecutionMetricsPayload,
     NodeDataClearResponse,
@@ -1267,15 +1267,11 @@ class NodeDataService:
                 exc.terminal_reason if isinstance(exc, WorkerError) else "cancelled"
             )
             if isinstance(exc, WorkerRemoteError):
-                logger.error(
-                    "node_data_worker_failed",
-                    job_id=job_id,
-                    remote_type=exc.remote_type,
-                    remote_message=exc.remote_message,
-                    remote_traceback=exc.remote_traceback,
-                )
-                message = _INTERNAL_ERROR_DETAIL
-                transition_fields: dict[str, Any] = {"error": _INTERNAL_ERROR_DETAIL}
+                # What the worker raised, worded there when Haute names it, else an incident
+                # whose record holds its traceback.
+                answer = answer_failure(exc, operation="node_data_build")
+                message = answer.message
+                transition_fields: dict[str, Any] = answer.job_fields()
             else:
                 message = str(exc) if isinstance(exc, WorkerError) else f"{label} {reason}"
                 transition_fields = {}
@@ -1355,12 +1351,12 @@ class NodeDataService:
                 elapsed_seconds=elapsed,
             )
         else:
-            logger.error("node_data_job_failed", job_id=job_id, exc_info=True)
+            answer = answer_failure(exc, operation="node_data_job")
             self._lifecycle.transition(
                 job_id,
-                to="error",
-                message=_INTERNAL_ERROR_DETAIL,
-                fields={"error": _INTERNAL_ERROR_DETAIL},
+                to=answer.terminal_reason,
+                message=answer.message,
+                fields=answer.job_fields(),
                 elapsed_seconds=elapsed,
             )
 

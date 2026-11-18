@@ -40,6 +40,7 @@ from haute.routes._training_preparation import (
     prepare_training_data,
 )
 from haute.schemas import TrainRequest
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests._training_helpers import join_training_preparation
 from tests.conftest import make_file_input_config
@@ -579,7 +580,7 @@ class TestWorkerExceptionMapping:
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
         assert job["http_status_code"] == 500
-        assert "Training preparation failed" in job["message"]
+        assert_unnamed(job["message"])
         assert run.prepared_admission_releases() == 1
         assert not Path(run.parquet_path).exists()
 

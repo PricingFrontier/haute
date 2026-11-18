@@ -14,11 +14,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 
 from haute._project_context import context_thread
 from haute.errors import RequestRefusedError
 from tests import _modelling_route_helpers
+from tests._failure_assertions import assert_unnamed
 from tests._modelling_route_helpers import (
     _completed_train_response,
     _make_modelling_graph,
@@ -338,7 +338,7 @@ class TestSaveModelEndpoint:
                 outcomes[job_id] = modelling_routes.save_model(
                     SaveModelRequest(job_id=job_id, output_path="frequency")
                 )
-            except HTTPException as exc:
+            except RequestRefusedError as exc:
                 outcomes[job_id] = exc
 
         first = context_thread(save, args=("save_job",))
@@ -362,7 +362,7 @@ class TestSaveModelEndpoint:
         assert not first.is_alive() and not second.is_alive()
         assert getattr(outcomes["save_job"], "status", None) == "ok"
         refused = outcomes["save_job_other"]
-        assert isinstance(refused, HTTPException) and refused.status_code == 409
+        assert isinstance(refused, RequestRefusedError) and refused.status_code == 409
         assert copy_calls == [0]
         assert (_seeded_model.models / "frequency.cbm").read_bytes() == b"model-bytes"
         assert (
@@ -610,7 +610,7 @@ class TestMlflowLogSuccess:
             )
         assert resp.status_code == 500
         assert "MLflow connection refused" not in resp.json()["detail"]
-        assert "Check the server logs" in resp.json()["detail"]
+        assert_unnamed(resp.json()["detail"])
 
     def test_mlflow_log_no_result_data(self, client):
         """Completed job with no result should return 400."""

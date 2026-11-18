@@ -27,7 +27,7 @@ from haute._workbench_test_quotes import (
     render_test_quotes_report,
 )
 from haute.deploy._validators import score_test_quote_file
-from haute.routes._error_handlers import install_exception_handlers
+from haute.routes._error_handlers import install_failure_answers
 from haute.routes.workbench import router
 from tests._project import use_project
 from tests._workbench_helpers import form_files, write_files
@@ -90,7 +90,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 def client() -> TestClient:
     application = FastAPI()
-    install_exception_handlers(application)
+    install_failure_answers(application)
     application.include_router(router)
     return TestClient(application)
 

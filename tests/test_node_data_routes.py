@@ -29,6 +29,7 @@ from haute._polars_utils import (
 )
 from haute._project_context import context_thread, current_project
 from haute.routes import _node_data_service as service_mod
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests.conftest import make_edge, make_graph
 
@@ -591,8 +592,8 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
 ) -> None:
     from haute._execution_admission import ExecutionAdmissionError
     from haute._execution_context import ExecutionProfile
+    from haute._memory_messages import memory_limit_user_message
     from haute.errors import ContractMismatchError
-    from haute.routes._memory_messages import memory_limit_user_message
 
     def contract_failure(*_args, **_kwargs):
         raise ContractMismatchError("declared column premium is missing")
@@ -653,7 +654,6 @@ def test_a_remote_worker_failure_reports_only_the_fixed_internal_detail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._worker_failures import WorkerRemoteError
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
     from haute.routes.node_data import _store
 
     secret = "database password appeared in the child exception"
@@ -674,8 +674,8 @@ def test_a_remote_worker_failure_reports_only_the_fixed_internal_detail(
     stored = _store.require_job(run["job_id"])
 
     assert (final["status"], final["terminal_reason"]) == ("error", "error")
-    assert final["message"] == _INTERNAL_ERROR_DETAIL
-    assert stored["error"] == _INTERNAL_ERROR_DETAIL
+    assert_unnamed(final["message"])
+    assert_unnamed(stored["error"])
     assert secret not in str(final)
     assert secret not in str(stored)
 
@@ -685,7 +685,6 @@ def test_an_unexpected_parent_failure_reports_only_the_fixed_internal_detail(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
     from haute.routes.node_data import _store
 
     secret = "C:/secret/path/to/pipeline.py line 42"
@@ -701,8 +700,8 @@ def test_an_unexpected_parent_failure_reports_only_the_fixed_internal_detail(
     stored = _store.require_job(run["job_id"])
 
     assert (final["status"], final["terminal_reason"]) == ("error", "error")
-    assert final["message"] == _INTERNAL_ERROR_DETAIL
-    assert stored["error"] == _INTERNAL_ERROR_DETAIL
+    assert_unnamed(final["message"])
+    assert_unnamed(stored["error"])
     assert secret not in str(final)
     assert secret not in str(stored)
 

@@ -19,10 +19,12 @@ import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, cast
 
 from haute._cpu_performance import configure_process_high_qos
+from haute._failure_answers import FAILURE_ANSWER_PAYLOAD_KEY, worker_failure_payload
 from haute._native_memory_limit import (
     NativeMemoryLease,
     NativeMemoryLimitUnsupportedError,
@@ -105,11 +107,15 @@ class WorkerRemoteFailureError(WorkerRemoteError):
     """A validated child failure, preserving protocol terminal details."""
 
     def __init__(self, payload: WorkerFailurePayload) -> None:
+        answer = payload.fields.get(FAILURE_ANSWER_PAYLOAD_KEY)
         super().__init__(
             remote_type=payload.error_type,
             remote_message=payload.message,
             remote_traceback=payload.traceback,
             is_memory=payload.terminal_reason == "memory_limited",
+            public_payload={FAILURE_ANSWER_PAYLOAD_KEY: answer}
+            if isinstance(answer, dict)
+            else None,
         )
         self.terminal_reason = cast(WorkerTerminalReason, payload.terminal_reason)
         self.fields = payload.fields
@@ -624,22 +630,38 @@ def _protocol_entrypoint(
         result_queue.put(("ok", result))
     except BaseException as raised:
         exc = memory_error_for_thread_start_failure(raised) if applied else raised
-        result_queue.put(
-            (
-                "error",
-                WorkerFailurePayload(
-                    terminal_reason=_terminal_reason_for_exception(exc),
-                    error_type=type(exc).__name__,
-                    message=str(exc)[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__,
-                    traceback="".join(
-                        traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    )[:WORKER_MAX_TRACEBACK_LENGTH],
-                    fields={},
-                ),
-            )
-        )
+        result_queue.put(("error", _failure_payload_for(exc)))
     finally:
         runtime.close()
+
+
+def _failure_payload_for(exc: BaseException) -> WorkerFailurePayload:
+    """A job function's own failure as the child sends it. A failure Haute names here,
+    where it was raised, carries its words as the job's message and its answer for the
+    parent (``haute._failure_answers.failure_payload``); any other its type, message and
+    traceback, which the parent answers with an incident."""
+    sent = worker_failure_payload(exc)
+    answer = None if sent is None else sent.get(FAILURE_ANSWER_PAYLOAD_KEY)
+    worded: dict[str, Any] = {}
+    if isinstance(answer, dict):
+        worded = {
+            FAILURE_ANSWER_PAYLOAD_KEY: answer,
+            WORKER_USER_MESSAGE_FIELD: str(answer["message"])[:WORKER_MAX_MESSAGE_LENGTH],
+        }
+    payload = partial(
+        WorkerFailurePayload,
+        terminal_reason=_terminal_reason_for_exception(exc),
+        error_type=type(exc).__name__,
+        message=str(exc)[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__,
+        traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[
+            :WORKER_MAX_TRACEBACK_LENGTH
+        ],
+    )
+    try:
+        return payload(fields=worded)
+    except WorkerProtocolError:
+        # An answer the transport cannot carry: the failure still crosses, unworded.
+        return payload(fields={})
 
 
 def _preload_failure_payload(module: str, exc: Exception) -> WorkerFailurePayload:

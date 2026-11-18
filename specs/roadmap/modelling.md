@@ -24,11 +24,6 @@ where it did not score.
 model trained outside Haute, which the earlier sweep did not score, and was
 reproduced on 13 November against LightGBM's own `predict`.
 
-`MDL-10` comes from the review plan's phase 4, a sweep
-of the server and the commands on Linux (WSL2) under memory limits,
-signals and pipes. The main session ran each case again on 15 November
-2026.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -42,7 +37,6 @@ signals and pipes. The main session ran each case again on 15 November
 | MDL-07 | Planned | P3 | A GLM asked to classify is refused by name, when it is trained from a script and when a Model Scoring node scores it. |
 | MDL-08 | Planned | P2 | A null in a GLM's numeric feature, or an infinity reaching an XGBoost model, is refused naming the column instead of failing the whole run with the library's own error. |
 | MDL-09 | Planned | P2 | An imported LightGBM model whose categorical feature has Boolean levels scores a False and a True as its own `predict` does, not both as missing. |
-| MDL-10 | Planned | P2 | Training that runs out of memory under a container's limit ends `memory_limited` with the limit and a remedy, not "Check the server logs". |
 
 ## Planned improvements
 
@@ -332,27 +326,3 @@ model with a level of each type LightGBM records against the booster's own
 `src/haute/modelling/_native_encoding.py::encode_frame`;
 `src/haute/modelling/_lightgbm.py`; `specs/modelling/low-level.md`.
 
-### MDL-10 — Training that runs out of memory inside a container says so
-**Why:** Reproduced on 15 November 2026 on Linux. `haute serve` ran under a
-1,500 MiB memory limit with no swap, as a container gives it, and trained
-CatBoost on a 1.5 million row, 41 column Parquet file. The memory estimate
-cut the rows to about 297,000; data preparation then failed with "Cannot
-allocate memory (os error 12)". The job ends with status error and the
-message "Pipeline execution failed. Check the server logs for details."
-The same job with no limit completes. The preparation step maps a
-`MemoryError` to the memory message; an allocation the operating system
-refuses arrives as an `OSError` or a Polars error and falls to the
-catch-all. The analyst is told nothing they can act on.
-
-**Plan:** Treat an out-of-memory error from the operating system or from
-Polars as the memory refusal in training preparation: end
-`memory_limited` with the limit in force and what to change (fewer rows
-or columns, or a higher limit).
-
-**Acceptance:** The job above ends `memory_limited` with a message naming
-the limit and a remedy, and no reference to the server log.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_training_preparation.py`;
-`specs/execution-engine/high-level.md`.

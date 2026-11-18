@@ -425,7 +425,7 @@ def _candidate_from_ast(
                 source_file=source_file,
                 element_id=recovery_id,
                 source_span=span,
-                remediation="Check the server logs with the incident id and report the defect.",
+                remediation="Report the incident id: the defect is recorded under it.",
                 incident_id=incident_id,
             ),
             diagnostics=diagnostics,
@@ -1963,7 +1963,7 @@ def _recover_registered_submodels(
                 captures=captures,
                 code="submodel_recovery_internal_error",
                 message=("This submodel could not be recovered because of an internal error."),
-                remediation=("Check the server logs with the incident id and report the defect."),
+                remediation=("Report the incident id: the defect is recorded under it."),
                 incident_id=incident_id,
             )
             continue
@@ -2850,7 +2850,7 @@ def load_pipeline_editor_document(
             scope="pipeline",
             message="The pipeline source could not be reconstructed because of an internal error.",
             source_file=source_file,
-            remediation="Check the server logs with the incident id and report the defect.",
+            remediation="Report the incident id: the defect is recorded under it.",
             incident_id=incident_id,
         )
         return PipelineEditorDocument(

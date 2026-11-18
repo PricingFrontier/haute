@@ -8,9 +8,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
+from haute._failure_answers import answer_failure
 from haute._git import GitHistoryReadError
 from haute._logging import get_logger
 from haute._project_context import current_project
@@ -32,13 +33,16 @@ from haute.assistant._tools import (
 )
 from haute.errors import (
     ConfigError,
+    ConflictError,
     HauteError,
     InvalidPathError,
+    InvalidRequestError,
+    NotFoundError,
     PathOutsideProjectError,
     RequestRefusedError,
+    ServiceFailedError,
 )
 from haute.routes._helpers import (
-    _INTERNAL_ERROR_DETAIL,
     discover_pipelines,
     save_lock,
 )
@@ -99,10 +103,7 @@ def _canonical_source_file(source_file: str) -> str:
         resolved = path.resolve()
         if resolved == target:
             return resolved.relative_to(root).as_posix()
-    raise HTTPException(
-        status_code=404,
-        detail=f"No pipeline file '{source_file}' was found in this project",
-    )
+    raise NotFoundError(f"No pipeline file '{source_file}' was found in this project")
 
 
 async def _bound_source_file(source_file: str) -> str:
@@ -114,13 +115,13 @@ async def _bound_source_file(source_file: str) -> str:
 
     try:
         return await asyncio.to_thread(_canonical_source_file, source_file)
-    except (HTTPException, RequestRefusedError, PathOutsideProjectError, InvalidPathError):
+    except (RequestRefusedError, PathOutsideProjectError, InvalidPathError):
         raise
     except HauteError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
     except Exception as exc:
         detail = _http_error_detail(exc, "session_source_resolution")
-        raise HTTPException(status_code=500, detail=detail) from None
+        raise ServiceFailedError(detail) from None
 
 
 def _http_error_detail(exc: Exception, operation: str) -> str:
@@ -128,13 +129,7 @@ def _http_error_detail(exc: Exception, operation: str) -> str:
 
     if isinstance(exc, HauteError):
         return str(exc)
-    logger.error(
-        "assistant_route_operation_failed",
-        operation=operation,
-        error=type(exc).__name__,
-        exc_info=True,
-    )
-    return _INTERNAL_ERROR_DETAIL
+    return answer_failure(exc, operation=f"assistant_{operation}").message
 
 
 async def _message_config() -> AssistantConfig:
@@ -146,9 +141,9 @@ async def _message_config() -> AssistantConfig:
     try:
         return await asyncio.to_thread(resolve_assistant_config)
     except HauteError as exc:
-        raise HTTPException(status_code=400, detail=exc.message) from None
+        raise InvalidRequestError(exc.message) from None
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=_http_error_detail(exc, "readiness")) from None
+        raise ServiceFailedError(_http_error_detail(exc, "readiness")) from None
 
 
 def _readiness() -> AssistantStatusResponse:
@@ -157,9 +152,9 @@ def _readiness() -> AssistantStatusResponse:
     try:
         status = assistant_readiness()
     except HauteError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        raise InvalidRequestError(str(exc)) from None
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=_http_error_detail(exc, "readiness")) from None
+        raise ServiceFailedError(_http_error_detail(exc, "readiness")) from None
     return AssistantStatusResponse(
         configured=status.configured,
         reason=status.reason,
@@ -374,31 +369,28 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
     try:
         reservation = await _loop.reserve_turn(session_store, body.session_id)
     except _loop.UnknownSessionError:
-        raise HTTPException(status_code=404, detail="Unknown assistant session") from None
+        raise NotFoundError("Unknown assistant session") from None
     except _loop.ConcurrentTurnError as exc:
-        raise HTTPException(status_code=409, detail=exc.to_payload()) from None
+        raise ConflictError(exc.to_payload()) from None
     session = reservation.session
 
     try:
         if source_file != session.source_file:
             # The canvas shows another pipeline: running the turn would edit
             # a file the analyst is not looking at.
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"This chat belongs to pipeline '{session.source_file}'. "
-                    "Open that pipeline to continue it, or start a new chat."
-                ),
+            raise ConflictError(
+                f"This chat belongs to pipeline '{session.source_file}'. "
+                "Open that pipeline to continue it, or start a new chat."
             )
         try:
             provider = _provider_factory(config)
         except ConfigError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise InvalidRequestError(str(exc)) from None
         except HauteError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from None
+            raise RequestRefusedError(str(exc), status_code=502) from None
         except Exception as exc:
             detail = _http_error_detail(exc, "provider_factory")
-            raise HTTPException(status_code=502, detail=detail) from None
+            raise RequestRefusedError(detail, status_code=502) from None
 
         request_context = body.context
         # The changes the analyst undid since the model's last turn.
@@ -423,12 +415,12 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         except TurnContextError as exc:
             # The canvas that sent this context shows a graph the saved file no
             # longer has.
-            raise HTTPException(status_code=409, detail=str(exc)) from None
+            raise ConflictError(str(exc)) from None
         except HauteError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from None
+            raise ServiceFailedError(str(exc)) from None
         except Exception as exc:
             detail = _http_error_detail(exc, "turn_context")
-            raise HTTPException(status_code=500, detail=detail) from None
+            raise ServiceFailedError(detail) from None
         execute_tool = build_tool_executor(
             session.source_file,
             session_id=session.id,
@@ -467,7 +459,7 @@ def _latest_change(session: AssistantSession, change_id: str) -> AssistantChange
             change = content.get("change")
             if isinstance(change, dict) and change.get("id") == change_id:
                 return AssistantChangeRecord.model_validate(change)
-    raise HTTPException(status_code=404, detail="This chat has no change with that id")
+    raise NotFoundError("This chat has no change with that id")
 
 
 @router.post("/changes/undo", response_model=AssistantUndoResponse)
@@ -482,20 +474,15 @@ async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResp
     try:
         reservation = await _loop.reserve_turn(session_store, body.session_id)
     except _loop.UnknownSessionError:
-        raise HTTPException(status_code=404, detail="Unknown assistant session") from None
+        raise NotFoundError("Unknown assistant session") from None
     except _loop.ConcurrentTurnError:
-        raise HTTPException(
-            status_code=409, detail="An assistant turn is running; undo after it ends"
-        ) from None
+        raise ConflictError("An assistant turn is running; undo after it ends") from None
     session = reservation.session
     try:
         if source_file != session.source_file:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"This chat belongs to pipeline '{session.source_file}'. "
-                    "Open that pipeline to undo its changes."
-                ),
+            raise ConflictError(
+                f"This chat belongs to pipeline '{session.source_file}'. "
+                "Open that pipeline to undo its changes."
             )
         change = _latest_change(session, body.change_id)
         try:
@@ -503,7 +490,7 @@ async def undo_assistant_change(body: AssistantUndoRequest) -> AssistantUndoResp
                 session.source_file, change
             )
         except (AssistantOperationError, GitHistoryReadError, StaleDocumentRevisionError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from None
+            raise ConflictError(str(exc)) from None
         session_store.record_undo(session, change)
     finally:
         reservation.release()

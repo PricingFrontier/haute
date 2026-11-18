@@ -363,7 +363,7 @@ class TestGraphToCodeMultiPathTraversal:
     The fix must explicitly allow only two prefix families:
       - ``<main_pipeline>.py`` matching ``body.source_file``
       - ``modules/<name>.py`` (repo-relative)
-    and raise a loud HTTPException on anything else.
+    and raise a loud RequestRefusedError on anything else.
     """
 
     def _make_graph_with_crafted_submodel_file(self, sm_file: str) -> PipelineGraph:
@@ -473,8 +473,7 @@ class TestGraphToCodeMultiPathTraversal:
         """A well-formed codegen output (main file + ``modules/<name>.py``)
         must still be accepted by the allowlist.
         """
-        from fastapi import HTTPException
-
+        from haute.errors import RequestRefusedError
         from haute.routes._save_pipeline import SavePipelineService
         from haute.schemas import SavePipelineRequest
 
@@ -503,7 +502,7 @@ class TestGraphToCodeMultiPathTraversal:
             # but it must NOT raise a 4xx due to the allowlist.
             try:
                 svc.save(req)
-            except HTTPException as exc:
+            except RequestRefusedError as exc:
                 # Tolerate non-path-related failures; we're checking the
                 # allowlist does not reject the valid paths.
                 if exc.status_code in (400, 403):
@@ -527,8 +526,7 @@ class TestGraphToCodeMultiPathTraversal:
         save must raise; it must not return ``status=saved`` with the
         malicious file missing from disk.
         """
-        from fastapi import HTTPException
-
+        from haute.errors import RequestRefusedError
         from haute.routes._save_pipeline import SavePipelineService
         from haute.schemas import SavePipelineRequest
 
@@ -553,7 +551,7 @@ class TestGraphToCodeMultiPathTraversal:
             raised = False
             try:
                 svc.save(req)
-            except HTTPException:
+            except RequestRefusedError:
                 raised = True
             except Exception:
                 raised = True

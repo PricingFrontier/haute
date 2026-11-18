@@ -33,7 +33,7 @@ A cause several packages here share has its own file and is taken first:
 |---|---|---:|---|
 | VCS-01 | Planned | P2 | A catch-up that cannot remove an open file leaves the branches and the files as they were, and removes the file on the retry. |
 | VCS-02 | Planned | P2 | Commit and Restore succeed when a deletion or a rename is already staged, instead of failing every time with "Check the server logs". |
-| VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "see server log". |
+| VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "Git refused this". |
 | VCS-04 | Planned | P3 | A restore the server died in reads as interrupted at the next start, and Retry finishes it. |
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
 | VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
@@ -142,9 +142,10 @@ injected into Haute.
 
 - A `.git/index.lock` left by a git command that crashed, or held by one
   still running. Readiness reads `ready`. Every save answers "Changes saved;
-  version capture failed (git error — see server log)." and Commit answers
-  "Operation failed. Check the server logs for details." Git's own message,
-  which only the log holds, says another git process seems to be running
+  version capture failed: Git refused this. Its reason is recorded under
+  incident <id>." and Commit answers "Git refused this. Its reason is
+  recorded under incident <id>." Git's own message, which only the record
+  under that incident holds, says another git process seems to be running
   and that the file can be removed by hand if none is.
 - A folder git does not trust because another account owns it, as on a
   network share (switched on here with git's own
@@ -162,9 +163,9 @@ injected into Haute.
   commits are required) whose signing program fails, as a gpg with no key
   or one that cannot ask for its passphrase does (run with a program that
   exits at once). Git says "error: gpg failed to sign the data". Every
-  save answers the "see server log" warning, and Commit and Restore answer
-  "Operation failed. Check the server logs for details.", so version
-  history stops and nothing mentions signing. Each failed save leaves its
+  save answers the "Git refused this" warning, and Commit and Restore answer
+  "Git refused this", each naming an incident, so version history stops and
+  nothing mentions signing. Each failed save leaves its
   files staged, which for a deleted file is the state `VCS-02` describes.
 
 In the second and third cases the repository exists and holds the project's

@@ -288,9 +288,9 @@ times out waiting for the slot, and the pool's own close, which the server
 calls when it shuts down, does not return either.
 
 Through the editor, the shipped rating example's graph is 2,224 bytes as
-sent to the worker. With the worker killed, the next preview answers 500,
-"Operation failed. Check the server logs for details.", and the one after
-it works. With the example's rating table grown to 5,000 rows the graph is
+sent to the worker. With the worker killed, the next preview answers 500
+with an incident ("Haute hit a failure it does not recognise"), and the one
+after it works. With the example's rating table grown to 5,000 rows the graph is
 151,156 bytes: after the worker is killed the preview has no answer after
 60 seconds, and the next preview of the shipped graph has none after 30.
 Previews stay dead until the server is restarted. The execution
@@ -304,9 +304,10 @@ stopped and was started again.
 **Acceptance:** With the idle worker killed, a preview whose graph is 151
 kB as sent is answered, with rows or with a named failure, within the
 request's own time limit; the preview after it has rows; and the server
-shuts down. No preview after a worker's death says "Check the server logs".
+shuts down. The first preview after a worker's death says that the worker
+stopped and was started again, not that the failure is unrecognised.
 
-**Dependencies:** `SRV-01` decides how much a failure's answer says.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_interactive_workers.py`;
 `specs/execution-engine/low-level.md`.

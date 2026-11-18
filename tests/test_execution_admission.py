@@ -463,10 +463,12 @@ def test_heavy_execution_admission_counts_in_flight_budget(
         assert exc_info.value.to_payload()["in_flight_operations"] == [
             "optimiser_setup:optimiser_setup_a"
         ]
-        from haute.routes._memory_messages import memory_limit_user_message
+        from haute._memory_messages import memory_limit_user_message
 
         message = memory_limit_user_message(exc_info.value, operation_noun="Optimiser estimate")
-        assert "reserved by optimiser_setup:optimiser_setup_a" in message
+        # A holder with no name is left out, never shown by its internal label.
+        assert "6.0 GiB reserved, 8.0 GiB allowed" in message
+        assert "optimiser_setup_a" not in message
 
         first.release_admission()
 

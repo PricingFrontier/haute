@@ -49,6 +49,7 @@ from haute.executor import (
 from haute.projection import ExecutionStrategy, ExecutionStrategyStatus
 from haute.routes._isolated_worker_async import WorkerCancellationGate
 from haute.schemas import ExecutionMetricsPayload, WriteOutputResponse
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests.conftest import build_test_input_snapshot
 
@@ -2893,7 +2894,6 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
         WorkerRemoteError,
     )
     from haute.routes import pipeline as pipeline_route
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 
     failure: BaseException
     if failure_kind in {
@@ -2959,5 +2959,5 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
         # The warehouse's (already redacted) message is what the user can act on.
         assert response.json()["detail"] == f"{failure_kind} failure"
     if expected_status == 500:
-        assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert_unnamed(response.json()["detail"])
         assert "private" not in response.text

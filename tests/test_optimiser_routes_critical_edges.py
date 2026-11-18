@@ -9,11 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 
 from haute._project_context import current_project
 from haute.errors import RequestRefusedError
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
 from tests.job_store_support import discard_corrupt_job, seed_job
 from tests.optimiser_fixtures import (
@@ -437,7 +436,7 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
             "atomic_update_if_heavy_present",
             side_effect=RuntimeError("store write failed"),
         ),
-        patch("haute.server.logger.error") as log_error,
+        patch("haute._failure_answers.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/apply",
@@ -448,12 +447,12 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     assert not orphan_path.exists()
     assert not orphan_dir.exists()
     assert resp.status_code == 500
-    assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+    assert_unnamed(resp.json()["detail"])
     # The application handler logs it; the route no longer catches it.
     log_error.assert_called_once()
-    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.args == ("unexpected_failure",)
     assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
-    assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
+    assert log_error.call_args.kwargs["operation"] == "POST /api/optimiser/apply"
 
 
 def test_save_reraises_http_exception_from_artifact_build(
@@ -489,7 +488,7 @@ def test_save_reraises_http_exception_from_artifact_build(
         use_project(tmp_path)
         with patch(
             "haute.routes.optimiser._build_artifact_payload",
-            side_effect=HTTPException(status_code=418, detail="artifact rejected"),
+            side_effect=RequestRefusedError("artifact rejected", status_code=418),
         ):
             resp = client.post(
                 "/api/optimiser/save",
@@ -612,7 +611,7 @@ def test_frontier_select_unhandled_exception_logged_and_500(
             "haute.routes._optimiser_frontier._frontier_point_result_dict",
             side_effect=ZeroDivisionError("kaboom"),
         ),
-        patch("haute.server.logger.error") as log_error,
+        patch("haute._failure_answers.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -620,12 +619,12 @@ def test_frontier_select_unhandled_exception_logged_and_500(
         )
 
     assert resp.status_code == 500
-    assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+    assert_unnamed(resp.json()["detail"])
     # The application handler logs it; the route no longer catches it.
     log_error.assert_called_once()
-    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.args == ("unexpected_failure",)
     assert log_error.call_args.kwargs["error_class"] == "ZeroDivisionError"
-    assert log_error.call_args.kwargs["path"] == "/api/optimiser/frontier/select"
+    assert log_error.call_args.kwargs["operation"] == "POST /api/optimiser/frontier/select"
 
 
 # ---------------------------------------------------------------------------

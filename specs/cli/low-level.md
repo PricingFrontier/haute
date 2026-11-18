@@ -5,9 +5,9 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`, a `HauteGroup`, the command line's one edge for failures: whatever a command raises past Click's own errors, its aborts and a broken pipe ends in `answer_command_failure`'s one line and exit 1), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
-| `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, and `EXPECTED_FAILURES`, the failures a command reports as one line (Haute's own errors, value errors and OS errors). |
+| `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, `EXPECTED_FAILURES`, the failures a command reports in their own words (Haute's own errors, value errors and OS errors), and `answer_command_failure`, which ends a command on a failure in one line and exit 1: a failure `haute._failure_answers.classify_failure` names in its words, an expected one in its own, anything else as an incident whose traceback `_write_incident` writes to `.haute/incidents/<id>.txt` (`INCIDENTS_FOLDER`), or `haute-incidents/` in the system's temporary folder outside a project, saying where, and printing it instead when the record cannot be written. |
 | `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig` (`pipeline_file`, `node`, `source`, `rows`), `handle_run`: parses a pipeline, walks it lazily to its output node or `--node` (`execution.execute_lazy_graph`, under the lazy-sink profile), prints each walked node's plan width and collects only the target's output; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
@@ -87,7 +87,7 @@ reported. The CLI does not print schema warnings.
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
 | `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default). The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; on a new project a workbench project's database and sign-in have none, so an answer must be picked. In a project with a `haute.toml` each default is the project's current answer instead, and a question it holds no answer to has none, save the host's. | Success 0. An existing `haute.toml` that does not read as TOML exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a question without a default and without its flag (a new workbench project's `--store` or `--sign-in`, or on a re-run any the project holds no answer to) exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
-| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, an admission refusal, or an expected failure (`EXPECTED_FAILURES` or a Polars error), whether the walk attributes it to a node (printed `✗ <node> (line N): <error>` first) or it arises collecting the output, exits 1; any other exception propagates with its traceback, after the `✗` line when the walk names its node. Success exits 0 after printing the output. |
+| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, an admission refusal, or an expected failure (`EXPECTED_FAILURES` or a Polars error), whether the walk attributes it to a node (printed `✗ <node> (line N): <error>` first) or it arises collecting the output, exits 1; a failure the walk attributes to a node exits 1 after its `✗` line whatever it is, and memory and any other exception end at the `haute` group in one line (the process cap that refused the run named with the setting that raises it, anything unnamed an incident). Success exits 0 after printing the output. |
 | `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, or empty graph exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
@@ -183,12 +183,13 @@ walked node from its plan's `collect_schema()` (a multi-frame result one line pe
 collects only the target, through `streaming_collect` (`head(rows)` first with `--rows`); a
 node whose result is already a DataFrame (a node whose builder materialises, a Quote
 Response assembling its response among them) is printed as it is. A failure the walk or a
-schema read attributes to a node (`errors.failing_node`) prints `✗ <node> (line N): <error>`;
-attribution says where a failure surfaced, not that it was expected, so it exits 1 only for
-an expected failure (`EXPECTED_FAILURES` or a Polars error) and otherwise propagates with its
-traceback. A failure while collecting the target, which no node is to blame for, prints
+schema read attributes to a node (`errors.failing_node`) prints `✗ <node> (line N): <error>`
+and exits 1: a node's own failure is the analyst's, whatever it is. Out of memory however it
+arrives is not a node's, and ends at the `haute` group in the words every edge gives it. A
+failure while collecting the target, which no node is to blame for, prints
 `Error collecting the output of <frame>: <error>` and exits 1. An admission refusal is one
-`Error:` line and exit 1. The admission is released on every path.
+`Error:` line naming the process cap, what the process already holds and the setting that
+raises it, and exit 1. The admission is released on every path.
 
 **`lint`**: resolves the pipeline file and parses it as the editor loads it
 (`routes._helpers.parse_pipeline_to_graph`, strict, under the root of the project holding the
@@ -277,8 +278,8 @@ The CLI never calls `score_test_quotes` directly. Each stage prints a `✓`/`✗
 progress line. Resolution keeps its existing user-facing failure boundary;
 validation renders `DeployError`; target dispatch renders `DeployError`,
 `ImportError`, and `NotImplementedError`. An unexpected target-backend
-exception is deliberately not caught, preserving its original type and
-traceback.
+exception is deliberately not caught by the command: it ends at the `haute` group, an
+incident whose record keeps its original type and traceback.
 
 **`smoke`**: requires `haute.toml`; loads `DeployConfig`, applies an optional endpoint-suffix
 override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
@@ -488,9 +489,10 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   `status --version-only` deliberately converts its not-found/no-version case to
   `click.ClickException` (exit 1) so scripts cannot mistake absence for version `0`.
   The formatting catches take only `EXPECTED_FAILURES` (`HauteError`, `ValueError`,
-  `OSError`); SDK, scoring and programming errors outside them propagate with their
-  original exception and traceback (still exit 1). `train` prints that training succeeded
-  before a result-reporting failure's traceback.
+  `OSError`); SDK, scoring and programming errors outside them end at the `haute` group in
+  one line and exit 1, an unnamed one as an incident whose traceback is written beside the
+  project. `train` prints that training succeeded
+  before a result-reporting failure's line.
 - `_serve._load_toml_server_host` distinguishes `OSError` (logged as a warning, treated as "no
   override so fall back to default") from `tomllib.TOMLDecodeError` (raised as `haute.errors.ConfigError`
   — a malformed `haute.toml` must not silently resolve to the loopback default, since that could mask
@@ -501,7 +503,8 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 - `_deploy.handle_deploy`'s target-dispatch step distinguishes `ImportError` (missing optional
   extra — tells the user which `uv add haute[...]` to run), `NotImplementedError` (target not yet
   supported), and `DeployError` (expected target/configuration or operational failure). It has no
-  catch-all fallback: implementation exceptions propagate with their original traceback.
+  catch-all fallback: implementation exceptions reach the `haute` group, an incident whose
+  record keeps their original traceback.
 - `CiSecretsError` is the deploy-secrets steps' one failure: `haute ci secrets` makes it a Click
   error, `POST /api/git/ci-secrets` a 400 with its message, and `push_with_ci_secrets` the
   `problem` of the response's `ci_secrets`, never a failed push. Anything else, a

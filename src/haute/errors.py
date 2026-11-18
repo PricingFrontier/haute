@@ -25,8 +25,9 @@ module are the ones the ``HauteError`` promise applies to.
 
 from __future__ import annotations
 
+import errno
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, ClassVar, TypeGuard
+from typing import Any, ClassVar, Literal, TypeGuard
 
 from haute._validation_error import ConfigSettingError as ConfigSettingError
 from haute._validation_error import HauteValidationError as HauteValidationError
@@ -119,10 +120,12 @@ def _name_nodes_in_execution(error: HauteError) -> None:
 
 
 _FAILING_NODE_ATTRIBUTE = "haute_failing_node"
+_FAILING_NODE_NAME_ATTRIBUTE = "haute_failing_node_name"
 
 
 def mark_failing_node(exc: BaseException, node_id: str) -> None:
-    """Record that *exc* was raised while the graph walk built or ran *node_id*.
+    """Record that *exc* was raised while the graph walk built or ran *node_id*, and the
+    name the walk gives that node, so whoever answers the failure later can name it.
 
     The innermost record wins: a failure already marked keeps its node. A
     failure a lazy frame raises only when a later caller reads its schema is
@@ -131,6 +134,10 @@ def mark_failing_node(exc: BaseException, node_id: str) -> None:
 
     if failing_node(exc) is None:
         setattr(exc, _FAILING_NODE_ATTRIBUTE, node_id)
+        from haute._execution_context import current_node_namer
+
+        name_of = current_node_namer()
+        setattr(exc, _FAILING_NODE_NAME_ATTRIBUTE, node_id if name_of is None else name_of(node_id))
 
 
 def failing_node(exc: BaseException) -> str | None:
@@ -138,6 +145,13 @@ def failing_node(exc: BaseException) -> str | None:
 
     node_id = getattr(exc, _FAILING_NODE_ATTRIBUTE, None)
     return node_id if isinstance(node_id, str) else None
+
+
+def failing_node_name(exc: BaseException) -> str | None:
+    """The name of :func:`failing_node`'s node, as the walk named it when it marked *exc*."""
+
+    name = getattr(exc, _FAILING_NODE_NAME_ATTRIBUTE, None)
+    return name if isinstance(name, str) else failing_node(exc)
 
 
 def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
@@ -164,9 +178,17 @@ class RequestRefusedError(HauteError):
 
     status: ClassVar[int] = 400
 
-    def __init__(self, detail: str | Mapping[str, Any], *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        detail: str | Mapping[str, Any],
+        *,
+        status_code: int | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.detail = detail
         self.status_code = self.status if status_code is None else status_code
+        #: Response headers the refusal is answered with, such as ``Retry-After``.
+        self.headers = dict(headers or {})
         message = detail if isinstance(detail, str) else detail.get("message")
         super().__init__(message if isinstance(message, str) else str(detail))
 
@@ -232,6 +254,50 @@ class InvalidPathError(HauteError):
 
 class ConfigError(HauteError):
     """Configuration loading or validation failure."""
+
+
+class PipelineFileError(FileNotFoundError):
+    """``haute.toml``'s ``[project].pipeline`` names a file that is not there (``missing``) or
+    that holds no pipeline (``not_a_pipeline``).
+
+    Still a ``FileNotFoundError``, so every caller that catches one keeps doing so. It carries
+    the file, so each edge names it as it names files (relative to the project), and its
+    message the remedy.
+    """
+
+    def __init__(
+        self, path: str, *, reason: Literal["missing", "not_a_pipeline"] = "missing"
+    ) -> None:
+        self.reason = reason
+        super().__init__(errno.ENOENT, self.words(path), path)
+
+    def words(self, named: str) -> str:
+        """The refusal, naming the file as *named*."""
+        if self.reason == "missing":
+            return (
+                f"Pipeline file configured in haute.toml [project].pipeline does not exist: "
+                f"{named}. Fix the path in haute.toml or create the file."
+            )
+        return (
+            f"Pipeline file configured in haute.toml [project].pipeline does not look like a "
+            f"Haute pipeline: {named}. Point [project].pipeline at a .py file containing "
+            "'haute.Pipeline'."
+        )
+
+    def __str__(self) -> str:
+        return str(self.strerror)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (_restore_pipeline_file_error, (type(self), str(self.filename), self.reason))
+
+
+def _restore_pipeline_file_error(
+    error_type: type[PipelineFileError],
+    path: str,
+    reason: Literal["missing", "not_a_pipeline"],
+) -> PipelineFileError:
+    """A :class:`PipelineFileError` as a worker sent it."""
+    return error_type(path, reason=reason)
 
 
 class NodeConfigError(ConfigError, HauteValidationError):
@@ -596,14 +662,15 @@ class TraceTargetNotFoundError(TraceRequestError):
     error_code = "trace_target_not_found"
 
 
-class TraceNodeFailedError(ExecutionError):
-    """A node's own code failed while a trace ran it: a syntax error, a missing column.
+class NodeFailedError(ExecutionError):
+    """A node's own code failed while a run walked it: a syntax error, a missing column.
 
     The user fixes it on the node, so it is a public contract error naming the node, as a
-    preview shows the same failure on its node.
+    preview shows the same failure on its node. A trace, a Data Output's Write, training
+    and the optimiser each answer one through :mod:`haute._failure_answers`.
     """
 
-    error_code = "trace_node_failed"
+    error_code = "node_failed"
     public_fields = ("node_id", "node")
 
     def __init__(

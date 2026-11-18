@@ -70,6 +70,7 @@ from haute.routes._training_artifacts import (
 from haute.routes._training_lifecycle import TrainService, _worker_timing
 from haute.routes._training_worker import _run_dispersion_process_job, _run_training_process_job
 from haute.schemas import EvaluationReportPayload, TuningReportPayload
+from tests._failure_assertions import assert_unnamed
 
 _TEST_WORKER_MEMORY_LIMIT_BYTES = 512 * 1024**2
 _IDENTITY = "a" * 64
@@ -795,7 +796,7 @@ def test_train_service_rejects_evaluation_response_artifact_mismatch(
     service = TrainService(store, protocol_runner=mismatched_runner)
     with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
         job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
-    assert store.require_job(job_id)["status"] == "contract_error"
+    assert store.require_job(job_id)["status"] == "error"
 
 
 def test_train_service_rejects_schema_invalid_completed_response(tmp_path: Path) -> None:
@@ -812,8 +813,9 @@ def test_train_service_rejects_schema_invalid_completed_response(tmp_path: Path)
     with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
         job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
 
-    assert store.require_job(job_id)["status"] == "contract_error"
-    assert "malformed" in store.require_job(job_id)["message"].lower()
+    # A worker that broke its protocol is Haute's fault: an error with its incident.
+    assert store.require_job(job_id)["status"] == "error"
+    assert_unnamed(store.require_job(job_id)["message"])
 
 
 def test_train_service_rejects_tuning_artifacts_omitted_by_response(tmp_path: Path) -> None:
@@ -839,8 +841,8 @@ def test_train_service_rejects_tuning_artifacts_omitted_by_response(tmp_path: Pa
     with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
         job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
 
-    assert store.require_job(job_id)["status"] == "contract_error"
-    assert "omits declared tuning artifacts" in store.require_job(job_id)["message"]
+    assert store.require_job(job_id)["status"] == "error"
+    assert_unnamed(store.require_job(job_id)["message"])
 
 
 def test_train_service_rejects_tuning_response_manifest_path_mismatch(tmp_path: Path) -> None:
@@ -867,8 +869,8 @@ def test_train_service_rejects_tuning_response_manifest_path_mismatch(tmp_path: 
     with patch("haute.modelling.TrainingJob", _SuccessfulTunedTrainingJob):
         job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
 
-    assert store.require_job(job_id)["status"] == "contract_error"
-    assert "tuning response path" in store.require_job(job_id)["message"].lower()
+    assert store.require_job(job_id)["status"] == "error"
+    assert_unnamed(store.require_job(job_id)["message"])
 
 
 def test_publication_validates_evaluation_digests_and_canonical_paths(tmp_path: Path) -> None:

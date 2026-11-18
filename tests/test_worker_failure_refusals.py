@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
 
 from haute._worker_failures import (
     WorkerBusyError,
@@ -20,8 +19,9 @@ from haute._worker_failures import (
     WorkerTerminationError,
     WorkerTimeoutError,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-from haute.routes._worker_failure_http import worker_failure_http_exception
+from haute.errors import RequestRefusedError
+from haute.routes._worker_failure_refusals import worker_failure_refusal
+from tests._failure_assertions import assert_unnamed, without_message
 
 
 def _remote(
@@ -36,8 +36,8 @@ def _remote(
     )
 
 
-def _answer(exc: WorkerError, **kwargs: object) -> HTTPException:
-    return worker_failure_http_exception(
+def _answer(exc: WorkerError, **kwargs: object) -> RequestRefusedError:
+    return worker_failure_refusal(
         exc, operation="pipeline_write_output", timed_out="took too long", **kwargs
     )
 
@@ -55,8 +55,9 @@ def _answer(exc: WorkerError, **kwargs: object) -> HTTPException:
         pytest.param(WorkerHostError("resource tracker died"), 503, id="host"),
         pytest.param(WorkerProtocolError("malformed envelope"), 500, id="protocol"),
         pytest.param(WorkerTerminationError(), 500, id="termination"),
-        pytest.param(WorkerBusyError("slot held"), 500, id="busy"),
-        pytest.param(WorkerPreemptedError(), 500, id="preempted"),
+        # Another request holds or took the worker: a conflict to retry, not a fault.
+        pytest.param(WorkerBusyError("slot held"), 409, id="busy"),
+        pytest.param(WorkerPreemptedError(), 409, id="preempted"),
     ],
 )
 def test_each_failure_class_has_one_status(failure: WorkerError, status: int) -> None:
@@ -70,7 +71,7 @@ def test_a_timeout_answers_the_routes_own_detail() -> None:
 def test_a_memory_outcome_carries_the_cap_the_worker_ran_under() -> None:
     answered = _answer(WorkerMemoryLimitError(rss_bytes=2, rss_limit_bytes=1), memory_limit_bytes=8)
 
-    assert answered.detail == {
+    assert without_message(answered.detail) == {
         "error_code": "memory_limit",
         "operation": "pipeline_write_output",
         "reason": "worker_rss_limit_exceeded",
@@ -97,11 +98,11 @@ def test_anything_else_is_a_generic_500() -> None:
     answered = _answer(_remote(module="", type_="ValueError", is_memory=False))
 
     assert answered.status_code == 500
-    assert answered.detail == _INTERNAL_ERROR_DETAIL
+    assert_unnamed(answered.detail)
 
 
 def test_a_routes_own_remote_answer_is_asked_before_the_generic_500() -> None:
-    teapot = HTTPException(status_code=418, detail="mine")
+    teapot = RequestRefusedError("mine", status_code=418)
     answered = _answer(
         _remote(module="haute.mine", type_="MineError", is_memory=False),
         remote=lambda exc: teapot if exc.remote_type == "MineError" else None,

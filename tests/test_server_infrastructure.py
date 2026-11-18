@@ -17,8 +17,8 @@ from fastapi.testclient import TestClient
 
 from haute._project_context import current_project
 from haute.errors import PathOutsideProjectError
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests import _server_helpers
+from tests._failure_assertions import assert_unnamed
 
 # Fixtures shared with the other modules split from one suite.
 client = _server_helpers.client
@@ -82,13 +82,13 @@ class TestMiddleware500:
     """Middleware dispatch method: exception path returns JSON 500."""
 
     def test_dispatch_exception_returns_json_500(self):
-        """Directly test _RequestIdMiddleware.dispatch when call_next raises."""
+        """Directly test RequestFailureMiddleware.dispatch when call_next raises."""
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from haute.server import _RequestIdMiddleware
+        from haute.routes._error_handlers import RequestFailureMiddleware
 
-        middleware = _RequestIdMiddleware(app=MagicMock())
+        middleware = RequestFailureMiddleware(app=MagicMock())
 
         # Build a fake Request
         request = MagicMock()
@@ -109,7 +109,7 @@ class TestMiddleware500:
         import json
 
         body = json.loads(resp.body)
-        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
+        assert_unnamed(body["detail"])
         assert 1 <= len(resp.headers["x-request-id"]) <= 64
 
     def test_request_id_header_passthrough(self, client: TestClient):
@@ -139,9 +139,9 @@ class TestMiddleware500:
     ):
         """Untrusted correlation metadata never reaches a response header."""
         if "\x1f" in request_id:
-            from haute.server import _select_request_id
+            from haute.routes._error_handlers import select_request_id
 
-            selected, rejection = _select_request_id(request_id)
+            selected, rejection = select_request_id(request_id)
             assert selected != request_id
             assert rejection is not None
             return
@@ -162,10 +162,10 @@ class TestMiddleware500:
         assert resp.headers["x-request-id"] == request_id
 
     def test_rejected_request_id_log_does_not_contain_rejected_value(self):
-        from haute.server import _select_request_id
+        from haute.routes._error_handlers import select_request_id
 
         rejected = "secret-" + ("z" * 200)
-        selected, rejection = _select_request_id(rejected)
+        selected, rejection = select_request_id(rejected)
 
         assert selected != rejected
         assert rejection == {"reason": "too_long", "length": len(rejected)}
@@ -212,9 +212,9 @@ class TestMiddlewareLogging:
 
         import structlog.testing
 
-        from haute.server import _RequestIdMiddleware
+        from haute.routes._error_handlers import RequestFailureMiddleware
 
-        middleware = _RequestIdMiddleware(app=MagicMock())
+        middleware = RequestFailureMiddleware(app=MagicMock())
         request = MagicMock()
         request.headers = {}
         request.method = "POST"
@@ -230,7 +230,7 @@ class TestMiddlewareLogging:
             loop.close()
 
         assert resp.status_code == 500
-        error_events = [e for e in captured if e.get("event") == "unhandled_exception"]
+        error_events = [e for e in captured if e.get("event") == "unexpected_failure"]
         assert len(error_events) >= 1
         assert "traceback" in error_events[0]
         assert error_events[0]["log_level"] == "error"
@@ -239,9 +239,9 @@ class TestMiddlewareLogging:
         import asyncio
         from unittest.mock import AsyncMock, MagicMock
 
-        from haute.server import _RequestIdMiddleware
+        from haute.routes._error_handlers import RequestFailureMiddleware
 
-        middleware = _RequestIdMiddleware(app=MagicMock())
+        middleware = RequestFailureMiddleware(app=MagicMock())
         request = MagicMock()
         request.headers = {}
         request.method = "GET"
@@ -257,7 +257,7 @@ class TestMiddlewareLogging:
 
         assert resp.status_code == 500
         body = json.loads(resp.body)
-        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
+        assert_unnamed(body["detail"])
         assert "secret internal detail" not in resp.body.decode()
         assert "Traceback" not in resp.body.decode()
 

@@ -16,7 +16,7 @@
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`), and an interrupted tree (`interrupted.json`: `operation`, `files`, `at`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
-| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). `POST /api/git/push` publishes through `haute._ci_secrets.push_with_ci_secrets`, and `POST /api/git/ci-secrets` is `set_missing_ci_secrets`; the deploy's-secrets step they add is owned by [cli](../cli/low-level.md). |
+| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a git error the route does not map itself is answered by the server API's failure answers. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). `POST /api/git/push` publishes through `haute._ci_secrets.push_with_ci_secrets`, and `POST /api/git/ci-secrets` is `set_missing_ci_secrets`; the deploy's-secrets step they add is owned by [cli](../cli/low-level.md). |
 
 ## Key types and data structures
 
@@ -901,11 +901,14 @@ not be converted into an empty-remote bootstrap. A later authoritative default f
 update the selected remote-tracking ref and object database before validation refuses, but
 never mutates those user-owned local surfaces.
 
-`routes/git.py`'s `git_error_http_exception(e: GitError) -> HTTPException` is the sole
-error-to-HTTP mapping point, applied by the application's `GitError` handler
-(`routes/_error_handlers.py`) and dispatched by `isinstance` in most-specific-first order:
-`GitGuardrailError` → 403, `GitDomainError` → 400 (verbatim message), plain `GitError` → 400
-with the sanitized `_INTERNAL_ERROR_DETAIL` constant (full detail logged server-side only).
+`haute._failure_answers` is the sole error-to-HTTP mapping point for git, as for every
+other failure, dispatched by `isinstance` in most-specific-first order:
+`GitGuardrailError` → 403 (`git_guardrail`), `GitDomainError` → 400 (verbatim message,
+`git_refused`), plain `GitError` → 400 `git_failed`, "Git refused this. Its reason is recorded
+under incident <id>.", git's own message logged under the incident only (`git_refusal_answer`).
+A save whose capture git refuses warns in the same words. A hand-written git message whose cause
+only git's stderr names (a push the remote rejected, a bootstrap the remote refused, history git
+could not read) names the incident its stderr is logged under (`record_incident`).
 `GitPushRejectedError` and `GitMilestoneForkError` are caught BEFORE the generic `GitError`
 handler in the two routes that can raise them (`git_push`, `git_commit`) and mapped to 409
 with their structured payload's `model_dump()` as `HTTPException.detail`; the wire envelope
@@ -1045,7 +1048,7 @@ process failures, and precise ref-movement races deterministic.
   append-only missing-entry repair, and non-UTF-8 input handling.
 - **`tests/test_git_routes.py`** — the HTTP layer: every route's happy path, that all
   handlers are genuinely sync `def` (not `async def`, to avoid event-loop blocking),
-  general-exception-to-500 handling, `git_error_http_exception`'s logging and status-code mapping
+  general-exception-to-500 handling, the failure answers' status-code mapping
   for all three error families, and that ref-moving routes correctly wrap their `_git` call
   in `pause_watcher()` and publish `git.tree.changed` once they have answered (a switch
   broadcasting the destination's document, and the name→path index seeing a pipeline the

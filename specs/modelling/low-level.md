@@ -82,14 +82,14 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/modelling/_model_export.py` | `MODEL_FILE_SUFFIXES` and `resolve_model_export_destination()`: the Export pane's model-file destination rules (see Save-model-after-the-fact). |
 | `src/haute/routes/_export_receipts.py` | Export receipts on training jobs: `record_receipt` (append an MLflow or model-file receipt, keeping the newest `MAX_RECEIPTS_PER_KIND`), `export_receipts` (the wire shape the status route returns), `mlflow_receipt_for_operation` (idempotent retries) and `single_flight_mlflow_log` (one MLflow log per job at a time, else a `409` in-progress refusal). |
-| `src/haute/routes/_mlflow_log_errors.py` | The shared HTTP outcomes of the modelling and optimiser MLflow log routes: `require_mlflow_installed` (the shared `503`) and `mlflow_log_http_exception` (configuration `400`, classified remote `502` with an `mlflow_<category>` code and write-specific copy, unclassified `500`; logs category and error type only). |
+| `src/haute/routes/_mlflow_log_errors.py` | The shared HTTP outcomes of the modelling and optimiser MLflow log routes: `require_mlflow_installed` (the shared `503`) and `mlflow_log_refusal` (configuration `400`, classified remote `502` with an `mlflow_<category>` code and write-specific copy, unclassified a `500` incident; logs category and error type only). |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow log, export, model-cache clear, and dispersion jobs. |
 | `src/haute/routes/_training_preparation.py` | Training input preparation rules plus the hard-capped preparation worker: deterministic sampling, feature/metadata demand and projection, modelling-node lookup, row-limit and RAM/VRAM feasibility helpers, the picklable `TrainingPreparationRequest`/`TrainingPreparationOutcome`/`TrainingPreparationFailure` transport, the in-process core `prepare_training_data`, the spawn entrypoint `prepare_training_data_worker`, and the target/task gate `_validate_target_task_pairing`. |
 | `src/haute/routes/_training_evaluation.py` | Route-side evaluation and GLM-dispersion rules: family/link validation, dispersion parameter contracts, and immutable evaluation-preview projection. |
 | `src/haute/routes/_training_worker.py` | Spawn-picklable training/dispersion worker protocol: request validation, child execution context, curated failure taxonomy, bounded progress/result payloads, and the two process entrypoints. It publishes only staged manifests. |
 | `src/haute/routes/_training_artifacts.py` | Sole parent-side training artifact publication owner: manifest/path/size/digest validation, strict evaluation/tuning reloads, rollback-capable generation replacement, and stale tuning retirement. |
 | `src/haute/routes/_training_lifecycle.py` | State-owning `TrainService` implementation. Composes `JobLifecycle`, `CancellableJobRegistry`, and `IsolatedJobSupervisor`; orchestrates preparation and worker launch, cancellation/timeout, parent cleanup, and atomic completion publication through the domain modules above. |
-| `src/haute/routes/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
+| `src/haute/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
 | `src/haute/schemas.py` | Shared Pydantic request/response contracts owned by [server-api](../server-api/low-level.md) and used by `/api/modelling/*` routes. |
 
 ## Key types and data structures
@@ -500,7 +500,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    `TrainingPreparationFailure` carries `terminal_reason`
    (`contract_error`|`memory_limited`|`cancelled`|`error`), the job `message`/`fields`, and the
    `http_status_code`/`http_detail`, computed in the child with the same
-   `_http_failure_job_parts`/`contract_error_job_fields`/`_memory_limit_http_exception`
+   `_refusal_job_parts`/`contract_error_job_fields`/`memory_answer`
    helpers the in-thread path used, so job records and HTTP payloads are unchanged. A cancelled
    run maps to `cancelled` with `CLIENT_CLOSED_REQUEST_STATUS`, both in the mapper and ahead of
    the worker's own catch-all, so a cancellation is never reported as a pipeline failure. Every
@@ -1148,14 +1148,15 @@ Failures map through `routes/_mlflow_log_errors.py`, shared with the optimiser l
 `require_mlflow_installed()` runs first, so a missing MLflow package is the shared `503` with
 `MLFLOW_NOT_INSTALLED_DETAIL` on every MLflow route. A `HauteValidationError` from haute's own
 artifact checks (an unloadable model, an incomplete contract, a missing artifact) is a `400`
-with its message, raised before any run exists. `mlflow_log_http_exception(exc, job_id=...)`
+with its message, raised before any run exists. `mlflow_log_refusal(exc, job_id=...)`
 maps an `MlflowConfigError` to `400` with its message; classifies anything else with
 `haute._mlflow_errors.classify_mlflow_error`, logging `mlflow_log_failed` with only the
 category, error type and job id; returns a classified remote failure as `502` with detail
 `{"error_code": "mlflow_<category>", "message": ...}` — an `MlflowRemoteError`'s own message, or
 the write-specific copy in `MLFLOW_LOG_FAILURE_MESSAGES` for authentication, permission,
 missing_resource and connectivity; and returns an unclassified failure (including a local disk
-error, which is never connectivity) as the generic `500`.
+error, which is never connectivity) as a `500` incident whose record holds the category, type and
+job id only (`unexpected_failure`).
 
 **Export receipts.** Every successful export is recorded on the training job so the Export
 pane can say where a result went after a pane switch or a browser reload.
@@ -1272,8 +1273,8 @@ forward-slash spelling is the display path. It rejects reserved device names
 (`MalformedRuntimePathError`) and drive-relative Windows paths, resolves the path against the
 project root (an absolute path stands alone), and raises `RuntimePathOutsideProjectError` when
 the result leaves the root. `suffix_mismatch` is true when an explicit suffix differs from
-`model_suffix` ignoring case. Routes map these errors through `runtime_path_http_exception`
-(`400` malformed, `403` outside) and resolve against the current project's root.
+`model_suffix` ignoring case. Routes hand these errors to the failure answers (`failure_refusal`: `400` malformed,
+`403` outside) and resolve against the current project's root.
 
 `POST /save/destination` (`ModelSaveDestinationRequest`: non-empty `output_path`, `algorithm:
 Literal["catboost", "glm"]`) returns `ModelSaveDestinationResponse` (`path` display spelling,
@@ -1562,7 +1563,7 @@ rows/features) and retry.
   deliberately curated, haute-authored wording: the cancelled/memory-limit/
   contract-error/bounded-memory branches of `_known_training_worker_failure`
   (the memory-limit branch authors its message from the exception's structured
-  attributes via the shared `src/haute/routes/_memory_messages.py::memory_limit_user_message`
+  attributes via the shared `src/haute/_memory_messages.py::memory_limit_user_message`
   — human-readable used/allowed sizes plus a call to action, never the internal
   operation name, which stays in the diagnostic `error` field; the same shape
   serves the training 507 response, the auto-range job, and the input-snapshot

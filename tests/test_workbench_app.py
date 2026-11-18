@@ -556,15 +556,21 @@ def test_pricings_holding_every_place_refuse_another_at_once_until_one_ends(
 def test_a_pipeline_failing_on_the_quote_answers_why(
     release: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A node's own code failing on the values typed names the node and what it raised, as
+    every edge names it, so the underwriter can tell the analyst what broke."""
+    from haute.errors import mark_failing_node
+
     def fail(**_: Any) -> None:
-        raise KeyError("vehicle_factor")
+        raised = KeyError("vehicle_factor")
+        mark_failing_node(raised, "priced")
+        raise raised
 
     monkeypatch.setattr(workbench_app, "score_graph", fail)
 
     answered = _price(_client(release()))
 
-    assert answered.status_code == 500
-    assert answered.json()["detail"] == "The pipeline failed on this quote: 'vehicle_factor'"
+    assert answered.status_code == 422
+    assert answered.json()["detail"]["message"] == "'priced' failed: 'vehicle_factor'"
 
 
 def test_the_admission_is_held_until_the_answer_is_the_tables_sent_back(
