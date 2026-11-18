@@ -175,7 +175,9 @@ it looked in, and mark the node. Both commands then print one line. Set the
 destination, and no traceback. The editor's preview of that node shows the
 same message on the node and answers no 500. A tracking server that cannot
 be reached is reported as that, not as a missing run. Neither command prints
-the agent hint.
+the agent hint. `tests/test_run_parity.py`'s `model_lifecycle` example, whose
+ways refuse the missing run in different words today, passes with its
+expected-failure mark removed.
 
 **Dependencies:** None.
 
