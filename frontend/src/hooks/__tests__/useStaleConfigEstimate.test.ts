@@ -201,7 +201,8 @@ describe("useStaleConfigEstimate", () => {
       .fn<(payload: unknown, opts: { signal: AbortSignal }) => Promise<FakeEstimate>>()
       .mockImplementation((_p, opts) => {
         captured = opts.signal
-        return Promise.reject(abortError)
+        // An aborted request rejects once its signal aborts, as fetch does.
+        return new Promise<FakeEstimate>((_resolve, reject) => opts.signal.addEventListener("abort", () => reject(abortError)))
       })
 
     const { unmount, result } = renderHook(() =>

@@ -20,33 +20,47 @@ import {
   undeleteBranch,
 } from "../api/client"
 import { leaveUnsavedEdits } from "../hooks/useDirtyNavigation"
-import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import { chosenOverParts, discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useGitStore from "../stores/useGitStore"
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { documentPart } from "../stores/useDocumentStatusStore"
+import { answer } from "./answers"
 
 /** Re-sync git state everywhere after an inverse ran: status (toolbar,
- *  branch manager) + the history nonce (Git panel refetch). */
+ *  branch manager) + the history nonce (Git panel refetch). The status is the git store's,
+ *  read again whatever came of the editor meanwhile. */
 async function resyncGit(): Promise<void> {
-  await useGitStore.getState().loadStatus({ refresh: true }) // not a read begun before the inverse
-  useGitStore.getState().notifyHistoryChanged()
+  const historyChanged = () => useGitStore.getState().notifyHistoryChanged()
+  // Not a read begun before the inverse.
+  await answer([documentPart()], useGitStore.getState().loadStatus({ refresh: true }), {
+    ok: historyChanged,
+    stale: historyChanged,
+  })
 }
 
 /** Run one leg of an entry: toast success, resync; toast + rethrow on
  *  failure so the store puts the entry back for a retry, reading the status
- *  again since a file held open can leave the clone interrupted. */
+ *  again since a file held open can leave the clone interrupted. An entry is the
+ *  history's, run after the panel that pushed it may be gone: what it did is said either
+ *  way. */
 async function leg(action: () => Promise<unknown>, doneMessage: string): Promise<void> {
-  try {
-    await action()
-  } catch (err) {
+  const done = () => {
+    useToastStore.getState().addToast("success", doneMessage)
+    return resyncGit()
+  }
+  const failed = (err: unknown): never => {
     const detail = apiErrorMessage(err, "unknown error")
     useToastStore.getState().addToast("error", `Undo/redo failed: ${detail}`)
     void useGitStore.getState().loadStatus({ refresh: true })
     throw err
   }
-  useToastStore.getState().addToast("success", doneMessage)
-  await resyncGit()
+  await answer([documentPart()], action, {
+    ok: done,
+    failed,
+    stale: (settled) => ("value" in settled ? done() : failed(settled.error)),
+  })
 }
 
 /** A leg the analyst cancelled at the unsaved-edits question: nothing ran or failed. */
@@ -59,8 +73,9 @@ class SwitchCancelled extends Error {
 /**
  * One leg of a switch: unsaved edits are asked about first, `onSave` the project's save
  * for Save first. Cancel rejects before anything runs or is reported, so the store puts
- * the entry back; otherwise the checkout runs as a leg, and the edits chosen over it are
- * dropped once it succeeds (nothing, when Save first left the project clean).
+ * the entry back, as a document replaced while it was asked does; otherwise the checkout
+ * runs as a leg, and the edits chosen over it are dropped once it succeeds (nothing, when
+ * Save first left the project clean), unless an edit was made while it ran.
  */
 async function switchLeg(
   branch: string,
@@ -68,12 +83,24 @@ async function switchLeg(
   doneMessage: string,
   onSave?: () => Promise<boolean>,
 ): Promise<void> {
-  if (!(await leaveUnsavedEdits(question, onSave))) throw new SwitchCancelled()
-  await leg(async () => {
-    await setWorkingBranch(branch, false)
-    discardCanvasEdits()
-    await discardFormEdits()
-  }, doneMessage)
+  const cancelled = (): never => {
+    throw new SwitchCancelled()
+  }
+  await answer([documentPart()], leaveUnsavedEdits(question, onSave), {
+    ok: async (leave) => {
+      if (!leave) cancelled()
+      await leg(() => answer(chosenOverParts(), setWorkingBranch(branch, false), {
+        ok: async (_switched, asked) => {
+          discardCanvasEdits()
+          await asked.answer(discardFormEdits(), {})
+        },
+        stale: (settled) => {
+          if ("error" in settled) throw settled.error
+        },
+      }), doneMessage)
+    },
+    stale: cancelled,
+  })
 }
 
 /** `onSave` is the project's save, which a leg's Save first runs. */

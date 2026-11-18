@@ -217,7 +217,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     const answer = deferred<{ values: Record<string, { notes: string }[]>; not_opened: string[] }>()
     vi.mocked(openTestQuote).mockImplementationOnce(() => answer.promise)
     const committed = vi.fn()
-    const field = renderHook(() => useCommittedDraft("kept in quote", committed))
+    const field = renderHook(() => useCommittedDraft<string>("kept in quote", committed))
 
     const opening = store().openQuote("a.json")
     act(() => field.result.current.edit("typed during open"))

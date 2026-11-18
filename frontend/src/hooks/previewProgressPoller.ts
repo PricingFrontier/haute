@@ -1,5 +1,6 @@
 import { getPreviewProgress } from "../api/client"
 import type { PreviewProgressResponse } from "../api/types"
+import { answer, requestKind, under } from "../utils/answers"
 
 export const PREVIEW_PROGRESS_POLL_MS = 250
 
@@ -20,22 +21,27 @@ export function pollPreviewProgress(
   signal: AbortSignal,
   onProgress: (progress: PreviewProgressResponse) => void,
 ): () => void {
+  // Each poll's answer belongs to the polling: once stopped, one still answering does nothing.
+  const polling = requestKind()
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   const stop = () => {
     stopped = true
+    polling.bump()
     if (timer !== undefined) clearTimeout(timer)
   }
   signal.addEventListener("abort", stop, { once: true })
-  const poll = async () => {
-    try {
-      const progress = await getPreviewProgress(requestId, { signal })
-      if (!stopped && progress) onProgress(progress)
-    } catch {
-      // Expected while the request is starting or settling; ask again.
-    }
+  const next = () => {
     if (!stopped) timer = setTimeout(() => void poll(), PREVIEW_PROGRESS_POLL_MS)
   }
+  const poll = () => answer([under(polling)], getPreviewProgress(requestId, { signal }), {
+    ok: (progress) => {
+      if (progress) onProgress(progress)
+      next()
+    },
+    // Expected while the request is starting or settling; ask again.
+    failed: next,
+  })
   timer = setTimeout(() => void poll(), PREVIEW_PROGRESS_POLL_MS)
   return () => {
     signal.removeEventListener("abort", stop)

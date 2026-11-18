@@ -8,7 +8,7 @@
 import { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react"
 import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
-import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentPart } from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import { forgetDeletedNodes } from "../stores/forgetDeletedNodes"
 import useUIStore from "../stores/useUIStore"
@@ -31,6 +31,7 @@ import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import type { SubmodelCreateResult } from "./useSubmodelNavigation"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
 import { resultKeysOf } from "../utils/requestGateway"
+import { answer } from "../utils/answers"
 
 type UseNodeHandlersParams = {
   nodeIdCounter: MutableRefObject<number>
@@ -262,8 +263,11 @@ export default function useNodeHandlers({
       if (!createWrappedNodeInstance) {
         throw new Error("Create Instance requires the parent document transform handler")
       }
-      const result = await createWrappedNodeInstance(id)
-      if (!result.ok) addToast("error", result.error)
+      await answer([documentPart()], createWrappedNodeInstance(id), {
+        ok: (result) => {
+          if (!result.ok) addToast("error", result.error)
+        },
+      })
       return
     }
 

@@ -83,7 +83,7 @@ import {
   type SubmodelFocusIdentity,
 } from "../utils/submodelDocument"
 import useToastStore from "./useToastStore"
-import { watch, type Part } from "../utils/answers"
+import { answer, watch, type Part } from "../utils/answers"
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -869,6 +869,10 @@ function createInitialGraphState(): GraphStoreData {
 }
 
 const useGraphStore = create<GraphStore>()((set, get) => {
+  /** History is locked while a VC entry's undo or redo runs, and unlocked once it has settled. */
+  const unlockHistory = (running: boolean) => {
+    if (!running) set({ vcBusy: false })
+  }
   /**
    * The document as one history entry: the pipeline's own nodes and edges with
    * the definitions, preamble and constants, recording `focus` as the view the
@@ -1444,15 +1448,13 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           redoStack: appendHistoryEntry(state.redoStack, prev),
           vcBusy: true,
         }))
-        void prev
-          .undo()
-          .catch(() => {
-            set((state) => ({
-              undoStack: appendHistoryEntry(state.undoStack, prev),
-              redoStack: state.redoStack.filter((e) => e !== prev),
-            }))
-          })
-          .finally(() => set({ vcBusy: false }))
+        // The entry returns only to the history that still holds it: one a load replaced is gone.
+        void answer([watch(useGraphStore, (state) => state.redoStack.includes(prev))], prev.undo(), {
+          failed: () => set((state) => ({
+            undoStack: appendHistoryEntry(state.undoStack, prev),
+            redoStack: state.redoStack.filter((e) => e !== prev),
+          })),
+        }, { inFlight: unlockHistory })
         return
       }
       endGesture()
@@ -1477,15 +1479,12 @@ const useGraphStore = create<GraphStore>()((set, get) => {
           undoStack: appendHistoryEntry(state.undoStack, next),
           vcBusy: true,
         }))
-        void next
-          .redo()
-          .catch(() => {
-            set((state) => ({
-              redoStack: appendHistoryEntry(state.redoStack, next),
-              undoStack: state.undoStack.filter((e) => e !== next),
-            }))
-          })
-          .finally(() => set({ vcBusy: false }))
+        void answer([watch(useGraphStore, (state) => state.undoStack.includes(next))], next.redo(), {
+          failed: () => set((state) => ({
+            redoStack: appendHistoryEntry(state.redoStack, next),
+            undoStack: state.undoStack.filter((e) => e !== next),
+          })),
+        }, { inFlight: unlockHistory })
         return
       }
       endGesture()

@@ -46,6 +46,7 @@ import { NODE_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
+  type PipelineEditorDocument,
   type PipelineLoadStatus,
 } from "../types/pipelineDocument"
 import { type ColumnFingerprintInput } from "../utils/columnFingerprint"
@@ -62,6 +63,8 @@ import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
 import { apiErrorCode, apiErrorMessage, isStaleRevision } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
+import { answer, ask, newest, signalPart, type Part } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
 
 interface PipelineAPIParams {
@@ -369,6 +372,17 @@ function isPreviewDocumentFenceCurrent(
     current.graphSynchronized
 }
 
+/** A preview's document, as a late answer's part: it holds while the preview fence does. */
+function previewDocumentPart(
+  captured: PreviewDocumentFence,
+  sourceRevisionRef: React.MutableRefObject<string>,
+): Part {
+  return {
+    holds: () => isPreviewDocumentFenceCurrent(captured, sourceRevisionRef),
+    subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+  }
+}
+
 function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: PreviewNodeResponse, source: string, structuralVersion: number): Node[] {
   return nodes.map((n) =>
     n.id === nodeId
@@ -642,6 +656,15 @@ export default function usePipelineAPI({
   const invalidatePreviewRequests = useCallback(() => {
     ++previewRequestSeq.current
   }, [])
+  /**
+   * The preview a request is, as a late answer's part: the newest of the panel's previews
+   * while no later preview, stop or cancel has advanced the serial. Nothing announces the
+   * serial, which never moves back; it is asked again as each answer settles.
+   */
+  const previewTurn = useCallback((requestId: number): Part => ({
+    holds: () => previewRequestSeq.current === requestId,
+    subscribe: () => () => undefined,
+  }), [])
   // A frame preview is stored only when it is of the frame the node previews,
   // so the node-data epoch it is current at — and the frame to fetch again — is
   // kept beside the object the panel shows.
@@ -696,10 +719,20 @@ export default function usePipelineAPI({
   // each table on its own, some even when it fails or is stopped, so every
   // outcome tells the node's readers to ask again.
   const rereadInputSnapshot = useCallback(
-    (input: Node, signal: AbortSignal) =>
-      ensureSnapshotsForNodes([input], signal, { force: true }).finally(() => {
-        useNodeDataStore.getState().bumpEpoch()
-      }),
+    async (input: Node, signal: AbortSignal) => {
+      const askAgain = () => useNodeDataStore.getState().bumpEpoch()
+      await answer([signalPart(signal)], ensureSnapshotsForNodes([input], signal, { force: true }), {
+        ok: askAgain,
+        failed: (error) => {
+          askAgain()
+          throw error
+        },
+        stale: (settled) => {
+          askAgain()
+          if (!("value" in settled)) throw settled.error
+        },
+      })
+    },
     [ensureSnapshotsForNodes],
   )
   // Prepare only the inputs the previews of `targets` read: the backend
@@ -711,7 +744,9 @@ export default function usePipelineAPI({
       targets: PreviewInputTarget[],
       signal: AbortSignal,
     ) => {
-      const answers = await Promise.all(
+      let ensured: Promise<void> = Promise.resolve()
+      // Prepared for the caller while its signal holds: an aborted preview builds nothing.
+      await answer([signalPart(signal)], Promise.all(
         targets.map((target) =>
           previewInputs({
             graph,
@@ -721,12 +756,19 @@ export default function usePipelineAPI({
             signal,
           }),
         ),
-      )
-      const wanted = new Map<string, Node>()
-      for (const answer of answers) {
-        for (const [at, input] of inputNodesOf(graph, answer)) wanted.set(at, input)
-      }
-      return ensureSnapshotsForNodes([...wanted.values()], signal)
+      ), {
+        ok: (inputs) => {
+          const wanted = new Map<string, Node>()
+          for (const read of inputs) {
+            for (const [at, input] of inputNodesOf(graph, read)) wanted.set(at, input)
+          }
+          ensured = ensureSnapshotsForNodes([...wanted.values()], signal)
+        },
+        stale: (settled) => {
+          throw "error" in settled ? settled.error : new DOMException("Input snapshot ensure was cancelled.", "AbortError")
+        },
+      })
+      return ensured
     },
     [ensureSnapshotsForNodes],
   )
@@ -783,37 +825,40 @@ export default function usePipelineAPI({
   }, [pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, nodeIdCounterRef])
 
   // Initial pipeline load
+  const pipelineLoads = useRequestKind()
   useEffect(() => {
-    const controller = new AbortController()
-    let disposed = false
     useDocumentStatusStore.getState().reset()
-
-    loadPipeline({ signal: controller.signal, retry: INITIAL_PIPELINE_RETRY_POLICY })
-      .then(async ({ document: raw, documentFingerprint }) => {
-        if (disposed) return
+    // The load belongs to this run of the effect: unmounting lets it go, and aborts it.
+    const asked = ask([newest(pipelineLoads)])
+    const failed = (err: unknown) => {
+      const detail = err instanceof Error ? err.message : String(err)
+      setLoadError(detail)
+      addToast("error", `Failed to load pipeline: ${detail}`)
+      setLoading(false)
+    }
+    void asked.answer((signal) => loadPipeline({ signal, retry: INITIAL_PIPELINE_RETRY_POLICY }), {
+      ok: async ({ document: raw, documentFingerprint }) => {
         // Narrow the response at the ingestion boundary.  Any drift in
         // the backend contract (missing `nodes`/`edges`, wrong type on an
-        // optional field) throws a named Error that flows into the
-        // `.catch` handler below — rather than surfacing downstream as a
+        // optional field) throws a named Error that is reported as the
+        // load's failure — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
-        const data = await parsePipelineEditorDocument(raw)
-        if (disposed) return
-        adoptPipelineDocument(data, documentFingerprint)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (disposed || (isAbortError(err) && controller.signal.aborted)) return
-        const detail = err instanceof Error ? err.message : String(err)
-        setLoadError(detail)
-        addToast("error", `Failed to load pipeline: ${detail}`)
-        setLoading(false)
-      })
-
-    return () => {
-      disposed = true
-      controller.abort()
-    }
-  }, [adoptPipelineDocument, addToast])
+        let data: PipelineEditorDocument
+        try {
+          data = await parsePipelineEditorDocument(raw)
+        } catch (err: unknown) {
+          asked.apply(() => failed(err))
+          return
+        }
+        asked.apply(() => {
+          adoptPipelineDocument(data, documentFingerprint)
+          setLoading(false)
+        })
+      },
+      failed,
+    })
+    return () => asked.release()
+  }, [adoptPipelineDocument, addToast, pipelineLoads])
 
   // After a stop, show the node's last stored result for the current source,
   // row limit and frame, or nothing (the panel then offers Refresh). *nodeKey*
@@ -871,23 +916,35 @@ export default function usePipelineAPI({
       addToast("error", `Stopping failed: ${String(failed.message)} Press Stop to try again.`)
       stopRetry.current = async () => {
         const { cancelInputSnapshotBuilds } = await import("./ensureInputSnapshots")
-        const stillRunning = await cancelInputSnapshotBuilds(pending)
-        if (stillRunning) {
-          pending = stillRunning.jobIds
-          addToast("error", `Stopping failed: ${stillRunning.message} Press Stop to try again.`)
-          return
+        // The builds are cancelled whatever the panel shows now; the stopped preview is put
+        // back only while it is still the panel's.
+        const cancelled = (stillRunning: Awaited<ReturnType<typeof cancelInputSnapshotBuilds>>): boolean => {
+          if (stillRunning) {
+            pending = stillRunning.jobIds
+            addToast("error", `Stopping failed: ${stillRunning.message} Press Stop to try again.`)
+            return false
+          }
+          stopRetry.current = null
+          return true
         }
-        stopRetry.current = null
-        if (previewRequestSeq.current !== requestId) return
-        restoreAfterStop(node, nodeKey)
-        setPreviewBusy(false)
+        await answer([previewTurn(requestId)], cancelInputSnapshotBuilds(pending), {
+          ok: (stillRunning) => {
+            if (!cancelled(stillRunning)) return
+            restoreAfterStop(node, nodeKey)
+            setPreviewBusy(false)
+          },
+          stale: (settled) => {
+            if (!("value" in settled)) throw settled.error
+            cancelled(settled.value)
+          },
+        })
       }
       return true
     }
     restoreAfterStop(node, nodeKey)
     setPreviewBusy(false)
     return true
-  }, [addToast, restoreAfterStop])
+  }, [addToast, previewTurn, restoreAfterStop])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: ImmediatePreviewOptions) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
@@ -1005,12 +1062,14 @@ export default function usePipelineAPI({
       if (announced) bumpEpoch()
     }
 
+    // The answer belongs to this preview, of the document as it was asked of: a newer preview,
+    // a stop or a cancel, or another document, leaves it to say nothing.
+    const asked = ask([previewTurn(requestId), previewDocumentPart(snapshotDocumentFence, sourceRevisionRef)])
+    const superseded = () => new DOMException("Preview request was superseded.", "AbortError")
     const withProgress = (send: (requestId: string) => Promise<PreviewNodeResponse>) =>
       sendWithProgress(node.id, controller.signal, requestStillCurrent, send)
     const executePreview = () => {
-      if (previewRequestSeq.current !== requestId || !documentStillCurrent() || controller.signal.aborted) {
-        throw new DOMException("Preview request was superseded.", "AbortError")
-      }
+      if (!asked.current() || controller.signal.aborted) throw superseded()
       if (useGraphStore.getState().structuralVersion !== structuralVersion) {
         // Preparation asks the backend which inputs the preview reads, so an
         // editor settling its node's config — the Apply editor mirroring its
@@ -1021,13 +1080,13 @@ export default function usePipelineAPI({
         const current = canvasGraph().nodes.find((candidate) => candidate.id === node.id)
         const restart = fetchPreviewImmediateRef.current
         if (current && restart && restarts < MAX_PREVIEW_PREPARATION_RESTARTS) {
-          restart(current, undefined, {
+          asked.apply(() => restart(current, undefined, {
             ...options,
             nodeKey,
             snapshotsEnsured: false,
             preparationRestarts: restarts + 1,
-          })
-          throw new DOMException("Preview request was superseded.", "AbortError")
+          }))
+          throw superseded()
         }
         throw new Error("The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.")
       }
@@ -1060,116 +1119,118 @@ export default function usePipelineAPI({
     const previewAfterReread = (): never => {
       const current = canvasGraph().nodes.find((candidate) => candidate.id === node.id)
       const restart = fetchPreviewImmediateRef.current
-      if (
-        current &&
-        restart &&
-        previewRequestSeq.current === requestId &&
-        documentStillCurrent() &&
-        !controller.signal.aborted
-      ) {
-        restart(current, undefined, { ...options, nodeKey, rereadInput: undefined })
+      if (current && restart && !controller.signal.aborted) {
+        asked.apply(() => restart(current, undefined, { ...options, nodeKey, rereadInput: undefined }))
       }
-      throw new DOMException("Preview request was superseded.", "AbortError")
+      throw superseded()
     }
-    const previewRequest =
-      recoveryPreview || options?.snapshotsEnsured
-        ? executePreview()
-        : options?.rereadInput
-          ? rereadInputSnapshot(options.rereadInput, controller.signal).then(previewAfterReread)
-          : ensureSnapshotsForPreviews(
-              graph,
-              [
-                {
-                  target: wireTarget,
-                  source: snapshotSource,
-                  requestedPreviewColumns,
-                },
-              ],
-              controller.signal,
-            ).then(executePreview)
-    previewRequest
-      .then((result) => {
-        rootCapturedIds = capturedGenerationIds(result)
-        // Superseded by a newer preview request: that request owns the
-        // panel surface and will reach its own terminal state.
-        if (previewRequestSeq.current !== requestId) return
-        // The live document fence is authoritative even when a dirty local
-        // graph was retained. Results admitted under an older revision/status
-        // must never paint the panel or enter its cache.
-        if (!documentStillCurrent()) return
-        const targetKey = answerTargetKey(result, target)
-        const preview = keyedPreviewData({ ...resultToPreview(node.id, label, result, portLabel, targetKey), target }, output, nodeKey)
-        if (!requestStillCurrent()) {
-          // The graph changed while this response was in flight (e.g. an
-          // editor mirrored artifact metadata into node config, bumping
-          // structuralVersion). Stale columns must not be written into the
-          // restructured graph, but the panel must still reach a terminal
-          // state — silently dropping the response would strand
-          // "Executing pipeline..." forever with no request in flight and
-          // no error surfaced. Paint only if the panel still shows this
-          // node: a node deleted mid-flight has already had its panel
-          // cleared by handleDeleteNode and must stay cleared.
-          setPreviewData((prev) => (prev?.nodeId === node.id ? preview : prev))
-          if (canvasGraph().nodes.some((n) => n.id === node.id)) {
-            // Tagged with the fetch-time structuralVersion, so the next
-            // preview sees a context mismatch and refetches in the
-            // background instead of trusting this entry.
-            storePreview(cacheKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
-            storedPreview = preview
+    const previewRequest = (async (): Promise<PreviewNodeResponse> => {
+      if (recoveryPreview || options?.snapshotsEnsured) return executePreview()
+      if (options?.rereadInput) {
+        await rereadInputSnapshot(options.rereadInput, controller.signal)
+        return previewAfterReread()
+      }
+      await ensureSnapshotsForPreviews(
+        graph,
+        [
+          {
+            target: wireTarget,
+            source: snapshotSource,
+            requestedPreviewColumns,
+          },
+        ],
+        controller.signal,
+      )
+      return executePreview()
+    })()
+    // Announced before the preview stops being busy, so the refetch of a stale displayed
+    // preview never sees the entry before its re-stamp; a stop whose snapshot build refused
+    // to stop keeps the preview running.
+    const finish = () => {
+      if (rootCapturedIds.length > 0) announceOwnCaptures(rootCapturedIds)
+      if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
+      if (previewAbort.current === controller) previewAbort.current = null
+      asked.release()
+    }
+    void asked.answer(previewRequest, {
+      ok: (result) => {
+        try {
+          rootCapturedIds = capturedGenerationIds(result)
+          const targetKey = answerTargetKey(result, target)
+          const preview = keyedPreviewData({ ...resultToPreview(node.id, label, result, portLabel, targetKey), target }, output, nodeKey)
+          if (useGraphStore.getState().structuralVersion !== structuralVersion) {
+            // The graph changed while this response was in flight (e.g. an
+            // editor mirrored artifact metadata into node config, bumping
+            // structuralVersion). Stale columns must not be written into the
+            // restructured graph, but the panel must still reach a terminal
+            // state — silently dropping the response would strand
+            // "Executing pipeline..." forever with no request in flight and
+            // no error surfaced. Paint only if the panel still shows this
+            // node: a node deleted mid-flight has already had its panel
+            // cleared by handleDeleteNode and must stay cleared.
+            setPreviewData((prev) => (prev?.nodeId === node.id ? preview : prev))
+            if (canvasGraph().nodes.some((n) => n.id === node.id)) {
+              // Tagged with the fetch-time structuralVersion, so the next
+              // preview sees a context mismatch and refetches in the
+              // background instead of trusting this entry.
+              storePreview(cacheKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
+              storedPreview = preview
+            }
+            return
           }
-          return
+          setPreviewData(preview)
+          // Cache the result for next time
+          storePreview(cacheKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
+          storedPreview = preview
+          if (result.node_statuses) {
+            setNodeStatuses(canvasNodeStatuses(result, node.id, openOccurrence))
+          }
+          if (result.columns) {
+            // An occurrence's output previewed from the main pipeline describes the
+            // occurrence's ports through the answer's maps, never the occurrence itself.
+            setNodesRaw((nds) => output
+              ? applyPreviewSchemaMapsToNodes(nds, result, snapshotSource, structuralVersion, openOccurrence)
+              : applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource, structuralVersion, openOccurrence, targetKey))
+            if (openOccurrence !== null && !output) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
+          }
+        } finally {
+          finish()
         }
-        setPreviewData(preview)
-        // Cache the result for next time
-        storePreview(cacheKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, snapshotNodeDataEpoch)
-        storedPreview = preview
-        if (result.node_statuses) {
-          setNodeStatuses(canvasNodeStatuses(result, node.id, openOccurrence))
+      },
+      failed: (err) => {
+        try {
+          if (settleStopped(node, nodeKey, requestId, err)) return
+          if (isAbortError(err) || isPreviewSupersededError(err)) return
+          const detail = apiErrorMessage(err)
+          const failure = keyedPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }), output, nodeKey)
+          if (useGraphStore.getState().structuralVersion !== structuralVersion) {
+            // Same terminal-state requirement as the success path: a failure
+            // arriving after a mid-flight graph change must surface as an
+            // error, not strand the panel on "loading".
+            setPreviewData((prev) => (prev?.nodeId === node.id ? failure : prev))
+            return
+          }
+          setPreviewData(failure)
+          setNodeStatuses({})
+          if (isApiTimeoutError(err)) {
+            addToast("error", `Preview timed out for "${label}": ${detail}`)
+          }
+        } finally {
+          finish()
         }
-        if (result.columns) {
-          // An occurrence's output previewed from the main pipeline describes the
-          // occurrence's ports through the answer's maps, never the occurrence itself.
-          setNodesRaw((nds) => output
-            ? applyPreviewSchemaMapsToNodes(nds, result, snapshotSource, structuralVersion, openOccurrence)
-            : applyPreviewResultColumnsToNodes(nds, node.id, result, snapshotSource, structuralVersion, openOccurrence, targetKey))
-          if (openOccurrence !== null && !output) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
+      },
+      // Superseded by a newer preview request, or another document: that request owns the
+      // panel surface. A stopped one settles as a stop; captures it made are announced.
+      stale: (settled) => {
+        try {
+          if ("value" in settled) rootCapturedIds = capturedGenerationIds(settled.value)
+          else settleStopped(node, nodeKey, requestId, settled.error)
+        } finally {
+          finish()
         }
-      })
-      .catch((err: unknown) => {
-        if (settleStopped(node, nodeKey, requestId, err)) return
-        // Superseded by a newer preview request: that request owns the
-        // panel surface.
-        if (previewRequestSeq.current !== requestId) return
-        if (!documentStillCurrent()) return
-        if (isAbortError(err) || isPreviewSupersededError(err)) return
-        const detail = apiErrorMessage(err)
-        const failure = keyedPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }), output, nodeKey)
-        if (!requestStillCurrent()) {
-          // Same terminal-state requirement as the success path: a failure
-          // arriving after a mid-flight graph change must surface as an
-          // error, not strand the panel on "loading".
-          setPreviewData((prev) => (prev?.nodeId === node.id ? failure : prev))
-          return
-        }
-        setPreviewData(failure)
-        setNodeStatuses({})
-        if (isApiTimeoutError(err)) {
-          addToast("error", `Preview timed out for "${label}": ${detail}`)
-        }
-      })
-      .finally(() => {
-        // Announced before the preview stops being busy, so the refetch of a
-        // stale displayed preview never sees the entry before its re-stamp.
-        if (rootCapturedIds.length > 0) announceOwnCaptures(rootCapturedIds)
-        // A stop whose snapshot build refused to stop keeps the preview running.
-        if (previewRequestSeq.current === requestId && stopRetry.current === null) {
-          setPreviewBusy(false)
-        }
-        if (previewAbort.current === controller) {
-          previewAbort.current = null
-        }
-      })
-  }, [activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor, outputFor])
+      },
+    })
+  }, [activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, rereadInputSnapshot, sendWithProgress, settleStopped, portLabelFor, outputFor, previewTurn])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -1371,6 +1432,17 @@ export default function usePipelineAPI({
     // The answers' nodes are placed on the canvas the refresh is sent from.
     const openOccurrence = useGraphStore.getState().focus?.instanceId ?? null
 
+    // The refresh belongs to this preview, of the document as it was asked of.
+    const asked = ask([previewTurn(requestId), previewDocumentPart(snapshotDocumentFence, sourceRevisionRef)])
+    const announce = (result: PreviewNodeResponse) => {
+      // The refreshed preview is requested after this, at the raised epoch.
+      const { bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
+      if (noteAnnouncedCaptures(capturedGenerationIds(result))) bumpEpoch()
+    }
+    const done = () => {
+      if (previewAbort.current === controller) previewAbort.current = null
+      asked.release()
+    }
     const previewStaleUpstream = () => new Promise<void>((resolve) => {
       let nextIndex = 0
       let activeCount = 0
@@ -1411,32 +1483,45 @@ export default function usePipelineAPI({
           const upstream = staleUpstream[nextIndex++]
           activeCount += 1
           const upstreamTarget = nodeFrame(canvasNodeAddress(upstream.id), portLabelFor(upstream) ?? null)
-          previewNode({
+          void asked.answer(previewNode({
             graph,
             target: frameTargetPayload(upstreamTarget),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion, portLabelFor(upstream)),
             signal: controller.signal,
-          })
-            .then((result) => {
-              // The refreshed preview is requested after this, at the raised epoch.
-              const { bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
-              if (noteAnnouncedCaptures(capturedGenerationIds(result))) bumpEpoch()
-              if (!requestStillCurrent()) return
-              if (result.columns) {
-                const upstreamKey = answerTargetKey(result, upstreamTarget)
-                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, openOccurrence, upstreamKey))
-                if (openOccurrence !== null) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
+          }), {
+            ok: (result) => {
+              try {
+                announce(result)
+                if (useGraphStore.getState().structuralVersion !== structuralVersion) return
+                if (result.columns) {
+                  const upstreamKey = answerTargetKey(result, upstreamTarget)
+                  setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result, snapshotSource, structuralVersion, openOccurrence, upstreamKey))
+                  if (openOccurrence !== null) recordRootPreviewColumns(result, snapshotSource, structuralVersion)
+                }
+              } finally {
+                finishOne()
               }
-            })
-            .catch((err: unknown) => {
-              if (!requestStillCurrent()) return
-              if (isAbortError(err) || isPreviewSupersededError(err)) return
-              const detail = apiErrorMessage(err)
-              addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
-            })
-            .finally(finishOne)
+            },
+            failed: (err) => {
+              try {
+                if (useGraphStore.getState().structuralVersion !== structuralVersion) return
+                if (isAbortError(err) || isPreviewSupersededError(err)) return
+                const detail = apiErrorMessage(err)
+                addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
+              } finally {
+                finishOne()
+              }
+            },
+            stale: (settled) => {
+              try {
+                if ("value" in settled) announce(settled.value)
+              } finally {
+                finishOne()
+              }
+            },
+          })
         }
       }
 
@@ -1444,7 +1529,24 @@ export default function usePipelineAPI({
       drain()
     })
 
-    ensureSnapshotsForPreviews(
+    // Stopped while previewing upstream nodes: nothing more runs. A refresh a newer preview
+    // overtook leaves that one the panel; one whose document moved stops being busy.
+    const afterUpstream = () => {
+      if (controller.signal.aborted) {
+        settleStopped(node, nodeKey, requestId, null)
+        return
+      }
+      if (!requestStillCurrent()) {
+        if (previewRequestSeq.current === requestId) setPreviewBusy(false)
+        return
+      }
+      fetchPreviewImmediate(node, requestId, {
+        bypassCache: true,
+        snapshotsEnsured: true,
+        nodeKey,
+      })
+    }
+    void asked.answer(ensureSnapshotsForPreviews(
       graph,
       [node, ...staleUpstream].map((previewed) => ({
         target: frameTargetPayload(nodeFrame(canvasNodeAddress(previewed.id), portLabelFor(previewed) ?? null)),
@@ -1452,44 +1554,52 @@ export default function usePipelineAPI({
         requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion, portLabelFor(previewed)),
       })),
       controller.signal,
-    )
-      .then(() => previewStaleUpstream())
-      .then(() => {
-        // Stopped while previewing upstream nodes: nothing more runs.
-        if (controller.signal.aborted) {
-          settleStopped(node, nodeKey, requestId, null)
-          return
-        }
-        if (!requestStillCurrent()) {
-          if (previewRequestSeq.current === requestId) setPreviewBusy(false)
-          return
-        }
-        fetchPreviewImmediate(node, requestId, {
-          bypassCache: true,
-          snapshotsEnsured: true,
-          nodeKey,
+    ), {
+      ok: async () => {
+        await asked.answer(previewStaleUpstream(), {
+          ok: () => {
+            try {
+              afterUpstream()
+            } finally {
+              done()
+            }
+          },
+          stale: () => {
+            try {
+              afterUpstream()
+            } finally {
+              done()
+            }
+          },
         })
-      })
-      .catch((err: unknown) => {
-        if (settleStopped(node, nodeKey, requestId, err)) return
-        if (previewRequestSeq.current !== requestId || isAbortError(err)) return
-        if (!documentStillCurrent()) return
-        const detail = apiErrorMessage(err)
-        setPreviewData(
-          keyedPreviewData(makePreviewData(node.id, nodeLabel(node), {
-            status: "error",
-            error: detail,
-          }), undefined, nodeKey),
-        )
-        setNodeStatuses({})
-        setPreviewBusy(false)
-      })
-      .finally(() => {
-        if (previewAbort.current === controller) {
-          previewAbort.current = null
+      },
+      failed: (err) => {
+        try {
+          if (settleStopped(node, nodeKey, requestId, err)) return
+          if (isAbortError(err)) return
+          const detail = apiErrorMessage(err)
+          setPreviewData(
+            keyedPreviewData(makePreviewData(node.id, nodeLabel(node), {
+              status: "error",
+              error: detail,
+            }), undefined, nodeKey),
+          )
+          setNodeStatuses({})
+          setPreviewBusy(false)
+        } finally {
+          done()
         }
-      })
-  }, [fetchPreviewImmediate, previewDebounce, activeSubmodelIdentity, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor])
+      },
+      stale: (settled) => {
+        try {
+          if (!("value" in settled)) settleStopped(node, nodeKey, requestId, settled.error)
+          else afterUpstream()
+        } finally {
+          done()
+        }
+      },
+    })
+  }, [fetchPreviewImmediate, previewDebounce, activeSubmodelIdentity, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, portLabelFor, previewTurn, settleStopped])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = canvasGraph().nodes.find((n) => n.id === nodeId)
@@ -1539,9 +1649,11 @@ export default function usePipelineAPI({
       setPreviewBusy(false)
       return
     }
-    const snapshotsReady = recoveryPreview
-      ? Promise.resolve()
-      : ensureSnapshotsForPreviews(
+    // The frame belongs to this preview, of the document as it was asked of.
+    const asked = ask([previewTurn(requestId), previewDocumentPart(snapshotDocumentFence, sourceRevisionRef)])
+    const frameRequest = (async (): Promise<PreviewNodeResponse> => {
+      if (!recoveryPreview) {
+        await ensureSnapshotsForPreviews(
           graph,
           [
             {
@@ -1551,80 +1663,99 @@ export default function usePipelineAPI({
           ],
           controller.signal,
         )
-    snapshotsReady.then(() => {
-        if (!requestStillCurrent() || controller.signal.aborted) {
-          throw new DOMException("Preview request was superseded.", "AbortError")
-        }
-        if (recoveryPreview) {
-          return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
-            previewRecoveryNode({
-              sourceFile: sourceFileRef.current,
-              sourceRevision: snapshotDocumentRevision,
-              targetRecoveryId: node.id,
-              rowLimit: snapshotRowLimit,
-              source: snapshotSource,
-              portLabel,
-              requestId: previewRequestId,
-              signal: controller.signal,
-            }),
-          )
-        }
+      }
+      if (!requestStillCurrent() || controller.signal.aborted) {
+        throw new DOMException("Preview request was superseded.", "AbortError")
+      }
+      if (recoveryPreview) {
         return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
-          previewNode({
-            graph,
-            target: wireFrameTarget,
+          previewRecoveryNode({
+            sourceFile: sourceFileRef.current,
+            sourceRevision: snapshotDocumentRevision,
+            targetRecoveryId: node.id,
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
+            portLabel,
             requestId: previewRequestId,
             signal: controller.signal,
           }),
         )
-      })
-      .then((result) => {
-        const { epoch, bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
-        const captured = noteAnnouncedCaptures(capturedGenerationIds(result))
-        if (previewRequestSeq.current !== requestId) {
-          if (captured) bumpEpoch()
-          return
-        }
-        const preview = keyedPreviewData(
-          { ...resultToPreview(node.id, label, result, portLabel, answerTargetKey(result, frameTarget)), target: frameTarget },
-          undefined,
-          nodeKey,
-        )
-        // Its own captures leave it current unless something else moved the
-        // epoch while it was in flight.
-        const currentAt = captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch
-        framePreviewEpochs.current.set(preview, { epoch: currentAt, portLabel })
-        if (requestStillCurrent()) {
-          setPreviewData(preview)
-          // The frame the node previews is its stored preview, which selecting
-          // the node again shows.
-          if (portLabelFor(node) === portLabel) {
-            useNodeResultsStore
-              .getState()
-              .setPreview(nodeKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, currentAt)
+      }
+      return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
+        previewNode({
+          graph,
+          target: wireFrameTarget,
+          rowLimit: snapshotRowLimit,
+          source: snapshotSource,
+          requestId: previewRequestId,
+          signal: controller.signal,
+        }),
+      )
+    })()
+    // A stop whose snapshot build refused to stop keeps the preview running.
+    const finish = () => {
+      if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
+      if (previewAbort.current === controller) previewAbort.current = null
+      asked.release()
+    }
+    void asked.answer(frameRequest, {
+      ok: (result) => {
+        try {
+          const { epoch, bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
+          const captured = noteAnnouncedCaptures(capturedGenerationIds(result))
+          const preview = keyedPreviewData(
+            { ...resultToPreview(node.id, label, result, portLabel, answerTargetKey(result, frameTarget)), target: frameTarget },
+            undefined,
+            nodeKey,
+          )
+          // Its own captures leave it current unless something else moved the
+          // epoch while it was in flight.
+          const currentAt = captured && epoch === requestNodeDataEpoch ? epoch + 1 : requestNodeDataEpoch
+          framePreviewEpochs.current.set(preview, { epoch: currentAt, portLabel })
+          if (useGraphStore.getState().structuralVersion === structuralVersion) {
+            setPreviewData(preview)
+            // The frame the node previews is its stored preview, which selecting
+            // the node again shows.
+            if (portLabelFor(node) === portLabel) {
+              useNodeResultsStore
+                .getState()
+                .setPreview(nodeKey, preview, structuralVersion, snapshotSource, snapshotRowLimit, currentAt)
+            }
           }
+          if (captured) bumpEpoch()
+        } finally {
+          finish()
         }
-        if (captured) bumpEpoch()
-      })
-      .catch((err: unknown) => {
-        if (settleStopped(node, nodeKey, requestId, err)) return
-        if (previewRequestSeq.current !== requestId) return
-        if (!documentStillCurrent()) return
-        if (isAbortError(err) || isPreviewSupersededError(err)) return
-        const detail = apiErrorMessage(err)
-        setPreviewData(keyedPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }), undefined, nodeKey))
-        if (isApiTimeoutError(err)) {
-          addToast("error", `Preview timed out for "${label}": ${detail}`)
+      },
+      failed: (err) => {
+        try {
+          if (settleStopped(node, nodeKey, requestId, err)) return
+          if (isAbortError(err) || isPreviewSupersededError(err)) return
+          const detail = apiErrorMessage(err)
+          setPreviewData(keyedPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }), undefined, nodeKey))
+          if (isApiTimeoutError(err)) {
+            addToast("error", `Preview timed out for "${label}": ${detail}`)
+          }
+        } finally {
+          finish()
         }
-      })
-      .finally(() => {
-        // A stop whose snapshot build refused to stop keeps the preview running.
-        if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
-        if (previewAbort.current === controller) previewAbort.current = null
-      })
-  }, [previewDebounce, fetchPreviewImmediate, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor])
+      },
+      // Another preview owns the panel, or another document: captures the frame made are
+      // announced, and a stopped one settles as a stop.
+      stale: (settled) => {
+        try {
+          if ("value" in settled) {
+            const { bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
+            if (noteAnnouncedCaptures(capturedGenerationIds(settled.value))) bumpEpoch()
+          } else {
+            settleStopped(node, nodeKey, requestId, settled.error)
+          }
+        } finally {
+          finish()
+        }
+      },
+    })
+  }, [previewDebounce, fetchPreviewImmediate, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor, previewTurn])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
@@ -1696,10 +1827,6 @@ export default function usePipelineAPI({
     // Mark the exact graph snapshot that reached the backend, unless a newer
     // save has already been applied or another revision arrived meanwhile.
     const acknowledge = (sourceRevision: string, documentFingerprint: string, stepCode: readonly SavedStepCode[]) => {
-      if (
-        saveRequestId <= appliedSaveSeq.current ||
-        useDocumentStatusStore.getState().sourceFile !== saveSourceFile
-      ) return
       const observedRevision = sourceRevisionRef.current
       if (observedRevision !== saveSourceRevision && observedRevision !== sourceRevision) return
       // The baseline holds the code the server wrote for each edited node: the browser's own
@@ -1741,47 +1868,74 @@ export default function usePipelineAPI({
     // has settled.
     let settleSave!: () => void
     trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
-    try {
-      let data: Awaited<ReturnType<typeof savePipeline>>
+    const sending = (async () => {
       try {
-        data = await savePipeline(request)
+        return await savePipeline(request)
       } catch (err: unknown) {
         // No answer: the save may have been written. Sent once more, exactly, its
         // answer is the first request's if that committed, else the save made now.
         if (!isLostAnswer(err)) throw err
-        data = await savePipeline(request)
+        return savePipeline(request)
       }
-      acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
+    })()
+    // The save's answer marks its snapshot saved only while no newer save has been applied
+    // and the document is still this file; what it wrote is reported either way.
+    const thisSave: Part = {
+      holds: () => saveRequestId > appliedSaveSeq.current && useDocumentStatusStore.getState().sourceFile === saveSourceFile,
+      subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+    }
+    const failedSave = (err: unknown) => {
+      const detail = apiErrorMessage(err, "unknown error")
+      addToast("error", `Failed to save pipeline: ${detail}`)
+    }
+    const wrote = (data: Awaited<ReturnType<typeof savePipeline>>) => {
       addToast("success", `Saved → ${data.file}`)
       // The ledger commit, the warnings and the identity prompt, as every save reports them.
       reportSaveCapture(data)
-      return true
-    } catch (err: unknown) {
-      if (isStaleRevision(err)) {
-        if (
-          useDocumentStatusStore.getState().sourceFile !== saveSourceFile ||
-          sourceRevisionRef.current !== saveSourceRevision ||
-          saveRequestId <= appliedSaveSeq.current
-        ) return false
-        // The conflict is final until the user reloads (no implicit overwrite retry).
-        useDocumentStatusStore.getState().setGraphSynchronized(false)
-        useUIStore
-          .getState()
-          .setSyncBanner(
-            "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first.",
-          )
-        addToast(
-          "error",
-          "Save rejected: the pipeline changed on disk. Reload the file or discard local edits first.",
-        )
-        return false
-      }
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Failed to save pipeline: ${detail}`)
-      return false
+    }
+    let saved = false
+    try {
+      await answer([thisSave], sending, {
+        ok: (data) => {
+          try {
+            acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
+            wrote(data)
+            saved = true
+          } catch (err: unknown) {
+            failedSave(err)
+          }
+        },
+        failed: (err) => {
+          if (isStaleRevision(err)) {
+            if (sourceRevisionRef.current !== saveSourceRevision) return
+            // The conflict is final until the user reloads (no implicit overwrite retry).
+            useDocumentStatusStore.getState().setGraphSynchronized(false)
+            useUIStore
+              .getState()
+              .setSyncBanner(
+                "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first.",
+              )
+            addToast(
+              "error",
+              "Save rejected: the pipeline changed on disk. Reload the file or discard local edits first.",
+            )
+            return
+          }
+          failedSave(err)
+        },
+        stale: (settled) => {
+          if ("value" in settled) {
+            wrote(settled.value)
+            saved = true
+          } else if (!isStaleRevision(settled.error)) {
+            failedSave(settled.error)
+          }
+        },
+      })
     } finally {
       settleSave()
     }
+    return saved
   }, [descriptionRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   // In automatic calculation, the displayed preview is fetched again once a

@@ -12,6 +12,8 @@ import { apiErrorMessage } from "../api/errors"
 import { isIdentityPromptDismissed } from "./identityPrompt"
 import useGitStore from "./useGitStore"
 import useToastStore from "./useToastStore"
+import { documentPart } from "./useDocumentStatusStore"
+import { answer } from "../utils/answers"
 
 /** The capture fields of a write's response, every writer's alike. */
 export interface SaveCapture {
@@ -65,10 +67,14 @@ export async function captureUncaptured(): Promise<void> {
   if (paths.length === 0) return
   // Taken off before the request: a write answered meanwhile keeps its own files.
   useGitStore.setState((state) => ({ uncaptured: state.uncaptured.filter((path) => !paths.includes(path)) }))
-  try {
-    reportSaveCapture(await captureFiles(paths))
-  } catch (error: unknown) {
+  const failed = (error: unknown) => {
     keepUncaptured(paths)
     useToastStore.getState().addToast("error", `Version capture failed: ${apiErrorMessage(error)}`)
   }
+  // The capture is the ledger's whatever the editor shows by its answer: it is settled either way.
+  await answer([documentPart()], captureFiles(paths), {
+    ok: reportSaveCapture,
+    failed,
+    stale: (settled) => ("value" in settled ? reportSaveCapture(settled.value) : failed(settled.error)),
+  })
 }

@@ -133,7 +133,7 @@
 | `frontend/src/components/form/fieldStyle.ts` | The look the panels' fields share: `INPUT_STYLE` (the input's colours, which `panels/editors/_shared.tsx` re-exports), `FIELD_CLASS` (a small field in a side panel), `COMPACT_FIELD_CLASS` (the same in the schema editor's dense rows), and `wholeNumber({ min, max, unit })`, a `ValidatedTextField` check of a whole number, no fewer than `min` and with `max` no more, its error a range ("Enter a whole number from 1 to 12.") or a least number of `unit` ("Enter a whole number of pixels, 240 or more."), a number past a safe whole one refused. |
 | `frontend/src/components/form/LabelledRow.tsx` | `LabelledRow`, a side panel's row of a label in a fixed column beside its control, so the controls line up, or with no label that column left blank, as for tick boxes under labelled rows; and `SelectRow`, a labelled select of named choices, its label its name unless given a `name` of its own. |
 | `frontend/src/components/form/QuietAction.tsx` | `QuietAction`, the quiet "+ Add" text action under a list (`.quiet-action`: accent text, underlined on hover), a plus before it unless another icon is given, its other props passed to the button. |
-| `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing and the stale-response document-identity fence. |
+| `frontend/src/utils/scopedSaveGuards.ts` | Pure node-scoped-save guards: one-node-at-a-time edit fencing, and the message a response is discarded with when the document it was computed against (its file and revision) is no longer on screen; the save's answer belongs to that document (`useScopedNodeSave`, through `utils/answers.ts`). |
 | `frontend/src/hooks/useScopedNodeSave.ts` | App-lifetime scoped-save coordination: per-document edited-node tracking (a node is marked edited only once its update is accepted, so a refused update locks no other node), edit refusal while a save is in flight or another node is dirty, the response fence, and adoption hand-off. A save first settles the open edits through the barrier the pipeline's save uses (`settleEdits`: every open draft committed, every node update still resolving landed or failed), so it sends the node as the panel shows it; a failed settle saves nothing and says why. |
 | `frontend/src/stores/useRecoverySummaryStore.ts` | Transient per-session recovery summary (field outcomes, completeness, previous config, diffs) keyed by recovery id. |
 
@@ -886,6 +886,9 @@ other way (high-level, "Late answers").
      edit not yet committed (`isDraftOpen`), told by `subscribeOpenDrafts`. A draft is seen
      open from the commit of the render that opened it, so a field typed in before a request
      is asked makes it never current.
+   - `signalPart(signal)`: the asker's own life, as the abort signal it gave, for a request made
+     for a caller that ends it with a signal (a job wait, an input snapshot ensure pass):
+     holds while the signal has not aborted.
    - `watch(store, select, holds)`: what `select` reads of a store (anything with `getState`
      and `subscribe`), holding while `holds(asked, now)` says so, by default while the two are
      `Object.is`: the Workbench form, the branch a list was read on, the quote open.
@@ -899,6 +902,8 @@ other way (high-level, "Late answers").
    run, awaiting a promise the handler returns. A handler's own waits are its own: what it
    writes after one, it writes through a further answer, which it asks under the same request
    (`asked.answer`, checked against the same parts) or under parts of its own.
+   `asked.apply(write)` runs a write now while the request is current, for what follows
+   several answers (a run's last step after its loop), and says whether it ran.
    `answer(belongsTo, request, handlers, options)` asks, answers once, and lets go once its
    handler has run.
 3. **What a request sets while it waits.** `options.pending(waiting)` is called with `true`
@@ -926,9 +931,16 @@ other way (high-level, "Late answers").
    name, `dispatch`); a store's action (through `getState()`, or a store's `get()`); a callback
    prop (`on…`); a function a hook gave; `ask` or `answer`, which capture what an answer
    belongs to when they are called; or a function that writes, followed through the source
-   whichever module declares it (an import, under its own name or another, or a re-export). A
-   method of the function's own local value (a `Map` it built) is not state. A handler given to
-   `answer` or `asked.answer`, a `pending` and an `inFlight` start unwaited.
+   whichever module declares it (an import, under its own name or another, or a re-export),
+   with a function's names in its lexical scope (a store's state or action held by a local of
+   an enclosing function is still one). A method of the function's own local value (a `Map` it
+   built) is not state. A handler given to `answer` or `asked.answer`, a callback given to
+   `asked.apply`, a `pending` and an `inFlight` start unwaited, and what they write is not a
+   write of the function they are written in, since the helper runs them while current. A
+   function that calling after a wait does not make a write is listed by name with its reason
+   (`NOT_STATE`): one that writes only a memo of its own (`canvasGraph`), or a wait primitive
+   that applies its caller's callbacks under the helper while its caller's signal holds
+   (`waitForJob`, `pollPreviewProgress`).
 
 ## Request gateway (normative)
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { ApiError } from "../../api/client"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import PipelineRepairDialog from "../PipelineRepairDialog"
 
@@ -65,6 +66,20 @@ describe("PipelineRepairDialog", () => {
     expect(applyRemoveUnavailableNode).toHaveBeenCalledWith({
       sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetRecoveryId: "target@1", deleteConfig: false,
     })
+  })
+
+  it("leaves the canvas on a document live sync brought while the repair ran, and closes (FEG-10)", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "root.py" }))
+    let answer: (value: ReturnType<typeof applied>) => void = () => {}
+    applyRemoveUnavailableNode.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
+    const { onApplied, onClose } = renderDialog()
+    fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
+    // Another tab saves; this tab receives its document by live sync.
+    act(() => useDocumentStatusStore.getState().loadLiveDocumentStatus(makePipelineEditorDocument({ source_file: "root.py" }), true, "fp-colleague"))
+    await act(async () => answer(applied()))
+
+    expect(onApplied).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it("keeps the config by default and deletes it only on the explicit choice", async () => {

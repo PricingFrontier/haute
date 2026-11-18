@@ -9,6 +9,7 @@ import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import { structuralFingerprint } from "../utils/structuralFingerprint"
+import { answer, type Part } from "../utils/answers"
 
 type Graph = { nodes: Node[]; edges: Edge[] }
 
@@ -93,18 +94,21 @@ export async function createAfterIdentity<T>({
     "error",
     `${action} was not applied because the graph changed while identity resolution was running.`,
   )
-  try {
-    const resolved = await resolve()
-    if (!stillCurrent()) {
-      refuse()
-      return
-    }
-    apply(resolved, canvasGraph())
-  } catch (err: unknown) {
-    if (!stillCurrent()) {
-      refuse()
-      return
-    }
-    addToast("error", `${failure}: ${apiErrorMessage(err)}`)
+  // The answer belongs to the graph as it was asked about, in the same view and document.
+  const asked: Part = {
+    holds: stillCurrent,
+    subscribe: (listener) => {
+      const graph = useGraphStore.subscribe(listener)
+      const document = useDocumentStatusStore.subscribe(listener)
+      return () => {
+        graph()
+        document()
+      }
+    },
   }
+  await answer([asked], resolve, {
+    ok: (resolved) => apply(resolved, canvasGraph()),
+    failed: (err) => addToast("error", `${failure}: ${apiErrorMessage(err)}`),
+    stale: refuse,
+  })
 }

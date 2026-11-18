@@ -33,6 +33,8 @@
  *   store-level backstop, not the primary timeout.
  */
 
+import { answer, type Part } from "../utils/answers"
+
 /** Above the API client's retry-loop worst case, so the transport's own
  *  ApiTimeoutError is always the error the user actually sees for a slow
  *  network; this backstop fires only for a genuinely unbounded promise.
@@ -150,22 +152,29 @@ export function createSingleFlight<T>(
       if (!options.refresh) return inFlight
       if (!queuedRefresh || queuedAnchor !== inFlight) {
         const anchor = inFlight
-        const queued: Promise<T> = anchor
-          .then(() => undefined, () => undefined)
-          .then(() => {
-            // Identity guard: a test reset or a newer queued refresh may have
-            // detached this continuation; a detached refresh must neither
-            // clear a newer queue slot nor spawn its own request. Superseded
-            // awaiters join whatever newer work exists.
-            if (queuedRefresh !== queued) {
-              return queuedRefresh ?? inFlight ?? options.detachedValue()
-            }
-            queuedRefresh = null
-            queuedAnchor = null
-            return load(fetcher, { ...options, refresh: false })
-          })
+        let settle!: (value: T | Promise<T>) => void
+        const queued = new Promise<T>((resolve) => {
+          settle = resolve
+        })
         queuedRefresh = queued
         queuedAnchor = anchor
+        // The queued refresh runs once the request it waits behind settles, while it is still
+        // the one queued: a test reset or a newer queued refresh detaches it, and then it
+        // neither clears a newer queue slot nor spawns its own request. Superseded awaiters
+        // join whatever newer work exists.
+        const stillQueued: Part = { holds: () => queuedRefresh === queued, subscribe: () => () => undefined }
+        void answer([stillQueued], anchor.then(() => undefined, () => undefined), {
+          ok: () => {
+            queuedRefresh = null
+            queuedAnchor = null
+            try {
+              settle(load(fetcher, { ...options, refresh: false }))
+            } catch (error: unknown) {
+              settle(Promise.reject(error))
+            }
+          },
+          stale: () => settle(queuedRefresh ?? inFlight ?? options.detachedValue()),
+        })
       }
       return queuedRefresh
     }

@@ -13,6 +13,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import { pendingSavesSettled } from "../stores/pendingSaves"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { constantDrafts } from "../utils/globalConstants"
+import { answer, requestKind, under, type Part } from "../utils/answers"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
@@ -237,6 +238,8 @@ export default function useWebSocketSync({
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
+    // The socket's life: a session probe answered once the hook has gone does nothing.
+    const socketLife = requestKind()
     // The connection id the server gave this effect's latest socket.
     let ownConnectionId: string | null = null
     let graphUpdateSeq = 0
@@ -325,14 +328,9 @@ export default function useWebSocketSync({
     }
 
     async function probeSessionThenReconnect() {
-      try {
-        await bootstrapHauteSession(true)
-      } catch {
-        // A pre-accept close is also how a temporarily unavailable backend
-        // appears. Keep the bounded reconnect loop alive and retry bootstrap.
-      }
-      if (!mounted) return
-      scheduleReconnect()
+      // A pre-accept close is also how a temporarily unavailable backend appears: a failed
+      // probe keeps the bounded reconnect loop alive and retries bootstrap.
+      await answer([under(socketLife)], bootstrapHauteSession(true), { ok: scheduleReconnect, failed: scheduleReconnect })
     }
 
     function connect() {
@@ -396,9 +394,15 @@ export default function useWebSocketSync({
           // accepted, so the server answers nothing while the file is that one.
           const saves = pendingSavesSettled(currentDocumentSource() ?? frame.sourceFile)
           if (saves) {
-            await saves
-            if (!mounted || !isCurrentSourceFile(frame.sourceFile, currentDocumentSource())) return
-            if (!showsFrame()) sendResync(true)
+            const sameSource: Part = {
+              holds: () => isCurrentSourceFile(frame.sourceFile, currentDocumentSource()),
+              subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+            }
+            await answer([under(socketLife), sameSource], saves, {
+              ok: () => {
+                if (!showsFrame()) sendResync(true)
+              },
+            })
             return
           }
           if (showsFrame()) return
@@ -552,13 +556,10 @@ export default function useWebSocketSync({
         // after a session probe below settles — its request can be slow to fail.
         setStatus("reconnecting")
         if (event.code === 1008 && isHauteSessionExpiredReason(event.reason)) {
-          void bootstrapHauteSession(true)
-            .then(() => {
-              if (mounted) scheduleReconnect()
-            })
-            .catch(() => {
-              if (mounted) markSessionExpired(event.reason)
-            })
+          void answer([under(socketLife)], bootstrapHauteSession(true), {
+            ok: scheduleReconnect,
+            failed: () => markSessionExpired(event.reason),
+          })
           return
         }
         if (!opened && event.code === ABNORMAL_CLOSE) {
@@ -581,6 +582,7 @@ export default function useWebSocketSync({
 
     return () => {
       mounted = false
+      socketLife.bump()
       if (ownConnectionId !== null) releaseSyncConnectionId(ownConnectionId)
       stopResyncRequests()
       if (reconnectTimer) clearTimeout(reconnectTimer)

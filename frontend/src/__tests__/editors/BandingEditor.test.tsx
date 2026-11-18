@@ -1570,8 +1570,10 @@ describe("BandingEditor Import from params", () => {
         <BandingEditor
           config={config}
           onUpdate={(key, value) => {
+            if (typeof key !== "string") throw new Error("The editor writes one key at a time here")
             written.push(value)
             setConfig((current) => ({ ...current, [key]: value }))
+            return { ok: true }
           }}
           inputSources={[]}
           accentColor="#22d3ee"

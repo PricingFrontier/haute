@@ -16,6 +16,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { apiErrorCode, apiErrorMessage, apiErrorStatus } from "../../api/errors"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest } from "../../utils/answers"
 
 const APPLY_REPLACED = "frontier_point_apply_replaced"
 
@@ -45,28 +47,35 @@ export function useLatestRequest<R extends { key: string }, T>(
   })
   const key = request?.key ?? null
   const failed = failure !== null && failure.key === key
+  // The request wanted now: a new key, null or unmount lets go of the one in flight, which
+  // aborts it, and its reply or error is then discarded silently.
+  const wanted = useRequestKind()
   useEffect(() => {
-    const wanted = requestRef.current
-    if (wanted === null || failed) return
-    const controller = new AbortController()
-    loadRef.current(wanted, controller.signal)
-      .then((value) => {
-        if (controller.signal.aborted) return
-        onLoadedRef.current(wanted, value)
+    const current = requestRef.current
+    if (current === null || failed) return
+    const asked = ask([newest(wanted)])
+    const fail = (error: unknown) => {
+      if (apiErrorStatus(error) === 409 && apiErrorCode(error) === APPLY_REPLACED) {
+        setAttempt((count) => count + 1)
+        return
+      }
+      setFailure({
+        key: current.key,
+        gone: apiErrorStatus(error) === 410,
+        message: apiErrorMessage(error, "The request failed."),
       })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return
-        if (apiErrorStatus(error) === 409 && apiErrorCode(error) === APPLY_REPLACED) {
-          setAttempt((current) => current + 1)
-          return
+    }
+    void asked.answer((signal) => loadRef.current(current, signal), {
+      ok: (value) => {
+        try {
+          onLoadedRef.current(current, value)
+        } catch (error: unknown) {
+          fail(error)
         }
-        setFailure({
-          key: wanted.key,
-          gone: apiErrorStatus(error) === 410,
-          message: apiErrorMessage(error, "The request failed."),
-        })
-      })
-    return () => controller.abort()
-  }, [key, failed, attempt])
+      },
+      failed: fail,
+    })
+    return () => asked.release()
+  }, [key, failed, attempt, wanted])
   return { failure: failed ? failure : null, retry: () => setFailure(null) }
 }

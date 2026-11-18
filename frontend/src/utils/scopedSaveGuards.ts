@@ -13,18 +13,9 @@ export function otherScopedEditedNodes(
 }
 
 /**
- * A late response may only be adopted if the document it was computed against
- * is still the one on screen; anything else intervened means the response is
- * stale and must be discarded rather than clobber newer state.
+ * What a node-scoped save's response is told against when the document it was computed
+ * against is no longer the one on screen (its file or revision moved): it is discarded
+ * rather than clobber newer state. The save's answer belongs to that document
+ * (`useScopedNodeSave`, through `utils/answers.ts`).
  */
-export function scopedSaveResponseFenceError(args: {
-  requestSourceFile: string
-  requestRevision: string
-  currentSourceFile: string
-  currentRevision: string | null
-}): string | null {
-  if (args.currentSourceFile !== args.requestSourceFile || args.currentRevision !== args.requestRevision) {
-    return "The document changed while saving; the stale response was discarded. Reload and retry."
-  }
-  return null
-}
+export const STALE_SCOPED_SAVE = "The document changed while saving; the stale response was discarded. Reload and retry."

@@ -17,14 +17,16 @@ import { buildNodeDataCacheIdentity } from "../panels/dataPointIdentity"
 import useNodeDataStore, { columnsCoverDemand } from "../stores/useNodeDataStore"
 import useNodeWorkStore, { registerNodeStop } from "../stores/useNodeWorkStore"
 import { hashConfig } from "../utils/configHash"
-import {
+import useDocumentStatusStore, {
   captureDocumentExecutionFence,
+  executionPart,
   isDocumentExecutionFenceCurrent,
   type DocumentExecutionFence,
 } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { prepareCanvasRequest, type PreparedCanvasRequest } from "../utils/requestGateway"
+import { answer, ask, watch, type Part } from "../utils/answers"
 import useGraphStore from "../stores/useGraphStore"
 
 /**
@@ -300,13 +302,23 @@ export default function useNodeDataCache({
     [activeSource, requestTarget],
   )
 
-  // `consumerKey` is the key the request was prepared under.
+  /**
+   * What a point answer belongs to: never another document's, another identity's or another
+   * node's. The execution fence it was asked under, and the identity the consumer asks about
+   * under `consumerKey`, the key the request was prepared under.
+   */
+  const pointFor = useCallback(
+    (fence: DocumentExecutionFence, identity: string, consumerKey: string): Part => ({
+      holds: () => isDocumentExecutionFenceCurrent(fence) && currentIdentity.current === askedOf(consumerKey, identity),
+      subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+    }),
+    [],
+  )
+
+  /** Publish *fresh* as the consumer's: only ever from a handler asked under `pointFor`. */
   const publish = useCallback(
     (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence, consumerKey: string) => {
-      // Never write another document's, another identity's or another node's answer.
-      if (!isDocumentExecutionFenceCurrent(fence)) return
       const asked = askedOf(consumerKey, identity)
-      if (currentIdentity.current !== asked) return
       observePoint(fresh, activeSource, identity, consumerKey)
       setAnswered({ askedFor: asked, fence, point: fresh })
       setProblem((previous) => (previous?.askedFor === asked ? null : previous))
@@ -314,36 +326,56 @@ export default function useNodeDataCache({
     [activeSource, observePoint],
   )
 
+  /** Publish *fresh* while it is still the consumer's, as `pointFor` says now. */
+  const publishIfAsked = useCallback(
+    (fresh: NodeDataPointResponse, identity: string, fence: DocumentExecutionFence, consumerKey: string) => {
+      const consumer = ask([pointFor(fence, identity, consumerKey)])
+      consumer.apply(() => publish(fresh, identity, fence, consumerKey))
+      consumer.release()
+    },
+    [pointFor, publish],
+  )
+
   const readPoint = useCallback(
     async (fence: DocumentExecutionFence, signal?: AbortSignal): Promise<NodeDataPointResponse | null> => {
       if (!configHash) return null
-      const fresh = await fetchPoint(signal)
-      if (fresh) publish(fresh.point, configHash, fence, fresh.consumerKey)
-      return fresh?.point ?? null
+      const target = requestTarget()
+      if (!target) return null
+      let read: NodeDataPointResponse | null = null
+      // The point is the caller's either way; it is published only while it is the consumer's.
+      await answer([pointFor(fence, configHash, target.resultKey)], getNodeDataPoint({
+        graph: target.graph,
+        target: target.node,
+        source: activeSource,
+        signal,
+      }), {
+        ok: (point) => {
+          read = point
+          publish(point, configHash, fence, target.resultKey)
+        },
+        stale: (settled) => {
+          if (!("value" in settled)) throw settled.error
+          read = settled.value
+        },
+      })
+      return read
     },
-    [configHash, fetchPoint, publish],
+    [activeSource, configHash, pointFor, publish, requestTarget],
   )
 
   useEffect(() => {
     if (!enabled || !nodeId || !configHash || !askedFor) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
-    const controller = new AbortController()
-    // Started in the chain so a request that cannot be built is caught with the rest.
-    void Promise.resolve()
-      .then(() => (controller.signal.aborted ? null : fetchPoint(controller.signal)))
-      .then((fresh) => {
-        if (!fresh || controller.signal.aborted) return
-        publish(fresh.point, configHash, fence, fresh.consumerKey)
-      })
-      .catch((err: unknown) => {
-        if (
-          controller.signal.aborted ||
-          !isDocumentExecutionFenceCurrent(fence) ||
-          (err instanceof Error && err.name === "AbortError")
-        ) {
-          return
-        }
+    // The read belongs to this run of the effect, under the fence it began with: a new
+    // identity, epoch or attempt lets it go, and aborts it. Built in the request, so one that
+    // cannot be built fails with the rest.
+    const asked = ask([executionPart(fence)])
+    void asked.answer((signal) => fetchPoint(signal), {
+      ok: (fresh) => {
+        if (fresh) publishIfAsked(fresh.point, configHash, fence, fresh.consumerKey)
+      },
+      failed: (err) => {
         // A 400 is the backend refusing to name a point for this graph.
         const refused = (err as { status?: unknown } | null)?.status === 400
         setProblem({
@@ -352,8 +384,9 @@ export default function useNodeDataCache({
           kind: refused ? "refused" : "failed",
           reason: apiErrorMessage(err),
         })
-      })
-    return () => controller.abort()
+      },
+    })
+    return () => asked.release()
     // Re-asks on what the consumer asks about (its identity under its node's
     // key), on the node-data epoch, which the store raises whenever any
     // consumer observes a published, widened, evicted, or cleared generation,
@@ -400,54 +433,68 @@ export default function useNodeDataCache({
         startedByLabel: nodeLabel,
         cancel: () => controller.abort(),
       })
-      try {
+      const cancelFailed = (failure: unknown) => addToast(
+        "error",
+        `Cancelling the data cache failed: ${apiErrorMessage(failure)}`,
+      )
+      const forgetOwnAbort = () => {
+        if (ownDelegatedAbort.current.get(key) === controller) ownDelegatedAbort.current.delete(key)
+      }
+      // The pass's settling belongs to the slot's delegated build being still this pass's: a
+      // pass that no longer owns this slot, after a document reset and another build, changes
+      // nothing here.
+      await answer([watch(useNodeDataStore, (state) => state.slots[target.slot_key]?.delegatedBuild?.token === token)],
         // ``force`` rebuilds the snapshot or table the ensure pass would
         // otherwise leave alone, which is what a refresh — or a point the
         // backend already reports stale — asks for. Cancelling aborts the pass,
         // which cancels the server-side build it is waiting for.
-        await ensureInputSnapshots([producer as never], {
+        ensureInputSnapshots([producer as never], {
           force,
           signal: controller.signal,
           onProgress: (message) => reportDelegatedProgress(target.slot_key, token, message),
           onJobStarted: (jobId) => {
             buildJobId = jobId
           },
+        }), {
+          ok: async () => {
+            forgetOwnAbort()
+            finishDelegatedBuild(target.slot_key, token)
+            await readPoint(fence)
+          },
+          failed: (err) => {
+            forgetOwnAbort()
+            if ((err as { name?: unknown } | null)?.name === "CancellationFailed" && buildJobId) {
+              // The build may still be running, so the control stays live: it
+              // cancels that build again instead of disappearing and leaving the
+              // point building with nothing watching it.
+              const jobId: string = buildJobId
+              retainDelegatedBuild(target.slot_key, token, {
+                message: "This build has not stopped yet; cancel it again",
+                cancel: () => {
+                  const retryFence = captureDocumentExecutionFence()
+                  void answer([executionPart(retryFence)], cancelInputSnapshotBuild(jobId), {
+                    ok: async (_cancelled, asked) => {
+                      finishDelegatedBuild(target.slot_key, token)
+                      await asked.answer(readPoint(retryFence), { failed: cancelFailed })
+                    },
+                    failed: cancelFailed,
+                    // Work the user asked to stop may still be running: it is said either way.
+                    stale: (settled) => {
+                      if (!("value" in settled)) cancelFailed(settled.error)
+                    },
+                  })
+                },
+              })
+              throw err
+            }
+            finishDelegatedBuild(target.slot_key, token)
+            throw err
+          },
+          stale: (settled) => {
+            forgetOwnAbort()
+            if (!("value" in settled)) throw settled.error
+          },
         })
-      } catch (err) {
-        if ((err as { name?: unknown } | null)?.name === "CancellationFailed" && buildJobId) {
-          // The build may still be running, so the control stays live: it
-          // cancels that build again instead of disappearing and leaving the
-          // point building with nothing watching it.
-          const jobId: string = buildJobId
-          // Retained, not restarted: a pass that no longer owns this slot —
-          // after a document reset and another build — changes nothing here.
-          retainDelegatedBuild(target.slot_key, token, {
-            message: "This build has not stopped yet; cancel it again",
-            cancel: () => {
-              void (async () => {
-                const retryFence = captureDocumentExecutionFence()
-                try {
-                  await cancelInputSnapshotBuild(jobId)
-                  finishDelegatedBuild(target.slot_key, token)
-                  await readPoint(retryFence)
-                } catch (retried) {
-                  addToast(
-                    "error",
-                    `Cancelling the data cache failed: ${apiErrorMessage(retried)}`,
-                  )
-                }
-              })()
-            },
-          })
-          throw err
-        }
-        finishDelegatedBuild(target.slot_key, token)
-        throw err
-      } finally {
-        if (ownDelegatedAbort.current.get(key) === controller) ownDelegatedAbort.current.delete(key)
-      }
-      finishDelegatedBuild(target.slot_key, token)
-      await readPoint(fence)
     },
     [
       addToast,
@@ -463,12 +510,17 @@ export default function useNodeDataCache({
 
   const cancelOwnedJob = useCallback(
     async (jobId: string, fence: DocumentExecutionFence) => {
-      try {
-        await cancelNodeData(jobId)
-        await readPoint(fence)
-      } catch (err) {
-        addToast("error", `Cancelling the data cache failed: ${apiErrorMessage(err)}`)
-      }
+      // Work the user asked to stop may still be running: a failure is said either way.
+      const failed = (err: unknown) => addToast("error", `Cancelling the data cache failed: ${apiErrorMessage(err)}`)
+      await answer([executionPart(fence)], cancelNodeData(jobId), {
+        ok: async (_cancelled, asked) => {
+          await asked.answer(readPoint(fence), { failed })
+        },
+        failed,
+        stale: (settled) => {
+          if (!("value" in settled)) failed(settled.error)
+        },
+      })
     },
     [addToast, readPoint],
   )
@@ -483,52 +535,10 @@ export default function useNodeDataCache({
       // The key the request is prepared under: the build's, after every await.
       const key = target.resultKey
       stopRequested.current.delete(key)
-      setSubmittingKeys((keys) => ({ ...keys, [key]: true }))
-      try {
-        const response = await runNodeData({
-          graph: target.graph,
-          target: target.node,
-          source: activeSource,
-          refresh,
-        })
-        if (!isDocumentExecutionFenceCurrent(fence)) return
-        // Published only while the consumer still asks about the identity this
-        // run was sent for.
-        publish(response.point, configHash, fence, target.resultKey)
-        if (response.status === "started" || response.status === "joined") {
-          if (!response.job_id) throw new Error("Node data build did not return a job id")
-          // Registered even for an identity the consumer has left: the build
-          // runs on the server, so it is polled and stays stoppable.
-          startJob(
-            response.point.slot_key,
-            {
-              jobId: response.job_id,
-              message: response.message || "Caching data",
-              startedByLabel: nodeLabel,
-              startedHere: response.status === "started",
-            },
-            { point: response.point, source: activeSource },
-          )
-          // Stop was pressed while this request was in flight.
-          if (response.status === "started" && stopRequested.current.has(key)) {
-            await cancelOwnedJob(response.job_id, fence)
-          }
-          return
-        }
-        // Nothing has started on the server for the rest, so an answer for an
-        // identity the consumer has left starts nothing and says nothing.
-        if (currentIdentity.current !== askedOf(target.resultKey, configHash)) return
-        if (response.status === "delegated") {
-          if (stopRequested.current.has(key)) return
-          // A snapshot-backed Data Input or API-input table is built by its own
-          // route, under this slot's delegated build so every consumer of the
-          // point sees it running and can cancel it.
-          await buildDelegated(response.point, refresh || response.point.state === "stale", fence, key)
-          return
-        }
-        if (response.cached) addToast("info", `Data already cached: ${nodeLabel}`)
-      } catch (err) {
-        if (!isDocumentExecutionFenceCurrent(fence)) return
+      // The run is published only while the consumer still asks about the identity it was
+      // sent for; what it started on the server is the document's, under the fence.
+      const consumer = ask([pointFor(fence, configHash, key)])
+      const failedBuild = (err: unknown) => {
         const name = (err as { name?: unknown } | null)?.name
         const detail = apiErrorMessage(err)
         // A cancellation the server refused leaves work running the user asked
@@ -540,14 +550,66 @@ export default function useNodeDataCache({
         // Cancelling is otherwise the outcome the user asked for, not a
         // failure. The abort arrives as a DOMException, not an Error instance.
         if (name === "AbortError") return
-        setProblem({ askedFor: askedOf(target.resultKey, configHash), during: "build", kind: "failed", reason: detail })
+        setProblem({ askedFor: askedOf(key, configHash), during: "build", kind: "failed", reason: detail })
         addToast("error", `Data caching failed: ${detail}`)
-      } finally {
-        setSubmittingKeys((keys) => {
-          const { [key]: _done, ...rest } = keys
-          void _done
-          return rest
+      }
+      try {
+        await answer([executionPart(fence)], runNodeData({
+          graph: target.graph,
+          target: target.node,
+          source: activeSource,
+          refresh,
+        }), {
+          ok: async (response, asked) => {
+            try {
+              consumer.apply(() => publish(response.point, configHash, fence, key))
+              if (response.status === "started" || response.status === "joined") {
+                if (!response.job_id) throw new Error("Node data build did not return a job id")
+                // Registered even for an identity the consumer has left: the build
+                // runs on the server, so it is polled and stays stoppable.
+                startJob(
+                  response.point.slot_key,
+                  {
+                    jobId: response.job_id,
+                    message: response.message || "Caching data",
+                    startedByLabel: nodeLabel,
+                    startedHere: response.status === "started",
+                  },
+                  { point: response.point, source: activeSource },
+                )
+                // Stop was pressed while this request was in flight.
+                if (response.status === "started" && stopRequested.current.has(key)) {
+                  await cancelOwnedJob(response.job_id, fence)
+                }
+                return
+              }
+              // Nothing has started on the server for the rest, so an answer for an
+              // identity the consumer has left starts nothing and says nothing.
+              if (!consumer.current()) return
+              if (response.status === "delegated") {
+                if (stopRequested.current.has(key)) return
+                // A snapshot-backed Data Input or API-input table is built by its own
+                // route, under this slot's delegated build so every consumer of the
+                // point sees it running and can cancel it.
+                await buildDelegated(response.point, refresh || response.point.state === "stale", fence, key)
+                return
+              }
+              if (response.cached) addToast("info", `Data already cached: ${nodeLabel}`)
+            } catch (err: unknown) {
+              asked.apply(() => failedBuild(err))
+            }
+          },
+          failed: failedBuild,
+        }, {
+          inFlight: (flying) => setSubmittingKeys((keys) => {
+            if (flying) return { ...keys, [key]: true }
+            const { [key]: _done, ...rest } = keys
+            void _done
+            return rest
+          }),
         })
+      } finally {
+        consumer.release()
       }
     },
     [
@@ -559,6 +621,7 @@ export default function useNodeDataCache({
       configHash,
       nodeId,
       nodeLabel,
+      pointFor,
       publish,
       requestTarget,
       startJob,
@@ -646,30 +709,29 @@ export default function useNodeDataCache({
     if (!target) return
     const fence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(fence)) return
-    try {
-      const response = await clearNodeData({
-        graph: target.graph,
-        target: target.node,
-        source: activeSource,
-      })
-      if (!isDocumentExecutionFenceCurrent(fence)) return
-      publish(response.point, configHash, fence, target.resultKey)
-      if (response.status === "delegated") {
-        // The node-data clear removed the point's analyses; its data belongs to
-        // the input-snapshot or JSON cache, cleared through its own route.
-        await clearDelegatedData(response.point)
-      }
-      await readPoint(fence)
-    } catch (err) {
-      addToast("error", `Clearing the data cache failed: ${apiErrorMessage(err)}`)
-    }
+    const failed = (err: unknown) => addToast("error", `Clearing the data cache failed: ${apiErrorMessage(err)}`)
+    await answer([executionPart(fence)], clearNodeData({
+      graph: target.graph,
+      target: target.node,
+      source: activeSource,
+    }), {
+      ok: async (response, asked) => {
+        publishIfAsked(response.point, configHash, fence, target.resultKey)
+        const reread = () => asked.answer(readPoint(fence), { failed })
+        // The node-data clear removed the point's analyses; a delegated point's data belongs
+        // to the input-snapshot or JSON cache, cleared through its own route.
+        if (response.status === "delegated") await asked.answer(clearDelegatedData(response.point), { ok: reread, failed })
+        else await reread()
+      },
+      failed,
+    })
   }, [
     activeSource,
     addToast,
     clearDelegatedData,
     configHash,
     nodeId,
-    publish,
+    publishIfAsked,
     readPoint,
     requestTarget,
   ])

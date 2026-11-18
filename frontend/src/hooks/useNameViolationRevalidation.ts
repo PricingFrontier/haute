@@ -7,6 +7,8 @@ import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import type { EditorIdentityBatchRequest } from "../api/types"
 import { isRequestInputType } from "../utils/nodeTypes"
+import { answer, newest } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 
 /**
  * The names each input binding's owner sets: a request input's frame labels
@@ -73,7 +75,8 @@ export function useNameViolationRevalidation({
   buildContextGraph: () => NonNullable<EditorIdentityBatchRequest["graph"]>
 }): void {
   const fenced = useDocumentStatusStore((state) => state.nameFence !== null)
-  const requestSerial = useRef(0)
+  // The newest check wins: an answer to one a later edit overtook is dropped.
+  const checks = useRequestKind()
   // Whether the latest request is unanswered: until it is, any change asks again.
   const pending = useRef(false)
   const previousBindings = useRef<string | null>(null)
@@ -99,25 +102,22 @@ export function useNameViolationRevalidation({
       const showing = useDocumentStatusStore.getState().inputBindingViolations.length > 0
       if (!showing && (previous === null || !bindingEdited(previous, bindingsKey))) return
     }
-    const request = ++requestSerial.current
-    pending.current = true
-    resolveEditorNodeIdentities({ nodes: [], graph: buildContextGraph() })
-      .then((response) => {
-        if (request !== requestSerial.current) return
-        pending.current = false
+    void answer([newest(checks)], resolveEditorNodeIdentities({ nodes: [], graph: buildContextGraph() }), {
+      ok: (response) => {
         const violations = response.violations ?? []
         const store = useDocumentStatusStore.getState()
         store.setNameViolations(violations)
         store.setInputBindingViolations(violations)
-      })
-      .catch((error: unknown) => {
-        if (request !== requestSerial.current) return
-        pending.current = false
-        // The banner and the editors keep the last answer, so the fence stays closed.
-        useToastStore.getState().addToast(
-          "error",
-          `Could not recheck the pipeline's names: ${apiErrorMessage(error, "unknown error")}`,
-        )
-      })
-  }, [changeKey, bindingsKey, fenced, buildContextGraph])
+      },
+      // The banner and the editors keep the last answer, so the fence stays closed.
+      failed: (error) => useToastStore.getState().addToast(
+        "error",
+        `Could not recheck the pipeline's names: ${apiErrorMessage(error, "unknown error")}`,
+      ),
+    }, {
+      pending: (waiting) => {
+        pending.current = waiting
+      },
+    })
+  }, [changeKey, bindingsKey, fenced, buildContextGraph, checks])
 }

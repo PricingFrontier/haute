@@ -269,9 +269,11 @@ export function documentPart(): Part {
   return watch(useDocumentStatusStore, (state) => `${state.executionGeneration}:${state.sourceFile}`)
 }
 
-/** The document execution fence, as an answer's part: an answer about running the pipeline. */
-export function executionPart(): Part {
-  const fence = captureDocumentExecutionFence()
+/**
+ * The document execution fence, as an answer's part: an answer about running the pipeline,
+ * under the fence captured now or the one *fence* names, captured when the work began.
+ */
+export function executionPart(fence: DocumentExecutionFence = captureDocumentExecutionFence()): Part {
   return { holds: () => isDocumentExecutionFenceCurrent(fence), subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()) }
 }
 

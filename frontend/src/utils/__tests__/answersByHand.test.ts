@@ -42,9 +42,30 @@ const SHARED = new Set(["frontend/src/utils/answers.ts"])
 /** What an `await` or a `.then` may wait for without waiting for the server, by callee, with why. */
 export const NOT_SERVER: Record<string, string> = {
   confirmed: "a question to the analyst, answered in the page",
+  "useQuestionStore.getState().ask": "a question to the analyst, answered in the page",
   "navigator.clipboard.writeText": "the browser's clipboard",
   "navigator.clipboard.write": "the browser's clipboard",
   import: "a lazy import of the editor's own code",
+  getLayoutedElements: "the layout engine, run in the page",
+  parsePipelineDocumentUpdateFrame: "reads a frame the sync socket pushed, with validators loaded in the page",
+  parsePipelineEditorDocument: "reads a document already answered, with validators loaded in the page",
+}
+
+/**
+ * A function that calling after a wait does not make a write, by `path::name`, with why: it
+ * writes only a memo of its own, which no one reads as the page's state, or it is a wait the
+ * helper's own callers build on, which applies what it is given under the helper while its
+ * caller's signal holds.
+ */
+export const NOT_STATE: Record<string, string> = {
+  "frontend/src/hooks/jobPollingController.ts::waitForJob":
+    "the one wait for a job: each poll's answer, and the caller's onStatus, under the wait and its caller's signal",
+  "frontend/src/hooks/previewProgressPoller.ts::pollPreviewProgress":
+    "polls a preview's progress: each answer, and the caller's onProgress, under the polling and its caller's signal",
+  "frontend/src/stores/useGraphStore.ts::canvasGraph":
+    "keeps the canvas as one object while its nodes and edges are the same, so readers can compare it",
+  "frontend/src/types/pipelineDocument.ts::loadEditorDocumentValidators":
+    "loads the editor document's generated validators once and keeps the module",
 }
 
 type Finding = { line: number; scope: string; text: string }
@@ -81,6 +102,12 @@ function dotted(expression: ts.Expression): string | null {
   if (ts.isPropertyAccessExpression(expression)) {
     const left = dotted(expression.expression)
     return left === null ? null : `${left}.${expression.name.text}`
+  }
+  // A store's state, read on the way: `useQuestionStore.getState().ask`.
+  if (ts.isCallExpression(expression) && expression.arguments.length === 0 && ts.isPropertyAccessExpression(expression.expression)
+    && expression.expression.name.text === "getState") {
+    const store = dotted(expression.expression)
+    return store === null ? null : `${store}()`
   }
   return null
 }
@@ -370,7 +397,7 @@ function merged(outer: Locals, inner: Locals): Locals {
 }
 
 /** Every function in the modules that writes state after a wait outside the helper, by module. */
-export function answersByHandIn(sources: ReadonlyMap<string, string>): Map<string, Finding[]> {
+export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: ReadonlySet<string> = new Set()): Map<string, Finding[]> {
   const known = new Set(sources.keys())
   const modules = new Map<string, Module>()
   for (const [path, source] of sources) modules.set(path, readModule(path, source, known))
@@ -449,10 +476,27 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>): Map<strin
     if (ts.isPropertyAccessExpression(target) && target.name.text === "current") return true
     return ts.isIdentifier(target) && module.moduleVariables.has(target.text) && !locals.has(target.text)
   }
+  /**
+   * Whether *fn* is a callback given to a wait primitive on `NOT_STATE` (`waitForJob`'s
+   * `onStatus`), which applies it under its own wait and its caller's signal.
+   */
+  const isPrimitiveCallback = (module: Module, fn: ts.Node): boolean => {
+    let argument: ts.Node = fn
+    if (fn.parent && ts.isPropertyAssignment(fn.parent) && ts.isObjectLiteralExpression(fn.parent.parent)) argument = fn.parent.parent
+    const call = argument.parent
+    if (!call || !ts.isCallExpression(call) || !call.arguments.includes(argument as ts.Expression) || !ts.isIdentifier(call.expression)) return false
+    const name = call.expression.text
+    const imported = module.imports.get(name)
+    const target = imported?.from && imported.name !== "*" ? exportTarget(imported.from, imported.name) : `${module.path}#${name}`
+    return target !== null && notState.has(target)
+  }
+  const guarded = (module: Module, fn: ts.Node): boolean => isHelperCallback(fn) || isPrimitiveCallback(module, fn)
   const writesAnywhere = (module: Module, node: ts.Node): boolean => {
     let found = false
     const visit = (current: ts.Node, locals: Locals) => {
-      if (found) return
+      // What the helper, or a wait primitive, runs while its request is current is no write
+      // of the function's.
+      if (found || (current !== node && isFunction(current) && guarded(module, current))) return
       const inner = current !== node && isFunction(current) ? merged(locals, localsOf(current)) : locals
       if (isWrite(module, current, inner)) {
         found = true
@@ -468,7 +512,7 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>): Map<strin
     for (const module of modules.values()) {
       for (const [name, fn] of module.declared) {
         const key = `${module.path}#${name}`
-        if (writers.has(key) || !writesAnywhere(module, fn)) continue
+        if (writers.has(key) || notState.has(key) || !writesAnywhere(module, fn)) continue
         writers.add(key)
         grew = true
       }
@@ -502,10 +546,11 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>): Map<strin
       if (!fn.body) return
       const locals = scopeLocals(fn)
       const promiseCall = isPromiseCallback(fn)
-      let waited = !isHelperCallback(fn) && (madeAfterWait.has(fn) || (promiseCall !== null && !isNotServer(awaited(promiseCall))))
+      let waited = !guarded(module, fn) && (madeAfterWait.has(fn) || (promiseCall !== null && !isNotServer(awaited(promiseCall))))
       const walk = (node: ts.Node) => {
         if (node !== fn && isFunction(node)) {
-          if (waited) madeAfterWait.add(node)
+          // A function declaration is made as its scope starts, wherever it is written.
+          if (waited && !ts.isFunctionDeclaration(node)) madeAfterWait.add(node)
           return
         }
         // A branch that waits and then leaves the function leaves what follows it unwaited.
@@ -537,7 +582,10 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>): Map<strin
             && ["then", "catch", "finally"].includes(node.expression.name.text) && !isNotServer(awaited(node))
           if (thenCall || waited) {
             for (const argument of node.arguments) {
-              if ((ts.isIdentifier(argument) || ts.isPropertyAccessExpression(argument)) && writesWhenCalled(module, argument, locals)) report(argument)
+              // A value a hook gave is a writer when it is called; passed on, `.then` calls it.
+              const given = ts.isIdentifier(argument) && module.hookBound.has(argument.text) && !WRITE_NAME.test(argument.text)
+              if ((ts.isIdentifier(argument) || ts.isPropertyAccessExpression(argument))
+                && (thenCall || !given) && writesWhenCalled(module, argument, locals)) report(argument)
             }
           }
         }
@@ -571,8 +619,12 @@ function sourceFiles(directory: string): string[] {
 function repositoryFindings(): Map<string, Finding[]> {
   const sources = new Map<string, string>()
   for (const path of sourceFiles(SRC)) sources.set(path, readFileSync(path, "utf-8"))
+  const notState = new Set(Object.keys(NOT_STATE).map((key) => {
+    const [rel, name] = key.split("::")
+    return `${resolve(SRC, "..", "..", rel)}#${name}`
+  }))
   const found = new Map<string, Finding[]>()
-  for (const [path, findings] of answersByHandIn(sources)) {
+  for (const [path, findings] of answersByHandIn(sources, notState)) {
     const rel = `frontend/src/${relative(SRC, path).split(sep).join("/")}`
     if (SHARED.has(rel)) continue
     for (const finding of findings) {
@@ -835,6 +887,14 @@ describe("the scan passes the helper's handlers", () => {
 })
 
 describe("the browser source", () => {
+  it("lists as no state only functions that are there", () => {
+    for (const key of Object.keys(NOT_STATE)) {
+      const [rel, name] = key.split("::")
+      const source = readFileSync(resolve(SRC, "..", "..", rel), "utf-8")
+      expect(source, key).toMatch(new RegExp(`(?:function|const|let)\\s+${name}\\b`))
+    }
+  })
+
   it("writes no state after a wait outside the helper", () => {
     const findings = repositoryFindings()
     const unlisted = [...findings.entries()].map(([key, found]) => `${key} (line ${found[0].line}: ${found[0].text})`)

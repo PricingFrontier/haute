@@ -7,6 +7,7 @@ import {
 } from "../api/client"
 import { TERMINAL_JOB_STATUSES, type InputCacheJobStatusResponse } from "../api/types"
 import { inputSnapshotSource, type SnapshotSource } from "../utils/inputSnapshotSource"
+import { ask, signalPart, type Asked, type Part } from "../utils/answers"
 import { JobWaitTimeoutError, waitForJob } from "./jobPollingController"
 
 const POLL_INTERVAL_MS = 800
@@ -88,30 +89,40 @@ function abortError(): DOMException {
   return new DOMException("Input snapshot ensure was cancelled.", "AbortError")
 }
 
-/** Wait for a build to end, and return how it ended. */
+/**
+ * What an ensure pass's answers belong to: its caller's life, by the signal it gave. A pass
+ * given no signal is its caller's to the end.
+ */
+function passPart(signal: AbortSignal | undefined): Part {
+  return signalPart(signal ?? new AbortController().signal)
+}
+
+/** Wait for a build to end, under the pass it is waited for in, and return how it ended. */
 async function waitForBuild(
   jobId: string,
-  signal: AbortSignal | undefined,
+  pass: Asked,
+  { signal, onBuildProgress }: EnsureInputSnapshotsOptions,
   owned: boolean,
-  onBuildProgress?: (job: InputCacheJobStatusResponse) => void,
 ): Promise<InputCacheJobStatusResponse> {
-  try {
-    return await waitForJob({
-      poll: (pollSignal) => getInputCacheJob(jobId, { signal: pollSignal }),
-      isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
-      intervalMs: POLL_INTERVAL_MS,
-      signal,
-      onStatus: (current) => {
-        if (current.status === "running") onBuildProgress?.(current)
-      },
-    })
-  } catch (caught) {
-    if (!signal?.aborted) throw caught
-    // A build joined from another tab or consumer is theirs: this pass only
-    // stops waiting for it.
-    if (owned) await cancelInputSnapshotBuild(jobId)
-    throw abortError()
-  }
+  let ended: InputCacheJobStatusResponse | null = null
+  const outcome = await pass.answer(waitForJob({
+    poll: (pollSignal) => getInputCacheJob(jobId, { signal: pollSignal }),
+    isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
+    intervalMs: POLL_INTERVAL_MS,
+    signal,
+    onStatus: (current) => {
+      if (current.status === "running") onBuildProgress?.(current)
+    },
+  }), {
+    ok: (job) => {
+      ended = job
+    },
+    // A build joined from another tab or consumer is theirs: this pass only stops waiting
+    // for it; one it started it cancels.
+    stale: () => (owned ? cancelInputSnapshotBuild(jobId) : undefined),
+  })
+  if (outcome === "stale" || ended === null) throw abortError()
+  return ended
 }
 
 /**
@@ -179,35 +190,41 @@ export async function ensureInputSnapshots(
   const dataInputs = sources.filter((source) => source.node_type !== "apiInput")
   if (sources.length === 0) return
 
+  // The caller hears of the pass while it holds: once its signal aborts, nothing more.
+  const pass = ask([passPart(options.signal)])
   let buildNotified = false
-  const notifyBuildStart = () => {
+  const notifyBuildStart = () => pass.apply(() => {
     if (buildNotified) return
     buildNotified = true
     options.onBuildStart?.()
-  }
-
-  const report = (message: string | null) => {
-    if (!options.signal?.aborted) options.onProgress?.(message)
-  }
-  // Structured Quote Inputs build their tables from one shred of the source.
-  // Keep these sequential so each node owns its progress message.
-  for (const source of quotes) {
-    report("Checking Quote Input cache…")
-    try {
-      await ensureSnapshot(source, options, () => {
-        notifyBuildStart()
-        report("Caching Quote Input tables as Parquet…")
-      })
-    } finally {
-      report(null)
+  })
+  const report = (message: string | null) => pass.apply(() => options.onProgress?.(message))
+  try {
+    // Structured Quote Inputs build their tables from one shred of the source.
+    // Keep these sequential so each node owns its progress message.
+    for (const source of quotes) {
+      report("Checking Quote Input cache…")
+      try {
+        await ensureSnapshot(source, options, pass, () => {
+          notifyBuildStart()
+          report("Caching Quote Input tables as Parquet…")
+        })
+      } finally {
+        report(null)
+      }
     }
-  }
 
-  // Every build settles before this returns, so a stop whose cancellations
-  // fail names every build still running, not only the first to fail.
-  const outcomes = await Promise.allSettled(
-    dataInputs.map((source) => ensureSnapshot(source, options, notifyBuildStart)),
-  )
+    // Every build settles before this returns, so a stop whose cancellations
+    // fail names every build still running, not only the first to fail.
+    await settleAll(dataInputs.map((source) => ensureSnapshot(source, options, pass, notifyBuildStart)))
+  } finally {
+    pass.release()
+  }
+}
+
+/** Wait for every build, and fail with each cancellation that failed, or the first failure. */
+async function settleAll(builds: Promise<void>[]): Promise<void> {
+  const outcomes = await Promise.allSettled(builds)
   const rejected = outcomes.flatMap((outcome) =>
     outcome.status === "rejected" ? [outcome.reason as unknown] : [],
   )
@@ -224,6 +241,7 @@ export async function ensureInputSnapshots(
 async function ensureSnapshot(
   source: SnapshotSource,
   options: EnsureInputSnapshotsOptions,
+  pass: Asked,
   notifyBuildStart: () => void,
 ): Promise<void> {
   if (options.signal?.aborted) throw abortError()
@@ -251,8 +269,8 @@ async function ensureSnapshot(
     // a build this request may not join (one being cancelled, or an ordinary
     // build for a forced request): it is waited for, never cancelled.
     const owned = started.status === "running" && !started.joined
-    if (owned) options.onJobStarted?.(started.job_id)
-    const job = await waitForBuild(started.job_id, options.signal, owned, options.onBuildProgress)
+    if (owned) pass.apply(() => options.onJobStarted?.(started.job_id))
+    const job = await waitForBuild(started.job_id, pass, options, owned)
     if (started.status === "running" && job.status === "completed") return
     // The build waited for did not build this request's snapshot: it was one
     // this request could not join, or a joined build its owner stopped. Ask again.

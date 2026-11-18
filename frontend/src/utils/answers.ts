@@ -18,7 +18,11 @@ type Unsubscribe = () => void
 export interface Part {
   /** Whether it still holds now. */
   readonly holds: () => boolean
-  /** Call *listener* whenever it may have moved, until the returned function is called. */
+  /**
+   * Call *listener* whenever it may have moved, until the returned function is called. A part
+   * whose state nothing announces (a slot a primitive holds) gives a no-op: it is asked again
+   * as the answer settles, and it must not move back once moved.
+   */
   readonly subscribe: (listener: () => void) => Unsubscribe
 }
 
@@ -81,6 +85,20 @@ export function newest(kind: RequestKind): Part {
 export function under(kind: RequestKind): Part {
   const state = stateOf(kind)
   return kindPart(state, state.turn)
+}
+
+/**
+ * The asker's own life, as the abort signal it gave: a request made for a caller that ends
+ * it with a signal (a job wait, an ensure pass) holds while that signal has not aborted.
+ */
+export function signalPart(signal: AbortSignal): Part {
+  return {
+    holds: () => !signal.aborted,
+    subscribe: (listener) => {
+      signal.addEventListener("abort", listener)
+      return () => signal.removeEventListener("abort", listener)
+    },
+  }
 }
 
 /** A store an answer can be watched against: a zustand store, or anything shaped like one. */
@@ -168,11 +186,12 @@ class Asking implements Asked {
   private ended = false
   private readonly controller = new AbortController()
   private unsubscribes: Unsubscribe[] = []
+  private readonly held: BelongsTo
+  private readonly pending: ((waiting: boolean) => void) | undefined
 
-  constructor(
-    private readonly held: BelongsTo,
-    private readonly pending: ((waiting: boolean) => void) | undefined,
-  ) {
+  constructor(held: BelongsTo, pending: ((waiting: boolean) => void) | undefined) {
+    this.held = held
+    this.pending = pending
     pending?.(true)
     // Watched from the moment it is asked, so a part that moves and moves back never revives it.
     const check = () => {

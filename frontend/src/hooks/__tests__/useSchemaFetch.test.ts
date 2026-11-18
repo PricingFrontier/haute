@@ -73,7 +73,8 @@ describe("useSchemaFetch", () => {
     expect(result.current.loading).toBe(true)
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.schema).toEqual(fakeSchema)
-    expect(mockFetchSchema).toHaveBeenLastCalledWith("data.csv", { signal: undefined }, undefined)
+    // A retry is the newest read: its own signal aborts it once a newer one is asked.
+    expect(mockFetchSchema).toHaveBeenLastCalledWith("data.csv", { signal: expect.any(AbortSignal) }, undefined)
   })
 
   it("loading state is true while fetch is pending", async () => {

@@ -1,5 +1,6 @@
 import { apiErrorMessage } from "../api/errors"
 import type { JobStatus } from "../api/types"
+import { answer, requestKind, under } from "../utils/answers"
 
 const BASE_INTERVAL_MS = 500
 const PROGRESS_INTERVAL_MS = 1_000
@@ -93,12 +94,16 @@ export function waitForJob<TStatus>({
 }: WaitForJobOptions<TStatus>): Promise<TStatus> {
   if (signal?.aborted) return Promise.reject(jobWaitAborted())
   return new Promise<TStatus>((resolve, reject) => {
+    // Each poll's answer belongs to the wait: once it has settled, by the job ending, the
+    // owner's signal or the deadline, a poll still answering does nothing.
+    const wait = requestKind()
     const requests = new AbortController()
     let settled = false
     let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
     const settle = (finish: () => void) => {
       if (settled) return
       settled = true
+      wait.bump()
       clearTimeout(pollTimeoutId)
       clearTimeout(deadlineId)
       signal?.removeEventListener("abort", onAbort)
@@ -113,18 +118,22 @@ export function waitForJob<TStatus>({
     signal?.addEventListener("abort", onAbort, { once: true })
 
     const request = () => {
-      Promise.resolve()
-        .then(() => poll(requests.signal))
-        .then((status) => {
-          if (settled) return
+      void answer([under(wait)], () => poll(requests.signal), {
+        ok: (status) => {
           if (isTerminal(status)) {
             settle(() => resolve(status))
             return
           }
-          onStatus?.(status)
+          try {
+            onStatus?.(status)
+          } catch (error: unknown) {
+            settle(() => reject(error))
+            return
+          }
           if (!settled) pollTimeoutId = setTimeout(request, intervalMs)
-        })
-        .catch((error: unknown) => settle(() => reject(error)))
+        },
+        failed: (error) => settle(() => reject(error)),
+      })
     }
     request()
   })
