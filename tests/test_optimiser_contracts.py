@@ -36,6 +36,7 @@ from haute.schemas import (  # noqa: E402
     OptimiserSolveResult,
 )
 from tests._failure_assertions import assert_unnamed
+from tests._training_helpers import PREPARATION_JOIN_TIMEOUT_S  # noqa: E402
 from tests.conftest import (
     make_edge,
     make_graph,
@@ -54,6 +55,7 @@ from tests.optimiser_fixtures import (  # noqa: E402
     make_scenario_grid,
     make_solved_result,
     setup_grid_stub,
+    solve_launch_stand_in,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -574,6 +576,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
     ).write_parquet(source_path)
     captured: dict[str, object] = {}
     grid_captured = threading.Event()
+    launch, launched = solve_launch_stand_in()
 
     def capture_grid(scored_lf, constraint_cols, config, node_id, job_id, **_kwargs):
         captured["df"] = scored_lf.collect()
@@ -590,7 +593,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
             "_build_grid",
             side_effect=capture_grid,
         ),
-        patch.object(optimiser_routes._solve_service, "_launch_background"),
+        patch.object(optimiser_routes._solve_service, "_launch_background", side_effect=launch),
     ):
         resp = client.post(
             "/api/optimiser/solve",
@@ -600,6 +603,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
             },
         )
         assert grid_captured.wait(timeout=10.0)
+        assert launched.wait(timeout=PREPARATION_JOIN_TIMEOUT_S)
 
     assert resp.status_code == 200
     assert captured["constraint_cols"] == ["volume"]
@@ -703,6 +707,8 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
         captured["job_id"] = ctx.job_id
         captured["mode"] = ctx.mode
         captured["ratebook_factors"] = ratebook_factors_handle
+        # The launch takes over setup's context; this solve finishes at once.
+        ctx.execution_context.release_admission()
 
     from haute.routes import optimiser as optimiser_routes
 

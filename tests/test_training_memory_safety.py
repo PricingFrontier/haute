@@ -27,6 +27,7 @@ from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, TrainResult, _PreparedData, _SplitResult
 from haute.routes._job_store import JobStore
 from haute.routes._training_lifecycle import TrainService
+from tests._failure_assertions import incident_in
 from tests._training_helpers import join_training_preparation
 from tests.test_training_worker_protocol import (
     _inline_protocol_runner,
@@ -890,7 +891,7 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
     run.assert_not_called()
 
 
-def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
+def test_an_unnamed_estimate_failure_ends_the_job_as_an_incident_before_execution(
     tmp_path: Path,
 ) -> None:
     from haute.schemas import TrainRequest
@@ -917,10 +918,11 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
 
     execute_and_sink.assert_not_called()
     job = store.require_job(response.job_id)
-    assert job["status"] == "contract_error"
-    assert job["terminal_reason"] == "contract_error"
-    assert job["http_status_code"] == 422
-    assert job["error_code"] == "training_memory_estimate_failed"
+    assert job["status"] == "error"
+    assert job["terminal_reason"] == "error"
+    assert job["http_status_code"] == 500
+    assert job["error_code"] == "unexpected_failure"
+    assert job["incident"] == incident_in(job["message"])
 
 
 def test_training_mlflow_log_receives_cancellation_checkpoint(tmp_path: Path) -> None:

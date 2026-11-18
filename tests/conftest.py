@@ -461,14 +461,35 @@ def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(httpx.AsyncClient, "__init__", async_client_init_with_session_token)
 
 
+#: How long a test's own work may take to release its memory reservation after the test
+#: body returns (a job thread recording its outcome) before the reservation counts as left.
+_RESERVATION_RELEASE_GRACE_S = 5.0
+
+
 @pytest.fixture(autouse=True)
 def _clear_execution_admission_reservations():
-    """Keep process-wide in-flight budget reservations isolated per test."""
-    from tests._process_state import clear_execution_admission_reservations
+    """Each test starts with no in-flight memory reservation and must end with none.
+
+    A reservation a test leaves holds the process's memory budget into the tests after
+    it, which are then refused as memory-limited; clearing it silently would hide that,
+    so the test that left it fails, naming it.
+    """
+    from tests._process_state import (
+        clear_execution_admission_reservations,
+        held_execution_admission_reservations,
+    )
 
     clear_execution_admission_reservations()
     yield
+    held = held_execution_admission_reservations(within_seconds=_RESERVATION_RELEASE_GRACE_S)
     clear_execution_admission_reservations()
+    if held:
+        pytest.fail(
+            "The test left memory reserved by work it started: "
+            + ", ".join(held)
+            + ". Wait for that work to finish, or free the grant a stand-in takes over.",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)
