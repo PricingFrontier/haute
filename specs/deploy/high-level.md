@@ -106,7 +106,7 @@ submodels, is refused before anything is pruned. A Workbench Input reads no samp
 request schema comes from its tables, the dry run reads one quote with nothing filled in, one
 row of nulls per table, and a served request is read into its tables from the records as they
 were sent, one quote per request, each consumer sized by the memory estimate from the table
-that feeds it; its test quotes are not pre-checked for columns, and their expected outputs
+that feeds it; its test quotes are read as its requests are, and their expected outputs
 are compared into the response's tables; a Databricks deployment's signature holds each
 table as a map of any values or an array of them, the reader holding the request to the
 tables' columns ([workbench](../workbench/high-level.md)). A Quote Input whose sample is
@@ -124,7 +124,9 @@ quote (how a feed, or XML's empty element, says "none") holds nothing and is nev
 refused, and a date column reads dates in the format it declares.
 Any other Quote Input reads the request as one frame typed by the input schema the manifest
 records (the sample file's columns and types), never by inference from the JSON values, so a
-request types its columns as the dry run and the test quotes do. A key the schema does not
+request types its columns as the dry run and the test quotes do: the dry run reads each test
+quote through the reader the service reads a request with, so it refuses a quote, or prices
+one that leaves out its exposure, as the service does. A key the schema does not
 name is ignored. A quote must give every column the schema names: one that leaves out a rating
 factor is refused, naming the quote and the column, on every target, rather than priced as if
 the factor were missing. The exception is an exposure that one of the pipeline's models applies

@@ -29,13 +29,9 @@ from haute.deploy._config import (
     test_quote_files,
 )
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS
-from haute.deploy._scorer import (
-    DeployInput,
-    QuoteRequest,
-    reads_one_quote_per_request,
-    reads_records,
-    score_graph,
-)
+from haute.deploy._request_frame import RequestReader
+from haute.deploy._scorer import reads_one_quote_per_request, score_graph
+from haute.errors import QuoteInputError
 
 logger = get_logger(component="deploy.validators")
 
@@ -651,19 +647,12 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
     elif tq_dir is not None and not test_quote_files(tq_dir):
         errors.append(f"Configured test_quotes.dir holds no *.json test quotes: {tq_dir}")
     elif tq_dir is not None:
-        # Pre-check each quote against the declared input schema; a
-        # silently missing column won't be caught by a passthrough graph
-        # and would deploy an API that accepts garbage quotes. A Workbench
-        # Input's quote need not hold every table (a many-row table it leaves
-        # out has no rows, a one-row one its row of nulls), and its reader
-        # refuses a quote that does not fit, naming the spot, when it is
-        # scored below, so its cases are not held to the columns here.
-        #
-        # Each file is read once: the cases the pre-check reads are the ones scored. A
-        # file whose rows miss columns names every such row and is not scored, since its
-        # request would only be refused on the first of them.
-        required_cols = set(resolved.input_schema or {})
-        reads_quotes = _reads_one_quote_per_request(resolved)
+        # Each file's cases are read as the service reads a request (``RequestReader``):
+        # a quote leaving out a column it must give, or holding a value its column does
+        # not, is refused in the service's words, and an exposure may be left out. Every
+        # such case is named, numbered by its row in the file, and the file is not
+        # scored, since its request would only be refused on the first of them.
+        reader = _request_reader(resolved)
         for jf in test_quote_files(tq_dir):
             started = time.perf_counter()
             try:
@@ -671,13 +660,10 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
             except Exception as exc:
                 test_quote_errors.append(f"test quote {jf.name!r} failed: could not parse ({exc})")
                 continue
-            missing_rows = (
-                [] if reads_quotes else _rows_missing_columns(jf.name, cases, required_cols)
-            )
-            if missing_rows:
-                test_quote_errors.extend(missing_rows)
+            misfits = _misfits(reader, jf.name, cases)
+            if misfits:
+                test_quote_errors.extend(misfits)
                 continue
-            # Actual scoring pass — surfaces runtime errors.
             result = _score_test_quote_cases(resolved, jf.name, cases, started=started)
             quote_results.append(result)
             if result["status"] == "error":
@@ -702,28 +688,30 @@ def validate_deploy(resolved: ResolvedDeploy, *, test_quotes: bool = True) -> li
     return quote_results
 
 
-def _rows_missing_columns(name: str, cases: list[_TestQuoteCase], required: set[str]) -> list[str]:
-    """One message per row of the test-quote file *name* whose input leaves out a column
-    the request requires, naming the row, the missing columns and those it gives."""
-    messages = []
+def _request_reader(resolved: ResolvedDeploy) -> RequestReader:
+    """The reader the deployment of *resolved* reads a request with, as served."""
+    return RequestReader.of(
+        resolved.pruned_graph,
+        resolved.input_node_ids,
+        {"input_schema": resolved.input_schema, "omittable_inputs": resolved.omittable_inputs},
+    )
+
+
+def _misfits(reader: RequestReader, name: str, cases: list[_TestQuoteCase]) -> list[str]:
+    """One refusal for each case of the test-quote file *name* the request reader refuses,
+    in the service's words and numbered by its row in the file."""
+    misfits: list[str] = []
     for row_index, case in enumerate(cases):
-        missing = sorted(required - set(case.input))
-        if missing:
-            messages.append(
-                f"test quote {name!r} row {row_index} failed: missing required input "
-                f"column(s) {missing}; provided columns {sorted(case.input)}."
-            )
-    return messages
+        try:
+            reader.read([case.input], first=row_index)
+        except QuoteInputError as exc:
+            misfits.append(f"test quote {name!r} failed: {exc.message}")
+    return misfits
 
 
 def _reads_one_quote_per_request(resolved: ResolvedDeploy) -> bool:
     """Whether the request input reads one quote per request: a Workbench Input does."""
     return reads_one_quote_per_request(resolved.pruned_graph, resolved.input_node_ids)
-
-
-def _request(inputs: list[dict[str, Any]], as_records: bool) -> DeployInput:
-    """Test quotes as one request, their records or a frame as the request input reads it."""
-    return QuoteRequest(tuple(inputs)) if as_records else pl.DataFrame(inputs)
 
 
 @in_resolved_project
@@ -784,21 +772,29 @@ def _test_quote_result(
     }
 
 
-def _score_test_quote_cases(
-    resolved: ResolvedDeploy, name: str, cases: list[_TestQuoteCase], *, started: float
-) -> TestQuoteResult:
-    """The result of the test-quote file *name*'s parsed *cases*, priced and checked."""
-    one_quote_per_request = _reads_one_quote_per_request(resolved)
-    # A Quote Input with tables reads its quotes as their records, as served.
-    as_records = reads_records(resolved.pruned_graph, resolved.input_node_ids)
-    # A deployment that answers a batch quote by quote scores each quote alone, as each
-    # case is checked here, its expected rows compared with its own answer.
-    case_per_request = resolved.request_rows.multi_quote != "in_request_order"
+def _case_per_request(resolved: ResolvedDeploy) -> bool:
+    """Whether the dry run sends each test quote as a request of its own.
 
-    def score(input_df: pl.DataFrame | QuoteRequest) -> pl.DataFrame:
+    A Workbench Input reads one quote per request, and a deployment that answers a batch
+    quote by quote scores each quote alone; either way each case is checked against its
+    own answer. Otherwise the file's cases are one request, answered in request order.
+    """
+    return (
+        _reads_one_quote_per_request(resolved)
+        or resolved.request_rows.multi_quote != "in_request_order"
+    )
+
+
+def _price_requests(resolved: ResolvedDeploy, cases: list[_TestQuoteCase]) -> list[pl.DataFrame]:
+    """The answer to each request the dry run sends for *cases*, in order: one per case,
+    or one for them all (:func:`_case_per_request`)."""
+    # Each request read as the service reads it, so a quote is refused or priced as served.
+    reader = _request_reader(resolved)
+
+    def score(inputs: list[dict[str, Any]]) -> pl.DataFrame:
         return score_graph(
             graph=resolved.pruned_graph,
-            input_df=input_df,
+            input_df=reader.read(inputs),
             input_node_ids=resolved.input_node_ids,
             output_node_id=resolved.output_node_id,
             artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
@@ -806,23 +802,32 @@ def _score_test_quote_cases(
             request_rows=resolved.request_rows,
         )
 
-    try:
-        if not cases:
-            rows = 0
-        elif one_quote_per_request:
-            # Each case as its request was sent: the Workbench Input types it.
-            outputs = [score(QuoteRequest((case.input,))) for case in cases]
-            _validate_expected_outputs_per_case(cases=cases, outputs=outputs)
-            rows = sum(output.height for output in outputs)
-        elif case_per_request:
-            answers = [score(_request([case.input], as_records)) for case in cases]
-            _validate_expected_outputs_per_case(cases=cases, outputs=list(answers))
-            rows = sum(answer.height for answer in answers)
-        else:
-            output = score(_request([case.input for case in cases], as_records))
-            _validate_expected_outputs(cases=cases, output=output)
-            rows = output.height
+    if not cases:
+        return []
+    if _case_per_request(resolved):
+        return [score([case.input]) for case in cases]
+    return [score([case.input for case in cases])]
 
+
+@in_resolved_project
+def price_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> list[pl.DataFrame]:
+    """The answer to each request the dry run sends for the test-quote file *jf*, as its
+    check prices them; a failure raises as the check reports it."""
+    return _price_requests(resolved, _load_test_quote_cases(jf))
+
+
+def _score_test_quote_cases(
+    resolved: ResolvedDeploy, name: str, cases: list[_TestQuoteCase], *, started: float
+) -> TestQuoteResult:
+    """The result of the test-quote file *name*'s parsed *cases*, priced and checked."""
+    try:
+        answers = _price_requests(resolved, cases)
+        if _case_per_request(resolved):
+            _validate_expected_outputs_per_case(cases=cases, outputs=answers)
+        elif answers:
+            (output,) = answers
+            _validate_expected_outputs(cases=cases, output=output)
+        rows = sum(answer.height for answer in answers)
     except Exception as exc:
         return _test_quote_result(name, started, error=exc)
     return _test_quote_result(name, started, rows=rows)

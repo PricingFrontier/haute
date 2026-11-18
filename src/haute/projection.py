@@ -1481,9 +1481,10 @@ def source_scan_projection(
     The physical scan is driven by planner demand alone.  ``selected_columns``
     has exactly one interpreter — the executor's post-call filter, which runs
     after a source node's code in every profile — so it is never pushed into
-    the physical read and never validated against the file schema here.  It
-    still bounds what a source can legitimately be asked for: demand for a
-    logical column the selection excludes is a planning error.
+    the physical read and never validated against the file schema here.  Demand
+    for a logical column the selection drops is not this source's to give: the
+    scan stays full width, so the selection is applied as it is wherever the
+    source runs, and the node asking for the column refuses it in its own words.
 
     Projection seeds are expressed in post-source logical output names, so a
     demanded logical column such as ``premium`` must be pushed down as its
@@ -1503,16 +1504,8 @@ def source_scan_projection(
     required = frozenset(required_output_columns)
     pre_shaping_names = _source_pre_shaping_names(config, required)
     if selected and pre_shaping_names is not None:
-        excluded = sorted(
-            logical_column
-            for logical_column, column in pre_shaping_names.items()
-            if column not in selected_set
-        )
-        if excluded:
-            raise ValueError(
-                "source projection requires a logical output column excluded by "
-                f"selected_columns: {excluded[0]!r}"
-            )
+        if any(column not in selected_set for column in pre_shaping_names.values()):
+            return SourceScanProjection(columns=None)
     if source_columns is None and not source_user_code_preserves_column_projection(code):
         return SourceScanProjection(columns=None)
     return SourceScanProjection(

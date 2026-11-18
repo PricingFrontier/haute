@@ -206,7 +206,6 @@ def score_batch_scoring_request(
 ) -> BatchScoreOutcome:
     """Score one batch under an already-constructed worker-local context."""
     from haute.deploy._scorer import (
-        QuoteRequest,
         reads_records,
         score_graph_lazy,
         score_quote_by_quote,
@@ -214,17 +213,18 @@ def score_batch_scoring_request(
 
     execution_context.checkpoint(label="before_deploy_batch_dataframe")
     rows = json.loads(Path(request.input_path).read_text(encoding="utf-8"))
-    # A Workbench Input, and a Quote Input with tables, read the quotes from the records
-    # as sent, typing each value themselves.
-    if reads_records(request.graph, request.input_node_ids):
-        input_df: pl.DataFrame | QuoteRequest = QuoteRequest(tuple(rows))
-    else:
-        # A flat Quote Input's quotes, typed by its declared schema, never by inference.
-        from haute.deploy._request_frame import frame_rows
+    # Read as the request input reads a request (``RequestReader``): a flat Quote Input's
+    # quotes typed by its declared schema, never by inference.
+    from haute.deploy._request_frame import RequestReader
 
-        if request.input_schema is None:
-            raise ValueError("A flat Quote Input's batch needs its input schema to be framed.")
-        input_df = frame_rows(rows, request.input_schema, omittable=request.omittable_inputs)
+    records = reads_records(request.graph, request.input_node_ids)
+    if not records and request.input_schema is None:
+        raise ValueError("A flat Quote Input's batch needs its input schema to be framed.")
+    input_df = RequestReader(
+        records=records,
+        schema=request.input_schema or {},
+        omittable=request.omittable_inputs,
+    ).read(rows)
     execution_context.checkpoint(label="after_deploy_batch_dataframe")
 
     if answers_quote_by_quote(request.request_rows, input_df.height):

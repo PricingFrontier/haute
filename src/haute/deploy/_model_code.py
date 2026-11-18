@@ -15,6 +15,7 @@ from mlflow.pyfunc import PythonModelContext
 from haute._types import PipelineGraph
 
 if TYPE_CHECKING:
+    from haute.deploy._request_frame import RequestReader
     from haute.deploy._scorer import DeployInput
 
 
@@ -30,13 +31,7 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def _request(
-    graph: PipelineGraph,
-    input_node_ids: list[str],
-    model_input: pd.DataFrame,
-    input_schema: dict[str, Any],
-    omittable: frozenset[str],
-) -> DeployInput:
+def _request(reader: RequestReader, model_input: pd.DataFrame) -> DeployInput:
     """The request as the pipeline's request input takes it.
 
     A Workbench Input, and a Quote Input with tables, read their quotes as their records,
@@ -45,19 +40,17 @@ def _request(
     unread, where the signature lets any value through (specs/workbench). Any other
     request input takes a frame typed by its declared *input_schema*, as a container's
     request is, leaving out only the *omittable* columns: pandas has no typed null, so a
-    missing value (``NaN``, ``NaT``, ``NA``) is a null first.
+    missing value (``NaN``, ``NaT``, ``NA``) is a null first. *reader* reads either
+    (:class:`~haute.deploy._request_frame.RequestReader`).
     """
-    from haute.deploy._request_frame import frame_rows
-    from haute.deploy._scorer import QuoteRequest, reads_records
-
     records = [_plain(record) for record in model_input.to_dict(orient="records")]
-    if reads_records(graph, input_node_ids):
-        return QuoteRequest(tuple(records))
+    if reader.records:
+        return reader.read(records)
     present = [
         {key: None if _missing(value) else value for key, value in record.items()}
         for record in records
     ]
-    return frame_rows(present, input_schema, omittable=omittable)
+    return reader.read(present)
 
 
 def _missing(value: object) -> bool:
@@ -111,21 +104,11 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         from haute.deploy._request_rows import RequestRows
 
         self._request_rows = RequestRows.from_manifest(self._manifest["request_rows"])
-        from haute.deploy._request_frame import request_frame_schema
-        from haute.deploy._scorer import reads_records
+        from haute.deploy._request_frame import RequestReader
 
-        # A flat Quote Input's request is framed by the schema its sample recorded.
-        self._input_schema = (
-            {}
-            if reads_records(self._graph, self._input_node_ids)
-            else request_frame_schema(self._manifest["input_schema"])
-        )
-        # The columns a quote may leave out: its exposures, priced as a full policy term.
-        self._omittable = (
-            frozenset()
-            if reads_records(self._graph, self._input_node_ids)
-            else frozenset(self._manifest["omittable_inputs"])
-        )
+        # The request read as a container's is: a flat Quote Input's framed by the schema
+        # its sample recorded, leaving out only its exposures, priced for a full term.
+        self._reader = RequestReader.of(self._graph, self._input_node_ids, self._manifest)
 
         manifest_artifacts = set(self._manifest.get("artifacts", {}))
         missing_artifacts = sorted(manifest_artifacts - set(context.artifacts))
@@ -161,13 +144,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         preserve_primary_error = False
         try:
             with execution_context.stage("deploy_from_pandas"):
-                input_df = _request(
-                    self._graph,
-                    self._input_node_ids,
-                    model_input,
-                    self._input_schema,
-                    self._omittable,
-                )
+                input_df = _request(self._reader, model_input)
             execution_context.checkpoint(label="after_deploy_from_pandas")
             result = score_graph(
                 graph=self._graph,

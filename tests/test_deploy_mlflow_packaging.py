@@ -16,6 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute.deploy._request_frame import RequestReader
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
 
@@ -296,7 +297,7 @@ class TestBuildSignature:
             # The pandas frame MLflow hands ``predict`` after enforcing the signature, taken
             # as ``HauteModel.predict`` takes it: the records, for the reader.
             enforced = _enforce_schema(pd.DataFrame([quote]), signature.inputs)
-            request = _request(graph, ["request"], enforced, {}, frozenset())
+            request = _request(RequestReader.of(graph, ["request"], {}), enforced)
             assert isinstance(request, QuoteRequest)
             frames = workbench_request_frames(config, request.records)
             # The frames are the input sides, by port, ``<table>_input``.
@@ -346,7 +347,7 @@ class TestBuildSignature:
                 "items": [np.array([{"item_id": "Z", "value": np.float64(1.5)}], dtype=object)],
             }
         )
-        assert _request(graph, ["request"], by_hand, {}, frozenset()) == QuoteRequest(
+        assert _request(RequestReader.of(graph, ["request"], {}), by_hand) == QuoteRequest(
             (
                 {
                     "policy": {"limit": 100, "start": "2026-01-02"},
@@ -368,7 +369,10 @@ class TestBuildSignature:
         )
         limits = pd.DataFrame({"limit": [100]})
         assert _request(
-            flat, ["quotes"], limits, {"limit": pl.Int64()}, frozenset()
+            RequestReader.of(
+                flat, ["quotes"], {"input_schema": {"limit": "Int64"}, "omittable_inputs": []}
+            ),
+            limits,
         ).to_dicts() == [{"limit": 100}]
 
     def test_all_numeric_types(self):

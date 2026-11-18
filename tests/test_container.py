@@ -610,10 +610,15 @@ class TestGenerateAppSource:
         """DEP-R15: an exception escaping the route still names its request id."""
         module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [100.0]}))
 
-        def broken_framing(*_args, **_kwargs):
-            raise RuntimeError("frame builder broke at /srv/haute/app.py")
+        class BrokenReader:
+            """The request reader, failing as no route handles."""
 
-        monkeypatch.setattr(module, "frame_rows", broken_framing)
+            records = False
+
+            def read(self, *_args, **_kwargs):
+                raise RuntimeError("frame builder broke at /srv/haute/app.py")
+
+        monkeypatch.setattr(module, "_reader", BrokenReader())
         client = TestClient(module.app, raise_server_exceptions=False)
 
         with caplog.at_level("ERROR", logger="haute.deploy.container"):

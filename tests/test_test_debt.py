@@ -37,6 +37,14 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # tests/test_run_parity.py (EXE-10): differences between the ways of running a
+    # pipeline that another roadmap package owns, each strict so its delivery turns
+    # it green: MLR-04, WB-76, EXE-05, IOL-03 and DPL-05.
+    "54b913d430048d28",
+    "ac378a8c68ba550d",
+    "a2784bd74a21e9cb",
+    "73042823acd5d3df",
+    "2f33a80c3c0ce0fa",
     # The chunked GLM suite (MOD-M01) fits real RustyStats models in both fit modes;
     # rustystats is an optional dependency, so the module importorskips it like the
     # other GLM suites. See tests/test_glm_chunked_fit.py.

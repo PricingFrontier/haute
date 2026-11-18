@@ -482,7 +482,7 @@ from haute.deploy._batch_scoring import (
     prepare_batch_scoring,
     score_batch_worker,
 )
-from haute.deploy._request_frame import frame_rows, request_frame_schema
+from haute.deploy._request_frame import RequestReader
 from haute.deploy._request_rows import RequestRows
 from haute.deploy._response_json import ndjson_rows, response_json
 from haute.deploy._scorer import (
@@ -503,13 +503,9 @@ _manifest = json.loads(_MANIFEST_PATH.read_text())
 
 _pruned_graph = PipelineGraph.model_validate(_manifest["pruned_graph"])
 _input_node_ids = _manifest["input_node_ids"]
-# A Workbench Input, and a Quote Input with tables, read the quotes from the records as
-# sent, typing each value themselves; any other request input takes the rows as a frame.
-_reads_quotes = reads_records(_pruned_graph, _input_node_ids)
-# A flat Quote Input's rows are typed by the schema its sample recorded, never inferred.
-_request_schema = {{}} if _reads_quotes else request_frame_schema(_manifest["input_schema"])
-# The columns a quote may leave out: its exposures, priced as a full policy term.
-_omittable = frozenset() if _reads_quotes else frozenset(_manifest["omittable_inputs"])
+# How the request input reads a request's quotes: as their records, or a frame typed by
+# the schema its sample recorded, leaving out only its exposures (priced for a full term).
+_reader = RequestReader.of(_pruned_graph, _input_node_ids, _manifest)
 _output_node_id = _manifest["output_node_id"]
 # Whether a request of several quotes is answered in request order, or refused.
 _request_rows = RequestRows.from_manifest(_manifest["request_rows"])
@@ -788,9 +784,9 @@ async def _quote_batch(request: Request, rows: list):
             output_node_id=_output_node_id,
             artifact_paths=_artifact_paths,
             output_fields=_output_fields,
-            input_schema=None if _reads_quotes else _request_schema,
+            input_schema=None if _reader.records else _reader.schema,
             request_rows=_request_rows,
-            omittable_inputs=_omittable,
+            omittable_inputs=_reader.omittable,
         )
         outcome = await run_isolated_worker_async(
             score_batch_worker,
@@ -937,11 +933,7 @@ async def quote(request: Request) -> JSONResponse:
     # The body is size-capped, so a single quote is framed before anything is admitted:
     # a value its column does not hold is refused without holding a context.
     try:
-        input_df = (
-            QuoteRequest(tuple(rows))
-            if _reads_quotes
-            else frame_rows(rows, _request_schema, omittable=_omittable)
-        )
+        input_df = _reader.read(rows)
     except HauteError as exc:
         if is_public_contract_error(exc):
             return JSONResponse(status_code=422, content=exc.to_payload())

@@ -577,6 +577,76 @@ step, the error line is that step's first line, and the message is unchanged. An
 only data can raise, such as a strict cast meeting a bad value, keeps no line, and a
 successful run does no extra work.
 
+### Ways of running a pipeline
+
+A pipeline is run six ways, and every way gives one answer. At the same node, under the
+same source, on the same inputs and with the same memory profile, each way gives the same
+rows, the same columns in the same order and the same types where it reports them, or the
+same refusal in the same words. `tests/test_run_parity.py` runs every shipped example, and
+a generated pipeline for each node type and each Columns setting, every way, and holds each
+difference below with a case that names its sentence; a node type or a way without a case
+fails it, as does a difference without a sentence here.
+
+| Way | What runs it | Where it answers |
+|---|---|---|
+| **preview** | the graph walker's display walk (`executor.execute_graph`), in the editor's capped interactive worker | any node, under any source |
+| **trace** | the display walk the preview ran (`trace.execute_trace`), one row at a time | any node, under any source |
+| **haute run** | the graph walker's sink walk (`execution.execute_lazy_graph`; `cli._run.run_frames` holds what it collects) | the response node, or `--node` |
+| **plain Python** | the file's own `Pipeline.run()` and `Pipeline.score()` loop over its decorated functions | its response node, or its single leaf |
+| **dry run** | `haute deploy --dry-run`: the deploy scorer on the test quotes (`deploy._validators.price_test_quote_file`) | the response node, under `live` |
+| **service** | the deployed app's `/quote` route, its batch worker and the Databricks model | the response node, under `live` |
+
+The ways share what decides an answer, so they cannot differ in it:
+
+- **What a node does.** Each node type's work is one helper its builder and its decorator
+  both call (`_node_apply`, `_rating`, `_model_scorer`, `_edge_join`, `_input_providers`).
+- **A node's Columns settings.** `_node_apply.shape_node_output` applies a node's
+  `selected_columns`, in the selection's order, then its `column_renames`. The graph walker
+  calls it after each builder (both walks, and the write recipes it composes), and the
+  plain-Python loop after each node's work, a hook's included, reading the settings from
+  the node's sidecar or, for a Transform and an Edge Join, its decorator. The projection
+  planner refuses no demand for a column a source's selection drops: it reads that source
+  full width, so the selection applies there as everywhere, and the node that reads the
+  column refuses it.
+- **The names a node gives its inputs.** The parser's rule (`_node_bindings`) names every
+  input; the plain-Python loop keeps each bound edge's name and gives it to a configured
+  node, as the walker gives a builder its `source_names`, so a Source Switch, a Quote
+  Response and an Apply Optimisation read their inputs by the same names (`données` is
+  `donn_xe9_es`) whichever way runs them.
+- **The frames between nodes.** Every way passes each node's output on as a lazy frame.
+- **A request's quotes.** `deploy._request_frame.RequestReader` reads them for the
+  service, its batch worker, the Databricks model and the dry run alike.
+- **A column a node reads that its input lacks.** One sentence
+  (`_execute_lazy.missing_input_columns`), whichever check of a walk finds it.
+
+The differences that are meant, each with its reason:
+
+- A deployment answers at its response node, under the live source. It serves requests;
+  the other ways answer at any node and under any source.
+- A preview shows the first rows of the answer, up to its row limit. The editor shows a
+  sample; the rows it shows are rows every other way gives.
+- A pipeline with more than one source and no request input is not deployed. A
+  deployment cannot tell which source a request stands for
+  ([deploy](../deploy/high-level.md)).
+- A workbench project is released as the underwriter app, which prices its quotes, and
+  `haute deploy` refuses it ([workbench](../workbench/high-level.md)).
+- A request of several quotes is answered with one row per quote, in request order; a
+  quote the pipeline answers with other than one row is answered in a request of its own.
+  The dry run sends each such quote alone, as the deployment's record says to.
+- A process runs what its memory admits: work whose memory nobody has measured is
+  admitted, with a warning, under a worker's memory cap and refused without one (a cross
+  join, above). The editor's preview runs in a capped worker; `haute run` runs in the
+  command's own process, without one.
+- A trace of a Workbench Output explains a cell from the frame that fills its table
+  ([tracing](../tracing/high-level.md)), so it holds that frame's columns too.
+- The file run as Python checks no node's column contract: a node reading a column its
+  input lacks refuses it in its own words. Contracts are the walker's boundary checks.
+- The file run as Python runs in the analyst's own process, which Haute neither caps nor
+  admits, so it runs work an admitted way refuses for its memory.
+
+A difference no line here allows is a defect. Those another package owns are held by the
+test as expected failures naming the package, so its delivery turns them green.
+
 ## Design rationale
 
 - **Hard-capped workers are the memory-safety mechanism; the static estimate admits
@@ -607,10 +677,12 @@ successful run does no extra work.
   bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
   C901 rule scoped to the walker module only; the rest of the package is not held to
   that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over
-  the Python functions it registered, sharing only the one topological sort
-  (`topo_sort_ids`) and frame picking (`_pick_source_frame`) with the walker: the walker
-  runs config-built nodes, and routing the decorator path through it would need
-  `Pipeline.to_graph()` to rebuild every live node losslessly.
+  the Python functions it registered: the walker runs config-built nodes, and routing the
+  decorator path through it would need `Pipeline.to_graph()` to rebuild every live node
+  losslessly. The loop shares with the walker everything that decides an answer (the one
+  topological sort, `topo_sort_ids`; frame picking, `_pick_source_frame`; each node type's
+  work, Columns settings and input names; see **Ways of running a pipeline**), and
+  `tests/test_run_parity.py` holds the two to one answer.
 - **Eager-with-caching for interactivity, lazy-with-captures for throughput.**
   Interactive preview needs low click-to-result latency on the *same* graph across
   many small edits — caching materialised DataFrames keyed by a graph fingerprint

@@ -48,6 +48,7 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._node_addresses import node_display_name
+from haute._node_apply import shape_node_output
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_spec, node_type_table
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import (
@@ -64,7 +65,6 @@ from haute.errors import (
     ContractColumnsMissingError,
     ContractMismatchError,
     ContractResolutionError,
-    NodeConfigError,
     SchemaMismatchError,
 )
 
@@ -97,9 +97,7 @@ def _edge_join_recipe(
     name = execution_node_name(node.id, node.data.label)
 
     def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
-        selected = _apply_selected_columns(lf, shaping, node_label=name)
-        renamed = _apply_column_renames(selected, shaping)
-        return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+        return shape_node_output(lf, shaping, node_label=name)
 
     return JoinRecipe(frames[base_index], frames[join_index], join_config, finish=finish)
 
@@ -169,9 +167,7 @@ def _write_recipe(
     name = execution_node_name(node.id, node.data.label)
 
     def finish(lf: pl.LazyFrame) -> pl.LazyFrame:
-        selected = _apply_selected_columns(lf, shaping, node_label=name)
-        renamed = _apply_column_renames(selected, shaping)
-        return renamed if isinstance(renamed, pl.LazyFrame) else renamed.lazy()
+        return shape_node_output(lf, shaping, node_label=name)
 
     if not decision.eligible:
         # Every refusal, not only the ones a write happens to report. A node
@@ -360,8 +356,19 @@ def _assert_inputs_satisfy_contract(
     if contract.inputs is None:
         return
     missing = sorted(contract.inputs - upstream_columns)
-    if not missing:
-        return
+    if missing:
+        raise missing_input_columns(node, missing, upstream_columns, name)
+
+
+def missing_input_columns(
+    node: GraphNode,
+    missing: Sequence[str],
+    upstream_columns: frozenset[str],
+    name: str | None = None,
+    **context: object,
+) -> ContractColumnsMissingError:
+    """The refusal of *node*, whose input of *upstream_columns* lacks the *missing*
+    columns it reads: one sentence, whichever check of a walk finds it."""
     subject = f"{_node_display_name(node, name)} needs {_name_columns(missing)}"
     if not upstream_columns:
         message = f"{subject}, but its input has no columns."
@@ -371,7 +378,7 @@ def _assert_inputs_satisfy_contract(
         if similar:
             noun = "a similar column" if len(similar) == 1 else "similar columns"
             message += f" Its input has {noun}: {', '.join(map(repr, similar))}."
-    raise ContractColumnsMissingError(message, node_id=node.id, missing=missing)
+    return ContractColumnsMissingError(message, node_id=node.id, missing=list(missing), **context)
 
 
 def _assert_outputs_satisfy_contract(
@@ -667,73 +674,6 @@ _GC_BATCH_INTERVAL = 3
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _apply_column_renames(
-    frame: pl.LazyFrame | pl.DataFrame,
-    config: dict[str, Any],
-) -> pl.LazyFrame | pl.DataFrame:
-    """Apply column renames from *config*'s ``column_renames``.
-
-    ``column_renames`` is a ``dict[str, str]`` mapping original column names
-    to new names.  Only renames for columns that actually exist in the frame
-    are applied.  A no-op when the dict is absent or empty.
-    """
-    renames: dict[str, str] | None = config.get("column_renames")
-    if not renames:
-        return frame
-
-    if isinstance(frame, pl.LazyFrame):
-        all_cols = set(frame.collect_schema().names())
-    else:
-        all_cols = set(frame.columns)
-
-    valid = {old: new for old, new in renames.items() if old in all_cols and old != new}
-    if valid:
-        return frame.rename(valid)
-    return frame
-
-
-def _apply_selected_columns(
-    frame: pl.LazyFrame | pl.DataFrame,
-    config: dict[str, Any],
-    *,
-    node_label: str,
-) -> pl.LazyFrame | pl.DataFrame:
-    """Filter *frame* to only the columns listed in *config*'s ``selected_columns``.
-
-    If ``selected_columns`` is absent or empty the frame is returned unchanged.
-    Only columns that actually exist in the frame are kept (a column an upstream
-    edit renamed or removed is left out), and the filter is a no-op when every
-    column is selected (avoids an unnecessary projection). A selection none of
-    whose columns exist any more is refused, naming the node and the columns:
-    keeping every column instead would silently widen the node's output.
-    """
-    sel_cols: list[str] | None = config.get("selected_columns")
-    if not sel_cols:
-        return frame
-
-    if isinstance(frame, pl.LazyFrame):
-        all_cols = frame.collect_schema().names()
-    else:
-        all_cols = frame.columns
-
-    seen: set[str] = set()
-    valid = []
-    for c in sel_cols:
-        if c in all_cols and c not in seen:
-            valid.append(c)
-            seen.add(c)
-    if not valid:
-        stale = ", ".join(repr(column) for column in dict.fromkeys(sel_cols))
-        raise NodeConfigError(
-            f"Node {node_label!r} keeps columns its input no longer has any of: {stale}. "
-            "Choose its columns again.",
-            setting="selected_columns",
-        )
-    if len(valid) < len(all_cols):
-        return frame.select(valid)
-    return frame
 
 
 def _is_plain_model_score(node: GraphNode) -> bool:
