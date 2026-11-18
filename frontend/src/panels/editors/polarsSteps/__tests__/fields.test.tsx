@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { act, render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { useState } from "react"
 
+import { commitOpenDrafts, isDraftOpen } from "../../../../components/form"
 import { literal } from "../catalogue"
 import { completionMatches } from "../completion"
 import { ArgumentField, ColumnListField, ColumnPicker, ConditionRow, NumberField, OperandField } from "../fields"
@@ -172,6 +173,118 @@ describe("number fields", () => {
     fireEvent.change(input, { target: { value: "1.5" } })
     fireEvent.blur(input)
     expect(onCommit).toHaveBeenCalledWith(1.5)
+  })
+
+  it("writes nothing while typing and once on commit", () => {
+    const onCommit = vi.fn()
+    render(<NumberField value={2} onCommit={onCommit} ariaLabel="Rate" />)
+    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    fireEvent.change(input, { target: { value: "4" } })
+    fireEvent.change(input, { target: { value: "45" } })
+    expect(onCommit).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    fireEvent.blur(input)
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith(45)
+  })
+
+  it("shows the stored number when it moves under an open draft", () => {
+    const onCommit = vi.fn()
+    const { rerender } = render(<NumberField value={2} onCommit={onCommit} ariaLabel="Rate" />)
+    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    fireEvent.change(input, { target: { value: "7" } })
+    rerender(<NumberField value={5} onCommit={onCommit} ariaLabel="Rate" />)
+    expect(input).toHaveValue(5)
+    fireEvent.blur(input)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
+  it("keeps a refused number in the box with its reason until the stored number moves", () => {
+    const onCommit = vi.fn()
+    const { rerender } = render(<NumberField value={2} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
+    const input = screen.getByRole("spinbutton", { name: "Count" })
+    fireEvent.change(input, { target: { value: "1.5" } })
+    fireEvent.blur(input)
+    expect(input).toHaveValue(1.5)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number.")
+    // The reason stays while the value is being fixed, until the next commit.
+    fireEvent.change(input, { target: { value: "1.25" } })
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number.")
+    rerender(<NumberField value={3} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
+    expect(input).toHaveValue(3)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    // A new draft starts without the old reason.
+    fireEvent.change(input, { target: { value: "4" } })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
+  it("a save commits an open number once, and a refused one keeps its value and reason", () => {
+    const onCommit = vi.fn()
+    render(<NumberField value={2} min={1} onCommit={onCommit} ariaLabel="Rate" />)
+    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    fireEvent.change(input, { target: { value: "6" } })
+    act(() => commitOpenDrafts())
+    act(() => commitOpenDrafts())
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith(6)
+    fireEvent.change(input, { target: { value: "0" } })
+    act(() => commitOpenDrafts())
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(input).toHaveValue(0)
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a value of at least 1.")
+    expect(isDraftOpen()).toBe(true)
+  })
+})
+
+describe("a column box holds the shared draft", () => {
+  afterEach(cleanup)
+
+  it("writes nothing while typing and once on commit", () => {
+    const onCommit = vi.fn()
+    render(<ColumnPicker value="premium" onCommit={onCommit} suggestions={COLUMNS} ariaLabel="Probe" />)
+    const input = screen.getByRole("combobox", { name: "Probe" })
+    fireEvent.change(input, { target: { value: "regi" } })
+    fireEvent.change(input, { target: { value: "region_x" } })
+    expect(onCommit).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    fireEvent.blur(input)
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith("region_x")
+  })
+
+  it("shows the stored name when it moves under an open draft", () => {
+    const onCommit = vi.fn()
+    const { rerender } = render(<ColumnPicker value="premium" onCommit={onCommit} suggestions={COLUMNS} ariaLabel="Probe" />)
+    const input = screen.getByRole("combobox", { name: "Probe" })
+    fireEvent.change(input, { target: { value: "Rat" } })
+    rerender(<ColumnPicker value="region" onCommit={onCommit} suggestions={COLUMNS} ariaLabel="Probe" />)
+    expect(input).toHaveValue("region")
+    // The same name coming back does not bring the draft back.
+    rerender(<ColumnPicker value="premium" onCommit={onCommit} suggestions={COLUMNS} ariaLabel="Probe" />)
+    expect(input).toHaveValue("premium")
+    fireEvent.blur(input)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
+  it("a save commits a picker's open name once, and adds the name typed in a list's add box", () => {
+    const onCommit = vi.fn()
+    const onChange = vi.fn()
+    render(
+      <>
+        <ColumnPicker value="" onCommit={onCommit} suggestions={COLUMNS} ariaLabel="Probe" />
+        <ColumnListField columns={["region"]} onChange={onChange} suggestions={COLUMNS} ariaLabel="Group by" />
+      </>,
+    )
+    fireEvent.change(screen.getByRole("combobox", { name: "Probe" }), { target: { value: " premium " } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Group by: add" }), { target: { value: "typed" } })
+    act(() => commitOpenDrafts())
+    act(() => commitOpenDrafts())
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith("premium")
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(["region", "typed"])
+    expect(screen.getByRole("combobox", { name: "Group by: add" })).toHaveValue("")
   })
 })
 

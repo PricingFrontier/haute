@@ -26,7 +26,15 @@ import {
 } from "lucide-react"
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 
-import { CommittedTextField, IconSelect, QuietAction, ValidatedTextField } from "../../../components/form"
+import {
+  CommittedTextField,
+  DraftTextField,
+  IconSelect,
+  QuietAction,
+  ValidatedTextField,
+  useCommittedDraft,
+  type CommittedDraft,
+} from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
@@ -245,6 +253,11 @@ export function TextField({
   )
 }
 
+/**
+ * A number committed on blur or Enter. A value the field cannot take stays in
+ * the box with its reason until the next commit; both let go when the stored
+ * number moves.
+ */
 export function NumberField({
   value,
   onCommit,
@@ -253,6 +266,7 @@ export function NumberField({
   min,
   max,
   id,
+  onRefused,
 }: {
   value: number
   onCommit: (next: number) => void
@@ -261,17 +275,44 @@ export function NumberField({
   min?: number
   max?: number
   id?: string
+  /** Told why a commit was refused, or null once one is taken. */
+  onRefused?: (reason: string | null) => void
 }) {
-  const [error, setError] = useState<string | null>(null)
-  const [seenValue, setSeenValue] = useState(value)
-  if (seenValue !== value) {
-    setSeenValue(value)
-    setError(null)
+  const read = (text: string): number | { refusal: string } => {
+    const parsed = text.trim() === "" ? Number.NaN : Number(text)
+    if (!Number.isFinite(parsed)) return { refusal: "Enter a finite number." }
+    if (integer && !Number.isInteger(parsed)) return { refusal: "Enter a whole number." }
+    if (min !== undefined && parsed < min) return { refusal: `Enter a value of at least ${min}.` }
+    if (max !== undefined && parsed > max) return { refusal: `Enter a value of at most ${max}.` }
+    return parsed
   }
+  // Why the open draft's last commit, from leaving the box or from a save, was refused.
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const draft = useCommittedDraft(String(value), (text) => {
+    const number = read(text)
+    if (typeof number !== "number") {
+      setRefusal(number.refusal)
+      onRefused?.(number.refusal)
+      return { ok: false }
+    }
+    setRefusal(null)
+    onRefused?.(null)
+    onCommit(number)
+  })
+  // The reason belongs to the draft it refused: shown while that draft is open, so an Undo
+  // under it takes both away, and dropped when a new draft starts.
+  const error = draft.editing ? refusal : null
   const errorId = useId()
   return (
     <div>
-      <CommittedTextField
+      <DraftTextField
+        draft={{
+          ...draft,
+          edit: (text) => {
+            if (!draft.editing) setRefusal(null)
+            draft.edit(text)
+          },
+        }}
         id={id}
         type="number"
         inputMode={integer ? "numeric" : "decimal"}
@@ -281,26 +322,6 @@ export function NumberField({
         aria-label={ariaLabel}
         aria-invalid={error !== null ? true : undefined}
         aria-describedby={error === null ? undefined : errorId}
-        value={String(value)}
-        onCommit={(text) => {
-          let nextError: string | null = null
-          const parsed = text.trim() === "" ? Number.NaN : Number(text)
-          if (!Number.isFinite(parsed)) {
-            nextError = "Enter a finite number."
-          } else if (integer && !Number.isInteger(parsed)) {
-            nextError = "Enter a whole number."
-          } else if (min !== undefined && parsed < min) {
-            nextError = `Enter a value of at least ${min}.`
-          } else if (max !== undefined && parsed > max) {
-            nextError = `Enter a value of at most ${max}.`
-          }
-          if (nextError !== null) {
-            setError(nextError)
-            return
-          }
-          setError(null)
-          onCommit(parsed)
-        }}
         className={`${CONTROL_CLASS} font-mono`}
         style={INPUT_STYLE}
       />
@@ -563,13 +584,11 @@ const UNKNOWN_BORDER = "1px dashed var(--warning)"
  * typed are listed beneath (every name while the box is empty, none active),
  * typing makes the first match active, Up/Down move, Tab, Enter or a click
  * takes the active name, Escape closes the list, and with nothing active
- * Enter or leaving the box commits what was typed. Each name shows its type
- * from the step's schema.
+ * Enter or leaving the box commits the draft. Each name shows its type from
+ * the step's schema. The box shows and commits the draft its caller holds.
  */
 function CompletingInput({
   draft,
-  onDraftChange,
-  onCommit,
   onAccept,
   suggestions,
   exclude = [],
@@ -582,9 +601,8 @@ function CompletingInput({
   describedBy,
   extras = [],
 }: {
-  draft: string
-  onDraftChange: (next: string) => void
-  onCommit: (draft: string) => void
+  draft: CommittedDraft<string>
+  /** A completion taken: its value, which the caller commits itself. */
   onAccept: (name: string) => void
   suggestions: string[]
   exclude?: string[]
@@ -600,7 +618,7 @@ function CompletingInput({
   extras?: Completion[]
 }) {
   const schema = useStepSchema()
-  const typed = draft.trim()
+  const typed = draft.shown.trim()
   const exact = typed.length > 0 && suggestions.includes(typed) && !exclude.includes(typed) ? typed : null
   const extraMatches = extras.filter((entry) => entry.label.toLowerCase().includes(typed.toLowerCase()))
   const completion = useCompletionList([...namesAsCompletions(completionMatches(suggestions, typed, exclude), schema.describe), ...extraMatches], exact)
@@ -610,32 +628,31 @@ function CompletingInput({
   }
   return (
     <div className={`relative ${className}`}>
-      <input
+      <DraftTextField
+        draft={{
+          ...draft,
+          edit: (next) => {
+            draft.edit(next)
+            // A cleared box is back to nothing chosen: no suggestion is active.
+            if (next.trim()) completion.typed()
+            else completion.show()
+          },
+        }}
         id={id}
         type="text"
         aria-label={ariaLabel}
         aria-describedby={describedBy}
-        value={draft}
         placeholder={placeholder}
         autoFocus={autoFocus}
         {...completion.inputProps}
-        onChange={(event) => {
-          onDraftChange(event.target.value)
-          // A cleared box is back to nothing chosen: no suggestion is active.
-          if (event.target.value.trim()) completion.typed()
-          else completion.show()
-        }}
         onFocus={completion.show}
-        onBlur={() => {
-          completion.hide()
-          onCommit(draft)
-        }}
+        onBlur={completion.hide}
         onKeyDown={(event) => {
           if (completion.onKeyDown(event, accept)) return
           if (event.key === "Enter") {
             event.preventDefault()
             completion.hide()
-            onCommit(draft)
+            draft.commit()
           }
         }}
         className={`${CONTROL_CLASS} font-mono`}
@@ -648,8 +665,8 @@ function CompletingInput({
 
 /**
  * A column-name box that completes from the suggested columns and accepts
- * any typed name. The draft follows the committed value when it changes from
- * outside, without remounting the box, so focus survives a commit.
+ * any typed name. Its draft is the shared one: it lets go when the stored
+ * name moves, without remounting the box, so focus survives a commit.
  */
 export function ColumnPicker({
   value,
@@ -673,33 +690,35 @@ export function ColumnPicker({
   extras?: Completion[]
   onExtra?: (value: string) => void
 }) {
-  const [draft, setDraft] = useState(value)
-  const [seen, setSeen] = useState(value)
-  if (value !== seen) {
-    setSeen(value)
-    setDraft(value)
+  const draft = useCommittedDraft(value, (next) => {
+    const trimmed = next.trim()
+    if (trimmed !== value) onCommit(trimmed)
+  })
+  // A name taken from the list or offered is committed at once; the box shows it
+  // until the stored name follows.
+  const take = (name: string) => {
+    const trimmed = name.trim()
+    if (trimmed === value) {
+      draft.discard()
+      return
+    }
+    draft.edit(trimmed)
+    onCommit(trimmed)
   }
   const schema = useStepSchema()
   const noteId = useId()
-  const commit = (next: string) => {
-    const trimmed = next.trim()
-    if (trimmed !== value) onCommit(trimmed)
-  }
   const unknown = value !== "" && schema.isKnown !== null && !schema.isKnown(value)
   return (
     <div className="grid gap-1 min-w-0">
       <CompletingInput
         draft={draft}
-        onDraftChange={setDraft}
-        onCommit={commit}
         onAccept={(name) => {
           if (extras?.some((entry) => entry.value === name)) {
-            setDraft(value)
+            draft.discard()
             onExtra?.(name)
             return
           }
-          setDraft(name)
-          commit(name)
+          take(name)
         }}
         suggestions={suggestions}
         extras={extras}
@@ -710,10 +729,7 @@ export function ColumnPicker({
         unknown={unknown}
         describedBy={unknown ? noteId : undefined}
       />
-      {unknown && <UnknownColumnNote id={noteId} name={value} suggestion={schema.closest(value)} onUse={(name) => {
-        setDraft(name)
-        onCommit(name)
-      }} />}
+      {unknown && <UnknownColumnNote id={noteId} name={value} suggestion={schema.closest(value)} onUse={take} />}
     </div>
   )
 }
@@ -751,12 +767,13 @@ export function ColumnListField({
   id?: string
 }) {
   const schema = useStepSchema()
-  const [draft, setDraft] = useState("")
   const add = (raw: string) => {
     const name = raw.trim()
     if (name && !columns.includes(name)) onChange([...columns, name])
-    setDraft("")
   }
+  // The name being typed into the add box, over nothing stored: a commit adds it and
+  // empties the box.
+  const draft = useCommittedDraft<string>("", add)
   const isUnknown = (name: string) => schema.isKnown !== null && !schema.isKnown(name)
   const unknown = columns.filter(isUnknown)
   return (
@@ -773,9 +790,10 @@ export function ColumnListField({
         ))}
         <CompletingInput
           draft={draft}
-          onDraftChange={setDraft}
-          onCommit={add}
-          onAccept={add}
+          onAccept={(name) => {
+            draft.discard()
+            add(name)
+          }}
           suggestions={suggestions}
           exclude={columns}
           ariaLabel={`${ariaLabel}: add`}
@@ -805,6 +823,7 @@ export function LiteralValueInput({
   ariaLabel,
   integer = false,
   min,
+  onRefused,
 }: {
   value: LiteralOperand
   onChange: (next: LiteralOperand) => void
@@ -812,6 +831,8 @@ export function LiteralValueInput({
   integer?: boolean
   /** The least number the slot takes, such as 0 for decimal places. */
   min?: number
+  /** Told why a typed number was refused, or null once one is taken. */
+  onRefused?: (reason: string | null) => void
 }) {
   switch (value.type) {
     case "number":
@@ -822,6 +843,7 @@ export function LiteralValueInput({
           min={min}
           onCommit={(n) => onChange(literal("number", n))}
           ariaLabel={ariaLabel}
+          onRefused={onRefused}
         />
       )
     case "text":
@@ -1103,6 +1125,9 @@ function LiteralListField({
   const type: LiteralType = values[0]?.type ?? chosenType
   const [draft, setDraft] = useState<LiteralOperand>(defaultLiteral(type))
   const [refusal, setRefusal] = useState<string | null>(null)
+  // Why the new-value box refused what it shows: nothing is added while it does, so what
+  // is added is what the box shows.
+  const [boxRefusal, setBoxRefusal] = useState<string | null>(null)
   const current = draft.type === type ? draft : defaultLiteral(type)
   const knownNumberType = numberTypeOf(columnType)
   const kind: NumberType | undefined = type === "number" ? (knownNumberType ?? numberType ?? "float") : undefined
@@ -1110,6 +1135,10 @@ function LiteralListField({
   // Every type keeps a draft and adds through the explicit action, so the
   // default of a select (true, today's date) can be added like any other.
   const add = () => {
+    if (boxRefusal !== null) {
+      setRefusal(boxRefusal)
+      return
+    }
     if (type === "text" && String(current.value).length === 0) return
     if (scale !== null && typeof current.value === "number" && decimalPlaces(current.value) > scale) {
       setRefusal(`${current.value} has more decimal places than the column's ${scale}, so it can never match.`)
@@ -1128,6 +1157,7 @@ function LiteralListField({
           setChosenType(next)
           setDraft(defaultLiteral(next))
           setRefusal(null)
+          setBoxRefusal(null)
           if (values.length > 0) onChange([])
         }}
         ariaLabel={`${ariaLabel} type`}
@@ -1152,7 +1182,13 @@ function LiteralListField({
           />
         ))}
         <div className="flex-1 basis-28 min-w-0 flex items-center gap-1">
-          <LiteralValueInput value={current} onChange={setDraft} ariaLabel={`${ariaLabel} new value`} integer={kind === "integer"} />
+          <LiteralValueInput
+            value={current}
+            onChange={setDraft}
+            onRefused={setBoxRefusal}
+            ariaLabel={`${ariaLabel} new value`}
+            integer={kind === "integer"}
+          />
           <button type="button" onClick={add} aria-label={`${ariaLabel}: add value`} className="add-row-btn focus-ring p-1 rounded" style={ADD_BUTTON_STYLE}>
             <Plus size={12} aria-hidden="true" />
           </button>

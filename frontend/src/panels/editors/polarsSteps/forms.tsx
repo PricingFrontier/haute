@@ -9,7 +9,7 @@
 import { Info } from "lucide-react"
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 
-import { ConfigCheckbox, QuietAction } from "../../../components/form"
+import { ConfigCheckbox, DraftTextArea, QuietAction, useCommittedDraft } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
 import type { GlobalConstantType } from "../../../utils/globalConstants"
@@ -215,6 +215,18 @@ function nestedExpression(ctx: StepFormContext, depth: number): RenderExpression
 type FormulaDraft = { over: string; text: string }
 type UnfinishedFormula = { draft: FormulaDraft | null; set: (next: FormulaDraft | null) => void }
 
+/** What an expression's editor remembers beside the stored expression, and the identity it was made against. */
+type Remembered = {
+  /** The expression's identity from `useRowKeys` when this was remembered. */
+  of: number
+  /** The expression left under each calculation, so going back to one restores it. */
+  left: ReadonlyMap<CalculationId, Expr>
+  /** A formula's unfinished text, so it survives a switch of calculation. */
+  formula: FormulaDraft | null
+}
+
+const NOTHING_LEFT: ReadonlyMap<CalculationId, Expr> = new Map()
+
 /**
  * An expression's select with the form of the calculation it names. A nested
  * expression (`only` absent) offers every calculation in "Computed as"; a
@@ -222,6 +234,10 @@ type UnfinishedFormula = { draft: FormulaDraft | null; set: (next: FormulaDraft 
  * it is a function step, and no select otherwise (`only` null). The select
  * and the form share what lets a switch keep work while the form is open: the
  * expression left for each calculation, and a formula's unfinished text.
+ * Both are held against the expression's identity, which follows this
+ * editor's own writes; a change from outside (an Undo, a Redo, a sync frame)
+ * gives the expression a new identity, never one it had before, so what was
+ * remembered is forgotten for good.
  */
 function ExpressionFields({
   expr,
@@ -238,12 +254,35 @@ function ExpressionFields({
   ariaLabel: string
   only?: FunctionSection | null
 }) {
-  const [left, setLeft] = useState<ReadonlyMap<CalculationId, Expr>>(() => new Map())
-  const [formulaDraft, setFormulaDraft] = useState<FormulaDraft | null>(null)
+  const identity = useRowKeys([expr])
+  const of = identity.keys[0]
+  const [remembered, setRemembered] = useState<Remembered | null>(null)
+  const held = remembered?.of === of ? remembered : null
+  const left = held?.left ?? NOTHING_LEFT
+  // Every write of the expression from here says so, so its identity follows it.
+  const write = (next: Expr) => onChange(identity.edit([next])[0])
+  const remember = (change: (current: Remembered) => Remembered) =>
+    setRemembered((previous) => change(previous?.of === of ? previous : { of, left: NOTHING_LEFT, formula: null }))
   return (
     <>
-      {only !== null && <ExprTypeSelect expr={expr} onChange={onChange} ctx={ctx} ariaLabel={ariaLabel} left={left} onLeave={(id, from) => setLeft((drafts) => new Map(drafts).set(id, from))} only={only} />}
-      <ExprEditor expr={expr} onChange={onChange} ctx={ctx} depth={depth} unfinished={{ draft: formulaDraft, set: setFormulaDraft }} />
+      {only !== null && (
+        <ExprTypeSelect
+          expr={expr}
+          onChange={write}
+          ctx={ctx}
+          ariaLabel={ariaLabel}
+          left={left}
+          onLeave={(id, from) => remember((current) => ({ ...current, left: new Map(current.left).set(id, from) }))}
+          only={only}
+        />
+      )}
+      <ExprEditor
+        expr={expr}
+        onChange={write}
+        ctx={ctx}
+        depth={depth}
+        unfinished={{ draft: held?.formula ?? null, set: (formula) => remember((current) => ({ ...current, formula })) }}
+      />
     </>
   )
 }
@@ -397,6 +436,9 @@ const ARG_LABELS: Record<string, string[]> = {
   try_to_datetime: ["Format"],
 }
 
+/** Why a formula was not taken, read from `text`; `refused` marks one that was read but does something Polars 2 refuses. */
+type FormulaProblem = { message: string; position: number | null; text: string; refused?: boolean }
+
 /** The line under the formula box while the caret is inside a call: `round(value, **decimal places**)`. */
 function ArgumentTip({ fn, arg }: { fn: string; arg: number }) {
   const spec = FUNCTIONS.find((f) => f.value === fn)
@@ -424,10 +466,10 @@ function ArgumentTip({ fn, arg }: { fn: string; arg: number }) {
  * move, Tab, Enter or a click takes the active entry (a function arrives as
  * `name()` with the caret inside), Escape closes the list. With nothing
  * active, Enter and leaving the box commit the formula. Inside a call a line
- * names its arguments; text that cannot be read says where reading stopped;
- * a column the step does not have is named, with the closest one offered.
- * The draft follows `text` when it changes from outside, without remounting
- * the box, so focus survives a commit.
+ * names its arguments; text that cannot be read stays in the box and says
+ * where reading stopped; a column the step does not have is named, with the
+ * closest one offered. The draft is the shared one: it lets go when the stored
+ * formula moves, without remounting the box, so focus survives a commit.
  */
 function FormulaField({
   text,
@@ -449,68 +491,76 @@ function FormulaField({
 }) {
   const schema = useStepSchema()
   const problemId = useId()
-  // Unfinished text comes back only over the formula it was typed over.
-  const [draft, setDraft] = useState(() => (unfinished?.draft?.over === text ? unfinished.draft.text : text))
-  const [caret, setCaret] = useState(text.length)
-  // `refused` marks a formula that was read but does something Polars 2 refuses.
-  const [problem, setProblem] = useState<{ message: string; position: number | null; text: string; refused?: boolean } | null>(null)
-  const [seenText, setSeenText] = useState(text)
-  if (text !== seenText) {
-    setSeenText(text)
-    setDraft(text)
-    setCaret(Math.min(caret, text.length))
-    setProblem(null)
-  }
-  const box = useRef<HTMLTextAreaElement | null>(null)
-  const pendingCaret = useRef<number | null>(null)
-  const { prefix, entries, exact } = formulaCompletions(draft, caret, columns, variables, constants, schema)
   const bare = useMemo(() => bareConstants(constants, columns), [constants, columns])
-  const completion = useCompletionList(entries, exact)
-  const call = callAtCaret(draft, caret)
-
-  useEffect(() => {
-    if (pendingCaret.current !== null && box.current) {
-      box.current.setSelectionRange(pendingCaret.current, pendingCaret.current)
-      pendingCaret.current = null
-    }
-  })
-  // Grow with the formula: one line empty, as many as the text wraps onto.
-  useLayoutEffect(() => {
-    const element = box.current
-    if (!element) return
-    element.style.height = "auto"
-    element.style.height = `${element.scrollHeight}px`
-  }, [draft])
-
-  // Text in the box that is not yet read, kept where it survives a switch of calculation.
-  const type = (value: string) => {
-    setDraft(value)
-    unfinished?.set(value === text ? null : { over: text, text: value })
-  }
-  const commitText = (value: string) => {
-    completion.hide()
-    if (value.trim() === text) {
-      // Back at the committed formula: whatever failed to parse is gone.
-      setProblem(null)
-      unfinished?.set(null)
-      return
-    }
+  // Why the open draft's last commit, from leaving the box or from a save, was not taken.
+  const [refusal, setRefusal] = useState<FormulaProblem | null>(null)
+  /** The expression *value* reads as, or why it cannot be taken. */
+  const read = (value: string): { expr: Expr } | { problem: FormulaProblem } => {
     try {
       const expr = parseFormula(value, variables, bare)
       const invalid = exprProblem(expr, "The formula", depth)
       if (invalid) throw new FormulaError(`${invalid} Compute part of it in an earlier step.`)
       const refused = exprTypeProblem(expr, schema.typeOf)
-      if (refused) {
-        setProblem({ message: refused, position: null, text: value, refused: true })
-        return
-      }
-      onCommit(expr)
-      setProblem(null)
-      unfinished?.set(null)
+      if (refused) return { problem: { message: refused, position: null, text: value, refused: true } }
+      return { expr }
     } catch (error) {
-      if (error instanceof FormulaError) setProblem({ message: error.message, position: error.position, text: value })
-      else setProblem({ message: "The formula could not be read.", position: null, text: value })
+      if (error instanceof FormulaError) return { problem: { message: error.message, position: error.position, text: value } }
+      return { problem: { message: "The formula could not be read.", position: null, text: value } }
     }
+  }
+  /** Commit *value* when it reads as a formula the step takes; otherwise refuse it, saying why. */
+  const submit = (value: string) => {
+    if (value.trim() === text) {
+      // Back at the committed formula: nothing is left unfinished.
+      unfinished?.set(null)
+      return
+    }
+    const formula = read(value)
+    if ("problem" in formula) {
+      setRefusal(formula.problem)
+      return { ok: false }
+    }
+    setRefusal(null)
+    onCommit(formula.expr)
+    unfinished?.set(null)
+  }
+  const draft = useCommittedDraft(text, submit)
+  // Unfinished text remembered over this formula fills the box until the box is typed in.
+  const remembered = !draft.editing && unfinished?.draft?.over === text ? unfinished.draft.text : null
+  const shown = remembered ?? draft.shown
+  // A refusal belongs to the draft it refused: shown while that draft is open, so an Undo
+  // under it takes both away, and dropped when a new draft starts.
+  const problem = draft.editing ? refusal : null
+  // The caret's place in the box; nothing set is the end of the text.
+  const [caret, setCaret] = useState<number | null>(null)
+  const at = Math.min(caret ?? shown.length, shown.length)
+  // The box is found inside its wrapper: the shared text area takes no ref.
+  const wrapper = useRef<HTMLDivElement | null>(null)
+  const pendingCaret = useRef<number | null>(null)
+  const { prefix, entries, exact } = formulaCompletions(shown, at, columns, variables, constants, schema)
+  const completion = useCompletionList(entries, exact)
+  const call = callAtCaret(shown, at)
+
+  useEffect(() => {
+    const element = wrapper.current?.querySelector("textarea")
+    if (pendingCaret.current !== null && element) {
+      element.setSelectionRange(pendingCaret.current, pendingCaret.current)
+      pendingCaret.current = null
+    }
+  })
+  // Grow with the formula: one line empty, as many as the text wraps onto.
+  useLayoutEffect(() => {
+    const element = wrapper.current?.querySelector("textarea")
+    if (!element) return
+    element.style.height = "auto"
+    element.style.height = `${element.scrollHeight}px`
+  }, [shown])
+
+  // Text in the box that is not yet read, kept where it survives a switch of calculation.
+  const type = (value: string) => {
+    if (!draft.editing) setRefusal(null)
+    draft.edit(value)
+    unfinished?.set(value === text ? null : { over: text, text: value })
   }
   const complete = (entry: Completion) => {
     // Values are `col:name`, `var:name`, `const:name` or `fn:name`.
@@ -519,16 +569,16 @@ function FormulaField({
     const call = kind === "fn"
     const insert = call
       ? `${name}()`
-      : kind === "const" && afterConstantsNamespace(draft, caret - prefix.length)
+      : kind === "const" && afterConstantsNamespace(shown, at - prefix.length)
         ? name
         : completionText(name, kind as CompletionKind, variables, bare)
     if (insert === null) return
-    const before = draft.slice(0, caret - prefix.length)
-    const after = draft.slice(caret)
+    const before = shown.slice(0, at - prefix.length)
+    const after = shown.slice(at)
     type(`${before}${insert}${after}`)
-    const at = before.length + insert.length - (call ? 1 : 0)
-    setCaret(at)
-    pendingCaret.current = at
+    const next = before.length + insert.length - (call ? 1 : 0)
+    setCaret(next)
+    pendingCaret.current = next
     completion.hide()
   }
 
@@ -541,7 +591,14 @@ function FormulaField({
       return []
     }
   }, [schema, text, variables, bare])
-  const replaceName = (from: string, to: string) => commitText(renameColumnInFormula(text, from, to, variables, bare))
+  const replaceName = (from: string, to: string) => {
+    const renamed = renameColumnInFormula(text, from, to, variables, bare)
+    if (submit(renamed)?.ok === false) {
+      // Refused: the renamed formula stays in the box with why.
+      draft.edit(renamed)
+      unfinished?.set({ over: text, text: renamed })
+    }
+  }
 
   return (
     <Field
@@ -554,29 +611,37 @@ function FormulaField({
         </span>
       }
     >
-      <div className="relative">
-        <textarea
-          ref={box}
+      <div ref={wrapper} className="relative">
+        <DraftTextArea
+          draft={{
+            ...draft,
+            shown,
+            edit: (value) => {
+              const next = value.replace(/\r?\n/g, " ")
+              type(next)
+              setCaret(wrapper.current?.querySelector("textarea")?.selectionStart ?? next.length)
+              completion.typed()
+            },
+          }}
           rows={1}
           aria-label="Formula"
           aria-invalid={problem !== null || undefined}
           aria-describedby={problem ? problemId : undefined}
           title={FORMULA_EXAMPLE}
           placeholder={FORMULA_PLACEHOLDER}
-          value={draft}
           {...completion.inputProps}
-          onChange={(event) => {
-            type(event.target.value.replace(/\r?\n/g, " "))
-            setCaret(event.target.selectionStart ?? event.target.value.length)
-            completion.typed()
+          // Remembered text becomes the box's draft once the box is used, so leaving it commits it.
+          onFocus={() => {
+            if (remembered !== null) type(remembered)
           }}
-          onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
-          onBlur={() => commitText(draft)}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? shown.length)}
+          onBlur={completion.hide}
           onKeyDown={(event) => {
             if (completion.onKeyDown(event, complete)) return
             if (event.key === "Enter") {
               event.preventDefault()
-              commitText(draft)
+              completion.hide()
+              draft.commit()
             }
           }}
           className={`${CONTROL_CLASS} block resize-none overflow-hidden font-mono leading-5`}

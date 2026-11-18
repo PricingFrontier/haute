@@ -173,6 +173,33 @@ describe("PolarsStepsEditor", () => {
     expect(useGraphStore.getState().undoStack).toHaveLength(pendingPriorEdit ? 2 : 1)
   }, UNDO_REDO_TIMEOUT_MS)
 
+  it("keeps what a step's Function select left through its own writes, and forgets it after an undo and a redo", async () => {
+    const clip: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "capped",
+      expr: { type: "function", fn: "clip", operand: { kind: "column", name: "premium" }, args: [{ kind: "literal", type: "number", value: 0.8 }, { kind: "literal", type: "number", value: 1.2 }] },
+    }
+    useGraphStore.getState().setNodesRaw([makeNode("transform", "polars", { data: { config: { steps: [source, clip], code: "df = quotes" } } })])
+    useGraphStore.getState().markSaved()
+    render(<HistoryHarness />)
+    await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
+    fireEvent.click(screen.getByRole("button", { name: "Step 1: Clip" }))
+    const step = () => (useGraphStore.getState().nodes[0].data.config as { steps: Step[] }).steps[1]
+    const fn = () => screen.getByLabelText("Function")
+    // The editor's own writes come back through the node's config as they were written.
+    fireEvent.change(fn(), { target: { value: "round" } })
+    fireEvent.change(fn(), { target: { value: "clip" } })
+    expect(step()).toEqual(clip)
+    fireEvent.change(fn(), { target: { value: "round" } })
+    await act(() => useGraphStore.getState().undo())
+    await act(() => useGraphStore.getState().redo())
+    expect(step()).toMatchObject({ expr: { fn: "round" } })
+    fireEvent.change(fn(), { target: { value: "clip" } })
+    expect(step()).toMatchObject({ expr: { fn: "clip" } })
+    expect(step()).not.toEqual(clip)
+  }, UNDO_REDO_TIMEOUT_MS)
+
   it("seeds the start input and adds the first step from the chooser under it", async () => {
     const spy = vi.fn()
     render(<Harness initial={{ steps: [] }} inputSources={[quotes]} spy={spy} />)
