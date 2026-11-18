@@ -219,19 +219,28 @@ def _shown(answers: Mapping[Way, Answer]) -> str:
 
 def _owned(
     package: str,
-    present: bool,
     answers: Mapping[Way, Answer],
+    differing: Mapping[Way, Callable[[Answer], bool]],
     refusal: str | None = None,
 ) -> None:
     """The difference *package* owns, held by its strict expected failure.
 
-    When *present* (the case has checked the owned difference itself) it raises the
-    ``AssertionError`` that failure takes. Otherwise the ways must give one answer: any other
-    difference, an unexpected exception included, fails the test outright, never taken for
-    the owned one; and one answer passes, so the strict mark fails until it is removed.
+    *differing* names each way the owned difference sets apart, with what that way answers
+    because of it. When every such way answers so, and every other way gives one answer
+    (none raising), this raises the ``AssertionError`` the expected failure takes. Anything
+    else (another difference, an exception no check expects, an owned way answering
+    otherwise) fails the test outright, never taken for the owned difference; and one answer
+    from every way passes, so the strict mark fails until it is removed.
     """
+    rest = {way: answer for way, answer in answers.items() if way not in differing}
+    present = bool(differing) and all(check(answers[way]) for way, check in differing.items())
     if present:
-        raise AssertionError(f"{package}, as its entry describes:\n{_shown(answers)}")
+        problems = _disagreements(rest, refusal)
+        if not problems:
+            raise AssertionError(f"{package}, as its entry describes:\n{_shown(answers)}")
+        pytest.fail(
+            f"{package}'s difference, and another: " + "; ".join(problems) + "\n" + _shown(answers)
+        )
     problems = _disagreements(answers, refusal)
     if problems:
         pytest.fail(f"not {package}'s difference: " + "; ".join(problems) + "\n" + _shown(answers))
@@ -719,8 +728,19 @@ def test_a_shipped_example_gives_one_answer_every_way(
     words = _EXAMPLES_REFUSED.get(name)
     if name in _EXAMPLES_OWNED_ELSEWHERE:
         assert words is not None
-        refused = all(answer.refusal is not None for answer in answers.values())
-        _owned("MLR-04", refused and bool(_disagreements(answers, words)), answers, words)
+
+        def unhandled(answer: Answer) -> bool:
+            # A missing run raised as a traceback naming it, or `haute run`'s incident.
+            if answer.refusal is None:
+                return False
+            if answer.internal:
+                return words in answer.refusal
+            return "a failure it does not recognise" in answer.refusal
+
+        differing = {
+            way: unhandled for way, answer in answers.items() if not _refuses(answer, words)
+        }
+        _owned("MLR-04", answers, differing, words)
         return
     _assert_one_answer(answers, refusal=words)
 
@@ -1488,10 +1508,26 @@ def test_a_workbench_sample_is_priced_under_one_identity_every_way(
         json.dumps(json.loads(row)["pricing"], separators=(",", ":")) for row in document.rows
     ]
     answers = {Way.PREVIEW: preview, Way.PYTHON: Answer(rows=tuple(tables))}
-    (previewed,), (ran,) = (json.loads(row) for row in preview.rows), map(json.loads, tables)
-    # The walker leaves the identity out (null), where the file run as Python gives the stand-in.
-    owned = "quote_reference" not in previewed and ran.get("quote_reference") == "PREVIEW"
-    _owned("WB-76", owned, answers)
+    identity = ("quote_reference", "quote_option")
+
+    def without_identity(answer: Answer) -> list[dict[str, Any]]:
+        rows = [json.loads(row) for row in answer.rows]
+        return [{key: value for key, value in row.items() if key not in identity} for row in rows]
+
+    def stands_in(answer: Answer) -> bool:
+        # The file run as Python gives the stand-in; the walker leaves the identity out (null)
+        # and agrees with it on every other value.
+        rows = [json.loads(row) for row in answer.rows]
+        walked = [json.loads(row) for row in preview.rows]
+        return (
+            answer.refusal is None
+            and preview.refusal is None
+            and all(row.get("quote_reference") == "PREVIEW" for row in rows)
+            and not any(key in row for row in walked for key in identity)
+            and without_identity(answer) == without_identity(preview)
+        )
+
+    _owned("WB-76", answers, {Way.PYTHON: stands_in})
 
 
 def _workbench_project(tmp_path: Path) -> Project:
@@ -1708,7 +1744,11 @@ def test_a_column_a_selection_drops_is_refused_by_the_node_reading_it(
 
     ran = answers.pop(Way.PYTHON)
     assert ran.refusal is not None and meant.words in ran.refusal, ran.show()
-    _assert_one_answer(answers, refusal="'quote_response' needs the columns 'age', 'exposure'")
+    _assert_one_answer(
+        answers,
+        refusal="'quote_response' needs the columns 'age', 'exposure' and 'region', which are "
+        "not in its input.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1750,9 +1790,12 @@ def test_a_transform_crossing_a_constant_answers_every_way(
     )
 
     answers = _answers(project, Target("quote_response"), capsys, monkeypatch)
-    admitted = [answer for way, answer in answers.items() if way is not Way.PYTHON]
-    owned = all(_refuses(answer, "cross_join_unmeasured") for answer in admitted)
-    _owned("EXE-05", owned, answers)
+    admitted = {
+        way: lambda answer: _refuses(answer, "cross_join_unmeasured")
+        for way in answers
+        if way is not Way.PYTHON
+    }
+    _owned("EXE-05", answers, admitted)
 
 
 def _csv_quotes(root: Path, columns: Columns) -> Written:
@@ -1780,10 +1823,11 @@ def test_a_quote_input_on_a_csv_answers_every_way(
         Way.HAUTE_RUN: _haute_run(project, target, capsys),
         Way.PYTHON: _python(project, target),
     }
-    owned = answers[Way.PREVIEW].refusal is None and _refuses(
-        answers[Way.HAUTE_RUN], "CSV sources require declared dtypes"
+    _owned(
+        "IOL-03",
+        answers,
+        {Way.HAUTE_RUN: lambda answer: _refuses(answer, "CSV sources require declared dtypes")},
     )
-    _owned("IOL-03", owned, answers)
 
 
 @pytest.mark.xfail(
@@ -1815,10 +1859,11 @@ def test_a_clean_checkout_runs_every_way(
     preview = _preview(project, project.targets[0])
 
     answers = {Way.PREVIEW: preview, Way.PYTHON: ran, Way.DRY_RUN: dry}
-    owned = preview.refusal is None and all(
-        _refuses(answer, "input_snapshot_missing") for answer in (ran, dry)
-    )
-    _owned("DPL-05", owned, answers)
+
+    def unbuilt(answer: Answer) -> bool:
+        return _refuses(answer, "input_snapshot_missing")
+
+    _owned("DPL-05", answers, {Way.PYTHON: unbuilt, Way.DRY_RUN: unbuilt})
 
 
 #: The node types a test above runs, by the case that holds it.
