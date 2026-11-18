@@ -192,8 +192,11 @@ test.describe("an operation the server stopped part-way", () => {
       JSON.stringify({
         operation: "restore",
         at: new Date().toISOString(),
-        initial: { [`refs/heads/${ledger}`]: before },
-        steps: [{ [`refs/heads/${ledger}`]: commit }, {}],
+        initial: { HEAD: `ref: refs/heads/${ledger}`, [`refs/heads/${ledger}`]: before },
+        steps: [
+          { kind: "refs", sets: { [`refs/heads/${ledger}`]: commit } },
+          { kind: "files", sets: {} },
+        ],
         commit_point: 1,
         files: ["rating/main.py"],
         wipes_caches: true,

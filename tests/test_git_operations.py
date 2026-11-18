@@ -134,10 +134,15 @@ def _remote(root: Path, base: Path) -> Path:
 
 
 def _colleague(
-    bare: Path, base: Path, change: Callable[[Path], list[str]], *, milestone: bool = True
+    bare: Path,
+    base: Path,
+    change: Callable[[Path], list[str]],
+    *,
+    milestone: bool = True,
+    label: str | None = None,
 ) -> None:
-    """A colleague's clone makes *change*, saves it (as a milestone unless not) and
-    pushes."""
+    """A colleague's clone makes *change*, saves it (as a milestone unless not, with
+    *label* as its version label) and pushes."""
     other = base / "other"
     _git(base, "clone", "-q", str(bare), str(other))
     _git(other, "config", "user.name", "Colleague")
@@ -147,7 +152,7 @@ def _colleague(
     resolve_ledger(WORKING, cwd=other)
     assert commit_save(change(other), WORKING, cwd=other)
     if milestone:
-        commit_milestone("Colleague's milestone", other, cwd=other)
+        commit_milestone("Colleague's milestone", other, version_label=label, cwd=other)
     push_working_pair("origin", other, cwd=other)
 
 
@@ -168,6 +173,16 @@ def _arrange_catch_up(base: Path) -> tuple[Path, _Call]:
     _pair(root)
     _milestone(root)
     _colleague(_remote(root, base), base, _rewrites_rating_and_deletes_a_utility)
+    return root, _Call("fast_forward_pair", ("origin", ROOT), {"cwd": ROOT})
+
+
+def _arrange_catch_up_labelled(base: Path) -> tuple[Path, _Call]:
+    """The colleague's milestone carries a version label, which Catch up brings."""
+    root = _new_repo(base)
+    _pair(root)
+    _milestone(root)
+    bare = _remote(root, base)
+    _colleague(bare, base, _rewrites_rating_and_deletes_a_utility, label="2.0")
     return root, _Call("fast_forward_pair", ("origin", ROOT), {"cwd": ROOT})
 
 
@@ -358,6 +373,7 @@ OPERATIONS = [
     _Operation("restore", "restore", 2, 1, _arrange_restore),
     _Operation("catch-up", "catch-up", 2, 2, _arrange_catch_up),
     _Operation("catch-up-ledger-only", "catch-up", 1, 1, _arrange_catch_up_ledger_only),
+    _Operation("catch-up-labelled", "catch-up", 3, 3, _arrange_catch_up_labelled),
     _Operation("select-branch", "select-branch", 2, 2, _arrange_select),
     _Operation("select-branch-spawning", "select-branch", 3, 3, _arrange_select_spawning),
     _Operation("open-ledger", "open-ledger", 2, 2, _arrange_open_ledger),
@@ -714,6 +730,134 @@ def test_retry_refuses_a_file_changed_after_the_stop_and_keeps_the_record(
     assert (root / "rating.py").read_text() == "# v1\n"
 
 
+def _interrupt_recovery(monkeypatch: pytest.MonkeyPatch, after: int, *, fail: bool) -> None:
+    """Stop recovery, or fail it with a caught error, once *after* of its transitions are
+    done."""
+    real = git_operation._apply_transition
+    done = [0]
+
+    def apply(updates: object, expects: object, project_root: Path, cwd: Path | None) -> None:
+        if done[0] == after:
+            if fail:
+                raise GitError("injected recovery failure")
+            raise _Stopped
+        real(updates, expects, project_root, cwd)  # type: ignore[arg-type]
+        done[0] += 1
+
+    monkeypatch.setattr(git_operation, "_apply_transition", apply)
+
+
+def _transitions(record: OperationRecord, after: int) -> int:
+    """How many transitions Retry makes from a stop after *after* steps."""
+    steps = record.steps[after:] if after >= record.commit_point else record.steps[:after]
+    return sum(1 for sets in steps if sets)
+
+
+RECOVERY_STOPS = [
+    pytest.param(row, fail, id=f"{row.id}-{'failed' if fail else 'stopped'}")
+    for row in OPERATIONS
+    for fail in (False, True)
+]
+
+
+@pytest.mark.parametrize(("row", "fail"), RECOVERY_STOPS)
+def test_a_recovery_that_itself_stops_leaves_a_state_retry_goes_on_from(
+    row: _Operation, fail: bool, tmp_path: Path
+) -> None:
+    """Recovery moves the slots one recorded step at a time, so stopping or failing it
+    between any two leaves a state the record knows, and the next Retry finishes."""
+    for after in {row.commit_point - 1, row.commit_point}:
+        if not 0 <= after <= row.steps:
+            continue
+        probe = _stop(*row.arrange(tmp_path / f"probe-{after}"), row.operation, after)
+        for transition in range(_transitions(probe, after)):
+            root, call = row.arrange(tmp_path / f"{after}-{transition}")
+            record = _stop(root, call, row.operation, after)
+            states = _states(record)
+            with pytest.MonkeyPatch.context() as patch:
+                _interrupt_recovery(patch, transition, fail=fail)
+                expected = GitTransactionError if fail else _Stopped
+                with pytest.raises(expected):
+                    retry_interrupted(root, cwd=root)
+
+            assert read_operation(root) is not None
+            assert _slots(record, root) in states
+            retry_interrupted(root, cwd=root)
+
+            assert read_operation(root) is None
+            forward = after >= record.commit_point
+            assert _slots(record, root) == states[-1 if forward else 0]
+            assert git_operation._files_out_of_step(record.files, root) == []
+
+
+def test_retry_refuses_a_branch_head_names_that_moved_after_the_stop(tmp_path: Path) -> None:
+    """A switch between two existing ledgers changes neither ledger, yet the files come
+    from them: the record pins both, so a ledger moved outside Haute is found."""
+    root, call = _arrange_select(tmp_path)
+    record = _stop(root, call, "select-branch", 1)  # on the other ledger, files written
+    assert {f"refs/heads/{LEDGER}", "refs/heads/other-save", "HEAD"} <= set(record.initial)
+    _git(root, "update-ref", f"refs/heads/{LEDGER}", _git(root, "rev-parse", "main"))
+
+    with pytest.raises(GitTransactionError, match="Choosing a branch stopped part-way"):
+        retry_interrupted(root, cwd=root)
+
+    assert read_operation(root) is not None
+
+
+def test_a_hook_that_rewrites_a_file_and_refuses_leaves_head_on_the_ledger(
+    tmp_path: Path,
+) -> None:
+    """The hooks' pass moves HEAD and writes no file, so its record names none: a
+    formatter's change to a pending file stays the analyst's, and HEAD goes back."""
+    root = _new_repo(tmp_path)
+    _pair(root)
+    install_hook(root, "pre-commit", "#!/bin/sh\necho '# formatted' > rating.py\nexit 1\n")
+    stop_root, stop_call = _arrange_milestone_hooks(tmp_path / "stopped")
+    assert _stop(stop_root, stop_call, "milestone-hooks", 0).files == []
+
+    with pytest.raises(GitDomainError, match="pre-commit hook refused the milestone"):
+        commit_milestone("Rated", root, cwd=root)
+
+    assert _git(root, "symbolic-ref", "--short", "HEAD") == LEDGER
+    assert read_operation(root) is None
+    assert (root / "rating.py").read_text().strip() == "# formatted"
+
+
+def test_a_fetch_adds_no_label_and_catch_up_brings_the_colleagues_as_a_step(
+    tmp_path: Path,
+) -> None:
+    root, call = _arrange_catch_up_labelled(tmp_path)
+    label = "refs/tags/version/2.0"
+    with git_core._fetch_exec_lock:
+        assert git_core._fetch_refs("origin", cwd=root)
+    assert _git(root, "for-each-ref", "refs/tags/") == ""
+    held = f"{git_core.LABELS_NAMESPACE}/origin/version/2.0"
+    assert _git(root, "rev-parse", "--verify", held)
+
+    record = _stop(root, call, "catch-up", 3)
+    assert record.kinds == ["fast-forward", "refs", "refs"]
+    assert record.steps[-1] == {label: _git(root, "rev-parse", held)}
+    retry_interrupted(root, cwd=root)
+
+    assert _git(root, "rev-parse", label) == _git(root, "rev-parse", held)
+    assert _git(root, "rev-parse", f"{label}^{{commit}}") == _git(root, "rev-parse", WORKING)
+
+
+def test_spin_off_brings_the_colleagues_labels_with_their_line(tmp_path: Path) -> None:
+    root = _new_repo(tmp_path)
+    _pair(root)
+    _milestone(root)
+    bare = _remote(root, tmp_path)
+    _colleague(bare, tmp_path, _rewrites_rating_and_deletes_a_utility, label="2.0")
+    _write_and_save(root, WORKING, {"local.py": "# local line\n"})
+    commit_milestone("Local milestone", root, cwd=root, allow_fork=True)
+
+    haute_git.branch_away("origin", root, cwd=root)
+
+    label = _git(root, "rev-parse", "refs/tags/version/2.0^{commit}")
+    assert label == _git(root, "rev-parse", WORKING)
+
+
 def test_retry_refuses_refs_that_moved_after_the_stop_and_keeps_the_record(
     tmp_path: Path,
 ) -> None:
@@ -916,10 +1060,19 @@ def test_a_catch_up_over_a_file_held_open_on_windows_changes_nothing_until_it_cl
         (("symbolic-ref", "--delete", "HEAD"), True),
         (("tag", "--points-at", "x", "--list", "version/*"), False),
         (("tag", "version/1.0"), True),
-        (("fetch", "--prune", "origin", "--quiet"), False),
-        (("fetch", "bundle", "+refs/heads/*:refs/remotes/upstream/*"), False),
-        (("fetch", "C:\\temp\\project.bundle", "+refs/heads/*:refs/remotes/upstream/*"), False),
-        (("fetch", "origin", "refs/heads/a:refs/heads/a"), True),
+        # git follows tags into refs/tags/ by default, and configured refspecs may
+        # name any ref: only a fetch with --no-tags and every destination named under
+        # refs/remotes/ moves none.
+        (("fetch", "--prune", "origin", "--quiet"), True),
+        (("fetch", "bundle", "+refs/heads/*:refs/remotes/upstream/*"), True),
+        (("fetch", "--no-tags", "--prune", "origin", "--quiet"), True),
+        (("fetch", "--no-tags", "bundle", "+refs/heads/*:refs/remotes/upstream/*"), False),
+        (
+            ("fetch", "--no-tags", "C:\\t\\p.bundle", "+refs/heads/*:refs/remotes/upstream/*"),
+            False,
+        ),
+        (("fetch", "--no-tags", "origin", "refs/heads/a:refs/heads/a"), True),
+        (("fetch", "--no-tags", "origin", "+refs/tags/*:refs/tags/*"), True),
     ],
 )
 def test_each_command_is_classified_as_moving_a_ref_or_not(

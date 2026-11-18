@@ -362,12 +362,18 @@ def _moves_local_refs(args: Sequence[str]) -> bool:
     if sub == "tag":
         return not any(arg.split("=")[0] in _TAG_LISTING for arg in rest)
     if sub == "fetch":
-        # The first operand is the repository (a remote, a URL, a bundle's path, which
-        # on Windows holds a colon); the refspecs follow it.
+        # Only a fetch that follows no tags and names every destination, each under
+        # refs/remotes/, moves no ref: by default git follows tags into refs/tags/, and
+        # configured refspecs may name any ref. The first operand is the repository (a
+        # remote, a URL, a bundle's path, which on Windows holds a colon).
         refspecs = [arg for arg in rest if not arg.startswith("-")][1:]
-        return any(
-            ":" in spec and not spec.split(":", 1)[1].startswith("refs/remotes/")
-            for spec in refspecs
+        return not (
+            "--no-tags" in rest
+            and refspecs
+            and all(
+                ":" in spec and spec.split(":", 1)[1].startswith("refs/remotes/")
+                for spec in refspecs
+            )
         )
     raise GitError(f"git {sub or '(no subcommand)'} is not classified as moving refs or not")
 
@@ -723,6 +729,17 @@ def _remote_env(cwd: Path | None = None) -> dict[str, str]:
     return _git_env(overrides)
 
 
+#: Where a fetch keeps a remote's version labels: beside its branches and outside
+#: ``refs/tags/``, so no fetch adds a label to the clone. Catch up and Spin off add the
+#: ones they bring as a recorded step (``labels_to_adopt``).
+LABELS_NAMESPACE = "refs/remotes/haute-labels"
+
+
+def label_refspec(namespace: str) -> str:
+    """The refspec that fetches a repository's version labels for *namespace*."""
+    return f"+refs/tags/version/*:{LABELS_NAMESPACE}/{namespace}/version/*"
+
+
 def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     """Run a prompt-proof, time-bounded ``git fetch``; return success.
 
@@ -738,11 +755,19 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     any hang, so a legitimately-configured non-interactive helper (token cache)
     keeps working rather than being forced off.
 
-    With no explicit *refs*, fetch and prune the configured remote namespace.
+    With no explicit *refs*, fetch and prune the remote's branches into
+    ``refs/remotes/<remote>/`` and its version labels into ``LABELS_NAMESPACE``.
     Authoritative actions use that form so a genuinely absent optional pair leg
-    is represented by a missing tracking ref rather than a failed fetch.
+    is represented by a missing tracking ref rather than a failed fetch. *refs* are
+    branch names, each fetched to its tracking ref. Every refspec is explicit and no
+    tag is followed, so a fetch moves no ref of the clone's own.
     """
-    args = ("fetch", remote, *refs, "--quiet") if refs else ("fetch", "--prune", remote, "--quiet")
+    if refs:
+        refspecs = tuple(f"+refs/heads/{ref}:refs/remotes/{remote}/{ref}" for ref in refs)
+        args = ("fetch", "--no-tags", remote, *refspecs, "--quiet")
+    else:
+        everything = (f"+refs/heads/*:refs/remotes/{remote}/*", label_refspec(remote))
+        args = ("fetch", "--no-tags", "--prune", remote, *everything, "--quiet")
     try:
         result = _run_git_process(
             *args,

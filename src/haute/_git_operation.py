@@ -231,6 +231,7 @@ class Operation:
         existing = read_operation(self._root)
         if existing is not None:
             raise GitInterruptedError(existing)
+        self._pin_head()
         self._files = self._written_files()
         write_operation(self._root, self._record())
         logger.info("git_operation_started", operation=self.name, steps=len(self._steps))
@@ -252,23 +253,38 @@ class Operation:
         clear_operation(self._root)
         logger.info("git_operation_finished", operation=self.name)
 
+    def _pin_head(self) -> None:
+        """Put HEAD, and every branch HEAD names in any state, in the record whether a
+        step changes them or not: the commits the files come from are then the record's,
+        and a branch moved after a stop is found, not trusted."""
+        self._initial.setdefault(HEAD, self.value(HEAD))
+        for state in _states(self._initial, [step.sets for step in self._steps]):
+            head = state[HEAD]
+            if isinstance(head, str) and head.startswith(_SYMBOLIC):
+                ref = head.removeprefix(_SYMBOLIC)
+                if ref not in self._initial:
+                    self._initial[ref] = self.value(ref)
+
     def _record(self) -> OperationRecord:
         return OperationRecord(
             operation=self.name,
             at=datetime.now(UTC).isoformat(),
             initial=dict(self._initial),
             steps=[dict(step.sets) for step in self._steps],
+            kinds=[step.kind for step in self._steps],
             commit_point=len(self._steps) if self._commit_point is None else self._commit_point,
             files=self._files,
             wipes_caches=self._wipes,
         )
 
     def _written_files(self) -> list[str]:
-        """Every path that differs between HEAD's first commit and its commit after any
-        step, less those not in step now: the analyst's tracked changes, and a path the
-        first commit lacks that is on disk. Those are the analyst's, never the record's."""
+        """Every path that differs between the commit the files hold before the first
+        step and the one they hold after any step that writes files, less those not in
+        step now: the analyst's tracked changes, and a path the first commit lacks that is
+        on disk. Those are the analyst's, never the record's. A step that moves HEAD or a
+        ref without writing files (the hooks' pass) names none."""
         states = _states(self._initial, [step.sets for step in self._steps])
-        commits = [_head_commit(state, self._cwd) for state in states]
+        commits = _worktree_commits(states, [step.kind for step in self._steps])
         first = commits[0] or _EMPTY_TREE
         changed: dict[str, bool] = {}
         for commit in dict.fromkeys(commits[1:]):
@@ -396,17 +412,37 @@ def _states(initial: dict[str, object], steps: list[dict[str, object]]) -> list[
     return states
 
 
-def _head_commit(state: dict[str, object], cwd: Path | None) -> str | None:
-    """The commit HEAD is at in *state*, reading a slot the operation does not change
-    from the repository; None for an unborn HEAD."""
-    head = state[HEAD] if HEAD in state else _head_value(cwd)
+def _head_commit(state: dict[str, object]) -> str | None:
+    """The commit HEAD is at in *state*, which holds HEAD and the branch it names (the
+    record pins both); None for an unborn HEAD."""
+    head = state[HEAD]
     if not isinstance(head, str):
         return None
     if not head.startswith(_SYMBOLIC):
         return head
-    ref = head.removeprefix(_SYMBOLIC)
-    value = state[ref] if ref in state else _ref_value(ref, cwd)
+    value = state[head.removeprefix(_SYMBOLIC)]
     return value if isinstance(value, str) else None
+
+
+#: The kinds of step that write the files, from the commit HEAD is at once they ran.
+_WRITES_FILES = frozenset({"checkout", "fast-forward", "files"})
+
+
+def _worktree_commits(states: list[dict[str, object]], kinds: list[str]) -> list[str | None]:
+    """The commit the files hold in each state: HEAD's before the first step, then HEAD's
+    after each step that writes files, unchanged by one that does not."""
+    commits = [_head_commit(states[0])]
+    for state, kind in zip(states[1:], kinds, strict=True):
+        commits.append(_head_commit(state) if kind in _WRITES_FILES else commits[-1])
+    return commits
+
+
+def _live_head_commit(cwd: Path | None) -> str | None:
+    """The commit HEAD is at now; None for an unborn HEAD."""
+    head = _head_value(cwd)
+    if head is None or not head.startswith(_SYMBOLIC):
+        return head
+    return _ref_value(head.removeprefix(_SYMBOLIC), cwd)
 
 
 def _diff_status(old: str, new: str, cwd: Path | None) -> list[tuple[str, str]]:
@@ -447,7 +483,7 @@ def _write_files_from_head(files: list[str], cwd: Path | None, *, verify: bool) 
     root = _worktree(cwd)
     # An unborn HEAD (a clone whose remote names no branch it has) holds the empty tree:
     # restoring from it removes the files, as git restore does any its source lacks.
-    head = _head_commit({}, cwd)
+    head = _live_head_commit(cwd)
     known = _indexed(cwd) | set(_blobs(head, cwd))
     stderr = ""
     tracked = [path for path in files if path in known]
@@ -482,7 +518,7 @@ def _files_out_of_step(files: list[str], cwd: Path | None) -> list[str]:
     """Those of *files* not as HEAD has them: changed where HEAD's tree has them, indexed
     or on disk where it does not."""
     root = _worktree(cwd)
-    in_head = set(_blobs(_head_commit({}, cwd), cwd))
+    in_head = set(_blobs(_live_head_commit(cwd), cwd))
     indexed = _indexed(cwd)
     changed = _tracked_changes(cwd)
 
@@ -565,9 +601,10 @@ def recover(project_root: Path, cwd: Path | None, *, failed_step: int | None = N
         logger.warning("git_operation_kept", operation=record.operation, step=failed_step)
         return False
     forward = failed_step is None and max(reached) >= record.commit_point
-    target = states[-1] if forward else states[0]
+    start, end = (max(reached), len(states) - 1) if forward else (min(reached), 0)
+    target = states[end]
 
-    changed = _changed_since(record.files, [_head_commit(s, cwd) for s in states], cwd)
+    changed = _changed_since(record.files, _worktree_commits(states, record.kinds), cwd)
     if changed:
         raise GitDomainError(
             f"{name_files(changed)} changed after {record.words.lower()} stopped. "
@@ -579,7 +616,7 @@ def recover(project_root: Path, cwd: Path | None, *, failed_step: int | None = N
     )
     try:
         with _ref_moves_permitted():
-            _apply(target, live, project_root, cwd)
+            _walk(record, states, start, end, project_root, cwd)
     except (GitError, OSError) as refused:
         raise unfinished from refused
     _write_files_from_head(record.files, cwd, verify=True)
@@ -596,37 +633,49 @@ def recover(project_root: Path, cwd: Path | None, *, failed_step: int | None = N
     return True
 
 
-def _apply(
-    target: dict[str, object], live: dict[str, object], project_root: Path, cwd: Path | None
+def _walk(
+    record: OperationRecord,
+    states: list[dict[str, object]],
+    start: int,
+    end: int,
+    project_root: Path,
+    cwd: Path | None,
 ) -> None:
-    """Set every slot to *target*: the refs in one transaction expecting *live*, then HEAD,
-    the recorded working branch and the tombstones."""
+    """Take the slots from ``states[start]`` to ``states[end]`` one recorded step at a
+    time, undoing steps in reverse order going back. Each step sets one kind of slot,
+    which one git transaction, one HEAD update or one file write sets at once, so a
+    recovery that itself stops leaves a state the record knows and Retry goes on."""
+    direction = 1 if end >= start else -1
+    for here in range(start, end, direction):
+        there = here + direction
+        between = record.steps[min(here, there)]
+        if between:
+            _apply_transition(
+                {slot: states[there][slot] for slot in between},
+                {slot: states[here][slot] for slot in between},
+                project_root,
+                cwd,
+            )
+
+
+def _apply_transition(
+    updates: dict[str, object], expects: dict[str, object], project_root: Path, cwd: Path | None
+) -> None:
+    """Set the slots of one step to *updates*, the refs expecting *expects*."""
     refs = {
-        slot: (live[slot], value)
-        for slot, value in target.items()
-        if slot.startswith("refs/") and live[slot] != value
+        slot: (expects[slot], value) for slot, value in updates.items() if slot.startswith("refs/")
     }
     if refs:
         _ref_transaction(refs, cwd)
-    head = target.get(HEAD)
-    if HEAD in target and live[HEAD] != head:
+    if HEAD in updates:
+        head = updates[HEAD]
         assert isinstance(head, str)
         if head.startswith(_SYMBOLIC):
             _run_git("symbolic-ref", HEAD, head.removeprefix(_SYMBOLIC), cwd=cwd)
         else:
             _run_git("update-ref", "--no-deref", HEAD, head, cwd=cwd)
-    if BRANCH in target and live[BRANCH] != target[BRANCH]:
-        if target[BRANCH] is None:
-            clear_working_branch(project_root)
-        else:
-            branch = target[BRANCH]
-            assert isinstance(branch, str)
-            write_working_branch(project_root, branch)
-    for slot, value in target.items():
-        if slot.startswith(_TRASH) and live[slot] != value:
-            entry_id = slot.removeprefix(_TRASH)
-            if value is None:
-                remove_trash(project_root, entry_id)
-            else:
-                assert isinstance(value, dict)
-                record_trash(project_root, entry_id, value)
+    if BRANCH in updates:
+        _set_working_branch(updates[BRANCH], project_root)
+    for slot, value in updates.items():
+        if slot.startswith(_TRASH):
+            _set_trash(slot, value, project_root)

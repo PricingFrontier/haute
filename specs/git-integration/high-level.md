@@ -298,19 +298,26 @@ save's one commit to the ledger is the only ref move outside an operation, and t
 commands that move a ref refuse to run outside one.
 
 The record names the operation's commit point, the step after which it goes forward and not
-back: a restore's ledger advance, and a confirmed delete's checkout once it has discarded
-changes; for every other operation its last step. A failure that is caught before that point
+back: a restore's ledger advance; a delete's transaction that pins and removes the pair, or
+its checkout when a confirmed delete discards changes; an undelete's transaction that
+rebuilds the pair; for every other operation its last step. A failure that is caught before that point
 is put back from the record, to the commits it holds, before the call returns, and the result
 is checked against them. A failure after it keeps what was done, and the record stays. A
 record still there, at the next start or after an operation that could be neither put back
 nor finished, is the interruption: readiness answers `interrupted`, naming the operation and
 its files ("Restoring a version stopped part-way: rating/main.py and 2 more."), and every
-other git action, a save's capture included, refuses until the analyst chooses Retry. Retry
+other action that changes version history, a save's capture included, refuses until the
+analyst chooses Retry; setting the git identity and the preferences go on as usual. Retry
 reads where the refs are, finishes the operation from there or puts it back, writes the
 files, and checks the result. It never overwrites a file that holds neither version the
 operation knew, which someone changed after it stopped; it names the file instead. A file
 the operation did not change, the analyst's own edits among them, is never named in the
-record and never touched by a put-back.
+record and never touched by a put-back. A recovery moves the refs back or on one recorded
+step at a time, so one that itself stops leaves a state its record knows.
+
+A fetch never adds a label to the clone: the remote's version labels are kept beside its
+branches, and Catch up and Spin off add those on the line they bring as a recorded step, so
+a colleague's labels show as they always have.
 
 **Crash-safe clone state.** Every `.haute/*.json` write is staged to a sibling temporary
 file and atomically replaced while holding the same per-repository mutation lock used by the

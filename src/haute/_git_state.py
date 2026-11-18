@@ -259,15 +259,18 @@ def name_files(files: list[str]) -> str:
 class OperationRecord:
     """An operation's record as ``operation.json`` holds it.
 
-    *initial* maps each slot the operation changes to its value before the first
-    step, and each of *steps* the slots that step sets, so the state after step k
-    is *initial* overlaid with the first k steps. A record that cannot be read is
-    still an interruption: *readable* is False and the operation ``unknown``."""
+    *initial* maps each slot the operation changes, and HEAD and every branch HEAD
+    names in any of its states, to its value before the first step. Each of *steps*
+    is the slots that step sets, and *kinds* says what each step is, so the state
+    after step k is *initial* overlaid with the first k steps, and the steps whose
+    kind writes files say which commit the files hold. A record that cannot be read
+    is still an interruption: *readable* is False and the operation ``unknown``."""
 
     operation: str
     at: str | None
     initial: dict[str, object]
     steps: list[dict[str, object]]
+    kinds: list[str]
     commit_point: int
     files: list[str]
     wipes_caches: bool
@@ -282,7 +285,10 @@ class OperationRecord:
             "operation": self.operation,
             "at": self.at,
             "initial": self.initial,
-            "steps": self.steps,
+            "steps": [
+                {"kind": kind, "sets": sets}
+                for kind, sets in zip(self.kinds, self.steps, strict=True)
+            ],
             "commit_point": self.commit_point,
             "files": self.files,
             "wipes_caches": self.wipes_caches,
@@ -302,7 +308,7 @@ def interruption_message(record: OperationRecord) -> str:
 
 
 def _unreadable_operation() -> OperationRecord:
-    return OperationRecord("unknown", None, {}, [], 0, [], False, readable=False)
+    return OperationRecord("unknown", None, {}, [], [], 0, [], False, readable=False)
 
 
 def _parse_operation(raw: object) -> OperationRecord | None:
@@ -321,7 +327,7 @@ def _parse_operation(raw: object) -> OperationRecord | None:
         and isinstance(initial, dict)
         and all(isinstance(slot, str) for slot in initial)
         and isinstance(steps, list)
-        and all(isinstance(step, dict) and all(isinstance(k, str) for k in step) for step in steps)
+        and all(_is_step(step) for step in steps)
         and isinstance(commit_point, int)
         and not isinstance(commit_point, bool)
         and 0 <= commit_point <= len(steps)
@@ -331,7 +337,27 @@ def _parse_operation(raw: object) -> OperationRecord | None:
     ):
         return None
     assert isinstance(operation, str)
-    return OperationRecord(operation, at, initial, steps, commit_point, files, wipes)
+    kinds = [step["kind"] for step in steps]
+    sets = [step["sets"] for step in steps]
+    return OperationRecord(operation, at, initial, sets, kinds, commit_point, files, wipes)
+
+
+#: What a recorded step is: a ref transaction, a checkout, a fast-forward, a write of the
+#: files from HEAD, HEAD alone, the recorded working branch, a tombstone, or a call.
+STEP_KINDS = frozenset(
+    {"refs", "checkout", "fast-forward", "files", "head", "branch", "trash", "call"}
+)
+
+
+def _is_step(step: object) -> bool:
+    if not isinstance(step, dict) or set(step) != {"kind", "sets"}:
+        return False
+    sets = step["sets"]
+    return (
+        step["kind"] in STEP_KINDS
+        and isinstance(sets, dict)
+        and all(isinstance(slot, str) for slot in sets)
+    )
 
 
 def read_operation(project_root: Path) -> OperationRecord | None:

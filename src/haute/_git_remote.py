@@ -10,6 +10,7 @@ from haute._git_core import (
     _CLONE_TIMEOUT_SECONDS,
     _FETCH_TIMEOUT_SECONDS,
     _PUSH_TIMEOUT_SECONDS,
+    LABELS_NAMESPACE,
     LEDGER_SUFFIX,
     GitBootstrapIncompleteError,
     GitDomainError,
@@ -37,6 +38,7 @@ from haute._git_core import (
     _serialized_mutation,
     _validate_managed_working_branch,
     _validate_ref_name,
+    label_refspec,
     ledger_name,
 )
 from haute._git_operation import Operation
@@ -267,7 +269,8 @@ def bundle_verify(bundle: Path, cwd: Path | None = None) -> None:
 
 
 def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> None:
-    """Populate ``refs/remotes/<namespace>/*`` from *bundle*'s branches.
+    """Populate ``refs/remotes/<namespace>/*`` from *bundle*'s branches, and its
+    version labels into ``LABELS_NAMESPACE``.
 
     Deliberately configures NO git remote: fetching straight from a bundle
     path fills the tracking namespace and leaves ``git remote`` untouched,
@@ -282,8 +285,10 @@ def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> 
     try:
         result = _run_git_process(
             "fetch",
+            "--no-tags",
             str(bundle),
             f"+refs/heads/*:refs/remotes/{namespace}/*",
+            label_refspec(namespace),
             cwd=cwd or current_project().root,
             env=_remote_env(cwd),
             timeout=_CLONE_TIMEOUT_SECONDS,
@@ -299,6 +304,26 @@ def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> 
     if result.returncode != 0:
         logger.warning("git_bundle_fetch_failed", stderr=result.stderr.strip())
         raise GitError("The stored project bundle could not be read.")
+
+
+def labels_to_adopt(namespace: str, tip: str, cwd: Path | None = None) -> dict[str, str | None]:
+    """The version labels a fetch for *namespace* brought (``LABELS_NAMESPACE``) on
+    *tip*'s history that the clone has no label of that name for, as the ref updates
+    creating them. A label the clone already has is left as it is."""
+    prefix = f"{LABELS_NAMESPACE}/{namespace}/"
+    fetched = _run_git(
+        "for-each-ref", "--format=%(refname)%00%(objectname)", f"--merged={tip}", prefix, cwd=cwd
+    )
+    held = set(
+        _run_git("for-each-ref", "--format=%(refname)", "refs/tags/version/", cwd=cwd).split()
+    )
+    adopt: dict[str, str | None] = {}
+    for line in fetched.splitlines():
+        ref, label_object = line.split("\0")
+        label = "refs/tags/" + ref.removeprefix(prefix)
+        if label not in held:
+            adopt[label] = label_object
+    return adopt
 
 
 def pair_divergence(
@@ -1063,6 +1088,11 @@ def fast_forward_pair_from_tracking(
         else:
             catch_up.refs({f"refs/heads/{working}": target})
         fast_forwarded.append(branch)
+    # The version labels the remote has on the milestones caught up to, as a colleague
+    # sees them after their own Catch up.
+    remote_working = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+    if remote_working is not None:
+        catch_up.refs(labels_to_adopt(remote, remote_working, cwd))
     catch_up.run()
 
     logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
@@ -1143,6 +1173,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
             f"refs/heads/{ledger_name(aside)}": old_l,
             f"refs/heads/{working}": remote_w,
             f"refs/heads/{ledger}": remote_l if remote_l is not None else remote_w,
+            **labels_to_adopt(remote, remote_w, cwd),
         }
     )
     spin_off.checkout(ledger)

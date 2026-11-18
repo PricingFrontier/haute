@@ -119,9 +119,15 @@ git's copy of another repository, which every fetch replaces, so a fetch or push
 only those, or a clone, moves none. `update-ref`, `branch`, `checkout`, `switch`, `merge`,
 `reset`, `commit`, `rebase`, `cherry-pick`, `revert`, `pull`, `am`, `stash` and `worktree`
 move refs; `symbolic-ref` with a new target or `--delete`, and `tag` other than a listing
-(`-l`, `--list`, `--points-at`, `--merged`, `--contains`), move them; a `fetch` refspec whose
-destination is outside `refs/remotes/` moves one (its first operand is the repository, a
-bundle's path on Windows holding a colon, and only the operands after it are refspecs). Read-only and index-only commands are
+(`-l`, `--list`, `--points-at`, `--merged`, `--contains`), move them. A `fetch` moves none
+only when it follows no tags (`--no-tags`) and names every destination, each under
+`refs/remotes/`: by default git follows tags into `refs/tags/`, and configured refspecs may
+name any ref. Its first operand is the repository, a bundle's path on Windows holding a
+colon, and only the operands after it are refspecs. Every fetch the core runs takes that
+form (`_fetch_refs`, `fetch_bundle_refs`, the expected default's fetch): branches into
+`refs/remotes/<remote>/`, and version labels into `LABELS_NAMESPACE`
+(`refs/remotes/haute-labels/<remote>/version/`, `label_refspec`), beside the branches and
+outside the clone's own labels. Read-only and index-only commands are
 named one by one, and a subcommand the core does not know raises `GitError` naming it, so a
 new kind of command is classified before it can run. A command that moves a ref raises
 `GitError` ("git <subcommand> would move a ref outside a recorded operation") unless it runs
@@ -147,7 +153,7 @@ insertion order = recency). An entry id is `<branch>@<UTC YYYYMMDDTHHMMSSZ>`, wi
 with no `branch` field. It is read with that name as its branch and its pins at
 `refs/haute/trash/<name>` and `refs/haute/trash/<name>-save`. `operation.json` is the
 record of a git operation in progress (`_git_operation.py`): `{operation, at, initial,
-steps, commit_point, files, wipes_caches}`. *operation* is one of `restore`, `catch-up`,
+steps: [{kind, sets}], commit_point, files, wipes_caches}`. *operation* is one of `restore`, `catch-up`,
 `select-branch`, `open-ledger`, `seed`, `create-branch`, `spin-off`, `archive`, `delete`,
 `undelete`, `unarchive`, `repair`, `milestone`, `milestone-hooks` and `adopt-clone`, which
 `operation_words` says as "Restoring a version", "Catching up", "Choosing a branch",
@@ -155,9 +161,12 @@ steps, commit_point, files, wipes_caches}`. *operation* is one of `restore`, `ca
 off a copy", "Archiving a branch", "Deleting a branch", "Restoring a deleted branch",
 "Restoring an archived branch", "Repairing a branch", "Committing a milestone", "Running
 the project's commit hooks" and "Opening the stored project". *initial* maps every slot the
-operation changes to its value before the first step, and each entry of *steps* the slots
-that step sets, in order, so the state after step *k* is *initial* overlaid with the first
-*k* steps. A slot is `HEAD` (`"ref: refs/heads/<name>"` or a full SHA), a full ref name (a
+operation changes, and HEAD and every branch HEAD names in any of its states whether the
+operation changes them or not, to its value before the first step. Each entry of *steps*
+gives its *kind* (`refs`, `checkout`, `fast-forward`, `files`, `head`, `branch`, `trash`
+or `call`) and the slots it *sets*, in order, so the state after step *k* is *initial*
+overlaid with the first *k* steps, and the steps whose kind writes files (`checkout`,
+`fast-forward`, `files`) say which commit the files hold after each. A slot is `HEAD` (`"ref: refs/heads/<name>"` or a full SHA), a full ref name (a
 full SHA, or `null` for no ref), `branch` (the working branch `state.json` records, or
 `null`) or `trash:<entry id>` (the tombstone, or `null`); a step that sets none runs
 something between two others (the hooks). *commit_point* is the number of steps after which
@@ -355,11 +364,15 @@ is dropped when it would change nothing:
 
 `committed()` puts the commit point after the steps added so far; by default it is after the
 last. `run()` with no steps does nothing. Otherwise it refuses while another operation is in
-progress in the thread, or a record is there (`GitInterruptedError`), and works out *files*:
-every path that differs between the commit HEAD is at before the first step and the commit it
-is at after any step (the empty tree for an unborn HEAD), less every path not in step when
-the record is written, a tracked change (the analyst's own edit) or a path the first commit
-lacks that is on disk (an untracked or ignored file). It then writes the record, performs
+progress in the thread, or a record is there (`GitInterruptedError`), puts HEAD and the
+branches it names in *initial* (`_pin_head`), so the commits the files come from are the
+record's and a branch moved after a stop is found, and works out *files*. The files hold
+HEAD's commit before the first step (the empty tree for an unborn HEAD), then HEAD's commit
+after each step that writes files, unchanged by one that does not (`_worktree_commits`): a
+step that moves HEAD or a ref alone, as the hooks' pass does, names no file. *files* is
+every path that differs between the first of those commits and any later one, less every
+path not in step when the record is written, a tracked change (the analyst's own edit) or a
+path the first commit lacks that is on disk (an untracked or ignored file). It then writes the record, performs
 each step inside `_ref_moves_permitted()`, wipes the caches when the operation does, and
 removes the record. On an `Exception` it calls `recover` with *failed_step*, the step
 that raised. That step is unfinished, whatever its git command did before failing (a
@@ -371,24 +384,29 @@ interrupted from the keyboard) leaves the record as it is.
 
 `recover(project_root, cwd, failed_step=None)` is the one routine that acts on a record, for
 the caught failure and for Retry:
-1. It reads every slot live and finds the last step *k* whose state equals them all. With
-   none, the refs moved after the operation stopped: `GitTransactionError`, the record kept.
-2. For Retry (no *failed_step*), *k* at or past the commit point goes forward to the last
-   step; before it, back to the first state. For a caught failure, *failed_step* decides:
+1. It reads every slot live and finds the steps whose state equals them all. With none,
+   the refs moved after the operation stopped: `GitTransactionError`, the record kept.
+2. For Retry (no *failed_step*), the last such step at or past the commit point goes forward
+   from there to the last step; before it, back from the first such step to the first
+   state. For a caught failure, *failed_step* decides:
    before the commit point back to the first state, at or past it the record is kept and
    nothing more is done.
-3. Each of *files* on disk must hold one of the versions the operation's HEAD commits give
-   it (`hash-object --stdin-paths`, with the path's filters); one that holds neither was
+3. Each of *files* on disk must hold one of the versions the commits the files hold in the
+   record's states give it (`hash-object --stdin-paths`, with the path's filters); one that holds neither was
    changed after the operation stopped, and is refused by name ("<files> changed after
    <operation> stopped. Move the changes aside, then choose Retry."), nothing changed. A file
    git cannot read is left to the check in step 6.
-4. It sets the refs in one `update-ref --stdin` transaction, expecting the values it read,
-   then HEAD (`symbolic-ref`, or `update-ref --no-deref` for a commit), then the recorded
-   working branch and the tombstones. A git or file error here raises
-   `GitTransactionError`, the record kept.
-5. It writes *files* from HEAD: `restore --source=HEAD --staged --worktree
-   --pathspec-from-file=- --pathspec-file-nul` for each one the index or HEAD's tree holds,
-   and removes one on disk that neither holds, a leftover of the operation.
+4. It walks the slots there one recorded step at a time (`_walk`), undoing the steps in
+   reverse order going back. Each step sets one kind of slot, so each transition is one
+   `update-ref --stdin` transaction expecting the values of the state it leaves, one HEAD
+   update (`symbolic-ref`, or `update-ref --no-deref` for a commit), or one write of the
+   recorded working branch or of a tombstone (`_apply_transition`): a recovery that itself
+   stops or fails leaves a state of the record, and the next Retry goes on from it. A git or
+   file error here raises `GitTransactionError`, the record kept.
+5. It writes *files* from HEAD: `restore --source=<HEAD's commit, or the empty tree for an
+   unborn HEAD> --staged --worktree --pathspec-from-file=- --pathspec-file-nul` for each one
+   the index or HEAD's tree holds, and removes one on disk that neither holds, a leftover of
+   the operation; git's own words are logged when the restore fails.
 6. It checks the result: every slot at its target, and each of *files* in step, tracked and
    unchanged where HEAD's tree has it, and neither indexed nor on disk where it does not.
    Files that are not raise `GitFilesInUseError`, the record kept.
@@ -802,8 +820,8 @@ as Push inspection (`_read_advertisement`, which `_inspect_remote` wraps), and a
 failure propagates: an unreachable remote never reads as adoptable.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
-detached states) and a clean tracked tree. Fetches and prunes the configured remote
-namespace, then aborts if that required refresh times out, cannot launch or exits non-zero
+detached states) and a clean tracked tree. Fetches and prunes the remote's branches and
+version labels (`_fetch_refs`), then aborts if that required refresh times out, cannot launch or exits non-zero
 (`GitRemoteUnavailableError`, the refresh message) or shows that either managed remote leg is
 missing (`GitDomainError`); transport failure and a deleted working/ledger branch have
 distinct user-facing refusals. No cache
@@ -812,14 +830,18 @@ EVERY leg to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg 
 outright (the user must reconcile via `branch_away` instead; this function never merges).
 The `catch-up` operation's steps: the ledger (checked out) advances to its remote tip via
 `git merge --ff-only <sha>` through the fence, then the working ref (not checked out) via a
-CAS transaction, each only when that leg is behind; its commit point is its last step. Any
+CAS transaction, each only when that leg is behind, then one transaction creating the
+version labels the remote has on the working branch's caught-up history that the clone has
+no label of that name for (`labels_to_adopt`, read from `LABELS_NAMESPACE` with
+`for-each-ref --merged`), so a colleague's labels appear as they did; its commit point is its
+last step. Any
 failure puts both refs and the files back from the record, so a file the remote deleted that
 another program holds leaves the ledger, the working branch and every file as they were,
 and the next catch-up, once the file is closed, removes it. A put-back that cannot finish
 keeps the record, never a clean refusal or success.
 
 **Branch away (`branch_away`).** The reconciliation path when a remote fork is detected.
-It first fetches and prunes the configured remote namespace, aborting with
+It first fetches and prunes the remote's branches and version labels, aborting with
 `GitRemoteUnavailableError` (the refresh message) on any transport/process failure before
 choosing an aside name or mutating refs. This
 authoritative snapshot lets an absent optional ledger remain a successful fetch while
@@ -827,7 +849,8 @@ removing a deleted tracking ref; an absent working branch is then a distinct dom
 refusal. The `spin-off` operation detaches HEAD at the ledger's tip (no file changes), then
 in one ref transaction creates a unique dated aside pair (`_free_pair_name`:
 `<W>-local-<YYYYMMDD>`, then `-2`, `-3`… until it and its ledger are both free) at the
-current pair's tips and moves `working`/`ledger` to the remote's tips, then checks out the
+current pair's tips, moves `working`/`ledger` to the remote's tips and creates the version
+labels the remote has on the adopted line that the clone lacks, then checks out the
 ledger. It records the merge-base of the old and new working tips as the aside branch's fork
 point (for the branch manager's back-link). If the remote has no ledger (`X2`), the local
 ledger moves to the adopted working tip rather than adopting one. Any failure puts the pair,
@@ -1137,14 +1160,19 @@ process failures, and precise ref-movement races deterministic.
   past its commit point and otherwise puts every slot and file back, and removes the record.
   A second test fails each step in turn and catches it: before the commit point the call
   returns with every slot and file as before and no record; after it, the steps done kept,
-  the record there, and Retry finishing. A third fails each step before the commit point
+  the record there, and Retry finishing. A recovery is itself stopped and failed at each of
+  its transitions, for a stop just before and at the commit point, and the next Retry
+  finishes or puts back. A third fails each step before the commit point
   after its own git command has run (the fence refusing a checkout or fast-forward that
   moved its ref), and requires every slot and file as they began and no record. A child process killed with `os._exit` at the
   restore's, the catch-up's, the spin-off's and the confirmed delete's most dangerous step
   leaves the same record and state. Further: a file holding neither version refused by
   Retry by name and kept, refs moved after the stop refused as `GitTransactionError` with
-  the record kept, a record that cannot be read reading `interrupted` with no operation named
-  and Retry refusing it, the analyst's own edit and an untracked file never in a record nor
+  the record kept, a branch HEAD names moved after a stop refused although the operation
+  never changed it, a record that cannot be read reading `interrupted` with no operation
+  named and Retry refusing it, a hook that rewrites a file and refuses leaving HEAD on the
+  ledger and no record, a fetch adding no label and Catch up and Spin off bringing a
+  colleague's labels as a recorded step, the analyst's own edit and an untracked file never in a record nor
   touched by a put-back, a catch-up over a file the remote deleted that another program
   holds refused with the ledger, the working branch and the files as they were and the
   next catch-up removing it (on Windows with a real open handle), and the runners refusing
