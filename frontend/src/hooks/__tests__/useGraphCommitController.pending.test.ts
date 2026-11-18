@@ -241,6 +241,29 @@ describe("useGraphCommitController pending commits", () => {
       expect(errors()).toEqual([expect.stringContaining("the node changed while it was resolving")])
     })
 
+    it("lets go of a moved draft at once, so an edit made after the Undo builds on the undone node", async () => {
+      const { replies, hook, edit, committedConfig, errors } = setUp()
+      edit((config) => ({ ...config, path: "a.json" }))
+      await act(async () => {
+        replies.requests[0].resolve()
+        await hook.result.current.waitForPendingCommits()
+      })
+
+      edit((config) => ({ ...config, path: "b.json" }))
+      act(() => { useGraphStore.getState().undo() })
+      // The panel shows the undone node at once, not the draft it moved under.
+      expect(hook.result.current.pendingNodeData.has("api")).toBe(false)
+      edit((config) => ({ ...config, contract: "strict" }))
+      await act(async () => {
+        replies.requests[1].resolve()
+        replies.requests[2].resolve()
+        await hook.result.current.waitForPendingCommits()
+      })
+
+      expect(committedConfig()).toMatchObject({ path: "quotes.json", contract: "strict" })
+      expect(errors()).toEqual([expect.stringContaining("the node changed while it was resolving")])
+    })
+
     it("resolves a draft again when only the definitions it is resolved against change", async () => {
       const { replies, hook, edit, committedConfig, errors } = setUp()
       edit((config) => ({ ...config, path: "b.json" }))

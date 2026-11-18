@@ -312,6 +312,15 @@ export function NumberField({
             if (!draft.editing) setRefusal(null)
             draft.edit(text)
           },
+          // A commit that lands, an unchanged number too, takes the refusal away.
+          commit: (next) => {
+            const landed = draft.commit(next)
+            if (landed && refusal !== null) {
+              setRefusal(null)
+              onRefused?.(null)
+            }
+            return landed
+          },
         }}
         id={id}
         type="number"

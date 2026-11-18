@@ -18,6 +18,7 @@ import { isPlainObject } from "../../types/guards"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import PathPickerField from "./shared/PathPickerField"
+import { useRowKeys } from "./shared/useRowKeys"
 
 type Direction = "input" | "output"
 
@@ -38,17 +39,13 @@ const OUTPUT_COMMON_KEYS = new Set([
   "contract",
 ])
 
-let nextArgumentRowId = 0
-
 type ArgumentRow = {
-  id: number
   name: string
   valueText: string
 }
 
 function argumentRows(args: Record<string, unknown>): ArgumentRow[] {
   return Object.entries(args).map(([name, value]) => ({
-    id: nextArgumentRowId++,
     name,
     valueText: JSON.stringify(value) ?? "null",
   }))
@@ -65,7 +62,7 @@ function parseRecords(value: string): unknown[] | string {
   return Array.isArray(parsed) ? parsed : "Records must be a JSON array."
 }
 
-/** Two lists of argument rows say the same: names and value texts, in order, whatever their ids. */
+/** Two lists of argument rows say the same: names and value texts, in order. */
 function sameArgumentRows(a: readonly ArgumentRow[], b: readonly ArgumentRow[]): boolean {
   return a.length === b.length && a.every((row, i) => row.name === b[i].name && row.valueText === b[i].valueText)
 }
@@ -118,6 +115,11 @@ export function IoArgumentsEditor({
     { equals: sameArgumentRows },
   )
   const rows = draft.shown
+  // Each row's key, kept through the list's own writes and through a parent that rebuilds
+  // equal arguments, so a field's typing and focus stay with its row.
+  const rowKeys = useRowKeys(rows)
+  const withRow = (index: number, change: Partial<ArgumentRow>) =>
+    rows.map((candidate, at) => (at === index ? { ...candidate, ...change } : candidate))
   const commit = (nextRows: ArgumentRow[]) => {
     draft.commit(nextRows)
   }
@@ -128,12 +130,7 @@ export function IoArgumentsEditor({
         <EditorLabel as="span">Arguments</EditorLabel>
         <button
           type="button"
-          onClick={() =>
-            commit([
-              ...rows,
-              { id: nextArgumentRowId++, name: "", valueText: "" },
-            ])
-          }
+          onClick={() => commit(rowKeys.add([...rows, { name: "", valueText: "" }]))}
           className="flex items-center gap-1 text-[11px] font-medium"
           style={{ color: "var(--accent)" }}
         >
@@ -165,7 +162,7 @@ export function IoArgumentsEditor({
             // under its name, if there is one.
             const keepsSavedValue = Object.hasOwn(args, name)
             return (
-              <div key={row.id}>
+              <div key={rowKeys.keys[index]}>
                 <div className="flex items-center gap-1.5">
                   <CommittedTextField
                     type="text"
@@ -173,15 +170,7 @@ export function IoArgumentsEditor({
                     value={row.name}
                     placeholder="name"
                     aria-label={`Argument ${index + 1} name`}
-                    onCommit={(nextName) =>
-                      commit(
-                        rows.map((candidate) =>
-                          candidate.id === row.id
-                            ? { ...candidate, name: nextName }
-                            : candidate,
-                        ),
-                      )
-                    }
+                    onCommit={(nextName) => commit(rowKeys.edit(withRow(index, { name: nextName })))}
                     className="focus-ring w-2/5 px-2 py-1.5 text-xs font-mono rounded-lg"
                     style={inputStyle}
                   />
@@ -190,24 +179,14 @@ export function IoArgumentsEditor({
                     value={row.valueText}
                     placeholder='JSON value, e.g. "," or true'
                     aria-label={`Argument ${index + 1} value`}
-                    onCommit={(valueText) =>
-                      commit(
-                        rows.map((candidate) =>
-                          candidate.id === row.id
-                            ? { ...candidate, valueText }
-                            : candidate,
-                        ),
-                      )
-                    }
+                    onCommit={(valueText) => commit(rowKeys.edit(withRow(index, { valueText })))}
                     className="focus-ring flex-1 px-2 py-1.5 text-xs font-mono rounded-lg"
                     style={inputStyle}
                   />
                   <button
                     type="button"
                     aria-label={`Remove argument ${index + 1}`}
-                    onClick={() =>
-                      commit(rows.filter((candidate) => candidate.id !== row.id))
-                    }
+                    onClick={() => commit(rowKeys.remove(index, rows.filter((_, at) => at !== index)))}
                     className="icon-danger-btn p-1 rounded shrink-0"
                   >
                     <X size={12} />

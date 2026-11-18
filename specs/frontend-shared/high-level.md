@@ -292,12 +292,15 @@ graph-backed configuration cannot create one undo entry per character.
 
 **Panel values and Undo.** A value being edited in a panel or a node, whatever its kind (a
 line of text, a number, a JSON text, a grid cell, a list of rows), is held by one shared
-draft, `useCommittedDraft`, and by nothing else. The field shows the stored value until the
+draft, `useCommittedDraft`. The few still held another way (a code editor's typing, the
+colour picker's preview, the Columns tab's empty selection, and the fields of lists still keyed
+by position) are listed under
+[FES-07](../roadmap/frontend-shared.md#fes-07--the-last-panel-values-outside-the-shared-draft). The field shows the stored value until the
 analyst types; the typed draft commits once, on blur or Enter (a text area: on blur), as one
 undo step, and a commit whose value is unchanged commits nothing. When the stored value moves
 under an open draft, by an Undo, a Redo, a live-sync frame or any other change from outside
 the field, the draft lets go and the field shows what the store holds. A draft belongs to the
-item it edits: a value in a list's row is keyed by that row's identity, never by its
+item it edits: a value in a list's row is keyed by that row's identity rather than its
 position, and a row keeps its identity only through the list's own edits, additions,
 removals and moves; a list replaced from outside, as by an Undo, gives every row a new
 identity, so no draft or remembered value passes to another row. A value a panel remembers

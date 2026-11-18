@@ -176,6 +176,21 @@ function readsAny(node: ts.Node, names: ReadonlySet<string>): boolean {
   return found
 }
 
+/** Whether *node* reads one of *names*, the component's own state, as a value. */
+function readsOwn(node: ts.Node, names: ReadonlySet<string>): boolean {
+  let found = false
+  const visit = (current: ts.Node) => {
+    if (found) return
+    if (ts.isIdentifier(current) && names.has(current.text) && isValueReference(current)) {
+      found = true
+      return
+    }
+    ts.forEachChild(current, visit)
+  }
+  visit(node)
+  return found
+}
+
 function calleeName(call: ts.CallExpression): string | null {
   const callee = call.expression
   if (ts.isIdentifier(callee)) return callee.text
@@ -312,7 +327,11 @@ export function draftsByHand(source: string, fileName = "source.tsx"): Finding[]
 
     // A setter whose state a field shows: setting it from a stored value, in a handler
     // too, makes a draft.
-    const fieldSetters = fieldValueStates(fn, stateSetters(fn))
+    const states = stateSetters(fn)
+    const fieldSetters = fieldValueStates(fn, states)
+    // The component's own state, and what is computed from it: a field shown from that and
+    // a stored value together (`value={draft ?? value}`) is a draft held by hand.
+    const own = new Set(states.keys())
     const objects = new Map<string, ts.ObjectLiteralExpression>()
     const counted = new Set<ts.Node>()
     const adjusted = counted
@@ -340,6 +359,7 @@ export function draftsByHand(source: string, fileName = "source.tsx"): Finding[]
           return
         }
         if (readsAny(init, stored)) bindingNames(node.name, stored)
+        if (readsOwn(init, own)) bindingNames(node.name, own)
       }
       if (topLevel && ts.isIfStatement(node)) {
         let adjusts = false
@@ -384,7 +404,9 @@ export function draftsByHand(source: string, fileName = "source.tsx"): Finding[]
       }
       if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && isOwnTypedField(node, objects)) {
         const handler = attributeValue(node, "onChange", objects)
-        if (handler === true || handler === undefined || writesOnChange(handler)) report(node, scope, "field")
+        const value = attributeValue(node, "value", objects)
+        const draftOfStored = value !== undefined && value !== true && readsOwn(value, own) && readsAny(value, stored)
+        if (handler === true || handler === undefined || writesOnChange(handler) || draftOfStored) report(node, scope, "field")
       }
       ts.forEachChild(node, (child) => walk(child, false))
     }
@@ -433,6 +455,16 @@ describe("the scan finds a copy held by hand", () => {
         return <input type="text" value={value} onChange={(e) => onUpdate(e.target.value)} />
       }`)
     expect(findings.map((f) => [f.scope, f.rule])).toEqual([["Cell", "field"]])
+  })
+
+  it("finds a field showing its own draft over a stored value, committed by hand", () => {
+    const findings = draftsByHand(`
+      export function Name({ value, onCommit }) {
+        const [draft, setDraft] = useState(null)
+        const shown = draft ?? value
+        return <input value={shown} onChange={(e) => setDraft(e.target.value)} onBlur={() => onCommit(draft)} />
+      }`)
+    expect(findings.map((f) => f.rule)).toEqual(["field"])
   })
 
   it("finds state seeded from a prop, through a value derived from it", () => {

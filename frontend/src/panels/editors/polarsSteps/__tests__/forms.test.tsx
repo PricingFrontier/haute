@@ -176,6 +176,29 @@ describe("step forms only build schema-valid payloads", () => {
     ])
   })
 
+  it("adds again once a refused number in the new-value box is put back to the one it held", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "f",
+      kind: "filter",
+      match: "all",
+      conditions: [{ column: "region", operator: "is_in", values: [{ kind: "literal", type: "number", value: 1 }] }],
+    }
+    render(<Stateful initial={step} spy={spy} />)
+    const input = screen.getByLabelText("Filter condition 1 values new value")
+    fireEvent.change(input, { target: { value: "" } })
+    fireEvent.blur(input)
+    // Back to the number the box held: nothing changes, and the refusal goes.
+    fireEvent.change(input, { target: { value: "0" } })
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    const latest = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(latest.conditions[0].values).toEqual([
+      { kind: "literal", type: "number", value: 1 },
+      { kind: "literal", type: "number", value: 0 },
+    ])
+  })
+
   it("string operators offer text values only, while comparisons offer every type", () => {
     const onChange = vi.fn()
     const step: Step = {
