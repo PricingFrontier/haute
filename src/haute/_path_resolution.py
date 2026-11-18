@@ -9,6 +9,7 @@ with its reason, anchor a relative path on the pipeline directory themselves.
 
 from __future__ import annotations
 
+import fnmatch
 import glob
 import os
 from pathlib import Path, PureWindowsPath
@@ -244,31 +245,61 @@ def _real_entry(copy: Path) -> Path:
 def _copy_files(copy: Path, project_root: Path) -> dict[str, Path]:
     """Every file *copy* stands for, keyed by its posix path below the copy's fixed part.
 
-    A folder is walked through its links, each folder once, and every entry met is held
-    inside *project_root* before the walk goes on, so nothing outside is listed or read.
+    The walk starts at the fixed part and follows links. A glob's remaining components
+    are matched as the walk goes (``**`` for any number of folders), so it enters only a
+    folder a match could lie in, and a matched folder stands for every file under it.
+    Every entry it uses is held inside *project_root* before it is listed or read, and a
+    link back to a folder above it (a cycle) is not entered again; an alias of a folder
+    elsewhere is, so its files keep their own paths.
     """
     base = _fixed_part(copy)
-    pending = (
-        [copy]
-        if base == copy
-        else [Path(match) for match in glob.iglob(str(copy), recursive=True, include_hidden=True)]
-    )
+    pattern = copy.relative_to(base).parts
     files: dict[str, Path] = {}
-    walked: set[str] = set()
+    pending: list[tuple[Path, tuple[str, ...], frozenset[str], bool]] = [
+        (base, (), frozenset(), not pattern)
+    ]
     while pending:
-        entry = pending.pop()
+        entry, parts, above, named = pending.pop()
+        named = named or (bool(parts) and _pattern_matches(parts, pattern))
         real = os.path.realpath(entry)
+        is_dir = os.path.isdir(real)
+        if not named and not (is_dir and _pattern_continues(parts, pattern)):
+            continue
         if not is_contained(project_root, Path(real)):
             raise RuntimePathOutsideProjectError(
                 f"{entry} leads outside the project root, to {real}"
             )
-        if os.path.isdir(real):
-            if real not in walked:
-                walked.add(real)
-                pending.extend(entry.iterdir())
-        elif os.path.isfile(real):
-            files[entry.relative_to(base).as_posix()] = entry
+        if is_dir:
+            if real not in above:
+                pending.extend(
+                    (child, (*parts, child.name), above | {real}, named)
+                    for child in entry.iterdir()
+                )
+        elif named and os.path.isfile(real):
+            files["/".join(parts) or "."] = entry
     return files
+
+
+def _pattern_matches(parts: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
+    """Whether the path *parts* matches the glob *pattern*, ``**`` matching any folders."""
+    if not pattern:
+        return not parts
+    head, rest = pattern[0], pattern[1:]
+    if head == "**":
+        return any(_pattern_matches(parts[index:], rest) for index in range(len(parts) + 1))
+    return bool(parts) and fnmatch.fnmatch(parts[0], head) and _pattern_matches(parts[1:], rest)
+
+
+def _pattern_continues(parts: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
+    """Whether a path below the folder *parts* could match the glob *pattern*."""
+    if not parts:
+        return bool(pattern)
+    if not pattern:
+        return False
+    head, rest = pattern[0], pattern[1:]
+    if head == "**":
+        return True
+    return fnmatch.fnmatch(parts[0], head) and _pattern_continues(parts[1:], rest)
 
 
 def _exists_or_matches(candidate: Path) -> bool:

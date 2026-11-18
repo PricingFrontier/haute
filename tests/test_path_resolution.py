@@ -8,6 +8,7 @@ and when a relative path names two copies that differ.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -364,24 +365,79 @@ def test_a_rewrite_keeping_size_and_time_is_compared_by_its_content(tmp_path: Pa
     assert copies_differ(*copies, project_root=project_root)
 
 
-@pytest.mark.parametrize("raw", ["rates", "rates/*"], ids=["folder", "glob"])
+@pytest.mark.parametrize(
+    "raw",
+    ["rates", "rates/*", "rates/**/*.parquet"],
+    ids=["folder", "glob", "recursive glob"],
+)
 def test_a_copy_leading_out_of_the_project_is_refused_before_anything_is_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str
 ) -> None:
-    """A link inside one copy to a folder outside the project is refused, never opened."""
+    """A link inside one copy to a folder outside the project is refused: the outside
+    folder is never listed, no file is opened, and no glob expands the pattern."""
     project_root, pipeline_dir = _layout(tmp_path)
     outside = tmp_path / "outside"
     _write(outside / "part.parquet", "outside")
     _link(project_root / "rates" / "linked", outside)
     _write(pipeline_dir / "rates" / "linked" / "part.parquet", "outside")
-    opened: list[Path] = []
-    monkeypatch.setattr(
-        "haute._path_resolution._same_bytes", lambda first, second: opened.append(first)
-    )
     copies = _copies(raw, project_root, pipeline_dir)
     assert copies is not None
+    listed: list[Path] = []
+    opened: list[Path] = []
+    list_folder = Path.iterdir
+
+    def recording_iterdir(folder: Path) -> Iterator[Path]:
+        listed.append(Path(os.path.realpath(folder)))
+        return list_folder(folder)
+
+    def no_glob(*_args: object, **_kwargs: object) -> Iterator[str]:
+        raise AssertionError("the comparison expands a glob outside its checked walk")
+
+    monkeypatch.setattr(Path, "iterdir", recording_iterdir)
+    monkeypatch.setattr("haute._path_resolution._same_bytes", lambda first, _: opened.append(first))
+    monkeypatch.setattr("haute._path_resolution.glob.iglob", no_glob)
 
     with pytest.raises(RuntimePathOutsideProjectError, match="leads outside the project root"):
         copies_differ(*copies, project_root=project_root)
 
     assert opened == []
+    assert listed
+    assert not [folder for folder in listed if folder.is_relative_to(outside.resolve())]
+
+
+def test_an_alias_and_a_copied_folder_hold_the_same_files(tmp_path: Path) -> None:
+    """A link to a folder beside it is not a cycle: its files keep their own paths."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    _write(project_root / "rates" / "actual" / "part.parquet", "rows")
+    _link(project_root / "rates" / "alias", project_root / "rates" / "actual")
+    for name in ("actual", "alias"):
+        _write(pipeline_dir / "rates" / name / "part.parquet", "rows")
+    copies = _copies("rates", project_root, pipeline_dir)
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
+
+    _write(pipeline_dir / "rates" / "alias" / "part.parquet", "other rows")
+
+    assert copies_differ(*copies, project_root=project_root)
+
+
+@pytest.mark.parametrize("raw", ["rates", "rates/**/*.parquet"], ids=["folder", "recursive glob"])
+def test_a_link_back_to_a_folder_above_ends_the_walk(tmp_path: Path, raw: str) -> None:
+    project_root, pipeline_dir = _layout(tmp_path)
+    for folder in (project_root, pipeline_dir):
+        _write(folder / "rates" / "part.parquet", "rows")
+    _link(project_root / "rates" / "nested" / "loop", project_root / "rates")
+    copies = _copies(raw, project_root, pipeline_dir)
+
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)
+
+
+def test_an_outside_link_the_pattern_cannot_reach_is_left_alone(tmp_path: Path) -> None:
+    """Only what a pattern names is part of its copy, as a glob reads it."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    _write(tmp_path / "outside" / "part.parquet", "outside")
+    for folder in (project_root, pipeline_dir):
+        _write(folder / "rates" / "north.parquet", "north")
+    _link(project_root / "rates" / "linked", tmp_path / "outside")
+    copies = _copies("rates/*.parquet", project_root, pipeline_dir)
+
+    assert copies is not None and not copies_differ(*copies, project_root=project_root)

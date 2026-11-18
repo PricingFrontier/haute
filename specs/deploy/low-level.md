@@ -216,9 +216,11 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    the pipeline folder is compared (`_path_resolution.node_input_path_copies` and
    `copies_differ`): the copies are one when they are the same file, or when they hold
    the same files at the same relative paths with the same bytes (a folder's files,
-   followed through links, or the files a glob matches, read in 1 MiB chunks after the
-   sizes, every time, with no cache). A file a copy names that leads outside the project
-   root is never opened: it raises the invalid-path `DeployError`. Copies that differ
+   followed through links, a link back to a folder above not entered again, or the files a
+   glob matches, matched during the same walk with `**` for any number of folders; read in
+   1 MiB chunks after the sizes, every time, with no cache). An entry a copy uses that leads
+   outside the project root is never listed or opened: it raises the invalid-path
+   `DeployError`. Copies that differ
    raise a `DeployError` naming the node, the field, both files relative to the project
    root and the one the editor reads, before `refuse_data_outside_pipeline_folder`;
    identical copies pass. Bundling repeats the
