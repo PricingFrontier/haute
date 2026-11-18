@@ -284,14 +284,14 @@ def _resolve_runtime_graph_paths(
     remap: Mapping[str, str],
     request_input_ids: Collection[str],
 ) -> PipelineGraph:
-    """Resolve the path configs scoring reads from disk, as deploy bundles them.
+    """Resolve the path configs scoring reads from disk, as the editor and the bundler do.
 
-    A relative path is tried against ``graph.source_file``'s directory, then the project
-    root, its backslashes read as separators, never outside the project root. Only a
-    path scoring actually reads is resolved: a request input's sample is replaced by
-    the live request, and a node with a bundled artifact reads that instead (its
-    configured path only names the artifact). A served bundle carries its original
-    ``source_file``, which need not exist where it is served.
+    A relative path names the project root's file, then the one in ``graph.source_file``'s
+    directory (the one anchoring rule), its backslashes read as separators, never outside
+    the project root. Only a path scoring actually reads is resolved: a request input's
+    sample is replaced by the live request, and a node with a bundled artifact reads that
+    instead (its configured path only names the artifact). A served bundle carries its
+    original ``source_file``, which need not exist where it is served.
     """
     from haute._path_resolution import _normalise_path_text, resolve_graph_source_path
 

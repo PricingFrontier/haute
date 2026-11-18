@@ -54,7 +54,6 @@ decisions and maintenance work distinct.
 | [Root cause: ways of running a pipeline](root-cause-run-parity.md) | The same pipeline giving different answers from the preview, a trace, `haute run`, plain Python, the dry run and the deployed service. | `EXE-10` |
 | [Root cause: interrupted git operations](root-cause-git-intent.md) | A git operation of several steps that stops part-way and leaves the clone in between with nothing recorded. | `VCS-11` |
 | [Root cause: the quote store check](root-cause-store-check.md) | A quote store that differs from what Haute expects and still passes the check. | `WB-75` |
-| [Root cause: path anchoring](root-cause-path-anchoring.md) | Which file a relative path in a node's settings means, in the editor, a run and the deployed bundle. | `DPL-01` |
 
 ## Root causes — 16 November 2026
 

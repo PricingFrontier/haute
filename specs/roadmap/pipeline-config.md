@@ -209,9 +209,8 @@ instead. No file a save writes holds an absolute path. A test carries a
 project from Windows to Linux and back.
 
 **Dependencies:** `IOL-01` for what an input that cannot be read says.
-`DPL-01` owns relative paths in the deployed bundle.
 
-**Evidence:** `src/haute/_path_resolution.py::resolve_runtime_file_path`;
+**Evidence:** `src/haute/_path_resolution.py::resolve_node_input_path`;
 `src/haute/_path_case_audit.py`; `src/haute/_project.py`;
 `src/haute/routes/_save_pipeline.py`; `src/haute/cli/_lint.py`.
 

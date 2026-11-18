@@ -23,12 +23,11 @@ from haute.routes.json_cache import _resolve_data_path
 
 
 def test_resolve_data_path_outside_root_raises_403(tmp_path: Path) -> None:
-    """L154 ``enforce_project_root=True`` (True->False would resolve instead of
-    raise), L158 ``else 403`` (number), and L157 ``except ValueError`` (changing
-    the caught type lets ValueError escape instead of becoming HTTPException).
+    """L158 ``else 403`` (number) and L157 ``except ValueError`` (changing the
+    caught type lets ValueError escape instead of becoming HTTPException).
 
     The test's project is ``tmp_path``, so its parent's file is outside it and
-    ``resolve_runtime_file_path`` raises ValueError -> HTTPException(403).
+    ``resolve_node_input_path`` raises ValueError -> HTTPException(403).
     """
     with pytest.raises(HTTPException) as ei:
         _resolve_data_path(str(tmp_path.parent / "outside.json"))
@@ -38,7 +37,7 @@ def test_resolve_data_path_outside_root_raises_403(tmp_path: Path) -> None:
 def test_resolve_data_path_null_byte_raises_400() -> None:
     """Typed malformed-path failures map to 400 without scraping their message.
 
-    An embedded NUL makes ``resolve_runtime_file_path`` raise
+    An embedded NUL makes ``resolve_node_input_path`` raise
     ``MalformedRuntimePathError`` and the shared route adapter selects 400.
     """
     with pytest.raises(HTTPException) as ei:

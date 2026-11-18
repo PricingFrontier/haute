@@ -779,13 +779,10 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     deployment. The pipeline's workbench nodes take their tables from *form* when the caller
     read it (a release, which ships the form it read), else from the form folder, read here.
     """
-    from haute._path_resolution import (
-        RuntimePathError,
-        resolve_runtime_file_path,
-    )
     from haute._project import resolve_pipeline_file
     from haute._project_context import ProjectContext, project_scope
     from haute.deploy._bundler import (
+        check_local_input_paths,
         collect_artifacts,
         prepare_shipped_snapshots,
         refuse_data_outside_pipeline_folder,
@@ -897,34 +894,9 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         snapshot_provenance: dict[str, dict[str, Any]] = {}
         model_sources: dict[str, dict[str, Any]] = {}
         try:
-            # Validate every local runtime path before any bundle copy, schema
-            # read, or sample load.  Reuse execution's maintained enumeration so
-            # deploy cannot drift from runtime's definition of local file reads.
-            from haute.execution import _local_runtime_input_path_fields
-
-            for node in pruned_graph.nodes:
-                for field_name in _local_runtime_input_path_fields(node):
-                    raw_path = node.data.config.get(field_name)
-                    if not isinstance(raw_path, str) or not raw_path:
-                        continue
-                    try:
-                        resolve_runtime_file_path(
-                            raw_path,
-                            source_file=pipeline_file,
-                            pipeline_dir=pipeline_dir,
-                            project_root=project_root,
-                            prefer="pipeline",
-                            enforce_project_root=True,
-                        )
-                    except RuntimePathError as exc:
-                        raise DeployError(
-                            f"Node {node.id!r} field {field_name!r} has invalid local "
-                            f"runtime path {raw_path!r} ({type(exc).__name__}): {exc}. "
-                            "Use a path inside the configured project.",
-                            node_id=node.id,
-                            field=field_name,
-                            path=raw_path,
-                        ) from exc
+            # Every local runtime path is checked before any bundle copy, schema read
+            # or sample load: inside the project, and not two different files.
+            check_local_input_paths(pruned_graph, pipeline_dir, project_root)
             # Project code is read statically before anything runs the preamble: an
             # import the bundle does not carry is not importable here either, so the
             # schema dry run below could only fail on it with a bare import error.

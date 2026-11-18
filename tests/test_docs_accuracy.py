@@ -176,7 +176,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "root-cause-git-intent",
     "root-cause-late-answers",
     "root-cause-panel-drafts",
-    "root-cause-path-anchoring",
     "root-cause-run-parity",
     "root-cause-store-check",
     "root-cause-typed-numbers",

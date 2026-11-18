@@ -318,8 +318,8 @@ the app's own origin check refuses another site's writes. Its tests are in
    `source_file` values to remain inside that project.
 2. Every local runtime input field (`apiInput`/file or lakehouse `dataInput`,
    `externalFile`, model-score feature-contract files, and file-sourced
-   optimiser artifacts) passes through `resolve_runtime_file_path(...,
-   enforce_project_root=True)`. Separator normalization happens before `Path`
+   optimiser artifacts) passes through `resolve_node_input_path`, which always
+   holds both candidates inside the project root. Separator normalization happens before `Path`
    construction and `resolve()` follows symlinks before containment is checked.
    A path whose components include a DOS device name is rejected as
    `MalformedRuntimePathError` on **every** platform, using the same

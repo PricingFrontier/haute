@@ -803,14 +803,14 @@ def test_derived_module_removal_deletes_owned_file(tmp_path: Path) -> None:
 
 
 def test_nfc_nfd_input_path_spelling_is_never_normalized(tmp_path: Path) -> None:
-    from haute._path_resolution import resolve_runtime_file_path
+    from haute._path_resolution import resolve_node_input_path
 
     nfc = "café.csv"  # é precomposed (U+00E9)
     nfd = unicodedata.normalize("NFD", nfc)  # e + combining acute (U+0301)
     assert nfc != nfd
     (tmp_path / nfc).write_text("nfc-bytes", encoding="utf-8")
 
-    resolved = resolve_runtime_file_path(nfd, pipeline_dir=tmp_path, project_root=tmp_path)
+    resolved = resolve_node_input_path(nfd, pipeline_dir=tmp_path, project_root=tmp_path)
 
     # The pin: haute preserves the given spelling byte-for-byte — the
     # resolved path is still NFD, never rewritten to the on-disk NFC form.

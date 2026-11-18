@@ -84,10 +84,18 @@ processes: while it is held, a marker naming the holding process sits in the gen
 directory, and refresh, clear and retirement in any process leave a generation with a
 live holder's marker in place.
 
-Every local file read needed by the pruned deploy graph is resolved with pipeline-relative
-precedence and must remain inside the resolved project root. This includes API sample
-inputs, external/static data, file-backed optimiser artefacts, and explicit model feature
-contracts. MLflow artefact identifiers are not local paths, but absolute or
+Every local file read needed by the pruned deploy graph is resolved by the rule the editor
+and a run read by, the project root's file first and then the one under the pipeline folder
+([IO layer](../io-layer/low-level.md), "The anchoring rule"), and must remain inside the
+resolved project root, so the bundle ships, and the dry runs read, the file the preview read.
+This includes API sample inputs, external/static data, file-backed optimiser artefacts,
+model files and explicit model feature contracts. A relative path that names a file, a
+folder or a matching glob under both the project root and the pipeline folder is refused
+when the two copies differ, the refusal naming both: the analyst checked one of them, and
+the service must not price from the other. Identical copies pass. Which file a path names
+and whether that file may ship are two questions: a Data Input the quote output depends on
+must lie in the pipeline folder, judged on the file the rule names, so a project-root copy
+is refused even when an identical copy lies in the pipeline folder. MLflow artefact identifiers are not local paths, but absolute or
 parent-traversal-shaped identifiers are rejected before download. A configured
 `feature_contract_path` is bundled under the canonical model-sidecar name and takes
 precedence over an adjacent downloaded sidecar.

@@ -49,7 +49,7 @@ _DEPLOY_SCHEMA_EXECUTION_POLICY = "deploy-output-schema:v1"
 
 
 def _resolve_pipeline_path(graph: PipelineGraph, path: str) -> str:
-    """Resolve a graph config path as deploy bundles it: pipeline dir, then project root."""
+    """Resolve a graph config path as the editor and the bundler do: the project root first."""
     from haute._path_resolution import _normalise_path_text, resolve_graph_source_path
 
     if Path(_normalise_path_text(path)).is_absolute() or not graph.source_file:

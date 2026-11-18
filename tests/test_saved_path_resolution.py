@@ -7,9 +7,9 @@ root and pipeline dir both tried, backslashes read as separators), but a direct
 Parquet Data Input and deploy's schema inference and scoring joined it onto the
 pipeline dir alone. On Linux CI ``data\\x.parquet`` then named one file with a
 backslash in it, under the pipeline dir, and the dry-run deploy failed. Every reader now
-tries both places and never leaves the project root. The registry and the engine share
-one rule, the project root first (``resolve_node_input_path``); deploy bundles a Data
-Input's file from the pipeline dir first, as its specification states.
+tries both places and never leaves the project root, by one rule, the project root first
+(``resolve_node_input_path``): the registry, the engine and deploy's schema inference and
+scoring name one file.
 """
 
 from __future__ import annotations
@@ -132,12 +132,15 @@ def test_deploy_resolves_a_windows_path_as_bundling_does(project: Path) -> None:
     )
 
 
-def test_deploy_prefers_the_file_beside_the_pipeline(project: Path) -> None:
-    _file(project / "data" / "policies.parquet")
-    beside_pipeline = _file(project / "rating" / "data" / "policies.parquet")
+def test_deploy_reads_the_project_root_file_over_a_decoy(project: Path) -> None:
+    """Deploy's schema inference and scoring name the file the editor reads."""
+    saved = _file(project / "data" / "policies.parquet")
+    _file(project / "rating" / "data" / "policies.parquet")
     graph = _graph(project, "data/policies.parquet")
 
-    assert Path(_resolve_pipeline_path(graph, "data/policies.parquet")) == beside_pipeline.resolve()
+    assert Path(_resolve_pipeline_path(graph, "data/policies.parquet")) == saved.resolve()
+    [scored] = _resolve_runtime_graph_paths(graph, remap={}, request_input_ids=()).nodes
+    assert Path(scored.data.config["path"]) == saved.resolve()
 
 
 def test_the_file_browser_writes_forward_slashes(project: Path) -> None:
