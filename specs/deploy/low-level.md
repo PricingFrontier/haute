@@ -473,8 +473,8 @@ form naming a table or column its schema does not hold refused through
 least one `*.json` file, then reads each file once (`_load_test_quote_cases`; a file that
 cannot be read is reported and not scored), then scores the cases it read
 (`_score_test_quote_cases`, the step `score_test_quote_file` runs after reading a file; the
-requests it sends and the answers they price are `_price_requests`, which
-`price_test_quote_file` gives a caller), each request read by the reader the served app
+requests it sends and the answers they price are `_price_requests`), each request read by
+the reader the served app
 reads one with (`_request_frame.RequestReader`): a quote that leaves out a column it must
 give, or holds a value its column does not, is refused in the service's words, an exposure
 the manifest's `omittable_inputs` names may be left out and is priced for a full term, and a

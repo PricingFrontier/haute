@@ -809,13 +809,6 @@ def _price_requests(resolved: ResolvedDeploy, cases: list[_TestQuoteCase]) -> li
     return [score([case.input for case in cases])]
 
 
-@in_resolved_project
-def price_test_quote_file(resolved: ResolvedDeploy, jf: Path) -> list[pl.DataFrame]:
-    """The answer to each request the dry run sends for the test-quote file *jf*, as its
-    check prices them; a failure raises as the check reports it."""
-    return _price_requests(resolved, _load_test_quote_cases(jf))
-
-
 def _score_test_quote_cases(
     resolved: ResolvedDeploy, name: str, cases: list[_TestQuoteCase], *, started: float
 ) -> TestQuoteResult:

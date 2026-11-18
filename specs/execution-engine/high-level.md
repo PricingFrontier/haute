@@ -593,7 +593,7 @@ fails it, as does a difference without a sentence here.
 | **trace** | the display walk the preview ran (`trace.execute_trace`), one row at a time | any node, under any source |
 | **haute run** | the graph walker's sink walk (`execution.execute_lazy_graph`; `cli._run.run_frames` holds what it collects) | the response node, or `--node` |
 | **plain Python** | the file's own `Pipeline.run()` and `Pipeline.score()` loop over its decorated functions | its response node, or its single leaf |
-| **dry run** | `haute deploy --dry-run`: the deploy scorer on the test quotes (`deploy._validators.price_test_quote_file`) | the response node, under `live` |
+| **dry run** | `haute deploy --dry-run`: the deploy scorer on the test quotes (`deploy._validators._price_requests`) | the response node, under `live` |
 | **service** | the deployed app's `/quote` route, its batch worker and the Databricks model | the response node, under `live` |
 
 The ways share what decides an answer, so they cannot differ in it:

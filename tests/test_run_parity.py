@@ -416,8 +416,10 @@ def _imported(path: Path) -> Iterator[dict[str, Any]]:
     finally:
         sys.path.remove(str(path.parent))
         for name in set(sys.modules) - before:
-            module_file = getattr(sys.modules[name], "__file__", None) or ""
-            if module_file and Path(module_file).resolve().is_relative_to(path.parent):
+            module = sys.modules[name]
+            # A namespace package (a folder without __init__.py) has no file, only a path.
+            places = [getattr(module, "__file__", None), *getattr(module, "__path__", ())]
+            if any(place and Path(place).resolve().is_relative_to(path.parent) for place in places):
                 del sys.modules[name]
 
 
@@ -495,7 +497,7 @@ def _dry_run(project: Project, capsys: pytest.CaptureFixture[str]) -> Answer:
     """``haute deploy --dry-run`` on the test quotes, and, when it passes, the answers
     it priced them to."""
     from haute.cli._deploy import DeployCliConfig, handle_deploy
-    from haute.deploy._validators import price_test_quote_file
+    from haute.deploy._validators import _load_test_quote_cases, _price_requests
 
     quotes = _test_quotes(project)
     capsys.readouterr()
@@ -507,7 +509,8 @@ def _dry_run(project: Project, capsys: pytest.CaptureFixture[str]) -> Answer:
         return Answer.refused(capsys.readouterr().err)
     resolved = _resolved(project)
     try:
-        answers = price_test_quote_file(resolved, quotes)
+        # The requests the dry run sent and the answers it priced them to.
+        answers = _price_requests(resolved, _load_test_quote_cases(quotes))
     finally:
         resolved.close()
     return Answer.of_frame(pl.concat(answers, how="vertical"))
