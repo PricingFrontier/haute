@@ -1371,19 +1371,15 @@ class TrainService:
                 node_id,
                 source=source,
             )
+        except ExecutionCancelledError:
+            raise
         except Exception as exc:
-            # What stopped the estimate, said as every edge says it: a node's own failure
-            # naming its node, anything unnamed an incident.
-            answer = answer_pipeline_failure(exc, operation="training_ram_estimate")
-            detail = {
-                "error_code": "training_memory_estimate_failed",
-                "operation": "training_pipeline",
-                "job_id": job_id,
-                "reason": "memory_estimate_failed",
-                "message": f"Training memory estimate failed before execution: {answer.message}",
-                "incident": answer.incident,
-            }
-            raise UnprocessableError(detail) from None
+            # What stopped the estimate, answered as every edge answers it: a node's own
+            # failure naming its node (422), memory as memory (507), anything unnamed an
+            # incident (500) the job ends as an error.
+            raise answer_pipeline_failure(
+                exc, operation="training_ram_estimate"
+            ).refusal() from None
 
         return ram_est
 

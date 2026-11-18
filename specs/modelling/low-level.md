@@ -390,8 +390,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    token; start the owned preparation thread and return `TrainResponse(status="started",
    job_id=...)` before long-running work begins.
 3. The preparation thread first verifies that the job is still running, then
-   `_compile_preamble`; `_estimate_ram` (records the equivalent HTTP 422 detail on
-   failure); `training_row_plan` decides the fit mode and the row limit (a GLM whose RAM
+   `_compile_preamble`; `_estimate_ram` (a failure is answered by
+   `answer_pipeline_failure`: a node's own or the pipeline's failure 422, memory 507, a
+   cancellation stays a cancellation, anything unnamed an incident, 500, ending `error`); `training_row_plan` decides the fit mode and the row limit (a GLM whose RAM
    row limit binds fits out of core on every row; otherwise the estimated row limit is
    clamped against any user-supplied `row_limit`; see Chunked GLM fitting), and the job
    kwargs carry `fit_mode`;

@@ -23,6 +23,7 @@ import pytest
 from haute._chunked_writes import ChunkedWrite
 from haute._execution_context import (
     ExecutionCancellationToken,
+    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
@@ -156,13 +157,10 @@ def _patch_execute_env():
 
 
 class TestEstimateRamFailure:
-    def test_estimate_failure_raises_http_422(self):
-        """When memory estimation raises, _estimate_ram fails loudly.
-
-        nick-dev replaced the old swallow-and-fall-back-to-no-row-limit policy
-        with a typed HTTP 422 so a broken memory probe surfaces to the API layer
-        instead of silently training with no row cap.
-        """
+    def test_an_unnamed_estimate_failure_is_an_incident(self):
+        """A memory probe that fails for a reason nothing names is Haute's fault: an
+        incident (500), never the request's (422), and never a silent run without a row
+        cap. Its text is logged under the incident, never said."""
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -183,13 +181,32 @@ class TestEstimateRamFailure:
                     job_id=job_id,
                 )
 
-        assert exc_info.value.status_code == 422
+        assert exc_info.value.status_code == 500
         detail = exc_info.value.detail
-        assert isinstance(detail, dict)
-        assert detail["error_code"] == "training_memory_estimate_failed"
-        # What stopped the probe is an incident, its text logged, never said.
-        assert detail["incident"] in detail["message"]
+        assert_unnamed(detail)
         assert "probe blew up" not in str(detail)
+
+    def test_a_cancelled_estimate_stays_cancelled(self):
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job({"status": "running"})
+        cancelled = ExecutionCancelledError("training_memory_estimate", job_id=job_id)
+
+        with patch(
+            "haute.routes._training_lifecycle.estimate_training_memory",
+            side_effect=cancelled,
+        ):
+            with pytest.raises(ExecutionCancelledError) as exc_info:
+                service._estimate_ram(
+                    make_graph({"nodes": [], "edges": []}),
+                    "n",
+                    preamble_ns=None,
+                    job_id=job_id,
+                )
+
+        assert exc_info.value is cancelled
 
 
 # ---------------------------------------------------------------------------
