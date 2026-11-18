@@ -68,7 +68,9 @@ if its author remembers.
 **Plan:** One request helper that every call goes through when its answer
 will be written to state. It records what the answer belongs to: the
 document, the node, the panel, the edit it was asked under, and whether a
-field it would write to is being typed in, read from the shared draft. A
+field it would write to is being typed in, read from the shared draft
+(`isDraftOpen`); a code editor's text not yet flushed is not registered
+there until `FES-07`, so an answer that writes code asks the editor. A
 late answer is dropped, or handed back marked stale for the caller to
 settle, and what runs after the answer (a flag cleared, a list reloaded) is
 under the same check. Whatever a request set while it waited, such as a
@@ -92,9 +94,8 @@ after waiting outside the helper. The journeys of `FEG-10`, `VCS-10`,
 `FEP-04`, `FEN-01` and `FEN-10` pass.
 
 **Dependencies:** None: the shared draft it asks is built
-(`frontend/src/components/form/useCommittedDraft.ts`, `isDraftOpen`; a
-code editor's unflushed text is not registered there yet). Deliver before
-the packages its table names.
+(`frontend/src/components/form/useCommittedDraft.ts`, `isDraftOpen`).
+Deliver before the packages its table names.
 
 **Evidence:** `frontend/src/stores/useDocumentStatusStore.ts`;
 `frontend/src/panels/optimiser/useLatestRequest.ts`; `frontend/src/App.tsx`;

@@ -765,6 +765,43 @@ describe("BandingEditor", () => {
     expect(factor("vehicle_age_band").rules).toEqual(vehicle.rules)
   })
 
+  it("keeps a cell's focus through its own commit, and the rules set aside through the factor's own edits", () => {
+    const age = {
+      banding: "breakpoints",
+      column: "age",
+      output_column: "age_band",
+      rules: [{ boundary: "40", label: "Young" }, { boundary: "", label: "Older" }],
+    }
+    let shown: Record<string, unknown> = {}
+    function WithHistory() {
+      const [history, setHistory] = useState<Record<string, unknown>[]>([{ factors: [age] }])
+      shown = history[history.length - 1]
+      return (
+        <BandingEditor
+          nodeId="band_rt"
+          config={shown}
+          onUpdate={((key: string, value: unknown) => setHistory((h) => [...h, { ...h[h.length - 1], [key]: value }])) as never}
+          inputSources={[]}
+          accentColor="#22d3ee"
+        />
+      )
+    }
+    renderEditor(<WithHistory />)
+
+    fireEvent.click(screen.getByText("Categorical"))
+    fireEvent.click(screen.getByRole("button", { name: "Add manually" }))
+    const value = screen.getByLabelText("Rule 1 match value")
+    value.focus()
+    fireEvent.change(value, { target: { value: "north" } })
+    fireEvent.keyDown(value, { key: "Enter" })
+    // The grid's own write comes back as the rows it wrote: the cell is not drawn afresh.
+    expect(document.activeElement).toBe(value)
+    expect((shown.factors as { rules: { value: string }[] }[])[0].rules[0].value).toBe("north")
+
+    fireEvent.click(screen.getByText("Numeric"))
+    expect((shown.factors as { rules: unknown[] }[])[0].rules).toEqual(age.rules)
+  })
+
   // ─── Feature 4: Breakpoints mode rendering ────────────────────
 
   it("BreakpointGrid renders when banding is 'breakpoints' with existing rules", () => {

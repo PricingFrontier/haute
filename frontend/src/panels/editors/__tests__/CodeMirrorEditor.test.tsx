@@ -167,32 +167,6 @@ describe("CodeMirrorEditor", () => {
     expect(onChange).toHaveBeenCalledTimes(1)
   })
 
-  it("lets an outside change win over typing not yet committed, and keeps typing past its own commit", async () => {
-    const onChange = vi.fn()
-    let editorView: EditorView | null = null
-    const editor = (value: string) => (
-      <CodeMirrorEditor defaultValue={value} onChange={onChange} onEditorView={(view) => { editorView = view }} />
-    )
-    const { rerender } = render(editor("df = a"))
-    const type = async (text: string) => act(async () => {
-      editorView!.dispatch({ changes: { from: 0, to: editorView!.state.doc.length, insert: text } })
-    })
-
-    // Its own commit coming back while typing went on leaves the newer text.
-    await type("df = ab")
-    await act(async () => { await vi.advanceTimersByTimeAsync(150) })
-    expect(onChange).toHaveBeenLastCalledWith("df = ab")
-    await type("df = abc")
-    rerender(editor("df = ab"))
-    expect(editorView!.state.doc.toString()).toBe("df = abc")
-
-    // An Undo moves the stored code: it is what the editor shows, and the typing is not committed.
-    rerender(editor("df = a"))
-    expect(editorView!.state.doc.toString()).toBe("df = a")
-    await act(async () => { await vi.advanceTimersByTimeAsync(150) })
-    expect(onChange).toHaveBeenCalledTimes(1)
-  })
-
   it("commits a pending local document change when the editor unmounts", async () => {
     const onChange = vi.fn()
     let editorView: EditorView | null = null

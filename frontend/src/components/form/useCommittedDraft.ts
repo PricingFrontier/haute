@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 
 // ─── The shared draft ─────────────────────────────────────────────
 //
@@ -100,6 +100,9 @@ export function useCommittedDraft<T>(
   // that keeps the draft brings back. React's adjust-state-on-render pattern drops a stale
   // draft before it is shown for, or committed into, a new value.
   const [basis, setBasis] = useState<{ value: T; owner: unknown; expected?: { value: T } }>({ value, owner })
+  // The draft last committed: a draft is committed once, so the blur an Enter handler
+  // causes and then the Enter itself, or a save after a blur, never commit it twice.
+  const committed = useRef<{ value: T } | null>(null)
   let held = draft
   if (!equals(basis.value, value) || !Object.is(basis.owner, owner)) {
     const ownCommit = basis.expected !== undefined && Object.is(basis.owner, owner) && equals(basis.expected.value, value)
@@ -111,7 +114,7 @@ export function useCommittedDraft<T>(
   }
   const commit = (next?: T): boolean => {
     const typed = next === undefined ? held : { value: next }
-    if (typed === null) return true
+    if (typed === null || typed === committed.current) return true
     let result: CommitResult<T> = undefined
     if (!equals(typed.value, value)) {
       result = onCommit(typed.value)
@@ -120,6 +123,7 @@ export function useCommittedDraft<T>(
         return false
       }
     }
+    committed.current = typed
     if (result && result.stays !== undefined) {
       const stays = result.stays
       setDraft(typed)

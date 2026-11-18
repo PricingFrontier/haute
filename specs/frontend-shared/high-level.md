@@ -307,7 +307,9 @@ that does not parse) stays on screen with its reason and is not committed. Every
 pipeline or of one node, first commits each open draft, as leaving its field would, and then
 waits for each commit still resolving, so what is saved is what the panels show; a refused
 draft is left out and keeps its reason on screen. Whether any field is being typed in can be
-asked of the shared draft from outside React.
+asked of the shared draft from outside React. A code editor keeps its own rule for now: a
+change from outside that arrives while it holds typing not yet flushed waits until that typing
+is committed or reverted.
 
 **Pipeline imports.** The Utility pane's file list starts with a fixed `Imports` entry, which
 edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl` and

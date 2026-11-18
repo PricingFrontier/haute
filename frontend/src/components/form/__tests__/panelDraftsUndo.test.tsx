@@ -21,7 +21,10 @@ import { ControlledNumberCell } from "../../../panels/editors/rating/ControlledN
 import { IoArgumentsEditor } from "../../../panels/editors/_IoFormatEditor"
 import { HyperparametersConfig } from "../../../panels/modelling/HyperparametersConfig"
 import { formatHyperparameters, formatTuningSearchSpace } from "../../../panels/modelling/hyperparameters"
+import { EBMInteractionsConfig } from "../../../panels/modelling/EBMInteractionsConfig"
 import { NumberField } from "../../../panels/modelling/NumberField"
+import { SplitAndMetricsConfig } from "../../../panels/modelling/SplitAndMetricsConfig"
+import { TargetAndTaskConfig } from "../../../panels/modelling/TargetAndTaskConfig"
 import { useHyperparameterDrafts } from "../../../panels/modelling/useHyperparameterDrafts"
 import type { BandingFactor } from "../../../types/banding"
 
@@ -103,6 +106,31 @@ function Params({ config, onUpdate }: { config: Config; onUpdate: OnUpdateConfig
     />
   )
 }
+const SPLIT_COLUMNS = [{ name: "loss_amount", dtype: "Float64" }, { name: "date_col", dtype: "Date" }]
+const temporal = (testStart: string) => ({
+  schema_version: 1,
+  strategy: "temporal",
+  date_column: "date_col",
+  validation: { method: "single", start: "2025-01-01" },
+  test: { start: testStart },
+})
+function Split({ config, onUpdate }: { config: Config; onUpdate: OnUpdateConfig }) {
+  return (
+    <SplitAndMetricsConfig
+      columns={SPLIT_COLUMNS}
+      rowLimit={(config.row_limit as number | null) ?? null}
+      onRowLimitChange={(limit) => onUpdate("row_limit", limit)}
+      evaluation={config.evaluation as Record<string, unknown>}
+      onEvaluationChange={(evaluation) => onUpdate("evaluation", evaluation)}
+      refitOnDevelopment
+      onRefitOnDevelopmentChange={() => {}}
+      tuningEnabled={false}
+      preview={null}
+    />
+  )
+}
+const CLASSIFICATION_COLUMNS = [{ name: "outcome", dtype: "String" }, { name: "exposure", dtype: "Float64" }]
+
 const tuning = (searchSpace: Record<string, unknown>) => ({ schema_version: 1, trial_count: 20, seed: 42, metric: "gini", search_space: searchSpace })
 
 const ENTRIES: Entry[] = [
@@ -217,6 +245,46 @@ const ENTRIES: Entry[] = [
     field: () => screen.getByLabelText("Folds") as HTMLInputElement,
     typed: "7",
     shows: (config) => String(config.cv_folds),
+  },
+  {
+    name: "the row limit",
+    initial: { row_limit: 50000, evaluation: temporal("2025-06-01") },
+    moved: { row_limit: 20000, evaluation: temporal("2025-06-01") },
+    view: (config, onUpdate) => <Split config={config} onUpdate={onUpdate} />,
+    field: () => screen.getByLabelText("Row limit") as HTMLInputElement,
+    typed: "75000",
+    shows: (config) => String(config.row_limit),
+  },
+  {
+    name: "a temporal test set's start date",
+    initial: { row_limit: null, evaluation: temporal("2025-06-01") },
+    moved: { row_limit: null, evaluation: temporal("2025-07-01") },
+    view: (config, onUpdate) => <Split config={config} onUpdate={onUpdate} />,
+    field: () => screen.getByLabelText("Test starts") as HTMLInputElement,
+    typed: "2025-09-01",
+    shows: (config) => (config.evaluation as { test: { start: string } }).test.start,
+  },
+  {
+    name: "a classification target's positive class",
+    initial: { loss_function: "Logloss", task: "classification", positive_class: "claim" },
+    moved: { loss_function: "Logloss", task: "classification", positive_class: "lapse" },
+    view: (config, onUpdate) => (
+      <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={CLASSIFICATION_COLUMNS} target="outcome" weight="" metrics={["gini"]} />
+    ),
+    field: () => screen.getByLabelText("Positive class") as HTMLInputElement,
+    typed: "renewal",
+    shows: (config) => String(config.positive_class),
+  },
+  {
+    name: "an EBM's interaction count",
+    initial: { algorithm: "ebm", target: "claims", params: { interactions: 3 } },
+    moved: { algorithm: "ebm", target: "claims", params: { interactions: 5 } },
+    view: (config, onUpdate) => (
+      <EBMInteractionsConfig config={config} onUpdate={onUpdate} columns={[{ name: "claims", dtype: "Float64" }, { name: "age", dtype: "Float64" }]} />
+    ),
+    field: () => screen.getByLabelText("Maximum interaction count") as HTMLInputElement,
+    typed: "12",
+    shows: (config) => String((config.params as { interactions: number }).interactions),
   },
   {
     name: "a rating table's relativity cell",
