@@ -73,20 +73,27 @@ def utility_search_dirs(
 
 
 def find_utility_spec(pipeline_dir: str | Path | None) -> ModuleSpec | None:
-    """The ``utility`` an import loads, resolved without importing it.
+    """The project's ``utility`` an import loads now, resolved without importing it.
 
-    The finder's search of the project's directories first, then, for a project without
-    a ``utility``, the rest of the import path, as the import system falls through. A
-    project ``utility`` that is a namespace package (no ``__init__.py``) therefore wins
-    over a regular package of that name elsewhere on the path, as it does when imported.
-    Outside a project, Haute binds no finder, so the import system's own search is the
-    answer.
+    In a project, the finder's search of the project's directories, so a ``utility`` that
+    is a namespace package (no ``__init__.py``) is found as an import finds it. A
+    ``utility`` found only elsewhere on the import path is an installed library, not the
+    project's code: the deploy bundle never ships it, and, like every library, it is not
+    signed. Outside a project Haute binds no finder, so the import system's own search
+    answers.
+
+    The project's directories are listed afresh (their own finders' caches invalidated,
+    never the whole import system's), so a ``utility`` created or removed a moment ago is
+    seen at the cost of listing two directories, not a search of the whole path.
     """
-    if installed_project() is not None:
-        spec = PathFinder.find_spec(UTILITY_PACKAGE, utility_search_dirs(pipeline_dir))
-        if spec is not None:
-            return spec
-    return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
+    if installed_project() is None:
+        return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
+    dirs = utility_search_dirs(pipeline_dir)
+    for directory in dirs:
+        invalidate = getattr(sys.path_importer_cache.get(directory), "invalidate_caches", None)
+        if invalidate is not None:
+            invalidate()
+    return PathFinder.find_spec(UTILITY_PACKAGE, dirs)
 
 
 class _SourceOnlyLoader(SourceFileLoader):

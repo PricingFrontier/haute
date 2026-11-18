@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import random
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -195,15 +196,14 @@ class TestFingerprintCompleteness:
 
 
 class TestUtilitySyspathResolution:
-    def test_utility_on_syspath_only_is_fingerprinted(self, tmp_path, monkeypatch) -> None:
-        """A ``utility`` module that lives only on ``sys.path`` (not in the
-        pipeline dir or cwd) is what the preamble actually imports — its edits
-        must invalidate the fingerprint."""
+    @pytest.mark.no_project
+    def test_outside_a_project_a_utility_on_syspath_is_fingerprinted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """With no project Haute binds no finder, so a ``utility`` on ``sys.path`` is what
+        an import loads; its edits invalidate the fingerprint."""
         pipeline_dir = tmp_path / "pdir"
         pipeline_dir.mkdir()
-        work = tmp_path / "work"
-        work.mkdir()
-        use_project(work)
 
         libs = tmp_path / "libs"
         libs.mkdir()
@@ -219,24 +219,36 @@ class TestUtilitySyspathResolution:
         assert fp_before is not None
         assert fp_before != fp_after
 
-    def test_utility_created_on_syspath_invalidates_fingerprint(
+    def test_in_a_project_an_installed_utility_is_a_library_not_project_code(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Creating ``utility`` after an initial 'missing' fingerprint must
-        change the digest — resolution consults live import machinery state."""
-        pipeline_dir = tmp_path / "pdir"
-        pipeline_dir.mkdir()
+        """In a project only its own ``utility`` is its code (the one the deploy bundle
+        ships); one found elsewhere on ``sys.path`` is a library, unsigned like any."""
         work = tmp_path / "work"
         work.mkdir()
         use_project(work)
-
         libs = tmp_path / "libs"
         libs.mkdir()
+        (libs / "utility.py").write_text("SCALE = 10\n", encoding="utf-8")
         monkeypatch.syspath_prepend(str(libs))
+
+        before = preamble_execution_fingerprint("import utility\n", pipeline_dir=str(work))
+        (libs / "utility.py").write_text("SCALE = 1000\n", encoding="utf-8")
+
+        assert preamble_execution_fingerprint("import utility\n", pipeline_dir=str(work)) == before
+
+    def test_a_project_utility_created_a_moment_ago_invalidates_the_fingerprint(
+        self, tmp_path
+    ) -> None:
+        """Creating the project's ``utility`` after a 'missing' fingerprint changes it:
+        the project's directories are listed afresh on every resolution."""
+        pipeline_dir = tmp_path / "pdir"
+        pipeline_dir.mkdir()
+        use_project(tmp_path)
 
         preamble = "import utility\n"
         fp_missing = preamble_execution_fingerprint(preamble, pipeline_dir=str(pipeline_dir))
-        (libs / "utility.py").write_text("SCALE = 7\n", encoding="utf-8")
+        (pipeline_dir / "utility.py").write_text("SCALE = 7\n", encoding="utf-8")
         fp_present = preamble_execution_fingerprint(preamble, pipeline_dir=str(pipeline_dir))
 
         assert fp_missing is not None

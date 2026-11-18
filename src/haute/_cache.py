@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import importlib as _importlib
 import json as _json
 import math as _math
 from collections.abc import Iterable, Mapping
@@ -1229,21 +1228,17 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
 
 
 def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
-    """Resolve the top-level ``utility`` module/package the preamble will import.
+    """Resolve the project's top-level ``utility`` module or package.
 
-    Resolves it as the import does (:func:`haute._project_imports.find_utility_spec`:
-    the project's directories, then the rest of the path for a project without one),
-    so the bytes we hash are the bytes that will run.  ``PathFinder.find_spec``
-    performs pure resolution — it neither imports the module nor mutates
-    ``sys.modules`` — and we invalidate the finder caches first so a freshly
-    created/edited ``utility`` is seen.
+    Resolves it as an import does (:func:`haute._project_imports.find_utility_spec`: the
+    project's directories, then the rest of the path for a project without one), so the
+    bytes hashed are the bytes that will run. ``PathFinder.find_spec`` performs
+    pure resolution: it neither imports the module nor mutates ``sys.modules``.
 
     Returns the filesystem location(s) to hash (a single file for a module, one
-    or more directories for a package / namespace package), or ``None`` when
-    ``utility`` is not importable from the current path (recorded as
-    ``"missing"`` so a later creation still invalidates the digest).
+    or more directories for a package / namespace package), or ``None`` when no
+    ``utility`` is importable.
     """
-    _importlib.invalidate_caches()
     from haute._project_imports import find_utility_spec
 
     spec = find_utility_spec(pipeline_dir)
