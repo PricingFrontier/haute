@@ -214,15 +214,15 @@ def git_get_working_branch() -> GitWorkingBranchResponse:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/interrupted/retry — write the files an interrupted action left
+# POST /api/git/interrupted/retry — finish or put back an operation that stopped
 # ---------------------------------------------------------------------------
 
 
 @router.post("/interrupted/retry", response_model=GitWorkingBranchResponse)
 def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchResponse:
-    """Write HEAD's version of the files a git action left out of step (a file
-    another program held open), once the analyst has closed them, and answer the
-    readiness after. Files still held are 400, naming them."""
+    """Finish the operation that stopped part-way, or put it back, from its record,
+    and answer the readiness after. Files still held are 400, naming them; so is a file
+    changed since it stopped, and refs moved since."""
     with _rewriting_tree(background):
         retry_interrupted(current_project().root)
     return _with_storage_state(working_branch_status(current_project().root))

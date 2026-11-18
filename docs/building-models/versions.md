@@ -96,8 +96,18 @@ manager lists it with **Repair**. Repair finishes an archive that stopped part w
 branch that went missing comes back at its last milestone, with its saves since then
 waiting to be committed again.
 
-## Files in use
+## An action that stopped part-way
 
-On Windows, a version can't replace a file another program holds open, such as a CSV open
-in Excel. The toolbar then reads **Files in use** and names the files. Close them and choose
-**Retry**. Until then, committing a milestone and restoring a version are refused.
+Restoring a version, switching branch, catching up and the other version actions each take
+several steps: a restore records the version, then writes its files. If one stops before it
+finishes, the toolbar reads **Unfinished**, and its tooltip names the action and its files:
+"Restoring a version stopped part-way: rating/main.py." That happens when the server stops
+in the middle of one, or on Windows when another program holds one of the files open, such
+as a CSV open in Excel.
+
+Close any of the files another program has open, then choose **Retry**. Haute finishes the
+action, or puts everything back as it was before it. Until then, saving, committing a
+milestone, restoring a version and switching branch are refused.
+
+If you changed one of the files after the action stopped, Retry leaves it alone and names
+it. Move your changes aside, then choose **Retry** again.

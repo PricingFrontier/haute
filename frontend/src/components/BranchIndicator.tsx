@@ -134,15 +134,15 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const addToast = useToastStore((s) => s.addToast)
 
-  // An interrupted clone: once the analyst has closed the files, the server writes
-  // HEAD's version of them; files still held keep it interrupted, named in the toast.
+  // An operation that stopped part-way: the server finishes it or puts it back from its
+  // record; files still held keep it interrupted, named in the toast.
   const retryInterrupted = async () => {
     try {
       await retryInterruptedGit()
       await loadStatus({ refresh: true })
-      addToast("success", "The files are back in step with version history.")
+      addToast("success", "Back in step with version history.")
     } catch (err) {
-      addToast("error", apiErrorMessage(err, "Could not write the files."))
+      addToast("error", apiErrorMessage(err, "Retry did not go through."))
     }
   }
 
@@ -225,7 +225,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
       )
     }
     if (status.state === "interrupted") {
-      const detail = status.errors[0] ?? "A git action left files out of step."
+      const detail = status.errors[0] ?? "A git action stopped part-way."
       return wrapWithChildren(
         <Tooltip label={detail} side="bottom" className="max-w-[260px]">
           {(describedBy) => (
@@ -235,7 +235,7 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
               className="toolbar-btn flex items-center justify-center gap-1 px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
               style={{ color: "var(--danger)" }}
             >
-              <span className="truncate">Files in use</span>
+              <span className="truncate">Unfinished</span>
               <button
                 type="button"
                 data-testid="branch-indicator-retry-interrupted"

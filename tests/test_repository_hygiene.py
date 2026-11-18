@@ -112,8 +112,8 @@ def test_source_walks_fail_loudly_when_a_directory_cannot_be_listed(
 # Trees that hold no Python, so no bytecode cache can appear in them mid-walk.
 _TREES_WITHOUT_PYTHON = frozenset({"docs", "specs", "frontend"})
 
-# One possible walk root: whether it derives from a ``__file__``, and the path
-# segments it names.
+# One possible walk root: whether it derives from a ``__file__``, and which of the
+# trees without Python its path segments name.
 _Origin = tuple[bool, frozenset[str]]
 _UNANCHORED: _Origin = (False, frozenset())
 # A name's possible values: expressions, or ``(module, name)`` for a name
@@ -192,38 +192,57 @@ def _imported_origins(module: str, name: str) -> frozenset[_Origin]:
         return frozenset({_UNANCHORED})
     _RESOLVING.add((module, name))
     try:
-        return frozenset(_walk_origins(ast.Name(id=name), bindings, frozenset()))
+        return frozenset(_walk_origins(ast.Name(id=name), bindings, frozenset(), {}))
     finally:
         _RESOLVING.discard((module, name))
 
 
-def _walk_origins(expression: ast.expr, bindings: _Bindings, seen: frozenset[str]) -> set[_Origin]:
-    """Each root *expression* can evaluate to, judged separately."""
+# A name's origins, once worked out for the names already on the path to it.
+_NameOrigins = dict[tuple[str, frozenset[str]], set[_Origin]]
+
+
+def _walk_origins(
+    expression: ast.expr, bindings: _Bindings, seen: frozenset[str], known: _NameOrigins
+) -> set[_Origin]:
+    """Each root *expression* can evaluate to, judged separately.
+
+    A name's origins depend only on the name and the names already on the path to it
+    (*seen*), so *known* keeps them per file: a name bound many times, each binding
+    naming others bound many times, is worked out once per path context rather than
+    once per path, which grows exponentially."""
     if (isinstance(expression, ast.Name) and expression.id == "__file__") or (
         isinstance(expression, ast.Attribute) and expression.attr == "__file__"
     ):
         return {(True, frozenset())}
     if isinstance(expression, ast.Constant):
+        # Only the segments that name a tree without Python decide a walk, so only they
+        # are kept: combining every part's possible values then stays small.
         value = expression.value
-        return {(False, frozenset({value}) if isinstance(value, str) else frozenset())}
+        named = (
+            frozenset({value}) & _TREES_WITHOUT_PYTHON if isinstance(value, str) else frozenset()
+        )
+        return {(False, named)}
     if isinstance(expression, ast.Name):
-        values = [] if expression.id in seen else bindings.get(expression.id, [])
-        inner = seen | {expression.id}
-        origins = {
-            origin
-            for value in values
-            for origin in (
-                _imported_origins(*value)
-                if isinstance(value, tuple)
-                else _walk_origins(value, bindings, inner)
-            )
-        }
-        return origins or {_UNANCHORED}
+        key = (expression.id, seen)
+        if key not in known:
+            values = [] if expression.id in seen else bindings.get(expression.id, [])
+            inner = seen | {expression.id}
+            origins = {
+                origin
+                for value in values
+                for origin in (
+                    _imported_origins(*value)
+                    if isinstance(value, tuple)
+                    else _walk_origins(value, bindings, inner, known)
+                )
+            }
+            known[key] = origins or {_UNANCHORED}
+        return known[key]
     if isinstance(expression, ast.Tuple | ast.List | ast.Set):
         origins = {
             origin
             for element in expression.elts
-            for origin in _walk_origins(element, bindings, seen)
+            for origin in _walk_origins(element, bindings, seen, known)
         }
         return origins or {_UNANCHORED}
     # A path built from parts (``root / "src"``, ``Path(...).parents[1]``)
@@ -231,7 +250,7 @@ def _walk_origins(expression: ast.expr, bindings: _Bindings, seen: frozenset[str
     origins = {_UNANCHORED}
     for child in ast.iter_child_nodes(expression):
         if isinstance(child, ast.expr):
-            child_origins = _walk_origins(child, bindings, seen)
+            child_origins = _walk_origins(child, bindings, seen, known)
             origins = {
                 (anchored or child_anchored, segments | child_segments)
                 for anchored, segments in origins
@@ -267,13 +286,14 @@ def _raw_repository_walks(source: str) -> list[int]:
     """
     tree = ast.parse(source)
     bindings = _name_bindings(tree)
+    known: _NameOrigins = {}
     lines: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or (receiver := _walk_receiver(node)) is None:
             continue
         if any(
             anchored and not segments & _TREES_WITHOUT_PYTHON
-            for anchored, segments in _walk_origins(receiver, bindings, frozenset())
+            for anchored, segments in _walk_origins(receiver, bindings, frozenset(), known)
         ):
             lines.append(node.lineno)
     return sorted(lines)

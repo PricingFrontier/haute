@@ -126,7 +126,7 @@ class TestGitSubprocessEncoding:
                     ["git", "hash-object"], 0, stdout=b"\xffobject\n", stderr=b""
                 ),
                 subprocess.CompletedProcess(
-                    ["git", "update-ref"], 1, stdout=b"", stderr=b"\xffdiagnostic\n"
+                    ["git", "check-ignore"], 128, stdout=b"", stderr=b"\xffdiagnostic\n"
                 ),
             ]
         )
@@ -134,7 +134,7 @@ class TestGitSubprocessEncoding:
 
         assert git_core._run_git("hash-object", "--stdin", input_text="payload\n") == "�object"
         with pytest.raises(GitError, match="�diagnostic"):
-            git_core._run_git("update-ref", "--stdin", input_text="create refs/test x\n")
+            git_core._run_git("check-ignore", "--stdin", input_text="path\n")
 
 
 @pytest.mark.parametrize(

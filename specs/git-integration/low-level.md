@@ -5,16 +5,17 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_git.py` | Stable import facade. Re-exports the route/public Git API and exception taxonomy from the cohesive domain modules below; owns no subprocess, mutable state, cache, or branch transaction. |
-| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization, ref validation and branch-pair naming (`_free_pair_name`), guardrails, the compensation of a failed mutation (`_compensate`), immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them. |
+| `src/haute/_git_core.py` | Sole Git command and repository-mutation boundary: exception taxonomy, prompt-proof subprocess adapters, fetch serialization, ref validation and branch-pair naming (`_free_pair_name`), guardrails, the classification of every git command it runs as one that moves a local ref or not (`_moves_local_refs`, refusing one it does not know) and the refusal of a ref move outside a recorded operation's step or a save's one commit (`_ref_moves_permitted`, `_save_commit`), immutable object/ref queries, content-addressed primitive caches (including parsed graph-log rows), and the tree fence every working-tree-rewriting command runs through (`_rewrite_tree`, `_tracked_changes`, `GitFilesInUseError`). Domain modules depend on this layer; it depends on none of them but the clone-state leaf, whose operation record its lock decorator reads. |
+| `src/haute/_git_operation.py` | Recorded operations: `Operation`, the ordered steps of a git action that moves a ref (ref transactions, checkouts, a fast-forward, file writes, HEAD, the recorded working branch, trash entries), its record in `.haute/operation.json` written before the first step and removed after the last, the commit point, and `recover`, the one routine that finishes or puts back an operation from its record, for a caught failure and for Retry alike. It is the only module whose code runs a ref-moving git command. |
 | `src/haute/_git_setup.py` | Repository and clone setup: repository readiness, identity, default/working-branch association, unborn-repository seeding, and Git preferences. |
-| `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay with compensating rollback. |
+| `src/haute/_git_transactions.py` | Working/ledger branch-pair transactions: path-scoped saves, invariant checks, the sweep of unrecorded project files, milestone merge/ref transaction, version restore, and branch creation/fork replay, each a recorded operation, and Retry of an interrupted one. |
 | `src/haute/_lint_refusal.py` | `explain_lint_refusal`: a milestone refused by the scaffolded pre-commit hook, said node by node from ruff's concise diagnostics (`lint_problems`, `LintProblem`), each line quoted, with the fix-or-`noqa` instruction and `REFUSAL_GUIDE_URL`; nothing for output holding no diagnostic. |
 | `src/haute/_git_read_models.py` | Immutable panel read models for repository/working-branch readiness and managed working-branch listings, and the project-file reads behind the Pipeline files panel: `pipeline_file_states` (how each file in a folder stands against version history: `new`, `changed` or `ignored`) and `ignore_rule` (the `.gitignore` rule that ignores a path). It performs no mutation or fetch. |
 | `src/haute/_git_history.py` | Immutable history projection and safe historical materialisation: milestones, ledger saves, commit context, forest topology, use of the core's object-addressed log cache, and bounded archive extraction. |
 | `src/haute/_git_remote.py` | Deliberate remote synchronization and transport: remote configuration/listing, clone/bundle flows, pair divergence, fetch, push/bootstrap, fast-forward, and branch-away resolution. It uses the core command boundary and never owns clone-state files. |
-| `src/haute/_git_archive.py` | Local branch-pair archive lifecycle: archive, delete/tombstone, undelete, and restore transactions with compensating rollback. |
+| `src/haute/_git_archive.py` | Local branch-pair archive lifecycle: archive, delete/tombstone, undelete, un-archive and repair, each a recorded operation. |
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
-| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`), and an interrupted tree (`interrupted.json`: `operation`, `files`, `at`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
+| `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`), and the record of a git operation in progress (`operation.json`, read by `read_operation`, worded by `operation_words`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
 | `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). `POST /api/git/push` publishes through `haute._ci_secrets.push_with_ci_secrets`, and `POST /api/git/ci-secrets` is `set_missing_ci_secrets`; the deploy's-secrets step they add is owned by [cli](../cli/low-level.md). |
 
@@ -28,14 +29,17 @@ conversion in the routes).
 - `GitError(HauteError)` — base; wraps raw subprocess stderr.
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
-    - `GitTransactionError(GitDomainError)` — the primary mutation and at least one
-      compensating rollback step both failed. Every multi-step mutation (archive,
-      delete, undelete, working-branch creation and adoption, fork, catch-up, spin-off)
-      undoes itself through `_compensate`: on any exception it runs each undo step in
-      order, the later ones even after one fails, and re-raises the original error when
-      all took effect; a step that reports `False` or raises a `GitError` or `OSError`
-      makes it raise "<action> failed and automatic rollback was incomplete. Inspect the
-      repository before retrying." from the original error.
+    - `GitTransactionError(GitDomainError)` — a recorded operation `recover` can neither
+      put back nor finish: its refs are where no step of its record leaves them ("<operation>
+      stopped part-way, and its branches have moved since. Inspect the repository before
+      retrying."), git refuses the transaction that would set them ("<operation> could not
+      be put back." or "finished."), or the record cannot be read. The record stays, and
+      the operation's own failure is its cause. The milestone's hook pass raises it too
+      when the hooks' operation cannot put HEAD back on the ledger.
+    - `GitInterruptedError(GitDomainError)` — a git action asked for while
+      `.haute/operation.json` is there: "<operation> stopped part-way. Choose Retry first."
+      Every `_serialized_mutation` raises it once it holds the lock; Retry, identity and
+      preferences (`_serialized_while_interrupted`) do not.
     - `GitHistoryReadError(GitDomainError)` — history git could not read (a milestone list
       or a range of saves), or historical archive/extraction/parsing could not produce a
       trustworthy pipeline graph.
@@ -75,9 +79,10 @@ path: only a full 40-hex SHA is guaranteed immutable; a ref name (branch, `HEAD`
 falls through to an uncached live subprocess on every call. `_get_default_branch` is also
 uncached because the selected remote and its symbolic `HEAD` are mutable ref-name state.
 
-**Domain import direction.** `_git_core`, `_git_lock`, and `_git_state` are leaves.
-Setup, transactions, read models, history, remote synchronization, and archive lifecycle
-may import those leaves and narrowly import one another in the direction documented by the
+**Domain import direction.** `_git_lock` and `_git_state` are leaves, and `_git_core`
+imports only them. `_git_operation` imports the core and the clone state. Setup,
+transactions, read models, history, remote synchronization, and archive lifecycle
+may import those and narrowly import one another in the direction documented by the
 control flows below; they never import the `_git` facade. `_git.py` imports domain modules
 only to re-export their stable surface. This keeps the graph acyclic and prevents a second
 subprocess or clone-state owner from appearing during future work.
@@ -106,6 +111,32 @@ which Windows' pipe reader threads would otherwise wait on with the repository l
 Domain modules never receive the `subprocess` module or construct a raw process call
 themselves.
 
+**Ref moves (`_git_core.py`).** Every git command the core runs is built by `_git_argv`,
+which classifies it (`_moves_local_refs`) before anything starts. The refs that count are
+HEAD and everything under `refs/` but `refs/remotes/`: local branches, the `version/`
+labels under `refs/tags/`, and the trash pins under `refs/haute/`. Remote-tracking refs are
+git's copy of another repository, which every fetch replaces, so a fetch or push that writes
+only those, or a clone, moves none. `update-ref`, `branch`, `checkout`, `switch`, `merge`,
+`reset`, `commit`, `rebase`, `cherry-pick`, `revert`, `pull`, `am`, `stash` and `worktree`
+move refs; `symbolic-ref` with a new target or `--delete`, and `tag` other than a listing
+(`-l`, `--list`, `--points-at`, `--merged`, `--contains`), move them. A `fetch` moves none
+only when it follows no tags (`--no-tags`), applies no configured mapping (`--refmap=`)
+and names every destination, each under `refs/remotes/`: by default git follows tags into
+`refs/tags/`, and a remote's configured fetch refspecs, which may name any ref, update refs
+beside the ones a command names unless `--refmap=` empties them. Its first operand is the
+repository, a bundle's path on Windows holding a colon, and only the operands after it are
+refspecs. Every fetch the core runs takes that form (`SAFE_FETCH`: `_fetch_refs`,
+`fetch_bundle_refs`, the expected default's fetch): branches into
+`refs/remotes/<remote>/`, and version labels into `LABELS_NAMESPACE`
+(`refs/remotes/haute-labels/<remote>/version/`, `label_refspec`), beside the branches and
+outside the clone's own labels. Read-only and index-only commands are
+named one by one, and a subcommand the core does not know raises `GitError` naming it, so a
+new kind of command is classified before it can run. A command that moves a ref raises
+`GitError` ("git <subcommand> would move a ref outside a recorded operation") unless it runs
+inside `_ref_moves_permitted()`, which only `_git_operation`'s steps and `recover` enter, or
+is the one `commit` inside `_save_commit()`, which only `commit_save` enters. A structural
+test holds both uses, and that `"git"` heads an argument list only in `_git_argv`.
+
 **Remote environment (`_remote_env(cwd)`).** Every deliberate remote command, best-effort
 or strict, runs with `GIT_TERMINAL_PROMPT=0` and `SSH_ASKPASS_REQUIRE=never`. When the
 analyst has configured no ssh transport (`_ssh_command_configured`: `GIT_SSH_COMMAND` or
@@ -122,7 +153,28 @@ insertion order = recency). An entry id is `<branch>@<UTC YYYYMMDDTHHMMSSZ>`, wi
 `-3` and so on on a clash, and its pins are `refs/haute/trash/<entry_id>/working` and
 `/ledger`. An entry written before ids were introduced is keyed by the bare branch name,
 with no `branch` field. It is read with that name as its branch and its pins at
-`refs/haute/trash/<name>` and `refs/haute/trash/<name>-save`. Every writer holds the repository mutation lock, stages a complete UTF-8
+`refs/haute/trash/<name>` and `refs/haute/trash/<name>-save`. `operation.json` is the
+record of a git operation in progress (`_git_operation.py`): `{operation, at, initial,
+steps: [{kind, sets}], commit_point, files, wipes_caches}`. *operation* is one of `restore`, `catch-up`,
+`select-branch`, `open-ledger`, `seed`, `create-branch`, `spin-off`, `archive`, `delete`,
+`undelete`, `unarchive`, `repair`, `milestone`, `milestone-hooks` and `adopt-clone`, which
+`operation_words` says as "Restoring a version", "Catching up", "Choosing a branch",
+"Opening the working branch", "Making the first version", "Creating a branch", "Spinning
+off a copy", "Archiving a branch", "Deleting a branch", "Restoring a deleted branch",
+"Restoring an archived branch", "Repairing a branch", "Committing a milestone", "Running
+the project's commit hooks" and "Opening the stored project". *initial* maps every slot the
+operation changes, and HEAD and every branch HEAD names in any of its states whether the
+operation changes them or not, to its value before the first step. Each entry of *steps*
+gives its *kind* (`refs`, `checkout`, `fast-forward`, `files`, `head`, `branch`, `trash`
+or `call`) and the slots it *sets*, in order, so the state after step *k* is *initial*
+overlaid with the first *k* steps, and the steps whose kind writes files (`checkout`,
+`fast-forward`, `files`) say which commit the files hold after each. A slot is `HEAD` (`"ref: refs/heads/<name>"` or a full SHA), a full ref name (a
+full SHA, or `null` for no ref), `branch` (the working branch `state.json` records, or
+`null`) or `trash:<entry id>` (the tombstone, or `null`); a step that sets none runs
+something between two others (the hooks). *commit_point* is the number of steps after which
+the operation goes forward, *files* the paths it writes, and *wipes_caches* whether it
+clears `_VOLATILE_ARTEFACTS` once its files are in place. A record that cannot be read is
+still an interruption, of an operation `read_operation` reports as `unknown`. Every writer holds the repository mutation lock, stages a complete UTF-8
 document beside its destination, and atomically replaces the target. Every read-modify-write
 helper holds that lock across both phases, preserving concurrent entries while readers
 observe either the old complete document or the new complete document.
@@ -153,8 +205,10 @@ because pipeline position sidecars belong on the save ledger.
 **`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of eight
 literal values: `"git-unavailable"` (no Git binary on PATH; distinct from
 `"no-repository"` so the UI does not offer init), `"no-repository"` (there is no Git
-repository), `"interrupted"` (`.haute/interrupted.json` exists: files are out of step with
-HEAD, named in `errors`; read before every state below), `"unset"` (repository present, attached HEAD, no working branch recorded),
+repository), `"interrupted"` (`.haute/operation.json` exists: an operation stopped
+part-way, and `errors` holds one line naming it and up to five of its files, "<operation>
+stopped part-way: <files>." or "<operation> stopped part-way." when it writes none; read
+before every state below), `"unset"` (repository present, attached HEAD, no working branch recorded),
 `"detached"` (HEAD has no branch; `head_sha` supplies the accurate commit context),
 `"invalid"` (Git metadata or the recorded pair is missing / ineligible /
 invariant-violating), `"divergent"` (attached HEAD is on neither the recorded branch nor
@@ -182,7 +236,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 |---|---|---|
 | `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (eight-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
-| `POST /api/git/interrupted/retry` | None | `GitWorkingBranchResponse`, the readiness once HEAD's version of the interrupted files is written and the marker cleared; files still held are 400 `GitFilesInUseError`, the marker kept |
+| `POST /api/git/interrupted/retry` | None | `GitWorkingBranchResponse`, the readiness once `retry_interrupted` has finished the stopped operation or put it back and removed its record; files still held are 400 `GitFilesInUseError`, a file changed since it stopped is 400 naming it, and refs no step leaves are 400 `GitTransactionError`, the record kept in each case |
 | `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
 | `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
@@ -205,7 +259,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
 | `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[],ci_secrets=null}`; `default_branch` and `bootstrapped_default` are required response members, `ci_secrets` is the deploy's secrets on a GitHub remote's repository ([cli](../cli/low-level.md)), and working/ledger non-fast-forward is 409 |
 | `POST /api/git/ci-secrets` | `GitCiSecretsRequest {remote}` | `GitCiSecrets {repository,state,missing=[],newly_set=[],problem=null}` once the deploy's secrets the repository lacked are set from `.env`; 400 naming why when they do not apply or cannot be set ([cli](../cli/low-level.md)) |
-| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
+| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded,labels_added}`: the branches that moved and the version labels (`2.0`, without `version/`) now held too |
 | `POST /api/git/branch-away` | `GitBranchAwayRequest {remote}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
 
 ## Control flow
@@ -214,11 +268,12 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 (a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
 merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
-current) → `git status --porcelain -- <paths>` to check anything in *paths* actually
+current: the `open-ledger` operation, nothing when both are so already) → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged) → returns the new SHA. The `git commit` passes
+what else the user may have pre-staged), the one ref move outside a recorded operation,
+inside `_save_commit()` → returns the new SHA. The `git commit` passes
 `-c core.hooksPath=/dev/null` (`_git_core.NO_HOOKS`): a save runs none of the project's
 hooks, `prepare-commit-msg` and `post-commit` included (which `--no-verify` would still
 run); they run at a milestone over every save it records. Every path reaches Git as a
@@ -257,7 +312,7 @@ status`, which lists new files where `git diff` does not. Outside a repository t
 nothing to capture.
 
 Every public mutation entry point acquires the reentrant repository lock before its first
-precondition read and holds it through Git changes, clone-state writes, and any compensation.
+precondition read and holds it through Git changes, clone-state writes, and any put-back.
 Nested calls such as `commit_milestone` → `commit_save` → `resolve_ledger` reuse the same
 lock. Pure Git history/object readers do not acquire the engine lock, but every clone-state
 reader in `_git_state.py` acquires it for the file read so it cannot overlap an atomic state
@@ -276,11 +331,10 @@ switch that arrives during a save therefore waits for it and then sees all of it
 or, after a failed save's rollback, none of them.
 
 **The tree fence (`_rewrite_tree(*args, cwd)`).** Every command that rewrites the working
-tree runs through it. These are the checkouts in `resolve_ledger`, `set_working_branch`,
-`create_working_branch`'s switch and move, `_switch_away_if_active` and `branch_away`, and
-Catch up's `merge --ff-only`. The fence:
-1. checks for a git operation in progress, then records HEAD (its branch, or its SHA when
-   detached) and `_tracked_changes` (`status --porcelain -z --untracked-files=no`);
+tree runs through it, and only as a checkout or fast-forward step of a recorded operation.
+The fence:
+1. checks for a git operation in progress, then records `_tracked_changes` (`status
+   --porcelain -z --untracked-files=no`);
 2. runs the command, keeping its stderr;
 3. treats as out of step any tracked change that was not there before, and every file stderr
    names as not replaced (`unable to unlink old '<path>'`) or not removed (`unable to unlink
@@ -288,25 +342,86 @@ Catch up's `merge --ff-only`. The fence:
    and one left behind untracked, which the status comparison cannot. With none, a non-zero
    exit is an ordinary `GitError`.
 
-When files are out of step, the fence puts HEAD back if it moved (`checkout` of the recorded
-branch or `--detach` SHA). An ordinary command's put-back first stages the out-of-step files
-so the checkout carries them back untouched; a forced command's put-back is forced too, since
-its changes were to be discarded. It then writes the still-out-of-step files from HEAD
-(`restore --source=HEAD --staged --worktree`). Anything still out of step after that records
-the clone interrupted (`record_interrupted`).
+When files are out of step it raises `GitFilesInUseError`, naming the files stderr reports,
+else the out-of-step ones. It puts nothing back itself: the operation it is a step of does,
+from its record.
 
-Either way it raises `GitFilesInUseError`, naming the files stderr reports, else the
-out-of-step ones. The caller's own compensation then runs as for any
-failure: deleting the branch it created, restoring a ref.
+**Recorded operations (`_git_operation.py`).** A mutator builds an `Operation(name,
+project_root, cwd)` once every refusal has been checked and every commit object it needs has
+been made (`commit-tree`), then adds its steps in order. Each step reads the value its slots
+have after the steps before it (from the live repository for a slot no earlier step set) and
+is dropped when it would change nothing:
+- `refs({ref: sha | None})`: one `update-ref --stdin` transaction, `create`, `update` with
+  the earlier value as the expected one, or `delete`, all or nothing;
+- `checkout(branch)`, `checkout_detached(sha, force=False)`: HEAD to a branch or a commit,
+  writing the files, through the fence;
+- `fast_forward(sha)`: HEAD's branch to *sha* with `merge --ff-only`, through the fence;
+- `write_files()`: `restore --source=HEAD --staged --worktree` of the record's files (the
+  restore's write after its ledger moved);
+- `head(ref)`: `symbolic-ref HEAD <ref>`, no files (the hooks' pass);
+- `working_branch(name | None)`: `state.json`;
+- `trash(entry_id, entry | None)`: one tombstone added or removed;
+- `call(fn)`: runs *fn* between two steps, setting no slot; a call is never the last step,
+  since only the refs show how far an operation got.
 
-**Interrupted (`.haute/interrupted.json`).** `record_interrupted(project_root, operation,
-files)`, `read_interrupted` and `clear_interrupted` are lock-scoped like the other clone-state
-files. While it exists, readiness answers `"interrupted"`, and `commit_milestone` and
-`restore_version` refuse: "These files are out of step with version history: <files>. Close
-them and choose Retry first." `retry_interrupted(project_root, cwd)` writes HEAD's version
-of the marker's files. When no tracked change is left among them it clears the marker and
-returns readiness; otherwise it raises `GitFilesInUseError`. Its route runs under
-`pause_watcher()` and announces the tree change like the other paused routes.
+`committed()` puts the commit point after the steps added so far; by default it is after the
+last. `run()` with no steps does nothing. Otherwise it refuses while another operation is in
+progress in the thread, or a record is there (`GitInterruptedError`), puts HEAD and the
+branches it names in *initial* (`_pin_head`), so the commits the files come from are the
+record's and a branch moved after a stop is found, and works out *files*. The files hold
+HEAD's commit before the first step (the empty tree for an unborn HEAD), then HEAD's commit
+after each step that writes files, unchanged by one that does not (`_worktree_commits`): a
+step that moves HEAD or a ref alone, as the hooks' pass does, names no file. *files* is
+every path that differs between the first of those commits and any later one, less every
+path not in step when the record is written, a tracked change (the analyst's own edit) or a
+path the first commit lacks that is on disk (an untracked or ignored file). It then writes the record, performs
+each step inside `_ref_moves_permitted()`, wipes the caches when the operation does, and
+removes the record. On an `Exception` it calls `recover` with *failed_step*, the step
+that raised. That step is unfinished, whatever its git command did before failing (a
+checkout or fast-forward the fence refuses has moved its ref already): an operation whose
+failing step comes before its commit point is put back before the call returns, and one
+whose failing step is at or past it keeps the record. The original failure is re-raised,
+from whatever `recover` raised when that could not finish. A stop that is not an `Exception` (the process killed, or
+interrupted from the keyboard) leaves the record as it is.
+
+`recover(project_root, cwd, failed_step=None)` is the one routine that acts on a record, for
+the caught failure and for Retry:
+1. It reads every slot live and finds the steps whose state equals them all. With none,
+   the refs moved after the operation stopped: `GitTransactionError`, the record kept.
+2. For Retry (no *failed_step*), the last such step at or past the commit point goes forward
+   from there to the last step; before it, back from the first such step to the first
+   state. For a caught failure, *failed_step* decides:
+   before the commit point back to the first state, at or past it the record is kept and
+   nothing more is done.
+3. Each of *files* on disk must hold one of the versions the commits the files hold in the
+   record's states give it (`hash-object --stdin-paths`, with the path's filters); one that holds neither was
+   changed after the operation stopped, and is refused by name ("<files> changed after
+   <operation> stopped. Move the changes aside, then choose Retry."), nothing changed. A file
+   git cannot read is left to the check in step 6.
+4. It walks the slots there one recorded step at a time (`_walk`), undoing the steps in
+   reverse order going back. Each step sets one kind of slot, so each transition is one
+   `update-ref --stdin` transaction expecting the values of the state it leaves, one HEAD
+   update (`symbolic-ref`, or `update-ref --no-deref` for a commit), or one write of the
+   recorded working branch or of a tombstone (`_apply_transition`): a recovery that itself
+   stops or fails leaves a state of the record, and the next Retry goes on from it. A git or
+   file error here raises `GitTransactionError`, the record kept.
+5. It writes *files* from HEAD: `restore --source=<HEAD's commit, or the empty tree for an
+   unborn HEAD> --staged --worktree --pathspec-from-file=- --pathspec-file-nul` for each one
+   the index or HEAD's tree holds, and removes one on disk that neither holds, a leftover of
+   the operation; git's own words are logged when the restore fails.
+6. It checks the result: every slot at its target, and each of *files* in step, tracked and
+   unchanged where HEAD's tree has it, and neither indexed nor on disk where it does not.
+   Files that are not raise `GitFilesInUseError`, the record kept.
+7. It removes the record, and wipes the caches when it went forward in an operation that
+   does.
+
+**Interrupted (`.haute/operation.json`).** While the record exists, readiness answers
+`"interrupted"`, and every `_serialized_mutation` refuses with `GitInterruptedError` once it
+holds the lock: Commit, Restore, a save's capture, a switch, a catch-up, a push and every
+other git action. `retry_interrupted(project_root, cwd)` (`_serialized_while_interrupted`)
+calls `recover` with no *failed_step*, so the refs decide which way it goes. With no
+record it does nothing. Its route runs under `pause_watcher()` and announces the tree change
+like the other paused routes.
 
 **Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork,
 pipeline_folder)` → reads the recorded working branch from `_git_state.read_working_branch` →
@@ -329,7 +444,9 @@ file outside the pipeline folder is never included → `_run_commit_hooks` runs 
 `pre-commit` and `commit-msg` hooks, the ones a `git commit` of the milestone would run, when
 either is installed where git looks for it (`git rev-parse --git-path hooks/<name>`, which
 follows `core.hooksPath`). The milestone's saves are already on the ledger, so for the hooks
-HEAD names the working branch (`symbolic-ref`, no checkout) and a scratch index
+HEAD names the working branch (`symbolic-ref`, no checkout; the `milestone-hooks` operation,
+whose steps are HEAD to the working branch, the hooks, and HEAD back to the ledger) and a
+scratch index
 (`GIT_INDEX_FILE`, `read-tree` of the ledger) holds the ledger's tree: the milestone's changes
 are what is staged, and the real index and files are untouched. Each hook runs through `git
 hook run --ignore-missing` (git 2.36 or later; an older git with a hook installed is refused
@@ -346,9 +463,10 @@ characters) and ruff's message and code, then "Change each line, save, and commi
 keep a line as it is, end it with `# noqa: <code>` (its code). More: <docs URL>"
 (`REFUSAL_GUIDE_URL`); output holding no such line, another hook's or ruff failing to run,
 keeps the generic refusal; `commit-msg` gets the message in a file and may rewrite it,
-and a message it empties is refused. HEAD returns to the ledger in a `finally`, whatever
-ended the hooks (an interrupt included), before the scratch files are removed; a return that
-fails is `GitTransactionError`. What `pre-commit` left changed
+and a message it empties is refused. A hook that refuses, or anything else that ends the
+hooks with an `Exception`, has the operation put HEAD back on the ledger; a server that
+stops in them leaves the record, and Retry puts HEAD back. The scratch files are removed in
+a `finally`. What `pre-commit` left changed
 on disk, swept by the same rules, is recorded as one more save without hooks, "Changes made by
 the project's pre-commit hook" → `merge_to_working`
 validates the message (non-empty, no C0 control characters — a stray record-separator would
@@ -358,11 +476,11 @@ if it already equals the ledger tip ("no new saves"), then requires
 `refs/tags/version/<label>` to satisfy Git's complete full-ref format (invalid labels are a
 user-facing `GitDomainError` rather than a raw plumbing failure), rejects any duplicate tag
 before mutation, and builds the merge purely via
-`commit-tree <ledger's tree> -p <working_tip> -p <ledger_tip> -m <message>`. Without a
-label, a CAS `update-ref` advances the working branch. With a label, `hash-object
---literally -t tag` writes the fully Haute-constructed annotated-tag payload without
-invoking platform-dependent tag fsck, and one `update-ref --stdin` transaction
-atomically applies both the working-branch CAS and tag-ref creation — no checkout or index,
+`commit-tree <ledger's tree> -p <working_tip> -p <ledger_tip> -m <message>`. With a label,
+`hash-object --literally -t tag` writes the fully Haute-constructed annotated-tag payload
+without invoking platform-dependent tag fsck. The `milestone` operation's one step is then
+one `update-ref --stdin` transaction that applies the working-branch CAS and, with a label,
+the tag-ref creation atomically — no checkout or index,
 and a label conflict or ref race leaves both refs unchanged. `_run_git` passes stdin as
 bytes so Windows cannot translate the transaction's required LF separators to CRLF.
 
@@ -390,16 +508,13 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
   opens at a clean milestone. For a pending save the anchor is the working tip. For a
   folded save it is the first parent of the oldest spine milestone the save is an ancestor
   of (`_folding_anchor`). Then:
-  - `move=False, switch=False` (default): two fresh branches (`name`, `ledger_name(name)`)
-    at the base; current HEAD and branch untouched.
-  - `switch=True`: the same two branches, then a checkout of the new ledger and
-    `write_working_branch(name)`, the current pair's refs untouched. It first refuses a git
+  Each way is one `create-branch` operation, put back whole when it fails.
+  - `move=False, switch=False` (default): one ref transaction creating `name` and
+    `ledger_name(name)` at the base; current HEAD and branch untouched.
+  - `switch=True`: that transaction, then a checkout of the new ledger and the recorded
+    working branch set to `name`, the current pair's refs untouched. It first refuses a git
     operation in progress and tracked changes ("You have unsaved changes. Save or discard
     them before opening the new branch."), since the checkout replaces the files.
-
-  Either way, a failure after the first ref runs `_rollback_fork`'s steps and puts the
-  recorded working branch back. A complete rollback re-raises, and an incomplete one raises
-  `GitTransactionError`, so no lone ref leaks.
   - `move=True`: only legal at the latest milestone or a pending save (not an older
     milestone or a folded save), and not with `switch`, which it implies. Refuses if the spawning ledger's later commits are already published on
     ANY remote and the rewind would orphan them (checked per-remote via `_is_ancestor`),
@@ -408,12 +523,10 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     per-commit, preserving author/committer identity and dates through `GIT_AUTHOR_*` /
     `GIT_COMMITTER_*` env vars). Before replay, every to-be-relocated commit must have
     exactly one parent; an external merge is rejected because linear replay would destroy
-    topology. The operation then creates both new branches and checks out the new ledger
-    (its tree matches old HEAD's, so uncommitted edits carry across untouched), rewinds the
-    spawning branch's ledger to the fork point, and records the new working branch. Any
-    exception in this multi-step sequence runs `_rollback_fork`'s steps; a complete rollback
-    re-raises the original error, while any failed compensation raises
-    `GitTransactionError`.
+    topology. The operation then creates both new branches in one transaction and checks
+    out the new ledger (its tree matches old HEAD's, so uncommitted edits carry across
+    untouched), rewinds the spawning branch's ledger to the fork point, and records the new
+    working branch.
 
 **The volatile wipe (`_wipe_volatile_artefacts`).** Restore, Catch up and Spin off a copy
 wipe `_VOLATILE_ARTEFACTS` once their files are in place, so a refused or failed one deletes
@@ -447,16 +560,15 @@ Then:
    first."). The sweep's save stays.
 7. `commit-tree <sha>^{tree} -p <ledger tip>`, message `Restored <short sha>: <target
    subject>` with a `Restored-from: <sha>` trailer.
-8. A CAS `update-ref refs/heads/<ledger> <new> <old tip>`.
-9. `git restore --source=HEAD --staged --worktree -- :/`, which writes the target's files,
-   brings back deleted ones and removes ones added since, leaving untracked and ignored
-   files and `.haute/` alone.
-10. `_wipe_volatile_artefacts`.
+8. The `restore` operation: its first step, the commit point, advances the ledger by CAS to
+   the restore save; its second writes the record's files from HEAD (`write_files`), which
+   writes the target's files, brings back deleted ones and removes ones added since, leaving
+   untracked and ignored files and `.haute/` alone. It then wipes `_VOLATILE_ARTEFACTS`.
 
-A failure at step 9 leaves the ledger at the restore save, so it is not undone. The clone is
-recorded interrupted with the files git could not write: those named by `unable to unlink
-old '<path>'` on stderr, else the tracked changes left. The restore then raises
-`GitFilesInUseError`, and Retry writes those files. The route runs it inside
+A failure writing the files, or a server that stops after the ledger moved, leaves the
+ledger at the restore save, so it is not undone, and the record stays: readiness reads
+`interrupted`, and Retry writes the files. A file another program holds raises
+`GitFilesInUseError`. The route runs it inside
 `pause_watcher()`, then calls `_project_storage.enqueue_push()` as a save's
 capture does. `commit_milestone` takes its sweep from the same
 `_unrecorded_project_files`.
@@ -479,8 +591,10 @@ exists from `_list_branches_with_tips`.
   `_crystallize_milestone(_folding_anchor(W tip, HEAD), HEAD, branch)`.
 
 These helpers live in `_git_setup.py` and are shared with `create_working_branch`. The
-anchoring commit's tree is HEAD's, so `checkout -b <branch> <start>` changes no file and
-carries any uncommitted edit across.
+anchoring commit's tree is HEAD's, so the checkout of the new ledger at it changes no file
+and carries any uncommitted edit across. The `create-branch` operation's steps are one ref
+transaction creating the branch and its ledger at the start, the checkout of the ledger, and
+the recorded working branch set to the new branch.
 
 **Unborn-repo seeding (inside `set_working_branch`, `create=True`).** Only triggers when
 `HEAD` has no commits. If the current unborn branch is not itself protected, it is renamed
@@ -507,22 +621,25 @@ folder (`_refuse_unversionable`): "<path> (<size>) is too large for version hist
 takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
 and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added with
 `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
-An empty result still commits (`--allow-empty`) to establish the root. The root commit takes `NO_HOOKS` too: like a save, it runs none of the project's hooks. A `git commit` failure whose
-stderr mentions missing author identity is translated to a `GitDomainError` steering the
-user to set identity first; anything else re-raises as a plain `GitError`. The whole
-*post-seed pair-creation* path (branch checkout, ledger spawn, state write) is wrapped so any
-exception restores the post-seed HEAD (symbolic ref if it existed, else detached-SHA) and
-deletes the half-created branch and ledger.
+The staged index becomes the root commit's tree (`write-tree`), possibly the empty one, and
+`commit-tree <tree> -m "Initial commit"` makes the root commit, which runs none of the
+project's hooks, as a save does not. A `commit-tree` failure whose stderr mentions missing
+author identity is translated to a `GitDomainError` steering the user to set identity first;
+anything else re-raises as a plain `GitError`. The `seed` operation then renames the unborn
+branch (`head("refs/heads/main")`) when it is not protected, and creates the default branch
+at the root commit, its commit point its last step. The *post-seed pair creation* is the
+`create-branch` operation above, taken next.
 
-The seed phase runs before that rollback snapshot. A failure while seeding can therefore
-leave an unborn branch renamed to `main`, newly appended `.gitignore` guards, and index
-staging changes; a root commit that succeeded is deliberately permanent. These operations
-leave working-tree file contents in place. Once seeding has completed, branch/ledger refs,
-HEAD, and recorded working-branch state are the state the pair-creation rollback protects.
+A failure while seeding can leave newly appended `.gitignore` guards and index staging
+changes, which leave working-tree file contents in place; a seed that finished is
+deliberately permanent, whatever the pair creation after it does.
 
-Adopting an existing pair is transactional too: the previous symbolic/detached HEAD,
-whether the target ledger existed, and the previous clone association are captured before
-checkout. A failed ledger spawn, checkout, or state-file replacement restores all three.
+Adopting an existing pair is the `select-branch` operation: the ledger created at the
+working branch's tip when there is none, the checkout of the ledger, and the recorded
+working branch, each a step only when it changes something. Adopting a cloned project
+(`adopt_cloned_lineage`) is the `adopt-clone` operation: one ref transaction setting the
+working branch and, when the remote has one, its ledger to their remote-tracking tips, then
+the checkout of the ledger, else of the working branch.
 
 **Milestone metadata and commit context.** Log rows use NUL-delimited fields, so tabs in
 external commit subjects cannot shift the SHA/message/timestamp columns. Version labels are
@@ -705,38 +822,48 @@ as Push inspection (`_read_advertisement`, which `_inspect_remote` wraps), and a
 failure propagates: an unreachable remote never reads as adoptable.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
-detached states) and a clean tracked tree. Fetches and prunes the configured remote
-namespace, then aborts if that required refresh times out, cannot launch or exits non-zero
+detached states) and a clean tracked tree. Fetches and prunes the remote's branches and
+version labels (`_fetch_refs`), then aborts if that required refresh times out, cannot launch or exits non-zero
 (`GitRemoteUnavailableError`, the refresh message) or shows that either managed remote leg is
 missing (`GitDomainError`); transport failure and a deleted working/ledger branch have
 distinct user-facing refusals. No cache
 wipe, merge, or ref update may run on stale or incomplete tracking refs. It then requires
 EVERY leg to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses
 outright (the user must reconcile via `branch_away` instead; this function never merges).
-The ledger (checked out) advances via `git merge --ff-only`; the working ref (not checked
-out) advances via a CAS `update-ref`. If the checked-out ledger advances but the working-ref
-CAS fails, the ledger and working tree reset to their captured tip. A failed reset is
-reported as `GitTransactionError`, never as a clean refusal or success.
+With both legs synced and no label to adopt it answers "Already up to date with
+'<remote>'."; labels alone (one published for a milestone the clone holds) are a catch-up
+of their one step, which writes no file and keeps the caches.
+The `catch-up` operation's steps: the ledger (checked out) advances to its remote tip via
+`git merge --ff-only <sha>` through the fence, then the working ref (not checked out) via a
+CAS transaction, each only when that leg is behind, then one transaction creating the
+version labels the remote has on the working branch's caught-up history that the clone has
+no label of that name for (`labels_to_adopt`, read from `LABELS_NAMESPACE` with
+`for-each-ref --merged`), so a colleague's labels appear as they did; its commit point is its
+last step, and it wipes the caches only when a leg moved. Any
+failure puts both refs and the files back from the record, so a file the remote deleted that
+another program holds leaves the ledger, the working branch and every file as they were,
+and the next catch-up, once the file is closed, removes it. A put-back that cannot finish
+keeps the record, never a clean refusal or success.
 
 **Branch away (`branch_away`).** The reconciliation path when a remote fork is detected.
-It first fetches and prunes the configured remote namespace, aborting with
+It first fetches and prunes the remote's branches and version labels, aborting with
 `GitRemoteUnavailableError` (the refresh message) on any transport/process failure before
 choosing an aside name or mutating refs. This
 authoritative snapshot lets an absent optional ledger remain a successful fetch while
 removing a deleted tracking ref; an absent working branch is then a distinct domain
-refusal. It renames the current pair to a unique dated aside name
-(`_free_pair_name`: `<W>-local-<YYYYMMDD>`, then `-2`, `-3`… until it and its ledger are
-both free), creates fresh
-`working`/`ledger` branches at the remote's tips, checks out the new ledger, and records the
-merge-base of the old and new working tips as the aside branch's fork point (for the branch
-manager's back-link). If the remote has no ledger (`X2`), the local ledger is respawned at
-the adopted tip rather than adopted. On any exception the sequence is compensated
-(drops any freshly created canonical refs, renames the aside pair back, and puts HEAD on
-the ledger again); incomplete compensation raises `GitTransactionError`.
+refusal. The `spin-off` operation detaches HEAD at the ledger's tip (no file changes), then
+in one ref transaction creates a unique dated aside pair (`_free_pair_name`:
+`<W>-local-<YYYYMMDD>`, then `-2`, `-3`… until it and its ledger are both free) at the
+current pair's tips, moves `working`/`ledger` to the remote's tips and creates the version
+labels the remote has on the adopted line that the clone lacks, then checks out the
+ledger. It records the merge-base of the old and new working tips as the aside branch's fork
+point (for the branch manager's back-link). If the remote has no ledger (`X2`), the local
+ledger moves to the adopted working tip rather than adopting one. Any failure puts the pair,
+the aside names and HEAD back from the record.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
 milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
-or an unconfirmed delete refuses tracked changes first, with `_switch_away_if_active`'s
+or an unconfirmed delete refuses tracked changes first, with `_leave_if_active`'s
 "You have unsaved changes on this branch. Save or discard them before archiving it." (or
 "deleting it"), and the tree is left as it was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
@@ -745,33 +872,40 @@ moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X
 when that or its ledger is taken, `_free_pair_name`'s dated `archive/<X>-<YYYYMMDD>`, then
 `-2`, `-3`…) and its
 ledger at their tips and deletes `<X>` and its ledger with their tips as expected values.
-Un-archive (`restore_working_pair`) is the same transaction the other way.
+The `archive` operation's steps are that detach when the pair is active, the recorded working
+branch cleared when it is this pair, and the transaction. Un-archive (`restore_working_pair`)
+is the same transaction the other way, the `unarchive` operation's one step.
 
 **Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
 unmerged ledger saves, and on the active pair's tracked changes, unless `confirm=True`. It
-then:
-1. takes a fresh entry id;
-2. pins both tips under it, plain refs outside `refs/heads` that shield the objects from gc;
+takes a fresh entry id, then the `delete` operation:
+1. detaches HEAD at the working tip when the pair is active, forced when confirmed, and
+   clears the recorded working branch when it is this pair;
+2. in one `update-ref --stdin` transaction pins both tips under the entry, plain refs
+   outside `refs/heads` that shield the objects from gc, and removes the working and ledger
+   refs with their tips as expected values;
 3. writes the tombstone;
-4. removes the working and ledger refs in one `update-ref --stdin` transaction, with their
-   tips as expected values.
+4. when the trash is then over its cap, removes the oldest tombstones and, in one
+   transaction, their pins.
 
-A failure removes only this entry's pins and tombstone. Once the delete has succeeded,
-`trim_trash` drops the oldest entries beyond the cap and returns them, and their pins are
-deleted.
+Its commit point is the transaction of step 2, or the detach when a confirmed delete's
+checkout discards tracked changes: those cannot be put back, so a failure after it finishes
+the delete on Retry. A failure before the commit point puts the branch, HEAD and the
+recorded working branch back.
 
 `undelete_working_pair(id, as_name=None)` rebuilds the pair under *as_name* or the entry's
 branch. It refuses an unknown id, a name already taken by either ref ("Restore it under
-another name."), and a recorded commit that no longer resolves. It removes the tombstone,
-then creates both refs and deletes the entry's pins in one transaction; a failed transaction
-records the tombstone again, so the entry stays restorable. The restored pair
+another name."), and a recorded commit that no longer resolves. The `undelete` operation
+creates both refs and deletes the entry's pins in one transaction, its commit point, then
+removes the tombstone; a failed transaction leaves the tombstone, so the entry stays
+restorable. The restored pair
 is NOT auto-adopted as the working branch. `working_branches()` lists the tombstones, newest
 first, as `deleted`.
 
 **Repair (`repair_working_pair(ledger, project_root, cwd)`).** Under the repository lock it
 reads the pair again (`_broken_pair`) and refuses a ledger that is not part of a broken pair
-("'<ledger>' is not part of a broken branch."). It changes refs only, so HEAD, the files and
-clone state stay as they are.
+("'<ledger>' is not part of a broken branch."). It changes refs only, the `repair`
+operation's one step, so HEAD, the files and clone state stay as they are.
 - A `half-archived` pair is finished as the archive would have moved it: one `update-ref
   --stdin` transaction creates `<archived>-save` at the ledger's tip and deletes the ledger
   with that tip as its expected value.
@@ -962,11 +1096,10 @@ process failures, and precise ref-movement races deterministic.
   detached at its last milestone, an unconfirmed delete of it keeping a dirty tree),
   request-path no-fetch
   guarantees,
-  the tree fence (`TestTreeFence`: a checkout that exits 0 with a file left stale put back
-  and refused by name, a failed fast-forward's written files put back, a put-back that
-  cannot finish recording the clone interrupted, Commit and Restore refusing while
-  interrupted, Retry clearing the marker once the file is writable and refusing while it
-  is not, and on Windows a real held file), canonical-remote resolution,
+  the tree fence (`TestTreeFence`: a switch whose checkout exits 0 with a file left stale
+  put back and refused by name, a file held too tightly to read leaving the clone
+  interrupted until Retry, a forced checkout over a changed file it could not replace, and
+  on Windows a real held file), canonical-remote resolution,
   fork/create-working-branch (parallel, switch and move, from
   a milestone, a pending save and a folded save, the switch refusing tracked changes and
   rolling back a failed checkout), archive-
@@ -1019,14 +1152,47 @@ process failures, and precise ref-movement races deterministic.
   injected at the pause rolls back before the waiting milestone proceeds, which then records
   none of the save. It covers the full save, a node-scoped config change and a reset that
   rewrites a pipeline and its configuration.
+- **`tests/test_git_operations.py`** — recorded operations, over one table of every
+  operation that moves a ref (`OPERATIONS`: restore, catch-up, choosing a branch, opening the
+  ledger, the seed, creating a branch from the chooser and in each of the fork's three ways,
+  spin-off, archive, delete unconfirmed and confirmed over a dirty tree, undelete,
+  un-archive, repair, a milestone with a label, the hooks' pass and adopting a clone). For
+  each, the process is stopped after each step in turn, the record written and before the
+  first step included: the record names the operation and its files, every ref, HEAD, the
+  recorded working branch and the tombstones are exactly where the record says that step
+  leaves them, readiness reads `interrupted` naming the operation and the files, Commit,
+  Restore and a save's capture refuse, and Retry finishes the operation from a step at or
+  past its commit point and otherwise puts every slot and file back, and removes the record.
+  A second test fails each step in turn and catches it: before the commit point the call
+  returns with every slot and file as before and no record; after it, the steps done kept,
+  the record there, and Retry finishing. A recovery is itself stopped and failed at each of
+  its transitions, for a stop just before and at the commit point, and the next Retry
+  finishes or puts back. A third fails each step before the commit point
+  after its own git command has run (the fence refusing a checkout or fast-forward that
+  moved its ref), and requires every slot and file as they began and no record. A child process killed with `os._exit` at the
+  restore's, the catch-up's, the spin-off's and the confirmed delete's most dangerous step
+  leaves the same record and state. Further: a file holding neither version refused by
+  Retry by name and kept, refs moved after the stop refused as `GitTransactionError` with
+  the record kept, a branch HEAD names moved after a stop refused although the operation
+  never changed it, a record that cannot be read reading `interrupted` with no operation
+  named and Retry refusing it, a hook that rewrites a file and refuses leaving HEAD on the
+  ledger and no record, a fetch adding no label nor a branch a configured mapping names, Catch
+  up and Spin off bringing a colleague's labels as a recorded step, and Catch up bringing a
+  label alone when both branches already match, the analyst's own edit and an untracked file never in a record nor
+  touched by a put-back, a catch-up over a file the remote deleted that another program
+  holds refused with the ledger, the working branch and the files as they were and the
+  next catch-up removing it (on Windows with a real open handle), and the runners refusing
+  a ref-moving command outside an operation's step, a second commit in a save, and a
+  subcommand they do not know, with the structural test that only `_git_operation` enters
+  `_ref_moves_permitted`, only `commit_save` enters `_save_commit`, and `"git"` heads an
+  argument list only in `_git_argv`.
 - **`tests/test_git_lifecycle_improvements.py`** — failure-injection coverage for
   adopting an existing pair, deleting the only active pair, partial fast-forward,
-  archive state replacement, archive restore, undelete, and explicit incomplete-
-  compensation failures.
-- **`tests/test_git_rollback.py`** — crash-safety-net tests specifically for the
-  partial-failure rollback paths: the fork's and the branch-away's compensation, branch-away
-  guard conditions, and that unreachable-remote push preflight and fast-forward failures
-  correctly raise rather than swallow.
+  archive state replacement, archive restore and undelete, each put back from its record,
+  and a put-back that cannot finish keeping the record.
+- **`tests/test_git_rollback.py`** — branch-away guard conditions, and that
+  unreachable-remote push preflight and fast-forward failures correctly raise rather than
+  swallow.
 - **`tests/test_git_content_caches.py`** — the SHA-keyed cache layer specifically: milestone
   version-label batching, cache freshness across branch moves, subprocess call-count
   assertions (proving the caches actually eliminate the N+1 they claim to), tree-SHA
