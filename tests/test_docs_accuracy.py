@@ -172,7 +172,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-node-clarity",
     "rating",
     "root-cause-error-boundaries",
-    "root-cause-freshness",
     "root-cause-git-intent",
     "root-cause-late-answers",
     "root-cause-panel-drafts",

@@ -27,10 +27,9 @@ keeps something of its own to do.
 
 `FEG-08` keeps its own change: "Save node" must wait for the node's pending
 change before it reads the graph, as the whole pipeline's Save does. The
-optimiser's estimate and the Output editor's preview after an Undo
-(`FEM-04`, `FEN-08`) are not copies of a value: their keys leave out what
-they were computed from, and they belong to
-[results that go stale unseen](root-cause-freshness.md).
+optimiser's estimate and the Output editor's preview after an Undo were not
+copies of a value but keys that left out what they were computed from; the
+caching specification's "Stale results" holds them.
 
 ## Priorities
 

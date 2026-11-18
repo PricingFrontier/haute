@@ -12,7 +12,7 @@ from the plan's browser sweep of the editors' fields on 11 November; the
 main session re-ran each in a browser on a fresh project. `FEN-07` comes
 from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit, and was reproduced in a
-browser on 13 November. `FEN-08` to `FEN-10` come from the same reader;
+browser on 13 November. `FEN-09` and `FEN-10` come from the same reader;
 a worker ran each in a browser, and the main session ran each journey
 again on 13 November.
 
@@ -27,7 +27,6 @@ again on 13 November.
 | FEN-05 | Planned | P3 | An edit to a Banding cell is one undo step. |
 | FEN-06 | Planned | P3 | A Banding factor whose input column is gone is marked when the editor opens and counted among its Issues. |
 | FEN-07 | Planned | P2 | A Group by with a row count, saved and opened again, is a step the analyst can edit, not an "Invalid step" whose only action is Delete. |
-| FEN-08 | Planned | P3 | The Output editor's preview follows an Undo of a change upstream. |
 | FEN-09 | Planned | P3 | A Banding factor switched to its other type gets its own remembered rules, never another factor's after an Undo. |
 | FEN-10 | Planned | P3 | Values imported into a Banding factor are dropped when the factor was removed before they arrived. |
 
@@ -225,30 +224,6 @@ each window function, and none is called invalid.
 `frontend/src/panels/editors/polarsSteps/forms.tsx`;
 `src/haute/_polars_steps_lift.py::_Reader`;
 `specs/codegen/structured-syntax-boundary.md`.
-
-### FEN-08 — The Output editor's preview follows an Undo upstream
-**Why:** Reproduced on 13 November 2026 in a browser. The Quote Response's
-editor is open and its Output preview shows `value_doubled` as 22. The
-Transform upstream is changed from `* 2` to `* 3`, and the preview, opened
-again, shows 33. Undo in the toolbar puts `* 2` back. The Output preview
-still shows 33, with no note. Closing the Output preview and opening it
-again sends no request and shows 33; only Refresh shows 22.
-
-The preview is kept under a key made of the output mapping and the source.
-The nodes upstream, whose code decides the values, are not in it. Going to
-another node and back makes the editor ask again, so the old answer needs
-the editor to stay open through the Undo.
-
-**Plan:** Put what the preview was computed from into its key: the graph's
-structural version, as the node previews use.
-
-**Acceptance:** In the run above the Output preview shows 22 after the
-Undo, or says it is out of date, without Refresh.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/OutputEditor.tsx`;
-`src/haute/routes/output_assemble.py`.
 
 ### FEN-09 — A Banding factor's remembered rules stay with it through an Undo
 **Why:** Reproduced on 13 November 2026 in a browser. A Banding has a

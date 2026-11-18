@@ -12,7 +12,7 @@ settings were read from the source, not run. `AST-02` is about what an
 applied or undone change tells the editor of its version capture. It comes
 from the second run of the plan's sweep of failed writes on the same day
 and was reproduced through the assistant's service with a real git lock.
-`AST-03` to `AST-06` come from the plan's phase 5, a reader from a second model
+`AST-03`, `AST-04` and `AST-06` come from the plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit.
 A worker ran each through the editor's assistant routes with a stand-in
 for the provider, and the main session ran each again on 13 November.
@@ -25,7 +25,6 @@ for the provider, and the main session ran each again on 13 November.
 | AST-02 | Planned | P3 | An applied or undone assistant change whose version capture fails says so and names its files, as a save does. |
 | AST-03 | Planned | P2 | With executable source withheld, a step's comment is withheld with it. |
 | AST-04 | Planned | P2 | A provider is sent only what its own policy allows: not the earlier answers of a chat begun under a wider policy, and not what a policy saved during the turn allows. |
-| AST-05 | Planned | P3 | The assistant's brief of the graph names the columns the pipeline has after a utility module is edited. |
 | AST-06 | Planned | P3 | An apply that is saved after the turn's time limit is shown as applied, with its Undo. |
 
 ## Planned improvements
@@ -180,27 +179,6 @@ settings request is refused for the whole turn. A test covers each.
 **Evidence:** `src/haute/assistant/_session.py`;
 `src/haute/assistant/_tools.py`; `src/haute/routes/assistant.py`;
 `specs/assistant/high-level.md`.
-
-### AST-05 — The assistant's brief of the graph follows an edit to a utility module
-**Why:** Reproduced on 13 November 2026. A Transform calls
-`enrich(quotes)` from `utility/pricing.py`, which adds `base_premium`. A
-chat is open. The helper is edited to add `technical_premium` instead, and
-the analyst sends the next message. The brief of the graph that opens the
-turn still lists `base_premium`. In the same turn the assistant's own look
-at the node's columns returns `technical_premium`, so two of its sources
-disagree about the saved pipeline. The brief is kept under a key made of
-the graph's revision, the input files and the workbench's tables; the
-utility modules the pipeline imports are not in it.
-
-**Plan:** Put the imported utility modules' fingerprint, which compiling
-the preamble already computes, into the brief's key.
-
-**Acceptance:** After the helper is edited, the brief of the next turn
-names `technical_premium`.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/assistant/_tools.py`.
 
 ### AST-06 — An apply that lands after the turn's time limit is shown as applied
 **Why:** Reproduced on 13 November 2026 with the turn's time limit set to

@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import { answerQuestion, asked } from "../../test-utils/question"
 import UtilityPanel from "../UtilityPanel"
+import useDataEpochStore from "../../stores/useDataEpochStore"
 import useGitStore from "../../stores/useGitStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import useUIStore from "../../stores/useUIStore"
 
@@ -308,6 +310,22 @@ describe("UtilityPanel saving", () => {
 
     await waitFor(() => expect(screen.getByTestId("no-panel")).toBeInTheDocument())
     expect(mockUpdateFile).toHaveBeenCalledExactlyOnceWith("features", "x = 2\n", "1-1")
+  })
+
+  it("makes every preview and estimate made before a saved file out of date", async () => {
+    // FEP-03: helper code a node runs changed, so what was computed from it is old.
+    mockUpdateFile.mockResolvedValue(saved("x = 2\n", "2-2"))
+    const structural = useGraphStore.getState().structuralVersion
+    const epoch = useDataEpochStore.getState().epoch
+    render(<RightPanel />)
+    await waitFor(() => expect(editor()).toBeInTheDocument())
+
+    type("x = 2\n")
+    fireEvent.click(screen.getByTitle("Close"))
+
+    await waitFor(() => expect(screen.getByTestId("no-panel")).toBeInTheDocument())
+    expect(useGraphStore.getState().structuralVersion).toBe(structural + 1)
+    expect(useDataEpochStore.getState().epoch).toBe(epoch + 1)
   })
 
   it("closes at once when nothing is unsaved", async () => {

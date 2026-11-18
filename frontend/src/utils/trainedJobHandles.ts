@@ -19,6 +19,7 @@ import {
 } from "./modellingExportConfig"
 import { isPlainObject } from "../types/guards"
 import { canonicalValue } from "./canonicalJson"
+import { inputOrderedEdges } from "./inputOrderedEdges"
 
 // v2 kept a submodel's child under its bare id, which reads as a pipeline node's.
 const STORAGE_KEY = "haute.modelling.trainedJobs.v3"
@@ -157,9 +158,8 @@ function lineageMaterial(graph: TrainingLineageInput): unknown {
       ] as const
     })
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-  const edges = (graph.edges ?? [])
+  const edges = inputOrderedEdges(graph.edges ?? [])
     .map((edge) => `${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}`)
-    .sort()
   const submodels = Object.keys(graph.submodels ?? {})
     .sort()
     .map((name) => [name, submodelMaterial(graph.submodels?.[name])])

@@ -1,1 +1,97 @@
 version = 1
+
+# GHSA-FC5Q-39XC-VJPF: picomatch <= 4.0.7 ReDoS through single-branch repeated extglobs
+# such as +(*). No patched release exists (picomatch 4.0.7 is the latest; the upstream fix
+# pull requests #257-#266 are unmerged). The picomatch entry is the advisory; the others
+# are npm's transitive findings for the dev tools that depend on it. Remove all nine and
+# run `npm --prefix frontend update picomatch` once a fixed release ships.
+
+[[acceptance]]
+ecosystem = "npm"
+package = "picomatch"
+advisory = "GHSA-FC5Q-39XC-VJPF"
+owner = "Ralph"
+exposure = "Frontend dev and CI tooling only (vite, vitest, knip, typescript-eslint, json-schema-to-typescript); absent from the built frontend, the Python package and every deployment."
+compensating_control = "The flaw needs an attacker-supplied glob; these tools only match globs written in the repository's own config, and anyone able to change that config can already run code in CI."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "@typescript-eslint/typescript-estree"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Lint tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "@vitest/coverage-v8"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Test coverage tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "fdir"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Build tooling only (via vite); depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "json-schema-to-typescript"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Type generation tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "knip"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Unused-code lint tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "tinyglobby"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Build and lint tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "vite"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Dev server and build tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; the dev server is not a deployment; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"
+
+[[acceptance]]
+ecosystem = "npm"
+package = "vitest"
+advisory = "npm:transitive"
+owner = "Ralph"
+exposure = "Test tooling only; depends on picomatch (GHSA-FC5Q-39XC-VJPF)."
+compensating_control = "Matches only repository-authored globs; see the picomatch entry."
+approved_on = "2026-11-18"
+review_by = "2026-11-25"

@@ -27,15 +27,38 @@ from importlib.machinery import ModuleSpec, PathFinder, SourceFileLoader
 from pathlib import Path
 from types import CodeType, ModuleType
 
-from haute._project_context import current_project
+from haute._project_context import current_project, installed_project
 
 UTILITY_PACKAGE = "utility"
+
+#: The folders of a ``utility`` package that are no part of it: the interpreter's bytecode,
+#: which the finder never reads. Everything else under the package is the project's code
+#: and what that code reads beside itself, and is shipped, hashed and checked as one tree.
+UTILITY_SKIPPED_DIRS = frozenset({"__pycache__"})
+
+
+def utility_tree_files(location: Path) -> list[Path]:
+    """Every file of the ``utility`` at *location*, sorted: the module file itself, or each
+    file anywhere under the package folder but in :data:`UTILITY_SKIPPED_DIRS`.
+
+    The one listing of a project's utility code: the cache identities hash these files, the
+    deploy bundle ships them and a test quote's basis signs them, so a data file the code
+    reads beside itself (a ``rates.json``) counts wherever a ``.py`` file does.
+    """
+    if location.is_file():
+        return [location]
+    return sorted(
+        path
+        for path in location.rglob("*")
+        if path.is_file() and UTILITY_SKIPPED_DIRS.isdisjoint(path.relative_to(location).parts)
+    )
 
 
 def utility_search_dirs(
     pipeline_dir: str | Path | None, *, project_root: str | Path | None = None
 ) -> list[str]:
-    """Where a project's ``utility`` is found: beside the pipeline, then the project root.
+    """Where a project's ``utility`` is found: beside the pipeline, then the project root,
+    then the folder a deployed bundle ships it in (``ProjectContext.utility_root``).
 
     The project root is the current project's unless *project_root* names one. One
     entry when they are the same directory. The cache fingerprint and the deploy
@@ -47,21 +70,34 @@ def utility_search_dirs(
         dirs.append(str(Path(pipeline_dir).resolve()))
     root = current_project().root if project_root is None else Path(project_root).resolve()
     dirs.append(str(root))
+    bundled = installed_project()
+    if bundled is not None and bundled.utility_root is not None:
+        dirs.append(str(bundled.utility_root))
     return list(dict.fromkeys(dirs))
 
 
 def find_utility_spec(pipeline_dir: str | Path | None) -> ModuleSpec | None:
-    """The ``utility`` an import loads, resolved without importing it.
+    """The project's ``utility`` an import loads now, resolved without importing it.
 
-    The finder's search of the project's directories first, then, for a project without
-    a ``utility``, the rest of the import path, as the import system falls through. A
-    project ``utility`` that is a namespace package (no ``__init__.py``) therefore wins
-    over a regular package of that name elsewhere on the path, as it does when imported.
+    In a project, the finder's search of the project's directories, so a ``utility`` that
+    is a namespace package (no ``__init__.py``) is found as an import finds it. A
+    ``utility`` found only elsewhere on the import path is an installed library, not the
+    project's code: the deploy bundle never ships it, and, like every library, it is not
+    signed. Outside a project Haute binds no finder, so the import system's own search
+    answers.
+
+    The project's directories are listed afresh (their own finders' caches invalidated,
+    never the whole import system's), so a ``utility`` created or removed a moment ago is
+    seen at the cost of listing two directories, not a search of the whole path.
     """
-    spec = PathFinder.find_spec(UTILITY_PACKAGE, utility_search_dirs(pipeline_dir))
-    if spec is not None:
-        return spec
-    return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
+    if installed_project() is None:
+        return PathFinder.find_spec(UTILITY_PACKAGE, sys.path)
+    dirs = utility_search_dirs(pipeline_dir)
+    for directory in dirs:
+        invalidate = getattr(sys.path_importer_cache.get(directory), "invalidate_caches", None)
+        if invalidate is not None:
+            invalidate()
+    return PathFinder.find_spec(UTILITY_PACKAGE, dirs)
 
 
 class _SourceOnlyLoader(SourceFileLoader):
@@ -116,6 +152,20 @@ def bind_project_utility(pipeline_dir: str | Path | None, *, project_root: str |
     changed = dirs != _FINDER.search_dirs
     _FINDER.search_dirs = dirs
     return changed
+
+
+def unbind_project_utility() -> bool:
+    """Bind the finder to no project, so ``utility`` is left to the normal import system, as
+    in a process that never compiled a project's code; return whether it was bound. The
+    caller holds the executor's preamble lock and evicts ``utility``."""
+    bound = bool(_FINDER.search_dirs)
+    _FINDER.search_dirs = ()
+    return bound
+
+
+def project_utility_bound() -> bool:
+    """Whether the finder answers ``utility`` from some project's directories now."""
+    return bool(_FINDER.search_dirs)
 
 
 def utility_bound_to(pipeline_dir: str | Path | None, *, project_root: str | Path) -> bool:

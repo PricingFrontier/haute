@@ -8,7 +8,7 @@ import useDocumentStatusStore, {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "./useDocumentStatusStore"
-import useDataEpochStore from "./useDataEpochStore"
+import { noteProjectInputsChanged } from "./projectInputs"
 import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
 import useNodeWorkStore, { registerNodeStop } from "./useNodeWorkStore"
@@ -125,8 +125,8 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
     release()
     if (!isDocumentExecutionFenceCurrent(fence)) return
     useNodeDataStore.getState().bumpEpoch()
-    // A source imported anew is data a price made before did not read.
-    if (completed) useDataEpochStore.getState().moved()
+    // A source imported anew is data a price, a preview or an estimate made before did not read.
+    if (completed) noteProjectInputsChanged()
     if (completed && retired === null && !controller.signal.aborted && currentSourceKey(input.id, view) === sourceKey) {
       onImported(nodeKey)
     }

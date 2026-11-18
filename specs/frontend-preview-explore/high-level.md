@@ -134,6 +134,9 @@ Modelling and optimiser result presentation belongs to
   Closing the panel, or another panel opening in its place, waits for the draft's save; a
   refused save keeps the panel open with the reason and a Discard that closes it unsaved, and
   blocks file switching until a later save succeeds. Closing the tab with a draft asks first.
+  A saved, created or deleted utility file is announced as every write of a file a run reads
+  is (`frontend/src/stores/projectInputs.ts::noteProjectInputsChanged`), so every preview,
+  estimate and price made before it reads as out of date and selecting a node asks again.
   Shared preview chrome supports resizing, collapse and keyboard-accessible roving tabs.
 - Preview places actionable projection-boundary, rejected-strategy, or memory
   pressure detail behind an accessible status icon beside the row/column summary.

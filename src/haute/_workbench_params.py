@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import io
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -49,9 +49,9 @@ class ParamFile:
     values: list[str]
 
 
-def _params_path(project_root: Path, file: str) -> tuple[Path, str]:
-    """The params file *file* names, and its path from the project root, which messages
-    name it by. Only a CSV directly in the folder, by an ordinary name, is one."""
+def _params_name(project_root: Path, file: str) -> str:
+    """The path from the project root of the params file *file* names, which messages name
+    it by. Only a CSV directly in the folder, by an ordinary name, is one."""
     files = pipeline_files_folder(project_root)
     if files is None:
         raise ParamFileError(
@@ -59,10 +59,21 @@ def _params_path(project_root: Path, file: str) -> tuple[Path, str]:
         )
     if not file.casefold().endswith(".csv") or "/" in file or "\\" in file or file.startswith("."):
         raise ParamFileError(f"{file!r} isn't the name of a CSV file in the params folder.")
-    name = f"{files}/{PARAMS_FOLDER}/{file}"
+    return f"{files}/{PARAMS_FOLDER}/{file}"
+
+
+def _ordinary(project_root: Path, name: str) -> tuple[Path, bool]:
+    """The file at *name*, and whether it is an ordinary one of the project's. A hard link
+    reads as the file it is; the Pipeline files panel lists one too."""
     path, problem = ordinary_path_problem(project_root, name)
-    # A hard link reads as the file it is; the Pipeline files panel lists one too.
-    if problem is not None and problem != "multiply_linked":
+    return path, problem is None or problem == "multiply_linked"
+
+
+def _params_path(project_root: Path, file: str) -> tuple[Path, str]:
+    """The params file *file* names, and its path from the project root."""
+    name = _params_name(project_root, file)
+    path, ordinary = _ordinary(project_root, name)
+    if not ordinary:
         raise ParamFileError(f"{name} isn't an ordinary file in the project.", path=name)
     if not path.is_file():
         raise ParamFileError(f"{name} doesn't exist.", path=name)
@@ -122,6 +133,30 @@ def _frame(
             path=name,
         )
     return frame
+
+
+def params_files(project_root: Path) -> dict[str, Path]:
+    """Every params file, by its name: each CSV directly in the params folder, as
+    :func:`read_param_file` takes one, sorted by name; none for a project without the folder.
+
+    A form's revision signs them all (:func:`haute._workbench_folder.folder_revision`): any
+    column's allowed values can come from any of them, so a params file that changes, as a
+    colleague's pull changes one, makes a form read before it out of date.
+    """
+    files = pipeline_files_folder(project_root)
+    if files is None:
+        return {}
+    folder = project_root / files / PARAMS_FOLDER
+    if not folder.is_dir():
+        return {}
+    found: dict[str, Path] = {}
+    for entry in sorted(folder.iterdir(), key=lambda entry: entry.name):
+        if not entry.name.casefold().endswith(".csv") or entry.name.startswith("."):
+            continue
+        path, ordinary = _ordinary(project_root, f"{files}/{PARAMS_FOLDER}/{entry.name}")
+        if ordinary and path.is_file():
+            found[entry.name] = path
+    return found
 
 
 def read_param_file(project_root: Path, file: str, column: str | None = None) -> ParamFile:
@@ -262,6 +297,20 @@ def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> Non
 def working_tree_param_values(project_root: Path) -> ParamValues:
     """Read allowed values from the params files as the working tree holds them."""
     return lambda file, column: read_param_file(project_root, file, column).values
+
+
+def captured_param_values(project_root: Path, params: Mapping[str, bytes]) -> ParamValues:
+    """Read allowed values from the params files' bytes one read took (a form's revision
+    signs them, :func:`params_files`), never from the working tree again, so the form a
+    read parses is the one its revision names."""
+
+    def read(file: str, column: str) -> list[str]:
+        name = _params_name(project_root, file)
+        if file not in params:
+            raise ParamFileError(f"{name} doesn't exist.", path=name)
+        return param_file_from_bytes(params[file], name, column).values
+
+    return read
 
 
 def param_values_at(project_root: Path, ref: str) -> ParamValues:

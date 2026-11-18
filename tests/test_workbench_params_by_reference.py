@@ -63,6 +63,27 @@ def test_a_schema_file_holds_the_reference_and_reading_fills_the_values(project:
     assert _state_options(project) == ["CA", "NY"]
 
 
+def test_a_form_reads_the_params_its_revision_signs_when_a_file_changes_during_the_read(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revision signs the params files' bytes as one read took them; the form is parsed
+    from those bytes, not from the working tree read again a moment later (WB-67)."""
+    from haute import _workbench_folder
+
+    (project / PARAMS / "states.csv").write_bytes(b"code\nCA\nNY\n")
+    _write(project, _sourced({"file": "states.csv", "column": "code"}))
+    taken = _workbench_folder.read_folder
+
+    def read_then_changed(workbench_config):  # type: ignore[no-untyped-def]
+        snapshot = taken(workbench_config)
+        (project / PARAMS / "states.csv").write_bytes(b"code\nTX\n")
+        return snapshot
+
+    monkeypatch.setattr(_workbench_folder, "read_folder", read_then_changed)
+
+    assert _state_options(project) == ["CA", "NY"]
+
+
 @pytest.mark.parametrize(("table", "name"), [("policy", "state"), ("quote_details", "broker")])
 def test_a_loaded_forms_values_are_written_as_their_reference_alone(
     project: Path, table: str, name: str
@@ -189,4 +210,28 @@ def test_a_text_index_of_values_longer_than_a_key_is_refused_as_its_file_is_read
     (project / PARAMS / "perils.csv").write_text(f"peril\nFire\n{value}\n", encoding="utf-8")
 
     with pytest.raises(ParamFileError, match=f"longer than the {limit} a Text index holds"):
+        read_form_document(config(project))
+
+
+def test_a_params_file_that_cannot_be_read_names_itself_in_the_forms_refusal(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A form's revision signs every params file, so one that cannot be read refuses the
+    read of the form, naming the file, rather than leaving it out of the revision."""
+    from haute._workbench_form import WorkbenchFormError
+
+    _write(project, _sourced({"file": "perils.csv", "column": "peril"}))
+    unreadable = (project / PARAMS / "perils.csv").resolve()
+    read_bytes = Path.read_bytes
+
+    def refuse(path: Path) -> bytes:
+        if path.resolve() == unreadable:
+            raise PermissionError(13, "Access is denied")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+
+    with pytest.raises(
+        WorkbenchFormError, match=r"rating/files/params/perils\.csv could not be read"
+    ):
         read_form_document(config(project))

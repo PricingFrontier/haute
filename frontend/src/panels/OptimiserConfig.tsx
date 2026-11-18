@@ -23,7 +23,7 @@ import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
 import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
-import { useGraph, useRequestScope, useResultKey } from "./useGraph"
+import { useDerivedRequestKey, useGraph, useRequestScope, useResultKey } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import OptimiserConstraintSettings, { type FrontierRangeConfig } from "./optimiser/OptimiserConstraintSettings"
 import OptimiserSolveStatus from "./optimiser/OptimiserSolveStatus"
@@ -33,7 +33,6 @@ import { startOptimiserSolve, stopOptimiserSolve } from "./optimiser/solveAction
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import { FieldHelpIcon } from "./modelling/FieldHelpIcon"
-import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 
 type OptimiserConfigProps = {
   /** The node being configured: its solve job, results and remembered pane. */
@@ -169,15 +168,10 @@ export default function OptimiserConfig({
     },
     [requestScope, allNodes, edges, submodels, nodeId, globalConstants, preamble],
   )
-  // The estimate reads the graph upstream of this node, so edits to the node
-  // itself (which move the global structural version) must not re-request it.
-  const estimateStructureKey = useMemo(() => [
-    ...allNodes
-      .filter((node) => node.id !== nodeId)
-      .map((node) => `${node.id}:${shallowNodeDataHash(node.data)}`),
-    ...edges.map((edge) => `${edge.source}>${edge.target}:${edge.sourceHandle ?? ""}:${edge.targetHandle ?? ""}`),
-    JSON.stringify(submodels ?? null),
-  ].join("\u0001"), [allNodes, edges, nodeId, submodels])
+  // The estimate reads the document upstream of this node, its constants and preamble
+  // included; the node's own settings are keyed by `estimateInputs`, so editing one that
+  // shapes no input row does not re-request it.
+  const estimateStructureKey = useDerivedRequestKey(nodeId)
   // A solve result depends on everything but the export settings, and the size
   // estimate only on what shapes the solver's input rows and its memory forecast.
   const solveIdentity = useMemo(() => solveIdentityConfig(config), [config])

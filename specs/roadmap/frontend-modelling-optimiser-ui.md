@@ -12,10 +12,10 @@ browser. `FEM-02` comes from the plan's browser sweep of what happens
 around an open editor on 11 November; the main session ran it again in a
 browser and with real t-boost fits.
 
-`FEM-03` and `FEM-04` come from the review plan's phase 5, a reader
-from a second model family (Codex) over the code changed since the 31
-October audit. A worker drove each journey in a browser and the main
-session ran each again on 15 November 2026.
+`FEM-03` comes from the review plan's phase 5, a reader from a second
+model family (Codex) over the code changed since the 31 October audit. A
+worker drove its journey in a browser and the main session ran it again on
+15 November 2026.
 
 ## Priorities
 
@@ -24,7 +24,6 @@ session ran each again on 15 November 2026.
 | FEM-01 | Planned | P3 | A missing objective or constraint value in the optimiser's data preview is reported as missing: not drawn as zero, and not a crashed pane. |
 | FEM-02 | Planned | P3 | A t-boost model trained again while one of its three-way tables is on screen shows the new table, not a crashed result pane. |
 | FEM-03 | Planned | P2 | After Undo the search space box shows the range the training request carries. |
-| FEM-04 | Planned | P3 | The open Optimiser panel asks for a new estimate when Undo changes a global constant. |
 
 ## Planned improvements
 
@@ -126,23 +125,3 @@ both hold `{"depth":[4,6]}`.
 **Evidence:** `frontend/src/panels/ModellingConfig.tsx`;
 `specs/frontend-modelling-optimiser-ui/high-level.md`.
 
-### FEM-04 — The optimiser's estimate follows a constant changed by Undo
-**Why:** Reproduced on 15 November 2026 in the browser. A global constant
-that limits the rows reaching an Optimiser was changed from 40 to 20; the
-open Solve tab sent an estimate request carrying 20. Toolbar Undo put the
-constant back to 40, and no estimate request followed. Closing and
-opening the panel sent one carrying 40. A worker's run saw the panel keep
-"Quotes 4, Total rows 20" until then; in the main session's run the
-estimate itself was refused for memory, so only the requests were seen.
-The key that decides when to ask again leaves out the constants and the
-shared code at the top of the file.
-
-**Plan:** Include the global constants and the preamble in the key that
-triggers a new estimate.
-
-**Acceptance:** The Undo above sends an estimate request carrying 40
-while the panel stays open.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/OptimiserConfig.tsx`.

@@ -59,7 +59,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from haute._cache import canonical_json, graph_fingerprint, preamble_imports_utility
+from haute._cache import canonical_json, graph_fingerprint
 from haute._io import _load_cached, load_external_object
 from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
@@ -287,26 +287,37 @@ class TestFingerprintEdgeHandleSensitivity:
         )
         assert graph_fingerprint(g_none) != graph_fingerprint(g_literal)
 
-    def test_edge_insertion_order_is_irrelevant(self) -> None:
-        """Shuffled edge insertion order must not move the fingerprint.
+    def test_order_of_a_nodes_inputs_is_signed(self) -> None:
+        """A node's incoming edges in another order are another computation (CCH-04).
 
-        Uses the edge-join shape — two parallel edges between the SAME node
-        pair where only the handles differ — so the sort cannot fall back on
-        ``(source, target)`` alone to break the tie deterministically.
+        The executor gives a node its inputs in the graph's edge order, and a node whose
+        code reads its first input as ``df`` computes on whichever comes first.
         """
-        e_base = GraphEdge(id="e1", source="quotes", target="rate", targetHandle="base")
-        e_join = GraphEdge(id="e2", source="quotes", target="rate", targetHandle="join")
-        e_plain = GraphEdge(id="e3", source="quotes", target="rate")
+        first = GraphEdge(id="e1", source="quotes", target="rate", targetHandle="base")
+        second = GraphEdge(id="e2", source="quotes", target="rate", targetHandle="join")
 
-        fingerprints = {
-            graph_fingerprint(_make_wired_graph(list(order)))
-            for order in (
-                (e_base, e_join, e_plain),
-                (e_join, e_plain, e_base),
-                (e_plain, e_base, e_join),
-            )
-        }
-        assert len(fingerprints) == 1
+        assert graph_fingerprint(_make_wired_graph([first, second])) != graph_fingerprint(
+            _make_wired_graph([second, first])
+        )
+
+    def test_order_of_edges_into_different_nodes_is_not_signed(self) -> None:
+        """Edges into different nodes are independent: listing them in another order
+        computes the same thing, so it keeps the fingerprint."""
+        graph = _make_wired_graph([])
+        graph = graph.model_copy(
+            update={
+                "nodes": [
+                    *graph.nodes,
+                    GraphNode(id="other", data=NodeData(label="Other", nodeType="polars")),
+                ]
+            }
+        )
+        into_rate = GraphEdge(id="e1", source="quotes", target="rate")
+        into_other = GraphEdge(id="e2", source="quotes", target="other")
+
+        assert graph_fingerprint(
+            graph.model_copy(update={"edges": [into_rate, into_other]})
+        ) == graph_fingerprint(graph.model_copy(update={"edges": [into_other, into_rate]}))
 
     def test_algo_version_bumped_for_handle_aware_serialization(self) -> None:
         """The digest material changed — pre-handle cache entries must be
@@ -615,42 +626,6 @@ class TestCanonicalEncoderUnification:
 # ===========================================================================
 # Utility preamble import detection
 # ===========================================================================
-
-
-class TestPreambleUtilityImportDetection:
-    """Utility-sensitive preambles must opt into utility file fingerprinting.
-
-    Literal imports are straightforward to detect from the AST. Dynamic imports
-    matter just as much for cache correctness because they can still read the
-    project ``utility`` module while leaving no top-level import statement.
-    """
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            '__import__("utility.helpers")\n',
-            'import importlib\nhelpers = importlib.import_module("utility.helpers")\n',
-            'exec("import utility.helpers")\n',
-            'exec("from utility.helpers import VALUE")\n',
-        ],
-    )
-    def test_dynamic_utility_imports_are_detected(self, source: str) -> None:
-        assert preamble_imports_utility(source) is True
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            '__import__("json")\n',
-            'import importlib\njson_module = importlib.import_module("json")\n',
-            'exec("import json")\n',
-            'helper_name = "utility.helpers"\n',
-        ],
-    )
-    def test_non_import_utility_mentions_do_not_mark_utility_sensitive(
-        self,
-        source: str,
-    ) -> None:
-        assert preamble_imports_utility(source) is False
 
 
 # ===========================================================================

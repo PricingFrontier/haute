@@ -192,8 +192,10 @@ def _graphs(graph: dict[str, Any]) -> list[dict[str, Any]]:
 def _as_priced(graph: dict[str, Any]) -> dict[str, Any]:
     """*graph* as what prices a quote, as the execution fingerprint reads a graph: each
     pipeline's nodes by id, label, type and config, sorted by id, and its edges by their
-    ends, without where a node sits on the canvas, its description, an edge's canvas id or
-    the file the pipeline was read from."""
+    ends in the order the identities sign them (:func:`haute._cache.input_ordered_edges`:
+    by the node each feeds, a node's inputs in their own order), without where a node sits
+    on the canvas, its description, an edge's canvas id or the file the pipeline was read
+    from."""
     copied: dict[str, Any] = copy.deepcopy(graph)
     for each in _graphs(copied):
         each.pop("source_file", None)
@@ -211,7 +213,7 @@ def _as_priced(graph: dict[str, Any]) -> dict[str, Any]:
         )
         each["edges"] = sorted(
             ({end: edge.get(end) for end in _EDGE_ENDS} for edge in each.get("edges", [])),
-            key=lambda edge: json.dumps(edge, sort_keys=True),
+            key=lambda edge: str(edge["target"]),
         )
     return copied
 
@@ -222,17 +224,15 @@ _EDGE_ENDS = ("source", "sourceHandle", "target", "targetHandle")
 
 def _utility_hashes(release_dir: Path) -> dict[str, str]:
     """Each file of the project's utility code the bundle carries, by its path in it."""
-    from haute.deploy._project_modules import UTILITY_PACKAGE
+    from haute._project_imports import UTILITY_PACKAGE, utility_tree_files
 
-    package = release_dir / UTILITY_PACKAGE
-    files = [release_dir / f"{UTILITY_PACKAGE}.py"]
-    if package.is_dir():
-        files += [file for file in package.rglob("*") if "__pycache__" not in file.parts]
-    return {
-        file.relative_to(release_dir).as_posix(): content_hash(file)
-        for file in sorted(files)
-        if file.is_file()
-    }
+    files = [
+        file
+        for location in (release_dir / UTILITY_PACKAGE, release_dir / f"{UTILITY_PACKAGE}.py")
+        if location.exists()
+        for file in utility_tree_files(location)
+    ]
+    return {file.relative_to(release_dir).as_posix(): content_hash(file) for file in sorted(files)}
 
 
 def _release_id(

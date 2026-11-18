@@ -1267,6 +1267,32 @@ describe("OutputEditor - assembled-output preview", () => {
     expect(screen.queryByTestId("output-preview-json")).toBeNull()
   })
 
+  it("drops an assembled document once an Undo upstream puts back the code it was not assembled from", async () => {
+    // FEN-08: the preview is keyed by the document upstream, not only by its own mapping.
+    mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [{ premium: 100 }], row_count: 1 }))
+    const upstream = (code: string): SimpleNode[] => [
+      { ...SINGLE_PORT_NODES[0], data: { ...SINGLE_PORT_NODES[0].data, config: { code } } },
+    ]
+    const editor = (nodes: SimpleNode[]) => (
+      <GraphProvider requestScope={documentRequestScope} allNodes={nodes} edges={SINGLE_PORT_EDGES}>
+        <OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />
+      </GraphProvider>
+    )
+    const view = rtlRender(editor(upstream("df = x * 2")))
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+
+    view.rerender(editor(upstream("df = x * 3")))
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+    fireEvent.click(screen.getByTestId("output-preview-refresh"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+
+    // Undo in the toolbar puts the upstream code back.
+    view.rerender(editor(upstream("df = x * 2")))
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+    expect(screen.getByText("Refresh to assemble the response from the current mapping.")).toBeTruthy()
+  })
+
   it("drops an assembled document once the pipeline's data changes, and assembles it again on reopening", async () => {
     mockOutputAssembleDryRun.mockResolvedValue(makeOutputDryRun({ status: "ok", document: [{ premium: 100 }], row_count: 1 }))
     render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {

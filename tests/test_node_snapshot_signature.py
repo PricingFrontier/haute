@@ -32,6 +32,7 @@ _SIGNATURE_FIELDS = (
     "preamble_supplied",
     "execution_semantics_version",
     "polars_version",
+    "haute_code",
 )
 
 
@@ -138,7 +139,7 @@ def test_signature_is_deterministic(project: Path) -> None:
     graph = _graph(project)
 
     assert _signature(graph) == _signature(_graph(project))
-    assert _signature(graph).startswith("node-snapshot:v3:")
+    assert _signature(graph).startswith("node-snapshot:v4:")
 
 
 def test_another_polars_version_signs_another_snapshot(
@@ -151,6 +152,46 @@ def test_another_polars_version_signs_another_snapshot(
     monkeypatch.setattr(pl, "__version__", "9.9.9")
 
     assert _signature(graph) != current
+
+
+def test_a_snapshot_of_another_build_of_haute_reads_as_stale(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CCH-01: a change to Haute's own code can change what a node computes, so a node
+    output published by one build is stale to another; the same build reads it as current."""
+    import haute._node_snapshots as node_snapshots
+    from haute._execution_context import ExecutionProfile
+    from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSnapshotStore
+
+    graph = _graph(project)
+    slot = NodeSnapshotSlot(
+        pipeline_source_file=pipeline_source_file_key(graph),
+        node_id="join",
+        source="live",
+        semantics_class=BOUNDED_SEMANTICS_CLASS,
+    )
+    store = NodeSnapshotStore(project)
+    published = _signature(graph)
+    identity = slot.identity(published)
+    artifact = store.stage_node_output(identity)
+    pl.DataFrame({"premium": [1.0]}).write_parquet(artifact.part_path(0))
+    with store.publish_node_output(
+        identity,
+        artifact,
+        columns=NodeSnapshotColumns.all(),
+        dependencies={},
+        explicit=False,
+        profile=ExecutionProfile.NODE_SNAPSHOT,
+        refresh=False,
+        owner=NodeSnapshotOwner(
+            occurrence=None, occurrence_label=None, node_id="join", label="join"
+        ),
+    ) as publication:
+        assert publication.outcome == "published"
+
+    assert store.slot_status(slot, _signature(graph)).state == "current"
+    monkeypatch.setattr(node_snapshots, "haute_code_fingerprint", lambda: "another-build")
+    assert store.slot_status(slot, _signature(graph)).state == "stale"
 
 
 @pytest.mark.parametrize(

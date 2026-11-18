@@ -1281,7 +1281,7 @@ class TestPreambleCacheEviction:
         # cache_clear() on every call.
         for i in range(bound + 5):
             preamble = f"PREAMBLE_EVICT_TEST_{i} = {i}\n"
-            _compile_preamble(preamble, execution_fingerprint=f"pin-{i}")
+            _compile_preamble(preamble, execution_fingerprint=f"pin.{i}")
 
         info_after = _compile_preamble.cache_info()  # type: ignore[attr-defined]
         assert info_after.currsize <= bound

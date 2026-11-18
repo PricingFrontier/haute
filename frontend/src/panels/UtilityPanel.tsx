@@ -5,6 +5,7 @@ import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
 import { hasModifier } from "../hooks/keyboardTargets"
+import { noteProjectInputsChanged } from "../stores/projectInputs"
 import { reportSaveCapture } from "../stores/saveCapture"
 import { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
@@ -123,6 +124,8 @@ export default function UtilityPanel({
       if (revision === undefined) throw new Error(`no revision of ${module} was read`)
       const saved = await updateUtilityFile(module, value, revision)
       reportSaveCapture(saved)
+      // Helper code a node runs changed: every preview and estimate made before is old.
+      noteProjectInputsChanged()
       const active = mountedRef.current && activeModuleRef.current === module
       const typedSince = active && contentRef.current !== value
       if (typedSince && saved.content !== value) {
@@ -380,6 +383,7 @@ export default function UtilityPanel({
       const res = await createUtilityFile({ name })
       revisionsRef.current.set(res.module, res.revision)
       reportSaveCapture(res)
+      noteProjectInputsChanged()
       setCreating(false)
       setNewName("")
       // Auto-add import to preamble
@@ -401,6 +405,7 @@ export default function UtilityPanel({
       const revision = revisionsRef.current.get(activeModule)
       if (revision === undefined) throw new Error(`no revision of ${activeModule} was read`)
       reportSaveCapture(await deleteUtilityFile(activeModule, revision))
+      noteProjectInputsChanged()
       // The file is gone, its draft with it; a refused delete keeps both.
       draftRef.current = null
       setUtilityUnsaved(false)

@@ -571,17 +571,41 @@ def folder_files(spec: FormSpec, folder: Path) -> dict[str, bytes]:
 
 @dataclass(frozen=True, slots=True)
 class FolderSnapshot:
-    """The folder as one read took it: each file's bytes by its path from the folder, and
-    the revision those bytes make."""
+    """The folder as one read took it: each file's bytes by its path from the folder, each
+    params file's by its name, and the revision those bytes make."""
 
     files: Mapping[str, bytes]
+    params: Mapping[str, bytes]
     revision: str
 
 
-def folder_revision(files: Mapping[str, bytes]) -> str:
-    """The revision of a folder holding *files*: every file's path and its bytes' hash."""
-    manifest = [[path, content_hash_bytes(files[path])] for path in sorted(files)]
+def folder_revision(files: Mapping[str, bytes], params: Mapping[str, bytes]) -> str:
+    """The revision of a form whose folder holds *files*: every file's path and its bytes'
+    hash, and every params file's (:func:`haute._workbench_params.params_files`), by name,
+    which the form's allowed values are read from, so a changed params file is a new
+    revision as an edited form file is (WB-67)."""
+    manifest = {
+        "form": [[path, content_hash_bytes(files[path])] for path in sorted(files)],
+        "params": [[name, content_hash_bytes(params[name])] for name in sorted(params)],
+    }
     return content_hash_bytes(canonical_json(manifest).encode("utf-8"))
+
+
+def read_params_unlocked(config: WorkbenchConfig) -> dict[str, bytes]:
+    """Every params file's bytes, by name, for a form's revision; the caller holds
+    :func:`form_folder_lock`."""
+    from haute._workbench_params import params_files
+
+    found: dict[str, bytes] = {}
+    for name, path in params_files(config.project_root).items():
+        try:
+            found[name] = path.read_bytes()
+        except OSError as exc:
+            raise WorkbenchFormError(
+                f"{path.relative_to(config.project_root).as_posix()} could not be read: {exc}",
+                path=str(path),
+            ) from exc
+    return found
 
 
 #: One lock per project in this process, so a thread that holds it re-enters it rather than
@@ -656,8 +680,9 @@ def read_folder_unlocked(config: WorkbenchConfig) -> FolderSnapshot:
                     path=str(config.form_folder / relative),
                 ) from exc
         else:
+            params = read_params_unlocked(config)
             if _listing(config) == before:
-                return FolderSnapshot(files, folder_revision(files))
+                return FolderSnapshot(files, params, folder_revision(files, params))
     raise WorkbenchFormError(
         f"{config.form} changed while it was being read: try again", path=str(config.form_folder)
     )
@@ -1151,8 +1176,12 @@ def _place(loc: tuple[Any, ...], folder: FolderIndex) -> str:
 def read_form_document(config: WorkbenchConfig) -> FormDocument:
     """The form the project's folder holds now, with the folder's revision and what reading
     it grew; a :class:`WorkbenchFormError` for a folder that cannot be read as a form."""
+    from haute._workbench_params import captured_param_values
+
     snapshot = read_folder(config)
-    spec, repairs = form_from_files(config, snapshot.files)
+    spec, repairs = form_from_files(
+        config, snapshot.files, captured_param_values(config.project_root, snapshot.params)
+    )
     return FormDocument(spec, snapshot.revision, repairs)
 
 

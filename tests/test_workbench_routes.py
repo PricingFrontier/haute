@@ -23,10 +23,16 @@ from haute._git_transactions import commit_milestone
 from haute._project_context import context_thread
 from haute._workbench_folder import folder_revision
 from haute._workbench_form import QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_STORE_ONLY
+from haute._workbench_params import params_files
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes.workbench import router
 from tests._project import use_project
 from tests._workbench_helpers import FORM, enable, form_files, write_form
+
+
+def params_of(project: Path) -> dict[str, bytes]:
+    """The params files a form's revision signs, as the project holds them."""
+    return {name: path.read_bytes() for name, path in params_files(project).items()}
 
 
 def column(name: str, type_: str = "str", **rest: Any) -> dict[str, Any]:
@@ -341,7 +347,7 @@ def test_the_form_is_served_with_its_revision_and_saved_against_it(project: Path
     assert again.json()["form"]["schema"]["tables"][0]["name"] == "quote_details"
 
 
-@pytest.mark.parametrize("change", ["edit", "add", "delete"])
+@pytest.mark.parametrize("change", ["edit", "add", "delete", "params"])
 def test_a_save_against_a_folder_that_changed_on_disk_is_refused_writing_nothing(
     project: Path, change: str
 ) -> None:
@@ -356,6 +362,12 @@ def test_a_save_against_a_folder_that_changed_on_disk_is_refused_writing_nothing
         (folder / "form.json").write_bytes((json.dumps({**index, "name": "home"}) + "\n").encode())
     elif change == "add":
         (folder / "notes.json").write_bytes(b"{}\n")
+    elif change == "params":
+        # WB-67: a column's allowed values come from the params files, which a colleague's
+        # pull changes; the form read before is stale.
+        params = project / "rating" / "files" / "params"
+        params.mkdir(parents=True, exist_ok=True)
+        (params / "codes.csv").write_bytes(b"code\nA\nC\n")
     else:
         (folder / "schema" / "policy_details.json").unlink()
     before = files_of(project)
@@ -363,8 +375,8 @@ def test_a_save_against_a_folder_that_changed_on_disk_is_refused_writing_nothing
 
     assert stale.status_code == 409
     assert stale.json()["detail"] == (
-        "stale_document_revision: rating/workbench changed on disk after the workbench "
-        "read it. Reload the workbench before saving."
+        "stale_document_revision: rating/workbench or a params file changed on disk after the "
+        "workbench read it. Reload the workbench before saving."
     )
     assert files_of(project) == before
 
@@ -395,7 +407,7 @@ def test_a_save_over_a_folder_holding_a_file_not_the_forms_deletes_nothing(
     (project / FORM / "notes.json").write_bytes(b"{}\n")
     before = files_of(project)
 
-    refused = save(body["form"], folder_revision(before))
+    refused = save(body["form"], folder_revision(before, params_of(project)))
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == (
@@ -458,7 +470,7 @@ def test_a_save_over_a_folder_not_holding_a_named_file_as_named_changes_nothing(
     change(project / FORM)
     before = files_of(project)
 
-    refused = save(body["form"], folder_revision(before))
+    refused = save(body["form"], folder_revision(before, params_of(project)))
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == detail

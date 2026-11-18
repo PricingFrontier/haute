@@ -47,6 +47,7 @@ from haute._cache import (
     canonical_json,
     checked_cache_inputs,
     graph_fingerprint,
+    haute_code_fingerprint,
     polars_version,
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
@@ -666,6 +667,7 @@ def node_snapshot_signature(
             "preamble_supplied": bool(canonical.preamble),
             "execution_semantics_version": NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION,
             "polars_version": polars_version(),
+            "haute_code": haute_code_fingerprint(),
         },
     )
     digest = hashlib.sha256(inputs.canonical_bytes).hexdigest()

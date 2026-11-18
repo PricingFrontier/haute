@@ -95,7 +95,12 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         # whatever the serving process's working directory.
         from haute._project_context import ProjectContext
 
-        self._project = ProjectContext.at(manifest_path.parent)
+        # MLflow copies the bundled ``utility`` (a code path) into the model's ``code``
+        # folder and puts that on the import path: it is the project's code, so the
+        # finder and the cache identities search it as a project folder.
+        self._project = ProjectContext.at(
+            manifest_path.parent, utility_root=manifest_path.parent.parent / "code"
+        )
         self._manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         _require_deployed_polars(self._manifest["polars_version"])
         self._graph = PipelineGraph.model_validate(self._manifest["pruned_graph"])

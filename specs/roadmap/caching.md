@@ -3,79 +3,21 @@
 ## Scope
 
 The on-disk store of input and node-output snapshots, as [the caching
-specification](../caching/high-level.md) describes it: what a node-output
-snapshot's signature covers, and so when a stored output stops being
-current, how a finished snapshot is published, and what the check after it
-costs. `CCH-01` comes from the
-9 November 2026 codebase review. It follows from the signature's fields as
-written and from the repository's history; no stale read was staged to
-show it. `CCH-02` comes from the review plan's sweep of pairs of operations
-and was reproduced on 11 November with a second process holding one of the
-snapshot's new files open. `CCH-03` comes from the plan's sweep of sizes
-on the same day, measured again by the main session with a timer around
-the check. `CCH-04` comes from the plan's phase 5, a reader from a second model
-family (Codex) over the code changed since the 31 October audit;
-a worker built the run and the main session ran it again on 13 November.
-`CCH-05` comes from a question the plan asks of the whole codebase, put to
-the same reader: for every cache, what is in its key against what changes
-its answer. It was run the same way on the same day.
-
-A cause several packages here share has its own file and is taken first:
-[results that go stale unseen](root-cause-freshness.md).
+specification](../caching/high-level.md) describes it: how a finished
+snapshot is published, and what the check after it costs. `CCH-02` comes
+from the review plan's sweep of pairs of operations and was reproduced on
+11 November 2026 with a second process holding one of the snapshot's new
+files open. `CCH-03` comes from the plan's sweep of sizes on the same day,
+measured again by the main session with a timer around the check.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CCH-01 | Planned | P2 | A node output stored by one version of Haute's node code is not read as current by another. |
 | CCH-02 | Planned | P3 | A snapshot is published while a scanner or an indexer still has one of its new files open, instead of the build failing with no reason given. |
 | CCH-03 | Planned | P3 | A preview that stores many node outputs checks the store's budget once, not with a walk of the whole store after each one. |
-| CCH-04 | Planned | P2 | A preview follows the order of a node's inputs: reconnecting a Load File's two inputs the other way round no longer shows the first input's rows from the store. |
-| CCH-05 | Planned | P2 | A preview follows an edit to a utility module that a node's own code imports, as it does one the preamble imports. |
 
 ## Planned improvements
-
-### CCH-01 — A node-output snapshot is tied to the code that computed it
-**Why:** Read from the source and the history. A node-output snapshot's
-signature covers the node's lineage, its runtime inputs, the source, the
-semantics class, contract enforcement, whether a preamble exists, a
-hand-kept execution semantics version and the installed Polars version.
-Nothing in it identifies the Haute code that computed the rows. The
-specification says the Polars version is signed "so an upgrade never mixes
-one release's results into another's run", which holds for a Polars upgrade
-and not for a Haute one. The hand-kept version has read `node-snapshot:v1`
-since the day it was introduced, 17 September 2026, while the modules that
-compute node outputs have changed in 33, 18, 62, 39 and 33 commits since
-(the node apply functions, rating, the builders, the model scorer and the
-Polars steps). Some of those changed what a node produces: a rating table
-with two entries for the same levels is now refused, a Workbench Output
-fills columns it could not before. The JSON shredding cache does keep such
-a version and has moved it to 3. The store lives under the project's cache
-folder and outlives the server, so after a fix to a node's computation every
-output captured before it is still current: preview, training preparation,
-optimiser setup and Explore read the old rows until an input or the graph
-changes or the analyst clears the cache.
-
-**Plan:** Sign what computed the rows. For a released build, the Haute
-version; for a source checkout, a digest of the modules a node's output
-depends on, computed once per process. Keep the hand-kept version for a
-deliberate break. Say in the specification that a Haute upgrade starts
-node outputs cold, as a Polars upgrade does.
-
-**Acceptance:** A snapshot published under one value of the code identity is
-reported stale under another, asserted by changing the identity in a test
-and reading the slot's status. Two processes of the same build share
-snapshots as today. The signature's field list in the caching specification
-names the new field.
-
-**Dependencies:** None. Existing snapshots are rebuilt on first use; Haute
-has no users to migrate.
-
-**Evidence:** `src/haute/_node_snapshots.py::node_snapshot_signature`;
-`src/haute/_node_snapshots.py::NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION`;
-`src/haute/_cache.py::ALGO_VERSION` moves for canonicalisation changes;
-`src/haute/_json_shred/_snapshots.py::SHRED_SEMANTICS_VERSION` is the
-counterpart that has moved; `specs/caching/high-level.md`.
 
 ### CCH-02 — A snapshot is published through the rename that waits
 **Why:** Reproduced on 11 November 2026 with nothing patched. On Windows a
@@ -166,67 +108,3 @@ are within their budget, and the existing eviction tests pass unchanged.
 `src/haute/_node_snapshots.py::NodeSnapshotStore.enforce_automatic_budget`;
 `src/haute/_node_snapshots.py::NodeSnapshotStore._scan_usage`.
 
-### CCH-04 — A preview follows the order of a node's inputs
-**Why:** Reproduced on 13 November 2026 through the editor's preview route.
-A Load File node reads a factor of 1.2 from a JSON file and multiplies the
-premium of `df`, which is its first input. With the inputs `a` (premium
-100) and then `b` (premium 200), the preview shows `a1` at 120. With the
-inputs connected the other way round, `b` first, the preview still shows
-`a1` at 120: in the same editor process, in a new one, and after the
-pipeline file itself is rewritten as `loaded(b, a)` and read again. A
-trace of the same cell says 240, and the graph run without the preview's
-store gives `b1` at 240. The old rows sit in the project's `.haute_cache`
-folder, so a restart of the editor keeps them.
-
-The caching specification has preview keys "include every
-execution-relevant graph" input. The preview's key and the graph's
-structural fingerprint both sort a node's edges before they hash them, so
-the order of a node's inputs is in neither. For a node whose code is given
-its first input as `df`, the order is what it computes on.
-
-**Plan:** Keep the order of a node's inputs in the preview key, in the
-structural fingerprint and in a node output's signature, at least for the
-node types whose work depends on it.
-
-**Acceptance:** The Load File above previews `b1` at 240 once its inputs
-are swapped, in the same process and after a restart, and its trace and its
-preview agree. A test swaps the inputs of every node type that takes more
-than one and compares the preview with a run that uses no store.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_cache.py`; `src/haute/_node_snapshots.py`;
-`src/haute/_user_exec.py`; `specs/caching/high-level.md`.
-
-### CCH-05 — A preview follows a utility module imported inside a node's code
-**Why:** Reproduced on 13 November 2026 through the editor's routes, in one
-editor process. A Transform's code begins `from utility.rates import RATE`
-and multiplies a premium of 100 by it. The pipeline's preamble holds a
-constant and no import of `utility`. With `RATE` at 10 the preview shows
-1000. `RATE` is changed to 20 in the file, and then to 30 through the
-editor's own utility route. The preview shows 1000 each time, also with a
-row limit it had not served before. `haute run` gives 3000, and so does the
-editor once it is restarted. With the import in the preamble, where the
-Utility panel puts it, the preview follows each edit: 1000, 2000, 3000.
-
-The preview's key takes in the utility files only when the preamble
-imports them, and the worker that runs the node keeps the module it first
-imported. The caching specification has the key "include every
-execution-relevant" utility file. The plan's run of the same pipeline with
-no preamble at all could not make the import: the preview and `haute run`
-both failed with "No module named 'utility'".
-
-**Plan:** Treat a utility import in a node's code as the preamble's is
-treated, in the key and in the worker. Or refuse it when the pipeline is
-saved and linted, naming the node, and say the import belongs in the
-preamble.
-
-**Acceptance:** In the pipeline above the preview shows 2000 and then 3000
-after the two edits, without a restart, or the save refuses the import by
-name. The preview and `haute run` agree either way.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_cache.py::preamble_execution_fingerprint`;
-`src/haute/_node_snapshots.py`; `src/haute/_project_imports.py`;
-`specs/caching/high-level.md`.

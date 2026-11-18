@@ -33,7 +33,7 @@ from haute._builders import _build_node_fn
 from haute._cache import (
     GraphFingerprintMemo,
     preamble_execution_fingerprint,
-    preamble_imports_utility,
+    utility_generation,
 )
 from haute._data_points import DataPointResolver
 from haute._env import int_env
@@ -56,10 +56,12 @@ from haute._path_resolution import (
     _normalise_path_text,
 )
 from haute._pipeline_settings import project_pipeline_settings
-from haute._project_context import current_project, graph_pipeline_dir
+from haute._project_context import current_project, graph_pipeline_dir, installed_project
 from haute._project_imports import (
     bind_project_utility,
     evict_utility_modules,
+    project_utility_bound,
+    unbind_project_utility,
     utility_bound_to,
 )
 from haute._registry import ensure_registry_ready
@@ -354,10 +356,53 @@ def _compile_preamble_cached(
     return _PreambleCell()
 
 
+#: The ``utility`` generation (:func:`haute._cache.utility_generation`) whose modules
+#: ``sys.modules`` may hold: the one the last compile or cache hit loaded, or put the
+#: modules aside for. Read and written under ``_preamble_lock``.
+_loaded_utility_generation: str | None = None
+
+
+def _align_loaded_utility(
+    pipeline_dir_str: str | None,  # pragma: no mutate
+    project_root: str,
+    generation: str,
+) -> None:
+    """Bind the finder to this project and, when the binding or the ``utility`` generation
+    changed, put aside every loaded ``utility`` module. Caller holds ``_preamble_lock``.
+
+    Whatever imports ``utility`` (the preamble, a node's code, a helper while Polars
+    collects), it then loads the files of *generation*: a cached namespace taken at one
+    generation never runs beside modules loaded at another, as after an edit undone
+    (A, then B, then A again). The next import loads the source again, which the
+    finder's loader always compiles, so no bytecode from before a change can stand in.
+    Modules are put aside only when the generation moves, never for a preamble edit alone.
+    """
+    global _loaded_utility_generation
+    rebound = bind_project_utility(pipeline_dir_str, project_root=project_root)
+    if rebound or _loaded_utility_generation != generation:
+        evict_utility_modules()
+        _loaded_utility_generation = generation
+
+
+def _forget_loaded_utility() -> None:
+    """For a pipeline with no ``utility`` (or no project): unbind the finder and put aside
+    every loaded ``utility`` module, so neither a removed package nor another pipeline's
+    folder runs under an identity that signs no ``utility``; the next import fails as it
+    would in a fresh process."""
+    global _loaded_utility_generation
+    if _loaded_utility_generation is None and not project_utility_bound():
+        return
+    with _preamble_lock:
+        unbind_project_utility()
+        evict_utility_modules()
+        _loaded_utility_generation = None
+
+
 def _compile_preamble_into_cell(
     preamble: str,
     project_root: str,
     pipeline_dir_str: str | None,  # pragma: no mutate
+    generation: str,
 ) -> dict[str, Any]:
     """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
 
@@ -365,14 +410,10 @@ def _compile_preamble_into_cell(
     without literal import statements execute with the ordinary ``__import__``
     and can consult process-global import state.
     """
-    validate_user_code(preamble)
-    rebound = bind_project_utility(pipeline_dir_str, project_root=project_root)
-    if rebound or preamble_imports_utility(preamble):
-        # A cache miss for a utility-importing preamble (a changed digest) or a
-        # newly bound project: the next import loads utility's source again, which
-        # the finder's loader always compiles, so no stale bytecode can stand in.
-        evict_utility_modules()
-    return _exec_preamble_namespace(preamble)
+    if preamble.strip():
+        validate_user_code(preamble)
+    _align_loaded_utility(pipeline_dir_str, project_root, generation)
+    return _exec_preamble_namespace(preamble) if preamble.strip() else {}
 
 
 def _compile_preamble(
@@ -409,16 +450,7 @@ def _compile_preamble(
     source line number when the preamble fails to execute (e.g. a utility
     module has a NameError).
     """
-    # Short-circuit empty / whitespace preambles BEFORE touching the cache
-    # — empty preambles are common and shouldn't evict cache entries.
-    if not preamble or not preamble.strip():
-        return {}
-
-    # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
-    # subfolder), then in the project root (``haute._project_imports``); both
-    # are part of the cache key, as two projects can share a preamble's text.
-    project_root = str(current_project().root)
-
+    preamble = preamble or ""
     # Normalise pipeline_dir to a string at the boundary so lru_cache's
     # argument-hashing treats ``Path("/x")`` and ``"/x"`` identically.
     pipeline_dir_str: str | None = None  # pragma: no mutate
@@ -431,8 +463,19 @@ def _compile_preamble(
             pipeline_dir=pipeline_dir_str,
             memo=memo,
         )
-        if execution_fingerprint is None:
+    # No preamble and no ``utility`` (or no project to bind one from): no project code,
+    # so nothing to bind or compile.
+    if execution_fingerprint is None or (not preamble.strip() and installed_project() is None):
+        if preamble.strip():
             raise RuntimeError("non-empty preamble did not produce an execution fingerprint")
+        _forget_loaded_utility()
+        return {}
+
+    # ``utility`` is found beside the pipeline file (e.g. inside a ``rating/``
+    # subfolder), then in the project root (``haute._project_imports``); both
+    # are part of the cache key, as two projects can share a preamble's text.
+    project_root = str(current_project().root)
+    generation = utility_generation(execution_fingerprint)
 
     # Cell lookup under its own tiny guard (never held during exec), so a
     # hot hit returns without touching ``_preamble_lock`` — a slow compile
@@ -447,13 +490,14 @@ def _compile_preamble(
     ns = cell.ns
     if ns is not None:
         # A cached namespace's deferred ``utility`` imports run when the frame is
-        # collected, so they must find this project's package even when another
-        # project's compile bound the finder since: rebind it and forget the other
-        # project's modules. A process serves one project at a time.
-        if not utility_bound_to(pipeline_dir_str, project_root=project_root):
+        # collected, so they must find this project's package, at the generation the
+        # namespace was taken at, even when another compile bound the finder or loaded
+        # another generation since. A process serves one project at a time.
+        if _loaded_utility_generation != generation or not utility_bound_to(
+            pipeline_dir_str, project_root=project_root
+        ):
             with _preamble_lock:
-                if bind_project_utility(pipeline_dir_str, project_root=project_root):
-                    evict_utility_modules()
+                _align_loaded_utility(pipeline_dir_str, project_root, generation)
         return ns
 
     # Single-flight population: first caller compiles under ``_preamble_lock``
@@ -463,7 +507,9 @@ def _compile_preamble(
     # semantically-equal-but-distinct namespace.
     with _preamble_lock:
         if cell.ns is None:
-            cell.ns = _compile_preamble_into_cell(preamble, project_root, pipeline_dir_str)
+            cell.ns = _compile_preamble_into_cell(
+                preamble, project_root, pipeline_dir_str, generation
+            )
         return cell.ns
 
 

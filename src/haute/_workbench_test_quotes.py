@@ -336,10 +336,13 @@ def basis(release: ResolvedRelease) -> str:
 
 
 def _utility_digest(utility: Path | None) -> str | None:
-    """The bundled ``utility`` package's or file's bytes, as one digest; None without one."""
+    """Every file of the bundled ``utility`` (:func:`haute._project_imports.utility_tree_files`,
+    data the code reads beside itself included), as one digest; None without one."""
+    from haute._project_imports import utility_tree_files
+
     if utility is None:
         return None
-    files = sorted(utility.rglob("*.py")) if utility.is_dir() else [utility]
+    files = utility_tree_files(utility)
     digest = hashlib.sha256()
     for file in files:
         digest.update(file.relative_to(utility.parent).as_posix().encode())

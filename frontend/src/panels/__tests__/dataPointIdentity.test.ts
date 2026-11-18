@@ -226,4 +226,20 @@ describe("buildNodeDataCacheIdentity execution dependencies", () => {
 
     expect(JSON.stringify(moved)).not.toBe(JSON.stringify(base))
   })
+
+  it("changes when an upstream node's inputs are connected the other way round", () => {
+    // CCH-06: the executor gives a node its inputs in edge order, so the order is the data.
+    const other = { ...source, id: "source_2", data: { ...source.data, label: "source_2" } }
+    const loaded = { ...source, id: "loaded", data: { ...source.data, label: "loaded", nodeType: "externalFile" } }
+    const identity = (order: SimpleEdge[]) => JSON.stringify(buildNodeDataCacheIdentity({
+      node: consumer,
+      allNodes: [source, other, loaded, consumer],
+      edges: [...order, { id: "loaded-banding", source: "loaded", target: "banding_1" }],
+      preamble: "",
+    }))
+    const first: SimpleEdge = { id: "a", source: "source_1", target: "loaded" }
+    const second: SimpleEdge = { id: "b", source: "source_2", target: "loaded" }
+
+    expect(identity([second, first])).not.toBe(identity([first, second]))
+  })
 })

@@ -54,19 +54,28 @@ class ProjectContext:
     """
 
     root: Path
+    #: Where a deployed bundle ships the project's ``utility`` when that is not under the
+    #: root: an MLflow model's code folder, which MLflow puts on the import path. The
+    #: finder, the cache identities and the compile cache search it as a project folder.
+    utility_root: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.root.is_absolute():
             raise ValueError(f"A project context takes an absolute root, not {self.root!s}.")
+        if self.utility_root is not None and not self.utility_root.is_absolute():
+            raise ValueError(
+                f"A project context takes an absolute utility root, not {self.utility_root!s}."
+            )
 
     @classmethod
-    def at(cls, root: Path) -> ProjectContext:
+    def at(cls, root: Path, *, utility_root: Path | None = None) -> ProjectContext:
         """The context rooted at *root* itself, without looking above it.
 
         A standalone script in no project runs in its own folder this way, and
-        deploy installs its validated root with it.
+        deploy installs its validated root with it, and an MLflow model the folder
+        its bundled ``utility`` ships in as *utility_root*.
         """
-        return cls(root.resolve())
+        return cls(root.resolve(), None if utility_root is None else utility_root.resolve())
 
     @property
     def pipeline_dir(self) -> Path:

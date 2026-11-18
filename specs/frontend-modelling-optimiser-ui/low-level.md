@@ -1088,9 +1088,10 @@ The behavioural contract is defined in
   document fence is current. The size estimate keys on its input fields (with the constraint
   count, which the memory forecast prices, and the confirmed `chunk_rows` and `kept_free_gb`
   pipeline settings through `selectConfirmedPipelineSetting`, which the forecast's chunk size and
-  its cap read) and a structure key built from every other node, the
-  edges and submodels, so the node's own edits (which move the global structural version) never
-  re-request it.
+  its cap read) and the panel's derived-request key (`useDerivedRequestKey`, the graph store's
+  `derivedRequestKey`): every other node, the edges in input order, the submodels, the preamble,
+  the constants and the project-inputs epoch, so an Undo of a constant re-requests it and the
+  node's own edits (which move the global structural version) never do.
 - `OptimiserSolveStatus.tsx` renders the issue alert directly beneath the Optimise button. Its
   size block ends with `SolveMemoryForecast`, a `role="status"` line "Estimated solve memory X of
   Y" (`formatBytes` of the estimate's `solve_memory_forecast_bytes` and

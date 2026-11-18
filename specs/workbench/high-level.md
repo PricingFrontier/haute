@@ -687,8 +687,12 @@ Out of scope:
   character an earlier save lost (U+FFFD) is refused, naming it, rather than offered as it
   reads. It writes nothing.
 - **The form, served and saved.** `GET /api/workbench/form` answers the form as its folder
-  holds it now and the folder's `revision`, the content hash of every file in the folder,
-  its path and its bytes. `PUT /api/workbench/form` takes the whole form and the
+  holds it now and its `revision`, the content hash of every file in the folder, its path
+  and its bytes, and of every params file (each CSV directly in `files/params/`), its name
+  and its bytes: a column's allowed values can come from any of them, so a params file that
+  changes, as a colleague's pull changes one, makes a form read before it, and a test quote
+  typed against it, stale. The form is parsed from the params bytes its revision signs, never
+  from the working tree read again. `PUT /api/workbench/form` takes the whole form and the
   `base_revision` it was read at and, under the pipeline save's lock, as every write to the
   project is, so two saves never pass the revision check together, writes each of the
   form's files whose bytes differ from the file's, making the folders it needs, and deletes
@@ -3609,8 +3613,9 @@ Out of scope:
   table does not hold stops neither: the sample prices it nowhere, and a release ships no
   sample.
 - `PUT /api/workbench/form` answers 404 while the workbench is not enabled; 409
-  "stale_document_revision: <form> changed on disk after the workbench read it. Reload the
-  workbench before saving." when the folder's revision is not the `base_revision` quoted
+  "stale_document_revision: <form> or a params file changed on disk after the workbench read
+  it. Reload the workbench before saving." when the form's revision (its folder's files and
+  every params file) is not the `base_revision` quoted
   (the folder gone included), writing nothing; 409 "<form> could not be written: <reason>"
   when a file cannot be written or deleted, every file put back as it was, the message
   naming any file that could not be put back, to restore from version history; 422 naming each

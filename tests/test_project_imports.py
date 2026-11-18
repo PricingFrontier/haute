@@ -260,3 +260,31 @@ def test_a_project_without_utility_leaves_the_name_to_the_import_system(
     ns = _compile_preamble("from utility import WHERE\n", pipeline_dir=str(pipeline_dir))
 
     assert ns["WHERE"] == "code path"
+
+
+@pytest.mark.no_project
+def test_outside_a_project_a_utility_beside_the_folder_is_not_the_one_imported(
+    tmp_path: Path,
+) -> None:
+    """With no project installed Haute binds no finder, so a ``utility`` beside the folder
+    asked about is not what an import loads; the import system's own search answers."""
+    from haute._project_imports import find_utility_spec
+
+    (tmp_path / "utility.py").write_text("X = 1\n", encoding="utf-8")
+
+    assert find_utility_spec(tmp_path) is None
+
+
+def test_a_utility_created_or_removed_a_moment_ago_is_seen(tmp_path: Path) -> None:
+    """Each project directory's listing is read afresh, without invalidating the whole
+    import system's caches."""
+    from haute._project_imports import find_utility_spec
+
+    use_project(tmp_path)
+    assert find_utility_spec(None) is None
+    (tmp_path / "utility.py").write_text("X = 1\n", encoding="utf-8")
+    spec = find_utility_spec(None)
+    assert spec is not None
+    assert Path(str(spec.origin)) == (tmp_path / "utility.py").resolve()
+    (tmp_path / "utility.py").unlink()
+    assert find_utility_spec(None) is None
