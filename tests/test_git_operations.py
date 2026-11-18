@@ -133,8 +133,11 @@ def _remote(root: Path, base: Path) -> Path:
     return bare
 
 
-def _colleague(bare: Path, base: Path, change: Callable[[Path], list[str]]) -> None:
-    """A colleague's clone makes *change*, saves it as a milestone and pushes."""
+def _colleague(
+    bare: Path, base: Path, change: Callable[[Path], list[str]], *, milestone: bool = True
+) -> None:
+    """A colleague's clone makes *change*, saves it (as a milestone unless not) and
+    pushes."""
     other = base / "other"
     _git(base, "clone", "-q", str(bare), str(other))
     _git(other, "config", "user.name", "Colleague")
@@ -143,7 +146,8 @@ def _colleague(bare: Path, base: Path, change: Callable[[Path], list[str]]) -> N
     write_working_branch(other, WORKING)
     resolve_ledger(WORKING, cwd=other)
     assert commit_save(change(other), WORKING, cwd=other)
-    commit_milestone("Colleague's milestone", other, cwd=other)
+    if milestone:
+        commit_milestone("Colleague's milestone", other, cwd=other)
     push_working_pair("origin", other, cwd=other)
 
 
@@ -164,6 +168,16 @@ def _arrange_catch_up(base: Path) -> tuple[Path, _Call]:
     _pair(root)
     _milestone(root)
     _colleague(_remote(root, base), base, _rewrites_rating_and_deletes_a_utility)
+    return root, _Call("fast_forward_pair", ("origin", ROOT), {"cwd": ROOT})
+
+
+def _arrange_catch_up_ledger_only(base: Path) -> tuple[Path, _Call]:
+    """Only the ledger is behind: the colleague saved and pushed, with no milestone."""
+    root = _new_repo(base)
+    _pair(root)
+    _milestone(root)
+    bare = _remote(root, base)
+    _colleague(bare, base, _rewrites_rating_and_deletes_a_utility, milestone=False)
     return root, _Call("fast_forward_pair", ("origin", ROOT), {"cwd": ROOT})
 
 
@@ -336,11 +350,14 @@ class _Operation:
     steps: int
     commit_point: int
     arrange: Callable[[Path], tuple[Path, _Call]]
+    # A confirmed delete discards the analyst's edits by design, in its first step.
+    discards: bool = False
 
 
 OPERATIONS = [
     _Operation("restore", "restore", 2, 1, _arrange_restore),
     _Operation("catch-up", "catch-up", 2, 2, _arrange_catch_up),
+    _Operation("catch-up-ledger-only", "catch-up", 1, 1, _arrange_catch_up_ledger_only),
     _Operation("select-branch", "select-branch", 2, 2, _arrange_select),
     _Operation("select-branch-spawning", "select-branch", 3, 3, _arrange_select_spawning),
     _Operation("open-ledger", "open-ledger", 2, 2, _arrange_open_ledger),
@@ -353,7 +370,9 @@ OPERATIONS = [
     _Operation("spin-off", "spin-off", 3, 3, _arrange_spin_off),
     _Operation("archive", "archive", 3, 3, _arrange_archive),
     _Operation("delete", "delete", 4, 3, _arrange_delete),
-    _Operation("delete-confirmed-dirty", "delete", 4, 1, _arrange_delete_confirmed_dirty),
+    _Operation(
+        "delete-confirmed-dirty", "delete", 4, 1, _arrange_delete_confirmed_dirty, discards=True
+    ),
     _Operation("delete-at-the-cap", "delete", 6, 3, _arrange_delete_at_the_cap),
     _Operation("undelete", "undelete", 2, 1, _arrange_undelete),
     _Operation("unarchive", "unarchive", 1, 1, _arrange_unarchive),
@@ -374,6 +393,13 @@ FAILURES = [
     for row in OPERATIONS
     for failing in range(row.steps)
 ]
+# A step whose git command did its work and then failed (the fence finding a file
+# git left behind) is as unfinished as one that failed first.
+LATE_FAILURES = [
+    pytest.param(row, failing, id=f"{row.id}-step-{failing}")
+    for row in OPERATIONS
+    for failing in range(row.commit_point)
+]
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +419,7 @@ class _Began:
     record: OperationRecord | None = None
     worktree: dict[str, bytes] = field(default_factory=dict)
     untracked: set[str] = field(default_factory=set)
+    edited: set[str] = field(default_factory=set)
 
 
 def _interrupt(
@@ -401,10 +428,12 @@ def _interrupt(
     at: int,
     *,
     fail: bool = False,
+    late: bool = False,
     began: _Began | None = None,
 ) -> None:
     """Stop *operation* once *at* of its steps are done, or with *fail* fail its step
-    *at* (from 0) with a caught error. What it began from goes in *began*."""
+    *at* (from 0) with a caught error, after the step's own work when *late*. What it
+    began from goes in *began*."""
     real = git_operation._perform
     done = [0]
 
@@ -417,7 +446,10 @@ def _interrupt(
             began.record = record
             began.worktree = _worktree(project_root)
             began.untracked = _untracked(project_root)
+            began.edited = git_operation._tracked_changes(project_root)
         if fail and done[0] == at:
+            if late:
+                real(step, files, project_root, cwd)  # type: ignore[arg-type]
             raise GitError("injected step failure")
         if not fail and at == 0:
             raise _Stopped
@@ -513,7 +545,7 @@ def test_a_caught_failure_at_each_step_is_put_back_or_kept_past_the_commit_point
     planned = began.record
     assert planned is not None
     states = _states(planned)
-    if failing < planned.commit_point or states[-1] == states[0]:
+    if failing < planned.commit_point:
         # Put back before the call returned: every slot and file as it was.
         assert read_operation(root) is None
         assert _slots(planned, root) == states[0]
@@ -531,6 +563,31 @@ def test_a_caught_failure_at_each_step_is_put_back_or_kept_past_the_commit_point
 
     assert read_operation(root) is None
     assert _slots(planned, root) == states[-1]
+    assert git_operation._files_out_of_step(planned.files, root) == []
+
+
+@pytest.mark.parametrize(("row", "failing"), LATE_FAILURES)
+def test_a_step_that_failed_after_its_own_work_before_the_commit_point_is_put_back(
+    row: _Operation, failing: int, tmp_path: Path
+) -> None:
+    root, call = row.arrange(tmp_path)
+    began = _Began()
+
+    with pytest.MonkeyPatch.context() as patch:
+        _interrupt(patch, row.operation, failing, fail=True, late=True, began=began)
+        with pytest.raises(GitError, match="injected step failure"):
+            call.run(root)
+
+    planned = began.record
+    assert planned is not None
+    assert read_operation(root) is None
+    assert _slots(planned, root) == _states(planned)[0]
+    # Every file as it began, but an edit a confirmed delete's forced checkout discarded.
+    discarded = began.edited if row.discards else set()
+    worktree = {path: data for path, data in _worktree(root).items() if path not in discarded}
+    assert worktree == {
+        path: data for path, data in began.worktree.items() if path not in discarded
+    }
     assert git_operation._files_out_of_step(planned.files, root) == []
 
 
@@ -578,7 +635,13 @@ def _comparable(record: OperationRecord) -> str:
 
 @pytest.mark.parametrize(
     ("row_id", "after"),
-    [("restore", 1), ("catch-up", 1), ("spin-off", 2), ("delete-confirmed-dirty", 2)],
+    [
+        ("restore", 1),
+        ("catch-up", 1),
+        ("spin-off", 2),
+        ("delete-confirmed-dirty", 2),
+        ("milestone-hooks", 1),
+    ],
 )
 def test_a_killed_process_leaves_what_the_stop_leaves(
     row_id: str, after: int, tmp_path: Path
@@ -758,8 +821,10 @@ def test_the_analysts_own_edits_are_never_in_a_record_nor_touched_by_a_put_back(
 # ---------------------------------------------------------------------------
 
 
-def _behind_a_colleague(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    root, _call = _arrange_catch_up(tmp_path)
+def _behind_a_colleague(
+    tmp_path: Path, arrange: Callable[[Path], tuple[Path, _Call]] = _arrange_catch_up
+) -> tuple[Path, dict[str, str]]:
+    root, _call = arrange(tmp_path)
     tips = {ref: _git(root, "rev-parse", ref) for ref in (WORKING, LEDGER)}
     return root, tips
 
@@ -774,11 +839,18 @@ def _as_before(root: Path, tips: dict[str, str], before: dict[str, bytes]) -> No
     assert read_operation(root) is None
 
 
+@pytest.mark.parametrize(
+    "arrange",
+    [_arrange_catch_up, _arrange_catch_up_ledger_only],
+    ids=["both-legs-behind", "only-the-ledger-behind"],
+)
 def test_a_catch_up_git_cannot_remove_a_file_for_leaves_everything_as_it_was(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    arrange: Callable[[Path], tuple[Path, _Call]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Git moves the branch and exits 0 with the file left on disk, untracked."""
-    root, tips = _behind_a_colleague(tmp_path)
+    root, tips = _behind_a_colleague(tmp_path, arrange)
     before = _worktree(root)
     real = git_core._run_git_capture
 
@@ -859,6 +931,33 @@ def test_each_command_is_classified_as_moving_a_ref_or_not(
 def test_a_command_nobody_classified_is_refused() -> None:
     with pytest.raises(GitError, match="git gc is not classified"):
         git_core._git_argv(("gc",))
+
+
+_RUNNERS = (
+    "_run_git",
+    "_run_git_ok",
+    "_run_git_rc",
+    "_run_git_capture",
+    "_run_git_process",
+    "_rewrite_tree",
+)
+
+
+def test_every_git_command_the_source_runs_is_classified() -> None:
+    """A command nobody classified refuses at run time, so every literal subcommand the
+    source hands a runner is classified here first, past ``-c`` settings and NO_HOOKS."""
+    subcommands: set[str] = set()
+    for name in _RUNNERS:
+        for _path, call, _scope in _calls_to(name):
+            args = [arg for arg in call.args if not isinstance(arg, ast.Starred)]
+            literal = [arg.value for arg in args if isinstance(arg, ast.Constant)]
+            while literal[:1] == ["-c"]:
+                literal = literal[2:]
+            if literal and isinstance(literal[0], str):
+                subcommands.add(literal[0])
+    assert {"rev-parse", "update-ref", "status", "archive", "fetch"} <= subcommands
+    for subcommand in sorted(subcommands):
+        git_core._moves_local_refs((subcommand,))  # raises for one nobody classified
 
 
 def test_a_ref_move_outside_an_operation_is_refused(tmp_path: Path) -> None:

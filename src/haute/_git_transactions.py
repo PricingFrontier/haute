@@ -847,4 +847,4 @@ def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
     if read_operation(project_root) is None:
         return
     _assert_no_git_op_in_progress(cwd)
-    recover(project_root, cwd, direction="retry")
+    recover(project_root, cwd)

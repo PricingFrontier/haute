@@ -361,20 +361,22 @@ is at after any step (the empty tree for an unborn HEAD), less every path not in
 the record is written, a tracked change (the analyst's own edit) or a path the first commit
 lacks that is on disk (an untracked or ignored file). It then writes the record, performs
 each step inside `_ref_moves_permitted()`, wipes the caches when the operation does, and
-removes the record. On an `Exception` it calls `recover` with *direction* `"back"`: an
-operation that has not reached its commit point is put back before the call returns, and one
-that has keeps the record. The original failure is re-raised, from whatever `recover` raised
-when that could not finish. A stop that is not an `Exception` (the process killed, or
+removes the record. On an `Exception` it calls `recover` with *failed_step*, the step
+that raised. That step is unfinished, whatever its git command did before failing (a
+checkout or fast-forward the fence refuses has moved its ref already): an operation whose
+failing step comes before its commit point is put back before the call returns, and one
+whose failing step is at or past it keeps the record. The original failure is re-raised,
+from whatever `recover` raised when that could not finish. A stop that is not an `Exception` (the process killed, or
 interrupted from the keyboard) leaves the record as it is.
 
-`recover(project_root, cwd, direction)` is the one routine that acts on a record, for the
-caught failure and for Retry:
+`recover(project_root, cwd, failed_step=None)` is the one routine that acts on a record, for
+the caught failure and for Retry:
 1. It reads every slot live and finds the last step *k* whose state equals them all. With
    none, the refs moved after the operation stopped: `GitTransactionError`, the record kept.
-2. *k* at or past the commit point goes forward to the last step; before it, back to the
-   first state. An operation whose last state is its first (the hooks' HEAD swing) is put
-   back from any step, since both ways lead to the same state. A caught failure past the
-   commit point (`direction="back"`) stops here and keeps the record.
+2. For Retry (no *failed_step*), *k* at or past the commit point goes forward to the last
+   step; before it, back to the first state. For a caught failure, *failed_step* decides:
+   before the commit point back to the first state, at or past it the record is kept and
+   nothing more is done.
 3. Each of *files* on disk must hold one of the versions the operation's HEAD commits give
    it (`hash-object --stdin-paths`, with the path's filters); one that holds neither was
    changed after the operation stopped, and is refused by name ("<files> changed after
@@ -397,7 +399,7 @@ caught failure and for Retry:
 `"interrupted"`, and every `_serialized_mutation` refuses with `GitInterruptedError` once it
 holds the lock: Commit, Restore, a save's capture, a switch, a catch-up, a push and every
 other git action. `retry_interrupted(project_root, cwd)` (`_serialized_while_interrupted`)
-calls `recover` with *direction* `"retry"`, which goes whichever way step 2 says. With no
+calls `recover` with no *failed_step*, so the refs decide which way it goes. With no
 record it does nothing. Its route runs under `pause_watcher()` and announces the tree change
 like the other paused routes.
 
@@ -1135,8 +1137,9 @@ process failures, and precise ref-movement races deterministic.
   past its commit point and otherwise puts every slot and file back, and removes the record.
   A second test fails each step in turn and catches it: before the commit point the call
   returns with every slot and file as before and no record; after it, the steps done kept,
-  the record there, and Retry finishing; an operation that ends where it began is put back
-  from any step. A child process killed with `os._exit` at the
+  the record there, and Retry finishing. A third fails each step before the commit point
+  after its own git command has run (the fence refusing a checkout or fast-forward that
+  moved its ref), and requires every slot and file as they began and no record. A child process killed with `os._exit` at the
   restore's, the catch-up's, the spin-off's and the confirmed delete's most dangerous step
   leaves the same record and state. Further: a file holding neither version refused by
   Retry by name and kept, refs moved after the stop refused as `GitTransactionError` with

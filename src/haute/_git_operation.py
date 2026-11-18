@@ -215,9 +215,11 @@ class Operation:
     def run(self) -> None:
         """Write the record, perform the steps, and remove the record.
 
-        An ``Exception`` from a step has :func:`recover` put the operation back when it
-        has not reached its commit point; the failure is re-raised, from what ``recover``
-        raised when it could not. Any other stop leaves the record."""
+        An ``Exception`` from a step leaves that step unfinished, whatever its git command
+        did before failing: :func:`recover` puts the operation back when that step comes
+        before the commit point, and keeps the record when it does not. The failure is
+        re-raised, from what ``recover`` raised when it could not put back. Any other stop
+        leaves the record."""
         if not any(step.sets for step in self._steps):
             return
         if self._steps[-1].kind == "call":
@@ -233,12 +235,13 @@ class Operation:
         write_operation(self._root, self._record())
         logger.info("git_operation_started", operation=self.name, steps=len(self._steps))
         running = _RUNNING.set(True)
+        failed_step = 0
         try:
-            for step in self._steps:
+            for failed_step, step in enumerate(self._steps):
                 _perform(step, self._files, self._root, self._cwd)
         except Exception as failure:
             try:
-                recover(self._root, self._cwd, direction="back")
+                recover(self._root, self._cwd, failed_step=failed_step)
             except (GitError, OSError) as unrecovered:
                 raise unrecovered from failure
             raise
@@ -442,13 +445,16 @@ def _write_files_from_head(files: list[str], cwd: Path | None, *, verify: bool) 
     if not files:
         return
     root = _worktree(cwd)
-    known = _indexed(cwd) | set(_blobs(_head_commit({}, cwd), cwd))
+    # An unborn HEAD (a clone whose remote names no branch it has) holds the empty tree:
+    # restoring from it removes the files, as git restore does any its source lacks.
+    head = _head_commit({}, cwd)
+    known = _indexed(cwd) | set(_blobs(head, cwd))
     stderr = ""
     tracked = [path for path in files if path in known]
     if tracked:
-        _code, stderr = _run_git_capture(
+        code, stderr = _run_git_capture(
             "restore",
-            "--source=HEAD",
+            f"--source={head or _EMPTY_TREE}",
             "--staged",
             "--worktree",
             "--pathspec-from-file=-",
@@ -456,6 +462,10 @@ def _write_files_from_head(files: list[str], cwd: Path | None, *, verify: bool) 
             cwd=cwd,
             input_text="".join(f":(literal){path}\0" for path in tracked),
         )
+        if code != 0:
+            # Held files are the usual cause; whatever it was, the check below names the
+            # files left, and the log keeps git's own words.
+            logger.warning("git_restore_failed", files=len(tracked), stderr=stderr)
     for path in files:
         if path not in known and os.path.lexists(root / path):
             try:
@@ -523,16 +533,18 @@ def _hash_files(paths: list[str], cwd: Path | None) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def recover(project_root: Path, cwd: Path | None, *, direction: Literal["back", "retry"]) -> bool:
+def recover(project_root: Path, cwd: Path | None, *, failed_step: int | None = None) -> bool:
     """Finish the recorded operation or put it back, from its record and the refs as they
     are, and remove the record. Return whether there was one to act on.
 
-    The live slots must equal the state after some step k; with none, the refs moved
-    after the operation stopped (``GitTransactionError``). k at or past the commit point
-    goes forward to the last step, and before it back to the first state; a caught
-    failure past the commit point (*direction* ``"back"``) keeps the record instead. A
-    file that holds neither version the operation knew is refused by name; files not in
-    step afterwards raise ``GitFilesInUseError``. Either way the record stays."""
+    The live slots must equal the state after some step; with none, the refs moved after
+    the operation stopped (``GitTransactionError``). For Retry the refs decide: the last
+    step they match at or past the commit point goes forward to the last step, and before
+    it back to the first state. For a caught failure, *failed_step* is the step that
+    raised, unfinished whatever its git command did first: before the commit point the
+    operation goes back, and at or past it the record is kept. A file that holds neither
+    version the operation knew is refused by name; files not in step afterwards raise
+    ``GitFilesInUseError``. Either way the record stays."""
     record = read_operation(project_root)
     if record is None:
         return False
@@ -549,12 +561,10 @@ def recover(project_root: Path, cwd: Path | None, *, direction: Literal["back", 
             f"{record.words} stopped part-way, and its branches have moved since. "
             "Inspect the repository before retrying."
         )
-    # An operation that ends where it began (the hooks' HEAD swing) is put back from any
-    # step: both ways lead to the same state, and nothing past its commit point is kept.
-    forward = max(reached) >= record.commit_point and states[-1] != states[0]
-    if forward and direction == "back":
-        logger.warning("git_operation_kept", operation=record.operation, step=max(reached))
+    if failed_step is not None and failed_step >= record.commit_point:
+        logger.warning("git_operation_kept", operation=record.operation, step=failed_step)
         return False
+    forward = failed_step is None and max(reached) >= record.commit_point
     target = states[-1] if forward else states[0]
 
     changed = _changed_since(record.files, [_head_commit(s, cwd) for s in states], cwd)
