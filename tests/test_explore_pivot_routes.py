@@ -565,6 +565,78 @@ def test_members_read_from_a_file_rewritten_underneath_them_are_not_answered(
     assert [option["label"] for option in answered["members"]] == ["East"]
 
 
+def test_a_float_of_every_width_is_aggregated_and_grouped_as_a_float(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """XPL-02: a Float16 column gives the pivot the numbers its Float32 and Float64 twins give."""
+    path = tmp_path / "widths.parquet"
+    values = [1.0, math.nan, 2.0, 3.0, math.inf, -math.inf, 4.0]
+    groups = [1.0, math.nan, 2.0, 2.0, None, 1.0, 1.0]
+    widths = {"16": pl.Float16, "32": pl.Float32, "64": pl.Float64}
+    pl.DataFrame(
+        {
+            "region": ["A", "A", "A", "B", "B", "C", "C"],
+            **{f"f{width}": pl.Series(values, dtype=dtype) for width, dtype in widths.items()},
+            **{f"g{width}": pl.Series(groups, dtype=dtype) for width, dtype in widths.items()},
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    def value(width: str, aggregation: str) -> dict[str, Any]:
+        return {
+            "id": f"{aggregation}_{width}",
+            "field": f"f{width}",
+            "aggregation": aggregation,
+            "reference": f"f{width}_{'mean' if aggregation == 'average' else aggregation}",
+            "display_name": aggregation,
+        }
+
+    aggregations = ("count", "sum", "average")
+    pivot = _pivot(
+        columns=[],
+        values=[value(width, aggregation) for width in widths for aggregation in aggregations],
+    )
+    status, result = _run_pivot(client, graph, pivot)
+    assert status["status"] == "completed", status
+    assert result is not None
+    for row in ([("string", "A")], [("string", "B")], [("string", "C")], None):
+        cells = {
+            width: [_cell(result, row, [], f"{agg}_{width}") for agg in aggregations]
+            for width in widths
+        }
+        assert cells["16"] == cells["32"] == cells["64"], row
+    # NaN is left out: A counts 2 and sums 3; the total counts the 6 other rows.
+    assert [_cell(result, [("string", "A")], [], f"{agg}_16") for agg in aggregations] == [
+        2,
+        3.0,
+        1.5,
+    ]
+    assert _cell(result, None, [], "count_16") == 6
+
+    for width in widths:
+        status, grouped = _run_pivot(
+            client,
+            graph,
+            _pivot(
+                columns=[],
+                rows=[{"id": "row_1", "field": f"g{width}"}],
+                values=[
+                    {
+                        **value(width, "count"),
+                        "id": "rows",
+                        "field": "region",
+                        "reference": "region_count",
+                    }
+                ],
+            ),
+        )
+        assert status["status"] == "completed", status
+        assert grouped is not None
+        # 1, 2, NaN and missing: four groups at every width.
+        assert len([path for path in grouped["row_paths"] if not path["is_grand_total"]]) == 4
+
+
 def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
     client: TestClient, tmp_path: Path
 ) -> None:

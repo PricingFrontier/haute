@@ -43,6 +43,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._polars_dtypes import TEXT_KINDS, column_kind
 from haute._polars_utils import bounded_sink, execution_collect, streaming_collect
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_choice_query_peak_bytes
 from haute.errors import (
@@ -64,8 +65,6 @@ if TYPE_CHECKING:
 
 ANALYSIS_ROW_PRESENT_COLUMN = "__haute_analysis_row_present"
 """False for a solved quote the chosen analysis frame has no row for (its "Missing" level)."""
-
-_STRING_DTYPE_NAMES = ("String", "Categorical", "Enum")
 
 
 class AnalysisColumnNotConstantError(OptimiserSetupError):
@@ -247,7 +246,7 @@ def write_quote_analysis(
             summary_exprs.append(
                 pl.col(column).approx_n_unique().alias(f"approx_n_unique:{column}")
             )
-            if schema[column].base_type().__name__ in _STRING_DTYPE_NAMES:
+            if column_kind(schema[column]) in TEXT_KINDS:
                 max_bytes = pl.col(column).cast(pl.String).str.len_bytes().max()
             else:
                 max_bytes = pl.lit(None, dtype=pl.UInt32)

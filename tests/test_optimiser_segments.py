@@ -760,6 +760,29 @@ class TestSegmentsRoute:
         )
         assert body["weight_label"] == "Objective at the chosen scenario"
 
+    def test_a_float_of_every_width_is_broken_down_as_a_number(self, client, tmp_path):
+        """OPM-05: a Float16 analysis column is binned as a number, as its Float64 twin is."""
+        scored = _scored(tmp_path)
+        score = pl.col("quote_id").str.slice(1).cast(pl.Int32) * 0.5
+        pl.read_parquet(scored).with_columns(
+            score.cast(pl.Float64).alias("score_f64"), score.cast(pl.Float16).alias("score_f16")
+        ).write_parquet(scored)
+        job_id, status = _solved(
+            client, _data_graph(scored, analysis_columns=["score_f64", "score_f16"])
+        )
+
+        keys = {key["key"]: key for key in status["result"]["segment_keys"]}
+        assert keys["score_f16"]["binning"] == keys["score_f64"]["binning"] == "numeric"
+        assert keys["score_f16"]["available"] is True
+
+        def levels(key: str) -> list[tuple[str, int]]:
+            response = _segments(client, job_id, key)
+            assert response.status_code == 200, response.text
+            return [(row["label"], row["quotes"]) for row in response.json()["rows"]]
+
+        assert levels("score_f16") == levels("score_f64")
+        assert sum(quotes for _label, quotes in levels("score_f16")) == 9
+
     def test_an_unknown_key_or_weight_is_a_422(self, client, tmp_path):
         job_id, _status = _solved(
             client, _data_graph(_scored(tmp_path), analysis_columns=["region"])

@@ -44,50 +44,24 @@ describe("normaliseBandingFactors", () => {
 // ─── isNumericDtype ──────────────────────────────────────────────
 
 describe("isNumericDtype", () => {
-  it("recognizes int types", () => {
-    expect(isNumericDtype("int32")).toBe(true)
-    expect(isNumericDtype("int64")).toBe(true)
-    expect(isNumericDtype("Int8")).toBe(true)
-  })
+  // The types a preview sends, as Polars renders them; every kind is in columnKinds.test.ts.
+  it.each(["Int8", "Int64", "Int128", "UInt16", "UInt128", "Float16", "Float32", "Float64", "Decimal(precision=10, scale=2)"])(
+    "recognizes %s",
+    (dtype) => {
+      expect(isNumericDtype(dtype)).toBe(true)
+    },
+  )
 
-  it("recognizes uint types", () => {
-    expect(isNumericDtype("uint32")).toBe(true)
-    expect(isNumericDtype("UInt16")).toBe(true)
-  })
+  it.each(["String", "Utf8", "Boolean", "Date", "Datetime(time_unit='us', time_zone=None)", "Null", "List(Int64)"])(
+    "rejects %s",
+    (dtype) => {
+      expect(isNumericDtype(dtype)).toBe(false)
+    },
+  )
 
-  it("recognizes float types", () => {
-    expect(isNumericDtype("float32")).toBe(true)
-    expect(isNumericDtype("float64")).toBe(true)
-    expect(isNumericDtype("Float64")).toBe(true)
-  })
-
-  it("recognizes short Polars type aliases", () => {
-    expect(isNumericDtype("f32")).toBe(true)
-    expect(isNumericDtype("f64")).toBe(true)
-    expect(isNumericDtype("i8")).toBe(true)
-    expect(isNumericDtype("i16")).toBe(true)
-    expect(isNumericDtype("i32")).toBe(true)
-    expect(isNumericDtype("i64")).toBe(true)
-    expect(isNumericDtype("u8")).toBe(true)
-    expect(isNumericDtype("u16")).toBe(true)
-    expect(isNumericDtype("u32")).toBe(true)
-    expect(isNumericDtype("u64")).toBe(true)
-  })
-
-  it("rejects string types", () => {
-    expect(isNumericDtype("str")).toBe(false)
-    expect(isNumericDtype("Utf8")).toBe(false)
-    expect(isNumericDtype("String")).toBe(false)
-  })
-
-  it("rejects boolean types", () => {
-    expect(isNumericDtype("bool")).toBe(false)
-    expect(isNumericDtype("Boolean")).toBe(false)
-  })
-
-  it("rejects date types", () => {
-    expect(isNumericDtype("date")).toBe(false)
-    expect(isNumericDtype("datetime")).toBe(false)
+  it("rejects text that is not a Polars type's name", () => {
+    expect(isNumericDtype("f64")).toBe(false)
+    expect(isNumericDtype("int64")).toBe(false)
   })
 })
 
@@ -110,11 +84,11 @@ describe("isTemporalDtype", () => {
 
 describe("inferBandingType", () => {
   const colMap = {
-    age: "int64",
-    premium: "float64",
-    region: "Utf8",
-    active: "bool",
-    score: "f32",
+    age: "Int64",
+    premium: "Float64",
+    region: "String",
+    active: "Boolean",
+    score: "Float16",
   }
 
   it("returns breakpoints for integer column", () => {
@@ -125,7 +99,7 @@ describe("inferBandingType", () => {
     expect(inferBandingType("premium", colMap)).toBe("breakpoints")
   })
 
-  it("returns breakpoints for Polars short alias", () => {
+  it("returns breakpoints for a half-precision float column", () => {
     expect(inferBandingType("score", colMap)).toBe("breakpoints")
   })
 

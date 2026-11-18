@@ -22,6 +22,8 @@ from collections.abc import Callable, Sequence
 
 import polars as pl
 
+from haute._polars_dtypes import TEXT_KINDS, column_kind
+
 # Reported metrics that are undefined without discrete class labels. A
 # continuous target reaching sklearn's roc_auc_score/log_loss with any of
 # these requested dies at the metric stage, so the gate rejects it up front.
@@ -102,19 +104,19 @@ def training_target_task_issue(
         # TrainingJob._validate_columns); this check owns only the pairing.
         return None
     dtype = schema[target]
-    base_type = dtype.base_type()
-    if base_type == pl.Null:
+    kind = column_kind(dtype)
+    if kind == "null":
         # An all-null target is a null-count problem, not a type problem —
         # TrainingJob._prepare_data's zero-non-null-rows gate owns that
         # message, and it is more accurate than a dtype complaint here.
         return None
-    if base_type == pl.Boolean or dtype.is_integer():
+    if kind in {"boolean", "integer"}:
         return None
-    if base_type in (pl.String, pl.Categorical, pl.Enum):
+    if kind in TEXT_KINDS:
         # Class labels for classification; under any other task a string
         # target is a target/task problem the fit's own validation owns.
         return None
-    if dtype.is_float() or base_type == pl.Decimal:
+    if kind in {"float", "decimal"}:
         if collect is None:
             from haute._polars_utils import streaming_collect
 
@@ -123,7 +125,7 @@ def training_target_task_issue(
             data,
             target,
             collect,
-            decimal=base_type == pl.Decimal,
+            decimal=kind == "decimal",
         ):
             return None
         if classification_task:

@@ -32,6 +32,32 @@ def explore_execution_context():
         context.release_admission()
 
 
+def test_a_float_of_every_width_is_profiled_as_a_float(explore_execution_context) -> None:
+    """XPL-02: a Float16 column's profile gives the numbers its Float32 and Float64 twins give."""
+    from haute._frame_profile import _build_frame_stats
+
+    values = [1.0, float("nan"), 2.0, 3.0, float("inf"), float("-inf"), 4.0]
+    lf = pl.LazyFrame(
+        {
+            f"f{width}": pl.Series(values, dtype=dtype)
+            for width, dtype in (("16", pl.Float16), ("32", pl.Float32), ("64", pl.Float64))
+        }
+    )
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+
+    def profile(stat):
+        assert stat.histogram is not None
+        bins = [(b.start, b.end, b.count) for b in stat.histogram.bins]
+        return stat.nan_count, stat.distinct_count, stat.histogram.status, bins
+
+    assert profile(stats[0]) == profile(stats[1]) == profile(stats[2])
+    # One NaN; six distinct values; the histogram bins the four finite values.
+    nan_count, distinct, _status, bins = profile(stats[0])
+    assert (nan_count, distinct, sum(count for *_, count in bins)) == (1, 6, 4)
+
+
 def test_build_frame_stats_object_dtype_distinct_is_none(explore_execution_context) -> None:
     from haute._frame_profile import _build_frame_stats
 

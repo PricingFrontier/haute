@@ -273,12 +273,28 @@ come from the selected format; explicit extensions are preserved. Destination pr
 and writing use the same resolution, and writing creates missing parent directories.
 Database and lakehouse locators retain their provider-specific resolution.
 
+**Column kinds.** Every place that reads a column by its kind (the pivot, the frame
+profile, the Banding statistics, a Rating lookup, the optimiser's analysis, the impact
+report, the editor's column lists) asks one module what kind the column's type is:
+integer, float, decimal, boolean, text, category, date, datetime, duration, time,
+binary, null, nested, object or extension. The answer comes from Polars' own
+classification, so a float of any width (`Float16`, `Float32`, `Float64`) is a float
+everywhere and a type a later Polars adds takes its kind from Polars. The editor reads
+the same answer from the generated contract. A reader handles a column as its kind or
+refuses it naming its type; no reader keeps its own list of type names.
+
 ## Design rationale
 
 The registry is the single capability source for validation, editor metadata, and Polars
 dispatch, preventing code generation from inventing a second format matrix. Snapshot
 generation directories and a tiny atomic pointer make refresh safe for concurrent readers.
 Strict identity validation prevents durable cache metadata becoming a credential leak.
+
+Column kinds come from one module because every list of type names kept by hand went
+stale the same way: each named `Float32` and `Float64` as the floats, none named
+`Float16`, and each was found as its own defect in its own area. A test finds code that
+decides a kind from a type's name, on the server and in the browser, so the next list
+fails a test instead of a reader.
 
 Parquet is the shared snapshot boundary because it is lazy-scannable, schema-bearing, and
 can be written in bounded batches. Publication computes SHA-256 and seeds a process-local

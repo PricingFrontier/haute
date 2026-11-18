@@ -89,7 +89,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
 | `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
-| `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, `isStringOrCategoricalDtype` (the String and Categorical dtypes CatBoost trains as categorical features, as the backend detects them; Enum is not one), and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns; `castFamily` names a column type's family in the step renderer's cast table (`cast_family`) and `decimalScale` reads a Decimal type's scale, for the step editor. |
+| `frontend/src/utils/polarsDtypes.ts` | The editor's one answer to what kind of column a type is: `columnKind` reads the server's table (`COLUMN_KINDS` in the generated contract) by the base name of the type as `str(dtype)` renders it, and every rule is a kind or group of kinds: `isNumericDtype` (the number kinds, an integer, a float of any width or a decimal) for modelling, pivot and banding controls, `isTemporalDtype` (Date and Datetime) banding uses to offer Numeric on date columns, `isStringOrCategoricalDtype` (String and Categorical, the columns CatBoost trains as categorical features, as the backend detects them; Enum is not one), and `castFamily` (a type's kind in the step renderer's cast table, `cast_family`); `decimalScale` reads a Decimal type's scale, for the step editor. `frontend/src/utils/__tests__/columnKinds.test.ts` holds each rule to the server's on the shared cases. |
 
 ## Key types and data structures
 
@@ -159,8 +159,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    `monotone_constraints[name] = -1|1`; choosing the dash removes the key. Inclusion changes only
    `feature_columns`, which starts absent so every feature starts excluded: a stored direction
    remains selected in the disabled control and becomes active again after re-inclusion. GLM's Features pane is `GLMTermsConfig`. `glmDtypeClass` classifies columns as continuous,
-   integer, boolean, categorical, or unsupported, pinned to the backend by
-   `__tests__/fixtures/glmDtypeClasses.json`; role columns and unsupported dtypes are not offered,
+   integer, boolean, categorical, or unsupported by its column kind, pinned to the backend by
+   the shared column-kind cases (`frontend/src/utils/__tests__/fixtures/columnKindCases.json`); role columns and unsupported dtypes are not offered,
    and the pane states how many unsupported columns it hides. A feature is in the model exactly
    when it has a term, is read by an expression, or is a filled interaction factor. Each row offers
    Add term: the dtype-class default fit first, then a uniquely named `** 2` expression for a

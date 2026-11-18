@@ -100,12 +100,13 @@ describe("pivotConfig", () => {
   })
 
   it("selects aggregations from the Polars dtype capabilities", () => {
-    expect(isNumericPivotDtype("i64")).toBe(true)
-    expect(isNumericPivotDtype("f64")).toBe(true)
+    expect(isNumericPivotDtype("Int64")).toBe(true)
+    // A half-precision float is a number to the pivot's pickers, as it is to the server.
+    expect(isNumericPivotDtype("Float16")).toBe(true)
     expect(isNumericPivotDtype("Decimal(12, 2)")).toBe(true)
     expect(isNumericPivotDtype("Int64ish")).toBe(false)
     expect(isNumericPivotDtype("Decimalish")).toBe(false)
-    expect(pivotAggregationsForDtype("i64")).toEqual([
+    expect(pivotAggregationsForDtype("Float16")).toEqual([
       "sum", "count", "average", "min", "max", "median", "distinct_count",
     ])
     expect(pivotAggregationsForDtype("Binary")).toEqual([
