@@ -6274,10 +6274,13 @@ class GitFastForwardRequest(BaseModel):
 class GitFastForwardResponse(BaseModel):
     # A conflict-free catch-up (P7 D1/D2): the working pair advanced to the
     # remote's tips by fast-forward only (never a merge). `fast_forwarded` lists
-    # the refs that actually moved (working and/or the ledger).
+    # the refs that actually moved (working and/or the ledger), and `labels_added`
+    # the version labels the remote has on them that the clone now holds too (none
+    # moved and only labels added: a label published for a milestone already here).
     remote: str
     working_branch: str
-    fast_forwarded: list[str] = Field(default_factory=list)
+    fast_forwarded: list[str]
+    labels_added: list[str]
 
 
 class GitUpstreamStatusResponse(BaseModel):

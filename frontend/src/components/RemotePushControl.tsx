@@ -244,10 +244,21 @@ export default function RemotePushControl({
     setCatchingUp(true)
     try {
       const res = await gitFastForward(target)
+      const n = res.fast_forwarded.length
+      if (n === 0) {
+        // Only labels came: no file changed, so the edits on the canvas stay.
+        const labels = res.labels_added
+        addToast(
+          "success",
+          `Caught up - added version label${labels.length === 1 ? "" : "s"} ${labels.join(", ")} from ${res.remote}`,
+        )
+        setRejection(null)
+        await reloadAfterTreeChange() // the history shows the labels
+        return
+      }
       // The files are the remote's now: edits chosen over them go, as after a switch.
       discardCanvasEdits()
       await discardFormEdits()
-      const n = res.fast_forwarded.length
       addToast("success", `Caught up - updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`)
       setRejection(null)
       await reloadAfterTreeChange()

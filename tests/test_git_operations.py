@@ -843,6 +843,51 @@ def test_a_fetch_adds_no_label_and_catch_up_brings_the_colleagues_as_a_step(
     assert _git(root, "rev-parse", f"{label}^{{commit}}") == _git(root, "rev-parse", WORKING)
 
 
+@pytest.mark.parametrize("named", [(), ("main",)], ids=["everything", "one-branch"])
+def test_a_fetch_writes_no_ref_a_configured_mapping_names(
+    named: tuple[str, ...], tmp_path: Path
+) -> None:
+    """A remote's configured fetch refspecs apply beside the named ones unless the
+    fetch empties them: one mapping a branch into refs/heads/ must not create it."""
+    root, _call = _arrange_catch_up_labelled(tmp_path)
+    _git(root, "config", "--add", "remote.origin.fetch", f"+refs/heads/{WORKING}:refs/heads/mapped")
+    _git(root, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+
+    with git_core._fetch_exec_lock:
+        assert git_core._fetch_refs("origin", *named, cwd=root)
+
+    assert _git(root, "branch", "--list", "mapped") == ""
+    assert _git(root, "for-each-ref", "refs/tags/") == ""
+
+
+def test_catch_up_brings_a_label_published_for_a_milestone_already_here(tmp_path: Path) -> None:
+    """Both branches already match the remote; the colleague then labels the shared
+    milestone. Catch up adds the label, as a recorded step, and writes no file."""
+    root = _new_repo(tmp_path)
+    _pair(root)
+    _milestone(root)
+    bare = _remote(root, tmp_path)
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(bare), str(other))
+    _git(other, "config", "user.name", "Colleague")
+    _git(other, "config", "user.email", "colleague@example.com")
+    _git(other, "tag", "-a", "version/1.5", "-m", "1.5", f"origin/{WORKING}")
+    _git(other, "push", "-q", "origin", "version/1.5")
+    (root / ".haute_cache").mkdir()
+
+    response = fast_forward_pair("origin", root, cwd=root)
+
+    assert response.fast_forwarded == []
+    assert response.labels_added == ["1.5"]
+    assert _git(root, "rev-parse", "refs/tags/version/1.5^{commit}") == _git(
+        root, "rev-parse", WORKING
+    )
+    assert (root / ".haute_cache").is_dir()  # no file was written, so the caches stay
+    assert read_operation(root) is None
+    with pytest.raises(GitDomainError, match="Already up to date"):
+        fast_forward_pair("origin", root, cwd=root)
+
+
 def test_spin_off_brings_the_colleagues_labels_with_their_line(tmp_path: Path) -> None:
     root = _new_repo(tmp_path)
     _pair(root)
@@ -1060,19 +1105,20 @@ def test_a_catch_up_over_a_file_held_open_on_windows_changes_nothing_until_it_cl
         (("symbolic-ref", "--delete", "HEAD"), True),
         (("tag", "--points-at", "x", "--list", "version/*"), False),
         (("tag", "version/1.0"), True),
-        # git follows tags into refs/tags/ by default, and configured refspecs may
-        # name any ref: only a fetch with --no-tags and every destination named under
-        # refs/remotes/ moves none.
+        # git follows tags into refs/tags/ by default, and a remote's configured fetch
+        # refspecs may name any ref and apply beside named ones: only a fetch with
+        # --no-tags, --refmap= and every destination named under refs/remotes/ moves none.
         (("fetch", "--prune", "origin", "--quiet"), True),
         (("fetch", "bundle", "+refs/heads/*:refs/remotes/upstream/*"), True),
-        (("fetch", "--no-tags", "--prune", "origin", "--quiet"), True),
-        (("fetch", "--no-tags", "bundle", "+refs/heads/*:refs/remotes/upstream/*"), False),
+        (("fetch", "--no-tags", "--refmap=", "--prune", "origin", "--quiet"), True),
+        (("fetch", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"), True),
+        (("fetch", *git_core.SAFE_FETCH, "bundle", "+refs/heads/*:refs/remotes/up/*"), False),
         (
-            ("fetch", "--no-tags", "C:\\t\\p.bundle", "+refs/heads/*:refs/remotes/upstream/*"),
+            ("fetch", *git_core.SAFE_FETCH, "C:\\t\\p.bundle", "+refs/heads/*:refs/remotes/up/*"),
             False,
         ),
-        (("fetch", "--no-tags", "origin", "refs/heads/a:refs/heads/a"), True),
-        (("fetch", "--no-tags", "origin", "+refs/tags/*:refs/tags/*"), True),
+        (("fetch", *git_core.SAFE_FETCH, "origin", "refs/heads/a:refs/heads/a"), True),
+        (("fetch", *git_core.SAFE_FETCH, "origin", "+refs/tags/*:refs/tags/*"), True),
     ],
 )
 def test_each_command_is_classified_as_moving_a_ref_or_not(

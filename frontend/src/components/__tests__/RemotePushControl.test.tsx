@@ -61,6 +61,7 @@ describe("RemotePushControl", () => {
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+      labels_added: [],
     })
     mockBranchAway.mockResolvedValue({
       working_branch: "dev",
@@ -759,6 +760,25 @@ describe("RemotePushControl", () => {
       expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
     })
 
+    it("names the labels a catch-up brought alone, and keeps the canvas edits", async () => {
+      ways[0].setUp()
+      mockFastForward.mockResolvedValue({
+        remote: "origin",
+        working_branch: "dev",
+        fast_forwarded: [],
+        labels_added: ["2.0"],
+      })
+      render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+      await ways[0].click()
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "success",
+          "Caught up - added version label 2.0 from origin",
+        ),
+      )
+    })
+
     it("closing the rejection dialog drops the question open in it", async () => {
       rejectPushWith(behind)
       useGraphStore.setState({ dirty: true })
@@ -864,6 +884,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+      labels_added: [],
     })
     mockBranchAway.mockResolvedValue({
       working_branch: "dev",

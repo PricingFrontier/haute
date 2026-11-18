@@ -120,11 +120,13 @@ only those, or a clone, moves none. `update-ref`, `branch`, `checkout`, `switch`
 `reset`, `commit`, `rebase`, `cherry-pick`, `revert`, `pull`, `am`, `stash` and `worktree`
 move refs; `symbolic-ref` with a new target or `--delete`, and `tag` other than a listing
 (`-l`, `--list`, `--points-at`, `--merged`, `--contains`), move them. A `fetch` moves none
-only when it follows no tags (`--no-tags`) and names every destination, each under
-`refs/remotes/`: by default git follows tags into `refs/tags/`, and configured refspecs may
-name any ref. Its first operand is the repository, a bundle's path on Windows holding a
-colon, and only the operands after it are refspecs. Every fetch the core runs takes that
-form (`_fetch_refs`, `fetch_bundle_refs`, the expected default's fetch): branches into
+only when it follows no tags (`--no-tags`), applies no configured mapping (`--refmap=`)
+and names every destination, each under `refs/remotes/`: by default git follows tags into
+`refs/tags/`, and a remote's configured fetch refspecs, which may name any ref, update refs
+beside the ones a command names unless `--refmap=` empties them. Its first operand is the
+repository, a bundle's path on Windows holding a colon, and only the operands after it are
+refspecs. Every fetch the core runs takes that form (`SAFE_FETCH`: `_fetch_refs`,
+`fetch_bundle_refs`, the expected default's fetch): branches into
 `refs/remotes/<remote>/`, and version labels into `LABELS_NAMESPACE`
 (`refs/remotes/haute-labels/<remote>/version/`, `label_refspec`), beside the branches and
 outside the clone's own labels. Read-only and index-only commands are
@@ -257,7 +259,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
 | `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[],ci_secrets=null}`; `default_branch` and `bootstrapped_default` are required response members, `ci_secrets` is the deploy's secrets on a GitHub remote's repository ([cli](../cli/low-level.md)), and working/ledger non-fast-forward is 409 |
 | `POST /api/git/ci-secrets` | `GitCiSecretsRequest {remote}` | `GitCiSecrets {repository,state,missing=[],newly_set=[],problem=null}` once the deploy's secrets the repository lacked are set from `.env`; 400 naming why when they do not apply or cannot be set ([cli](../cli/low-level.md)) |
-| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded=[]}` |
+| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded,labels_added}`: the branches that moved and the version labels (`2.0`, without `version/`) now held too |
 | `POST /api/git/branch-away` | `GitBranchAwayRequest {remote}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
 
 ## Control flow
@@ -828,13 +830,16 @@ distinct user-facing refusals. No cache
 wipe, merge, or ref update may run on stale or incomplete tracking refs. It then requires
 EVERY leg to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses
 outright (the user must reconcile via `branch_away` instead; this function never merges).
+With both legs synced and no label to adopt it answers "Already up to date with
+'<remote>'."; labels alone (one published for a milestone the clone holds) are a catch-up
+of their one step, which writes no file and keeps the caches.
 The `catch-up` operation's steps: the ledger (checked out) advances to its remote tip via
 `git merge --ff-only <sha>` through the fence, then the working ref (not checked out) via a
 CAS transaction, each only when that leg is behind, then one transaction creating the
 version labels the remote has on the working branch's caught-up history that the clone has
 no label of that name for (`labels_to_adopt`, read from `LABELS_NAMESPACE` with
 `for-each-ref --merged`), so a colleague's labels appear as they did; its commit point is its
-last step. Any
+last step, and it wipes the caches only when a leg moved. Any
 failure puts both refs and the files back from the record, so a file the remote deleted that
 another program holds leaves the ledger, the working branch and every file as they were,
 and the next catch-up, once the file is closed, removes it. A put-back that cannot finish
@@ -1171,8 +1176,9 @@ process failures, and precise ref-movement races deterministic.
   the record kept, a branch HEAD names moved after a stop refused although the operation
   never changed it, a record that cannot be read reading `interrupted` with no operation
   named and Retry refusing it, a hook that rewrites a file and refuses leaving HEAD on the
-  ledger and no record, a fetch adding no label and Catch up and Spin off bringing a
-  colleague's labels as a recorded step, the analyst's own edit and an untracked file never in a record nor
+  ledger and no record, a fetch adding no label nor a branch a configured mapping names, Catch
+  up and Spin off bringing a colleague's labels as a recorded step, and Catch up bringing a
+  label alone when both branches already match, the analyst's own edit and an untracked file never in a record nor
   touched by a put-back, a catch-up over a file the remote deleted that another program
   holds refused with the ledger, the working branch and the files as they were and the
   next catch-up removing it (on Windows with a real open handle), and the runners refusing

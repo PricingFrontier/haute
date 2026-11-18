@@ -62,6 +62,7 @@ describe("UpstreamSyncModal - a fork's relationship to its parent", () => {
       remote: "upstream",
       working_branch: "pricing-dev",
       fast_forwarded: ["pricing-dev", "pricing-dev-save"],
+      labels_added: [],
     })
     const onClose = vi.fn()
     render(<UpstreamSyncModal onClose={onClose} />)

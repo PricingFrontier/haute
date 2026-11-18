@@ -1883,6 +1883,7 @@ export interface GitCiSecrets {
 }
 export interface GitFastForwardResponse {
   fast_forwarded: string[];
+  labels_added: string[];
   remote: string;
   working_branch: string;
 }

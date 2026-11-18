@@ -362,13 +362,16 @@ def _moves_local_refs(args: Sequence[str]) -> bool:
     if sub == "tag":
         return not any(arg.split("=")[0] in _TAG_LISTING for arg in rest)
     if sub == "fetch":
-        # Only a fetch that follows no tags and names every destination, each under
-        # refs/remotes/, moves no ref: by default git follows tags into refs/tags/, and
-        # configured refspecs may name any ref. The first operand is the repository (a
-        # remote, a URL, a bundle's path, which on Windows holds a colon).
+        # Only a fetch that follows no tags, applies no configured mapping and names
+        # every destination, each under refs/remotes/, moves no ref: by default git
+        # follows tags into refs/tags/, and the remote's configured fetch refspecs,
+        # which may name any ref, update refs beside the ones a command names unless
+        # --refmap= empties them. The first operand is the repository (a remote, a
+        # URL, a bundle's path, which on Windows holds a colon).
         refspecs = [arg for arg in rest if not arg.startswith("-")][1:]
         return not (
             "--no-tags" in rest
+            and "--refmap=" in rest
             and refspecs
             and all(
                 ":" in spec and spec.split(":", 1)[1].startswith("refs/remotes/")
@@ -735,6 +738,11 @@ def _remote_env(cwd: Path | None = None) -> dict[str, str]:
 LABELS_NAMESPACE = "refs/remotes/haute-labels"
 
 
+#: Every fetch the core runs: no tag followed, no configured mapping applied, so only
+#: the refspecs it names, all under ``refs/remotes/``, are written.
+SAFE_FETCH = ("--no-tags", "--refmap=")
+
+
 def label_refspec(namespace: str) -> str:
     """The refspec that fetches a repository's version labels for *namespace*."""
     return f"+refs/tags/version/*:{LABELS_NAMESPACE}/{namespace}/version/*"
@@ -764,10 +772,10 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     """
     if refs:
         refspecs = tuple(f"+refs/heads/{ref}:refs/remotes/{remote}/{ref}" for ref in refs)
-        args = ("fetch", "--no-tags", remote, *refspecs, "--quiet")
+        args = ("fetch", *SAFE_FETCH, remote, *refspecs, "--quiet")
     else:
         everything = (f"+refs/heads/*:refs/remotes/{remote}/*", label_refspec(remote))
-        args = ("fetch", "--no-tags", "--prune", remote, *everything, "--quiet")
+        args = ("fetch", *SAFE_FETCH, "--prune", remote, *everything, "--quiet")
     try:
         result = _run_git_process(
             *args,

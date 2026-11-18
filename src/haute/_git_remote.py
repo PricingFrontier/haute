@@ -12,6 +12,7 @@ from haute._git_core import (
     _PUSH_TIMEOUT_SECONDS,
     LABELS_NAMESPACE,
     LEDGER_SUFFIX,
+    SAFE_FETCH,
     GitBootstrapIncompleteError,
     GitDomainError,
     GitError,
@@ -285,7 +286,7 @@ def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> 
     try:
         result = _run_git_process(
             "fetch",
-            "--no-tags",
+            *SAFE_FETCH,
             str(bundle),
             f"+refs/heads/*:refs/remotes/{namespace}/*",
             label_refspec(namespace),
@@ -749,7 +750,7 @@ def _fetch_expected_default(remote: str, branch: str, cwd: Path | None = None) -
         with _fetch_exec_lock:
             result = _run_git_process(
                 "fetch",
-                "--no-tags",
+                *SAFE_FETCH,
                 remote,
                 f"refs/heads/{branch}:{destination}",
                 "--quiet",
@@ -1066,20 +1067,25 @@ def fast_forward_pair_from_tracking(
             "the fork, so there is no clean fast-forward. Spin off a copy to keep "
             "your work, then reconcile."
         )
-    if w_leg.status != "behind" and l_leg.status != "behind":
+    # The version labels the remote has on the milestones caught up to, as a colleague
+    # sees them after their own Catch up: also when they are all the remote has new,
+    # a label published for a milestone this clone already holds.
+    remote_working = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+    labels = labels_to_adopt(remote, remote_working, cwd) if remote_working is not None else {}
+    behind = [
+        branch for branch, leg in ((ledger, l_leg), (working, w_leg)) if leg.status == "behind"
+    ]
+    if not behind and not labels:
         raise GitDomainError(f"Already up to date with '{label}'.")
 
     # One recorded operation: the ledger first (it's HEAD; merge --ff-only advances
-    # it and the working tree), then the working ref (not checked out) by CAS. Any
-    # failure puts both refs and the files back from the record, so a file git could
-    # not remove leaves nothing moved. Volatile caches must not survive into the
-    # caught-up tree (S12); they go once it is in place, so a refused catch-up
-    # deletes nothing.
-    fast_forwarded: list[str] = []
-    catch_up = Operation("catch-up", project_root, cwd, wipes_caches=True)
-    for branch, leg in ((ledger, l_leg), (working, w_leg)):
-        if leg.status != "behind":
-            continue
+    # it and the working tree), then the working ref (not checked out) by CAS, then the
+    # labels. Any failure puts the refs and the files back from the record, so a file
+    # git could not remove leaves nothing moved. Volatile caches must not survive into
+    # the caught-up tree (S12); they go once it is in place, so a refused catch-up
+    # deletes nothing, and a catch-up of labels alone writes no file and keeps them.
+    catch_up = Operation("catch-up", project_root, cwd, wipes_caches=bool(behind))
+    for branch in behind:
         target = _rev_parse(f"refs/remotes/{remote}/{branch}", cwd=cwd)
         if target is None:
             raise GitError("could not resolve refs for the fast-forward")
@@ -1087,17 +1093,15 @@ def fast_forward_pair_from_tracking(
             catch_up.fast_forward(target)
         else:
             catch_up.refs({f"refs/heads/{working}": target})
-        fast_forwarded.append(branch)
-    # The version labels the remote has on the milestones caught up to, as a colleague
-    # sees them after their own Catch up.
-    remote_working = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
-    if remote_working is not None:
-        catch_up.refs(labels_to_adopt(remote, remote_working, cwd))
+    catch_up.refs(labels)
     catch_up.run()
 
-    logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
+    logger.info("fast_forwarded_pair", remote=remote, refs=behind, labels=sorted(labels))
     return GitFastForwardResponse(
-        remote=remote, working_branch=working, fast_forwarded=fast_forwarded
+        remote=remote,
+        working_branch=working,
+        fast_forwarded=behind,
+        labels_added=sorted(ref.removeprefix("refs/tags/version/") for ref in labels),
     )
 
 
