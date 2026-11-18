@@ -729,17 +729,13 @@ def test_a_shipped_example_gives_one_answer_every_way(
     if name in _EXAMPLES_OWNED_ELSEWHERE:
         assert words is not None
 
-        def unhandled(answer: Answer) -> bool:
-            # A missing run raised as a traceback naming it, or `haute run`'s incident.
-            if answer.refusal is None:
-                return False
-            if answer.internal:
-                return words in answer.refusal
-            return "a failure it does not recognise" in answer.refusal
+        def raised(answer: Answer) -> bool:
+            # The missing run raised as MLflow's own exception, naming it: the command line's
+            # edge turns the same exception into its unrecognised-failure sentence.
+            refusal = answer.refusal or ""
+            return answer.internal and refusal.startswith("MlflowException: ") and words in refusal
 
-        differing = {
-            way: unhandled for way, answer in answers.items() if not _refuses(answer, words)
-        }
+        differing = {way: raised for way, answer in answers.items() if not _refuses(answer, words)}
         _owned("MLR-04", answers, differing, words)
         return
     _assert_one_answer(answers, refusal=words)
@@ -1522,7 +1518,10 @@ def test_a_workbench_sample_is_priced_under_one_identity_every_way(
         return (
             answer.refusal is None
             and preview.refusal is None
-            and all(row.get("quote_reference") == "PREVIEW" for row in rows)
+            and all(
+                (row.get("quote_reference"), row.get("quote_option")) == ("PREVIEW", 1)
+                for row in rows
+            )
             and not any(key in row for row in walked for key in identity)
             and without_identity(answer) == without_identity(preview)
         )
