@@ -524,6 +524,8 @@ class TestStartGlmMergeAndKeepColumns:
         def fake_launch(job_id, node_id, config, train_params, *args, **kwargs):
             captured["train_params"] = train_params
             captured["config"] = config
+            # The launch takes over the admitted context; this fit finishes at once.
+            kwargs["execution_context"].release_admission()
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),

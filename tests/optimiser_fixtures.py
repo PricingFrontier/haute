@@ -22,6 +22,7 @@ overrides; the standard shape is the implicit baseline.
 
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -616,6 +617,25 @@ def setup_grid_stub(grid: object | None = None) -> Any:
     from haute.routes._optimiser_service import SetupGrid
 
     return SetupGrid(grid=object() if grid is None else grid, quote_analysis_handle=None)
+
+
+def solve_launch_stand_in() -> tuple[Any, threading.Event]:
+    """A stand-in for ``OptimiserSolveService._launch_background`` and the event it sets.
+
+    The real launcher takes over the execution context setup admitted and frees its
+    memory when the solve finishes; this solve finishes at once, so the stand-in frees it
+    as it is handed over, and the job stays ``running`` as a launched solve's does. Setup
+    runs on its own thread: a test waits on the event before it leaves the patches, or
+    setup goes on with the real pipeline and the real launcher, whose solve then holds
+    the server's memory budget into the tests that follow.
+    """
+    launched = threading.Event()
+
+    def launch(ctx: Any, **_kwargs: Any) -> None:
+        ctx.execution_context.release_admission()
+        launched.set()
+
+    return launch, launched
 
 
 def make_online_apply_frame(

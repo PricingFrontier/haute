@@ -15,6 +15,27 @@ from haute._event_bus import EventBus, HandlerType
 from haute.routes._supersession import SupersessionCoordinator
 
 
+def held_execution_admission_reservations(*, within_seconds: float) -> tuple[str, ...]:
+    """The in-flight budget reservations still held once *within_seconds* have passed.
+
+    Work a test started may still be releasing as it ends; a reservation that outlives
+    the wait is work the test left running, or a grant a stand-in took and never freed.
+    Each names its profile, its operation and what it holds.
+    """
+    import time
+
+    from haute import _execution_admission as admission
+
+    deadline = time.monotonic() + within_seconds
+    with admission._IN_FLIGHT_LOCK:
+        while admission._IN_FLIGHT_RESERVATIONS and (left := deadline - time.monotonic()) > 0:
+            admission._IN_FLIGHT_RELEASED.wait(timeout=left)
+        return tuple(
+            f"{profile.value}:{operation} ({amount // 2**20} MiB)"
+            for profile, amount, operation in admission._IN_FLIGHT_RESERVATIONS.values()
+        )
+
+
 def clear_execution_admission_reservations() -> None:
     """Forget every in-flight budget reservation and wake any waiter."""
     from haute import _execution_admission as admission
