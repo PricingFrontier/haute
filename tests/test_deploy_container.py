@@ -91,12 +91,15 @@ class TestGitShaShort:
 
     def test_returns_the_short_head_sha_of_a_repository(self, tmp_path, monkeypatch) -> None:
         """Reads HEAD through the git command core."""
-        from haute._git_core import _run_git
         from haute.deploy._container import _git_sha_short
+        from tests._git_helpers import git_run
 
         use_project(tmp_path)
-        _run_git("init", "-q")
-        _run_git(
+        # The repository is the test's, made as in a terminal: the core moves a ref only
+        # as a step of one of Haute's recorded operations.
+        git_run(tmp_path, "init", "-q")
+        git_run(
+            tmp_path,
             "-c",
             "user.name=t",
             "-c",
@@ -108,7 +111,7 @@ class TestGitShaShort:
             "init",
         )
 
-        assert _git_sha_short() == _run_git("rev-parse", "--short", "HEAD")
+        assert _git_sha_short() == git_run(tmp_path, "rev-parse", "--short", "HEAD")
 
     def test_returns_local_outside_a_repository(self, tmp_path, monkeypatch) -> None:
         from haute.deploy._container import _git_sha_short

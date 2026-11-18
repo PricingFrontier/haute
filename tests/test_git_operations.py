@@ -91,6 +91,13 @@ class _Call:
         return {"root": str(root), "fn": self.fn, "args": self.args, "kwargs": self.kwargs}
 
 
+def _write(root: Path, path: str, text: str) -> None:
+    """Write *text* to *path* under the repository *root* (a test's own sandbox)."""
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+
+
 def _new_repo(base: Path) -> Path:
     root = base / "repo"
     root.mkdir(parents=True)
@@ -280,7 +287,7 @@ def _arrange_delete(base: Path) -> tuple[Path, _Call]:
 def _arrange_delete_confirmed_dirty(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
-    (root / "keep.txt").write_text("edited, not saved\n")
+    _write(root, "keep.txt", "edited, not saved\n")
     return root, _Call("delete_working_pair", (WORKING, ROOT), {"confirm": True, "cwd": ROOT})
 
 
@@ -715,7 +722,7 @@ def test_retry_refuses_a_file_changed_after_the_stop_and_keeps_the_record(
 ) -> None:
     root, call = _arrange_restore(tmp_path)
     _stop(root, call, "restore", 1)  # the ledger moved, the files not yet written
-    (root / "rating.py").write_text("# edited after the server stopped\n")
+    _write(root, "rating.py", "# edited after the server stopped\n")
 
     with pytest.raises(GitDomainError, match="rating.py changed after restoring a version stopped"):
         retry_interrupted(root, cwd=root)
@@ -953,7 +960,7 @@ def test_retry_finds_a_changed_file_when_git_cannot_hash_them_all_at_once(
     the readable ones are still checked, and the one git cannot read is left for later."""
     root, call = _arrange_restore(tmp_path)
     _stop(root, call, "restore", 1)
-    (root / "rating.py").write_text("# edited after the server stopped\n")
+    _write(root, "rating.py", "# edited after the server stopped\n")
     real = git_operation._run_git
 
     def batch_refused(*args: str, **kwargs: object) -> str:
@@ -972,7 +979,7 @@ def test_a_record_that_cannot_be_read_is_an_interruption_retry_will_not_guess(
 ) -> None:
     root = _new_repo(tmp_path)
     set_working_branch(WORKING, root, cwd=root)
-    (root / ".haute" / "operation.json").write_text("{ torn")
+    _write(root, ".haute/operation.json", "{ torn")
 
     status = working_branch_status(root, cwd=root)
     assert status.state == "interrupted"
@@ -989,8 +996,8 @@ def test_the_analysts_own_edits_are_never_in_a_record_nor_touched_by_a_put_back(
     file beside it. Neither is the operation's: the record names neither, git refuses
     the checkout over the edit, and the put-back leaves both as they are."""
     root, call = _arrange_select(tmp_path)
-    (root / "rating.py").write_text("# the analyst's own edit\n")
-    (root / "notes.md").write_text("untracked\n")
+    _write(root, "rating.py", "# the analyst's own edit\n")
+    _write(root, "notes.md", "untracked\n")
     record = _stop(root, call, "select-branch", 0)
     assert record.files == []
     retry_interrupted(root, cwd=root)
@@ -1046,8 +1053,7 @@ def test_a_catch_up_git_cannot_remove_a_file_for_leaves_everything_as_it_was(
     def merge_leaving_the_file(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         code, stderr = real(*args, cwd=cwd)
         if args[0] == "merge":
-            (root / "utility").mkdir(exist_ok=True)
-            (root / "utility" / "old_rates.py").write_text("RATE = 1\n")
+            _write(root, "utility/old_rates.py", "RATE = 1\n")
             return 0, "warning: unable to unlink 'utility/old_rates.py': Invalid argument"
         return code, stderr
 
@@ -1093,6 +1099,7 @@ def test_a_catch_up_over_a_file_held_open_on_windows_changes_nothing_until_it_cl
     ("args", "moves"),
     [
         (("status", "--porcelain"), False),
+        (("init", "-q"), False),
         (("rev-parse", "HEAD"), False),
         (("restore", "--source=HEAD", "--", "a"), False),
         (("-c", "core.hooksPath=/dev/null", "commit", "-m", "x"), True),
@@ -1142,6 +1149,7 @@ _RUNNERS = (
 )
 
 
+@pytest.mark.meta
 def test_every_git_command_the_source_runs_is_classified() -> None:
     """A command nobody classified refuses at run time, so every literal subcommand the
     source hands a runner is classified here first, past ``-c`` settings and NO_HOOKS."""
@@ -1200,6 +1208,7 @@ def _calls_to(name: str) -> list[tuple[Path, ast.Call, list[str]]]:
     return found
 
 
+@pytest.mark.meta
 def test_only_the_operation_steps_move_refs_and_only_a_save_commits_outside_one() -> None:
     permitted = {(path.name, tuple(scope)) for path, _, scope in _calls_to("_ref_moves_permitted")}
     assert {name for name, _ in permitted} == {"_git_operation.py"}
@@ -1208,6 +1217,7 @@ def test_only_the_operation_steps_move_refs_and_only_a_save_commits_outside_one(
     assert saves == {("_git_transactions.py", ("commit_save",))}
 
 
+@pytest.mark.meta
 def test_every_git_process_the_core_starts_is_built_by_the_classifying_builder() -> None:
     core = SRC / "_git_core.py"
     tree = ast.parse(core.read_text(encoding="utf-8"))
@@ -1239,6 +1249,7 @@ def test_every_git_process_the_core_starts_is_built_by_the_classifying_builder()
         assert getattr(call.args[0].func, "id", "") == "_git_argv"  # type: ignore[attr-defined]
 
 
+@pytest.mark.meta
 def test_only_an_operation_writes_and_clears_its_record() -> None:
     for name in ("write_operation", "clear_operation"):
         callers = {(path.name, scope[0]) for path, _, scope in _calls_to(name)}

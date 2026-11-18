@@ -17,6 +17,7 @@ import multiprocessing
 import os
 import secrets
 import shutil
+import subprocess
 import tempfile
 import time
 import tomllib
@@ -35,7 +36,6 @@ from typing import Any, Literal, cast, get_args
 import polars as pl
 
 import haute
-from haute import _git
 from haute._git_state import write_working_branch
 from haute._interactive_workers import (
     resolve_interactive_execution_mode,
@@ -1803,10 +1803,15 @@ def self_test_config(config: AssistantConfig, egress: SelfTestEgress) -> Assista
 
 
 def _run_git(project_root: Path, *arguments: str) -> None:
-    try:
-        _git._run_git(*arguments, cwd=project_root)
-    except _git.GitError as exc:
-        raise RuntimeError(f"evaluation Git setup failed during {arguments[0]}") from exc
+    """Prepare the fixture's repository as an analyst would in a terminal: git run
+    directly, not through Haute's command core, whose ref moves are its operations'."""
+    result = subprocess.run(
+        ["git", *arguments], cwd=project_root, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"evaluation Git setup failed during {arguments[0]}: {result.stderr.strip()}"
+        )
 
 
 def _initialize_mutation_gate(project_root: Path) -> None:

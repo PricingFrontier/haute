@@ -306,6 +306,8 @@ _MOVES_NO_REF = frozenset(
         "for-each-ref",
         "hash-object",
         "hook",
+        # Creating a repository, or reinitialising one, moves no ref it already has.
+        "init",
         "log",
         "ls-files",
         "ls-remote",
