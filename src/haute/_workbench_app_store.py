@@ -169,11 +169,13 @@ class StoreGate:
         try:
             self._book = self._opener()
         except Exception as exc:
+            # A store that does not fit closes the quotes with its refusal; any other
+            # failure is raised on, for the edge to answer.
             refusal = _closed_by(exc)
-            if refusal is None:
-                raise
-            self._close(refusal)
-            raise refusal from None
+            if refusal is not None:
+                self._close(refusal)
+                raise refusal from None
+            raise
         if self._refusal is not None:
             logger.info("quote_store_opened")
         self._refusal = None

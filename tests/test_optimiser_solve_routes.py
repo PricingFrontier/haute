@@ -2204,11 +2204,12 @@ class TestSaveExceptionPaths:
             )
         detail = resp.json()["detail"]
         if named:
-            assert resp.status_code == 507
+            assert resp.status_code == 500
             assert (
                 detail == "There isn't room on disk for out.json. Free some space, then try again."
             )
-            log_error.assert_not_called()
+            # Named, so never an incident.
+            assert "unexpected_failure" not in [call.args[0] for call in log_error.call_args_list]
         else:
             assert resp.status_code == 500
             assert_unnamed(detail)

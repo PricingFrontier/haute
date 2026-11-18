@@ -560,8 +560,7 @@ class TestTrainBackgroundLaunchFailures:
         job = store.require_job(job_id)
         assert job["status"] == "error"
         assert job["terminal_reason"] == "error"
-        assert "unexpected internal error" in job["message"]
-        assert "ValidationError" in job["message"]
+        assert_unnamed(job["message"])
         assert "must be a finite number" not in job["message"]
         # The wrapper text claims the "error" field; the child's raw pydantic
         # dump survives under "worker_error" (naming the non-finite field).
@@ -1067,8 +1066,7 @@ class TestBackgroundThreadErrors:
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
             assert status["terminal_reason"] == "error"
-            assert "unexpected internal error" in status["message"]
-            assert "ValueError" in status["message"]
+            assert_unnamed(status["message"])
             assert "leaky" not in status["message"]
 
     def test_background_runtime_error(self, client, training_data, monkeypatch):
@@ -1096,10 +1094,9 @@ class TestBackgroundThreadErrors:
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
-            # The curated fallback is promoted verbatim: the entrypoint must
-            # stamp user_message, or the wrapper prefix would appear here.
-            assert status["message"].startswith("Training of ")
-            assert "RuntimeError" in status["message"]
+            # The incident is promoted verbatim: the entrypoint must stamp
+            # user_message, or the wrapper prefix would appear here.
+            assert_unnamed(status["message"])
             assert "CUDA out of memory" not in status["message"]
             # The raw third-party text stays in the server-side job record
             # (the public status response whitelist never exposed it).
@@ -1129,9 +1126,7 @@ class TestBackgroundThreadErrors:
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
-            assert status["message"].startswith("Training of ")
-            assert "RuntimeError" in status["message"]
-            assert "target" in status["message"]
+            assert_unnamed(status["message"])
             assert "unexpected crash" not in status["message"]
             from haute.routes.modelling import _store
 

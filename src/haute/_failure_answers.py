@@ -112,9 +112,8 @@ class FailureAnswer:
         fields: dict[str, Any] = {
             "error": self.message,
             "error_code": self.code,
-            "error_detail": dict(self.detail)
-            if isinstance(self.detail, Mapping)
-            else {"error_code": self.code, "message": self.message},
+            # The detail an edge answers with, so a job replayed as a response says the same.
+            "error_detail": dict(self.detail) if isinstance(self.detail, Mapping) else self.detail,
             "http_status_code": self.status,
         }
         if self.incident is not None:
@@ -737,13 +736,23 @@ def file_answer(exc: BaseException, *, named: str | None = None) -> FailureAnswe
         message = f"Haute could not write {named or display_file(too_long.filename)}: "
         return _plain(422, "path_too_long", f"{message}{too_long.strerror}.")
     refused = _os_error_in(exc)
+    if (
+        refused is not None
+        and refused.errno == errno.ENOSPC
+        and not (named or _target_file(refused))
+    ):
+        # A full disk is actionable whichever file it refused.
+        return _plain(
+            500, "disk_full", "The disk Haute writes to is full. Free some space, then try again."
+        )
     if refused is None or not (named or _target_file(refused)):
         # An OSError naming no file says nothing a person could act on: unnamed.
         return None
     named = named or display_file(_target_file(refused))
     if refused.errno == errno.ENOSPC:
+        # 500, never 507: Haute answers 507 for memory alone, and its consumers read it so.
         return _plain(
-            507,
+            500,
             "disk_full",
             f"There isn't room on disk for {named}. Free some space, then try again.",
         )

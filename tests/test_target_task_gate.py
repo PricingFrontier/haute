@@ -790,9 +790,12 @@ class TestWorkerBoundaryUserMessage:
     def test_plain_value_error_does_not_ride_the_validation_channel(self) -> None:
         """Provenance is enforced by the marker type: a dependency's bare
         ``ValueError`` is not vouched for, so it falls through to the
-        entrypoint's ``_friendly_error`` fallback (a plain ``error``) instead
+        entrypoint's failure answer (an incident, a plain ``error``) instead
         of surfacing verbatim as a ``contract_error``."""
-        from haute.routes._training_worker import _friendly_error, _known_training_worker_failure
+        from haute.routes._training_worker import (
+            _known_training_worker_failure,
+            _training_failure_answer,
+        )
 
         exc = ValueError("could not convert string to float: '/tmp/leaky/path'")
         assert (
@@ -802,9 +805,10 @@ class TestWorkerBoundaryUserMessage:
             )
             is None
         )
-        message = _friendly_error(exc, context="target 'sev'")
-        assert "could not convert" not in message
-        assert "ValueError" in message
+        answer = _training_failure_answer(exc, context="target 'sev'")
+        assert answer.terminal_reason == "error"
+        assert "could not convert" not in answer.message
+        assert_unnamed(answer.message)
 
     def test_metric_stage_wrapper_rides_the_validation_channel(self) -> None:
         """The metric-stage wrap is haute-authored, user-facing wording: it
@@ -847,36 +851,33 @@ class TestWorkerBoundaryUserMessage:
         assert WORKER_USER_MESSAGE_FIELD not in payload.fields
 
     def test_unexpected_exception_fallback_is_curated_without_third_party_text(self) -> None:
-        """The fallback names the fit context and exception type only — the
-        arbitrary third-party message body (which may carry internal paths)
-        stays in the diagnostic ``error`` field, and the failure remains a
-        plain system ``error``, never a ``contract_error``."""
-        from haute.routes._training_worker import _friendly_error
+        """An unexpected failure is an incident: the arbitrary third-party message body
+        (which may carry internal paths) stays in the diagnostic ``error`` field and the
+        incident's record, and the failure remains a plain system ``error``, never a
+        ``contract_error``."""
+        from haute.routes._training_worker import (
+            _answered_failure_payload,
+            _training_failure_answer,
+        )
 
         exc = RuntimeError("failed to lock /var/lib/haute/internal/state.db")
-        message = _friendly_error(exc, context="target 'sev' (objective 'Tweedie')")
-        assert "RuntimeError" in message
-        assert "target 'sev' (objective 'Tweedie')" in message
-        assert "/var/lib" not in message
-        payload = _worker_failure_payload(
-            exc,
-            terminal_reason="error",
-            message=message,
-            fields={"error": str(exc)},
-            user_facing=True,
-        )
+        answer = _training_failure_answer(exc, context="target 'sev' (objective 'Tweedie')")
+        assert_unnamed(answer.message)
+        assert "/var/lib" not in answer.message
+        payload = _answered_failure_payload(exc, answer)
         assert payload.terminal_reason == "error"
-        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == message
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == answer.message
+        assert payload.fields["incident"] == answer.incident
         assert payload.fields["error"] == "failed to lock /var/lib/haute/internal/state.db"
 
-    def test_model_save_os_error_names_the_reason_not_the_staging_path(self) -> None:
-        from haute.routes._training_worker import _friendly_error
+    def test_model_save_os_error_names_the_full_disk_not_the_staging_path(self) -> None:
+        from haute.routes._training_worker import _training_failure_answer
 
         exc = OSError(28, "No space left on device", "/tmp/.haute-training-j1/output/model.cbm")
-        message = _friendly_error(exc)
-        assert "No space left on device" in message
-        assert "/tmp" not in message
-        assert "model.cbm" not in message
+        answer = _training_failure_answer(exc)
+        assert (answer.code, answer.terminal_reason) == ("disk_full", "error")
+        assert "Free some space" in answer.message
+        assert "/tmp" not in answer.message
 
     def test_memory_limit_failure_names_budget_and_call_to_action(self) -> None:
         from haute._execution_context import ExecutionMemoryLimitExceededError

@@ -30,6 +30,7 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._failure_answers import (
+    AnsweredFailureError,
     answer_failure,
     answer_pipeline_failure,
     failure_refusal,
@@ -158,12 +159,12 @@ from haute.routes._training_preparation import (
 from haute.routes._training_worker import (
     _append_live_loss_row,
     _assert_json_finite,
-    _friendly_error,
     _job_elapsed_seconds,
     _require_consistent_completed_response,
     _run_dispersion_process_job,
     _run_training_process_job,
     _training_context_phrase,
+    _training_failure_answer,
 )
 from haute.routes._worker_failure_refusals import worker_failure_refusal
 from haute.schemas import (
@@ -679,7 +680,7 @@ class TrainService:
 
         A cancellation takes the token's reason, an admission or memory failure
         is ``memory_limited``, a ``RequestRefusedError`` keeps its parts, and anything
-        else is a curated ``error`` (the raw text stays in ``error``).
+        else ends as its failure answer says (the raw text stays in ``error``).
         """
         if isinstance(exc, ExecutionCancelledError):
             reason = self._training_jobs.cancellation_reason(job_id) or "cancelled"
@@ -694,22 +695,22 @@ class TrainService:
         elif isinstance(exc, RequestRefusedError):
             self._persist_preparation_refusal(job_id, exc)
         else:
-            logger.exception(f"{kind}_preparation_failed", job_id=job_id)
+            answer = _training_failure_answer(
+                exc, operation_noun=operation_noun, context=_training_context_phrase(config)
+            )
             self._lifecycle.transition(
                 job_id,
-                to="error",
-                message=_friendly_error(
-                    exc,
-                    operation_noun=operation_noun,
-                    context=_training_context_phrase(config),
-                ),
-                fields={"error": str(exc)},
+                to=answer.terminal_reason,
+                message=answer.message,
+                fields={**answer.job_fields(), "error": str(exc)},
             )
 
     def _persist_preparation_refusal(self, job_id: str, exc: RequestRefusedError) -> None:
         message, fields = _refusal_job_parts(exc, job_id=job_id)
         terminal: TerminalReason
-        if exc.status_code == 507:
+        if isinstance(exc, AnsweredFailureError):
+            terminal = exc.answer.terminal_reason
+        elif exc.status_code == 507:
             terminal = "memory_limited"
         elif 400 <= exc.status_code < 500:
             terminal = "contract_error"
@@ -1322,21 +1323,12 @@ class TrainService:
         except Exception as exc:
             # The schema-only build runs the user's own transform code, which can raise
             # anything at all: an undefined name is a NameError, an empty transform a
-            # NotImplementedError. A node's own failure names its node, as every edge
-            # names it; anything else keeps the modelling node and the class in a 422.
+            # NotImplementedError. The walk marks it with its node, so it names its node as
+            # every edge names it; anything else is Haute's own, raised on to be answered.
             failed = node_failed_error(exc)
             if failed is not None:
                 raise contract_error_refusal(failed) from exc
-            logger.warning(
-                "glm_input_schema_unresolvable",
-                node_id=body.node_id,
-                error=str(exc),
-                exc_info=True,
-            )
-            raise UnprocessableError(
-                "Training input schema could not be resolved at modelling node "
-                f"{body.node_id!r}: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise
         finally:
             if execution_context is not None:
                 execution_context.release_admission(preserve_primary_error=True)

@@ -207,7 +207,10 @@ def _interactive_worker_entrypoint(
                         failure = (
                             memory_error_for_thread_start_failure(raised) if applied else raised
                         )
-                        envelope = ("result", job_id, "error", failure_evidence(failure))
+                        # Classified in the request's project, as the parent names a file.
+                        with project_scope(project):
+                            evidence = failure_evidence(failure)
+                        envelope = ("result", job_id, "error", evidence)
                         # The envelope carries only text; the exception's traceback
                         # would hold the failed job's frames into the next job.
                         del failure

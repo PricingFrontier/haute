@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 import time
 import traceback
 from collections.abc import Iterable, Mapping
@@ -22,6 +21,7 @@ from haute._execution_context import (
     ExecutionProfile,
     current_rss_bytes,
 )
+from haute._failure_answers import FailureAnswer, answer_failure, record_incident
 from haute._logging import get_logger
 from haute._memory_messages import memory_limit_user_message
 from haute._native_memory_limit import (
@@ -87,87 +87,49 @@ def _training_context_phrase(job_kwargs: Mapping[str, Any] | None) -> str:
     return f"target {target!r}"
 
 
-def _friendly_error(
+def _training_failure_answer(
     exc: Exception,
     *,
     operation_noun: str = "Training",
     context: str = "the model",
-) -> str:
-    """Translate a training-path exception into a curated, actionable message.
+) -> FailureAnswer:
+    """*exc*, raised fitting or estimating, as the job answers it.
 
-    Every returned shape is haute-authored and safe to promote verbatim as the
-    job's terminal message; the raw exception text stays in the diagnostic
-    ``error`` field and the traceback. Apart from the ``HauteValidationError``
-    validation channel, no shape interpolates a third-party message body
-    (which may carry internal paths or secrets) — third-party failures name
-    the exception type and the target/objective context only, and they stay a
-    plain system ``error`` — a system fault is never relabelled as a
-    ``contract_error``.
+    A CatBoost error is worded here by its type, never its text (which can carry internal
+    paths): data with NaN or infinite values and a feature mismatch say what to fix, any
+    other is recorded under an incident naming the fit. Everything else is answered as
+    every edge answers it (``haute._failure_answers.answer_failure``): a validation
+    refusal in its own words, a file the operating system refused named, anything unnamed
+    an incident.
     """
-    if isinstance(exc, HauteValidationError):
-        # HauteValidationError is the package's deliberate validation channel:
-        # gates, column checks, and the metric-stage wrap all speak through
-        # it. Provenance is enforced by the marker type — a dependency's plain
-        # ValueError takes the type-only fallback below instead.
-        return str(exc)
-
     exc_type = type(exc).__name__
-
-    if isinstance(exc, FileNotFoundError):
-        # At the fit stage the missing path is typically an internal staged
-        # asset, so the message does not quote it; the path stays in the
-        # diagnostic fields and traceback.
-        return (
-            f"{operation_noun} could not find a file it needs. The full error, "
-            "including the path, is recorded in the job's error details."
-        )
-
-    # Keyed on the exception TYPE: a non-CatBoost error that merely mentions
-    # "catboost" in its text must not take a CatBoost-specific shape.
+    # Keyed on the exception TYPE: a non-CatBoost error that merely mentions "catboost" in
+    # its text must not take a CatBoost-specific shape.
     if "CatBoost" in exc_type:
-        msg = str(exc)
-        if "nan" in msg.lower() or "inf" in msg.lower():
-            return (
-                f"{operation_noun} failed: the data contains NaN or infinite "
-                "values. Add a Transform node upstream to handle missing values "
-                "(e.g. .fill_null() or .drop_nulls()) before training."
+        said = str(exc).lower()
+        if "nan" in said or "inf" in said:
+            return _fit_words(
+                f"{operation_noun} failed: the data contains NaN or infinite values. Add a "
+                "Transform node upstream to handle missing values (e.g. .fill_null() or "
+                ".drop_nulls()) before training."
             )
-        if "feature" in msg.lower() and "number" in msg.lower():
-            return (
-                f"{operation_noun} failed: feature mismatch — the data's "
-                "columns do not match what the model expects. The full error "
-                "is recorded in the job's error details."
+        if "feature" in said and "number" in said:
+            return _fit_words(
+                f"{operation_noun} failed: feature mismatch — the data's columns do not "
+                "match what the model expects."
             )
-        return (
-            f"{operation_noun} of {context} failed with a CatBoost error "
-            f"({exc_type}). The full error is recorded in the job's error details."
+        incident = record_incident(exc, event="training_catboost_failed", context=context)
+        return _fit_words(
+            f"{operation_noun} of {context} failed with a CatBoost error ({exc_type}); its "
+            f"details are recorded under incident {incident}.",
+            incident=incident,
         )
+    return answer_failure(exc, operation=f"{operation_noun} of {context}")
 
-    if isinstance(exc, OSError):
-        # Surface only an OS-authored reason: exc.strerror is
-        # constructor-supplied (a dependency can put arbitrary text there), so
-        # the reason is re-derived from the numeric errno.
-        reason: str | None = None
-        if isinstance(exc.errno, int):
-            try:
-                reason = os.strerror(exc.errno)
-            except (ValueError, OverflowError):
-                reason = None
-        if reason:
-            return (
-                f"{operation_noun} could not save its output files ({reason}). "
-                "Check the server's disk space and file permissions, then try again."
-            )
-        return (
-            f"{operation_noun} could not save its output files because of a "
-            "file-system error. Check the server's disk space and file "
-            "permissions, then try again."
-        )
 
-    return (
-        f"{operation_noun} of {context} failed with an unexpected internal error "
-        f"({exc_type}). The full error is recorded in the job's error details."
-    )
+def _fit_words(message: str, *, incident: str | None = None) -> FailureAnswer:
+    """A fit's failure in words written here: Haute's fault to report, not the request's."""
+    return FailureAnswer(500, "training_failed", message, "error", message, incident)
 
 
 def _assert_json_finite(value: Any, path: str = "result") -> None:
@@ -341,10 +303,8 @@ def _worker_failure_payload(
     payload_fields = dict(fields) if fields is not None else {"error": detail}
     # Only deliberately curated messages are marked user-facing (haute-authored
     # wording: the gates, the metric wrap, HauteValidationError validation
-    # messages, the _friendly_error shapes — whose fallback names only the
-    # target/objective context and exception type, never the third-party
-    # message body). Raw third-party text stays behind the typed
-    # "Isolated worker raised {type}: {message}" wrapper.
+    # messages, a failure answer's words). Raw third-party text stays behind the
+    # typed "Isolated worker raised {type}: {message}" wrapper.
     if user_facing:
         payload_fields.setdefault(WORKER_USER_MESSAGE_FIELD, detail)
     return WorkerFailurePayload(
@@ -353,6 +313,18 @@ def _worker_failure_payload(
         message=detail,
         traceback=remote_traceback or type(exc).__name__,
         fields=payload_fields,
+    )
+
+
+def _answered_failure_payload(exc: Exception, answer: FailureAnswer) -> WorkerFailurePayload:
+    """*exc* as the child sends it, in its answer's words and with its answer's job fields
+    (its code and any incident), the raw text kept in the diagnostic ``error``."""
+    return _worker_failure_payload(
+        exc,
+        terminal_reason=answer.terminal_reason,
+        message=answer.message,
+        fields={**answer.job_fields(), "error": str(exc) or type(exc).__name__},
+        user_facing=True,
     )
 
 
@@ -410,7 +382,7 @@ def _known_training_worker_failure(
     if isinstance(exc, HauteValidationError):
         # The marker type vouches the message is haute-authored validation
         # wording; a dependency's plain ValueError falls through to the
-        # entrypoint's _friendly_error fallback (a plain "error") instead.
+        # entrypoint's failure answer (an incident) instead.
         return _worker_failure_payload(exc, terminal_reason="contract_error", user_facing=True)
     if isinstance(exc, GLMMemoryPlanError):
         # Haute-authored: the curated message carries RustyStats' planned peak.
@@ -746,13 +718,7 @@ def _run_training_process_job(
         if known is not None:
             return _with_worker_failure_metrics(known, execution_context)
         return _with_worker_failure_metrics(
-            _worker_failure_payload(
-                exc,
-                terminal_reason="error",
-                message=_friendly_error(exc, context=failure_context),
-                fields={"error": str(exc) or type(exc).__name__},
-                user_facing=True,
-            ),
+            _answered_failure_payload(exc, _training_failure_answer(exc, context=failure_context)),
             execution_context,
         )
 
@@ -869,17 +835,9 @@ def _run_dispersion_process_job(
         )
         if known is not None:
             return _with_worker_failure_metrics(known, execution_context)
+        answer = _training_failure_answer(
+            exc, operation_noun="Dispersion estimation", context=failure_context
+        )
         return _with_worker_failure_metrics(
-            _worker_failure_payload(
-                exc,
-                terminal_reason="error",
-                message=_friendly_error(
-                    exc,
-                    operation_noun="Dispersion estimation",
-                    context=failure_context,
-                ),
-                fields={"error": str(exc) or type(exc).__name__},
-                user_facing=True,
-            ),
-            execution_context,
+            _answered_failure_payload(exc, answer), execution_context
         )

@@ -177,7 +177,7 @@ class TestFiles:
         )
 
         assert answer is not None
-        assert (answer.status, answer.code) == (507, "disk_full")
+        assert (answer.status, answer.code) == (500, "disk_full")
         assert answer.message.startswith("There isn't room on disk for main.py.")
 
     def test_a_file_outside_the_project_is_named_by_its_name_alone(self, tmp_path: Path) -> None:
@@ -291,3 +291,63 @@ class TestAcrossAWorker:
         answer = answer_failure(InvalidRequestError({"error_code": "x", "message": "No."}))
 
         assert answer_from_payload(answer.payload()) == answer
+
+
+def _hold_a_project_file() -> None:
+    """Fail as a file another program holds fails, in the project's ``outputs`` folder."""
+    from haute._project_context import current_project
+
+    path = str(current_project().root / "outputs" / "rates.csv")
+    if sys.platform == "win32":
+        raise PermissionError(None, "The process cannot access the file", path, 32)
+    held = PermissionError(errno.EACCES, "The process cannot access the file", path)
+    held.winerror = 32  # type: ignore[attr-defined]
+    raise held
+
+
+def test_a_worker_names_a_project_file_as_the_parent_names_it() -> None:
+    """The child classifies its failure in the request's project, so a file in a folder of
+    the project is named by its path in the project, as the same failure in-process is."""
+    from haute._worker_isolation import run_isolated_worker
+
+    with pytest.raises(PermissionError) as in_process:
+        _hold_a_project_file()
+    with pytest.raises(WorkerRemoteError) as remote:
+        run_isolated_worker(_hold_a_project_file)
+
+    said = answer_failure(remote.value).message
+    assert said == answer_failure(in_process.value).message
+    assert said.startswith("outputs/rates.csv is open")
+
+
+@pytest.mark.parametrize("named", [True, False], ids=["a file", "no file"])
+def test_a_full_disk_is_an_error_never_a_memory_outcome(tmp_path: Path, named: bool) -> None:
+    """507 is Haute's memory answer alone: a full disk is a 500 whose job ends ``error``."""
+    filename = str(tmp_path / "rates.csv") if named else None
+    answer = answer_failure(OSError(errno.ENOSPC, "No space left on device", filename))
+
+    assert (answer.status, answer.code, answer.terminal_reason) == (500, "disk_full", "error")
+    assert "Free some space" in answer.message
+    assert answer.incident is None
+
+
+def test_an_answers_job_fields_survive_training_preparation_and_the_optimiser_worker() -> None:
+    """A refusal raised from an answer keeps the answer's code, detail and incident on the
+    job, and an optimiser child's job record carries its incident to the parent."""
+    from haute._failure_answers import unexpected_failure
+    from haute.routes._optimiser_worker import OptimiserWorkerFailure
+    from haute.routes._training_preparation import _preparation_failure_from_refusal
+
+    answer = unexpected_failure(RuntimeError("internal_slot"))
+
+    failure = _preparation_failure_from_refusal(answer.refusal(), job_id="job")
+
+    assert failure.terminal_reason == "error"
+    assert failure.fields["error_code"] == "unexpected_failure"
+    assert failure.fields["incident"] == answer.incident
+    assert failure.http_detail == answer.message
+    replayed = OptimiserWorkerFailure.from_job_record(
+        {"status": "error", "message": answer.message, **answer.job_fields()}
+    )
+    assert replayed.fields["incident"] == answer.incident
+    assert replayed.http_detail == answer.message

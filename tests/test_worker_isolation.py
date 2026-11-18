@@ -1620,6 +1620,48 @@ def test_isolated_job_supervisor_records_completed_result(tmp_path: Path) -> Non
     assert job["sum"] == 6
 
 
+def _classified_protocol_worker(runtime, request):
+    """Fail with a failure Haute names: a refusal, or the operating system out of memory."""
+    import errno
+
+    from haute.errors import InvalidRequestError
+
+    del runtime
+    if request.payload["kind"] == "refusal":
+        raise InvalidRequestError("Name the node to run to.")
+    raise OSError(errno.ENOMEM, "Cannot allocate memory")
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "code", "http_status"),
+    [
+        pytest.param("refusal", "contract_error", "invalid_request", 400, id="refusal"),
+        pytest.param("enomem", "memory_limited", "memory_limit", 507, id="enomem"),
+    ],
+)
+def test_a_job_ends_as_its_childs_answer_says(
+    tmp_path: Path, kind: str, status: str, code: str, http_status: int
+) -> None:
+    """The child classifies its failure where it is raised; the job's end state, message
+    and fields are that answer's, through the real protocol and supervisor."""
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    supervisor = IsolatedJobSupervisor(JobLifecycle(store))
+
+    thread = _launch(supervisor, job_id, tmp_path, _classified_protocol_worker, {"kind": kind})
+    thread.join(timeout=60)
+
+    job = store.require_job(job_id)
+    assert (job["status"], job["error_code"], job["http_status_code"]) == (
+        status,
+        code,
+        http_status,
+    )
+    assert "failure_answer" not in job
+    if kind == "refusal":
+        assert job["message"] == "Name the node to run to."
+
+
 def test_isolated_job_supervisor_records_remote_failure(tmp_path: Path) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})

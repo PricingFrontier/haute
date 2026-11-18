@@ -9,9 +9,9 @@ and the files a run writes. The packages below come from the 9 November 2026
 codebase review. Each entry says whether it was reproduced, measured or read
 from the source against `HEAD` on that day.
 
-`MDL-01` and `MDL-02` are both a message the analyst needs arriving as
-"unexpected internal error"; they share the worker's failure mapping and go
-together. `MDL-05` removes code and has no behaviour of its own.
+`MDL-01` and `MDL-02` are both a message the analyst needs arriving as an
+incident ("Haute hit a failure it does not recognise"); they share the worker's
+failure mapping and go together. `MDL-05` removes code and has no behaviour of its own.
 
 `MDL-07` and `MDL-08` come from the review plan's sweep of 10 November 2026,
 which trained each model family through Haute and compared every way of
@@ -48,8 +48,8 @@ a bare `TypeError`: "date values must be ISO strings or native date/datetime
 values". Nothing checks the column first: the target's nulls are counted and
 filtered, the date column's are not. The training worker recognises only
 Haute's own validation errors as messages for the analyst, so the `TypeError`
-is answered as "Training of ... failed with an unexpected internal error
-(TypeError). The full error is recorded in the job's error details." A
+is answered as an incident: "Haute hit a failure it does not recognise
+(incident …)", its text recorded under the incident. A
 missing inception date on one row of the training data is enough. With 24
 rows: all dates planned; one null date raised the `TypeError`; an integer
 `yyyymmdd` column raised it too; a zone-aware datetime column raised Haute's
@@ -74,7 +74,7 @@ a message naming the column.
 **Evidence:** `src/haute/modelling/_evaluation.py::_date_codes`;
 `src/haute/modelling/_training_job.py::TrainingJob._build_evaluation_plan`;
 `src/haute/routes/_training_worker.py::_known_training_worker_failure`;
-`src/haute/routes/_training_worker.py::_friendly_error`.
+`src/haute/routes/_training_worker.py::_training_failure_answer`.
 
 ### MDL-02 — A tuning trial's validation message is not wrapped
 **Why:** Read from the source. The tuning loop re-raises cancellation, memory
@@ -261,8 +261,7 @@ deployed model is told only that the request failed. Training has the same
 gap for a GLM: nulls in a numeric feature raise RustyStats' "design matrix
 (X) contains 8 NaN values (0.7%)", which names no column, and the training
 worker passes on only Haute's own validation messages, so by the source the
-analyst is told "failed with an unexpected internal error
-(ValidationError)". The route was not run.
+analyst is told only of an incident. The route was not run.
 
 **Plan:** Before a GLM is fitted or scored, count the nulls and non-finite
 values in each numeric feature its terms use and refuse naming the column,
@@ -287,7 +286,7 @@ name, as proposed, or answer null for that row and carry on.
 **Evidence:** `src/haute/_mlflow_io.py::native_predictions`;
 `src/haute/modelling/_xgboost.py::XGBoostModel.matrix`;
 `src/haute/modelling/_rustystats.py::_rustystats_call`;
-`src/haute/routes/_training_worker.py::_friendly_error`;
+`src/haute/routes/_training_worker.py::_training_failure_answer`;
 `specs/modelling/high-level.md` (Unseen categorical values);
 `docs/building-models/nodes/model-score.md` (Values the model was not
 trained on).

@@ -35,7 +35,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._failure_answers import classify_failure, failure_refusal
+from haute._failure_answers import answer_failure, classify_failure, failure_refusal
 from haute._file_ops import PATH_TOO_LONG_REMEDIATION
 from haute._input_preparation import (
     capped_worker_config,
@@ -487,7 +487,6 @@ class _WorkerBuildError(Exception):
         error_code: str,
         phase: str,
         fields: dict[str, Any] | None = None,
-        diagnostic: tuple[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.terminal = terminal
@@ -495,8 +494,6 @@ class _WorkerBuildError(Exception):
         self.error_code = error_code
         self.phase = phase
         self.fields = fields or {}
-        # A failed build's own error, type and text, for the server log only.
-        self.diagnostic = diagnostic
 
 
 def _worker_build_failure(
@@ -504,8 +501,9 @@ def _worker_build_failure(
     *,
     budget: IsolatedExecutionBudget,
     token: Any,
-) -> _WorkerBuildError:
-    """Map one worker failure onto this job's terminal lifecycle state."""
+) -> _WorkerBuildError | None:
+    """Map one worker failure onto this job's terminal lifecycle state, or ``None`` for one
+    nothing names, which the build answers as every other failure of its own."""
     if worker_failure_is_cap_unavailable(exc):
         # Not a memory outcome: nothing ran, because the cap could not be installed.
         return _WorkerBuildError(
@@ -550,31 +548,48 @@ def _worker_build_failure(
             error_code="build_timed_out" if timed_out else "build_cancelled",
             phase="cancelled",
         )
-    message, error_code = _build_failure(exc)
+    if worker_failure_is_path_too_long(exc):
+        return _WorkerBuildError(
+            terminal="error",
+            message=PATH_TOO_LONG_REMEDIATION,
+            error_code="path_too_long",
+            phase="failed",
+        )
+    answer = classify_failure(exc)
+    if answer is None:
+        return None
     return _WorkerBuildError(
-        terminal="error",
-        message=message,
-        error_code=error_code,
-        phase="failed",
-        diagnostic=(
-            (exc.remote_type, exc.remote_message)
-            if isinstance(exc, WorkerRemoteError)
-            else (type(exc).__name__, str(exc))
-        ),
+        terminal="error", message=answer.message, error_code=answer.code, phase="failed"
     )
 
 
-def _build_failure(exc: BaseException) -> tuple[str, str]:
-    """The message and error code of a build that failed, neither naming a path outside the
-    project: a failure Haute names in the words every edge gives it (a file the operating
-    system refused, a node's own code, a refusal), else the fixed text, since a provider's
-    own message can hold a connection string."""
+def _build_failure(
+    exc: BaseException, *, config: dict[str, Any], job_id: str
+) -> tuple[str, str, dict[str, Any]]:
+    """The message, error code and job fields of a build that failed, none naming a path
+    outside the project: a failure Haute names in the words every edge gives it (a file the
+    operating system refused, a node's own code, a refusal), else an incident, its record
+    the provider's own message redacted, since that can hold a connection string."""
     if worker_failure_is_path_too_long(exc):
-        return PATH_TOO_LONG_REMEDIATION, "path_too_long"
-    answer = classify_failure(exc)
-    if answer is not None:
-        return answer.message, answer.code
-    return "Input snapshot build failed.", "build_failed"
+        return PATH_TOO_LONG_REMEDIATION, "path_too_long", {}
+
+    def record(incident: str, failed: BaseException, **known: Any) -> None:
+        if isinstance(failed, WorkerRemoteError):
+            error_type, error_text = failed.remote_type, failed.remote_message
+        else:
+            error_type, error_text = type(failed).__name__, str(failed)
+        logger.error(
+            "input_cache_build_failed",
+            incident=incident,
+            job_id=job_id,
+            error_type=error_type,
+            error=_provider_error_diagnostic(error_text, config),
+            **known,
+        )
+
+    answer = answer_failure(exc, operation="input_cache_build", record=record)
+    fields = {} if answer.incident is None else {"incident": answer.incident}
+    return answer.message, answer.code, fields
 
 
 def _job_worker_config(budget: IsolatedExecutionBudget, token: Any) -> IsolatedWorkerConfig:
@@ -627,7 +642,10 @@ def _supervise_data_input_build(
         progress=progress,
     )
     if build.failure is not None:
-        raise _worker_build_failure(build.failure, budget=budget, token=token) from build.failure
+        failure = _worker_build_failure(build.failure, budget=budget, token=token)
+        if failure is None:
+            raise build.failure
+        raise failure from build.failure
     published_data_input(store, identity, build)
     return store.open_generation(identity)
 
@@ -674,7 +692,12 @@ def _supervise_api_input_build(
             spawn=run_isolated_worker,
         )
     except Exception as exc:
-        raise _worker_build_failure(exc, budget=budget, token=token) from exc
+        # What the build names becomes its terminal state; anything else is raised on, for
+        # the build to answer as an incident.
+        failure = _worker_build_failure(exc, budget=budget, token=token)
+        if failure is not None:
+            raise failure from exc
+        raise
 
 
 def _run_build(
@@ -816,15 +839,6 @@ def _run_build(
             reason=failure.terminal,
             error_code=failure.error_code,
         )
-        if failure.diagnostic is not None:
-            # As an in-process failure is logged: the worker's own error, redacted.
-            error_type, error_text = failure.diagnostic
-            logger.error(
-                "input_cache_build_failed",
-                job_id=job_id,
-                error_type=error_type,
-                error=_provider_error_diagnostic(error_text, config),
-            )
         fail_build(
             failure.terminal,
             failure.message,
@@ -868,8 +882,8 @@ def _run_build(
                 phase="cancelled",
             )
         else:
-            message, error_code = _build_failure(exc)
-            fail_build("error", message, error_code=error_code, phase="failed")
+            message, error_code, fields = _build_failure(exc, config=config, job_id=job_id)
+            fail_build("error", message, error_code=error_code, phase="failed", **fields)
     except PipelineSettingsError as exc:
         # Admission reads the settings file again; its message names what to fix.
         logger.warning("input_cache_pipeline_settings_invalid", job_id=job_id, error=str(exc))
@@ -881,14 +895,9 @@ def _run_build(
             error=str(exc),
         )
     except Exception as exc:
-        logger.error(
-            "input_cache_build_failed",
-            job_id=job_id,
-            error_type=type(exc).__name__,
-            error=_provider_error_diagnostic(str(exc), config),
-        )
-        message, error_code = _build_failure(exc)
-        fail_build("error", message, error_code=error_code, phase="failed")
+        # A failure nothing names is an incident, its record the provider's text redacted.
+        message, error_code, fields = _build_failure(exc, config=config, job_id=job_id)
+        fail_build("error", message, error_code=error_code, phase="failed", **fields)
     finally:
         timeout_timer.cancel()
         if execution_context is not None:

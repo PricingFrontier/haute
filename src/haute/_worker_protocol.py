@@ -630,7 +630,10 @@ def _protocol_entrypoint(
         result_queue.put(("ok", result))
     except BaseException as raised:
         exc = memory_error_for_thread_start_failure(raised) if applied else raised
-        result_queue.put(("error", _failure_payload_for(exc)))
+        # Classified in the job's project, so a file in it is named as the parent names it.
+        with project_scope(project):
+            failed = _failure_payload_for(exc)
+        result_queue.put(("error", failed))
     finally:
         runtime.close()
 
@@ -648,9 +651,13 @@ def _failure_payload_for(exc: BaseException) -> WorkerFailurePayload:
             FAILURE_ANSWER_PAYLOAD_KEY: answer,
             WORKER_USER_MESSAGE_FIELD: str(answer["message"])[:WORKER_MAX_MESSAGE_LENGTH],
         }
+    terminal = answer.get("terminal_reason") if isinstance(answer, dict) else None
     payload = partial(
         WorkerFailurePayload,
-        terminal_reason=_terminal_reason_for_exception(exc),
+        # The end state the answer gives it, as the parent's answer will.
+        terminal_reason=terminal
+        if isinstance(terminal, str) and terminal
+        else _terminal_reason_for_exception(exc),
         error_type=type(exc).__name__,
         message=str(exc)[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__,
         traceback="".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[

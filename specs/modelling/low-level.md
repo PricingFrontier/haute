@@ -596,7 +596,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    GPU-VRAM 507 payload, and `worker_remote_traceback`: the formatted traceback that
    `IsolatedJobSupervisor` records on the job when the isolated worker raises
    (`WorkerRemoteFailureError`), `None` otherwise. It is diagnostic text for the UI's
-   failure details, not a stable contract to parse. It can hold what `_friendly_error` keeps
+   failure details, not a stable contract to parse. It can hold what `_training_failure_answer` keeps
    out of the terminal message (internal paths, a third-party message body), which is why
    the message stays curated and the traceback is a separate field the UI shows only on
    request: the status is served to the session that owns the local server, the person
@@ -756,8 +756,8 @@ experiment logs nothing.
    releases admission and the registry entry. A preparation failure lands in the job through
    `_record_preparation_failure`, shared with training: a cancellation takes the token's
    reason, an admission or memory failure is `memory_limited` (507), a `RequestRefusedError` keeps
-   its `contract_error`/`error` parts, and anything else is `error` with `_friendly_error`'s
-   curated "Dispersion estimation of …" message (the raw text stays in `error`).
+   its `contract_error`/`error` parts, and anything else ends as `_training_failure_answer` answers it
+   (an incident for a failure nothing names; the raw text stays in `error`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
    seeded row sampling — so the profiled data matches what a real training run would
@@ -790,7 +790,7 @@ experiment logs nothing.
 7. On success, the job transitions to `"completed"` with `param`/`value`/`llf`/`n_fits`
    fields. `ValueError` (including "no candidate converged") maps to `contract_error`;
    execution cancellation maps to `cancelled`, memory exhaustion maps to
-   `memory_limited`, and anything else maps to `error` via `_friendly_error`. The
+   `memory_limited`, and anything else ends as `_training_failure_answer` answers it. The
    parent supervisor always releases the job registry entry and RAM admission and
    deletes the temp parquet and staging root.
 8. `GET /dispersion/status/{job_id}` and `POST /dispersion/cancel/{job_id}` mirror the
@@ -1512,9 +1512,9 @@ rows/features) and retry.
   `_run_training_process_job` maps a `HauteValidationError` from `TrainingJob.run()`
   to a `contract_error` failure payload carrying its message verbatim (distinct from
   the catch-all `error`); a bare `ValueError` — a dependency's, or a deliberately
-  plain result-shape check — is a system fault that takes `error` with
-  `_friendly_error`'s type-only public message, the raw text surviving only in the
-  diagnostic `error` field. The parent supervisor persists that terminal reason.
+  plain result-shape check — is a system fault: an `error` with an incident
+  (`_training_failure_answer`), the raw text surviving only in the diagnostic `error`
+  field and the incident's record. The parent supervisor persists that terminal reason.
 - **Execution-engine exceptions** (`ExecutionCancelledError`,
   `ExecutionMemoryLimitExceededError`, `BoundedMemoryUnsupportedError`) — each maps to
   a distinct failure payload (`cancelled`, `memory_limited`, `contract_error`
@@ -1525,38 +1525,24 @@ rows/features) and retry.
   additionally transitions the job record to the matching terminal state
   (`memory_limited` for 507, `contract_error` for other 4xx, `error` otherwise) before
   re-raising, so the job store and the HTTP response can never disagree about outcome.
-- **Generic `Exception`** catch-all in each process entrypoint maps to an `error`
-  failure payload with the message produced by
-  `_friendly_error(exc, operation_noun=..., context=...)` — a heuristic
-  translator whose every shape is haute-authored, and which — apart from the
-  validation channel — never interpolates a third-party message body:
-  `HauteValidationError` messages verbatim (the validation channel; provenance
-  is enforced by the marker type, defined in `_validation_error.py` as a
-  `ValueError` subclass, re-exported by `errors.py`, and raised at haute's own
-  validation sites — gates, column checks,
-  the metric wrap, config/protocol validation; `TrainingConfigError` extends
-  it. A dependency's plain `ValueError` — including a pydantic
-  `ValidationError` — does not ride the channel: it takes the type-only
-  unexpected-error fallback, closing the #159 design's dependency-`ValueError`
-  residual), `FileNotFoundError` as a
-  path-free could-not-find-a-file shape (a fit-stage missing file is typically
-  an internal staged asset, so this deliberately narrows #159's
-  path-as-actionable ruling — the path stays in the diagnostic fields and
-  traceback), CatBoost failures keyed on the exception TYPE name (never a
-  message substring, so a non-CatBoost error that mentions catboost in its text
-  cannot take these shapes) with a NaN/Inf hint, a body-free feature-mismatch
-  shape, and a body-free generic shape naming the type and training context,
-  `OSError` rendered as a save failure whose reason is re-derived from the
-  numeric errno via `os.strerror` (`exc.strerror` is constructor-supplied and
-  untrusted; no errno → a generic file-system-error wording) — never the
-  internal temp/staging path embedded in `str(exc)` — and an unexpected-error
-  fallback naming the operation, the target/objective context, and the exception
-  type. `context` is built by
-  `_training_context_phrase(job_kwargs)` (`target 'x' (objective 'y')`, falling
-  back to `"the model"`); the entrypoints capture it right after parsing
-  `job_kwargs` so a fit-stage failure names what was being trained. The fallback
-  stays a plain system `error` — a system fault is never relabelled as
-  `contract_error`.
+- **Generic `Exception`** catch-all in each process entrypoint, and the preparation
+  owners' `_record_preparation_failure`, answer through
+  `_training_failure_answer(exc, operation_noun=..., context=...)`: a CatBoost error is worded
+  by its exception TYPE (never a message substring, so an error that mentions catboost in its
+  text is not one) and never its text, data with NaN or infinite values with the upstream
+  Transform hint and a feature mismatch body-free, any other CatBoost error naming its type
+  and the training context under an incident (`record_incident`); everything else is
+  answered as every edge answers it (`haute._failure_answers.answer_failure`):
+  `HauteValidationError` in its own words (the validation channel; provenance is enforced by
+  the marker type, so a dependency's plain `ValueError`, a pydantic `ValidationError`
+  included, does not ride it), a file the operating system refused named in the project, a
+  full disk, and anything unnamed an incident whose record holds the text and traceback.
+  The payload carries the answer's end state, message and job fields (its code and any
+  incident), the raw `str(exc)` in `fields["error"]` (`_answered_failure_payload`).
+  `context` is built by `_training_context_phrase(job_kwargs)` (`target 'x' (objective
+  'y')`, falling back to `"the model"`); the entrypoints capture it right after parsing
+  `job_kwargs` so a fit-stage failure names what was being trained. A system fault is never
+  relabelled as `contract_error`.
 - **Curated failure surfacing** — `_worker_failure_payload` takes an explicit
   `user_facing` decision from every call site and stamps the payload's
   `user_message` field (`src/haute/_worker_protocol.py::WORKER_USER_MESSAGE_FIELD`) only for
@@ -1569,7 +1555,7 @@ rows/features) and retry.
   serves the training 507 response, the auto-range job, and the input-snapshot
   build, so the wording cannot drift between surfaces), the
   `HauteValidationError` validation channel (which carries the gate and
-  metric-wrap messages), and every `_friendly_error` shape
+  metric-wrap messages), and every `_training_failure_answer` answer
   (all curated as above, so the entrypoints pass `user_facing=True` and thread
   the raw `str(exc)` into `fields["error"]` explicitly). Raw `MemoryError` text
   is NOT stamped and keeps the typed "Isolated worker raised {type}: {message}"
@@ -1675,8 +1661,8 @@ rows/features) and retry.
   candidate fit failed"; inside the process worker, `HauteValidationError` maps the job
   to `contract_error` with its message verbatim, `ExecutionCancelledError` maps to
   `cancelled`, `MemoryError` to `memory_limited`, and any other exception — a
-  dependency's plain `ValueError` included — maps to `error` via `_friendly_error`'s
-  type-only public message, the same taxonomy the training entrypoint uses.
+  dependency's plain `ValueError` included — ends as `_training_failure_answer` answers it, the same taxonomy the training
+  entrypoint uses.
 
 ## Testing
 

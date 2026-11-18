@@ -62,21 +62,21 @@ EDGE_GLOBS = (
     "src/haute/routes/_training_worker.py",
 )
 
-#: The module's functions that put a failure into words. A function anywhere in Haute
-#: that calls one of them (or calls such a function) hands a failure to the module too:
-#: an edge's own adapter, which words what it knows and hands on everything else.
+#: The module's functions that answer any failure, an incident for one nothing names. A
+#: function anywhere in Haute that calls one of them (or calls such a function) hands a
+#: failure to the module too: an edge's own adapter, which words what it knows and hands on
+#: everything else. A partial classifier (``classify_failure``, ``pipeline_failure``,
+#: ``node_failed_error``, ``memory_answer``) answers only what it names, so a catch that
+#: calls one and words the rest itself is the fallback this ratchet refuses.
 MODULE_FUNCTIONS = frozenset(
     {
         "answer_failure",
         "answer_pipeline_failure",
-        "classify_failure",
         "failure_refusal",
-        "pipeline_failure",
         "unexpected_failure",
-        "memory_answer",
         "git_refusal_answer",
+        "database_refusal_answer",
         "record_incident",
-        "node_failed_error",
     }
 )
 
@@ -172,17 +172,6 @@ ALLOWED_BROAD_CATCHES: dict[tuple[str, str], tuple[int, str]] = {
     ("src/haute/routes/mlflow.py", "_run_probe_bounded._worker"): (
         1,
         "the probe thread hands what it raised to the caller, which answers it",
-    ),
-    # A job whose own mapping words what it knows, a library's failure by its type.
-    ("src/haute/routes/_training_worker.py", "_run_training_process_job"): (
-        1,
-        "a fit's failure is worded by _friendly_error, a library's by its type with the "
-        "full error in the job's details",
-    ),
-    ("src/haute/routes/_training_worker.py", "_run_dispersion_process_job"): (
-        1,
-        "a fit's failure is worded by _friendly_error, a library's by its type with the "
-        "full error in the job's details",
     ),
     # Background tasks nobody waits on.
     ("src/haute/server.py", "_watcher_forever"): (
@@ -366,6 +355,16 @@ def test_the_scan_finds_a_new_error_response(
         ("    except Exception as exc:\n        logger.error('x', error=str(exc))\n", 1),
         ("    except Exception:\n        cleanup()\n        raise\n", 0),
         ("    except Exception as exc:\n        raise failure_refusal(exc) from exc\n", 0),
+        # A partial classifier answers only what it names: wording the rest locally is the
+        # fallback the ratchet refuses.
+        (
+            "    except Exception as exc:\n"
+            "        answer = classify_failure(exc)\n"
+            "        if answer is not None:\n"
+            "            return answer.message\n"
+            "        return 'Build failed.'\n",
+            1,
+        ),
         ("    except ValueError:\n        return None\n", 0),
     ],
 )

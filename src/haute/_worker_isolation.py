@@ -779,9 +779,12 @@ def _isolated_worker_entrypoint(
             with project_scope(project):
                 envelope = ("ok", function(*args, **kwargs))
         except BaseException as exc:
-            envelope = _worker_error_envelope(
-                memory_error_for_thread_start_failure(exc) if applied else exc
-            )
+            # Classified in the request's project, so a file in it is named as the
+            # parent would name it.
+            with project_scope(project):
+                envelope = _worker_error_envelope(
+                    memory_error_for_thread_start_failure(exc) if applied else exc
+                )
         # The native limit deliberately remains active until the queue feeder has
         # flushed this possibly-large payload.  Do not restore or close the lease:
         # process teardown releases it, and the joined parent removes any private

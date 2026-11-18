@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from haute._execution_context import ExecutionCancellationToken
 from haute._failure_answers import (
+    FAILURE_ANSWER_PAYLOAD_KEY,
     FailureAnswer,
     answer_failure,
     record_incident,
@@ -652,7 +653,9 @@ def _worker_terminal_answer(exc: WorkerError) -> tuple[TerminalReason, str, dict
     diagnostic ``error`` field (see ``_isolated_worker_failure_fields``).
     """
     fields = getattr(exc, "fields", None)
-    if isinstance(fields, Mapping):
+    # A child that classified its failure sent its answer: that answer decides, ahead of the
+    # message a worker writes for a failure only it can word.
+    if isinstance(fields, Mapping) and FAILURE_ANSWER_PAYLOAD_KEY not in fields:
         user_message = fields.get(WORKER_USER_MESSAGE_FIELD)
         if isinstance(user_message, str) and user_message:
             return _coerce_worker_terminal_reason(exc.terminal_reason), user_message, {}
@@ -666,6 +669,8 @@ def _worker_terminal_answer(exc: WorkerError) -> tuple[TerminalReason, str, dict
 def _isolated_worker_failure_fields(exc: WorkerError) -> dict[str, Any]:
     worker_fields = getattr(exc, "fields", None)
     fields: dict[str, Any] = dict(worker_fields) if isinstance(worker_fields, Mapping) else {}
+    # The transport's answer is the job's fields once answered, never a field of its own.
+    fields.pop(FAILURE_ANSWER_PAYLOAD_KEY, None)
     # The supervisor claims the "error" field for the typed wrapper text, but
     # the child's own diagnostic text (typically the raw exception message)
     # must survive the overwrite — it moves to "worker_error".

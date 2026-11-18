@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
 import polars as pl
 
@@ -30,7 +30,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._failure_answers import answer_pipeline_failure, memory_answer
+from haute._failure_answers import AnsweredFailureError, answer_pipeline_failure, memory_answer
 from haute._logging import get_logger
 from haute._polars_dtypes import wide_integer_column, wide_integer_message
 from haute._ram_estimate import RamEstimate
@@ -119,6 +119,13 @@ def _refusal_job_parts(
     job_id: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Preserve a refusal's public shape, its status and detail, on a terminal background job."""
+    if isinstance(exc, AnsweredFailureError):
+        # An answer already holds the job's fields (its code and incident among them).
+        fields = exc.answer.job_fields()
+        answered = fields["error_detail"]
+        if isinstance(answered, dict) and job_id is not None:
+            answered.setdefault("job_id", job_id)
+        return exc.answer.message, fields
     detail = exc.detail
     if isinstance(detail, dict):
         detail = dict(detail)
@@ -663,6 +670,14 @@ def _preparation_failure_from_refusal(
     terminal_reason: TrainingPreparationTerminalReason | None = None,
 ) -> TrainingPreparationFailure:
     message, fields = _refusal_job_parts(exc, job_id=job_id)
+    if terminal_reason is None and isinstance(exc, AnsweredFailureError):
+        # The answer's end state, an error where preparation has no such state of its own.
+        answered = exc.answer.terminal_reason
+        terminal_reason = (
+            cast(TrainingPreparationTerminalReason, answered)
+            if answered in get_args(TrainingPreparationTerminalReason)
+            else "error"
+        )
     if terminal_reason is None:
         if exc.status_code == 507:
             terminal_reason = "memory_limited"

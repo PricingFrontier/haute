@@ -634,11 +634,11 @@ def test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts(
 
     assert isinstance(result, WorkerFailurePayload)
     # Result-shape checks are system faults: deliberately a plain ValueError,
-    # so the terminal message is the type-only fallback and the specific
-    # integrity detail stays diagnostic.
+    # so the terminal message is an incident and the specific integrity detail
+    # stays diagnostic.
     assert result.error_type == "ValueError"
     assert result.terminal_reason == "error"
-    assert "unexpected internal error" in result.message
+    assert_unnamed(result.message)
     assert message not in result.message
     assert message in result.fields["error"]
 
@@ -1564,8 +1564,7 @@ def test_dispersion_worker_maps_estimator_failures(
     assert result.error_type == type(exception).__name__
     if reason == "error":
         assert str(exception) not in result.message
-        assert type(exception).__name__ in result.message
-        assert result.message.startswith("Dispersion estimation")
+        assert_unnamed(result.message)
         assert result.fields["error"] == str(exception)
 
 

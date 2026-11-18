@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute._project_context import context_thread, current_project
+from tests._failure_assertions import assert_unnamed
 from tests._process_state import reset_input_cache_route
 from tests._project import project_app, use_project, work_elsewhere
 
@@ -353,8 +354,10 @@ def test_provider_failure_message_is_logged_but_not_exposed(
     )
     terminal = _wait_for_terminal(client, started.json()["job_id"])
 
-    assert terminal["message"] == "Input snapshot build failed."
+    # An incident, logged once under its id, the provider's text redacted.
+    assert_unnamed(terminal["message"])
     assert len(logged) == 1
+    assert logged[0]["incident"] in terminal["message"]
     assert logged[0]["job_id"] == started.json()["job_id"]
     assert logged[0]["error_type"] == "RuntimeError"
     diagnostic = str(logged[0]["error"])
@@ -480,7 +483,8 @@ def test_write_failure_has_a_stable_safe_error_code(
 
     terminal = _wait_for_terminal(client, started.json()["job_id"])
     assert terminal["status"] == "error"
-    assert terminal["error_code"] == "build_failed"
+    # An OSError naming no file names nothing: an incident.
+    assert terminal["error_code"] == "unexpected_failure"
     assert "private cache path" not in terminal["message"]
 
 
@@ -746,7 +750,7 @@ def test_admitted_eager_memory_limit_reconciles_and_keeps_the_previous_generatio
     [
         ("cancelled", "cancelled", "build_cancelled"),
         ("timed_out", "timed_out", "build_timed_out"),
-        ("failed", "error", "build_failed"),
+        ("failed", "error", "unexpected_failure"),
     ],
 )
 def test_admitted_eager_worker_failures_map_onto_the_job_lifecycle(
@@ -1595,7 +1599,7 @@ def test_api_input_worker_failure_is_a_failed_job(
     terminal = _wait_for_terminal(client, started.json()["job_id"])
 
     assert terminal["status"] == "error"
-    assert terminal["error_code"] == "build_failed"
+    assert terminal["error_code"] == "unexpected_failure"
     assert "worker lost" not in terminal["message"]
     status = client.post("/api/input-cache/status", json=_api_input_body()).json()
     assert status["state"] == "missing"

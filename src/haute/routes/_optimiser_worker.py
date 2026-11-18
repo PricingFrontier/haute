@@ -71,7 +71,14 @@ if TYPE_CHECKING:
 logger = get_logger(component="server.optimiser.solve")
 
 #: The failure fields a terminal job record carries besides its status and message.
-_FAILURE_FIELDS = ("error", "error_code", "error_detail", "http_status_code", "execution_metrics")
+_FAILURE_FIELDS = (
+    "error",
+    "error_code",
+    "error_detail",
+    "http_status_code",
+    "incident",
+    "execution_metrics",
+)
 
 
 @dataclass(frozen=True)

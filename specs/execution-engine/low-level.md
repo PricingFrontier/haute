@@ -1190,7 +1190,7 @@ exception's type, and the message "Haute could not load <module> (<type>). The f
 recorded in the job's error details.", also marked as the payload's `user_message` so the
 supervisor shows it as the job's message. The module name is Haute's own; the library's text,
 which can carry internal paths, stays in the payload's `error` field and its traceback, as
-`_friendly_error` keeps it for a failure inside the fit. The allowance's figures were measured through a spawned child that loads the engine,
+`_training_failure_answer` keeps it out of a fit's failure. The allowance's figures were measured through a spawned child that loads the engine,
 starts the Polars pools, then fits 10,000 rows with the engine's default thread count, on
 Fly machines with 4 and 16 CPUs and with 32 and 64 online CPUs presented to the kernel's
 count. CatBoost's reservation above that baseline was 2.1, 2.2, 2.8, 3.7, 4.9, 6.0 and

@@ -1597,13 +1597,12 @@ def _trace_node_failures(graph: PipelineGraph) -> Iterator[None]:
         yield
     except Exception as exc:
         node_id = own_failing_node(exc)
-        if node_id is None:
-            raise
-        reference = node_reference(graph, node_id) if node_id in graph.node_map else None
-        failed = node_failed_error(exc, node=reference)
-        if failed is None:  # pragma: no cover - own_failing_node named it above
-            raise
-        raise failed from exc
+        if node_id is not None:
+            reference = node_reference(graph, node_id) if node_id in graph.node_map else None
+            failed = node_failed_error(exc, node=reference)
+            if failed is not None:
+                raise failed from exc
+        raise
 
 
 def _trace_payload(
