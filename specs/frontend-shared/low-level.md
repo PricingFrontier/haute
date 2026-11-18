@@ -897,8 +897,9 @@ other way (high-level, "Late answers").
    same turn as it settles, checks that the request is current: if it is, `ok(value, asked)` or
    `failed(error, asked)` runs; if not, `stale({ value } | { error })` runs when the caller gave
    one, to settle an answer it must not drop (a write that landed, or failed), and otherwise
-   nothing runs. A current rejection with no `failed` rejects the promise `answer` returns; a
-   late one never does. `answer` resolves `"ok"`, `"failed"` or `"stale"` once its handler has
+   nothing runs. What `ok` throws using the answer is the request's failure too: `failed` runs
+   with it, as a `catch` around the answer and its use did. A current rejection, or a throw
+   from `ok`, with no `failed` rejects the promise `answer` returns; a late one never does. `answer` resolves `"ok"`, `"failed"` or `"stale"` once its handler has
    run, awaiting a promise the handler returns. A handler's own waits are its own: what it
    writes after one, it writes through a further answer, which it asks under the same request
    (`asked.answer`, checked against the same parts) or under parts of its own.
@@ -924,9 +925,11 @@ other way (high-level, "Late answers").
 5. **The scan.** `frontend/src/utils/__tests__/answersByHand.test.ts` reads the browser
    source, but tests, generated code, the API client (`api/`, whose functions send the requests and keep the transport's own state) and `answers.ts` itself, and fails for a function that
    writes state after a wait. A wait is an `await`, or a callback given to `.then`, `.catch`
-   or `.finally`; a loop that waits waits from its first statement; a wait for no answer from
-   the server (a question to the analyst through `confirmed`, the clipboard, a lazy import) is
-   listed by what it awaits, with its reason. A write is an assignment to a ref's `current` or
+   or `.finally`; a loop that waits waits from its first statement, and a branch that waits
+   and then leaves the function leaves what follows it unwaited; a wait for no answer from the
+   server (a question to the analyst through `confirmed` or the question store, the clipboard,
+   a lazy import, the layout engine, a document or sync frame read with the page's own
+   validators) is listed by what it awaits, with its reason (`NOT_SERVER`). A write is an assignment to a ref's `current` or
    to a variable of the module, or a call of: a state setter (`set`, `setState`, a `set…`
    name, `dispatch`); a store's action (through `getState()`, or a store's `get()`); a callback
    prop (`on…`); a function a hook gave; `ask` or `answer`, which capture what an answer
@@ -1062,7 +1065,7 @@ Which result a stored answer is, and whether it is current, are separate questio
   `failed`. It also covers a `pending` flag reset the moment its request stops being current
   and not again when the late answer comes, a newer request's `pending` set after the older
   one's reset, a read aborted through `signal` and a write's answer settled by `stale`, a
-  current rejection with no `failed` passed on and a late one never, and a `belongsTo` that
+  current rejection with no `failed` passed on and a late one never, what `ok` throws taken as the failure, and a `belongsTo` that
   names nothing refused. `frontend/src/utils/__tests__/answersByHand.test.ts` is the scan
   ("Late answers", item 6); it is shown failing on a guard written by hand (a ticket checked
   after an `await`, a `cancelled` flag, a `finally` that clears a flag), on a write in a
@@ -1194,9 +1197,9 @@ same Vitest config.
   `apiErrorMessage`'s order: a structured detail's message, a string detail, a 422's first
   refusal as its place and message without pydantic's prefix, an error's own message, the
   fallback.
-- **Turns and tickets** (`frontend/src/utils/__tests__/serial.test.ts`): `serial` running
-  work one after another, a failure passing the turn on, and `latest` keeping the newest
-  ticket alone current, read without taking one, and none once bumped.
+- **Turns** (`frontend/src/utils/__tests__/serial.test.ts`): `serial` running work one after
+  another, a failure passing the turn on. The newest of a kind of request is the late-answer
+  helper's (`answers.test.tsx`).
 - **API client** (`frontend/src/api/__tests__/client.test.ts`,
   `frontend/src/api/__tests__/client.retry.test.ts`, `frontend/src/api/__tests__/client.contract.test.ts`): unit tests cover
   retry/backoff/abort semantics directly; the contract suite covers concrete

@@ -137,7 +137,10 @@ export type Settled<T> = { readonly value: T } | { readonly error: unknown }
 export interface Handlers<T> {
   /** The answer, while what asked for it is current. */
   readonly ok?: (value: T, asked: Asked) => unknown
-  /** Its failure, while current. Without it, a current failure rejects `answer`'s promise. */
+  /**
+   * Its failure, while current, or what `ok` threw using the answer. Without it, a current
+   * failure rejects `answer`'s promise.
+   */
   readonly failed?: (error: unknown, asked: Asked) => unknown
   /**
    * A late answer, to settle one that must not be dropped (a write that landed); without it a
@@ -226,7 +229,14 @@ class Asking implements Asked {
       return "stale"
     }
     if ("value" in settled) {
-      await handlers.ok?.(settled.value, this)
+      try {
+        await handlers.ok?.(settled.value, this)
+      } catch (error: unknown) {
+        // An answer the caller cannot use is the request's failure, as one refused is.
+        if (!handlers.failed) throw error
+        await handlers.failed(error, this)
+        return "failed"
+      }
       return "ok"
     }
     if (!handlers.failed) throw settled.error

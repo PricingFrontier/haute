@@ -171,7 +171,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-2",
     "polars-node-clarity",
     "rating",
-    "root-cause-late-answers",
     "root-cause-run-parity",
     "root-cause-store-check",
     "root-cause-typed-numbers",

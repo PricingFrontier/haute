@@ -4,6 +4,7 @@ import { apiErrorMessage } from "../api/errors"
 import QuestionDialog from "../components/QuestionDialog"
 import ToastContainer from "../components/Toast"
 import { waitForJob } from "../hooks/jobPollingController"
+import { useRequestKind } from "../hooks/useRequestKind"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import AppHeader from "./AppHeader"
 import NewQuoteWindow from "./NewQuoteWindow"
@@ -12,6 +13,7 @@ import { quotesClosedBy } from "./quoteValues"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
 import type { WorkbenchAppQuoteStore } from "../api/types"
+import { ask, newest } from "../utils/answers"
 import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
 import { BUTTON, Notice } from "./ui"
 import useAppStore from "./useAppStore"
@@ -31,8 +33,8 @@ export const QUOTES_RECHECK_MS = 10_000
 export default function UnderwriterApp() {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const open = useAppStore((s) => s.quotes?.open === true)
+  const opening = useRequestKind()
   useEffect(() => {
-    let live = true
     // Whichever of the app's calls meets a closed store, the quotes close.
     watchQuotesClosed((error) => {
       if (quotesClosedBy(error) === null) return
@@ -42,22 +44,21 @@ export default function UnderwriterApp() {
       if (typed instanceof HTMLElement) typed.blur()
       useAppStore.getState().noteQuotesClosed(error)
     })
-    Promise.all([fetchAppRelease(), fetchAppForm()])
-      .then(([release, { form, revision }]) => {
-        if (!live) return
+    const asked = ask([newest(opening)])
+    void asked.answer(Promise.all([fetchAppRelease(), fetchAppForm()]), {
+      ok: ([release, { form, revision }]) => {
         openRelease(form, revision, release.id)
         useAppStore.getState().setRelease(release, form, revision)
         setLoaded({ ready: true })
-      })
-      .catch((error: unknown) => {
-        if (live) setLoaded({ error: apiErrorMessage(error) })
-      })
+      },
+      failed: (error) => setLoaded({ error: apiErrorMessage(error) }),
+    })
     return () => {
-      live = false
+      asked.release()
       watchQuotesClosed(null)
       useWorkbenchPricingStore.getState().setQuotePricer(null)
     }
-  }, [])
+  }, [opening])
 
   return (
     <div className="flex h-screen flex-col" style={{ background: "var(--bg-base)" }}>
@@ -156,24 +157,31 @@ function RoutedPage({ route }: { route: AppRoute }) {
  */
 function QuotesClosed() {
   const message = useAppStore((s) => s.quotes?.message ?? null)
+  const rechecks = useRequestKind()
   useEffect(() => {
-    const ended = new AbortController()
+    const asked = ask([newest(rechecks)])
     const note = (quotes: WorkbenchAppQuoteStore | null) => {
       if (quotes !== null) useAppStore.getState().setQuotes(quotes)
     }
-    waitForJob({
-      // A release that cannot be read now is asked for again on the next tick.
-      poll: () => fetchAppRelease().then((release) => release.quotes, () => null),
-      isTerminal: (quotes) => quotes?.open === true,
-      intervalMs: QUOTES_RECHECK_MS,
-      signal: ended.signal,
-      onStatus: note,
-    })
-      .then(note)
-      // Ended as the view goes, or past the polling's lifetime: the page stays as it is.
-      .catch(() => undefined)
-    return () => ended.abort()
-  }, [])
+    void asked.answer(
+      (signal) =>
+        waitForJob({
+          // A release that cannot be read now is asked for again on the next tick.
+          poll: () => fetchAppRelease().then((release) => release.quotes, () => null),
+          isTerminal: (quotes) => quotes?.open === true,
+          intervalMs: QUOTES_RECHECK_MS,
+          signal,
+          onStatus: (quotes) => asked.apply(() => note(quotes)),
+        }),
+      {
+        ok: note,
+        // Ended past the polling's lifetime: the page stays as it is.
+        failed: () => undefined,
+      },
+    )
+    // Ended as the view goes.
+    return () => asked.release()
+  }, [rechecks])
   return (
     <>
       <AppHeader label="Quotes toolbar" />

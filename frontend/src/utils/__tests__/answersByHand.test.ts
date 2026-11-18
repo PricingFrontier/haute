@@ -47,6 +47,7 @@ export const NOT_SERVER: Record<string, string> = {
   "navigator.clipboard.write": "the browser's clipboard",
   import: "a lazy import of the editor's own code",
   getLayoutedElements: "the layout engine, run in the page",
+  loadChartMaker: "a lazy import of the chart library the sheets draw with",
   parsePipelineDocumentUpdateFrame: "reads a frame the sync socket pushed, with validators loaded in the page",
   parsePipelineEditorDocument: "reads a document already answered, with validators loaded in the page",
 }
@@ -70,7 +71,8 @@ export const NOT_STATE: Record<string, string> = {
 
 type Finding = { line: number; scope: string; text: string }
 
-const WRITE_NAME = /^(?:set|setState|dispatch|set[A-Z]\w*|on[A-Z]\w*)$/
+/** A state setter's or a callback prop's name; a timer's (`setTimeout`) writes nothing itself. */
+const WRITE_NAME = /^(?!set(?:Timeout|Interval|Immediate)$)(?:set|setState|dispatch|set[A-Z]\w*|on[A-Z]\w*)$/
 const HANDLER_KEYS = new Set(["ok", "failed", "stale"])
 const STATE_HOOKS_VALUE_ONLY = new Set(["useRef", "useMemo", "useId", "useContext", "useDeferredValue", "useSyncExternalStore"])
 
@@ -357,17 +359,30 @@ interface Locals extends Set<string> {
   readonly stateActions: Set<string>
 }
 
+const scopes = new WeakMap<ts.Node, Locals>()
+const ownLocals = new WeakMap<ts.Node, Locals>()
+
 /** Names in scope in *fn*: its own, and those of the functions it is written in (a closure's). */
 function scopeLocals(fn: FunctionNode): Locals {
-  let scope = localsOf(fn)
-  for (let outer = fn.parent; outer; outer = outer.parent) {
-    if (isFunction(outer)) scope = merged(localsOf(outer as FunctionNode), scope)
-  }
+  const known = scopes.get(fn)
+  if (known) return known
+  let outer: ts.Node | undefined = fn.parent
+  while (outer && !isFunction(outer)) outer = outer.parent
+  const scope = outer ? merged(scopeLocals(outer as FunctionNode), localsOf(fn)) : localsOf(fn)
+  scopes.set(fn, scope)
   return scope
 }
 
 /** Names local to *fn*: its parameters and what its body declares. */
 function localsOf(fn: FunctionNode): Locals {
+  const known = ownLocals.get(fn)
+  if (known) return known
+  const found = readLocals(fn)
+  ownLocals.set(fn, found)
+  return found
+}
+
+function readLocals(fn: FunctionNode): Locals {
   const locals = Object.assign(new Set<string>(), { stateHandles: new Set<string>(), stateActions: new Set<string>() })
   for (const parameter of fn.parameters) bindingNames(parameter.name, locals)
   const visit = (node: ts.Node) => {
@@ -635,11 +650,11 @@ function repositoryFindings(): Map<string, Finding[]> {
   return found
 }
 
-const scopes = (source: string, fileName?: string) => answersByHand(source, fileName).map((finding) => finding.scope)
+const scopesOf = (source: string, fileName?: string) => answersByHand(source, fileName).map((finding) => finding.scope)
 
 describe("the scan finds a write after a wait", () => {
   it("finds a ticket checked by hand after an await", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       const listAsked = latest()
       export const useList = create((set) => ({
         load: async (query) => {
@@ -652,7 +667,7 @@ describe("the scan finds a write after a wait", () => {
   })
 
   it("finds a cancelled flag kept by an effect", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export function Picker({ path }) {
         const [rows, setRows] = useState([])
         useEffect(() => {
@@ -665,7 +680,7 @@ describe("the scan finds a write after a wait", () => {
   })
 
   it("finds a finally that clears a flag, and a catch that says why", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export const useList = create((set, get) => ({
         more: async () => {
           set({ loadingMore: true })
@@ -706,7 +721,7 @@ describe("the scan finds a write after a wait", () => {
   })
 
   it("finds a writer given to .then by name, and a write in a loop that waits", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export function Rows() {
         const [rows, setRows] = useState([])
         const load = () => { fetchRows().then(setRows) }
@@ -721,7 +736,7 @@ describe("the scan finds a write after a wait", () => {
   })
 
   it("finds a write in a callback made after a wait, and a writer passed to one", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export function Rows() {
         const [rows, setRows] = useState([])
         const load = async () => {
@@ -773,8 +788,21 @@ describe("the scan finds a write after a wait", () => {
     ])
   })
 
+  it("passes a timer started after a wait, and finds a write in its callback", () => {
+    expect(scopesOf(`
+      export function Retry() {
+        const [tries, setTries] = useState(0)
+        const again = async () => {
+          await fetchRows()
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          setTimeout(() => setTries((n) => n + 1), 100)
+        }
+        return null
+      }`)).toEqual(["Retry.again"])
+  })
+
   it("passes a write after a branch that waits and leaves, and finds one after a branch that waits and stays", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export const useRun = create((set) => ({
         each: async (result) => {
           if (result.moved) {
@@ -791,7 +819,7 @@ describe("the scan finds a write after a wait", () => {
   })
 
   it("finds a ref and a module variable written after a wait, and a request asked after one", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       import { answer } from "../utils/answers"
       let newest = 0
       export function useLatest(ref) {
@@ -838,7 +866,7 @@ describe("the scan follows a writer across modules", () => {
 
 describe("the scan passes the helper's handlers", () => {
   it("passes writes made in the helper's handlers and pending", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       const listAsked = requestKind()
       export const useList = create((set, get) => ({
         more: async () => {
@@ -856,7 +884,7 @@ describe("the scan passes the helper's handlers", () => {
   })
 
   it("passes a wait for no answer from the server, and a method of a local value", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export function Panel({ file }) {
         const [busy, setBusy] = useState(false)
         const remove = async () => {
@@ -874,7 +902,7 @@ describe("the scan passes the helper's handlers", () => {
   })
 
   it("still finds a write after a handler's own wait", () => {
-    expect(scopes(`
+    expect(scopesOf(`
       export const useList = create((set) => ({
         save: () => answer({ document: true }, saveQuote(), {
           ok: async () => {
@@ -895,7 +923,8 @@ describe("the browser source", () => {
     }
   })
 
-  it("writes no state after a wait outside the helper", () => {
+  // The whole source, every module read and followed: slow next to the fixtures.
+  it("writes no state after a wait outside the helper", { timeout: 180_000 }, () => {
     const findings = repositoryFindings()
     const unlisted = [...findings.entries()].map(([key, found]) => `${key} (line ${found[0].line}: ${found[0].text})`)
     expect(unlisted).toEqual([])

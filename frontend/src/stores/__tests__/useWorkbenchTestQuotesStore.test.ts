@@ -212,7 +212,7 @@ describe("useWorkbenchTestQuotesStore", () => {
     expect(store().opened).toBeNull()
   })
 
-  it("drops an Open answered while a field holds text typed and not committed (WB-61)", async () => {
+  it("drops an Open answered while a field holds text typed and not committed", async () => {
     useWorkbenchFormStore.setState({ form: { ...form, sample: { t1: [{ notes: "kept in quote" }] } } })
     const answer = deferred<{ values: Record<string, { notes: string }[]>; not_opened: string[] }>()
     vi.mocked(openTestQuote).mockImplementationOnce(() => answer.promise)

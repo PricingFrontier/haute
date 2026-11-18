@@ -31,6 +31,8 @@ import useGraphStore from "../stores/useGraphStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDocumentStatusStore"
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, under } from "../utils/answers"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
 import { OPTIMISER_PANES, resolveOptimiserPane } from "./optimiser/optimiserPanes"
@@ -307,6 +309,7 @@ function NodeRecoveryStatus({
   scopedSave,
   scopedSaving,
 }: NodeRecoveryStatusProps) {
+  const life = useRequestKind()
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
   const summary = useRecoverySummaryStore((s) =>
     recoveryId ? s.summaries[recoverySummaryKey(documentSourceFile, recoveryId)] : undefined,
@@ -451,8 +454,10 @@ function NodeRecoveryStatus({
             disabled={saving}
             onClick={() => {
               setSaveError(null)
-              void scopedSave().then((result) => {
-                if (!result.ok) setSaveError(result.error ?? "Save failed.")
+              void answer([under(life)], scopedSave(), {
+                ok: (result) => {
+                  if (!result.ok) setSaveError(result.error ?? "Save failed.")
+                },
               })
             }}
             className="rounded px-2 py-1 font-medium"
@@ -1170,21 +1175,28 @@ function NodePanelContent({
 }: ActiveNodePanelProps) {
   const requestScope = useRequestScope()
   const [scopedSaving, setScopedSaving] = useState(false)
+  const life = useRequestKind()
   // The editor freezes while a scoped save is in flight so keystrokes cannot
   // race the adoption of the authoritative response.
   const runScopedSave = useMemo(
     () =>
       scopedSave
         ? async () => {
-            setScopedSaving(true)
-            try {
-              return await scopedSave()
-            } finally {
-              setScopedSaving(false)
-            }
+            let saved!: { ok: boolean; error?: string }
+            await answer([under(life)], scopedSave(), {
+              ok: (result) => {
+                saved = result
+              },
+              // The save landed, or failed, whatever came of the panel: its caller is told.
+              stale: (settled) => {
+                if ("error" in settled) throw settled.error
+                saved = settled.value
+              },
+            }, { inFlight: setScopedSaving })
+            return saved
           }
         : undefined,
-    [scopedSave],
+    [scopedSave, life],
   )
   const { allNodes, edges, submodels, preamble } = useGraph()
   const config = useMemo(() => (node.data.config || {}) as Record<string, unknown>, [node.data.config])

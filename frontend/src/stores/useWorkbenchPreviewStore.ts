@@ -14,7 +14,7 @@ import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchFo
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import { pricingLoop } from "./pricingLoop"
 import useWorkbenchPricingStore, { PRICING_DELAY_MS, type SamplePrice } from "./useWorkbenchPricingStore"
-import { latest } from "../utils/latest"
+import { answer, newest, requestKind, watch } from "../utils/answers"
 
 interface WorkbenchPreviewState {
   /** The quote, by table name, rows keyed by column name, as typed. */
@@ -67,7 +67,7 @@ interface WorkbenchPreviewState {
 }
 
 /** The pricing asked for last; an answer to an earlier one is dropped. */
-const asked = latest()
+const pricings = requestKind()
 
 /** No column locked: every cell takes typing. */
 export const NOTHING_LOCKED: ReadonlySet<string> = new Set()
@@ -90,18 +90,13 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     }
     const basis = basisOf(form, quote)
     if (price !== null && price.basis === basis) return
-    const attempt = asked.take()
-    set({ pricing: true, error: null })
     // Another quote opened meanwhile, or the host left: the answer is nobody's.
-    const current = () => asked.is(attempt) && useWorkbenchPricingStore.getState().quotePricer === quotePricer
-    try {
-      const priced = await quotePricer(form, quote)
-      if (current()) set({ price: { basis, ...priced } })
-    } catch (error: unknown) {
-      if (current()) set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` })
-    } finally {
-      if (asked.is(attempt)) set({ pricing: false })
-    }
+    const belongsTo = [newest(pricings), watch(useWorkbenchPricingStore, (state) => state.quotePricer)] as const
+    set({ error: null })
+    await answer(belongsTo, () => quotePricer(form, quote), {
+      ok: (priced) => set({ price: { basis, ...priced } }),
+      failed: (error) => set({ price: null, error: `Pricing failed: ${apiErrorMessage(error)}` }),
+    }, { pending: (pricing) => set({ pricing }) })
   }
   const loop = pricingLoop(priceOnce, PRICING_DELAY_MS)
 
@@ -124,7 +119,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
       get().schedule()
     },
     open: (quote, price, readOnly) => {
-      asked.bump()
+      pricings.bump()
       loop.cancel()
       set({ quote, price, error: null, pricing: false, readOnly })
       if (!readOnly && price === null) get().schedule()

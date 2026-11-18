@@ -7,6 +7,8 @@ import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import { useGridCellSelection } from "./useGridCellSelection"
 import useToastStore from "../../../stores/useToastStore"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { answer, under } from "../../../utils/answers"
 import { parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
 import { apiErrorMessage } from "../../../api/errors"
 
@@ -43,6 +45,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
   factorOverrides?: { factors: string[]; sliceKey?: Record<string, string> }
 }) {
   const addToast = useToastStore(s => s.addToast)
+  const life = useRequestKind()
   const usedFactors = factorOverrides?.factors || table.factors.slice(0, 2)
   const sliceKey = factorOverrides?.sliceKey || {}
   const rowFactor = usedFactors[0]
@@ -168,9 +171,11 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
 
   const copyVisibleTable = () => {
     const text = buildTableTsv(rowFactor, colFactor, rowLabels, colLabels, valueFor)
-    void writeClipboardText(text).catch((error: unknown) => {
-      const detail = apiErrorMessage(error)
-      addToast("error", `Could not copy rating table TSV: ${detail}`)
+    void answer([under(life)], writeClipboardText(text), {
+      failed: (error) => {
+        const detail = apiErrorMessage(error)
+        addToast("error", `Could not copy rating table TSV: ${detail}`)
+      },
     })
   }
 

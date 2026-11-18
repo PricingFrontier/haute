@@ -14,6 +14,8 @@ import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
 import { formatNumber, fractionToPercent } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
 import { useRequestScope, useResultKey } from "./useGraph"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, under } from "../utils/answers"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
@@ -336,15 +338,14 @@ export default function OptimiserPreview({
     fetchColumns: isStale,
   })
   const [rerunning, setRerunning] = useState(false)
+  const life = useRequestKind()
+  // A start records its own outcome under the node's result key (`startOptimiserSolve`).
   const handleRerun = useCallback(async () => {
     if (!rerunReadiness.canSolve) return
-    setRerunning(true)
-    try {
-      await startOptimiserSolve({ nodeId, config: nodeConfig, allNodes, requestScope })
-    } finally {
-      setRerunning(false)
-    }
-  }, [allNodes, nodeConfig, nodeId, requestScope, rerunReadiness.canSolve])
+    await answer([under(life)], startOptimiserSolve({ nodeId, config: nodeConfig, allNodes, requestScope }), {}, {
+      inFlight: setRerunning,
+    })
+  }, [allNodes, nodeConfig, nodeId, requestScope, rerunReadiness.canSolve, life])
 
   const factorLevelOrder = useMemo(
     () => bandingLevelOrderForOptimiser(nodeId, allNodes, edges),

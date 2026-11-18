@@ -4,11 +4,13 @@ import { Download, Loader2 } from "lucide-react"
 import { getInputCacheStatus } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { InputCacheSnapshotResponse } from "../api/types"
+import { useRequestKind } from "../hooks/useRequestKind"
 import type { SimpleNode } from "../panels/editors/_shared"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "../panels/previewPanelLayout"
 import { useResultKey } from "../panels/useGraph"
 import useInputImportStore, { startInputImport } from "../stores/useInputImportStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
+import { ask, newest } from "../utils/answers"
 import { importedTitle } from "../utils/importedTitle"
 import { inputSnapshotSource } from "../utils/inputSnapshotSource"
 
@@ -50,20 +52,19 @@ export default function InputImportButton({ node, onImported }: InputImportButto
   } | null>(null)
   const status = answer?.sourceKey === sourceKey ? answer.status : null
   const statusError = answer?.sourceKey === sourceKey ? answer.error : null
+  const reads = useRequestKind()
 
   useEffect(() => {
     if (!source || !sourceKey) return
-    const reading = new AbortController()
-    getInputCacheStatus(source, { signal: reading.signal }).then(
-      (read) => setAnswer({ sourceKey, status: read, error: null }),
-      (err: unknown) => {
-        if (!reading.signal.aborted) setAnswer({ sourceKey, status: null, error: apiErrorMessage(err) })
-      },
-    )
-    return () => reading.abort()
+    const asked = ask([newest(reads)])
+    void asked.answer((signal) => getInputCacheStatus(source, { signal }), {
+      ok: (read) => setAnswer({ sourceKey, status: read, error: null }),
+      failed: (err) => setAnswer({ sourceKey, status: null, error: apiErrorMessage(err) }),
+    })
+    return () => asked.release()
     // The source's content, not its object identity, decides what to read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceKey, epoch])
+  }, [sourceKey, epoch, reads])
 
   if (!source) return null
   const importing = run !== undefined

@@ -21,6 +21,8 @@ import { ApiError } from "../../api/client"
 import { apiErrorCode, apiErrorMessage } from "../../api/errors"
 import { newOperationId } from "./exportReceipts"
 import { configField } from "../../utils/configField"
+import { answer, under } from "../../utils/answers"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import { MODEL_COLORS } from "../../theme/colors"
 import { useMlflowDestinations } from "../../stores/useSettingsStore"
 import useUIStore from "../../stores/useUIStore"
@@ -86,39 +88,43 @@ export function MlflowExportSection({
   const confirmationKey = JSON.stringify([trainJobId, destination, experiment, availability.available])
   const [confirmedFor, setConfirmedFor] = useState<string | null>(null)
   const confirmingLogAgain = confirmedFor === confirmationKey
+  // A log answers while the section shows.
+  const section = useRequestKind()
 
   const logOperation = useCallback(async (operationId: string) => {
     if (!trainJobId) return
-    setLoggingToMlflow(true)
     setConfirmedFor(null)
     setMlflowResult(null)
     onMlflowResult?.(null)
-    try {
-      const result = await logToMlflow({
-        job_id: trainJobId,
-        experiment_name: configField(config, "mlflow_experiment", "") || null,
-        // Read at click time, so choosing Local folder after training sends "".
-        destination: configField(config, "mlflow_destination", "") as "" | MlflowDestinationKey,
-        operation_id: operationId,
-      })
-      setMlflowResult(result)
-      onMlflowResult?.(result)
-    } catch (e) {
-      const errResult = {
-        status: "error",
-        error: apiErrorMessage(e, "Logging to MLflow failed."),
-        error_code: apiErrorCode(e),
-        // A response that never arrived may still have logged the run, so Retry
-        // resends this operation; a refused request can start a new one.
-        operation_id: e instanceof ApiError ? null : operationId,
-      }
-      setMlflowResult(errResult)
-      onMlflowResult?.(errResult)
-    } finally {
-      setLoggingToMlflow(false)
-      onLogAttempted?.()
-    }
-  }, [trainJobId, config, onMlflowResult, onLogAttempted])
+    await answer([under(section)], () => logToMlflow({
+      job_id: trainJobId,
+      experiment_name: configField(config, "mlflow_experiment", "") || null,
+      // Read at click time, so choosing Local folder after training sends "".
+      destination: configField(config, "mlflow_destination", "") as "" | MlflowDestinationKey,
+      operation_id: operationId,
+    }), {
+      ok: (result) => {
+        setMlflowResult(result)
+        onMlflowResult?.(result)
+        onLogAttempted?.()
+      },
+      failed: (e) => {
+        const errResult = {
+          status: "error",
+          error: apiErrorMessage(e, "Logging to MLflow failed."),
+          error_code: apiErrorCode(e),
+          // A response that never arrived may still have logged the run, so Retry
+          // resends this operation; a refused request can start a new one.
+          operation_id: e instanceof ApiError ? null : operationId,
+        }
+        setMlflowResult(errResult)
+        onMlflowResult?.(errResult)
+        onLogAttempted?.()
+      },
+      // An attempt answered once the section is gone still has the job's receipts read again.
+      stale: () => onLogAttempted?.(),
+    }, { inFlight: setLoggingToMlflow })
+  }, [trainJobId, config, onMlflowResult, onLogAttempted, section, setMlflowResult, setLoggingToMlflow])
 
   const canLog = !!trainJobId && availability.available && !loggingToMlflow
   const handleLogExperiment = useCallback(() => {

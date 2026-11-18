@@ -20,6 +20,7 @@ import {
   type AssistantStreamEvent,
   type AssistantTurnOutcome,
 } from "../api/assistant"
+import { answer, ask, newest, requestKind, watch } from "../utils/answers"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useToastStore from "./useToastStore"
@@ -138,14 +139,18 @@ type SetAssistantState = (
 let activeController: AbortController | null = null
 
 /*
- * Monotonic tickets for the two navigation fetches. Both are re-issued faster
- * than they resolve — a second row click, a pipeline change, a turn finishing —
- * and neither response identifies which request it answers, so only the latest
- * ticket is allowed to write. Module scope, like `activeController`: the panel
- * can unmount and remount while a request is in flight.
+ * The two navigation fetches, newest wins. Both are re-issued faster than they
+ * resolve — a second row click, a pipeline change, a turn finishing — and
+ * neither response identifies which request it answers, so only the newest is
+ * allowed to write. Module scope, like `activeController`: the panel can
+ * unmount and remount while a request is in flight.
  */
-let openGeneration = 0
-let listGeneration = 0
+const opens = requestKind()
+const lists = requestKind()
+/** The status read asked for last. */
+const statusReads = requestKind()
+/** The turn under way: the only one that may write the transcript. */
+const turns = requestKind()
 
 export interface AssistantSendGate {
   status: AssistantStatus | "unknown" | "error"
@@ -503,17 +508,17 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   undoingChangeId: null,
 
   refreshStatus: async () => {
-    try {
-      const status = await getAssistantStatus()
-      set({ status, statusErrorDetail: null })
-    } catch (error) {
-      // A 400 is a configuration the backend could not read; its detail names
-      // what to fix, and asking again cannot succeed until the file changes.
-      const detail = error instanceof ApiError && error.status === 400
-        ? error.detail ?? null
-        : null
-      set({ status: "error", statusErrorDetail: detail })
-    }
+    await answer([newest(statusReads)], getAssistantStatus(), {
+      ok: (status) => set({ status, statusErrorDetail: null }),
+      failed: (error) => {
+        // A 400 is a configuration the backend could not read; its detail names
+        // what to fix, and asking again cannot succeed until the file changes.
+        const detail = error instanceof ApiError && error.status === 400
+          ? error.detail ?? null
+          : null
+        set({ status: "error", statusErrorDetail: detail })
+      },
+    })
   },
 
   loadSessions: async (sourceFile) => {
@@ -525,7 +530,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       (current.pipelineSource !== null || current.sessionId !== null) &&
       current.pipelineSource !== sourceFile
     ) {
-      openGeneration += 1
+      opens.bump()
       set({
         view: "list",
         sessionId: null,
@@ -536,20 +541,16 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       })
     }
     if (sourceFile === null) {
-      listGeneration += 1
+      lists.bump()
       set({ sessions: [], sessionsStatus: "ready", sessionsSource: null })
       return
     }
-    const generation = (listGeneration += 1)
+    const belongsTo = [newest(lists)] as const
     set({ sessionsStatus: "loading", sessionsSource: sourceFile })
-    try {
-      const { sessions } = await listAssistantSessions(sourceFile)
-      if (generation !== listGeneration) return
-      set({ sessions, sessionsStatus: "ready" })
-    } catch {
-      if (generation !== listGeneration) return
-      set({ sessionsStatus: "error" })
-    }
+    await answer(belongsTo, listAssistantSessions(sourceFile), {
+      ok: ({ sessions }) => set({ sessions, sessionsStatus: "ready" }),
+      failed: () => set({ sessionsStatus: "error" }),
+    })
   },
 
   openSession: async (sessionId, sourceFile) => {
@@ -562,7 +563,10 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // being left has to stop being addressable now rather than when its
     // replacement arrives — otherwise a message sent during the fetch lands in
     // the chat the user just navigated away from.
-    const generation = (openGeneration += 1)
+    //
+    // A second choice while this one is in flight owns the screen; letting a
+    // slower earlier response land would show a chat nobody picked.
+    const belongsTo = [newest(opens)] as const
     set({
       view: "chat",
       entries: [],
@@ -571,29 +575,25 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       sessionId: null,
       pipelineSource: null,
     })
-    try {
-      const result = await createAssistantSession(sourceFile, sessionId)
-      // A second choice while this one was in flight owns the screen; letting
-      // a slower earlier response land would show a chat nobody picked.
-      if (generation !== openGeneration) return
-      set({
+    await answer(belongsTo, createAssistantSession(sourceFile, sessionId), {
+      ok: (result) => set({
         sessionId: result.sessionId,
         pipelineSource: result.sourceFile,
         entries: hydrateEntries(result.history),
         buildPlan: result.buildPlan,
-      })
-    } catch (error) {
-      if (generation !== openGeneration) return
-      rejectSessionCreation(set, error)
-      set({ view: "list" })
-    }
+      }),
+      failed: (error) => {
+        rejectSessionCreation(set, error)
+        set({ view: "list" })
+      },
+    })
   },
 
   showSessionList: (sourceFile) => {
     if (get().turnStatus !== "idle") return
     // Any navigation supersedes an open still in flight, which would otherwise
     // land afterwards and re-attach the conversation just left.
-    openGeneration += 1
+    opens.bump()
     set({ view: "list", notice: null })
     void get().loadSessions(sourceFile)
   },
@@ -621,131 +621,149 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
 
     // A message sent from the immediately mounted composer becomes the active
     // chat. A slower transcript-open response must not replace it afterwards.
-    openGeneration += 1
+    opens.bump()
 
+    const turn = ask([newest(turns)])
     const controller = new AbortController()
     activeController = controller
     set({ turnStatus: "streaming", notice: null })
     // The eager chrome (canvas pill, toolbar) reads the turn from the UI store;
     // the canvas is read-only from here until the release below.
     useUIStore.getState().startAssistantTurn(() => get().stopTurn())
-    let sessionId = get().sessionId
-    try {
-      if (sessionId === null) {
-        // Always a fresh session. The panel resolves an existing conversation
-        // through `openSession`, so resuming a remembered id here would drop
-        // someone else's transcript into a chat the user opened as new.
-        const result = await createAssistantSession(sourceFile, null, controller.signal)
-        sessionId = result.sessionId
-        set({ sessionId, pipelineSource: result.sourceFile, buildPlan: result.buildPlan })
+
+    /** The message streamed into the chat `sessionId` names, its events written as they come. */
+    const stream = async (sessionId: string) => {
+      // The fix request rides on this message only; a later one must not
+      // reproduce the same error again. A newer request stays for the next one.
+      if (
+        context.previewErrorNodeId !== null
+        && useUIStore.getState().assistantPreviewErrorNodeId === context.previewErrorNodeId
+      ) {
+        useUIStore.getState().clearAssistantPreviewError()
       }
-    } catch (error) {
-      rejectSessionCreation(set, error)
-      if (activeController === controller) {
-        activeController = null
-        set({ turnStatus: "idle" })
-        useUIStore.getState().endAssistantTurn()
+
+      set((state) => ({
+        entries: [
+          ...state.entries,
+          { kind: "user", text },
+          { kind: "assistant", text: "", streaming: true },
+        ],
+        turnStatus: "streaming",
+        notice: null,
+      }))
+      options.onSent?.()
+
+      type TerminalEvent = Extract<AssistantStreamEvent, {
+        type: "completed" | "failed" | "cancelled"
+      }>
+      const terminal = { current: null as TerminalEvent | null }
+      try {
+        await turn.answer(streamAssistantMessage(sessionId, text, sourceFile, {
+          signal: controller.signal,
+          context,
+          onEvent: (event) => {
+            if (terminal.current !== null) {
+              throw new Error("Assistant stream contract violation: received an event after a terminal event.")
+            }
+            turn.apply(() => {
+              // Thinking lasts until the model's next text, tool or terminal event.
+              if ((event.type === "thinking") !== get().thinking) {
+                set({ thinking: event.type === "thinking" })
+              }
+              switch (event.type) {
+                case "thinking":
+                  break
+                case "text_delta":
+                  set((state) => ({ entries: appendAssistantText(state.entries, event.text) }))
+                  break
+                case "tool_started":
+                  set((state) => ({ entries: appendActivity(state.entries, toolStartedEntry(event)) }))
+                  break
+                case "tool_progress":
+                  set((state) => ({ entries: retitleTool(state.entries, event) }))
+                  break
+                case "tool_finished":
+                  set((state) => ({ entries: settleTool(state.entries, event) }))
+                  break
+                case "change_applied":
+                  set((state) => ({
+                    entries: appendActivity(state.entries, { kind: "change", change: event.change }),
+                  }))
+                  break
+                case "build_plan_updated":
+                  set({ buildPlan: event.build_plan })
+                  break
+                case "completed":
+                  terminal.current = event
+                  break
+                case "failed":
+                  terminal.current = event
+                  break
+                case "cancelled":
+                  terminal.current = event
+                  break
+              }
+            })
+          },
+        }), {
+          ok: () => {
+            const terminalEvent = terminal.current
+            try {
+              if (terminalEvent === null) {
+                set((state) => ({ entries: appendMarker(state.entries, "interrupted") }))
+              } else if (terminalEvent.type === "completed") {
+                set((state) => ({ entries: settleOutcome(state.entries, terminalEvent.outcome) }))
+              } else if (terminalEvent.type === "failed") {
+                set((state) => ({ entries: appendMarker(state.entries, "failed", terminalEvent.message) }))
+                useToastStore.getState().addToast("error", terminalEvent.message)
+              } else {
+                set((state) => ({ entries: appendMarker(state.entries, "stopped") }))
+              }
+            } catch (error) {
+              // An outcome that breaks the reply's contract ends the turn as a failed stream does.
+              rejectTurn(set, error)
+            }
+          },
+          failed: (error) => rejectTurn(set, error),
+        })
+      } finally {
+        turn.apply(() => {
+          activeController = null
+          set({ turnStatus: "idle", thinking: false })
+          useUIStore.getState().endAssistantTurn()
+          // The turn gave this conversation its first message, and therefore its
+          // title and its place in the list. Refresh so going back shows it —
+          // for the pipeline the canvas shows now, which may have changed mid-turn.
+          // With no listed pipeline there is no list to refresh.
+          const listedSource = get().sessionsSource
+          if (listedSource !== null) void get().loadSessions(listedSource)
+        })
       }
-      return
-    }
-    // The fix request rides on this message only; a later one must not
-    // reproduce the same error again. A newer request stays for the next one.
-    if (
-      context.previewErrorNodeId !== null
-      && useUIStore.getState().assistantPreviewErrorNodeId === context.previewErrorNodeId
-    ) {
-      useUIStore.getState().clearAssistantPreviewError()
     }
 
-    set((state) => ({
-      entries: [
-        ...state.entries,
-        { kind: "user", text },
-        { kind: "assistant", text: "", streaming: true },
-      ],
-      turnStatus: "streaming",
-      notice: null,
-    }))
-    options.onSent?.()
-
-    type TerminalEvent = Extract<AssistantStreamEvent, {
-      type: "completed" | "failed" | "cancelled"
-    }>
-    const terminal = { current: null as TerminalEvent | null }
     try {
-      await streamAssistantMessage(sessionId, text, sourceFile, {
-        signal: controller.signal,
-        context,
-        onEvent: (event) => {
-          if (terminal.current !== null) {
-            throw new Error("Assistant stream contract violation: received an event after a terminal event.")
-          }
-
-          // Thinking lasts until the model's next text, tool or terminal event.
-          if ((event.type === "thinking") !== get().thinking) {
-            set({ thinking: event.type === "thinking" })
-          }
-          switch (event.type) {
-            case "thinking":
-              break
-            case "text_delta":
-              set((state) => ({ entries: appendAssistantText(state.entries, event.text) }))
-              break
-            case "tool_started":
-              set((state) => ({ entries: appendActivity(state.entries, toolStartedEntry(event)) }))
-              break
-            case "tool_progress":
-              set((state) => ({ entries: retitleTool(state.entries, event) }))
-              break
-            case "tool_finished":
-              set((state) => ({ entries: settleTool(state.entries, event) }))
-              break
-            case "change_applied":
-              set((state) => ({
-                entries: appendActivity(state.entries, { kind: "change", change: event.change }),
-              }))
-              break
-            case "build_plan_updated":
-              set({ buildPlan: event.build_plan })
-              break
-            case "completed":
-              terminal.current = event
-              break
-            case "failed":
-              terminal.current = event
-              break
-            case "cancelled":
-              terminal.current = event
-              break
-          }
+      const sessionId = get().sessionId
+      if (sessionId !== null) {
+        await stream(sessionId)
+        return
+      }
+      // Always a fresh session. The panel resolves an existing conversation
+      // through `openSession`, so resuming a remembered id here would drop
+      // someone else's transcript into a chat the user opened as new.
+      await turn.answer(createAssistantSession(sourceFile, null, controller.signal), {
+        ok: async (result) => {
+          set({ sessionId: result.sessionId, pipelineSource: result.sourceFile, buildPlan: result.buildPlan })
+          await stream(result.sessionId)
+        },
+        failed: (error) => {
+          rejectSessionCreation(set, error)
+          activeController = null
+          set({ turnStatus: "idle" })
+          useUIStore.getState().endAssistantTurn()
         },
       })
-
-      const terminalEvent = terminal.current
-      if (terminalEvent === null) {
-        set((state) => ({ entries: appendMarker(state.entries, "interrupted") }))
-      } else if (terminalEvent.type === "completed") {
-        set((state) => ({ entries: settleOutcome(state.entries, terminalEvent.outcome) }))
-      } else if (terminalEvent.type === "failed") {
-        set((state) => ({ entries: appendMarker(state.entries, "failed", terminalEvent.message) }))
-        useToastStore.getState().addToast("error", terminalEvent.message)
-      } else {
-        set((state) => ({ entries: appendMarker(state.entries, "stopped") }))
-      }
-    } catch (error) {
-      rejectTurn(set, error)
     } finally {
-      if (activeController === controller) {
-        activeController = null
-        set({ turnStatus: "idle", thinking: false })
-        useUIStore.getState().endAssistantTurn()
-        // The turn gave this conversation its first message, and therefore its
-        // title and its place in the list. Refresh so going back shows it —
-        // for the pipeline the canvas shows now, which may have changed mid-turn.
-        // With no listed pipeline there is no list to refresh.
-        const listedSource = get().sessionsSource
-        if (listedSource !== null) void get().loadSessions(listedSource)
-      }
+      turn.release()
     }
   },
 
@@ -761,7 +779,7 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // backend session is minted by the first send instead. Superseding any
     // open still in flight is what keeps this chat empty: its response would
     // otherwise arrive and fill the new chat with an old transcript.
-    openGeneration += 1
+    opens.bump()
     set({
       sessionId: null,
       pipelineSource: null,
@@ -789,23 +807,20 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       set({ notice: "This change can no longer be undone here." })
       return
     }
-    set({ undoingChangeId: change.id, notice: null })
-    try {
-      const result = await undoAssistantChange(sessionId, change.id, pipelineSource)
+    set({ notice: null })
+    // The transcript notes the undo while it shows the session it was asked in.
+    await answer([watch(useAssistantStore, (state) => state.sessionId)], () => undoAssistantChange(sessionId, change.id, pipelineSource), {
       // The canvas updates through /ws/sync; the transcript notes the undo, and
       // the checklist shows the plan in which the backend marked it undone.
-      if (get().sessionId === sessionId) {
-        set((state) => ({
-          entries: [...state.entries, { kind: "undo", change }],
-          buildPlan: result.buildPlan,
-        }))
-      }
-    } catch (error) {
-      const detail = error instanceof ApiError ? error.detail : null
-      set({ notice: detail ?? "The change could not be undone." })
-    } finally {
-      set({ undoingChangeId: null })
-    }
+      ok: (result) => set((state) => ({
+        entries: [...state.entries, { kind: "undo", change }],
+        buildPlan: result.buildPlan,
+      })),
+      failed: (error) => {
+        const detail = error instanceof ApiError ? error.detail : null
+        set({ notice: detail ?? "The change could not be undone." })
+      },
+    }, { inFlight: (flying) => set({ undoingChangeId: flying ? change.id : null }) })
   },
 }))
 

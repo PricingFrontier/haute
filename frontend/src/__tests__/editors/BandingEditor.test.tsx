@@ -1551,7 +1551,7 @@ describe("BandingEditor Import from params", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import from params" })).toBeNull())
   })
 
-  it("drops the values of an import whose factor was removed while they were read (FEN-10)", async () => {
+  it("drops the values of an import whose factor was removed while they were read", async () => {
     vi.mocked(listProjectFiles).mockResolvedValue(paramsFolder("regions.csv"))
     let release: (values: string[]) => void = () => {}
     vi.mocked(fetchParamFile).mockImplementation((_file, column) =>

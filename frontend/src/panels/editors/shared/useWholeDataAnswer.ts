@@ -5,12 +5,11 @@ import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../../../api/errors"
 import type { PreparedGraph } from "../../../api/types"
 import useNodeDataCache, { nodeDataProblemText, type NodeDataCache } from "../../../hooks/useNodeDataCache"
-import {
-  captureDocumentExecutionFence,
-  isDocumentExecutionFenceCurrent,
-} from "../../../stores/useDocumentStatusStore"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { executionPart } from "../../../stores/useDocumentStatusStore"
 import useNodeDataStore from "../../../stores/useNodeDataStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
+import { answer as answerOf, newest } from "../../../utils/answers"
 import { canvasTarget, prepareNodeRequest } from "../../../utils/requestGateway"
 import type { SimpleEdge, SimpleNode } from "../_shared"
 
@@ -167,10 +166,6 @@ interface TaggedAnswer<T> extends Tagged<T> {
   subjectIdentity: string | null
 }
 
-interface InFlightQuestion {
-  controller: AbortController | null
-}
-
 /**
  * Ask the server about the whole dataset a node reads, for an editor that
  * otherwise works from preview rows.
@@ -199,7 +194,7 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
   const [answer, setAnswer] = useState<TaggedAnswer<TResponse | null> | null>(null)
   const [loading, setLoading] = useState<Tagged<boolean> | null>(null)
   const [error, setError] = useState<Tagged<string | null> | null>(null)
-  const inFlight = useRef<InFlightQuestion | null>(null)
+  const questions = useRequestKind()
   const askRef = useRef(ask)
   const failureMessageRef = useRef(failureMessage)
   useEffect(() => {
@@ -218,63 +213,41 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
     if (!nodeId || !askedFor || available !== "current" || requestScope === null) {
       return
     }
-    const fence = captureDocumentExecutionFence()
-    const question: InFlightQuestion = { controller: null }
+    // The execution fence as the edit left it: an answer once it has moved is no one's.
+    const fence = executionPart()
     const timer = setTimeout(() => {
-      const controller = new AbortController()
-      question.controller = controller
-      inFlight.current = question
-      setLoading({ identity: requestIdentity, value: true })
-      // Prepared in the chain, so a request that cannot be built fails like one refused.
-      Promise.resolve()
-        .then(() => {
-          const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-          return askRef.current({
-            asked: askedFor,
-            graph: target.graph,
-            target: target.node,
-            source: target.source,
-            signal: controller.signal,
-          })
+      void answerOf([newest(questions), fence], async (signal) => {
+        // Prepared in the request, so a request that cannot be built fails like one refused.
+        const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
+        return askRef.current({
+          asked: askedFor,
+          graph: target.graph,
+          target: target.node,
+          source: target.source,
+          signal,
         })
-        .then((response) => {
-          if (
-            controller.signal.aborted ||
-            inFlight.current !== question ||
-            !isDocumentExecutionFenceCurrent(fence)
-          ) return
+      }, {
+        ok: (response) => {
           setAnswer({ identity: requestIdentity, subjectIdentity, value: response })
           setError({ identity: requestIdentity, value: null })
           // The point looked current, but its data has gone or changed since it
           // was read. Every consumer re-reads its point, so this one's state,
           // and what its node's Refresh does, catch up with the server's.
           if (response.status === "cache_required") useNodeDataStore.getState().bumpEpoch()
-        })
-        .catch((err: unknown) => {
-          if (
-            controller.signal.aborted ||
-            inFlight.current !== question ||
-            !isDocumentExecutionFenceCurrent(fence)
-          ) return
+        },
+        failed: (err) => {
           // The editor keeps working from the preview, and says why it had to:
           // the server's own message — which for bad rules is execution's —
           // rather than the bare "HTTP 422" the client builds as the message.
           setAnswer({ identity: requestIdentity, subjectIdentity, value: null })
           setError({ identity: requestIdentity, value: apiErrorMessage(err, failureMessageRef.current) })
-        })
-        .finally(() => {
-          if (inFlight.current !== question) return
-          inFlight.current = null
-          setLoading({ identity: requestIdentity, value: false })
-        })
+        },
+      }, { pending: (waiting) => setLoading({ identity: requestIdentity, value: waiting }) })
     }, WHOLE_DATA_DEBOUNCE_MS)
+    // An edit, or the editor's unmount, supersedes the question: it is aborted.
     return () => {
       clearTimeout(timer)
-      question.controller?.abort()
-      if (inFlight.current === question) {
-        inFlight.current = null
-        setLoading({ identity: requestIdentity, value: false })
-      }
+      questions.bump()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, askedFor, available, dataVersion, activeSource])

@@ -6,7 +6,7 @@ import { useRequestScope } from "../panels/useGraph"
  * caching, cache size, preview memory, kept-free memory and the time limits,
  * kept in `.haute/pipeline-settings.json`), then the cached-data inventory.
  */
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from "lucide-react"
 
 import CacheStoreSize from "./CacheStoreSize"
@@ -15,11 +15,13 @@ import ModalShell from "./ModalShell"
 import ToggleButtonGroup from "./ToggleButtonGroup"
 import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
+import { useRequestKind } from "../hooks/useRequestKind"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
 import type { CacheOwnerEntry, RuntimeNodeKey } from "../generated/api-contracts.generated"
 import { keyText } from "../utils/answerAddresses"
 import { formatByteSize } from "../utils/formatBytes"
 import { formatDuration } from "../utils/formatValue"
+import { answer, newest, under } from "../utils/answers"
 import { preparePipelineRequest } from "../utils/requestGateway"
 import useSettingsStore, {
   MAX_CHUNK_ROWS,
@@ -523,7 +525,10 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
   // The row being cleared, so its own control shows the work and no other row
   // is disabled by it.
   const [clearing, setClearing] = useState<string | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
+  // The inventory read asked for last is the one shown; a pane closed reads nothing more.
+  const reads = useRequestKind()
+  // A clear answers while the pane is open.
+  const pane = useRequestKind()
 
   const activeSource = useSettingsStore((s) => s.activeSource)
   const loadPipelineSettings = useSettingsStore((s) => s.loadPipelineSettings)
@@ -547,80 +552,61 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
   }
 
   const request = useCallback(
-    (controller: AbortController) => {
+    (signal: AbortSignal) => {
       // Prepared at the moment of the request rather than subscribed to: a
       // subscription would make any edit, websocket resync or load re-issue the
       // request while the pane is open. The whole pipeline goes, also from inside
       // an open submodel, so every cached node is listed.
       const { graph } = preparePipelineRequest(requestScope)
       const labels = new Map(graph.nodes.map((node) => [node.id, String(node.data.label || node.id)]))
-      return fetchCacheNodes({ graph, source: activeSource }, { signal: controller.signal })
-        .then((answer) => ({ answer, labels }))
+      return fetchCacheNodes({ graph, source: activeSource }, { signal })
+        .then((answered) => ({ answered, labels }))
     },
     [activeSource, requestScope],
   )
 
-  const read = useCallback(
-    (controller: AbortController) => {
-      request(controller)
-        .then(({ answer, labels }) => {
-          if (controller.signal.aborted) return
-          setNodes(answer)
-          setOccurrenceLabels(labels)
-          setLoading(false)
-        })
-        .catch((cause: unknown) => {
-          if (controller.signal.aborted) return
-          // Keep the last good inventory beside the explicit error.
-          setError(apiErrorMessage(cause, "Could not read cached data."))
-          setLoading(false)
-        })
-    },
-    [request],
-  )
+  const read = useCallback(() => {
+    void answer([newest(reads)], request, {
+      ok: ({ answered, labels }) => {
+        setNodes(answered)
+        setOccurrenceLabels(labels)
+        setLoading(false)
+      },
+      failed: (cause) => {
+        // Keep the last good inventory beside the explicit error.
+        setError(apiErrorMessage(cause, "Could not read cached data."))
+        setLoading(false)
+      },
+    })
+  }, [reads, request])
 
   const refresh = useCallback(() => {
     // Refresh is disabled while a read is in flight, so there is nothing to
-    // supersede today; aborting anyway keeps this correct on its own terms
-    // rather than on the button's.
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
+    // supersede today; the newest read wins anyway, which keeps this correct on
+    // its own terms rather than on the button's.
     setLoading(true)
     setError(null)
-    read(controller)
+    read()
   }, [read])
 
   const clearRow = useCallback(
     (rowKey: string, digests: string[]) => {
       if (digests.length === 0) return
-      setClearing(rowKey)
       setError(null)
-      clearCacheIdentities(digests)
-        .then(() => {
-          // Re-read rather than patch the row: the server owns the inventory.
-          const controller = new AbortController()
-          abortRef.current?.abort()
-          abortRef.current = controller
-          read(controller)
-        })
-        .catch((cause: unknown) => {
-          setError(apiErrorMessage(cause, "Could not clear that cache."))
-        })
-        .finally(() => setClearing(null))
+      void answer([under(pane)], clearCacheIdentities(digests), {
+        // Re-read rather than patch the row: the server owns the inventory.
+        ok: () => read(),
+        failed: (cause) => setError(apiErrorMessage(cause, "Could not clear that cache.")),
+      }, { inFlight: (flying) => setClearing(flying ? rowKey : null) })
     },
-    [read],
+    [pane, read],
   )
 
   useEffect(() => {
     // The opening read sets no state of its own: the pane already starts
-    // loading with no error, and only the response changes that.
-    const controller = new AbortController()
-    abortRef.current = controller
-    read(controller)
-    // Abort whichever read is in flight when the pane closes — the latest,
-    // which after a Refresh is not the one this effect started.
-    return () => abortRef.current?.abort()
+    // loading with no error, and only the response changes that. The read in
+    // flight when the pane closes, whichever it is, ends with it.
+    read()
   }, [read])
 
   return (

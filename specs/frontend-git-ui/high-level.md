@@ -140,6 +140,9 @@ mutation starts, and a Cancel while it saves drops the mutation.
 An in-app switch reloads no page. The server publishes the new branch's documents and form
 once the switch has answered. When the analyst chose Discard, the switch drops the canvas's
 edits and asks for the document again only after it succeeds, so a failed switch keeps them.
+What it drops is what was chosen over when it was asked: an edit made on the canvas or in the
+form while the switch ran keeps every unsaved edit, and the new branch's documents wait behind
+the sync banner, as for Catch up below.
 
 The toolbar's Undo or Redo of a switch is a switch too, and asks the same question about
 unsaved edits before it checks out the other branch. The git panel may be closed, so the

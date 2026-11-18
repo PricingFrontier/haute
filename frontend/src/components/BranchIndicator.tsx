@@ -2,9 +2,10 @@ import { GitBranch } from "lucide-react"
 
 import { retryInterruptedGit } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
-import useGitStore from "../stores/useGitStore"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
+import { answer } from "../utils/answers"
 import Tooltip from "./Tooltip"
 
 /** The sync/storage chip shown beside the branch indicator once a working
@@ -136,14 +137,14 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
 
   // An operation that stopped part-way: the server finishes it or puts it back from its
   // record; files still held keep it interrupted, named in the toast.
+  // What it writes is the toolbar's and the toasts', which outlive the chip.
   const retryInterrupted = async () => {
-    try {
-      await retryInterruptedGit()
-      await loadStatus({ refresh: true })
-      addToast("success", "Back in step with version history.")
-    } catch (err) {
-      addToast("error", apiErrorMessage(err, "Retry did not go through."))
-    }
+    await answer([gitStorePart()], retryInterruptedGit(), {
+      ok: (_, asked) => asked.answer(loadStatus({ refresh: true }), {
+        ok: () => addToast("success", "Back in step with version history."),
+      }),
+      failed: (err) => addToast("error", apiErrorMessage(err, "Retry did not go through.")),
+    })
   }
 
   // Open the Git panel, expand the branch manager, and return its history view

@@ -647,7 +647,7 @@ describe("UtilityPanel saving", () => {
     expect(useUIStore.getState().utilityUnsaved).toBe(true)
   })
 
-  it("keeps the edit of a file chosen while another is being deleted, and saves it on close (FEP-04)", async () => {
+  it("keeps the edit of a file chosen while another is being deleted, and saves it on close", async () => {
     mockListFiles.mockResolvedValue({
       files: [
         { name: "old_rates.py", module: "old_rates" },

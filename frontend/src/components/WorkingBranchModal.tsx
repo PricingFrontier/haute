@@ -1,9 +1,11 @@
 import { useState } from "react"
 
 import { setGitIdentity, setWorkingBranch } from "../api/client"
-import useGitStore from "../stores/useGitStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { answer, ask, under } from "../utils/answers"
 import { GitIdentityFields, ModalFormActions, ModalFormHeader, ModalTextInput } from "./ModalForm"
 import BrokenPairs from "./BrokenPairs"
 import ModalShell from "./ModalShell"
@@ -48,6 +50,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
   const [userEmail, setUserEmail] = useState(status?.user_email ?? "")
   const [setGlobal, setSetGlobal] = useState(false)
   const [busy, setBusy] = useState(false)
+  const life = useRequestKind()
 
   const creating = choice === CREATE_SENTINEL
   const branchName = creating ? newBranch.trim() : choice
@@ -56,21 +59,30 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
 
   const submit = async () => {
     if (!canSubmit) return
-    setBusy(true)
-    try {
-      if (identityNeeded) {
-        await setGitIdentity(userName.trim(), userEmail.trim(), setGlobal)
-      }
-      await setWorkingBranch(branchName, creating)
-      await loadStatus({ refresh: true }) // not a read begun before the action
-      addToast("success", `Working branch set to ${branchName}`)
-      onConfirmed()
-    } catch (err: unknown) {
+    const refused = (err: unknown) => {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not set working branch: ${detail}`)
       void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
+    }
+    // The identity, the branch and what they tell the app belong to the git store; going on
+    // to the queued action belongs to this dialog, which a close ends.
+    const here = ask([under(life)])
+    try {
+      const identity = identityNeeded ? setGitIdentity(userName.trim(), userEmail.trim(), setGlobal) : Promise.resolve(null)
+      await answer([gitStorePart()], identity, {
+        ok: (_, asked) => asked.answer(setWorkingBranch(branchName, creating), {
+          ok: () => asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
+            ok: () => {
+              addToast("success", `Working branch set to ${branchName}`)
+              here.apply(onConfirmed)
+            },
+          }),
+          failed: refused,
+        }),
+        failed: refused,
+      }, { inFlight: setBusy })
     } finally {
-      setBusy(false)
+      here.release()
     }
   }
 

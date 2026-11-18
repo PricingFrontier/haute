@@ -4,6 +4,7 @@ import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import { answer, watch } from "../utils/answers"
 import { newQuoteValues } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
@@ -26,15 +27,16 @@ export function openRelease(form: FormSpec, revision: string, release: string): 
   useWorkbenchViewStore.setState({ underwriterApp: true })
   useWorkbenchViewStore.getState().showMode("preview")
   useWorkbenchPreviewStore.getState().setLocked(APP_SET_COLUMNS)
-  useWorkbenchPricingStore.getState().setQuotePricer(async (_form, quote) => {
-    try {
-      const { tables, request } = await priceAppQuote(revision, release, quote)
-      return { tables, sample: request }
-    } catch (error: unknown) {
-      // The page is for another release than the one serving it: Reload, not a failed price.
-      if (releaseMoved(error)) useAppStore.getState().noteReleaseChanged()
-      throw error
-    }
+  useWorkbenchPricingStore.getState().setQuotePricer((_form, quote) => {
+    const priced = priceAppQuote(revision, release, quote)
+    // The page is for another release than the one serving it: Reload, not a failed price,
+    // while this is the app's pricer.
+    void answer([watch(useWorkbenchPricingStore, (state) => state.quotePricer)], priced, {
+      failed: (error) => {
+        if (releaseMoved(error)) useAppStore.getState().noteReleaseChanged()
+      },
+    })
+    return priced.then(({ tables, request }) => ({ tables, sample: request }))
   })
   useWorkbenchPreviewStore.getState().open(structuredClone(newQuoteValues(form.schema)) as Record<string, SampleRow[]>, null, false)
 }

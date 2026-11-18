@@ -380,7 +380,7 @@ export default function BandingEditor({
 
   // Import opens where it was pressed, as Generate does; another factor's starts afresh. It
   // belongs to its factor by identity, never position: a removed factor's import goes with
-  // it, and its read answers nothing into the factor that takes its place (FEN-10).
+  // it, and its read answers nothing into the factor that takes its place.
   const importOptions = (
     <ImportParamValues
       key={`import-${factorKeys.keys[safeIdx]}`}

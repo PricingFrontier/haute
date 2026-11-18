@@ -22,10 +22,10 @@ from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit. A worker ran each in a
 browser, and the main session ran each journey again on 13 November.
 
-`FEG-09` and `FEG-10` come from the review plan's phase 5, a reader
-from a second model family (Codex) over the code changed since the 31
-October audit. A worker drove each journey in a browser and the main
-session ran each again on 15 November 2026.
+`FEG-09` comes from the review plan's phase 5, a reader from a second model
+family (Codex) over the code changed since the 31 October audit. A worker
+drove its journey in a browser and the main session ran it again on 15
+November 2026.
 
 ## Priorities
 
@@ -39,7 +39,6 @@ session ran each again on 15 November 2026.
 | FEG-06 | Planned | P3 | Nodes pasted together stay connected in their code: a pasted Transform reads the pasted input, not the original under a name it no longer has. |
 | FEG-07 | Planned | P3 | An Edge Join dropped on the edge into an optimiser moves the optimiser's chosen input to the join, and a save's refusal names the node as the canvas does. |
 | FEG-09 | Planned | P2 | Comparing an earlier milestone of a submodel that gained an output shows the comparison; an output with no identity yet never replaces the screen with an error. |
-| FEG-10 | Planned | P2 | A repair's late answer leaves the tab on the newer document it already shows. |
 
 ## Planned improvements
 
@@ -369,22 +368,3 @@ the old side. Neither journey shows the error screen.
 **Evidence:** `frontend/src/nodes/SubmodelNode.tsx`;
 `specs/frontend-graph-canvas/high-level.md`.
 
-### FEG-10 — A late answer to a repair leaves the canvas on the current document
-**Why:** Reproduced on 15 November 2026 in the browser with two tabs and
-the repair's answer held back. Tab A removed an unavailable node; the
-server applied it. Tab B then set a Rating Step's Default to 1.5 and
-saved; tab A received 1.5 by live sync. When A's repair answer arrived, A
-went back to the repair's document: Default 1, with Save offered. The
-file holds 1.5, and A's Save is refused with 409. The answer is applied
-without checking that the document it carries is still the latest.
-
-**Plan:** Apply a repair's answer only when its revision is the newest
-the tab has seen; otherwise keep the current document.
-
-**Acceptance:** In the journey above tab A still shows Default 1.5 after
-the answer, with no Save offered.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/PipelineRepairDialog.tsx`;
-`frontend/src/App.tsx`; `specs/frontend-graph-canvas/high-level.md`.

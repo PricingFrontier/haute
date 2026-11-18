@@ -11,6 +11,8 @@ import type {
   PivotFormulaPlacement,
 } from "../../explore/pivotConfig"
 import { INPUT_STYLE } from "../_shared"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { answer, under } from "../../../utils/answers"
 
 type PivotFormulaSectionProps = {
   pivot: ExplorePivotConfig
@@ -42,6 +44,7 @@ export default function PivotFormulaSection({
   const [error, setError] = useState<string | null>(null)
   const [formulaSearch, setFormulaSearch] = useState("")
   const expressionRef = useRef<HTMLTextAreaElement>(null)
+  const life = useRequestKind()
   const selectedFormulas = pivotFormulas(pivot)
   const selectedIds = new Set(selectedFormulas.map((formula) => formula.id))
   const availableFormulas = useMemo(() => {
@@ -285,9 +288,11 @@ export default function PivotFormulaSection({
                 type="button"
                 aria-label={`Delete formula ${editingFormula.display_name}`}
                 onClick={() =>
-                  void (async () => {
-                    if (await deleteFormula(editingFormula)) closeEditor()
-                  })()
+                  void answer([under(life)], deleteFormula(editingFormula), {
+                    ok: (deleted) => {
+                      if (deleted) closeEditor()
+                    },
+                  })
                 }
                 className="mr-auto rounded px-1.5 py-1 text-[10px]"
                 style={{ color: "var(--danger)" }}

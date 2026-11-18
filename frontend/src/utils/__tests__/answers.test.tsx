@@ -149,6 +149,25 @@ describe("an answer", () => {
     expect(await dropped).toBe("stale")
   })
 
+  it("takes what ok throws using the answer as the request's failure", async () => {
+    const request = held<string>()
+    const failed = vi.fn()
+    const outcome = answer([documentPart()], request.promise, {
+      ok: () => {
+        throw new Error("an answer the caller cannot use")
+      },
+      failed,
+    })
+    request.resolve("unusable")
+    expect(await outcome).toBe("failed")
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: "an answer the caller cannot use" }), expect.anything())
+
+    const unhandled = held<string>()
+    const rejected = answer([documentPart()], unhandled.promise, { ok: () => { throw new Error("thrown") } })
+    unhandled.resolve("unusable")
+    await expect(rejected).rejects.toThrow("thrown")
+  })
+
   it("rejects with a current failure no handler takes", async () => {
     const request = held<string>()
     const outcome = answer([documentPart()], request.promise, { ok: vi.fn() })

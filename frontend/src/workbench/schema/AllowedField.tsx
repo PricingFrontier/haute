@@ -1,14 +1,15 @@
 /** A column's allowed values, read from a params file's column (specs/workbench). */
 import { RefreshCw } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { apiErrorMessage } from "../../api/errors"
-import type { SchemaColumn } from "../../api/types"
+import type { FormSpec, SchemaColumn } from "../../api/types"
 import { fetchParamFile } from "../../api/workbench"
 import { COMPACT_FIELD_CLASS, INPUT_STYLE } from "../../components/form"
 import { useParamsFiles } from "../../hooks/useParamsFiles"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
+import { answer, newest, watch } from "../../utils/answers"
 import { tableColumns } from "../../utils/quoteIdentity"
-import { latest } from "../../utils/latest"
 import { setIndexKind } from "../../utils/workbenchForm"
 import { IconButton } from "./IconButton"
 
@@ -32,14 +33,7 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
   const [pendingFile, setPendingFile] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   // A read of values answers while the details are open and it is the latest.
-  const mounted = useRef(false)
-  const [reads] = useState(latest)
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-    }
-  }, [])
+  const reads = useRequestKind()
   const file = pendingFile ?? source?.file ?? ""
   // The CSV files in the params folder, listed as the details open (a project with no
   // pipeline folder says why it could not be), and `file`'s header.
@@ -48,26 +42,25 @@ export function AllowedField({ tableId, column, set }: { tableId: string; column
 
   // The column as the form holds it now, which an undo, a redo or a sync may have changed
   // while a read was under way.
-  const columnNow = () => {
-    const table = useWorkbenchFormStore.getState().form?.schema.tables.find((other) => other.name === tableId)
+  const columnIn = (form: FormSpec | null) => {
+    const table = form?.schema.tables.find((other) => other.name === tableId)
     return table === undefined ? undefined : tableColumns(table).find((other) => other.name === column.name)
   }
-  const sourceNow = () => JSON.stringify(columnNow()?.options_source ?? null)
+  const columnNow = () => columnIn(useWorkbenchFormStore.getState().form)
   const readValues = (from: string, name: string, then: (values: string[]) => void) => {
-    const ticket = reads.take()
-    const began = sourceNow()
     // A read answers only while it is the latest and the column's source is the one it began from.
-    const current = () => mounted.current && reads.is(ticket) && sourceNow() === began
+    const belongsTo = [
+      newest(reads),
+      watch(useWorkbenchFormStore, (state) => JSON.stringify(columnIn(state.form)?.options_source ?? null)),
+    ] as const
     setProblem(null)
-    void fetchParamFile(from, name)
-      .then(({ columns, values }) => {
-        if (!current()) return
+    void answer(belongsTo, fetchParamFile(from, name), {
+      ok: ({ columns, values }) => {
         keepHeader(from, columns)
         then(values)
-      })
-      .catch((error: unknown) => {
-        if (current()) setProblem(apiErrorMessage(error))
-      })
+      },
+      failed: (error) => setProblem(apiErrorMessage(error)),
+    })
   }
   const chooseFile = (chosen: string) => {
     // A pick or a refresh still being read no longer answers.

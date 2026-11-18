@@ -7,6 +7,7 @@
 import { create } from "zustand"
 import { fetchAppPeople } from "../api/app"
 import type { FormSpec, WorkbenchAppQuoteStore, WorkbenchAppReleaseResponse } from "../api/types"
+import { answer, newest, requestKind } from "../utils/answers"
 import { quotesClosedBy } from "./quoteValues"
 
 interface AppState {
@@ -27,6 +28,9 @@ interface AppState {
   loadPeople: () => Promise<void>
 }
 
+/** The people asked for last. */
+const peopleAsked = requestKind()
+
 const useAppStore = create<AppState>()((set) => ({
   release: null,
   form: null,
@@ -43,12 +47,11 @@ const useAppStore = create<AppState>()((set) => ({
   },
   setRelease: (release, form, revision) => set({ release, form, revision, quotes: release.quotes }),
   loadPeople: async () => {
-    try {
-      set({ people: (await fetchAppPeople()).people })
-    } catch {
+    await answer([newest(peopleAsked)], fetchAppPeople(), {
+      ok: ({ people }) => set({ people }),
       // Picking from the people is a convenience: a name can still be typed.
-      set({ people: [] })
-    }
+      failed: () => set({ people: [] }),
+    })
   },
 }))
 

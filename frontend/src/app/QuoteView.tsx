@@ -16,6 +16,7 @@ import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchViewStore, { ZOOM_STEP } from "../stores/useWorkbenchViewStore"
+import { answer } from "../utils/answers"
 import { canonicalJson } from "../utils/canonicalJson"
 import { relativeTime } from "../utils/relativeTime"
 import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
@@ -25,11 +26,11 @@ import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
 import { fullTime, valuesKey } from "./quoteValues"
-import { followLink, navigate, quotePath, setLeaveGuard, type AppRoute } from "./route"
+import { followLink, navigate, quotePath, routePart, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Notice, ReleaseNotice, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
-import useOpenQuoteStore, { busy, canEdit, readOnlyReason } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, canEdit, openQuotePart, readOnlyReason } from "./useOpenQuoteStore"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -40,8 +41,11 @@ const NAME_COLUMN = QUOTE_DETAILS.quote_name
 
 /** Save the open quote. */
 async function saveOpen(): Promise<void> {
-  const saved = await useOpenQuoteStore.getState().save()
-  if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.label}`)
+  await answer([openQuotePart()], useOpenQuoteStore.getState().save(), {
+    ok: (saved) => {
+      if (saved !== null) useToastStore.getState().addToast("success", `Saved ${saved.label}`)
+    },
+  })
 }
 
 /**
@@ -49,10 +53,11 @@ async function saveOpen(): Promise<void> {
  * own address once it has one, unless the page has moved on meanwhile.
  */
 async function makeAsked(from: QuoteSource): Promise<void> {
-  const asked = window.location.href
-  const made = await useOpenQuoteStore.getState().openNew(from)
-  if (made === null || window.location.href !== asked) return
-  await navigate(quotePath(made.reference, made.option), { replace: true, force: true })
+  await answer([routePart()], useOpenQuoteStore.getState().openNew(from), {
+    ok: async (made) => {
+      if (made !== null) await navigate(quotePath(made.reference, made.option), { replace: true, force: true })
+    },
+  })
 }
 
 export default function QuoteView({ route }: { route: QuoteRoute }) {
@@ -241,18 +246,28 @@ function QuoteBar({ dirty }: { dirty: boolean }) {
       text: "It becomes the final quotation, and takes no save until someone amends it, giving a reason.",
       confirm: "Mark final",
     })
-    if (yes && (await change("final", {}, quote)) !== null) addToast("success", `${quote.label} is final`)
+    if (!yes) return
+    await answer([openQuotePart()], change("final", {}, quote), {
+      ok: (changed) => {
+        if (changed !== null) addToast("success", `${quote.label} is final`)
+      },
+    })
   }
 
   const amend = async () => {
     if (quote === null) return
-    const answer = await useQuestionStore.getState().ask({
+    const given = await useQuestionStore.getState().ask({
       title: `Amend ${quote.label}?`,
       text: "It goes back to draft, and its next save replaces the final quotation.",
       confirm: "Amend",
       reason: { label: "Why it is being amended" },
     })
-    if (answer !== null && (await change("amend", { reason: answer.reason }, quote)) !== null) addToast("success", `${quote.label} is a draft again`)
+    if (given === null) return
+    await answer([openQuotePart()], change("amend", { reason: given.reason }, quote), {
+      ok: (changed) => {
+        if (changed !== null) addToast("success", `${quote.label} is a draft again`)
+      },
+    })
   }
 
   return (
@@ -339,14 +354,14 @@ function QuoteLine() {
     if (quote === null) return
     let assignee = to
     if (to === "") {
-      const answer = await useQuestionStore.getState().ask({
+      const given = await useQuestionStore.getState().ask({
         title: `Assign ${quote.label}`,
         text: "Name who the quote is with now, as the app shows who is signed in.",
         confirm: "Assign",
         reason: { label: "Their sign-in name" },
       })
-      if (answer === null) return
-      assignee = answer.reason
+      if (given === null) return
+      assignee = given.reason
     }
     if (assignee !== quote.assignee) void change("assignee", { assignee }, quote)
   }
@@ -428,7 +443,11 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
     if (quote === null) return
     const { reference, option } = quote
     // Moved to the quote's address, its route opens it; there already, nothing else will.
-    if ((await navigate(quotePath(reference, option), { force: true })) === "here") void useOpenQuoteStore.getState().openQuote(reference, option)
+    await answer([routePart()], navigate(quotePath(reference, option), { force: true }), {
+      ok: (moved) => {
+        if (moved === "here") void useOpenQuoteStore.getState().openQuote(reference, option)
+      },
+    })
   }
 
   return (

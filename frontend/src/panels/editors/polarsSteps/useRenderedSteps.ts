@@ -9,6 +9,8 @@ import type { StepStart } from "../../../utils/polarsStepInputs"
 import type { ColumnInfo } from "./derivedColumns"
 import type { Step } from "./types"
 import { apiErrorMessage } from "../../../api/errors"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { ask, newest } from "../../../utils/answers"
 
 /** The columns the editor knows: each input's by name, and a frame-mode surface's `df`. */
 export type KnownColumns = { inputs: Readonly<Record<string, ColumnInfo[]>>; frame: ColumnInfo[] }
@@ -85,6 +87,7 @@ export function useRenderedSteps(
   onRendered?: (code: string) => void,
 ): RenderedStepsState {
   const revisionRef = useRef(0)
+  const renders = useRequestKind()
   const onRenderedRef = useRef(onRendered)
   useEffect(() => {
     onRenderedRef.current = onRendered
@@ -120,60 +123,13 @@ export function useRenderedSteps(
       return
     }
     setState((prev) => ({ ...prev, status: "pending", revision, stepLines: [] }))
-    const controller = new AbortController()
+    // The render of this revision: a newer one, or the editor's unmount, ends it.
+    const asked = ask([newest(renders)])
     const timer = setTimeout(() => {
-      const current = () => !controller.signal.aborted && revision === revisionRef.current
       const globalConstants = stepConstants.error === null ? stepConstants.constants : undefined
-      renderPolarsSteps({ steps, inputNames, start, globalConstants, signal: controller.signal })
-        .then((response) => {
-          if (!current()) return
-          if (response.ok) {
-            setState({
-              status: "ok",
-              code: response.code,
-              error: null,
-              revisionRendered: revision,
-              revision,
-              stepLines: response.step_lines,
-            })
-            onRenderedRef.current?.(response.code)
-            if (!steps.some((s) => s.kind === "free_code")) {
-              setResolved([])
-              return
-            }
-            const resolvedAt = (index: number, columns: FreeCodeColumns): Resolved => ({
-              signature: signatureOf(steps, index, knownKey),
-              id: steps[index].id,
-              columns,
-            })
-            resolveFreeCodeColumns({
-              nodeId,
-              steps,
-              inputNames,
-              start,
-              inputColumns,
-              frameColumns,
-              globalConstants: stepConstants.constants,
-              globalConstantsError: stepConstants.error,
-              source: stepConstants.source,
-              signal: controller.signal,
-            })
-              .then((columns) => {
-                if (!current()) return
-                setResolved(
-                  columns.free_code_columns.flatMap((entry) =>
-                    steps[entry.step_index] === undefined ? [] : [resolvedAt(entry.step_index, { columns: entry.columns, message: entry.message })],
-                  ),
-                )
-              })
-              .catch((err: unknown) => {
-                if (!current()) return
-                if (err instanceof DOMException && err.name === "AbortError") return
-                // A failed request is each free-code step's reason, never a silent gap.
-                const message = `the request failed: ${apiErrorMessage(err)}`
-                setResolved(steps.flatMap((s, index) => (s.kind === "free_code" ? [resolvedAt(index, { columns: null, message })] : [])))
-              })
-          } else {
+      void asked.answer((signal) => renderPolarsSteps({ steps, inputNames, start, globalConstants, signal }), {
+        ok: (response) => {
+          if (!response.ok) {
             setState((prev) => ({
               ...prev,
               status: "error",
@@ -182,10 +138,52 @@ export function useRenderedSteps(
               revision,
               stepLines: [],
             }))
+            return
           }
-        })
-        .catch((err: unknown) => {
-          if (controller.signal.aborted || revision !== revisionRef.current) return
+          setState({
+            status: "ok",
+            code: response.code,
+            error: null,
+            revisionRendered: revision,
+            revision,
+            stepLines: response.step_lines,
+          })
+          onRenderedRef.current?.(response.code)
+          if (!steps.some((s) => s.kind === "free_code")) {
+            setResolved([])
+            return
+          }
+          const resolvedAt = (index: number, columns: FreeCodeColumns): Resolved => ({
+            signature: signatureOf(steps, index, knownKey),
+            id: steps[index].id,
+            columns,
+          })
+          return asked.answer((signal) => resolveFreeCodeColumns({
+            nodeId,
+            steps,
+            inputNames,
+            start,
+            inputColumns,
+            frameColumns,
+            globalConstants: stepConstants.constants,
+            globalConstantsError: stepConstants.error,
+            source: stepConstants.source,
+            signal,
+          }), {
+            ok: (columns) => setResolved(
+              columns.free_code_columns.flatMap((entry) =>
+                steps[entry.step_index] === undefined ? [] : [resolvedAt(entry.step_index, { columns: entry.columns, message: entry.message })],
+              ),
+            ),
+            failed: (err) => {
+              if (err instanceof DOMException && err.name === "AbortError") return
+              // A failed request is each free-code step's reason, never a silent gap.
+              const message = `the request failed: ${apiErrorMessage(err)}`
+              setResolved(steps.flatMap((s, index) => (s.kind === "free_code" ? [resolvedAt(index, { columns: null, message })] : [])))
+            },
+          })
+        },
+        failed: (err) => {
           if (err instanceof DOMException && err.name === "AbortError") return
           const message = apiErrorMessage(err)
           setState((prev) => ({
@@ -196,16 +194,17 @@ export function useRenderedSteps(
             revision,
             stepLines: [],
           }))
-        })
+        },
+      })
     }, DEBOUNCE_MS)
     return () => {
       clearTimeout(timer)
-      controller.abort()
+      asked.release()
     }
     // The serialised keys are the change signal; `steps`/`inputNames` and the
     // known columns are read from the closure of the same render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepsKey, namesKey, start, knownKey, nodeId])
+  }, [stepsKey, namesKey, start, knownKey, nodeId, renders])
 
   const freeCode = useMemo(() => {
     const current = new Map<string, FreeCodeColumns>()

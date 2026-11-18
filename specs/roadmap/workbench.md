@@ -20,7 +20,7 @@ that fill the sheets from databases and APIs.
 
 `WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
 in the Workbench view's Allowed field. `WB-41` comes from the 31 October 2026 codebase
-review, which found its three defects by source inspection.
+review, which found its defects by source inspection.
 
 `WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
 it was confirmed by running the code or read from the source; none was run against a
@@ -38,7 +38,7 @@ SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the cont
 uses. The main session ran each again on the three databases. `WB-59` comes from the same
 phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
-`WB-60` to `WB-62` come from the plan's phase 5, a reader from a second model family (Codex)
+`WB-60` and `WB-62` come from the plan's phase 5, a reader from a second model family (Codex)
 over the code changed since the 31 October audit. A worker ran each in a browser, and the
 main session ran each journey again on 13 November 2026.
 
@@ -67,7 +67,7 @@ A cause several packages here share has its own file and is taken first:
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
+| WB-41 | Planned | P2 | `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
 | WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
 | WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
 | WB-48 | Planned | P3 | A typed number with a comma out of place is kept as typed and flagged, on the sheet and on the server alike. |
@@ -83,7 +83,6 @@ A cause several packages here share has its own file and is taken first:
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
 | WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
-| WB-61 | Planned | P3 | Text being typed in the designer's Preview is kept when a test quote's Open answers late. |
 | WB-62 | Planned | P3 | A whole number of more than 15 digits is shown digit for digit in a column with a Number format. |
 | WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
 | WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
@@ -503,51 +502,37 @@ specification and the field stop calling the shape older.
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
 
-### WB-41 — Fence `loadingMore` in `useQuoteListStore`, preview a submodel `WORKBENCH_OUTPUT` by address in `priceSample`, and remove stale blank-form rationale
-**Why:** Three defects affect the underwriter app's quote list pagination store, live
-sample pricing in the Workbench view, and the workbench high-level specification:
-1. In `useQuoteListStore` (`frontend/src/app/useQuoteListStore.ts`), `load` does not
-   reset `loadingMore: false` when switching to a new list while a previous `more()`
-   request is in flight, and `more()`'s `finally` block runs
-   `set({ loadingMore: false })` unconditionally without checking
-   `listAsked.is(attempt)`, clearing `loadingMore` for a newer list load's own
-   pagination request.
-2. In `priceSample` (`frontend/src/workbench/priceSample.ts`), the module docstring
+### WB-41 — Preview a submodel `WORKBENCH_OUTPUT` by address in `priceSample`, and remove stale blank-form rationale
+**Why:** Two defects affect live sample pricing in the Workbench view and the workbench
+high-level specification. (A third, the quote list's `loadingMore` left set or cleared
+across list switches, went with the late-answer helper: a further page belongs to the
+list loaded, and loading another ends it at once.)
+1. In `priceSample` (`frontend/src/workbench/priceSample.ts`), the module docstring
    states that every `Workbench Input` and `Workbench Output` at the top level or
    inside a submodel is supported, and `WORKBENCH_INPUT` is collected from both
    `graph.nodes` and `graph.submodels`, but `const output = graph.nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)`
    searches only top-level `graph.nodes`, failing with
    `"The pipeline has no Workbench Output..."` when `Workbench Output` lives inside a
    submodel.
-3. `specs/workbench/high-level.md` retains a stale rationale bullet (`The blank form
+2. `specs/workbench/high-level.md` retains a stale rationale bullet (`The blank form
    is a form. A project whose workbench was enabled by hand has no file yet...`) that
    directly contradicts the earlier rationale bullet (`A missing folder is a loss,
    not a new form`) and the folder-backed form loader.
 
-**Plan:** Reset `loadingMore: false` in `useQuoteListStore.load` and guard
-`set({ loadingMore: false })` in `more()` with `if (listAsked.is(attempt))`; search
-both `graph.nodes` and `graph.submodels` for `NODE_TYPES.WORKBENCH_OUTPUT` in
-`priceSample` and send a submodel child output as the preview's target by its address
-(`childAddress(occurrence, node)`) when calling `previewNode`; and remove the stale
-`The blank form is a form` bullet from `specs/workbench/high-level.md`.
+**Plan:** Search both `graph.nodes` and `graph.submodels` for
+`NODE_TYPES.WORKBENCH_OUTPUT` in `priceSample` and send a submodel child output as the
+preview's target by its address (`childAddress(occurrence, node)`) when calling
+`previewNode`; and remove the stale `The blank form is a form` bullet from
+`specs/workbench/high-level.md`.
 
-The regression for the first defect holds an old list's `more()`, loads another list,
-and asks for its next page both before and after the old request settles; the defect
-shows as the new list's pagination blocked, or the old completion clearing the new
-list's `loadingMore`. The 28 October 2026 review recorded this sequence as a candidate
-it did not run.
-
-**Acceptance:** Switching quote lists while `more()` is in flight resets `loadingMore`
-immediately and the stale `more()` completion cannot clear a newer list's `loadingMore`
-state; `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
+**Acceptance:** `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
 submodel by sending the child's address to `/api/pipeline/preview` and returning its
 priced tables; and `specs/workbench/high-level.md` states one consistent
 missing-folder rule.
 
 **Dependencies:** None.
 
-**Evidence:** `frontend/src/app/useQuoteListStore.ts::useQuoteListStore`;
-`frontend/src/workbench/priceSample.ts::priceSample`;
+**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample`;
 `frontend/src/utils/nodeAddress.ts::childAddress`;
 `specs/workbench/high-level.md`.
 
@@ -1020,32 +1005,6 @@ shows it again.
 
 **Evidence:** `frontend/src/app/quoteValues.ts`;
 `frontend/src/app/useOpenQuoteStore.ts`; `specs/workbench/high-level.md`.
-
-### WB-61 — Text being typed when a test quote opens is kept
-**Why:** Reproduced on 13 November 2026 in a browser, in the designer's
-Preview. A test quote `tq1` is saved with "kept in quote" in a notes
-field. Open is pressed for it, and before its answer arrives (the run held
-it) the designer clicks into the notes field and types "typed during
-open" without leaving the field. When the answer arrives the field shows
-"kept in quote" again, with the cursor still in it, and nothing is said.
-The specification has an Open's values dropped when the form changed
-meanwhile, "so typing during an Open" wins.
-
-The check that drops a late Open compares the form as last committed. Text
-still being typed in a field is not committed until the field is left, so
-the check does not see it.
-
-**Plan:** Count a field that is being typed in as a change when a late
-Open is weighed, or commit the text before the Open's values are applied.
-
-**Acceptance:** In the run above the field keeps "typed during open" after
-the Open answers, and the Open's values are dropped.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/stores/useWorkbenchTestQuotesStore.ts`;
-`frontend/src/components/form/CommittedTextField.tsx`;
-`specs/workbench/low-level.md`.
 
 ### WB-62 — A whole number of more than 15 digits is shown as typed in a formatted column
 **Why:** Reproduced on 13 November 2026 in a browser, in the underwriter

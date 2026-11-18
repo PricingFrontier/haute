@@ -11,6 +11,8 @@ import useUIStore, { type OptimiserPane } from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, under } from "../utils/answers"
 import { solveIdentityConfig } from "../utils/modellingExportConfig"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import {
@@ -83,6 +85,7 @@ export default function OptimiserConfig({
   // ── Local UI state (cheap, ok to recreate) ──
   const [submitting, setSubmitting] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const life = useRequestKind()
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
@@ -266,25 +269,18 @@ export default function OptimiserConfig({
 
   // --- Actions (polling is handled by useBackgroundJobs hook in App.tsx) ---
 
+  // A start records its own outcome under the node's result key (`startOptimiserSolve`).
   const handleSolve = useCallback(async () => {
-    setSubmitting(true)
-    try {
-      await startOptimiserSolve({ nodeId, config, allNodes, requestScope })
-    } finally {
-      setSubmitting(false)
-    }
-  }, [requestScope, allNodes, config, nodeId])
+    await answer([under(life)], startOptimiserSolve({ nodeId, config, allNodes, requestScope }), {}, {
+      inFlight: setSubmitting,
+    })
+  }, [requestScope, allNodes, config, nodeId, life])
 
   const handleStop = useCallback(async () => {
-    setStopping(true)
-    try {
-      await stopOptimiserSolve(resultKey)
-    } catch (error) {
-      useToastStore.getState().addToast("error", `Could not stop the optimisation: ${apiErrorMessage(error)}`)
-    } finally {
-      setStopping(false)
-    }
-  }, [resultKey])
+    await answer([under(life)], stopOptimiserSolve(resultKey), {
+      failed: (error) => useToastStore.getState().addToast("error", `Could not stop the optimisation: ${apiErrorMessage(error)}`),
+    }, { inFlight: setStopping })
+  }, [resultKey, life])
 
   const effectiveBandingSource = effectiveBandingNode?.name ?? ""
 

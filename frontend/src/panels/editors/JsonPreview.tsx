@@ -11,6 +11,8 @@ import {
 } from "lucide-react"
 import { writeClipboardText, downloadTextFile, clipboardWriteAvailable } from "./shared/tableClipboard"
 import { apiErrorMessage } from "../../api/errors"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, under } from "../../utils/answers"
 
 // ─── JsonPreview ──────────────────────────────────────────────────
 //
@@ -79,6 +81,7 @@ export function JsonPreview({
   const [ack, setAck] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const life = useRequestKind()
 
   const flashAck = useCallback((msg: string) => {
     setActionError(null)
@@ -92,11 +95,11 @@ export function JsonPreview({
   const truncated = typeof totalRows === "number" && totalRows > rows.length
 
   const onCopy = useCallback(() => {
-    writeClipboardText(json).then(
-      () => flashAck("Copied"),
-      (e: unknown) => setActionError(apiErrorMessage(e, "Copy failed")),
-    )
-  }, [json, flashAck])
+    void answer([under(life)], writeClipboardText(json), {
+      ok: () => flashAck("Copied"),
+      failed: (e) => setActionError(apiErrorMessage(e, "Copy failed")),
+    })
+  }, [json, flashAck, life])
 
   const onExport = useCallback(() => {
     const ok = downloadTextFile(json, `${filename}.json`, "application/json")

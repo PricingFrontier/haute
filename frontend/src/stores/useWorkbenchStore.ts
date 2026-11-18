@@ -18,8 +18,7 @@ import type { WorkbenchTables } from "../utils/workbenchTables"
 import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
 import useToastStore from "./useToastStore"
-import { latest } from "../utils/latest"
-import { watch, type Part } from "../utils/answers"
+import { answer, newest, requestKind, watch, type Part } from "../utils/answers"
 
 /** The editor's views: the pipeline editor's, and the workbench's while it is enabled. */
 export type EditorView = "pipeline" | "workbench"
@@ -100,7 +99,11 @@ interface WorkbenchState {
 }
 
 // Fetches are numbered across the store's life, so a later one always has a larger number.
-const fetches = latest()
+let fetches = 0
+/** The fetch of the tables asked for last: only it publishes. */
+const tablesAsked = requestKind()
+/** The status read asked for last. */
+const statusAsked = requestKind()
 /** What a fetch gives the workbench nodes, compared by content: the order of keys never reads as a change. */
 const given = (workbench: WorkbenchTables): string =>
   canonicalJson([workbench.tables, workbench.sample, workbench.responseTables])
@@ -112,13 +115,14 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   environments: [],
   formPath: null,
   load: async () => {
-    const status = await fetchWorkbenchStatus().catch((error: unknown) => {
-      useToastStore.getState().addToast("error", `Could not read the workbench's status: ${apiErrorMessage(error)}`)
-      return null
+    await answer([newest(statusAsked)], fetchWorkbenchStatus(), {
+      // While the workbench is not enabled the store stays as it started, so the editor
+      // never re-renders on its account.
+      ok: (status) => {
+        if (status.enabled) set({ enabled: true, formPath: status.form, environments: status.environments })
+      },
+      failed: (error) => useToastStore.getState().addToast("error", `Could not read the workbench's status: ${apiErrorMessage(error)}`),
     })
-    // While the workbench is not enabled the store stays as it started, so the editor
-    // never re-renders on its account.
-    if (status?.enabled) set({ enabled: true, formPath: status.form, environments: status.environments })
   },
   activeView: "pipeline",
   showView: (view) => {
@@ -141,11 +145,10 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   storeColumns: {},
   refreshTables: () => {
     if (!get().enabled) return null
-    const fetch = fetches.take()
-    settling = fetchWorkbenchTables().then(
-      (response): boolean | Promise<boolean> => {
-        // Superseded: the newer fetch's outcome is the one that counts.
-        if (!fetches.is(fetch)) return settling
+    fetches += 1
+    const fetch = fetches
+    settling = answer([newest(tablesAsked)], fetchWorkbenchTables(), {
+      ok: (response) => {
         const previous = get().tables
         const tables = {
           tables: response.tables,
@@ -160,14 +163,11 @@ const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
           useGraphStore.getState().noteStructureOutsideGraph()
           useNodeDataStore.getState().bumpEpoch()
         }
-        return true
       },
-      (error: unknown): boolean | Promise<boolean> => {
-        if (!fetches.is(fetch)) return settling
-        useToastStore.getState().addToast("error", `Could not fetch the workbench's tables: ${apiErrorMessage(error)}`)
-        return false
-      },
-    )
+      failed: (error) => useToastStore.getState().addToast("error", `Could not fetch the workbench's tables: ${apiErrorMessage(error)}`),
+    })
+      // Superseded: the newer fetch's outcome is the one that counts.
+      .then((outcome): boolean | Promise<boolean> => (outcome === "stale" ? settling : outcome === "ok"))
     return fetch
   },
   awaitTables: () => settling,

@@ -411,7 +411,7 @@ describe("CatalogTablePicker", () => {
     return { view, first, second }
   }
 
-  it.each(["second first", "first last"])("lists the chosen catalog's schemas with the answers delivered %s (FEN-01)", async (order) => {
+  it.each(["second first", "first last"])("lists the chosen catalog's schemas with the answers delivered %s", async (order) => {
     const { first, second } = await chooseTwoCatalogs()
     const mainSchemas = { schemas: [{ name: "main_only", comment: "" }] }
     const stagingSchemas = { schemas: [{ name: "staging_only", comment: "" }] }
@@ -428,7 +428,7 @@ describe("CatalogTablePicker", () => {
     expect(Array.from(getSchemaSelect().options).map((option) => option.value)).toEqual(["", "staging_only"])
   })
 
-  it("shows no error of an older catalog's failure against the newer choice (FEN-01)", async () => {
+  it("shows no error of an older catalog's failure against the newer choice", async () => {
     const { first, second } = await chooseTwoCatalogs()
     await act(async () => {
       second.resolve({ schemas: [{ name: "staging_only", comment: "" }] })

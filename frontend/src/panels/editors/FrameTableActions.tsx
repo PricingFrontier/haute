@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback } from "react"
 import { Copy, Share2, Save, ClipboardPaste, Check } from "lucide-react"
 import { apiErrorMessage } from "../../api/errors"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, under } from "../../utils/answers"
 import {
   buildTsv,
   buildCsv,
@@ -67,6 +69,7 @@ export function FrameTableActions({
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteDraft, setPasteDraft] = useState("")
   const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const life = useRequestKind()
 
   const flashAck = useCallback((msg: string) => {
     setError(null)
@@ -80,19 +83,19 @@ export function FrameTableActions({
   const onCopy = useCallback(() => {
     const { headers, rows } = getGrid()
     const tsv = buildTsv([headers, ...rows])
-    writeClipboardText(tsv).then(
-      () => flashAck("Copied"),
-      (e: unknown) => setError(apiErrorMessage(e, "Copy failed")),
-    )
-  }, [getGrid, flashAck])
+    void answer([under(life)], writeClipboardText(tsv), {
+      ok: () => flashAck("Copied"),
+      failed: (e) => setError(apiErrorMessage(e, "Copy failed")),
+    })
+  }, [getGrid, flashAck, life])
 
   const onShare = useCallback(() => {
     const json = JSON.stringify(getSchema(), null, 2)
-    writeClipboardText(json).then(
-      () => flashAck("Copied JSON"),
-      (e: unknown) => setError(apiErrorMessage(e, "Copy failed")),
-    )
-  }, [getSchema, flashAck])
+    void answer([under(life)], writeClipboardText(json), {
+      ok: () => flashAck("Copied JSON"),
+      failed: (e) => setError(apiErrorMessage(e, "Copy failed")),
+    })
+  }, [getSchema, flashAck, life])
 
   const onSave = useCallback(
     (format: SaveFormat) => {

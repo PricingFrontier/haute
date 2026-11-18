@@ -23,8 +23,8 @@ import { apiErrorMessage, apiErrorRawDetail, apiErrorRefused, isStaleRevision } 
 import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteActivityResponse, WorkbenchAppQuoteResponse } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
+import { answer, ask, newest, requestKind, under, watch, type Part, type Settled } from "../utils/answers"
 import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
-import { latest } from "../utils/latest"
 import {
   appDetails,
   cellPlaces,
@@ -219,11 +219,17 @@ const sendWrite = (write: QuoteWrite): Promise<WorkbenchAppQuoteResponse> => sav
  * The open quote's loads, newest wins: a save, a change or a read started under one load
  * answers that load alone, and its answer is dropped once another has started.
  */
-const loads = latest()
+const loads = requestKind()
 /** The activity asked for last. */
-const activityAsked = latest()
+const activityAsked = requestKind()
 
-const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
+/**
+ * The quote open now, as an answer's part (`utils/answers.ts`): it holds until another quote
+ * is opened or made, or the quote is left.
+ */
+export const openQuotePart = (): Part => under(loads)
+
+const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
   /** Read what failed into the notice it calls for. */
   const failed = (error: unknown): void => {
     const refusal = refusalOf(error)
@@ -371,49 +377,65 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
    * write's quote is adopted; failed, it is held or let go as `writeFailed` says.
    */
   const commit = async (first: () => PendingWrite | null): Promise<WorkbenchAppQuote | null> => {
-    const session = loads.current()
+    // Another quote opened meanwhile is not this save's.
+    const asked = ask([under(loads)])
     set({ saving: true, error: null, refusal: null, moved: false })
-    try {
-      // The save keeps the price the values settle on; another quote opened meanwhile is not this save's.
-      await useWorkbenchPreviewStore.getState().settle()
-      if (!loads.is(session)) return null
-      let next = first()
-      const held = heldWrite()
-      if (next !== null && held !== null && held.basis !== next.basis) {
-        try {
-          const repeated = await sendWrite(held.write)
-          if (!loads.is(session)) return null
-          adoptQuote(repeated)
-          next = nextSave()
-          if (next === null) return repeated.quote
-        } catch (error: unknown) {
-          if (!loads.is(session) || !apiErrorRefused(error)) throw error
-          // Landed, and the quote moved on past the version the values are edited over since:
-          // what was typed is not saved over a version gone, and the newest is offered.
-          if (writeSuperseded(error) && held.write.version === get().base) throw error
-          // Refused, so it never landed and never will, or landed under a version the quote
-          // was opened past: let go, and the values saved as asked.
-          letGo()
-          next = first()
-        }
-      }
-      if (next === null) return null
+    let made: WorkbenchAppQuote | null = null
+    /** Send `next`, held until its answer comes; saved, the quote as saved is adopted. */
+    const send = async (next: PendingWrite): Promise<void> => {
       const key = openDraftKey(get())
       set({ pending: next })
       keepDraft()
-      const answer = await sendWrite(next.write)
-      if (!loads.is(session)) {
-        forgetSaved(key, next.write.body.values)
-        return null
-      }
-      saved(answer, next.write.body.values)
-      return answer.quote
-    } catch (error: unknown) {
-      if (loads.is(session)) writeFailed(error)
-      return null
-    } finally {
-      if (loads.is(session)) set({ saving: false })
+      await asked.answer(sendWrite(next.write), {
+        ok: (answer) => {
+          saved(answer, next.write.body.values)
+          made = answer.quote
+        },
+        failed: writeFailed,
+        stale: (settled) => {
+          if ("value" in settled) forgetSaved(key, next.write.body.values)
+        },
+      })
     }
+    try {
+      // The save keeps the price the values settle on.
+      await asked.answer(useWorkbenchPreviewStore.getState().settle(), {
+        ok: async () => {
+          const next = first()
+          const held = heldWrite()
+          if (next === null || held === null || held.basis === next.basis) {
+            if (next !== null) await send(next)
+            return
+          }
+          await asked.answer(sendWrite(held.write), {
+            ok: async (repeated) => {
+              adoptQuote(repeated)
+              const after = nextSave()
+              if (after === null) made = repeated.quote
+              else await send(after)
+            },
+            failed: async (error) => {
+              // Landed, and the quote moved on past the version the values are edited over
+              // since: what was typed is not saved over a version gone, and the newest is offered.
+              if (!apiErrorRefused(error) || (writeSuperseded(error) && held.write.version === get().base)) {
+                writeFailed(error)
+                return
+              }
+              // Refused, so it never landed and never will, or landed under a version the quote
+              // was opened past: let go, and the values saved as asked.
+              letGo()
+              const again = first()
+              if (again !== null) await send(again)
+            },
+          })
+        },
+        failed: writeFailed,
+      })
+    } finally {
+      asked.apply(() => set({ saving: false }))
+      asked.release()
+    }
+    return made
   }
 
   /**
@@ -470,7 +492,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     ...CLOSED,
 
     openNew: async (from) => {
-      const attempt = loads.take()
+      const belongsTo = [newest(loads)] as const
       const { form, revision, release } = useAppStore.getState()
       if (form === null || release === null) return null
       // Until it is made, the sheets hold nothing and take no typing.
@@ -483,32 +505,41 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
       // Held in this tab until the answer comes, so a reload asks with it again and the
       // quote is made once.
       const held = creationKey(release.pipeline_name || "app", release.principal, askedFor(from))
-      try {
-        // Made from its source's values, without the details the app set for the source,
-        // under its reference: it names none of its own.
-        const read = await openAppQuote(from.reference, from.option)
-        if (!loads.is(attempt)) return null
-        const creation = { operation: heldOperation(held), form_revision: revision, release: release.id, values: withoutAppDetails(read.values as Values) }
-        const source = { reference: from.reference, option: from.option, relation: from.relation }
-        let answer: WorkbenchAppQuoteResponse
-        try {
-          answer = await createAppQuote(creation, source, null)
-        } catch (error: unknown) {
-          // Refused, it was not made and never will be: the next asks anew. Unanswered, it
-          // may have been: the key stays held.
-          if (apiErrorRefused(error)) releaseOperation(held)
-          throw error
-        }
-        releaseOperation(held)
-        if (!loads.is(attempt)) return answer.quote
-        show(answer)
-        // What of its source has no place on the sheets was not made part of it: named.
-        set({ status: "ready", dropped: [...new Set([...read.dropped, ...answer.dropped])], adopted: answer.quote.label })
-        return answer.quote
-      } catch (error: unknown) {
-        if (loads.is(attempt)) set({ status: "error", loadError: apiErrorMessage(error) })
-        return null
+      // Refused, it was not made and never will be: the next asks anew. Unanswered, it may
+      // have been: the key stays held.
+      const settleCreation = (settled: Settled<WorkbenchAppQuoteResponse>): void => {
+        if ("value" in settled || apiErrorRefused(settled.error)) releaseOperation(held)
       }
+      let made: WorkbenchAppQuote | null = null
+      const failedToOpen = (error: unknown) => set({ status: "error", loadError: apiErrorMessage(error) })
+      // Made from its source's values, without the details the app set for the source,
+      // under its reference: it names none of its own.
+      await answer(belongsTo, openAppQuote(from.reference, from.option), {
+        ok: async (read, asked) => {
+          const creation = { operation: heldOperation(held), form_revision: revision, release: release.id, values: withoutAppDetails(read.values as Values) }
+          const source = { reference: from.reference, option: from.option, relation: from.relation }
+          await asked.answer(createAppQuote(creation, source, null), {
+            ok: (answer) => {
+              settleCreation({ value: answer })
+              made = answer.quote
+              show(answer)
+              // What of its source has no place on the sheets was not made part of it: named.
+              set({ status: "ready", dropped: [...new Set([...read.dropped, ...answer.dropped])], adopted: answer.quote.label })
+            },
+            failed: (error) => {
+              settleCreation({ error })
+              failedToOpen(error)
+            },
+            // Made after another quote was opened, it is made all the same.
+            stale: (settled) => {
+              settleCreation(settled)
+              if ("value" in settled) made = settled.value.quote
+            },
+          })
+        },
+        failed: failedToOpen,
+      })
+      return made
     },
 
     openRouted: async (reference, option) => {
@@ -519,20 +550,19 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     },
 
     openQuote: async (reference, option) => {
-      const attempt = loads.take()
+      const belongsTo = [newest(loads)] as const
       // Until it is read, the sheets hold nothing of the quote before and take no typing.
       useWorkbenchPreviewStore.getState().open({}, null, true)
       set({ ...CLOSED, status: "loading", loadError: null })
-      try {
-        const answer = await openAppQuote(reference, option)
-        if (!loads.is(attempt)) return
-        show(answer)
-        set({ status: "ready" })
-        offerDraft()
-        if (get().historyOpen) void get().loadActivity()
-      } catch (error: unknown) {
-        if (loads.is(attempt)) set({ status: "error", loadError: apiErrorMessage(error) })
-      }
+      await answer(belongsTo, openAppQuote(reference, option), {
+        ok: (answer) => {
+          show(answer)
+          set({ status: "ready" })
+          offerDraft()
+          if (get().historyOpen) void get().loadActivity()
+        },
+        failed: (error) => set({ status: "error", loadError: apiErrorMessage(error) }),
+      })
     },
 
     save: async () => {
@@ -548,35 +578,42 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
         set({ error: `${asked.label} is no longer the quote open, so it was not changed.` })
         return null
       }
-      const session = loads.current()
+      const inQuote = ask([under(loads)])
       set({ changing: true, error: null, refusal: null })
+      let made: WorkbenchAppQuote | null = null
       try {
-        const { quote: changed } = await changeAppQuote(quote.reference, quote.option, change, base ?? quote.version, fields)
-        if (!loads.is(session)) return changed
-        // Every change but a note moves the quote's version on.
-        const moving = change !== "note"
-        // A save held after a lost answer named the version this change moved on from: it
-        // never landed, or this change would have been refused, and now it never will.
-        if (moving) set({ pending: null })
-        // An archive leaves the quote read only: what was typed, before the change or while
-        // it was made, is kept in this browser while the quote may still change.
-        keepDraft()
-        const wasReadOnly = readOnlyReason(get()) !== null
-        set({ quote: changed })
-        if (moving) adoptChange(changed)
-        useWorkbenchPreviewStore.getState().setReadOnly(readOnlyReason(get()) !== null)
-        // Restored or amended, it may change again: what this browser kept of it is offered
-        // back. One that could change all along keeps what is typed over its new version.
-        if (wasReadOnly && readOnlyReason(get()) === null) offerDraft()
-        else keepDraft()
-        if (get().historyOpen) void get().loadActivity()
-        return changed
-      } catch (error: unknown) {
-        if (loads.is(session)) failed(error)
-        return null
+        await inQuote.answer(changeAppQuote(quote.reference, quote.option, change, base ?? quote.version, fields), {
+          ok: ({ quote: changed }) => {
+            made = changed
+            // Every change but a note moves the quote's version on.
+            const moving = change !== "note"
+            // A save held after a lost answer named the version this change moved on from: it
+            // never landed, or this change would have been refused, and now it never will.
+            if (moving) set({ pending: null })
+            // An archive leaves the quote read only: what was typed, before the change or while
+            // it was made, is kept in this browser while the quote may still change.
+            keepDraft()
+            const wasReadOnly = readOnlyReason(get()) !== null
+            set({ quote: changed })
+            if (moving) adoptChange(changed)
+            useWorkbenchPreviewStore.getState().setReadOnly(readOnlyReason(get()) !== null)
+            // Restored or amended, it may change again: what this browser kept of it is offered
+            // back. One that could change all along keeps what is typed over its new version.
+            if (wasReadOnly && readOnlyReason(get()) === null) offerDraft()
+            else keepDraft()
+            if (get().historyOpen) void get().loadActivity()
+          },
+          failed,
+          // Made after another quote was opened, the change is made all the same.
+          stale: (settled) => {
+            if ("value" in settled) made = settled.value.quote
+          },
+        })
       } finally {
-        if (loads.is(session)) set({ changing: false })
+        inQuote.apply(() => set({ changing: false }))
+        inQuote.release()
       }
+      return made
     },
 
     keepDraft,
@@ -613,20 +650,16 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get) => {
     loadActivity: async () => {
       const { quote } = get()
       if (quote === null) return
-      const session = loads.current()
       // The activity asked for last is the one shown: an earlier answer lacks what came since.
-      const asked = activityAsked.take()
-      const answering = (): boolean => {
-        const open = get().quote
-        return loads.is(session) && activityAsked.is(asked) && open !== null && sameQuote(open, quote)
-      }
-      try {
-        const activity = await fetchAppQuoteActivity(quote.reference, quote.option)
-        if (answering()) set({ activity })
-      } catch (error: unknown) {
-        // A read asked for since answers in its place.
-        if (answering()) set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` })
-      }
+      const belongsTo = [
+        under(loads),
+        newest(activityAsked),
+        watch(api, (state) => state.quote, (_, open) => open !== null && sameQuote(open, quote)),
+      ] as const
+      await answer(belongsTo, fetchAppQuoteActivity(quote.reference, quote.option), {
+        ok: (activity) => set({ activity }),
+        failed: (error) => set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` }),
+      })
     },
 
     setHistoryOpen: (open) => {

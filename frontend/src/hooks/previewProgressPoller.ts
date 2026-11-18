@@ -34,7 +34,7 @@ export function pollPreviewProgress(
   const next = () => {
     if (!stopped) timer = setTimeout(() => void poll(), PREVIEW_PROGRESS_POLL_MS)
   }
-  const poll = () => answer([under(polling)], getPreviewProgress(requestId, { signal }), {
+  const poll = () => answer([under(polling)], () => getPreviewProgress(requestId, { signal }), {
     ok: (progress) => {
       if (progress) onProgress(progress)
       next()

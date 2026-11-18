@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import {
   getExperiments,
   getRuns,
@@ -7,10 +7,12 @@ import {
 } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import { useMlflowDestinations } from "../stores/useSettingsStore"
+import { answer, newest, under } from "../utils/answers"
 import {
   effectiveMlflowDestination,
   mlflowDestinationEntry,
 } from "../utils/mlflowDestinations"
+import { useRequestKind } from "./useRequestKind"
 
 /**
  * Shared hook for lazy-loading MLflow dropdown data (experiments, runs,
@@ -27,8 +29,8 @@ import {
  * change therefore empties the arrays, guards, errors and loading flags and
  * clears `browseExpId` by derivation, with no effect to run and no window in
  * which the previous backend's content is still on screen. A response that
- * lands after a scope change (or after a newer request for the same picker)
- * carries an older request number and is dropped.
+ * lands after a scope change, or after a newer request for the same picker, is
+ * dropped, and the picker stops loading the moment it is.
  *
  * @param opts.runTag      - Optional artifact filter passed to `getRuns` (e.g. "optimiser")
  * @param opts.initialExpId - Pre-selected experiment id to initialize browseExpId
@@ -86,19 +88,18 @@ export interface MlflowBrowserState {
 }
 
 /**
- * One picker's data plus the scope it belongs to and the request that filled
- * it. `scope: null` means "never fetched": no real scope compares equal to it.
+ * One picker's data plus the scope it belongs to. `scope: null` means "never
+ * fetched": no real scope compares equal to it.
  */
 interface ScopedFetch<T> {
   scope: string | null
-  request: number
   items: T[]
   loading: boolean
   error: string
 }
 
 function emptyFetch<T>(scope: string | null = null): ScopedFetch<T> {
-  return { scope, request: 0, items: [], loading: false, error: "" }
+  return { scope, items: [], loading: false, error: "" }
 }
 
 // Stable empties, so a consumer memoising on `runs` or `models` does not see a
@@ -145,12 +146,14 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
   const fetchedModels = useRef<string | null>(null)
   const fetchedRunsFor = useRef<{ scope: string | null; expId: string }>({ scope: null, expId: "" })
   const fetchedVersionsFor = useRef<{ scope: string | null; model: string }>({ scope: null, model: "" })
-  // Monotonic per picker: a completion writes only while it is still the
-  // newest request that picker started.
-  const experimentsRequest = useRef(0)
-  const runsRequest = useRef(0)
-  const modelsRequest = useRef(0)
-  const versionsRequest = useRef(0)
+  // Per picker: a completion writes only while it is still the newest request
+  // that picker started, in the scope it was started in.
+  const experimentsAsked = useRequestKind()
+  const runsAsked = useRequestKind()
+  const modelsAsked = useRequestKind()
+  const versionsAsked = useRequestKind()
+  const inScopeAsked = useRequestKind()
+  useEffect(() => () => inScopeAsked.bump(), [scope, inScopeAsked])
 
   const inScope = <T,>(state: ScopedFetch<T>): boolean => state.scope === scope
 
@@ -181,120 +184,96 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
   const refreshExperiments = useCallback(() => {
     if (fetchedExperiments.current === scope) return
     fetchedExperiments.current = scope
-    const request = ++experimentsRequest.current
+    const belongsTo = [newest(experimentsAsked), under(inScopeAsked)] as const
     setExperimentsState((prev) => ({
       ...(prev.scope === scope ? prev : emptyFetch<Experiment>(scope)),
       scope,
-      request,
       loading: true,
       error: "",
     }))
-    getExperiments(destination)
-      .then((data) => {
-        setExperimentsState((prev) => prev.request === request
-          ? { ...prev, items: Array.isArray(data) ? data : [], loading: false }
-          : prev)
-      })
-      .catch((e: Error) => {
+    void answer(belongsTo, getExperiments(destination), {
+      ok: (data) => setExperimentsState((prev) => ({ ...prev, items: Array.isArray(data) ? data : [] })),
+      failed: (e) => {
         if (fetchedExperiments.current === scope) fetchedExperiments.current = null
-        setExperimentsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load experiments") }
-          : prev)
-      })
-  }, [destination, scope])
+        setExperimentsState((prev) => ({ ...prev, items: [], error: apiErrorMessage(e, "Failed to load experiments") }))
+      },
+    }, { pending: (loading) => setExperimentsState((prev) => ({ ...prev, loading })) })
+  }, [destination, experimentsAsked, inScopeAsked, scope])
 
   const refreshRuns = useCallback((expId: string) => {
     if (!expId) return
     const guard = fetchedRunsFor.current
     if (guard.scope === scope && guard.expId === expId) return
     fetchedRunsFor.current = { scope, expId }
-    const request = ++runsRequest.current
+    const belongsTo = [newest(runsAsked), under(inScopeAsked)] as const
     setRunsState((prev) => ({
       ...(prev.scope === scope ? prev : emptyFetch<Run>(scope)),
       scope,
-      request,
       loading: true,
       error: "",
     }))
-    getRuns(expId, runTag, destination)
-      .then((data) => {
-        setRunsState((prev) => prev.request === request
-          ? { ...prev, items: Array.isArray(data) ? data : [], loading: false }
-          : prev)
-      })
-      .catch((e: Error) => {
+    void answer(belongsTo, getRuns(expId, runTag, destination), {
+      ok: (data) => setRunsState((prev) => ({ ...prev, items: Array.isArray(data) ? data : [] })),
+      failed: (e) => {
         const current = fetchedRunsFor.current
         if (current.scope === scope && current.expId === expId) {
           fetchedRunsFor.current = { scope: null, expId: "" }
         }
-        setRunsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load runs") }
-          : prev)
-      })
-  }, [destination, runTag, scope])
+        setRunsState((prev) => ({ ...prev, items: [], error: apiErrorMessage(e, "Failed to load runs") }))
+      },
+    }, { pending: (loading) => setRunsState((prev) => ({ ...prev, loading })) })
+  }, [destination, inScopeAsked, runTag, runsAsked, scope])
 
   const refreshModels = useCallback(() => {
     if (fetchedModels.current === scope) return
     fetchedModels.current = scope
-    const request = ++modelsRequest.current
+    const belongsTo = [newest(modelsAsked), under(inScopeAsked)] as const
     setModelsState((prev) => ({
       ...(prev.scope === scope ? prev : emptyFetch<RegisteredModel>(scope)),
       scope,
-      request,
       loading: true,
       error: "",
     }))
-    getModels(destination)
-      .then((data) => {
-        setModelsState((prev) => prev.request === request
-          ? { ...prev, items: Array.isArray(data) ? data : [], loading: false }
-          : prev)
-      })
-      .catch((e: Error) => {
+    void answer(belongsTo, getModels(destination), {
+      ok: (data) => setModelsState((prev) => ({ ...prev, items: Array.isArray(data) ? data : [] })),
+      failed: (e) => {
         if (fetchedModels.current === scope) fetchedModels.current = null
-        setModelsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load models") }
-          : prev)
-      })
-  }, [destination, scope])
+        setModelsState((prev) => ({ ...prev, items: [], error: apiErrorMessage(e, "Failed to load models") }))
+      },
+    }, { pending: (loading) => setModelsState((prev) => ({ ...prev, loading })) })
+  }, [destination, inScopeAsked, modelsAsked, scope])
 
   const refreshVersions = useCallback((modelName: string) => {
     if (!modelName) return
     const guard = fetchedVersionsFor.current
     if (guard.scope === scope && guard.model === modelName) return
     fetchedVersionsFor.current = { scope, model: modelName }
-    const request = ++versionsRequest.current
+    const belongsTo = [newest(versionsAsked), under(inScopeAsked)] as const
     setVersionsState({
       scope,
-      request,
       for: modelName,
       items: [],
       loading: true,
       error: "",
     })
-    getModelVersions(modelName, destination)
-      .then((data) => {
-        setVersionsState((prev) => prev.request === request
-          ? { ...prev, items: Array.isArray(data) ? data : [], loading: false }
-          : prev)
-      })
-      .catch((e: Error) => {
+    void answer(belongsTo, getModelVersions(modelName, destination), {
+      ok: (data) => setVersionsState((prev) => ({ ...prev, items: Array.isArray(data) ? data : [] })),
+      failed: (e) => {
         const current = fetchedVersionsFor.current
         if (current.scope === scope && current.model === modelName) {
           fetchedVersionsFor.current = { scope: null, model: "" }
         }
-        setVersionsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load versions") }
-          : prev)
-      })
-  }, [destination, scope])
+        setVersionsState((prev) => ({ ...prev, items: [], error: apiErrorMessage(e, "Failed to load versions") }))
+      },
+    }, { pending: (loading) => setVersionsState((prev) => ({ ...prev, loading })) })
+  }, [destination, inScopeAsked, scope, versionsAsked])
 
   const resetRunsGuard = useCallback(() => {
     fetchedRunsFor.current = { scope: null, expId: "" }
     // Retire any runs request still in flight, so its response cannot land on
     // the experiment the caller just moved away from.
-    setRunsState((prev) => ({ ...prev, request: ++runsRequest.current }))
-  }, [])
+    runsAsked.bump()
+  }, [runsAsked])
 
   return {
     experiments,

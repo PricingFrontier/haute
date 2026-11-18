@@ -433,7 +433,7 @@ export default function UtilityPanel({
     })
   }, [newName, life, loadFiles, loadFile, onImportAdded])
 
-  // A delete belongs to the file open when it was pressed (FEP-04): its answer clears the
+  // A delete belongs to the file open when it was pressed: its answer clears the
   // draft and the file only while that file is still open. A file chosen meanwhile keeps its
   // draft; the list is read again either way, since the deleted file has gone.
   const handleDelete = useCallback(async () => {

@@ -3,11 +3,10 @@ import { create } from "zustand"
 import type { Node } from "@xyflow/react"
 
 import { apiErrorMessage } from "../api/errors"
+import type { InputCacheJobStatusResponse } from "../api/types"
+import { ask } from "../utils/answers"
 import { inputSnapshotSource } from "../utils/inputSnapshotSource"
-import useDocumentStatusStore, {
-  captureDocumentExecutionFence,
-  isDocumentExecutionFenceCurrent,
-} from "./useDocumentStatusStore"
+import useDocumentStatusStore, { executionPart } from "./useDocumentStatusStore"
 import { noteProjectInputsChanged } from "./projectInputs"
 import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
@@ -88,7 +87,12 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
   const source = inputSnapshotSource(input)
   if (!source) return
   const sourceKey = JSON.stringify(source)
-  const fence = captureDocumentExecutionFence()
+  // The document the import started in: its node data are read anew only while it is the
+  // one shown.
+  const inDocument = ask([executionPart()])
+  // The run on its node: let go as it leaves it, so what its work answers after that is
+  // only settled.
+  const onNode = ask([executionPart()])
   const controller = new AbortController()
   const workKey = `import:${nodeKey}`
   // The view the node is on: its continuation reads it only while that view is open.
@@ -108,6 +112,7 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
   const release = () => {
     if (ended) return false
     ended = true
+    onNode.release()
     setRun(nodeKey, null)
     useNodeWorkStore.getState().setRunning(workKey, null)
     unregisterStop()
@@ -123,13 +128,15 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
     if (settled) return
     settled = true
     release()
-    if (!isDocumentExecutionFenceCurrent(fence)) return
-    useNodeDataStore.getState().bumpEpoch()
-    // A source imported anew is data a price, a preview or an estimate made before did not read.
-    if (completed) noteProjectInputsChanged()
-    if (completed && retired === null && !controller.signal.aborted && currentSourceKey(input.id, view) === sourceKey) {
-      onImported(nodeKey)
-    }
+    inDocument.apply(() => {
+      useNodeDataStore.getState().bumpEpoch()
+      // A source imported anew is data a price, a preview or an estimate made before did not read.
+      if (completed) noteProjectInputsChanged()
+      if (completed && retired === null && !controller.signal.aborted && currentSourceKey(input.id, view) === sourceKey) {
+        onImported(nodeKey)
+      }
+    })
+    inDocument.release()
   }
   // Cancel builds that refused to stop again. Returns whether they all stopped.
   const cancelPending = async (): Promise<boolean> => {
@@ -140,21 +147,28 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
   }
   // A retired import has no node left to press Stop on, so its builds are
   // cancelled again in the background until they stop, and a build that never
-  // does is reported.
+  // does is reported. The run has left its node: each answer is settled late.
   const cancelRetired = async () => {
-    for (let attempt = 1; attempt <= RETIRED_CANCEL_ATTEMPTS; attempt += 1) {
-      if (await cancelPending()) {
-        settle(false)
-        return
-      }
+    for (let attempt = 1; ; attempt += 1) {
+      let stopped = false
+      await onNode.answer(cancelPending(), {
+        stale: (answered) => {
+          if ("error" in answered) throw answered.error
+          stopped = answered.value
+          if (stopped) settle(false)
+          else if (attempt === RETIRED_CANCEL_ATTEMPTS) {
+            addToast(
+              "error",
+              retired === "deleted"
+                ? "An import of a deleted node could not be stopped and may still be running."
+                : "An import from the previous pipeline could not be stopped and may still be running.",
+            )
+          }
+        },
+      })
+      if (stopped || attempt === RETIRED_CANCEL_ATTEMPTS) return
       await new Promise((resolve) => setTimeout(resolve, RETIRED_CANCEL_INTERVAL_MS))
     }
-    addToast(
-      "error",
-      retired === "deleted"
-        ? "An import of a deleted node could not be stopped and may still be running."
-        : "An import from the previous pipeline could not be stopped and may still be running.",
-    )
   }
   // The run leaves its node at once, and its build is stopped in the background.
   const retire = (reason: "document" | "deleted") => {
@@ -169,53 +183,61 @@ export function startInputImport(nodeKey: string, input: Pick<Node, "id" | "data
       controller.abort()
       return
     }
-    void cancelPending().then((stopped) => {
-      if (stopped) settle(false)
-      else addToast("error", "Stopping the import failed. Press Stop to try again.")
+    void onNode.answer(cancelPending(), {
+      ok: (stopped) => {
+        if (stopped) settle(false)
+        else addToast("error", "Stopping the import failed. Press Stop to try again.")
+      },
+      // Retired meanwhile, its builds are cancelled again in the background; once they
+      // stopped, its work is over.
+      stale: (answered) => {
+        if ("value" in answered && answered.value) settle(false)
+      },
     })
   })
   // A replaced document is another pipeline, whose node may reuse this id: the
   // run leaves its node at once, so it is never shown, stopped, or continued as
   // the new document's, while its build is still stopped in the background.
   const unsubscribeDocument = useDocumentStatusStore.subscribe(() => {
-    if (!isDocumentExecutionFenceCurrent(fence)) retire("document")
+    if (!inDocument.current()) retire("document")
   })
   // A deleted node's run leaves it the same way (`retireInputImport`).
   retirements.set(nodeKey, retireDeleted)
 
-  setRun(nodeKey, { rows: null })
-  useNodeWorkStore.getState().setRunning(workKey, nodeKey)
-  void (async () => {
-    const { ensureInputSnapshots } = await snapshots
-    try {
-      await ensureInputSnapshots([input], {
-        force: true,
-        signal: controller.signal,
-        onBuildProgress: (job) => {
-          if (controller.signal.aborted) return
-          // A count once the build has counted rows: one written in a single
-          // pass (a CSV) or an API Input's tables report none until they end.
-          setRun(nodeKey, { rows: job.progress.rows > 0 ? job.progress.rows : null })
-        },
-      })
-    } catch (err) {
-      const failed = err as { name?: unknown; jobIds?: unknown } | null
-      if (failed?.name === "CancellationFailed" && Array.isArray(failed.jobIds)) {
-        pending = failed.jobIds as string[]
-        if (retired) {
-          void cancelRetired()
-          return
-        }
-        addToast("error", `Stopping the import failed: ${apiErrorMessage(err)} Press Stop to try again.`)
+  /** The build's failure: builds that refused to stop are held for a Stop, or cancelled again once retired. */
+  const buildFailed = (err: unknown, onItsNode: boolean) => {
+    const failed = err as { name?: unknown; jobIds?: unknown } | null
+    if (failed?.name === "CancellationFailed" && Array.isArray(failed.jobIds)) {
+      pending = failed.jobIds as string[]
+      if (!onItsNode) {
+        void cancelRetired()
         return
       }
-      // A retired run's failure belongs to a node that is gone.
-      if (failed?.name !== "AbortError" && retired === null) addToast("error", `Import failed: ${apiErrorMessage(err)}`)
-      settle(false)
+      addToast("error", `Stopping the import failed: ${apiErrorMessage(err)} Press Stop to try again.`)
       return
     }
-    settle(true)
-  })()
+    // A retired run's failure belongs to a node that is gone.
+    if (failed?.name !== "AbortError" && onItsNode) addToast("error", `Import failed: ${apiErrorMessage(err)}`)
+    settle(false)
+  }
+  const onBuildProgress = (job: InputCacheJobStatusResponse) => {
+    if (controller.signal.aborted) return
+    // A count once the build has counted rows: one written in a single
+    // pass (a CSV) or an API Input's tables report none until they end.
+    onNode.apply(() => setRun(nodeKey, { rows: job.progress.rows > 0 ? job.progress.rows : null }))
+  }
+
+  setRun(nodeKey, { rows: null })
+  useNodeWorkStore.getState().setRunning(workKey, nodeKey)
+  void onNode.answer(
+    snapshots.then(({ ensureInputSnapshots }) => ensureInputSnapshots([input], { force: true, signal: controller.signal, onBuildProgress })),
+    {
+      ok: () => settle(true),
+      failed: (err) => buildFailed(err, true),
+      // Retired meanwhile, its work still ends: a build may have published before it stopped.
+      stale: (answered) => ("value" in answered ? settle(true) : buildFailed(answered.error, false)),
+    },
+  )
 }
 
 export default useInputImportStore

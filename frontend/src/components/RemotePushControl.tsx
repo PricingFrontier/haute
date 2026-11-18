@@ -252,13 +252,9 @@ export default function RemotePushControl({
     else void doPush()
   }
 
-  /**
-   * Catch up's and Spin off's answer belongs to the edits chosen over when it was pressed
-   * (VCS-10): an edit made on the canvas or in the form while it ran, or text still being
-   * typed, keeps every unsaved edit, and the remote's files wait behind the sync banner as
-   * any change on disk under unsaved edits does. A canvas as saved takes the remote's
-   * document whenever it arrives, before the answer or after.
-   */
+  // Catch up's and Spin off's answer belongs to the edits chosen over when it was pressed
+  // (`chosenOverParts`): an edit made while it ran keeps every unsaved edit. A canvas as saved
+  // takes the remote's document whenever it arrives, before the answer or after.
   /** What a catch-up or a spin-off did, said whatever came of the edits; its branch moved. */
   const treeMoved = useCallback(async (said: string) => {
     addToast("success", said)

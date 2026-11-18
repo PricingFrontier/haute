@@ -1,5 +1,7 @@
 import { useState } from "react"
 
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, under } from "../utils/answers"
 import ModalShell from "./ModalShell"
 
 interface SubmodelDialogProps {
@@ -12,16 +14,15 @@ interface SubmodelDialogProps {
 export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: SubmodelDialogProps) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const life = useRequestKind()
 
   const submit = async (name: string) => {
-    setPending(true)
     setError(null)
-    try {
-      const result = await onSubmit(name)
-      if (!result.ok) setError(result.error)
-    } finally {
-      setPending(false)
-    }
+    await answer([under(life)], onSubmit(name), {
+      ok: (result) => {
+        if (!result.ok) setError(result.error)
+      },
+    }, { inFlight: setPending })
   }
 
   return (

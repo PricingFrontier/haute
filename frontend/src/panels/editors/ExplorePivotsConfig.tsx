@@ -24,6 +24,8 @@ import type {
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import useConfirmedConfigUpdate from "./useConfirmedConfigUpdate"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, under } from "../../utils/answers"
 import {
   ExploreConfigCard,
   ExploreConfigCardEmptyState,
@@ -554,6 +556,8 @@ export default function ExplorePivotsConfig({
   )
   const setExploreConfiguredPivot = useUIStore((s) => s.setExploreConfiguredPivot)
   const confirmThenCurrent = useConfirmedConfigUpdate(config, onUpdate)
+  // A question answered once the editor has gone changes nothing.
+  const life = useRequestKind()
   const parsed = parseExplorePivots(config)
   const configuredPivotExists =
     !parsed.ok ||
@@ -600,35 +604,43 @@ export default function ExplorePivotsConfig({
   // A deletion asks first, then removes the card from the config as it stands
   // once answered, so an edit made while the dialog was open survives it.
   const deleteFormula = async (formula: PivotFormulaPlacement): Promise<boolean> => {
-    const current = await confirmThenCurrent({
+    let deleted = false
+    await answer([under(life)], confirmThenCurrent({
       title: `Delete ${formula.display_name} from every pivot?`,
       confirm: "Delete",
       danger: true,
+    }), {
+      ok: (current) => {
+        const state = current && parseExplorePivots(current.config)
+        if (!current || !state?.ok) return
+        current.onUpdate(exploreStateUpdate(
+          state.pivots.map((pivot) => ({
+            ...pivot,
+            formulas: pivot.formulas.filter((candidate) => candidate.id !== formula.id),
+            value_order: pivot.value_order.filter((id) => id !== formula.id),
+          })),
+          state.formulas.filter((candidate) => candidate.id !== formula.id),
+        ))
+        deleted = true
+      },
     })
-    const state = current && parseExplorePivots(current.config)
-    if (!current || !state?.ok) return false
-    current.onUpdate(exploreStateUpdate(
-      state.pivots.map((pivot) => ({
-        ...pivot,
-        formulas: pivot.formulas.filter((candidate) => candidate.id !== formula.id),
-        value_order: pivot.value_order.filter((id) => id !== formula.id),
-      })),
-      state.formulas.filter((candidate) => candidate.id !== formula.id),
-    ))
-    return true
+    return deleted
   }
 
   const deletePivot = async (pivot: ExplorePivotConfig) => {
-    const current = await confirmThenCurrent({ title: `Delete ${pivot.name}?`, confirm: "Delete", danger: true })
-    const state = current && parseExplorePivots(current.config)
-    if (!current || !state?.ok) return
-    if (useUIStore.getState().exploreConfiguredPivotIds[nodeId] === pivot.id) {
-      setExploreConfiguredPivot(nodeId, null)
-    }
-    current.onUpdate(exploreStateUpdate(
-      state.pivots.filter((candidate) => candidate.id !== pivot.id),
-      state.formulas,
-    ))
+    await answer([under(life)], confirmThenCurrent({ title: `Delete ${pivot.name}?`, confirm: "Delete", danger: true }), {
+      ok: (current) => {
+        const state = current && parseExplorePivots(current.config)
+        if (!current || !state?.ok) return
+        if (useUIStore.getState().exploreConfiguredPivotIds[nodeId] === pivot.id) {
+          setExploreConfiguredPivot(nodeId, null)
+        }
+        current.onUpdate(exploreStateUpdate(
+          state.pivots.filter((candidate) => candidate.id !== pivot.id),
+          state.formulas,
+        ))
+      },
+    })
   }
 
   if (configuredPivot) {

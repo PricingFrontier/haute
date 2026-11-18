@@ -5,7 +5,9 @@ import { listFiles } from "../../api/client"
 import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
 import { INPUT_STYLE } from "../../components/form/fieldStyle"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import useSettingsStore from "../../stores/useSettingsStore"
+import { ask, newest } from "../../utils/answers"
 import { formatValue } from "../../utils/formatValue"
 import { formatBytes } from "../../utils/formatBytes"
 import { apiErrorMessage } from "../../api/errors"
@@ -120,28 +122,26 @@ export function FileBrowser({
   const getFileListCache = useSettingsStore((s) => s.getFileListCache)
   const setFileListCache = useSettingsStore((s) => s.setFileListCache)
   const listingKey = `${dir}|${extensions || ""}`
+  const listings = useRequestKind()
 
   useEffect(() => {
-    let cancelled = false
     const cached = getFileListCache(listingKey)
     if (cached) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- cache-hit fast path: show cached file list immediately without async fetch
       setListing({ key: listingKey, items: cached as FileItem[], error: null })
       return
     }
-    listFiles(dir, extensions)
-      .then((data) => {
-        if (cancelled) return
+    const asked = ask([newest(listings)])
+    void asked.answer(listFiles(dir, extensions), {
+      ok: (data) => {
         const fileItems = data.items || []
         setFileListCache(listingKey, fileItems)
         setListing({ key: listingKey, items: fileItems, error: null })
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return
-        setListing({ key: listingKey, items: [], error: apiErrorMessage(e, "Failed to load files") })
-      })
-    return () => { cancelled = true }
-  }, [dir, extensions, listingKey, getFileListCache, setFileListCache])
+      },
+      failed: (e) => setListing({ key: listingKey, items: [], error: apiErrorMessage(e, "Failed to load files") }),
+    })
+    return () => asked.release()
+  }, [dir, extensions, listingKey, getFileListCache, setFileListCache, listings])
 
   const current = listing?.key === listingKey ? listing : null
   const loading = current === null

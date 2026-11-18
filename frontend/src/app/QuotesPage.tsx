@@ -32,7 +32,9 @@ import { changeAppQuote, type QuotesQuery } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
 import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
+import { useRequestKind } from "../hooks/useRequestKind"
 import useToastStore from "../stores/useToastStore"
+import { answer, under } from "../utils/answers"
 import { relativeTime } from "../utils/relativeTime"
 import { fullTime, listColumns, listValue } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
@@ -151,33 +153,36 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
     return () => window.removeEventListener("keydown", onKey)
   }, [editor])
 
+  // An archive or a restore answers while the page shows.
+  const page = useRequestKind()
   const archive = async (quote: WorkbenchAppQuote) => {
-    try {
-      const { quote: archived } = await changeAppQuote(quote.reference, quote.option, "archive", quote.version, {})
-      // The list shown once it is answered, which may be another than the one archived from.
-      void useQuoteListStore.getState().reload()
-      addToast("success", `Archived ${quote.label}`, {
-        label: "Undo",
-        run: () => {
-          // The list shown when Undo is pressed, which may be another than the one archived from.
-          void changeAppQuote(archived.reference, archived.option, "restore", archived.version, {})
-            .then(() => useQuoteListStore.getState().reload())
-            .catch((reason: unknown) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`))
-        },
-      })
-    } catch (reason: unknown) {
-      addToast("error", `Could not archive ${quote.label}: ${apiErrorMessage(reason)}`)
-    }
+    await answer([under(page)], changeAppQuote(quote.reference, quote.option, "archive", quote.version, {}), {
+      ok: ({ quote: archived }) => {
+        // The list shown once it is answered, which may be another than the one archived from.
+        void useQuoteListStore.getState().reload()
+        addToast("success", `Archived ${quote.label}`, {
+          label: "Undo",
+          run: () => {
+            // The list shown when Undo is pressed, which may be another than the one archived from.
+            void answer([under(page)], changeAppQuote(archived.reference, archived.option, "restore", archived.version, {}), {
+              ok: () => useQuoteListStore.getState().reload(),
+              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`),
+            })
+          },
+        })
+      },
+      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${apiErrorMessage(reason)}`),
+    })
   }
 
   const restore = async (quote: WorkbenchAppQuote) => {
-    try {
-      await changeAppQuote(quote.reference, quote.option, "restore", quote.version, {})
-      void useQuoteListStore.getState().reload()
-      addToast("success", `Restored ${quote.label}`)
-    } catch (reason: unknown) {
-      addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`)
-    }
+    await answer([under(page)], changeAppQuote(quote.reference, quote.option, "restore", quote.version, {}), {
+      ok: () => {
+        void useQuoteListStore.getState().reload()
+        addToast("success", `Restored ${quote.label}`)
+      },
+      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`),
+    })
   }
 
   const copyLink = async (quote: WorkbenchAppQuote) => {

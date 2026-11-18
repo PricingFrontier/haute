@@ -61,7 +61,7 @@ function PipelineRepairDialogContent({
   const applyingRef = useRef(false)
 
   // The repair is applied to the document on show when it was pressed: once live sync or
-  // another adoption has replaced it (FEG-10), its answer is that document's no more, and the
+  // another adoption has replaced it, its answer is that document's no more, and the
   // canvas keeps the newer one; the dialog closes, its repair done or overtaken.
   const apply = async () => {
     if (applyingRef.current) return

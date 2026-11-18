@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react"
 
-import useGitStore from "../stores/useGitStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { answer, ask, under } from "../utils/answers"
 import ModalShell from "./ModalShell"
 
 interface StorageBindModalProps {
@@ -46,6 +48,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
   // Set when the user chooses to bind elsewhere instead of forking, so the
   // held-location panel gives way to the ordinary form.
   const [dismissedHold, setDismissedHold] = useState(false)
+  const life = useRequestKind()
 
   const showHold = heldBy !== null && !dismissedHold
   const error = localError ?? (failed && !heldBy ? failed.message : null)
@@ -70,38 +73,52 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
   const canSubmit = remoteUrl.trim() !== "" && !busy
   const canFork = forkUrl.trim() !== "" && !busy
 
+  // A bind and its toast belong to the git store; the dialog's error and its close, to the
+  // dialog.
   const submit = async () => {
     if (!canSubmit) return
-    setBusy(true)
     setLocalError(null)
+    const here = ask([under(life)])
+    const refused = (err: unknown) => here.apply(() => setLocalError(apiErrorMessage(err, "Could not bind storage")))
     try {
-      if (failed) await acknowledgeBind()
-      await bindStorage(remoteUrl.trim())
-      // Accepted, not finished: let the user carry on. The dialog reopens by
-      // itself if the background bind fails.
-      addToast("info", "Saving this project to storage - you can keep working.")
-      onClose()
-    } catch (err: unknown) {
-      setLocalError(apiErrorMessage(err, "Could not bind storage"))
+      await answer([gitStorePart()], failed ? acknowledgeBind() : Promise.resolve(), {
+        ok: (_, asked) => asked.answer(bindStorage(remoteUrl.trim()), {
+          ok: () => {
+            // Accepted, not finished: let the user carry on. The dialog reopens by
+            // itself if the background bind fails.
+            addToast("info", "Saving this project to storage - you can keep working.")
+            here.apply(onClose)
+          },
+          failed: refused,
+        }),
+        failed: refused,
+      }, { inFlight: setBusy })
     } finally {
-      setBusy(false)
+      here.release()
     }
   }
 
   const forkAndBind = async () => {
     if (!canFork || !failed?.remote_url) return
-    setBusy(true)
     setLocalError(null)
+    const here = ask([under(life)])
+    const refused = (err: unknown) => here.apply(() => setLocalError(apiErrorMessage(err, "Could not fork the storage location")))
     try {
-      const forked = await forkStorage(failed.remote_url, forkUrl.trim())
-      await acknowledgeBind()
-      await bindStorage(forked.target_url)
-      addToast("info", "Forked, and saving the copy to storage - you can keep working.")
-      onClose()
-    } catch (err: unknown) {
-      setLocalError(apiErrorMessage(err, "Could not fork the storage location"))
+      await answer([gitStorePart()], forkStorage(failed.remote_url, forkUrl.trim()), {
+        ok: (forked, asked) => asked.answer(acknowledgeBind(), {
+          ok: () => asked.answer(bindStorage(forked.target_url), {
+            ok: () => {
+              addToast("info", "Forked, and saving the copy to storage - you can keep working.")
+              here.apply(onClose)
+            },
+            failed: refused,
+          }),
+          failed: refused,
+        }),
+        failed: refused,
+      }, { inFlight: setBusy })
     } finally {
-      setBusy(false)
+      here.release()
     }
   }
 

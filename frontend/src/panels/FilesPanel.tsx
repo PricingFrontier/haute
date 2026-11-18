@@ -4,11 +4,13 @@ import PanelShell from "./PanelShell"
 import { deleteProjectFile, listProjectFiles, projectFileDownloadUrl, uploadProjectFile } from "../api/projectFiles"
 import { apiErrorMessage } from "../api/errors"
 import type { ProjectFileEntry, ProjectFilePlace, ProjectFolderResponse } from "../api/types"
+import { useRequestKind } from "../hooks/useRequestKind"
 import { reportSaveCapture } from "../stores/saveCapture"
 import { noteProjectInputsChanged } from "../stores/projectInputs"
 import useQuestionStore, { confirmed } from "../stores/useQuestionStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
+import { answer, ask, newest, under } from "../utils/answers"
 import { formatBytes } from "../utils/formatBytes"
 import { relativeTime } from "../utils/relativeTime"
 
@@ -124,23 +126,27 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
   const nextUpload = useRef(0)
   const addToast = useToastStore((s) => s.addToast)
   const refresh = () => setNonce((n) => n + 1)
+  const listings = useRequestKind()
+  // What a write or a question asked from the panel shows belongs to the panel; what a write
+  // that landed did (its save capture, the inputs it changed) is settled even once it closed.
+  const life = useRequestKind()
 
   useEffect(() => {
-    const controller = new AbortController()
-    listProjectFiles(place, path, { signal: controller.signal })
-      .then((folder) => {
+    const asked = ask([newest(listings)])
+    void asked.answer((signal) => listProjectFiles(place, path, { signal }), {
+      ok: (folder) => {
         setListing(folder)
         setError(null)
         setAnswered(request)
-      })
-      .catch((caught: unknown) => {
-        if (controller.signal.aborted) return
+      },
+      failed: (caught) => {
         setListing(null)
         setError(apiErrorMessage(caught, "The folder could not be read."))
         setAnswered(request)
-      })
-    return () => controller.abort()
-  }, [place, path, request])
+      },
+    })
+    return () => asked.release()
+  }, [place, path, request, listings])
 
   const root = listing?.root ?? ""
   // The listing of the folder shown: until it answers, another folder's rows, and what they
@@ -156,29 +162,52 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       ? `${shownFolder(folder)} is ignored by .gitignore, so files added there couldn't be versioned.`
       : `${shownFolder(folder)} only downloads: files can't be added to it.`
 
+  /** Upload *files* one at a time, each once the one before has answered. */
   async function uploadAll(folder: string, files: File[], revisions: Map<string, string>) {
     let wrote = false
-    for (const file of files) {
+    const upload = (index: number): Promise<unknown> | void => {
+      if (index === files.length) {
+        useSettingsStore.getState().clearFileListCache()
+        // What was priced or previewed on the data before is stale: a file the pipeline reads may be new.
+        if (wrote) noteProjectInputsChanged()
+        refresh()
+        return
+      }
+      const file = files[index]
       const id = nextUpload.current++
       const job = uploadProjectFile(place, joinPath(folder, file.name), file, {
         replaceRevision: revisions.get(file.name) ?? null,
         onProgress: (loaded, total) => setUploads((rows) => rows.map((row) => (row.id === id ? { ...row, loaded, total } : row))),
       })
       setUploads((rows) => [...rows, { id, name: file.name, loaded: 0, total: file.size, abort: job.abort }])
-      try {
-        const written = await job.promise
+      const landed = (written: Awaited<typeof job.promise>) => {
         if (place === "pipeline") reportSaveCapture(written)
         wrote = true
-      } catch (caught) {
-        if (!isAbort(caught)) addToast("error", `${file.name}: ${apiErrorMessage(caught, "The file was not added.")}`)
-      } finally {
-        setUploads((rows) => rows.filter((row) => row.id !== id))
       }
+      const refused = (caught: unknown) => {
+        if (!isAbort(caught)) addToast("error", `${file.name}: ${apiErrorMessage(caught, "The file was not added.")}`)
+      }
+      const done = () => setUploads((rows) => rows.filter((row) => row.id !== id))
+      return answer([under(life)], job.promise, {
+        ok: (written) => {
+          landed(written)
+          done()
+          return upload(index + 1)
+        },
+        failed: (caught) => {
+          refused(caught)
+          done()
+          return upload(index + 1)
+        },
+        // The panel closed while a file went up: what landed is still reported, and the rest go up.
+        stale: (settled) => {
+          if ("value" in settled) landed(settled.value)
+          else refused(settled.error)
+          return upload(index + 1)
+        },
+      })
     }
-    useSettingsStore.getState().clearFileListCache()
-    // What was priced or previewed on the data before is stale: a file the pipeline reads may be new.
-    if (wrote) noteProjectInputsChanged()
-    refresh()
+    await upload(0)
   }
 
   async function addFiles(folder: string, files: File[]) {
@@ -188,41 +217,41 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
       return
     }
     // A clash is checked against a listing of the folder written to, never another's.
-    let entries = folder === path && shown !== null ? shown.entries : null
-    if (entries === null) {
-      try {
-        entries = (await listProjectFiles(place, folder)).entries
-      } catch (caught) {
-        addToast("error", apiErrorMessage(caught, "The folder could not be read."))
-        return
-      }
-    }
-    const revisions = new Map<string, string>()
-    // How each file stands against version history: whether a replace keeps what it replaces.
-    const statuses = new Map<string, FileStatus>()
-    for (const entry of entries) {
-      if (entry.kind !== "file" || entry.revision === null) continue
-      revisions.set(entry.name, entry.revision)
-      statuses.set(entry.name, entry.status)
-    }
-    const clashing = files.filter((file) => revisions.has(file.name))
-    if (clashing.length === 0) {
-      await uploadAll(folder, files, new Map())
-      return
-    }
-    // Asked first, saying what the replace loses; the files that clash nothing may go alone.
-    const lost = clashing.filter((file) => (statuses.get(file.name) ?? null) !== null).length
-    const fresh = files.filter((file) => !revisions.has(file.name))
-    const answer = await useQuestionStore.getState().ask({
-      title: clashing.length === 1 ? `Replace ${clashing[0].name} in ${shownFolder(folder)}?` : `Replace ${clashing.length} files in ${shownFolder(folder)}?`,
-      text: clashing.length === 1 ? fateOf(place, statuses.get(clashing[0].name) ?? null, "The version it replaces") : fateOfMany(place, clashing.length, lost),
-      confirm: "Replace",
-      ...(fresh.length > 0 ? { other: "Skip these" } : {}),
-      ...(clashing.length > 1 ? { list: clashing.map((file) => file.name) } : {}),
+    const shownEntries = folder === path && shown !== null ? shown.entries : null
+    const listed = shownEntries !== null
+      ? Promise.resolve(shownEntries)
+      : listProjectFiles(place, folder).then((folderListing) => folderListing.entries)
+    await answer([under(life)], listed, {
+      ok: (entries, asked) => {
+        const revisions = new Map<string, string>()
+        // How each file stands against version history: whether a replace keeps what it replaces.
+        const statuses = new Map<string, FileStatus>()
+        for (const entry of entries) {
+          if (entry.kind !== "file" || entry.revision === null) continue
+          revisions.set(entry.name, entry.revision)
+          statuses.set(entry.name, entry.status)
+        }
+        const clashing = files.filter((file) => revisions.has(file.name))
+        if (clashing.length === 0) return uploadAll(folder, files, new Map())
+        // Asked first, saying what the replace loses; the files that clash nothing may go alone.
+        const lost = clashing.filter((file) => (statuses.get(file.name) ?? null) !== null).length
+        const fresh = files.filter((file) => !revisions.has(file.name))
+        return asked.answer(useQuestionStore.getState().ask({
+          title: clashing.length === 1 ? `Replace ${clashing[0].name} in ${shownFolder(folder)}?` : `Replace ${clashing.length} files in ${shownFolder(folder)}?`,
+          text: clashing.length === 1 ? fateOf(place, statuses.get(clashing[0].name) ?? null, "The version it replaces") : fateOfMany(place, clashing.length, lost),
+          confirm: "Replace",
+          ...(fresh.length > 0 ? { other: "Skip these" } : {}),
+          ...(clashing.length > 1 ? { list: clashing.map((file) => file.name) } : {}),
+        }), {
+          ok: (reply) => {
+            if (reply === null) return
+            if (reply.choice === "other") return uploadAll(folder, fresh, new Map())
+            return uploadAll(folder, files, revisions)
+          },
+        })
+      },
+      failed: (caught) => addToast("error", apiErrorMessage(caught, "The folder could not be read.")),
     })
-    if (answer === null) return
-    if (answer.choice === "other") await uploadAll(folder, fresh, new Map())
-    else await uploadAll(folder, files, revisions)
   }
 
   /** Delete a file once asked, saying whether it can be recovered. */
@@ -256,15 +285,28 @@ export default function FilesPanel({ place, onClose }: FilesPanelProps) {
   }
 
   async function deleteFile(entry: ProjectFileEntry) {
-    try {
-      const removed = await deleteProjectFile(place, entry.path, entry.revision ?? "")
+    const request = deleteProjectFile(place, entry.path, entry.revision ?? "")
+    const landed = (removed: Awaited<typeof request>) => {
       if (place === "pipeline") reportSaveCapture(removed)
       useSettingsStore.getState().clearFileListCache()
       noteProjectInputsChanged()
-    } catch (caught) {
-      addToast("error", `${entry.name}: ${apiErrorMessage(caught, "The file was not deleted.")}`)
     }
-    refresh()
+    const refused = (caught: unknown) => addToast("error", `${entry.name}: ${apiErrorMessage(caught, "The file was not deleted.")}`)
+    await answer([under(life)], request, {
+      ok: (removed) => {
+        landed(removed)
+        refresh()
+      },
+      failed: (caught) => {
+        refused(caught)
+        refresh()
+      },
+      // The panel closed while it ran: a file deleted is still reported.
+      stale: (settled) => {
+        if ("value" in settled) landed(settled.value)
+        else refused(settled.error)
+      },
+    })
   }
 
   const crumbs = path ? path.split("/") : []

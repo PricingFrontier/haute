@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../api/errors"
+import { useRequestKind } from "../hooks/useRequestKind"
 import ModalShell from "./ModalShell"
+import { answer, under } from "../utils/answers"
 import { validateNodeName } from "../utils/nodeNameValidation"
 
 interface RenameDialogProps {
@@ -22,6 +24,7 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
   const [value, setValue] = useState<string>(defaultValue)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const life = useRequestKind()
 
   // Auto-focus and select all text on mount
   useEffect(() => {
@@ -39,16 +42,13 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
     if (pending) return
     const result = validateNodeName(value)
     if (result === null) return
-    setPending(true)
     setError(null)
-    try {
-      const outcome = await onConfirm(result)
-      if (!outcome.ok) setError(outcome.error)
-    } catch (reason: unknown) {
-      setError(`Rename failed: ${apiErrorMessage(reason)}`)
-    } finally {
-      setPending(false)
-    }
+    await answer([under(life)], onConfirm(result), {
+      ok: (outcome) => {
+        if (!outcome.ok) setError(outcome.error)
+      },
+      failed: (reason) => setError(`Rename failed: ${apiErrorMessage(reason)}`),
+    }, { inFlight: setPending })
   }
 
   return (

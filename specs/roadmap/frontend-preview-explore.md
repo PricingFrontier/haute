@@ -11,18 +11,12 @@ against a local server, first by the sweep and then by the main session on
 the scaffolded test project, with a data file replaced on disk while the
 editor was open. The main session added the Banding editor's case.
 
-`FEP-04` comes from the review plan's phase 5, a reader from a second
-model family (Codex) over the code changed since the 31 October audit. A
-worker drove its journey in a browser and the main session ran it again on
-15 November 2026.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FEP-01 | Planned | P2 | After a data file's columns change, one Refresh previews the file as it is, instead of failing on the columns the editor remembered. |
 | FEP-02 | Planned | P2 | A node's Refresh brings the Explore overview, and the Banding editor's counts and values, up to date with the data, as it does the preview. |
-| FEP-04 | Planned | P2 | An edit to one utility file made while another is being deleted is kept and saved. |
 
 ## Planned improvements
 
@@ -131,23 +125,3 @@ same test. A schema refreshed from long to short shows every column.
 `frontend/src/panels/editors/banding/useBandingStats.ts`;
 `frontend/src/panels/explore/SchemaTableCard.tsx`.
 
-### FEP-04 — A utility file edited while another is being deleted keeps its edit
-**Why:** Reproduced on 15 November 2026 in the browser with the delete's
-answer held back. `old_rates` was deleted in the Utility panel; while the
-answer was on its way `new_rates` was chosen and `x * 2` changed to
-`x * 3`. When the answer arrived the panel jumped to the first file, the
-edit left the editor, no save of `new_rates` was sent, and the file still
-holds `x * 2`. No message. The handler clears the draft and the chosen
-file after the delete answers, whichever file is open by then.
-
-**Plan:** After a delete answers, clear the draft only when the open
-file is the deleted one; or keep the file selector disabled until the
-answer.
-
-**Acceptance:** The journey above ends with `x * 3` in the editor and
-saved on close, or the selector cannot be used while the delete runs.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/UtilityPanel.tsx`;
-`specs/frontend-preview-explore/low-level.md`.

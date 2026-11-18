@@ -12,13 +12,13 @@ import type {
   PreparedGraph,
 } from "../../api/types"
 import useDocumentStatusStore, {
-  captureDocumentExecutionFence,
   documentExecutionKey,
-  isDocumentExecutionFenceCurrent,
-  type DocumentExecutionFence,
+  executionPart,
 } from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
 import { waitForJob } from "../../hooks/jobPollingController"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest, watch, type Asked } from "../../utils/answers"
 import {
   buildExecutionFailureMessage,
   executionJobStatusFromReason,
@@ -184,11 +184,13 @@ type ActiveRun = {
   generation: number
   scopeKey: string
   targets: readonly string[]
-  graphVersion: number
-  controller: AbortController
+  /**
+   * The run as asked: the newest run of the hook while it is mounted, on the
+   * structural version and under the document execution fence it started on.
+   */
+  asked: Asked
   jobId: string | null
   cancelledJobId: string | null
-  documentFence: DocumentExecutionFence
 }
 
 export type UseOptimiserAutoRangeOptions = {
@@ -228,11 +230,11 @@ export function useOptimiserAutoRange({
   const scopeKey = autoRangeScopeKey(nodeId, graphVersion, currentDocumentKey)
   const generationRef = useRef(0)
   const activeRef = useRef<ActiveRun | null>(null)
-  const unmountedRef = useRef(false)
+  const runs = useRequestKind()
 
   const retire = useCallback((active: ActiveRun) => {
     if (activeRef.current === active) activeRef.current = null
-    active.controller.abort()
+    active.asked.release()
 
     const jobId = active.jobId
     if (!jobId || active.cancelledJobId === jobId) return
@@ -244,22 +246,9 @@ export function useOptimiserAutoRange({
     })
   }, [])
 
-  const isCurrent = useCallback((active: ActiveRun) => (
-    !unmountedRef.current
-    && activeRef.current === active
-    && generationRef.current === active.generation
-    && !active.controller.signal.aborted
-    && useGraphStore.getState().structuralVersion === active.graphVersion
-    && isDocumentExecutionFenceCurrent(active.documentFence)
-  ), [])
-
-  useEffect(() => {
-    unmountedRef.current = false
-    return () => {
-      unmountedRef.current = true
-      const active = activeRef.current
-      if (active) retire(active)
-    }
+  useEffect(() => () => {
+    const active = activeRef.current
+    if (active) retire(active)
   }, [retire])
 
   useEffect(() => {
@@ -268,38 +257,23 @@ export function useOptimiserAutoRange({
   }, [retire, scopeKey])
 
   const executeRun = useCallback(async (active: ActiveRun): Promise<void> => {
-    try {
-      const target = requestTarget()
-      const start = await startOptimiserFrontierAutoRange({
-        graph: target.graph,
-        target: target.node,
-        signal: active.controller.signal,
+    const { asked } = active
+    const failed = (error: unknown) => {
+      const metrics = executionMetricsFromError(error)
+      const reason = executionTerminalReasonFromError(error)
+      dispatch({
+        type: "failure",
+        generation: active.generation,
+        error: buildExecutionFailureMessage(apiErrorMessage(error), metrics, {
+          prefix: "Auto range failed",
+          terminalReason: reason,
+        }),
+        metrics: metrics ?? null,
+        status: executionJobStatusFromReason(reason),
+        reason,
       })
-      if (start.status === "started" && start.job_id) active.jobId = start.job_id
-      if (!isCurrent(active)) {
-        retire(active)
-        return
-      }
-      if (start.status === "error" || !start.job_id) {
-        throw new Error(start.error || "Auto range failed to start")
-      }
-
-      const jobId = start.job_id
-      const status = await waitForJob({
-        poll: (signal) => getOptimiserFrontierAutoRangeStatus(jobId, { signal }),
-        isTerminal: (current) => current.status !== "running",
-        intervalMs: POLL_INTERVAL_MS,
-        signal: active.controller.signal,
-        // Retiring aborts the run's signal, which ends the wait.
-        onStatus: () => {
-          if (!isCurrent(active)) retire(active)
-        },
-      })
-      if (!isCurrent(active)) {
-        retire(active)
-        return
-      }
-
+    }
+    const completed = (status: FrontierAutoRangeStatusResponse) => {
       if (status.status === "cancelled" || status.status === "superseded") {
         dispatch({
           type: "terminal",
@@ -321,10 +295,13 @@ export function useOptimiserAutoRange({
         return
       }
 
-      const ranges = validateRanges(status, active.targets)
-      if (!isCurrent(active)) return
-      const updateResult = writeRanges(ranges)
-      if (!updateResult.ok) throw new Error(updateResult.error)
+      try {
+        const updateResult = writeRanges(validateRanges(status, active.targets))
+        if (!updateResult.ok) throw new Error(updateResult.error)
+      } catch (error) {
+        failed(error)
+        return
+      }
 
       const publishedScopeKey = autoRangeScopeKey(
         nodeId,
@@ -336,29 +313,51 @@ export function useOptimiserAutoRange({
         generation: active.generation,
         scopeKey: publishedScopeKey,
       })
-    } catch (error) {
-      if (!isCurrent(active)) return
-      const metrics = executionMetricsFromError(error)
-      const reason = executionTerminalReasonFromError(error)
-      dispatch({
-        type: "failure",
-        generation: active.generation,
-        error: buildExecutionFailureMessage(apiErrorMessage(error), metrics, {
-          prefix: "Auto range failed",
-          terminalReason: reason,
-        }),
-        metrics: metrics ?? null,
-        status: executionJobStatusFromReason(reason),
-        reason,
+    }
+    try {
+      await asked.answer(async (signal) => {
+        const target = requestTarget()
+        return startOptimiserFrontierAutoRange({
+          graph: target.graph,
+          target: target.node,
+          signal,
+        })
+      }, {
+        ok: (start) => {
+          if (start.status === "started" && start.job_id) active.jobId = start.job_id
+          if (start.status === "error" || !start.job_id) {
+            failed(new Error(start.error || "Auto range failed to start"))
+            return
+          }
+          const jobId = start.job_id
+          return asked.answer(waitForJob({
+            poll: (signal) => getOptimiserFrontierAutoRangeStatus(jobId, { signal }),
+            isTerminal: (current) => current.status !== "running",
+            intervalMs: POLL_INTERVAL_MS,
+            // The run's signal aborts once it is no longer current, which ends the wait.
+            signal: asked.signal,
+          }), { ok: completed, failed, stale: () => retire(active) })
+        },
+        failed,
+        // A run no longer current: a job it started is cancelled.
+        stale: (settled) => {
+          if ("value" in settled && settled.value.status === "started" && settled.value.job_id) {
+            active.jobId = settled.value.job_id
+          }
+          retire(active)
+        },
       })
     } finally {
-      if (activeRef.current === active) activeRef.current = null
+      asked.apply(() => {
+        if (activeRef.current === active) activeRef.current = null
+      })
+      asked.release()
     }
-  }, [requestTarget, isCurrent, nodeId, writeRanges, retire])
+  }, [requestTarget, nodeId, writeRanges, retire])
 
   const run = useCallback((targets: readonly string[]) => {
-    const documentFence = captureDocumentExecutionFence()
-    if (!isDocumentExecutionFenceCurrent(documentFence)) return
+    const documentFence = executionPart()
+    if (!documentFence.holds()) return
 
     const previous = activeRef.current
     if (previous) retire(previous)
@@ -366,16 +365,18 @@ export function useOptimiserAutoRange({
       generation: ++generationRef.current,
       scopeKey,
       targets: [...targets],
-      graphVersion,
-      controller: new AbortController(),
+      asked: ask([
+        newest(runs),
+        documentFence,
+        watch(useGraphStore, (current) => current.structuralVersion, (_, now) => now === graphVersion),
+      ]),
       jobId: null,
       cancelledJobId: null,
-      documentFence,
     }
     activeRef.current = active
     dispatch({ type: "begin", generation: active.generation, scopeKey, targets: active.targets })
     void executeRun(active)
-  }, [executeRun, graphVersion, retire, scopeKey])
+  }, [executeRun, graphVersion, retire, runs, scopeKey])
 
   const visibleState = state.scopeKey === scopeKey ? state : initialState
   return {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react"
 import { fetchModellingGpuStatus } from "../../api/client"
 import type { GpuFamilyStatus } from "../../api/types"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest } from "../../utils/answers"
 
 type Props = {
   checked: boolean
@@ -42,17 +44,16 @@ export function GpuTrainingCheckbox({
 export function XGBoostGpuToggle({ checked, onToggle }: Props) {
   const [status, setStatus] = useState<GpuFamilyStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const probes = useRequestKind()
 
   useEffect(() => {
-    const controller = new AbortController()
-    fetchModellingGpuStatus({ signal: controller.signal })
-      .then((response) => setStatus(response.xgboost))
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return
-        setError(reason instanceof Error ? reason.message : String(reason))
-      })
-    return () => controller.abort()
-  }, [])
+    const asked = ask([newest(probes)])
+    void asked.answer((signal) => fetchModellingGpuStatus({ signal }), {
+      ok: (response) => setStatus(response.xgboost),
+      failed: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+    })
+    return () => asked.release()
+  }, [probes])
 
   const available = status?.available === true
   const detail = error !== null

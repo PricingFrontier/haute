@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
 import {
@@ -6,6 +6,7 @@ import {
   type DispersionParam,
   type TrainEstimate,
 } from "../api/types"
+import { useRequestKind } from "../hooks/useRequestKind"
 import {
   useStaleConfigEstimate,
   type UseStaleConfigEstimateResult,
@@ -13,14 +14,11 @@ import {
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { type CachedTrainResult, type TrainProgress } from "../stores/useNodeResultsStore"
 import { hasTrainResult } from "../stores/nodeResultsSelectors"
-import useDocumentStatusStore, {
-  captureDocumentExecutionFence,
-  documentExecutionKey,
-  isDocumentExecutionFenceCurrent,
-} from "../stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentExecutionKey, executionPart } from "../stores/useDocumentStatusStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ModellingPane } from "../stores/useUIStore"
+import { answer, ask, newest, watch } from "../utils/answers"
 import { configField } from "../utils/configField"
 import {
   executionJobStatusFromReason,
@@ -506,13 +504,17 @@ export default function ModellingConfig({
     [allNodes, openNode, openOccurrence],
   )
   const [estimateWaiting, setEstimateWaiting] = useState(false)
-  const latestEstimate = useRef(0)
+  const estimates = useRequestKind()
   const estimateEndpoint = useCallback(
     async (_payload: void, context: { signal: AbortSignal }) => {
       // A superseded estimate settles after its replacement starts, so only the
       // latest may show or clear the waiting notice; the replacement starts
       // without it, whatever the estimate it replaces was waiting for.
-      const run = ++latestEstimate.current
+      const asked = ask([newest(estimates)], {
+        pending: (waiting) => {
+          if (!waiting) setEstimateWaiting(false)
+        },
+      })
       setEstimateWaiting(false)
       try {
         return await estimateAfterSupersededPreviews(
@@ -522,13 +524,13 @@ export default function ModellingConfig({
           },
           context.signal,
           undefined,
-          { onWaiting: () => { if (run === latestEstimate.current) setEstimateWaiting(true) } },
+          { onWaiting: () => asked.apply(() => setEstimateWaiting(true)) },
         )
       } finally {
-        if (run === latestEstimate.current) setEstimateWaiting(false)
+        asked.release()
       }
     },
-    [activeSource, requestTarget],
+    [activeSource, estimates, requestTarget],
   )
   const estimate = useStaleConfigEstimate<TrainEstimate>(
     nodeId,
@@ -580,9 +582,9 @@ export default function ModellingConfig({
   }), [activeSource, documentKey, resultKey, requestTarget, structuralVersion, trainingHash])
   const onTrain = useCallback(async () => {
     if (hasTrainingConfigurationIssues) return
-    const documentFence = captureDocumentExecutionFence()
-    if (!isDocumentExecutionFenceCurrent(documentFence)) return
-    setSubmitting(true)
+    const document = executionPart()
+    // A document that cannot run trains nothing.
+    if (!document.holds()) return
     // The lineage is taken from the exact payload submitted, before awaiting, so
     // an edit made while the request is pending never relabels this job; the
     // config hash is this render's training identity for the same reason. The
@@ -594,52 +596,41 @@ export default function ModellingConfig({
     const lineage = trainingLineage(target.graph)
     const configHash = trainingHash
     const attempt = { configHash, source: activeSource, structuralVersion }
-    try {
-      const result = await trainModel({
-        graph: target.graph,
-        target: target.node,
-        source: useSettingsStore.getState().activeSource,
-      })
-      if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      if (result.status === "started" && result.job_id) {
-        startTrainJob(key, result.job_id, nodeLabel, configHash, activeSource, structuralVersion, lineage)
-      } else {
-        // The server only ever answers a started job; anything else refused the start.
-        failTrainStart(key, attempt, result.error || `Training did not start (status ${result.status}).`)
-      }
-    } catch (error) {
-      if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      const message = apiErrorMessage(error)
-      failTrainStart(key, attempt, message, failureStatus(error, message))
-    } finally {
-      setSubmitting(false)
-    }
+    await answer([document], () => trainModel({
+      graph: target.graph,
+      target: target.node,
+      source: useSettingsStore.getState().activeSource,
+    }), {
+      ok: (result) => {
+        if (result.status === "started" && result.job_id) {
+          startTrainJob(key, result.job_id, nodeLabel, configHash, activeSource, structuralVersion, lineage)
+        } else {
+          // The server only ever answers a started job; anything else refused the start.
+          failTrainStart(key, attempt, result.error || `Training did not start (status ${result.status}).`)
+        }
+      },
+      failed: (error) => {
+        const message = apiErrorMessage(error)
+        failTrainStart(key, attempt, message, failureStatus(error, message))
+      },
+    }, { inFlight: setSubmitting })
   }, [activeSource, allNodes, failTrainStart, hasTrainingConfigurationIssues, nodeId, requestTarget, startTrainJob, structuralVersion, trainingHash])
   const onCancel = useCallback(async () => {
     const key = resultKey
     const job = useNodeResultsStore.getState().trainJobs[key]
     if (!job || cancelling) return
 
-    setCancelling(true)
-    const documentFence = captureDocumentExecutionFence()
-    try {
-      const status = await cancelTrain(job.jobId)
-      // The reply belongs to the job it cancelled; the store ignores it once
-      // polling has retired that job, and a changed document drops it here.
-      if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      if (status.status === "completed" && status.result) completeTrainJob(key, job.jobId, status.result, status)
-      else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(key, job.jobId, status.message || "Training stopped", status)
-      else updateTrainProgress(key, job.jobId, status)
-    } catch (error) {
-      if (
-        isDocumentExecutionFenceCurrent(documentFence)
-        && useNodeResultsStore.getState().trainJobs[key]?.jobId === job.jobId
-      ) {
-        addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`)
-      }
-    } finally {
-      setCancelling(false)
-    }
+    // The reply belongs to the job it cancelled and the document: once polling has
+    // retired the job, or the document changed, it is dropped.
+    const belongsTo = [executionPart(), watch(useNodeResultsStore, (state) => state.trainJobs[key]?.jobId)] as const
+    await answer(belongsTo, () => cancelTrain(job.jobId), {
+      ok: (status) => {
+        if (status.status === "completed" && status.result) completeTrainJob(key, job.jobId, status.result, status)
+        else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(key, job.jobId, status.message || "Training stopped", status)
+        else updateTrainProgress(key, job.jobId, status)
+      },
+      failed: (error) => addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`),
+    }, { inFlight: setCancelling })
   }, [addToast, cancelling, completeTrainJob, failTrainJob, resultKey, updateTrainProgress])
 
   if (!algorithm) return <AlgorithmGateway onUpdate={onUpdate} />

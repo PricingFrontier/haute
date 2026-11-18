@@ -3,6 +3,8 @@ import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest } from "../../utils/answers"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
 import { clearedMlflowSelection, effectiveMlflowDestination } from "../../utils/mlflowDestinations"
@@ -137,27 +139,27 @@ export default function OptimiserApplyEditor({
   }, [optimiserMode, onUpdate, ratebookInput, resolvedOptimiserMode])
 
   // Load artifact metadata when file path changes
+  const artifactReads = useRequestKind()
   useEffect(() => {
     if (sourceType !== "file" || !artifactPath) {
       return
     }
     // A read for a path no longer chosen is cancelled, and a late answer to it
     // never replaces the current artifact's metadata.
-    const controller = new AbortController()
-    readJson<ArtifactMeta>(artifactPath, { signal: controller.signal })
-      .then((data) => {
-        if (controller.signal.aborted) return
+    const asked = ask([newest(artifactReads)])
+    void asked.answer((signal) => readJson<ArtifactMeta>(artifactPath, { signal }), {
+      ok: (data) => {
         setMeta({ artifactPath, data })
         setLoadError(null)
-      })
-      .catch((e: unknown) => {
-        if (controller.signal.aborted) return
+      },
+      failed: (e) => {
         console.warn("Artifact load failed:", e)
         setLoadError({ artifactPath, message: "Could not load artifact file" })
         setMeta(null)
-      })
-    return () => controller.abort()
-  }, [artifactPath, sourceType])
+      },
+    })
+    return () => asked.release()
+  }, [artifactPath, sourceType, artifactReads])
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">

@@ -9,6 +9,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { ApiError, getTrainStatus } from "../../api/client"
 import type { TrainExportReceipts } from "../../api/types"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest } from "../../utils/answers"
 
 const NO_RECEIPTS: TrainExportReceipts = { mlflow: [], model_files: [] }
 
@@ -24,26 +26,23 @@ export function useExportReceipts(jobId: string | null): ExportReceiptsState {
     receipts: NO_RECEIPTS,
   })
   const [generation, setGeneration] = useState(0)
+  const reads = useRequestKind()
 
   useEffect(() => {
     if (!jobId) return
-    const controller = new AbortController()
-    getTrainStatus(jobId, { signal: controller.signal }).then(
-      (status) => {
-        if (controller.signal.aborted) return
-        setState({ jobId, receipts: status.export_receipts ?? NO_RECEIPTS })
-      },
-      (caught: unknown) => {
-        if (controller.signal.aborted) return
+    const asked = ask([newest(reads)])
+    void asked.answer((signal) => getTrainStatus(jobId, { signal }), {
+      ok: (status) => setState({ jobId, receipts: status.export_receipts ?? NO_RECEIPTS }),
+      failed: (caught) => {
         // A job that is gone has no receipts to show; anything else keeps the
         // last known receipts rather than claiming nothing was exported.
         if (caught instanceof ApiError && caught.status === 404) {
           setState({ jobId, receipts: NO_RECEIPTS })
         }
       },
-    )
-    return () => controller.abort()
-  }, [jobId, generation])
+    })
+    return () => asked.release()
+  }, [jobId, generation, reads])
 
   const refresh = useCallback(() => setGeneration((value) => value + 1), [])
   return {

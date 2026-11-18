@@ -11,7 +11,9 @@ import type {
   OutputDestinationResponse,
 } from "../../api/types"
 import useSettingsStore from "../../stores/useSettingsStore"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import useOutputWriteStore from "../../stores/useOutputWriteStore"
+import { answer, ask, newest, watch } from "../../utils/answers"
 import { graphForRequestIdentity } from "../../utils/buildGraph"
 import { canvasTarget, prepareNodeRequest } from "../../utils/requestGateway"
 import { useGraph, useRequestScope, useResultKey } from "../useGraph"
@@ -307,25 +309,22 @@ export default function DataOutputEditor({
     [clearWrite, writeKey],
   )
 
+  const destinations = useRequestKind()
   useEffect(() => {
     if (!ready) return
-    const controller = new AbortController()
-    void Promise.resolve()
-      .then(() => resolveOutputDestination({ ...requestTarget(), signal: controller.signal }))
-      .then(
-        (response) => {
-          if (!controller.signal.aborted) {
-            setDestinationState({ identity, response })
-          }
-        },
-        (caught: unknown) => {
-          if (controller.signal.aborted) return
+    const asked = ask([newest(destinations)])
+    void asked.answer(
+      Promise.resolve().then(() => resolveOutputDestination({ ...requestTarget(), signal: asked.signal })),
+      {
+        ok: (response) => setDestinationState({ identity, response }),
+        failed: (caught) => {
           const message = apiErrorMessage(caught, "Could not resolve output destination.")
           setDestinationState({ identity, error: message })
         },
-      )
-    return () => controller.abort()
-  }, [identity, ready, requestTarget])
+      },
+    )
+    return () => asked.release()
+  }, [identity, ready, requestTarget, destinations])
 
   const write = async (overwrite: boolean) => {
     if (!ready || isWriting) return
@@ -335,23 +334,25 @@ export default function DataOutputEditor({
     const requestKey = writeKey
     const requestId = beginWrite(requestKey, requestIdentity)
     if (requestId === null) return
-    try {
-      const response = await writeOutput({
-        ...requestTarget(),
-        source: activeSource,
-        overwrite,
-      })
-      completeWrite(requestKey, requestId, requestIdentity, {
+    // The answer belongs to the write the store holds for the node, which outlives the editor;
+    // a deleted node's forgotten write finds nothing to complete.
+    await answer([watch(useOutputWriteStore, (state) => state.writes[requestKey]?.requestId)], writeOutput({
+      ...requestTarget(),
+      source: activeSource,
+      overwrite,
+    }), {
+      ok: (response) => completeWrite(requestKey, requestId, requestIdentity, {
         phase: "success",
         result: response,
-      })
-    } catch (caught) {
-      const message = apiErrorMessage(caught, "Output write failed.")
-      completeWrite(requestKey, requestId, requestIdentity, {
-        phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
-        message,
-      })
-    }
+      }),
+      failed: (caught) => {
+        const message = apiErrorMessage(caught, "Output write failed.")
+        completeWrite(requestKey, requestId, requestIdentity, {
+          phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
+          message,
+        })
+      },
+    })
   }
 
   return (

@@ -68,7 +68,7 @@ describe("PipelineRepairDialog", () => {
     })
   })
 
-  it("leaves the canvas on a document live sync brought while the repair ran, and closes (FEG-10)", async () => {
+  it("leaves the canvas on a document live sync brought while the repair ran, and closes", async () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ source_file: "root.py" }))
     let answer: (value: ReturnType<typeof applied>) => void = () => {}
     applyRemoveUnavailableNode.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))

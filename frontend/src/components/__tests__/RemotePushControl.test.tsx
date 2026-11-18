@@ -738,7 +738,7 @@ describe("RemotePushControl", () => {
         expect(onSave).toHaveBeenCalledOnce()
       })
 
-      it("keeps every unsaved edit when one was made while it ran (VCS-10)", async () => {
+      it("keeps every unsaved edit when one was made while it ran", async () => {
         const reload = vi.fn(async () => {})
         useWorkbenchFormStore.setState({ reload })
         useWorkbenchStore.setState({ formDirty: true })

@@ -28,7 +28,9 @@ import { X, History, AlertTriangle, Loader2, Columns2, Rows2 } from "lucide-reac
 
 import { getCommitPipeline, getCommitContext } from "../api/client"
 import { apiErrorMessage, apiErrorStatus } from "../api/errors"
+import { useRequestKind } from "../hooks/useRequestKind"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { ask, newest } from "../utils/answers"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
 import { diffPipelineNodes, type GraphDiff } from "../utils/graphDiff"
@@ -363,58 +365,51 @@ export default function ComparisonView({
   // `comparison.sha` at the call site, so inspecting a different version remounts
   // it with fresh state — no in-effect reset needed. The request is aborted if
   // the view unmounts (remount or bail-out) before it lands.
+  const pipelineReads = useRequestKind()
   useEffect(() => {
-    const ctrl = new AbortController()
-    const load = async () => {
-      const graph = await getCommitPipeline(comparison.sha, sourceFile, { signal: ctrl.signal })
-      const resolved = await resolveEditorGraphIdentities({
+    const asked = ask([newest(pipelineReads)])
+    void asked.answer(async (signal) => {
+      const graph = await getCommitPipeline(comparison.sha, sourceFile, { signal })
+      return resolveEditorGraphIdentities({
         nodes: graph.nodes,
         edges: graph.edges,
         submodels: graph.submodels ?? {},
         reservedApiInputFrameLabels: reservedApiInputFrameLabelSet,
       })
-      if (!ctrl.signal.aborted) setHistorical(resolved)
-    }
-    load().catch((err) => {
-      if (ctrl.signal.aborted) return
-      setError(apiErrorMessage(err, "Could not load this version."))
+    }, {
+      ok: (resolved) => setHistorical(resolved),
+      failed: (err) => setError(apiErrorMessage(err, "Could not load this version.")),
     })
-    return () => ctrl.abort()
-  }, [comparison.sha, sourceFile, reservedApiInputFrameLabelSet])
+    return () => asked.release()
+  }, [comparison.sha, sourceFile, reservedApiInputFrameLabelSet, pipelineReads])
 
   // Breadcrumb context for the historical (inspected) commit. Best-effort — a
   // failure just leaves the fallback label.
+  const contextReads = useRequestKind()
   useEffect(() => {
-    const ctrl = new AbortController()
-    getCommitContext(comparison.sha, { signal: ctrl.signal })
-      .then((ctx) => {
-        if (!ctrl.signal.aborted) setHistoricalCtx(ctx)
-      })
-      .catch((err) => {
-        if (ctrl.signal.aborted) return
-        // The breadcrumbs are optional context the comparison shows without: log, don't toast.
-        console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`)
-      })
-    return () => ctrl.abort()
-  }, [comparison.sha])
+    const asked = ask([newest(contextReads)])
+    void asked.answer((signal) => getCommitContext(comparison.sha, { signal }), {
+      ok: (ctx) => setHistoricalCtx(ctx),
+      // The breadcrumbs are optional context the comparison shows without: log, don't toast.
+      failed: (err) => console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`),
+    })
+    return () => asked.release()
+  }, [comparison.sha, contextReads])
 
   // Breadcrumb context for the current side (the working branch's latest save).
   // `base` = the inspected commit, so the response carries `delta_from_base` —
   // the historic↔current commit span shown on the historic pane.
+  const currentContextReads = useRequestKind()
   useEffect(() => {
     if (!lastSaveSha) return
-    const ctrl = new AbortController()
-    getCommitContext(lastSaveSha, { signal: ctrl.signal, base: comparison.sha })
-      .then((ctx) => {
-        if (!ctrl.signal.aborted) setCurrentCtx(ctx)
-      })
-      .catch((err) => {
-        if (ctrl.signal.aborted) return
-        // The breadcrumbs are optional context the comparison shows without: log, don't toast.
-        console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`)
-      })
-    return () => ctrl.abort()
-  }, [lastSaveSha, comparison.sha])
+    const asked = ask([newest(currentContextReads)])
+    void asked.answer((signal) => getCommitContext(lastSaveSha, { signal, base: comparison.sha }), {
+      ok: (ctx) => setCurrentCtx(ctx),
+      // The breadcrumbs are optional context the comparison shows without: log, don't toast.
+      failed: (err) => console.warn(`Commit context fetch failed (${apiErrorStatus(err) ?? apiErrorMessage(err)})`),
+    })
+    return () => asked.release()
+  }, [lastSaveSha, comparison.sha, currentContextReads])
 
   // Diff once the historical graph is in hand; class each side's nodes from it.
   const diff = useMemo(

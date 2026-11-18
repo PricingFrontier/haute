@@ -5,52 +5,23 @@
 The node editors' panels, as [the frontend node editors
 specification](../frontend-node-editors/high-level.md) describes them: which
 answer a picker shows when two of its requests overlap, and what a field
-accepts, saves and undoes. `FEN-01` comes from the review plan's browser
-sweep of 10 November 2026 and was reproduced in a real browser, with the two
-answers held and released in the reverse order. `FEN-02`, `FEN-03`, `FEN-04`
-and `FEN-06` come from the plan's browser sweep of the editors' fields on
+accepts, saves and undoes. `FEN-02`, `FEN-03`, `FEN-04` and `FEN-06` come from the plan's browser sweep of the editors' fields on
 11 November; the main session re-ran each in a browser on a fresh project. `FEN-07` comes
 from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit, and was reproduced in a
-browser on 13 November. `FEN-10` comes from the same reader; a worker ran it
-in a browser, and the main session ran the journey again on 13 November.
+browser on 13 November.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FEN-01 | Planned | P3 | The Databricks schema list is the chosen catalog's, whichever answer arrives last. |
 | FEN-02 | Planned | P2 | A Filter's "is one of" list starts at its column's type and takes pasted cells as separate values. |
 | FEN-03 | Planned | P3 | A Rename to a name the frame already has is refused at the step, and a step the engine refuses shows the engine's sentence without its plan or a file path. |
 | FEN-04 | Planned | P3 | A Constant value whose name is cleared is kept, or the save says so; the panel shows what the file holds. |
 | FEN-06 | Planned | P3 | A Banding factor whose input column is gone is marked when the editor opens and counted among its Issues. |
 | FEN-07 | Planned | P2 | A Group by with a row count, saved and opened again, is a step the analyst can edit, not an "Invalid step" whose only action is Delete. |
-| FEN-10 | Planned | P3 | Values imported into a Banding factor are dropped when the factor was removed before they arrived. |
 
 ## Planned improvements
-
-### FEN-01 — A late answer does not replace the chosen catalog's schemas
-**Why:** Reproduced on 10 November 2026 in a browser. In a Databricks Data
-Input, the analyst picks one catalog and then another before the first list
-of schemas has arrived. When the first catalog's answer comes last, it
-replaces the list: the Catalog box shows the second catalog and the Schema
-box offers no schema at all, with nothing said, as if the catalog were
-empty. Clicking into the Schema box asks again and recovers. The request has
-no guard, while the table picker in the same file keeps "only the answer to
-the latest ask". A failed older request would show its error against the
-newer catalog by the same path (read, not run). The overlap needs only that
-the first list is slower than the second.
-
-**Plan:** Give the catalog and schema requests the guard the table picker
-has: an answer for anything but the current choice is dropped.
-
-**Acceptance:** With the answers for two catalogs delivered in either order,
-the Schema box lists the chosen catalog's schemas, and an older failure
-shows no error against the newer choice.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/_DatabricksSelector.tsx`.
 
 ### FEN-02 — An "is one of" list takes its column's type and pasted cells
 **Why:** Reproduced on 11 November 2026 in a browser by the plan's sweep of
@@ -194,24 +165,3 @@ each window function, and none is called invalid.
 `src/haute/_polars_steps_lift.py::_Reader`;
 `specs/codegen/structured-syntax-boundary.md`.
 
-### FEN-10 — Imported values that arrive after their factor was removed are dropped
-**Why:** Reproduced on 13 November 2026 in a browser. A Banding has two
-Categorical factors, `channel` and `vehicle_age`. An import of values into
-`channel` from a column of a params file is started, and the read of the
-column is slow (the run held it). `channel` is removed. When the read
-answers, its values, North, South and East, are added to `vehicle_age`'s
-rules, and Save keeps them. Nothing is said. Choosing another factor
-while an import is pending cancels it; removing the factor does not,
-because the import's dialog is kept by the factor's position, which the
-next factor now has.
-
-**Plan:** Tie a pending import to its factor, and drop its answer when
-that factor is gone.
-
-**Acceptance:** In the run above `vehicle_age` keeps only its own rule
-after the read answers, and the removed factor's import adds nothing.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`;
-`frontend/src/panels/editors/banding/ImportParamValues.tsx`.

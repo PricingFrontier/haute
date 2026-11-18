@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import type { OnUpdateConfig } from "../editors/_shared"
 import CommittedTextField from "../../components/form/CommittedTextField"
 import { apiErrorMessage } from "../../api/errors"
@@ -13,6 +13,8 @@ import { ColumnSelector } from "./ColumnSelector"
 import { modelColumnChoices } from "./modelColumns"
 import WeightOffsetFields from "./WeightOffsetFields"
 import useToastStore from "../../stores/useToastStore"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest, under } from "../../utils/answers"
 
 type Column = { name: string; dtype: string }
 
@@ -67,31 +69,20 @@ export type GLMTargetConfigProps = {
   dispersionEstimate?: DispersionEstimate
 }
 
-type RunningEstimate = { param: DispersionParam; scope: string; controller: AbortController }
+type RunningEstimate = { param: DispersionParam; scope: string }
 type EstimateOutcome = { kind: "failed"; message: string } | { kind: "stopped" }
 
 export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate }: GLMTargetConfigProps) {
   const [running, setRunning] = useState<RunningEstimate | null>(null)
   const [estimateOutcome, setEstimateOutcome] = useState<EstimateOutcome | null>(null)
   const scope = dispersionEstimate?.scope ?? null
-  const scopeRef = useRef(scope)
-  const estimateRef = useRef<RunningEstimate | null>(null)
-  const mountedRef = useRef(true)
-  // A closed panel has nowhere to show the estimate, so it cancels it.
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-      estimateRef.current?.controller.abort()
-    }
-  }, [])
   // An estimate belongs to the settings it read: once they change, its value
-  // would land on a draft it was not computed for, so it stops.
-  useEffect(() => {
-    scopeRef.current = scope
-    const current = estimateRef.current
-    if (current && current.scope !== scope) current.controller.abort()
-  }, [scope])
+  // would land on a draft it was not computed for, so it stops; a closed panel
+  // has nowhere to show it, so it stops too.
+  const settingsRead = useRequestKind()
+  useEffect(() => () => settingsRead.bump(), [scope, settingsRead])
+  // The estimate started last owns the running state and the note while the panel shows.
+  const estimates = useRequestKind()
   const estimating = running !== null && running.scope === scope ? running.param : null
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
@@ -113,37 +104,32 @@ export function GLMTargetConfig({ config, onUpdate, columns, dispersionEstimate 
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!dispersionEstimate || estimating) return
-    const estimate: RunningEstimate = { param, scope: dispersionEstimate.scope, controller: new AbortController() }
-    const { signal } = estimate.controller
-    estimateRef.current = estimate
-    setRunning(estimate)
+    const estimate: RunningEstimate = { param, scope: dispersionEstimate.scope }
+    const shown = ask([newest(estimates)], { pending: (waiting) => setRunning(waiting ? estimate : null) })
+    const inScope = ask([under(settingsRead)])
     setEstimateOutcome(null)
     try {
-      const value = await dispersionEstimate.run(param, signal)
-      if (signal.aborted || scopeRef.current !== estimate.scope) return
-      // Filled in, not applied silently: the value lands in the visible,
-      // editable field and the user keeps the final say.
-      onUpdate(param, value)
-    } catch (e) {
-      // Prefer the backend's actionable detail ("GLM config has no factors…")
-      // over the generic "HTTP 400" message.
-      const message = apiErrorMessage(e)
-      if (signal.aborted) {
-        // Only a cancellation that failed is news: the estimate may still be
-        // running, and a toast outlives a closed panel.
-        if ((e as { name?: unknown } | null)?.name !== "AbortError") {
-          useToastStore.getState().addToast("error", `Cancelling the dispersion estimate failed: ${message}`)
-        }
-        // A newer estimate owns the note once one has started.
-        if (mountedRef.current && estimateRef.current === estimate) setEstimateOutcome({ kind: "stopped" })
-        return
-      }
-      if (estimateRef.current === estimate && scopeRef.current === estimate.scope) {
-        setEstimateOutcome({ kind: "failed", message })
-      }
+      await inScope.answer(dispersionEstimate.run(param, inScope.signal), {
+        // Filled in, not applied silently: the value lands in the visible,
+        // editable field and the user keeps the final say.
+        ok: (value) => onUpdate(param, value),
+        // Prefer the backend's actionable detail ("GLM config has no factors…")
+        // over the generic "HTTP 400" message.
+        failed: (e) => shown.apply(() => setEstimateOutcome({ kind: "failed", message: apiErrorMessage(e) })),
+        stale: (settled) => {
+          if (!("error" in settled)) return
+          // Only a cancellation that failed is news: the estimate may still be
+          // running, and a toast outlives a closed panel.
+          if ((settled.error as { name?: unknown } | null)?.name !== "AbortError") {
+            useToastStore.getState().addToast("error", `Cancelling the dispersion estimate failed: ${apiErrorMessage(settled.error)}`)
+          }
+          // A newer estimate owns the note once one has started.
+          shown.apply(() => setEstimateOutcome({ kind: "stopped" }))
+        },
+      })
     } finally {
-      if (estimateRef.current === estimate) estimateRef.current = null
-      if (mountedRef.current) setRunning((current) => (current === estimate ? null : current))
+      inScope.release()
+      shown.release()
     }
   }
 
