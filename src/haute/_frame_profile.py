@@ -12,6 +12,12 @@ import polars as pl
 
 from haute._column_summary import CATEGORICAL_COUNT_FIELD, is_unhashable_dtype
 from haute._execution_context import ExecutionContext
+from haute._polars_dtypes import (
+    TEXT_KINDS,
+    WIDE_INTEGER_DTYPES,
+    ColumnKind,
+    column_kind,
+)
 from haute._polars_utils import cancellable_streaming_collect
 from haute.schemas import (
     ExploreCategoricalColumnProfile,
@@ -48,12 +54,12 @@ _HISTOGRAM_COLUMN_LIMIT = 50
 # arrive rounded together.
 _HISTOGRAM_SAFE_INTEGER = 2**53 - 1
 _CATEGORICAL_VALUE_FIELD = "__haute_categorical_value"
-_TEXT_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum, pl.Binary)
-_LEXICAL_MIN_MAX_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum)
-# Bases cast to String for min/max display so the values match the categorical
+# Text the profile counts and lists values of: free text, categories, and bytes read as text.
+_TEXT_LIKE_KINDS: frozenset[ColumnKind] = TEXT_KINDS | {"binary"}
+# Kinds cast to String for min/max display so the values match the categorical
 # value counts: text sorts alphabetically (not by category code) and booleans
 # render as the same lowercase "true"/"false" rather than capitalised str(bool).
-_STRING_MIN_MAX_DTYPE_BASES = (*_LEXICAL_MIN_MAX_DTYPE_BASES, pl.Boolean)
+_STRING_MIN_MAX_KINDS: frozenset[ColumnKind] = TEXT_KINDS | {"boolean"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,17 +67,6 @@ class ExploreFrameStats:
     row_count: int
     columns: list[ExploreColumnStat]
     overview_summary: ExploreOverviewSummary
-
-
-def _is_float_dtype(dtype: pl.DataType) -> bool:
-    """Return True for float dtypes, the only columns that can hold NaN.
-
-    ``is_nan()`` raises ``InvalidOperationError`` against a non-float column
-    (see ``_trace_correlation``), so NaN counting must be gated strictly on
-    float dtype rather than the broader ``is_numeric()``.
-    """
-
-    return dtype.base_type() in (pl.Float32, pl.Float64)
 
 
 def _is_identifier_candidate(
@@ -132,7 +127,7 @@ def _format_numeric_profile_value(value: Any) -> str | None:
 def _supports_categorical_value_counts(dtype: pl.DataType) -> bool:
     """Return True when bounded distinct values can be displayed directly."""
 
-    return _supports_min_max(dtype) or dtype.base_type() in _TEXT_DTYPE_BASES
+    return _supports_min_max(dtype) or column_kind(dtype) in _TEXT_LIKE_KINDS
 
 
 def _supports_min_max(dtype: pl.DataType) -> bool:
@@ -143,7 +138,7 @@ def _supports_min_max(dtype: pl.DataType) -> bool:
         dtype.is_numeric()
         or dtype.is_temporal()
         or base == pl.Boolean
-        or base in _LEXICAL_MIN_MAX_DTYPE_BASES
+        or column_kind(dtype) in TEXT_KINDS
     )
 
 
@@ -172,7 +167,7 @@ def _min_max_column_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     """
 
     expr = pl.col(name)
-    if dtype.base_type() in _STRING_MIN_MAX_DTYPE_BASES:
+    if column_kind(dtype) in _STRING_MIN_MAX_KINDS:
         return expr.cast(pl.String)
     return expr
 
@@ -189,7 +184,7 @@ def _column_kind(dtype: pl.DataType) -> ExploreColumnKind:
         return "Boolean"
     if dtype.is_nested():
         return "Nested"
-    if base in _TEXT_DTYPE_BASES:
+    if column_kind(dtype) in _TEXT_LIKE_KINDS:
         return "Text"
     return "Other"
 
@@ -633,7 +628,7 @@ def numeric_finite_mask(value: pl.Expr, dtype: pl.DataType) -> pl.Expr:
 
     ``is_finite()`` of a null is null, so the mask is null-free for both sums.
     """
-    if _is_float_dtype(dtype):
+    if column_kind(dtype) == "float":
         return value.is_finite().fill_null(False)
     return value.is_not_null()
 
@@ -680,7 +675,7 @@ def numeric_bin_scale(
     ``minimum`` and ``maximum`` are the column's own finite extrema (rows chosen
     by ``numeric_finite_mask``, in the column's dtype) and must differ.
     """
-    if dtype.is_integer() and dtype not in (pl.Int128, pl.UInt128):
+    if dtype.is_integer() and dtype not in WIDE_INTEGER_DTYPES:
         low, high = int(minimum), int(maximum)
         span = high - low
         if span < 2**63:
@@ -838,7 +833,7 @@ def _build_frame_stats(
             min_max_expr = _min_max_column_expr(name, dtype)
             aggregations.append(min_max_expr.min().alias(f"min::{name}"))
             aggregations.append(min_max_expr.max().alias(f"max::{name}"))
-        if dtype.base_type() in _TEXT_DTYPE_BASES:
+        if column_kind(dtype) in _TEXT_LIKE_KINDS:
             text_expr = categorical_label_expr(name, dtype).str.len_chars()
             aggregations.append(text_expr.min().alias(f"text_min_length::{name}"))
             aggregations.append(text_expr.mean().alias(f"text_mean_length::{name}"))
@@ -858,7 +853,7 @@ def _build_frame_stats(
             aggregations.append(numeric_expr.std().alias(f"std::{name}"))
             aggregations.append((pl.col(name) == 0).sum().alias(f"zero::{name}"))
             aggregations.append((pl.col(name) < 0).sum().alias(f"negative::{name}"))
-            if _is_float_dtype(dtype):
+            if column_kind(dtype) == "float":
                 # NaN is the third missingness bucket, distinct from null.
                 # ``is_nan()`` yields null for null rows, so ``.sum()`` counts
                 # only genuine NaN values.
@@ -923,7 +918,7 @@ def _build_frame_stats(
     for name in column_names:
         dtype = schema[name]
         null_count = int(aggregate_row[f"null::{name}"])
-        nan_count = int(aggregate_row[f"nan::{name}"]) if _is_float_dtype(dtype) else None
+        nan_count = int(aggregate_row[f"nan::{name}"]) if column_kind(dtype) == "float" else None
         distinct_count: int | None
         if is_unhashable_dtype(dtype):
             distinct_count = None
@@ -947,7 +942,7 @@ def _build_frame_stats(
         # can outgrow it; numeric/temporal columns legitimately hold many
         # distinct values and are never flagged.
         is_high_cardinality = (
-            dtype.base_type() in _TEXT_DTYPE_BASES
+            column_kind(dtype) in _TEXT_LIKE_KINDS
             and distinct_count is not None
             and distinct_count > _CATEGORICAL_VALUE_COUNT_LIMIT
         )
@@ -978,7 +973,7 @@ def _build_frame_stats(
                     "negative_count": int(aggregate_row[f"negative::{name}"]),
                 }
             )
-            if _is_float_dtype(dtype):
+            if column_kind(dtype) == "float":
                 profile_stats["nan_count"] = nan_count
             if name in histogram_column_name_set:
                 profile_stats["histogram"] = histograms_by_column[name]
@@ -997,7 +992,7 @@ def _build_frame_stats(
             categorical_label_group_counts[name] = int(
                 aggregate_row[_categorical_label_group_count_alias(name)]
             )
-        if dtype.base_type() in _TEXT_DTYPE_BASES:
+        if column_kind(dtype) in _TEXT_LIKE_KINDS:
             profile_stats.update(
                 {
                     "text_min_length": aggregate_row[f"text_min_length::{name}"],

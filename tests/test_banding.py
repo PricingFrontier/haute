@@ -1265,6 +1265,28 @@ class TestBandingHardening:
         assert bands[0] == "dflt", f"Empty label should be skipped, got {bands[0]!r}"
         assert bands[1] == "high"
 
+    @pytest.mark.parametrize("dtype", [pl.Float16, pl.Float32, pl.Float64], ids=str)
+    def test_nan_and_infinity_take_the_default_at_every_float_width(self, dtype):
+        """RTG-07: a Float16 column's NaN and infinities take the default, as a Float64's do,
+        rather than comparing above every breakpoint into the top band."""
+        values = [5.0, 2.0, 1.5, 999.0, float("nan"), float("inf"), float("-inf")]
+        lf = pl.LazyFrame({"x": pl.Series(values, dtype=dtype)})
+        rules = [
+            {"boundary": "2", "label": "low"},
+            {"boundary": "10", "label": "mid"},
+            {"boundary": "", "label": "high"},
+        ]
+        bands = _apply_banding(lf, "x", "band", "breakpoints", rules, default="unknown")
+        assert bands.collect()["band"].to_list() == [
+            "mid",
+            "low",
+            "low",
+            "high",
+            "unknown",
+            "unknown",
+            "unknown",
+        ]
+
     def test_nan_input_falls_to_default(self):
         """NaN values in the input column should get the default, not match arbitrary rules."""
         lf = pl.DataFrame({"x": [1.0, float("nan"), 10.0]}).lazy()

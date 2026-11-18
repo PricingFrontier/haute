@@ -19,6 +19,7 @@ import polars as pl
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
 from haute._polars_dtypes import (
+    CONTRACT_NUMBER_NAMES,
     contract_dtype_name,
     is_string_or_categorical,
     wide_integer_column,
@@ -3493,7 +3494,7 @@ class TrainingJob:
         nonnumeric_features = sorted(
             key
             for key in constraints
-            if prepared.feature_dtypes.get(key) not in {"Int64", "Float64"}
+            if prepared.feature_dtypes.get(key) not in CONTRACT_NUMBER_NAMES
         )
         if nonnumeric_features:
             dtypes = {key: prepared.feature_dtypes.get(key) for key in nonnumeric_features}

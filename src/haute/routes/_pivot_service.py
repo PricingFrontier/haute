@@ -48,6 +48,7 @@ from haute._node_config_models import (
     ExplorePivotValuePlacement,
 )
 from haute._node_snapshots import NodeSnapshotStore
+from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind
 from haute._polars_utils import cancellable_streaming_collect
 from haute._project_context import context_thread, current_project
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
@@ -91,8 +92,21 @@ MAX_DISPLAY_CELLS = 50_000
 MAX_FILTER_MEMBERS = 500
 
 _COUNT_AGGREGATIONS = frozenset({"count", "distinct_count"})
-_FLOAT_BASE_TYPES = (pl.Float32, pl.Float64)
-_TEXT_BASE_TYPES = (pl.String, pl.Categorical, pl.Enum)
+#: The column kinds a filter, row or column field groups by: those a member names.
+_DIMENSION_KINDS: frozenset[ColumnKind] = frozenset(
+    {
+        "boolean",
+        "integer",
+        "float",
+        "decimal",
+        "text",
+        "category",
+        "date",
+        "datetime",
+        "time",
+        "null",
+    }
+)
 _MEMBER_KIND_ORDER = {
     "boolean": 0,
     "integer": 1,
@@ -329,35 +343,23 @@ def _combined_path(
 
 
 def _is_supported_dimension_dtype(dtype: pl.DataType) -> bool:
-    base = dtype.base_type()
-    return (
-        base in (*_TEXT_BASE_TYPES, pl.Boolean, pl.Decimal, pl.Date, pl.Datetime, pl.Time, pl.Null)
-        or dtype.is_integer()
-        or base in _FLOAT_BASE_TYPES
-    )
+    return column_kind(dtype) in _DIMENSION_KINDS
 
 
 def _member_kind_matches_dtype(kind: str, dtype: pl.DataType) -> bool:
+    """Whether a member of *kind* can be a value of a column of *dtype*.
+
+    A member names its column's kind, but for text (``string``, a text or category
+    column), a float's NaN (``nan``) and a missing value (``null``, any column).
+    """
     if kind == "null":
         return True
-    base = dtype.base_type()
+    column = column_kind(dtype)
     if kind == "string":
-        return base in _TEXT_BASE_TYPES
-    if kind == "boolean":
-        return base == pl.Boolean
-    if kind == "integer":
-        return dtype.is_integer()
-    if kind in {"float", "nan"}:
-        return base in _FLOAT_BASE_TYPES
-    if kind == "decimal":
-        return base == pl.Decimal
-    if kind == "date":
-        return base == pl.Date
-    if kind == "datetime":
-        return base == pl.Datetime
-    if kind == "time":
-        return base == pl.Time
-    return False
+        return column in TEXT_KINDS
+    if kind == "nan":
+        return column == "float"
+    return kind == column
 
 
 def _member_literal(member: ExplorePivotMember) -> Any:
@@ -556,7 +558,7 @@ def _compile_formulas(
 
 def _valid_value_expression(field: str, dtype: pl.DataType) -> pl.Expr:
     expression = pl.col(field)
-    if dtype.base_type() in _FLOAT_BASE_TYPES:
+    if column_kind(dtype) == "float":
         expression = expression.fill_nan(None)
     return expression
 
@@ -1454,7 +1456,7 @@ class PivotService:
     @staticmethod
     def _member_search_expression(field: str, dtype: pl.DataType, search: str) -> pl.Expr:
         column = pl.col(field)
-        if dtype.base_type() in _FLOAT_BASE_TYPES:
+        if column_kind(dtype) == "float":
             label = (
                 pl.when(column.is_null())
                 .then(pl.lit("(blank)"))

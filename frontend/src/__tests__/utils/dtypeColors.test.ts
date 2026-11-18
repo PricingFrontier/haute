@@ -1,58 +1,31 @@
 import { describe, it, expect } from "vitest"
-import { getDtypeColor } from "../../utils/dtypeColors"
+import { getDtypeColor, getKindColor } from "../../utils/dtypeColors"
 
 describe("getDtypeColor", () => {
-  // ── Each mapped dtype returns the correct color ────────────────
-
-  it("returns blue for Int64", () => {
-    expect(getDtypeColor("Int64")).toBe("text-blue-400")
+  it.each([
+    ["Int8", "text-blue-400"],
+    ["UInt64", "text-blue-400"],
+    ["Float16", "text-emerald-400"],
+    ["Float64", "text-emerald-400"],
+    ["Decimal(precision=10, scale=2)", "text-emerald-400"],
+    ["String", "text-amber-400"],
+    ["Utf8", "text-amber-400"],
+    ["Boolean", "text-purple-400"],
+    ["Date", "text-rose-400"],
+    ["Datetime(time_unit='us', time_zone=None)", "text-rose-400"],
+  ])("colours %s by its kind", (dtype, color) => {
+    expect(getDtypeColor(dtype)).toBe(color)
   })
 
-  it("returns blue for Int32", () => {
-    expect(getDtypeColor("Int32")).toBe("text-blue-400")
-  })
+  it.each(["Categorical", "Duration(time_unit='us')", "List(Int64)", "Complex128", ""])(
+    "gives %s the muted colour",
+    (dtype) => {
+      expect(getDtypeColor(dtype)).toBe("text-slate-400")
+    },
+  )
 
-  it("returns emerald for Float64", () => {
-    expect(getDtypeColor("Float64")).toBe("text-emerald-400")
-  })
-
-  it("returns emerald for Float32", () => {
-    expect(getDtypeColor("Float32")).toBe("text-emerald-400")
-  })
-
-  it("returns amber for String", () => {
-    expect(getDtypeColor("String")).toBe("text-amber-400")
-  })
-
-  it("returns amber for Utf8", () => {
-    expect(getDtypeColor("Utf8")).toBe("text-amber-400")
-  })
-
-  it("returns purple for Boolean", () => {
-    expect(getDtypeColor("Boolean")).toBe("text-purple-400")
-  })
-
-  it("returns rose for Date", () => {
-    expect(getDtypeColor("Date")).toBe("text-rose-400")
-  })
-
-  it("returns rose for Datetime", () => {
-    expect(getDtypeColor("Datetime")).toBe("text-rose-400")
-  })
-
-  // ── Partial match (includes-based matching) ────────────────────
-
-  it("matches partial dtype string (e.g. Polars.Int64)", () => {
-    expect(getDtypeColor("Polars.Int64")).toBe("text-blue-400")
-  })
-
-  // ── Fallback for unknown / empty dtypes ────────────────────────
-
-  it("returns fallback for unknown dtype", () => {
-    expect(getDtypeColor("Complex128")).toBe("text-slate-400")
-  })
-
-  it("returns fallback for empty string", () => {
-    expect(getDtypeColor("")).toBe("text-slate-400")
+  it("colours a kind as it colours its types", () => {
+    expect(getKindColor("integer")).toBe(getDtypeColor("Int64"))
+    expect(getKindColor(null)).toBe("text-slate-400")
   })
 })

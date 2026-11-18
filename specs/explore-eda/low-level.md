@@ -33,7 +33,7 @@
   present before storing it. Numeric-only fields (`p25_value`, `median_value`, `mean_value`,
   `p75_value`, `std_value`, `zero_count`, `negative_count`) default to `None` and are only
   populated when `dtype.is_numeric()`. `nan_count` is narrower still — `None` unless the dtype is
-  float (`Float32`/`Float64`, per `_is_float_dtype`), since `is_nan()` raises against a non-float
+  a float of any width (the `float` column kind, `_polars_dtypes.column_kind`), since `is_nan()` raises against a non-float
   numeric column and NaN cannot occur in an integer column at all. `histogram` is `None` for
   non-numeric columns and an `ExploreHistogram` for every numeric one.
 - **`ExploreHistogram`** (`schemas.py`) — `status` `ok` (up to `_HISTOGRAM_BIN_COUNT` = 20
@@ -180,7 +180,9 @@
   Selected formula cards use the same pointer and Up/Down keyboard reorder affordances as ordinary
   Values, but their drag targets are restricted to Values; Filters, Columns, Rows, and Left-arrow
   movement out of Values remain blocked.
-  Numeric operations first map floating NaN to null. `sum`/`average`/`median` require numeric
+  Numeric operations first map floating NaN to null, for a float of any width (the `float`
+  column kind); a filter, row or column field is one of the integer, float, decimal, boolean,
+  text, category, date, datetime, time and null kinds. `sum`/`average`/`median` require numeric
   fields; `min`/`max` also accept supported scalar non-numeric fields. Empty aggregates return
   null, while `count` and `distinct_count` return integer zero. Result normalisation preserves
   finite JSON scalar types, renders Decimal exactly, renders integers beyond JavaScript's exact

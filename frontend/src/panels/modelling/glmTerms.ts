@@ -1,4 +1,5 @@
 import type { ModellingColumn } from "./featureSelection"
+import { columnKind, type ColumnKind } from "../../utils/polarsDtypes"
 
 /**
  * Pure GLM term editing helpers.
@@ -86,20 +87,20 @@ export function termAt(terms: Terms, key: string): TermSpec | undefined {
 export type DtypeClass = "continuous" | "integer" | "boolean" | "categorical" | "unsupported"
 type SupportedClass = Exclude<DtypeClass, "unsupported">
 
-const DTYPE_CLASS_PATTERNS: readonly [SupportedClass, RegExp][] = [
-  ["continuous", /^(?:float(?:16|32|64)|f(?:16|32|64)|decimal(?:\(.*\))?)$/is],
-  ["integer", /^(?:u?int(?:8|16|32|64|128)|[iu](?:8|16|32|64|128))$/i],
-  ["boolean", /^bool(?:ean)?$/i],
-  ["categorical", /^(?:string|str|utf8|categorical(?:\(.*\))?|enum(?:\(.*\))?)$/is],
-]
+/** The GLM class of each column kind a GLM fit takes; every other kind is unsupported. */
+const DTYPE_CLASS_BY_KIND: Partial<Record<ColumnKind, SupportedClass>> = {
+  float: "continuous",
+  decimal: "continuous",
+  integer: "integer",
+  boolean: "boolean",
+  text: "categorical",
+  category: "categorical",
+}
 
-/** Classify a Polars dtype name for GLM fits; mirrors the backend `glm_dtype_class`. */
+/** Classify a column type as `str(dtype)` renders it for GLM fits, by its kind: the backend's `glm_dtype_class`. */
 export function glmDtypeClass(dtype: string): DtypeClass {
-  const name = dtype.trim()
-  for (const [dtypeClass, pattern] of DTYPE_CLASS_PATTERNS) {
-    if (pattern.test(name)) return dtypeClass
-  }
-  return "unsupported"
+  const kind = columnKind(dtype)
+  return (kind !== null && DTYPE_CLASS_BY_KIND[kind]) || "unsupported"
 }
 
 export const MAIN_FITS_BY_CLASS: Readonly<Record<DtypeClass, ReadonlySet<string>>> = {

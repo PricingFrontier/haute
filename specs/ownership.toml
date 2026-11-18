@@ -90,6 +90,12 @@ consumers = ["frontend-node-editors"]
 reason = "Shared UI owns the public form-primitive barrel used by node editors."
 
 [[shared_file]]
+path = "frontend/src/generated/api-contracts.column-kinds.generated.ts"
+primary = "engineering-quality"
+consumers = ["frontend-shared"]
+reason = "Engineering quality owns deterministic generation; the editor's column lists read the server's column-kind table."
+
+[[shared_file]]
 path = "frontend/src/generated/api-contracts.constants.generated.ts"
 primary = "engineering-quality"
 consumers = ["frontend-shared"]

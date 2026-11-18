@@ -22,6 +22,7 @@ from typing import Any
 
 import polars as pl
 
+from haute._polars_dtypes import NUMBER_KINDS, TEXT_KINDS, ColumnKind, column_kind
 from haute._polars_utils import execution_collect, limited_python_scan
 from haute._workbench_form import QUOTE_DETAILS_NAME
 from haute._workbench_tables import (
@@ -76,19 +77,20 @@ def workbench_output_tables(config: Mapping[str, Any]) -> tuple[WorkbenchTable, 
     return ports
 
 
+#: The column kinds that fill a column of each declared type.
+_DECLARED_COLUMN_KINDS: Mapping[str, frozenset[ColumnKind]] = {
+    "int": frozenset({"integer"}),
+    "float": NUMBER_KINDS,
+    "str": TEXT_KINDS,
+    "bool": frozenset({"boolean"}),
+    "date": frozenset({"date"}),
+}
+
+
 def column_fits(declared: str, dtype: pl.DataType) -> bool:
     """Whether a frame's column of *dtype* can fill a column declared *declared*."""
-    if dtype == pl.Null:
-        return True
-    if declared == "int":
-        return dtype.is_integer()
-    if declared == "float":
-        return dtype.is_numeric()
-    if declared == "str":
-        return dtype == pl.String or isinstance(dtype, (pl.Categorical, pl.Enum))
-    if declared == "bool":
-        return dtype == pl.Boolean
-    return dtype == pl.Date
+    kind = column_kind(dtype)
+    return kind == "null" or kind in _DECLARED_COLUMN_KINDS[declared]
 
 
 def fill_workbench_tables(

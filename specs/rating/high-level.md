@@ -88,8 +88,9 @@ Out of scope (owned by neighbouring components):
   immutable supported-operator contract, so a trace cannot credit a band the
   engine skipped.
 - `categorical` rules are an exact-match remap from input value to assignment.
-- Float columns have NaN/Infinity sanitised to null before rule matching, so
-  they always fall to the default rather than matching an arbitrary rule.
+- Float columns of every width (`Float16`, `Float32`, `Float64`: the `float` column
+  kind) have NaN/Infinity sanitised to null before rule matching, so they always
+  fall to the default rather than matching an arbitrary rule.
 - A draft factor with no column, no output column, or no rules is a documented
   no-op (the frame passes through unchanged for that factor). The node's column
   contract leaves a draft factor out too, so a factor that has its columns but no

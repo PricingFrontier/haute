@@ -22,6 +22,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from haute._polars_dtypes import (
+    NUMBER_KINDS,
+    ColumnKind,
+    base_type_kind,
+    column_kind,
+    numpy_float_type,
+)
 from haute.errors import RequestRefusedError, UnprocessableError
 from haute.routes._optimiser_adjustments import (
     BASE_PRICE,
@@ -73,6 +80,10 @@ A margin under ``MAX_SEGMENT_LEVELS`` for the estimate's error: ``k0``..``k2000`
 """
 
 MAX_SEGMENT_KEY_BYTES = 256
+#: The column kinds a breakdown has no level labels for: it labels a level by its value's
+#: text, which Polars 2 does not write for a duration, a nested value, an object or an
+#: extension type.
+_UNLABELLED_KINDS: frozenset[ColumnKind] = frozenset({"duration", "nested", "object", "extension"})
 """The longest level value, in UTF-8 bytes, a key may have."""
 
 MAX_FACTOR_SEGMENT_KEYS = 30
@@ -91,23 +102,6 @@ SPREAD_LABEL = "Adjustment spread"
 SPREAD_DESCRIPTION = (
     "How differently the optimiser adjusted the key's levels: the quote-weighted standard "
     "deviation of the levels' mean chosen scenario values."
-)
-
-_NUMERIC_DTYPES = frozenset(
-    {
-        "Int8",
-        "Int16",
-        "Int32",
-        "Int64",
-        "Int128",
-        "UInt8",
-        "UInt16",
-        "UInt32",
-        "UInt64",
-        "Float32",
-        "Float64",
-        "Decimal",
-    }
 )
 
 # The additive per-level sums every breakdown collects.
@@ -166,9 +160,12 @@ def segment_keys(
 
 
 def _analysis_key(column: str, stats: Mapping[str, Any]) -> OptimiserSegmentKey:
-    binning: Binning = "numeric" if stats["dtype"] in _NUMERIC_DTYPES else "categorical"
+    kind = base_type_kind(stats["dtype"])
+    binning: Binning = "numeric" if kind in NUMBER_KINDS else "categorical"
     reason: str | None = None
-    if binning == "categorical":
+    if kind in _UNLABELLED_KINDS:
+        reason = f"{stats['dtype']} values cannot be broken down."
+    elif binning == "categorical":
         approx = int(stats["approx_n_unique"])
         width = stats["max_string_bytes"]
         if approx > ADMITTED_APPROX_LEVELS:
@@ -533,14 +530,12 @@ class FactorLevelSegments:
 
 
 def _format_bound(value: Any, dtype: pl.DataType) -> str:
-    """A bin bound in its column's dtype: an integer as one, a Float32 in its shortest form."""
-    import numpy as np
-    import polars as pl
-
+    """A bin bound in its column's dtype: an integer as one, a float in its shortest form at
+    its own width (a Float32's ``0.1`` is not ``0.10000000149011612``)."""
     if dtype.is_integer():
         return str(int(value))
-    if dtype == pl.Float32:
-        return str(np.float32(value))
+    if column_kind(dtype) == "float":
+        return str(numpy_float_type(dtype)(value))
     return repr(float(value))
 
 

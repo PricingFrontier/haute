@@ -66,6 +66,10 @@ IGNORE_NAMES = (
 ALLOWLIST: dict[str, str] = {
     "src/haute/__init__.py::__getattr__": "PEP 562 lazy attribute of the package.",
     "src/haute/__init__.py::__dir__": "PEP 562 companion of the lazy attributes.",
+    "src/haute/_polars_dtypes.py::polars_type_kinds": (
+        "Read by scripts/generate_api_contracts.py, which writes it into the contract the "
+        "browser's column kinds come from."
+    ),
     "src/haute/server.py::create_app_from_environment": (
         "uvicorn factory string in cli/_serve.py."
     ),

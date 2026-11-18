@@ -36,18 +36,27 @@ Consumers that need a coarser vocabulary get a named view here rather than a
 private table of their own: the rating descriptor renames this codec's keys
 (``haute._rating``), and the feature-contract and MLflow views below serve
 training, deploy scoring and MLflow signatures.
+
+It is also the one answer to what kind of column a type is (``column_kind``):
+integer, float, decimal, text, date and the rest, from Polars' own
+classification, so no reader keeps a list of type names that a new Polars type
+would leave stale (specs/io-layer, "Column kinds").
 """
 
 from __future__ import annotations
 
 import ast
+import functools
 import re
 from collections.abc import Mapping
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 import polars as pl
 
 from haute.errors import SchemaMismatchError
+
+if TYPE_CHECKING:
+    import numpy as np
 
 _TimeUnit = Literal["ms", "us", "ns"]
 
@@ -384,6 +393,8 @@ _CONTRACT_MLFLOW_TYPES: Mapping[str, str] = {
     "Boolean": "boolean",
 }
 CONTRACT_SCALAR_NAMES: tuple[str, ...] = tuple(sorted(_CONTRACT_MLFLOW_TYPES))
+#: The feature-contract names of a number: every integer and float width collapses to one.
+CONTRACT_NUMBER_NAMES: tuple[str, ...] = ("Float64", "Int64")
 
 _CONTRACT_DATETIME = re.compile(
     r"Datetime(?:\(time_unit='(?:ns|us|ms)', time_zone=(?:None|'[^']*')\))?\Z"
@@ -533,3 +544,155 @@ def rendered_dtype_mlflow_type_name(rendered: str) -> str | None:
     MLflow type — or ``None`` when MLflow has no type for it.
     """
     return _RENDERED_DTYPE_MLFLOW_TYPES.get(rendered.split("(", 1)[0])
+
+
+# ---------------------------------------------------------------------------
+# Column kinds
+# ---------------------------------------------------------------------------
+#
+# What kind of column a type is: the one answer every reader of a column asks
+# (specs/io-layer, "Column kinds"). Polars classifies its own number, nested,
+# object and extension types, so a float of any width is a float and a type a
+# later Polars adds to one of those families takes its kind from Polars; the
+# other types are told apart by base type, and a type that fits none is refused
+# by name rather than given a kind by default.
+
+ColumnKind = Literal[
+    "integer",
+    "float",
+    "decimal",
+    "boolean",
+    "text",
+    "category",
+    "date",
+    "datetime",
+    "duration",
+    "time",
+    "binary",
+    "null",
+    "nested",
+    "object",
+    "extension",
+]
+COLUMN_KINDS: tuple[ColumnKind, ...] = get_args(ColumnKind)
+#: The kinds of number: exactly Polars' ``is_numeric()``.
+NUMBER_KINDS: frozenset[ColumnKind] = frozenset({"integer", "float", "decimal"})
+#: A day, with or without its time: what date breakpoints band.
+DATE_KINDS: frozenset[ColumnKind] = frozenset({"date", "datetime"})
+#: Text, free or one of a set of categories.
+TEXT_KINDS: frozenset[ColumnKind] = frozenset({"text", "category"})
+#: The named groups of kinds, as the generated contract carries them to the browser.
+COLUMN_KIND_GROUPS: Mapping[str, frozenset[ColumnKind]] = {
+    "number": NUMBER_KINDS,
+    "date": DATE_KINDS,
+    "text": TEXT_KINDS,
+}
+
+_BASE_TYPE_KINDS: Mapping[type[pl.DataType], ColumnKind] = {
+    pl.Boolean: "boolean",
+    pl.String: "text",
+    pl.Categorical: "category",
+    pl.Enum: "category",
+    pl.Date: "date",
+    pl.Datetime: "datetime",
+    pl.Duration: "duration",
+    pl.Time: "time",
+    pl.Binary: "binary",
+    pl.Null: "null",
+}
+#: Type classes Polars defines that no column has: the abstract base and the
+#: placeholder for a type not yet resolved.
+_NOT_COLUMN_TYPES: tuple[type[pl.DataType], ...] = (pl.DataType, pl.Unknown)
+
+
+def column_kind(dtype: pl.DataType | type[pl.DataType]) -> ColumnKind:
+    """The kind of column *dtype* (an instance or a class) is, from Polars' classification.
+
+    Raises :class:`~haute.errors.SchemaMismatchError` naming the type when it has no
+    kind: Polars' ``Unknown``, or a type a later Polars adds outside every family here.
+    """
+    if dtype.is_integer():
+        return "integer"
+    if dtype.is_float():
+        return "float"
+    if dtype.is_decimal():
+        return "decimal"
+    if dtype.is_nested():
+        return "nested"
+    if dtype.is_object():
+        return "object"
+    if dtype.is_extension():
+        return "extension"
+    kind = _BASE_TYPE_KINDS.get(dtype.base_type())
+    if kind is None:
+        raise SchemaMismatchError(
+            f"Haute has no column kind for the Polars type {dtype}.", dtype=str(dtype)
+        )
+    return kind
+
+
+@functools.cache
+def polars_type_kinds() -> Mapping[str, ColumnKind]:
+    """Every type class Polars defines a column can have, by name, with its kind.
+
+    Read from the installed Polars, so an upgrade adds its new types (and refuses one
+    with no kind). The contract generator writes it for the browser.
+    """
+    kinds: dict[str, ColumnKind] = {}
+    for name in sorted(dir(pl)):
+        candidate = getattr(pl, name)
+        if (
+            isinstance(candidate, type)
+            and issubclass(candidate, pl.DataType)
+            and candidate not in _NOT_COLUMN_TYPES
+        ):
+            kinds[name] = column_kind(candidate)
+    return kinds
+
+
+def rendered_column_kind(rendered: str) -> ColumnKind:
+    """The kind of the type Polars renders as *rendered* (``str(dtype)``)."""
+    return column_kind(parse_rendered_dtype(rendered))
+
+
+def base_type_kind(name: str) -> ColumnKind:
+    """The kind of the Polars type named *name*, as ``str(dtype.base_type())`` renders it.
+
+    Only the named class is classified, so a type a later Polars adds without a kind is
+    refused where a column of it is read, not wherever any type is named.
+    """
+    candidate = getattr(pl, name, None)
+    if (
+        not isinstance(candidate, type)
+        or not issubclass(candidate, pl.DataType)
+        or candidate in _NOT_COLUMN_TYPES
+    ):
+        raise SchemaMismatchError(f"{name!r} is not a Polars column type.", dtype=name)
+    return column_kind(candidate)
+
+
+def integer_range(dtype: pl.DataType | type[pl.DataType]) -> tuple[int, int]:
+    """The least and greatest value of an integer type, as Polars states them."""
+    if column_kind(dtype) != "integer":
+        raise SchemaMismatchError(f"{dtype} is not an integer type.", dtype=str(dtype))
+    return _integer_range(dtype.base_type())
+
+
+@functools.cache
+def _integer_range(base: type[pl.DataType]) -> tuple[int, int]:
+    integer: Any = base  # an integer type class; only those state a least and greatest value
+    bounds = pl.select(integer.min().alias("least"), integer.max().alias("greatest"))
+    least, greatest = bounds.row(0)
+    return int(least), int(greatest)
+
+
+def numpy_float_type(dtype: pl.DataType | type[pl.DataType]) -> type[np.floating[Any]]:
+    """The NumPy type a float column's values convert to, at the column's own width."""
+    if column_kind(dtype) != "float":
+        raise SchemaMismatchError(f"{dtype} is not a float type.", dtype=str(dtype))
+    return _numpy_float_type(dtype.base_type())
+
+
+@functools.cache
+def _numpy_float_type(base: type[pl.DataType]) -> type[np.floating[Any]]:
+    return cast("type[np.floating[Any]]", pl.Series(dtype=base).to_numpy().dtype.type)

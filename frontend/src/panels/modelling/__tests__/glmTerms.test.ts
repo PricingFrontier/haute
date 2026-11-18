@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest"
 
-import dtypeFixture from "./fixtures/glmDtypeClasses.json"
 import grammarFixture from "./fixtures/glmExpressionGrammar.json"
 import type { ModellingColumn } from "../featureSelection"
 import {
@@ -17,7 +16,6 @@ import {
   expressionIdentifiers,
   featureTag,
   fitAllWithDefaults,
-  glmDtypeClass,
   interactionEncodingOptions,
   interactionEntryIssue,
   modelMembership,
@@ -69,11 +67,6 @@ const dtypeOf = (name: string) => context.byName.get(name)?.dtype ?? ""
 const values = (options: readonly { value: string }[]) => options.map((option) => option.value)
 
 describe("shared contract fixtures", () => {
-  it("classifies every Polars dtype name exactly like the backend", () => {
-    const cases: Record<string, string> = { ...dtypeFixture.polars, ...dtypeFixture.aliases }
-    expect(Object.fromEntries(Object.keys(cases).map((name) => [name, glmDtypeClass(name)]))).toEqual(cases)
-  })
-
   it("the expression grammar fixture passes", () => {
     for (const { expr, identifiers } of grammarFixture.accepted) {
       expect(expressionIdentifiers(expr), expr).toEqual(identifiers)

@@ -18,6 +18,7 @@ import polars as pl
 from haute._binning import equal_width_bins
 from haute._data_points import LeasedPointFrame
 from haute._execution_context import ExecutionCancellationToken, ExecutionContext
+from haute._polars_dtypes import DATE_KINDS, NUMBER_KINDS, column_kind
 from haute._polars_utils import cancellable_streaming_collect
 from haute._rating import (
     banding_rule_claim_expr,
@@ -72,15 +73,6 @@ def _factor_mode(factor: dict[str, Any]) -> str:
 def _factor_column(factor: dict[str, Any]) -> str:
     column = factor.get("column")
     return str(column) if isinstance(column, str) else ""
-
-
-def _is_numeric(dtype: Any) -> bool:
-    return bool(getattr(dtype, "is_numeric", lambda: False)())
-
-
-def _is_date(dtype: Any) -> bool:
-    """Date and Datetime, the temporal dtypes breakpoints can band."""
-    return isinstance(dtype, pl.Date | pl.Datetime) or dtype in (pl.Date, pl.Datetime)
 
 
 class BandingStatsService(PointAnalysisService):
@@ -158,7 +150,7 @@ class BandingStatsService(PointAnalysisService):
         if column not in schema:
             raise columns_missing([column])
         dtype = schema[column]
-        if mode in NUMERIC_BANDING_MODES and not (_is_numeric(dtype) or _is_date(dtype)):
+        if mode in NUMERIC_BANDING_MODES and column_kind(dtype) not in NUMBER_KINDS | DATE_KINDS:
             raise unprocessable(
                 f"Column {column!r} is {dtype}, which {mode} banding cannot compare."
             )
@@ -179,7 +171,7 @@ class BandingStatsService(PointAnalysisService):
             measured = (
                 # A date column is measured in wall-clock days since 1970-01-01.
                 frame.select(banding_temporal_ordinal_expr(pl.col(column), dtype).alias(column))
-                if _is_date(dtype)
+                if column_kind(dtype) in DATE_KINDS
                 else frame
             )
             stats = self._numeric(stats, body, measured, column, context)

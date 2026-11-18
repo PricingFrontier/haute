@@ -41,6 +41,7 @@ from haute._json_safe import (
 from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
 from haute._node_specs import known_node_spec, node_type_table
+from haute._polars_dtypes import TEXT_KINDS, column_kind, integer_range
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
 from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, TraceRowOutOfRangeError
@@ -265,17 +266,6 @@ def _compute_schema_diff(
 
 
 _CANONICAL_INTEGER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
-_INT_BOUNDS: dict[object, tuple[int, int]] = {
-    pl.Int8: (-(2**7), 2**7 - 1),
-    pl.Int16: (-(2**15), 2**15 - 1),
-    pl.Int32: (-(2**31), 2**31 - 1),
-    pl.Int64: (-(2**63), 2**63 - 1),
-    pl.Int128: (-(2**127), 2**127 - 1),
-    pl.UInt8: (0, 2**8 - 1),
-    pl.UInt16: (0, 2**16 - 1),
-    pl.UInt32: (0, 2**32 - 1),
-    pl.UInt64: (0, 2**64 - 1),
-}
 _TIME_UNIT_NS = {"ms": 1_000_000, "us": 1_000, "ns": 1}
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
@@ -373,9 +363,7 @@ def _typed_value_match_expr(
         return None, "boolean_is_not_numeric"
 
     if dtype.is_integer():
-        bounds = _INT_BOUNDS.get(dtype)
-        if bounds is None:
-            return None, "unsupported_integer_dtype"
+        bounds = integer_range(dtype)
         if isinstance(value, int):
             if not bounds[0] <= value <= bounds[1]:
                 return None, "integer_range_mismatch"
@@ -410,7 +398,7 @@ def _typed_value_match_expr(
             return _finite_numeric_match_expr(subject, value), None
         return None, "incompatible_float_value"
 
-    if base is pl.Decimal:
+    if column_kind(dtype) == "decimal":
         if isinstance(value, float):
             return None, "decimal_float_unsupported"
         try:
@@ -421,7 +409,7 @@ def _typed_value_match_expr(
             return None, "invalid_decimal_value"
         return subject == pl.lit(decimal_value), None
 
-    if base in (pl.String, pl.Categorical, pl.Enum):
+    if column_kind(dtype) in TEXT_KINDS:
         if not isinstance(value, str):
             return None, "incompatible_string_value"
         expression = subject.cast(pl.String) if base is not pl.String else subject

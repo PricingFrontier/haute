@@ -54,6 +54,7 @@ from haute._json_shred._source_proof import freshness_record
 from haute._logging import get_logger
 from haute._node_specs import STRUCTURAL_NODE_TYPES, WORKBENCH_NODE_TYPES, node_spec
 from haute._pipeline_settings import project_pipeline_settings
+from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
@@ -1142,13 +1143,11 @@ _MAX_PROFILE_ROWS = 1_000_000
 _MAX_PROFILE_VALUE_CHARS = 120
 _EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script"})
 _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
-# Only these dtypes can carry a value list. A categorical encoding is exactly
+# Only columns of these kinds carry a value list. A categorical encoding is exactly
 # what authoring needs ("is `fault` Y/N or true/false?"). The cardinality cap
 # reduces disclosure but is not an authorization boundary: repeated personal
 # values can fit, so the explicit row-sample policy remains authoritative.
-# Polars instantiates every schema dtype, so `isinstance` matches each of these
-# including their parameterised forms (`Enum(categories=[...])`).
-_PROFILABLE_LEVEL_DTYPES = (pl.String, pl.Categorical, pl.Enum, pl.Boolean)
+_PROFILABLE_LEVEL_KINDS: frozenset[ColumnKind] = TEXT_KINDS | {"boolean"}
 
 
 def _redact_config_value(
@@ -1667,7 +1666,7 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
     distinct = int(column.n_unique())
     profile["distinct_count"] = distinct
 
-    if isinstance(dtype, _PROFILABLE_LEVEL_DTYPES):
+    if column_kind(dtype) in _PROFILABLE_LEVEL_KINDS:
         if distinct <= _MAX_PROFILE_LEVELS:
             # Name the count field explicitly: Polars refuses `value_counts` on
             # a column already called `count`, which is an ordinary name in an

@@ -38,7 +38,14 @@ from typing import Any
 import polars as pl
 
 from haute._node_specs import STEPPED_NODE_TYPES, SteppedSurface, StepStart
-from haute._polars_dtypes import parse_rendered_dtype
+from haute._polars_dtypes import (
+    COLUMN_KINDS,
+    NUMBER_KINDS,
+    ColumnKind,
+    base_type_kind,
+    column_kind,
+    parse_rendered_dtype,
+)
 from haute._polars_steps_layout import layout_statement
 from haute._source_layout import float_literal, lines_inside_literals, python_lines
 from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
@@ -325,23 +332,13 @@ CAST_DTYPES: tuple[str, ...] = (
 #: The cast targets a text column reaches by parsing with a format: Polars 2 casts
 #: text to neither, so a Change types entry for them records the text's format.
 DATE_PARSE_TARGETS: dict[str, str] = {"Date": "to_date", "Datetime": "to_datetime"}
-#: The source column types the cast table tells apart (``cast_family``).
-CAST_FAMILIES: tuple[str, ...] = (
-    "integer",
-    "float",
-    "decimal",
-    "boolean",
-    "text",
-    "category",
-    "date",
-    "datetime",
-    "duration",
-    "time",
-    "binary",
-    "null",
+#: The source column types the cast table tells apart (``cast_family``): every column
+#: kind but those no cast takes.
+CAST_FAMILIES: tuple[ColumnKind, ...] = tuple(
+    kind for kind in COLUMN_KINDS if kind not in {"nested", "object", "extension"}
 )
 _NUMBER_TARGETS: frozenset[str] = frozenset(
-    {"Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64"}
+    target for target in CAST_DTYPES if base_type_kind(target) in NUMBER_KINDS
 )
 #: The Change types targets Polars 2 refuses for each source column type, even with
 #: ``strict=False``: what the editor withholds and what a failed run is checked
@@ -680,28 +677,11 @@ def _decimal_text(number: int | float) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def cast_family(dtype: pl.DataType) -> str | None:
-    """The cast table's name for a column type, or None for a type it does not cover."""
-    if dtype.is_integer():
-        return "integer"
-    if dtype.is_float():
-        return "float"
-    if isinstance(dtype, pl.Decimal):
-        return "decimal"
-    if isinstance(dtype, pl.Categorical | pl.Enum):
-        return "category"
-    if isinstance(dtype, pl.Datetime):
-        return "datetime"
-    if isinstance(dtype, pl.Duration):
-        return "duration"
-    return {
-        pl.Boolean: "boolean",
-        pl.String: "text",
-        pl.Date: "date",
-        pl.Time: "time",
-        pl.Binary: "binary",
-        pl.Null: "null",
-    }.get(type(dtype))
+def cast_family(dtype: pl.DataType) -> ColumnKind | None:
+    """The cast table's name for a column type, its kind, or None for a type it does not
+    cover (a list, a struct, an object)."""
+    kind = column_kind(dtype)
+    return kind if kind in CAST_FAMILIES else None
 
 
 def _cast_remedy(column: str, dtype: pl.DataType, target: str, *, formula: str | None) -> str:
