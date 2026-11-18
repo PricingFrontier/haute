@@ -14,7 +14,6 @@ main session's runs of that day in the editor and the underwriter app.
 
 A cause several packages here share has its own file and is taken first:
 [late answers](root-cause-late-answers.md),
-[panel values and Undo](root-cause-panel-drafts.md),
 [typed numbers](root-cause-typed-numbers.md).
 
 ## Priorities

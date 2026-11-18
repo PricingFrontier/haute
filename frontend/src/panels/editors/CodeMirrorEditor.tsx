@@ -285,7 +285,6 @@ export default function CodeMirrorEditor({
   const activeSource = useSettingsStore((s) => s.activeSource)
   const constants = useMemo(() => constantCompletions(drafts, activeSource), [drafts, activeSource])
   const lastPropValueRef = useRef(defaultValue)
-  const pendingExternalValueRef = useRef<string | null>(null)
 
   // Keep onChange ref fresh without recreating the editor
   useEffect(() => { onChangeRef.current = onChange }, [onChange])
@@ -320,7 +319,6 @@ export default function CodeMirrorEditor({
     const currentDoc = view.state.doc.toString()
     if (value === currentDoc) {
       lastPropValueRef.current = value
-      pendingExternalValueRef.current = null
       return
     }
     view.dispatch({
@@ -328,12 +326,12 @@ export default function CodeMirrorEditor({
       annotations: externalSyncAnnotation.current.of(true),
     })
     lastPropValueRef.current = value
-    pendingExternalValueRef.current = null
   }, [localChange])
 
-  // Sync external value changes into the editor. Focused editors still accept
-  // updates when their buffer matches the last committed prop value, which
-  // keeps websocket-driven refreshes visible without clobbering active edits.
+  // Sync external value changes into the editor, as every panel draft follows the
+  // stored value (specs/frontend-shared high-level, "Panel values and Undo"): this
+  // editor's own commit coming back leaves the typing since then alone, and any other
+  // change (an Undo, a Redo, a sync frame) wins over typing not yet committed.
   useEffect(() => {
     const view = viewRef.current
     if (!view) {
@@ -343,15 +341,12 @@ export default function CodeMirrorEditor({
     const currentDoc = view.state.doc.toString()
     if (defaultValue === currentDoc) {
       lastPropValueRef.current = defaultValue
-      pendingExternalValueRef.current = null
       localChange.cancel()
       return
     }
-    if (!view.hasFocus || currentDoc === lastPropValueRef.current) {
-      applyExternalValue(view, defaultValue)
-      return
-    }
-    pendingExternalValueRef.current = defaultValue
+    if (defaultValue === lastPropValueRef.current) return
+    localChange.cancel()
+    applyExternalValue(view, defaultValue)
   }, [applyExternalValue, defaultValue, localChange])
 
   // Create the editor once on mount
@@ -431,21 +426,8 @@ export default function CodeMirrorEditor({
 
         // Focus tracking for external sync
         EditorView.domEventHandlers({
-          blur: (_event, view) => {
-            const lastCommittedBeforeBlur = lastPropValueRef.current
-            const pendingLocalBeforeBlur = localChange.pending()?.[0] ?? null
+          blur: () => {
             localChange.flush()
-            if (
-              pendingLocalBeforeBlur !== null &&
-              pendingLocalBeforeBlur !== lastCommittedBeforeBlur
-            ) {
-              pendingExternalValueRef.current = null
-              return
-            }
-            const pendingValue = pendingExternalValueRef.current
-            if (pendingValue !== null && view.state.doc.toString() === lastPropValueRef.current) {
-              applyExternalValue(view, pendingValue)
-            }
           },
         }),
 

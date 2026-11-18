@@ -75,9 +75,10 @@ the same saved value. A new field that parses its own text fails the test
 for unlisted calls. The acceptance of `RTG-03`, `WB-48`, `WB-68` and
 `EXE-02` is met.
 
-**Dependencies:** [Panel values and Undo](root-cause-panel-drafts.md), for
-the draft the number field is built on. Deliver before the packages its
-table names.
+**Dependencies:** None: the number field is built on the shared draft
+(`frontend/src/components/form/useCommittedDraft.ts`), whose commit can
+refuse a value and keep it on screen. Deliver before the packages its table
+names.
 
 **Evidence:** `frontend/src/utils/sheetValues.ts`;
 `src/haute/_workbench_tables.py`; `src/haute/_node_apply.py`;

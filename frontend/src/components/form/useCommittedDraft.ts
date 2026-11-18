@@ -46,7 +46,7 @@ export function isDraftOpen(): boolean {
  * flushed) while *commit* is given, so a save commits it first. `commit` returns whether
  * the edit landed.
  */
-export function useOpenEdit(commit: (() => boolean) | null): void {
+function useOpenEdit(commit: (() => boolean) | null): void {
   useLayoutEffect(() => {
     if (!commit) return
     const edit: OpenEdit = { commit }

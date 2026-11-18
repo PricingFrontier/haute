@@ -135,7 +135,10 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
   const [versionsState, setVersionsState] = useState<ScopedFetch<ModelVersion> & { for: string }>(
     () => ({ ...emptyFetch<ModelVersion>(), for: "" }),
   )
-  const [browse, setBrowse] = useState(() => ({ scope, id: initialExpId }))
+  // The experiment browsed belongs to the stored experiment it was chosen over: an Undo,
+  // a Redo or any other change of the node's experiment lets it go, so the runs listed
+  // are the stored experiment's.
+  const [browse, setBrowse] = useState(() => ({ scope, id: initialExpId, over: initialExpId }))
 
   // Fetch guards -- only fetch once per scope, not on every focus
   const fetchedExperiments = useRef<string | null>(null)
@@ -156,14 +159,14 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
   const models = inScope(modelsState) ? modelsState.items : NO_MODELS
   const modelVersions = inScope(versionsState) ? versionsState.items : NO_VERSIONS
   const modelVersionsFor = inScope(versionsState) ? versionsState.for : ""
-  const browseExpId = browse.scope === scope ? browse.id : ""
+  const browseExpId = browse.scope !== scope ? "" : browse.over === initialExpId ? browse.id : initialExpId
 
   const setBrowseExpId = useCallback<React.Dispatch<React.SetStateAction<string>>>((value) => {
     setBrowse((prev) => {
-      const current = prev.scope === scope ? prev.id : ""
-      return { scope, id: typeof value === "function" ? value(current) : value }
+      const current = prev.scope !== scope ? "" : prev.over === initialExpId ? prev.id : initialExpId
+      return { scope, id: typeof value === "function" ? value(current) : value, over: initialExpId }
     })
-  }, [scope])
+  }, [scope, initialExpId])
 
   const setRuns = useCallback<React.Dispatch<React.SetStateAction<Run[]>>>((value) => {
     setRunsState((prev) => {

@@ -2469,7 +2469,7 @@ describe("ModellingConfig", () => {
       expect(mockTrainModel).not.toHaveBeenCalled()
     })
 
-    it("shows the search space training will use after an Undo (FEM-03)", () => {
+    it("shows the search space training will use after an Undo", () => {
       const tuning = (searchSpace: Record<string, unknown>) => ({
         schema_version: 1, trial_count: 20, seed: 42, metric: "gini", search_space: searchSpace,
       })

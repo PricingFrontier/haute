@@ -285,7 +285,7 @@ describe("useScopedNodeSave", () => {
   })
 
   it("saves the change the panel shows, after a change still resolving lands", async () => {
-    // FEG-08: the node's change is still resolving its identity when Save node is pressed.
+    // The node's change is still resolving its identity when Save node is pressed.
     let land!: () => void
     settleEdits.mockImplementationOnce(() => new Promise((resolve) => {
       land = () => {

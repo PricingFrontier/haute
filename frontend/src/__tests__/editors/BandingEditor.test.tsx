@@ -722,7 +722,7 @@ describe("BandingEditor", () => {
     // Loading a document forgets the stash: usePipelineAPI and useWebSocketSync suites.
   })
 
-  it("gives a factor its own remembered rules, never another factor's after an Undo (FEN-09)", () => {
+  it("gives a factor its own remembered rules, never another factor's after an Undo", () => {
     const proposer = { banding: "breakpoints", column: "proposer_age", output_column: "proposer_age_band", rules: [] }
     const vehicle = {
       banding: "categorical",

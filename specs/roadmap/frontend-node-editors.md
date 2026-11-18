@@ -7,14 +7,13 @@ specification](../frontend-node-editors/high-level.md) describes them: which
 answer a picker shows when two of its requests overlap, and what a field
 accepts, saves and undoes. `FEN-01` comes from the review plan's browser
 sweep of 10 November 2026 and was reproduced in a real browser, with the two
-answers held and released in the reverse order. `FEN-02` to `FEN-06` come
-from the plan's browser sweep of the editors' fields on 11 November; the
-main session re-ran each in a browser on a fresh project. `FEN-07` comes
+answers held and released in the reverse order. `FEN-02`, `FEN-03`, `FEN-04`
+and `FEN-06` come from the plan's browser sweep of the editors' fields on
+11 November; the main session re-ran each in a browser on a fresh project. `FEN-07` comes
 from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit, and was reproduced in a
-browser on 13 November. `FEN-09` and `FEN-10` come from the same reader;
-a worker ran each in a browser, and the main session ran each journey
-again on 13 November.
+browser on 13 November. `FEN-10` comes from the same reader; a worker ran it
+in a browser, and the main session ran the journey again on 13 November.
 
 ## Priorities
 
@@ -24,10 +23,8 @@ again on 13 November.
 | FEN-02 | Planned | P2 | A Filter's "is one of" list starts at its column's type and takes pasted cells as separate values. |
 | FEN-03 | Planned | P3 | A Rename to a name the frame already has is refused at the step, and a step the engine refuses shows the engine's sentence without its plan or a file path. |
 | FEN-04 | Planned | P3 | A Constant value whose name is cleared is kept, or the save says so; the panel shows what the file holds. |
-| FEN-05 | Planned | P3 | An edit to a Banding cell is one undo step. |
 | FEN-06 | Planned | P3 | A Banding factor whose input column is gone is marked when the editor opens and counted among its Issues. |
 | FEN-07 | Planned | P2 | A Group by with a row count, saved and opened again, is a step the analyst can edit, not an "Invalid step" whose only action is Delete. |
-| FEN-09 | Planned | P3 | A Banding factor switched to its other type gets its own remembered rules, never another factor's after an Undo. |
 | FEN-10 | Planned | P3 | Values imported into a Banding factor are dropped when the factor was removed before they arrived. |
 
 ## Planned improvements
@@ -135,34 +132,6 @@ the save the panel shows what the file holds.
 **Evidence:** `frontend/src/panels/editors/ConstantEditor.tsx`;
 `src/haute/_constant_config.py`.
 
-### FEN-05 — A Banding cell's edit is one undo step
-**Why:** Reproduced on 11 November 2026 in a browser by the sweep, and
-again by the main session. In a Banding node the analyst retypes a
-breakpoint's band name, `Age 40 or below`, as `Young`, presses Undo once
-and saves. The field reads `Youn` and the file holds `"label": "Youn"`:
-each keystroke is its own undo step. The breakpoint grid's boundary and
-band name are plain inputs that write on every keystroke, and the
-categorical rules grid is written the same way (read, not run). The
-editors' shared text field exists to prevent this; its own comment says
-"typing an N-character value recorded N undo entries". The sweep saw the
-Rating Step's Default, a Limit's rows and an Edge Join's suffix each undo
-in one step.
-
-**Plan:** Give the two Banding grids the committed field, or its buffering,
-so that a cell's edit reaches the graph once, when the cell is left or
-Enter is pressed.
-
-**Acceptance:** A band name retyped and undone once returns to the earlier
-name, in the field and in the file after a save. The same holds for a
-boundary and for a categorical rule's value and group. A browser test types
-and undoes.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/banding/BreakpointGrid.tsx`;
-`frontend/src/panels/editors/banding/BandingRulesGrid.tsx`;
-`frontend/src/components/form/CommittedTextField.tsx`.
-
 ### FEN-06 — A Banding factor whose input column is gone is marked at once
 **Why:** Reproduced on 11 November 2026 in a browser by the sweep, and
 again by the main session. An upstream column that a Banding factor reads
@@ -224,31 +193,6 @@ each window function, and none is called invalid.
 `frontend/src/panels/editors/polarsSteps/forms.tsx`;
 `src/haute/_polars_steps_lift.py::_Reader`;
 `specs/codegen/structured-syntax-boundary.md`.
-
-### FEN-09 — A Banding factor's remembered rules stay with it through an Undo
-**Why:** Reproduced on 13 November 2026 in a browser. A Banding has a
-Numeric factor `proposer_age` and then a Categorical factor `vehicle_age`
-with the rules 0 to "New" and 1 to "Nearly new". `vehicle_age` is moved
-first and switched to Numeric, and two Undos put the order and the type
-back. `proposer_age` is then switched to Categorical. It is given
-`vehicle_age`'s rules, 0 to "New" and 1 to "Nearly new", and Save writes
-them into its settings. Without the move and the Undos its rules are
-empty.
-
-The editor remembers the rules a factor had under its other type, so a
-switch back does not lose them, and it remembers them by the factor's
-position. Moving a factor forgets what was remembered; undoing the move
-does not, so the rules sit at a position another factor now holds.
-
-**Plan:** Remember the rules by the factor, not by its position, or forget
-them whenever the list of factors is replaced, as on an Undo.
-
-**Acceptance:** After the steps above `proposer_age` has no rules as a
-Categorical factor, and `vehicle_age` still has its two.
-
-**Dependencies:** `FEN-05` changes what one Undo covers in the same editor.
-
-**Evidence:** `frontend/src/panels/editors/BandingEditor.tsx`.
 
 ### FEN-10 — Imported values that arrive after their factor was removed are dropped
 **Why:** Reproduced on 13 November 2026 in a browser. A Banding has two

@@ -6,8 +6,8 @@
  * types, lets go of its copy when an Undo, a Redo or a change from outside moves the
  * value under it, and commits once, as one undo step, on blur or Enter or when a save
  * settles the open edits. A copy held any other way goes on showing, and sending, its
- * own value after an Undo (the search space box, `FEM-03`), or writes every keystroke as
- * its own undo step (the Banding grids, `FEN-05`). This scan finds, in the editor's
+ * own value after an Undo (the search space box), or writes every keystroke as
+ * its own undo step (the Banding grids). This scan finds, in the editor's
  * panels, nodes, components and hooks, but tests:
  *
  * - `field`: a typed `<input>` or `<textarea>` the component controls itself (a `value`
@@ -31,10 +31,82 @@ import { describe, expect, it } from "vitest"
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
 const SCANNED = ["panels", "nodes", "components/form"]
-const SHARED_DRAFT = "frontend/src/components/form/useCommittedDraft.ts"
+/** The shared mechanism itself: the draft, the fields built on it, and row identity. */
+const SHARED = new Set([
+  "frontend/src/components/form/useCommittedDraft.ts",
+  "frontend/src/components/form/CommittedTextField.tsx",
+  "frontend/src/panels/editors/shared/useRowKeys.ts",
+])
 
 /** `path::scope::rule` -> why the state is the page's own, not a copy of a stored value. */
-const OWN_STATE: Record<string, string> = {}
+const OWN_STATE: Record<string, string> = {
+  "frontend/src/components/form/SearchField.tsx::SearchField::field":
+    "the shared search box: the text filters a list, its caller holds it, and it is never stored",
+  "frontend/src/panels/assistant/AssistantPanel.tsx::AssistantPanel::adjust":
+    "the assistant's message draft, filled once per fix request; a message, not a stored value",
+  "frontend/src/panels/assistant/Composer.tsx::Composer::field":
+    "the assistant's message box, the panel's own draft message",
+  "frontend/src/panels/editors/_DatabricksSelector.tsx::WarehousePicker::seed":
+    "whether the HTTP path is typed by hand: a mode, chosen once from the stored path",
+  "frontend/src/panels/editors/_shared.tsx::FileBrowser::copy":
+    "the browsed folder's listing, read from the file-list cache: an answer, not a stored value",
+  "frontend/src/panels/editors/_shared.tsx::FileBrowser::seed":
+    "the folder the file browser opens on and the file it highlights: browsing state of an open dialog",
+  "frontend/src/panels/editors/ApiInputEditor.tsx::ApiInputEditor::adjust":
+    "inferred tables staged for the analyst to confirm: a server's answer, dropped when the config changes",
+  "frontend/src/panels/editors/banding/GenerateBandsDialog.tsx::CalendarGenerate::seed":
+    "the Generate dialog's own form, started from the current bands; nothing is written until Generate",
+  "frontend/src/panels/editors/banding/GenerateBandsDialog.tsx::NumericGenerate::seed":
+    "the Generate dialog's own form, started from the current bands; nothing is written until Generate",
+  "frontend/src/panels/editors/polarsSteps/fields.tsx::LiteralListField::seed":
+    "the type and text of a value being added, before it is in the list",
+  "frontend/src/panels/editors/polarsSteps/fields.tsx::MoreOptions::seed":
+    "a disclosure, open at first when the saved step uses its options",
+  "frontend/src/panels/editors/polarsSteps/forms.tsx::GroupByForm::seed":
+    "a disclosure: whether the aggregations' row filters show",
+  "frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts::useRenderedSteps::seed":
+    "the server's rendering of the steps as code: an answer, fenced by the steps' revision",
+  "frontend/src/panels/editors/shared/SearchableItemList.tsx::SearchableItemList::field":
+    "the list's search box: the text filters the rows and is never stored",
+  "frontend/src/panels/editors/shared/useSearchableList.ts::useSearchableList::adjust":
+    "which row is selected, kept on the same item as a search narrows the list",
+  "frontend/src/panels/editors/shared/useSearchableList.ts::useSearchableList::seed":
+    "which row is selected, kept on the same item as a search narrows the list",
+  "frontend/src/panels/explore/SchemaTableCard.tsx::SchemaTableCard::field":
+    "the schema table's search box",
+  "frontend/src/panels/git/useGitHistory.ts::useGitHistory::seed":
+    "the git history listed for a branch: version control's answer, not the pipeline document",
+  "frontend/src/panels/modelling/ColumnSelector.tsx::ColumnSelector::copy":
+    "the dropdown's active option and where its menu is placed",
+  "frontend/src/panels/modelling/FeatureBrowser.tsx::FeatureBrowser::field":
+    "the feature list's search box",
+  "frontend/src/panels/modelling/TermTableView.tsx::TermTableView::copy":
+    "which axes a fitted table is shown by: a view of a training result",
+  "frontend/src/panels/modelling/TermTableView.tsx::TermTableView::seed":
+    "which axes a fitted table is shown by: a view of a training result",
+  "frontend/src/panels/optimiser/OptimiserScenarioPanes.tsx::ScenarioQuoteNavigation::field":
+    "the quote number to jump to in a solved scenario",
+  "frontend/src/panels/optimiser/QuotesTab.tsx::QuotesTab::adjust":
+    "which result's quotes are shown, reset when the target changes",
+  "frontend/src/panels/optimiser/QuotesTab.tsx::QuotesTab::seed":
+    "which result's quotes are shown, reset when the target changes",
+  "frontend/src/panels/optimiser/useOptimiserScenarioData.ts::useOptimiserScenarioData::adjust":
+    "the scenario chart's series and navigation: a view of a solve's result",
+  "frontend/src/panels/optimiser/useOptimiserScenarioData.ts::useOptimiserScenarioData::seed":
+    "the scenario chart's series and navigation: a view of a solve's result",
+  "frontend/src/panels/OptimiserPreview.tsx::OptimiserPreview::adjust":
+    "the analyst's review of a solve's result, reset for another result",
+  "frontend/src/panels/OptimiserPreview.tsx::OptimiserPreview::seed":
+    "the analyst's review of a solve's result, reset for another result",
+  "frontend/src/panels/SortableValuesTable.tsx::ValuesTableSearch::field":
+    "the values table's search box",
+  "frontend/src/panels/TracePanel.tsx::TracePanel::adjust":
+    "the trace story in focus, reset for another story",
+  "frontend/src/panels/TracePanel.tsx::TracePanel::seed":
+    "the trace story in focus, reset for another story",
+  "frontend/src/panels/useRecordedNodeColumns.ts::useRecordedNodeColumns::adjust":
+    "the columns a preview recorded for the node: a run's answer, kept per source and config",
+}
 
 type Rule = "field" | "seed" | "copy" | "adjust"
 type Finding = { line: number; scope: string; rule: Rule; text: string }
@@ -344,7 +416,7 @@ function repositoryFindings(): Map<string, Finding[]> {
   for (const directory of SCANNED) {
     for (const path of sourceFiles(resolve(SRC, directory))) {
       const rel = `frontend/src/${relative(SRC, path).split(sep).join("/")}`
-      if (rel === SHARED_DRAFT) continue
+      if (SHARED.has(rel)) continue
       for (const finding of draftsByHand(readFileSync(path, "utf-8"), path)) {
         const key = `${rel}::${finding.scope}::${finding.rule}`
         found.set(key, [...(found.get(key) ?? []), finding])

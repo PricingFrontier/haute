@@ -20,7 +20,7 @@ export type HyperparameterDrafts = {
  * outlive a pane switch, and owned by the node, so another node starts from its own. Each
  * commits on blur, as one undo step; text that does not parse, or names a reserved key, is
  * refused and kept, and the caller makes it a Train-guard issue. An Undo, a Redo or any other
- * change of the stored value lets go of the draft (FEM-03: the box shows what training uses).
+ * change of the stored value lets go of the draft, so the box shows what training uses.
  */
 export function useHyperparameterDrafts({
   nodeId,
