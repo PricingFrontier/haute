@@ -768,8 +768,11 @@ describe("RemotePushControl", () => {
         fast_forwarded: [],
         labels_added: ["2.0"],
       })
+      useGraphStore.setState({ dirty: true })
+      const historyNonce = useGitStore.getState().historyNonce
       render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
       await ways[0].click()
+      fireEvent.click(await screen.findByTestId("git-navigation-discard"))
 
       await waitFor(() =>
         expect(mockAddToast).toHaveBeenCalledWith(
@@ -777,6 +780,9 @@ describe("RemotePushControl", () => {
           "Caught up - added version label 2.0 from origin",
         ),
       )
+      // No file changed, so the edits chosen over are kept, and the history is read again.
+      expect(useGraphStore.getState().dirty).toBe(true)
+      await waitFor(() => expect(useGitStore.getState().historyNonce).toBe(historyNonce + 1))
     })
 
     it("closing the rejection dialog drops the question open in it", async () => {

@@ -3156,15 +3156,23 @@ describe("API response guards", () => {
     ).toThrow("GitRemotesResponse: invalid contract at /remotes/0/working/status: enum")
   })
 
-  it("parses a fast-forward response with the advanced refs", () => {
+  it("parses a fast-forward response with the advanced refs and the labels added", () => {
     const parsed = gitFastForward({
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+      labels_added: ["2.0"],
     })
 
     expect(parsed.remote).toBe("origin")
     expect(parsed.fast_forwarded).toEqual(["dev", "dev-save"])
+    expect(parsed.labels_added).toEqual(["2.0"])
+  })
+
+  it("rejects a fast-forward response missing labels_added", () => {
+    expect(() =>
+      gitFastForward({ remote: "origin", working_branch: "dev", fast_forwarded: [] }),
+    ).toThrow(/labels_added/i)
   })
 
   it("parses required bootstrap metadata for either bootstrap outcome", () => {
@@ -3194,7 +3202,7 @@ describe("API response guards", () => {
 
   it("rejects a fast-forward response missing working_branch", () => {
     expect(() =>
-      gitFastForward({ remote: "origin", fast_forwarded: [] }),
+      gitFastForward({ remote: "origin", fast_forwarded: [], labels_added: [] }),
     ).toThrow(/working_branch/i)
   })
 

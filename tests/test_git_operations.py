@@ -843,7 +843,7 @@ def test_a_fetch_adds_no_label_and_catch_up_brings_the_colleagues_as_a_step(
     assert _git(root, "rev-parse", f"{label}^{{commit}}") == _git(root, "rev-parse", WORKING)
 
 
-@pytest.mark.parametrize("named", [(), ("main",)], ids=["everything", "one-branch"])
+@pytest.mark.parametrize("named", [(), (WORKING,)], ids=["everything", "the-mapped-branch"])
 def test_a_fetch_writes_no_ref_a_configured_mapping_names(
     named: tuple[str, ...], tmp_path: Path
 ) -> None:
