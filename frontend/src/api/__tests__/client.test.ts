@@ -1361,6 +1361,7 @@ describe("git remote catch-up + history endpoints", () => {
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+      labels_added: [],
     }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitFastForward("origin")
@@ -1779,7 +1780,12 @@ describe("request() edge cases", () => {
     // seconds: a 30-second browser deadline would report a failure the server then undoes.
     vi.useFakeTimers()
     try {
-      const fastForwardBody = { remote: "origin", working_branch: "dev", fast_forwarded: ["dev"] }
+      const fastForwardBody = {
+        remote: "origin",
+        working_branch: "dev",
+        fast_forwarded: ["dev"],
+        labels_added: [],
+      }
       const branchAwayBody = { working_branch: "dev", set_aside_as: "dev-2026-11-02" }
       mockFetch.mockImplementation(
         (url: string, options?: RequestInit) =>

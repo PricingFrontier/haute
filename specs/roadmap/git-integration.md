@@ -7,9 +7,8 @@ specification](../git-integration/high-level.md) describes it: the working
 branch and its save ledger, catching up from a remote, and what a failed git
 command leaves behind. The packages below come from the review plan's runs
 of 10 November 2026. Each was reproduced on Windows in a scratch
-repository: `VCS-01` with a real open file and a local remote, `VCS-02` and
-`VCS-03` with nothing injected into Haute, `VCS-04` by killing the server
-process, and `VCS-05` in a browser with two pages open on one project.
+repository: `VCS-02` and `VCS-03` with nothing injected into Haute, and
+`VCS-05` in a browser with two pages open on one project.
 `VCS-06` and `VCS-07` come from the main session's runs of 11 November
 behind the plan's sweep of damaged requests: folders and files renamed on
 disk, and branch names typed through the routes, with nothing injected.
@@ -24,17 +23,12 @@ from a second model family (Codex) over the code changed since the 31
 October audit. A worker drove each journey in a browser and the main
 session ran each again on 15 November 2026.
 
-A cause several packages here share has its own file and is taken first:
-[interrupted git operations](root-cause-git-intent.md).
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| VCS-01 | Planned | P2 | A catch-up that cannot remove an open file leaves the branches and the files as they were, and removes the file on the retry. |
 | VCS-02 | Planned | P2 | Commit and Restore succeed when a deletion or a rename is already staged, instead of failing every time with "Check the server logs". |
 | VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "Git refused this". |
-| VCS-04 | Planned | P3 | A restore the server died in reads as interrupted at the next start, and Retry finishes it. |
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
 | VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
 | VCS-07 | Planned | P2 | A branch name that cannot exist beside another branch is refused naming the clash, when a branch is created, restored or brought back from Deleted. |
@@ -43,48 +37,6 @@ A cause several packages here share has its own file and is taken first:
 | VCS-10 | Planned | P2 | An edit made while Catch up is running is still there when it answers, or could not be made. |
 
 ## Planned improvements
-
-### VCS-01 — A catch-up that could not remove a file puts the branch back
-**Why:** Reproduced. A colleague deletes a file and pushes. The analyst
-catches up while a program still holds that file open. Git cannot remove an
-open file on Windows; it moves the branch all the same and exits 0. Haute
-answers "utility/old_rates.py is open in another program, so Haute could not
-replace it. Close it and try again." and leaves the clone in between: the
-save ledger is at the colleague's commit, the working branch is not, the
-file is still on disk and now untracked, and nothing records an interrupted
-operation. When the analyst closes the file and tries again, the working
-branch catches up and the call succeeds, and the deleted file stays on disk
-for good. A utility module left that way is still imported by this analyst's
-pipelines and by nobody else's. The function that runs the merge documents
-the opposite: "HEAD is then put back where it was and the out-of-step files
-written from it; any still out of step record the clone interrupted". It
-decides whether HEAD moved by comparing the branch's name before and after,
-and a fast-forward moves the branch's tip without changing its name, so the
-put-back never runs. The file left behind is untracked, so the check for
-files still out of step, which reads tracked changes, finds none. The
-caller's own compensation does not run either: it marks the ledger as
-advanced only after the merge returns. A held file that the colleague
-changed, not deleted, is handled, because git exits 1 there and leaves the
-branch. The 28 October audit recorded this lead without running it.
-
-**Plan:** Compare commits, not names: record the commit HEAD points at
-before the command, and when a file was held put the branch back to that
-commit, whatever git's exit code. Count a file git reported as not removed
-as out of step whether it is tracked or not, so that it is either removed
-once it is free or recorded as interrupted. Let the caller's compensation
-read the refs, not a flag set after the call.
-
-**Acceptance:** With a file the remote deleted held open, a catch-up is
-refused naming the file, and the ledger, the working branch and every file
-are as they were before the call. After the file is closed, a second
-catch-up succeeds and the file is gone. A test does both on Windows with a
-real open handle, and a held file the remote changed still passes.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_core.py::_rewrite_tree`;
-`src/haute/_git_remote.py::fast_forward_pair_from_tracking`;
-`src/haute/_git_state.py::record_interrupted`.
 
 ### VCS-02 — Commit and Restore work with a deletion or rename already staged
 **Why:** Reproduced on 10 November 2026, with nothing injected. An analyst
@@ -113,8 +65,8 @@ Haute reaches the state without help. Deleting a Pipeline file stages the
 deletion and then commits it. With the process killed between the two, the
 restart found the deletion staged and the file still in version history,
 readiness `ready`, no pending change shown, and Commit failing as above. A
-restore cut short leaves a staged deletion for every file the restored
-version has and the later one had removed, with the same result (`VCS-04`).
+restore cut short no longer reaches it: its record keeps Commit refused
+until Retry has written the restored files.
 
 **Plan:** In the save capture, stage each path by what it is. A path that is
 in neither the folder nor the index needs no `git add`: its removal is
@@ -211,41 +163,6 @@ Commit's refusal say the commit could not be signed.
 `src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
 `src/haute/_git_transactions.py::commit_save`;
 `frontend/src/components/BranchIndicator.tsx`.
-
-### VCS-04 — A restore cut short is found at the next start
-**Why:** Reproduced on 10 November 2026. A Restore records its save on the
-ledger first and writes the files after. When a file cannot be written, the
-clone is marked interrupted, readiness names the files, and Retry writes
-them: the specification describes this for a restore that fails after its
-save was recorded. The mark is written only by the code that catches the
-failure, so a server process that dies between the two steps leaves no
-mark. Killed right after the ledger moved, the restart found the restore as
-the ledger's newest save ("Restored 40c845c7: Updated 4 files"), the files
-on disk still the later version, readiness `ready`, the pipeline loading
-`ready`, and no `.haute/interrupted.json`.
-Nothing says the restore did not finish. Commit then failed with "Operation
-failed. Check the server logs for details.", because the file the restored
-version adds back shows as a staged deletion (`VCS-02`). With that fixed, a
-Commit would record the files on disk as "Updated project files" on top of
-the restore, undoing it without a word (read from the sweep's rule, not
-run). No work is lost, since every version stays in the history. The window
-is the write-back of the files, one git command long.
-
-**Plan:** Write the interrupted mark, naming the files the restore will
-replace, before the ledger moves, and clear it once the files are written.
-A process that dies in between then leaves the state the specification
-already handles.
-
-**Acceptance:** With the process killed after the ledger moved, the next
-start reads `interrupted` naming the files, Commit and Restore refuse until
-Retry, and Retry writes the restored version. A restore that completes
-leaves no mark.
-
-**Dependencies:** `VCS-02` for the Commit that follows.
-
-**Evidence:** `src/haute/_git_transactions.py::restore_version`;
-`src/haute/_git_transactions.py::retry_interrupted`;
-`src/haute/_git_state.py::record_interrupted`.
 
 ### VCS-05 — A branch delete names what was confirmed
 **Why:** Reproduced on 10 November 2026 in a browser, with two pages open on
@@ -449,7 +366,7 @@ road.
 **Evidence:** `src/haute/_git_setup.py::set_working_branch`;
 `src/haute/_git_remote.py::fast_forward_pair_from_tracking`;
 `src/haute/_git_remote.py::branch_away`;
-`src/haute/_git_archive.py::_switch_away_if_active`;
+`src/haute/_git_archive.py::_leave_if_active`;
 `src/haute/_git_transactions.py::create_working_branch`;
 `src/haute/_git_transactions.py::restore_version`;
 `frontend/src/hooks/useProjectDirty.ts`;

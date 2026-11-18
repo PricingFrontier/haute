@@ -556,8 +556,8 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
   states, full error tooltip on hover and Retry focus with an accessible description,
   no-repository/unset/detached/invalid/divergent/ready rendering, an interrupted clone
-  naming its files with a Retry that reloads readiness on success and toasts the files
-  still held on refusal, the branch-name
+  reading "Unfinished" and naming the operation and its files, with a Retry that reloads
+  readiness on success and toasts the files still held on refusal, the branch-name
   click's panel/store side effects, and that the ready state stays branch-only — carrying no
   save SHA, including while a comparison is open.
 - **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor

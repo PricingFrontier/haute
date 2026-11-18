@@ -227,8 +227,9 @@ lines, is refused. A Restore runs in this order:
 Restoring the current version with nothing on disk to record answers that it is already this
 version. A Restore needs a git identity, and refuses while a git operation is in progress. It
 also refuses when an untracked or ignored file sits where the target has a file, naming the
-file, rather than overwriting it. If writing the files fails, history already holds the
-restore; the analyst sees the failure.
+file, rather than overwriting it. The ledger's advance is the restore's commit point: if
+writing the files then fails, or the server stops, history already holds the restore, and
+the clone reads as interrupted until Retry writes them.
 
 **Recoverability.** Deleting a working pair does not destroy it. Each deletion is its own
 trash entry, keyed by the branch name and the moment of deletion, so deleting a name, making
@@ -250,21 +251,19 @@ it again and deleting it again keeps both.
   then pending again for the next Commit. Create, undelete and restore refuse a name such a
   pair holds, so Repair is the way back to it.
 
-Multi-step ref
-mutations (branch selection, archive/delete/restore, fork with move or switch, branch-away,
-fast-forward, and branch-pair creation after any unborn-repository seed has succeeded) keep
-an operation snapshot and compensate on failure. An incomplete compensation is an explicit
-transaction failure and is never reported as success. Archiving or deleting the active pair
+Every action that moves a branch is a recorded operation (below), so a failure or a
+stopped server leaves either the state before it, the state after it, or a record that
+says where it stopped; never a pair half moved with nothing said. Archiving or deleting the active pair
 detaches at the working branch's tip, its last milestone, rather than checking out another
 branch: the analyst stays on the work they had committed. Its later saves stay with the
 archived ledger or the trash entry, and the branch chooser opens at the next startup. Files
 changed since the last save refuse an archive, and a delete unless it is confirmed: only a
-confirmed delete discards them with the branch. The seed phase itself is outside that rollback
-boundary: it may
-rename an unborn branch to `main`, append protective `.gitignore` entries, clear/rebuild the
-index, and create a permanent root commit before pair creation begins. A failure during that
-phase can leave those safe preparatory changes behind, although it does not deliberately
-remove working-tree files. Because the root commit is permanent, it never takes a Python
+confirmed delete discards them with the branch. The seed is an operation of its own,
+taken before the branch pair's: it may rename an unborn branch to `main`, append protective
+`.gitignore` entries, clear/rebuild the index, and create a permanent root commit before
+pair creation begins. A failure after the seed has finished leaves those safe preparatory
+changes behind, although it does not deliberately remove working-tree files. Because the
+root commit is permanent, it never takes a Python
 environment below the project's top level (a folder holding a venv's `pyvenv.cfg` or a conda
 environment's `conda-meta`, whatever the folder is called), a first version of more than
 1,000 files is refused, naming the folder most of them are in, and so is one holding a file
@@ -274,21 +273,51 @@ before anything is committed.
 **Files another program holds open.** On Windows git cannot replace a file another program
 holds open, such as a CSV open in Excel, and it does not always say so. A checkout still
 exits 0: HEAD moves to the new branch while that file keeps the old version, which the next
-Commit's sweep would record as a change. A fast-forward exits 1 with the other files already
-written, and a restore stops part-way.
+Commit's sweep would record as a change. A fast-forward over a file it cannot replace exits 1
+with the other files already written; over a file the remote deleted that it cannot remove,
+it exits 0 with the branch moved and the file left on disk, untracked. A restore stops
+part-way.
 
 So every git command that rewrites the working tree runs through one fence. It compares the
-tracked changes before and after, and a new one means the tree is out of step with HEAD. The
-fence then puts HEAD back where it was (forcing it when a file is held too tightly to be
-read, as Excel holds an open CSV, and nothing was changed before the command), writes the
-out-of-step files from it, and refuses
-with the files named: "<files> are open in another program, so Haute could not replace them.
-Close them and try again."
+tracked changes before and after, and reads the files git names as not replaced or not
+removed; any of them means the tree is out of step with HEAD, and the command fails with the
+files named. The operation it is a step of then puts everything back from its record (below)
+and refuses: "<files> are open in another program, so Haute could not replace them. Close
+them and try again." A file held so tightly git cannot even read it, as Excel holds an open
+CSV, cannot be checked until it is closed, so the clone reads as interrupted until Retry.
 
-When a file still cannot be written, the clone is recorded as interrupted. This happens when
-the put-back fails, or when a restore fails after its save was recorded. Readiness then
-answers `interrupted` with the files. Commit and Restore refuse until the analyst closes the
-files and chooses Retry, which writes HEAD's version of those files.
+**Operations recorded before they start.** Every action that moves a branch, HEAD, a version
+label or a deleted branch's pin is an operation of known steps: catching up, restoring a
+version, choosing a branch, creating one in any of its ways, spinning off a copy, archiving,
+deleting, bringing back, un-archiving and repairing a branch, a milestone and its hooks' run,
+the first version, and opening a stored project. Before its first step the operation writes
+what it is about to do to `.haute/operation.json`: each ref it touches and the commit it is
+at after every step, where HEAD is, the working branch the clone records, the trash entries
+it adds or removes, and the files it writes. It removes the record after its last step. A
+save's one commit to the ledger is the only ref move outside an operation, and the git
+commands that move a ref refuse to run outside one.
+
+The record names the operation's commit point, the step after which it goes forward and not
+back: a restore's ledger advance; a delete's transaction that pins and removes the pair, or
+its checkout when a confirmed delete discards changes; an undelete's transaction that
+rebuilds the pair; for every other operation its last step. A failure that is caught before that point
+is put back from the record, to the commits it holds, before the call returns, and the result
+is checked against them. A failure after it keeps what was done, and the record stays. A
+record still there, at the next start or after an operation that could be neither put back
+nor finished, is the interruption: readiness answers `interrupted`, naming the operation and
+its files ("Restoring a version stopped part-way: rating/main.py and 2 more."), and every
+other action that changes version history, a save's capture included, refuses until the
+analyst chooses Retry; setting the git identity and the preferences go on as usual. Retry
+reads where the refs are, finishes the operation from there or puts it back, writes the
+files, and checks the result. It never overwrites a file that holds neither version the
+operation knew, which someone changed after it stopped; it names the file instead. A file
+the operation did not change, the analyst's own edits among them, is never named in the
+record and never touched by a put-back. A recovery moves the refs back or on one recorded
+step at a time, so one that itself stops leaves a state its record knows.
+
+A fetch never adds a label to the clone: the remote's version labels are kept beside its
+branches, and Catch up and Spin off add those on the line they bring as a recorded step, so
+a colleague's labels show as they always have.
 
 **Crash-safe clone state.** Every `.haute/*.json` write is staged to a sibling temporary
 file and atomically replaced while holding the same per-repository mutation lock used by the
@@ -316,6 +345,13 @@ complete old or new document, never torn JSON.
   reachable and leaves the analyst on the branch. Recording the restore before writing the
   files means a file the operating system refuses to replace cannot leave a part-written
   tree that the next milestone's sweep would record as if it were the restore.
+- **Intent recorded before the first step, not repair after a failure.** Putting things
+  back only from code that catches a failure leaves no mark when nothing catches it, a
+  server process that dies between two steps, and puts back to whatever the code had noted
+  along the way: a branch's name, when git moved that branch and exited 0. A record written
+  before the first step names the commits every ref should be at after each step, so the
+  next start finds the stop, and both the caught failure and Retry read the refs as they are
+  and act on commits, never on flags set after a step returned. One routine does both.
 - **Never force, never auto-merge remotely.** The product's trust model is that a user's
   local work is never silently discarded or rewritten. Push refuses on divergence rather
   than forcing; fast-forward refuses on anything but a clean fast-forward; a remote rewrite
@@ -404,9 +440,14 @@ subclass of the project-wide `HauteError`):
 - **`GitGuardrailError`** — a `GitDomainError` subtype specifically for guardrail blocks
   (protected branch, already-archived, save ledger used as a working branch). Surfaces
   verbatim as HTTP 403.
-- **`GitTransactionError`** — a `GitDomainError` subtype used when a mutation failed and
-  one or more compensating steps also failed. Its safe message tells the user that repository
-  repair may be required; the original and rollback failures remain server-side.
+- **`GitTransactionError`** — a `GitDomainError` subtype used when an operation failed and
+  its refs are where no step of its record leaves them, so it can be neither put back nor
+  finished, or when the project's commit hooks left HEAD off the ledger. The record stays and
+  readiness reads `interrupted`; its safe message tells the user to inspect the repository,
+  and the original failure remains server-side.
+- **A refusal while interrupted** — a `GitDomainError` naming the operation that stopped
+  ("<operation> stopped part-way. Choose Retry first."), raised by every git action but Retry
+  while `.haute/operation.json` is there.
 - **`GitHistoryReadError`** — a `GitDomainError` subtype for a history git cannot read, a
   malformed archive, or a historical tree that cannot produce a pipeline graph. It is a
   failed read, never an empty successful list or graph.

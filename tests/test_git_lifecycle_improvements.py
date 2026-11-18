@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import haute._git_archive as git_archive
-import haute._git_remote as git_remote
+import haute._git_operation as git_operation
 from haute._git import (
     GitError,
     GitTransactionError,
@@ -23,7 +22,7 @@ from haute._git import (
     set_working_branch,
     undelete_working_pair,
 )
-from haute._git_state import read_trash, read_working_branch, write_working_branch
+from haute._git_state import read_operation, read_trash, read_working_branch, write_working_branch
 
 WORKING = "pricing-dev"
 LEDGER = "pricing-dev-save"
@@ -50,6 +49,29 @@ def repo(tmp_path: Path) -> Path:
 
 def _set_up_pair(repo: Path) -> None:
     set_working_branch(WORKING, repo, cwd=repo)
+
+
+def _fail_first_transaction(
+    monkeypatch: pytest.MonkeyPatch, naming: str = "", message: str = "injected"
+) -> None:
+    """Fail the first ref transaction an operation runs that names *naming*; the
+    put-back's transaction after it runs as git would."""
+    real_run = git_operation._run_git
+    failed: list[bool] = []
+
+    def fail_once(*args: str, **kwargs: object) -> str:
+        text = kwargs.get("input_text")
+        if (
+            not failed
+            and args[:2] == ("update-ref", "--stdin")
+            and isinstance(text, str)
+            and naming in text
+        ):
+            failed.append(True)
+            raise GitError(message)
+        return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(git_operation, "_run_git", fail_once)
 
 
 def _advance_remote_pair(repo: Path, tmp_path: Path) -> None:
@@ -79,16 +101,14 @@ def test_adopting_existing_branch_restores_head_ledger_and_prior_state_on_failur
     _git(repo, "checkout", "main")
     write_working_branch(repo, "previous-branch")
 
-    import haute._git_state as git_state
-
-    real_write = git_state.write_working_branch
+    real_write = git_operation.write_working_branch
 
     def fail_only_new_association(project_root: Path, branch: str) -> None:
         if branch == WORKING:
             raise OSError("injected association-write failure")
         real_write(project_root, branch)
 
-    monkeypatch.setattr(git_state, "write_working_branch", fail_only_new_association)
+    monkeypatch.setattr(git_operation, "write_working_branch", fail_only_new_association)
 
     with pytest.raises(OSError, match="injected association-write failure"):
         set_working_branch(WORKING, repo, cwd=repo)
@@ -96,6 +116,7 @@ def test_adopting_existing_branch_restores_head_ledger_and_prior_state_on_failur
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
     assert _git(repo, "branch", "--list", LEDGER) == ""
     assert read_working_branch(repo) == "previous-branch"
+    assert read_operation(repo) is None
 
 
 def test_confirmed_delete_of_only_active_pair_detaches_when_no_default_exists(
@@ -137,14 +158,7 @@ def test_fast_forward_failure_restores_both_refs_head_and_worktree(
     old_content = (repo / "rating.py").read_text()
     # Caches are wiped only once the caught-up tree is in place.
     (repo / ".haute_cache").mkdir()
-    real_run = git_remote._run_git
-
-    def fail_working_cas(*args: str, **kwargs: object) -> str:
-        if args[:2] == ("update-ref", f"refs/heads/{WORKING}"):
-            raise GitError("injected working CAS failure")
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(git_remote, "_run_git", fail_working_cas)
+    _fail_first_transaction(monkeypatch, f"refs/heads/{WORKING} ", "injected working CAS failure")
 
     with pytest.raises(GitError, match="injected working CAS failure"):
         fast_forward_pair("origin", repo, cwd=repo)
@@ -153,32 +167,41 @@ def test_fast_forward_failure_restores_both_refs_head_and_worktree(
     assert _git(repo, "rev-parse", LEDGER) == old_ledger
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
     assert (repo / "rating.py").read_text() == old_content
+    assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
     assert (repo / ".haute_cache").is_dir()
+    assert read_operation(repo) is None
 
 
-def test_fast_forward_raises_transaction_error_when_ledger_compensation_fails(
+def test_fast_forward_keeps_its_record_when_the_put_back_cannot_finish(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from haute._git import retry_interrupted, working_branch_status
+
     _set_up_pair(repo)
     _advance_remote_pair(repo, tmp_path)
-    real_run = git_remote._run_git
-    real_run_ok = git_remote._run_git_ok
+    old_ledger = _git(repo, "rev-parse", LEDGER)
+    real_run = git_operation._run_git
 
-    def fail_working_cas(*args: str, **kwargs: object) -> str:
-        if args[:2] == ("update-ref", f"refs/heads/{WORKING}"):
-            raise GitError("injected working CAS failure")
+    def refuse_every_transaction_after_the_ledger(*args: str, **kwargs: object) -> str:
+        if args[:2] == ("update-ref", "--stdin"):
+            raise GitError("injected ref transaction failure")
         return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-    def fail_compensating_reset(*args: str, **kwargs: object) -> tuple[bool, str]:
-        if args[:2] == ("reset", "--hard"):
-            return False, "injected reset rollback failure"
-        return real_run_ok(*args, **kwargs)  # type: ignore[arg-type]
+    monkeypatch.setattr(git_operation, "_run_git", refuse_every_transaction_after_the_ledger)
 
-    monkeypatch.setattr(git_remote, "_run_git", fail_working_cas)
-    monkeypatch.setattr(git_remote, "_run_git_ok", fail_compensating_reset)
-
-    with pytest.raises(GitTransactionError, match="automatic rollback was incomplete"):
+    with pytest.raises(GitTransactionError, match="Catching up could not be put back"):
         fast_forward_pair("origin", repo, cwd=repo)
+
+    record = read_operation(repo)
+    assert record is not None and record.operation == "catch-up"
+    assert working_branch_status(repo, cwd=repo).state == "interrupted"
+
+    monkeypatch.undo()
+    retry_interrupted(repo, cwd=repo)
+
+    assert _git(repo, "rev-parse", LEDGER) == old_ledger
+    assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+    assert read_operation(repo) is None
 
 
 def test_archive_state_failure_restores_head_and_association(
@@ -187,12 +210,10 @@ def test_archive_state_failure_restores_head_and_association(
     """Moving off the active pair and clearing clone state is one transaction."""
     _set_up_pair(repo)
 
-    import haute._git_state as git_state
-
     def fail_clear(_project_root: Path) -> None:
         raise OSError("injected state-clear failure")
 
-    monkeypatch.setattr(git_state, "clear_working_branch", fail_clear)
+    monkeypatch.setattr(git_operation, "clear_working_branch", fail_clear)
 
     with pytest.raises(OSError, match="injected state-clear failure"):
         archive_working_pair(WORKING, repo, cwd=repo)
@@ -201,6 +222,7 @@ def test_archive_state_failure_restores_head_and_association(
     assert _git(repo, "branch", "--list", WORKING) == WORKING
     assert _git(repo, "branch", "--list", LEDGER) == f"* {LEDGER}"
     assert read_working_branch(repo) == WORKING
+    assert read_operation(repo) is None
 
 
 def test_restore_moves_nothing_when_its_ref_transaction_fails(
@@ -209,14 +231,7 @@ def test_restore_moves_nothing_when_its_ref_transaction_fails(
     _set_up_pair(repo)
     archived = archive_working_pair(WORKING, repo, cwd=repo).archived_as
     archived_ledger = f"{archived}-save"
-    real_run = git_archive._run_git
-
-    def fail_transaction(*args: str, **kwargs: object) -> str:
-        if args[:2] == ("update-ref", "--stdin"):
-            raise GitError("injected ref transaction failure")
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(git_archive, "_run_git", fail_transaction)
+    _fail_first_transaction(monkeypatch, message="injected ref transaction failure")
 
     with pytest.raises(GitError, match="injected ref transaction failure"):
         restore_working_pair(archived, repo, cwd=repo)
@@ -232,14 +247,7 @@ def test_undelete_failure_removes_partial_heads_and_preserves_recovery_net(
 ) -> None:
     _set_up_pair(repo)
     entry_id = delete_working_pair(WORKING, repo, confirm=True, cwd=repo).trash_id
-    real_run = git_archive._run_git
-
-    def fail_transaction(*args: str, **kwargs: object) -> str:
-        if args[:2] == ("update-ref", "--stdin"):
-            raise GitError("injected ref transaction failure")
-        return real_run(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(git_archive, "_run_git", fail_transaction)
+    _fail_first_transaction(monkeypatch, message="injected ref transaction failure")
 
     with pytest.raises(GitError, match="injected ref transaction failure"):
         undelete_working_pair(entry_id, repo, cwd=repo)
@@ -249,3 +257,4 @@ def test_undelete_failure_removes_partial_heads_and_preserves_recovery_net(
     assert _git(repo, "rev-parse", "--verify", f"refs/haute/trash/{entry_id}/working")
     assert _git(repo, "rev-parse", "--verify", f"refs/haute/trash/{entry_id}/ledger")
     assert entry_id in read_trash(repo)
+    assert read_operation(repo) is None

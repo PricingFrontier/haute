@@ -186,8 +186,8 @@ orphaned halves).
   them to resolve divergence in the Git panel; `"invalid"` → the response's `errors` list
   joined verbatim (the one state that carries git-layer text); `"git-unavailable"` → fixed
   message that Git is not available on this host and assistant edits need it to record
-  each change; `"interrupted"` → fixed message directing them to close the files named in
-  the Git panel and choose Retry. `working_branch_status` is total for those eight repository/readiness
+  each change; `"interrupted"` → readiness's line naming the operation that stopped and its
+  files, then "Choose Retry in the toolbar before using assistant mutations." `working_branch_status` is total for those eight repository/readiness
   states, and a state outside them is a programming error that raises. An unexpected
   git-domain `HauteError`
   raised while computing readiness likewise maps to disabled with that error's message as

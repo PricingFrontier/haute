@@ -160,11 +160,9 @@ def _mutation_readiness(
             "Git is not available on this host; assistant edits need Git to record each change.",
         )
     if status.state == "interrupted":
-        return (
-            False,
-            "Close the files named in the Git panel and choose Retry before using assistant "
-            "mutations.",
-        )
+        # Readiness's own line names the operation that stopped and its files.
+        stopped = status.errors[0] if status.errors else "A git action stopped part-way."
+        return False, f"{stopped} Choose Retry in the toolbar before using assistant mutations."
     raise ValueError(f"Unknown working-branch state: {status.state!r}")
 
 

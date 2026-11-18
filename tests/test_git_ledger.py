@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import haute._git_core as git_core
+import haute._git_operation as git_operation
 import haute._git_transactions as git_transactions
 from haute._git import (
     GitDomainError,
@@ -27,6 +28,7 @@ from haute._git import (
     milestone_saves,
     pending_ledger_saves,
     resolve_ledger,
+    retry_interrupted,
     set_identity,
     set_working_branch,
     working_milestones,
@@ -373,37 +375,57 @@ class TestMilestoneMerge:
             f"`# noqa: F841` (its code). More: {REFUSAL_GUIDE_URL}",
         ]
 
-    @pytest.mark.parametrize("failure", ["an interrupt", "a cleanup failure"])
-    def test_head_returns_to_the_ledger_whatever_ends_the_hooks(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    def test_head_is_back_on_the_ledger_when_cleaning_up_after_the_hooks_fails(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from haute._git_state import write_working_branch
+        from haute._git_state import read_operation, write_working_branch
 
         write_working_branch(repo, WORKING)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         install_hook(repo, "pre-commit", "#!/bin/sh\nexit 0\n")
-        if failure == "an interrupt":
+        unlink = Path.unlink
 
-            def interrupted(*_args: object, **_kwargs: object) -> None:
-                raise KeyboardInterrupt
+        def unlink_refused(path: Path, missing_ok: bool = False) -> None:
+            if path.name == "haute-milestone-index":
+                raise PermissionError(path)
+            unlink(path, missing_ok=missing_ok)
 
-            monkeypatch.setattr(git_transactions, "_run_hook", interrupted)
-            expected: type[BaseException] = KeyboardInterrupt
-        else:
-            unlink = Path.unlink
+        monkeypatch.setattr(Path, "unlink", unlink_refused)
 
-            def unlink_refused(path: Path, missing_ok: bool = False) -> None:
-                if path.name == "haute-milestone-index":
-                    raise PermissionError(path)
-                unlink(path, missing_ok=missing_ok)
-
-            monkeypatch.setattr(Path, "unlink", unlink_refused)
-            expected = PermissionError
-
-        with pytest.raises(expected):
+        with pytest.raises(PermissionError):
             commit_milestone("Rated", repo, cwd=repo)
 
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert read_operation(repo) is None
+
+    def test_an_interrupt_in_the_hooks_leaves_the_record_and_retry_puts_head_back(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop that is not an error is what a killed server leaves: HEAD on the
+        working branch and the hooks' record, which Retry puts back."""
+        from haute._git_state import read_operation, write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        install_hook(repo, "pre-commit", "#!/bin/sh\nexit 0\n")
+
+        def interrupted(*_args: object, **_kwargs: object) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(git_transactions, "_run_hook", interrupted)
+
+        with pytest.raises(KeyboardInterrupt):
+            commit_milestone("Rated", repo, cwd=repo)
+
+        record = read_operation(repo)
+        assert record is not None and record.operation == "milestone-hooks"
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == WORKING
+
+        monkeypatch.undo()
+        retry_interrupted(repo, cwd=repo)
+
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert read_operation(repo) is None
 
     def test_a_commit_msg_hook_may_rewrite_the_milestone_message(self, repo: Path) -> None:
         from haute._git_state import write_working_branch
@@ -485,13 +507,16 @@ class TestMilestoneMerge:
                 raise GitError("injected ref transaction failure")
             return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(git_transactions, "_run_git", fail_ref_transaction)
+        monkeypatch.setattr(git_operation, "_run_git", fail_ref_transaction)
 
         with pytest.raises(GitError, match="injected ref transaction failure"):
             merge_to_working(WORKING, "Tagged version", tag_label="2.0", cwd=repo)
 
+        from haute._git_state import read_operation
+
         assert _git(repo, "rev-parse", WORKING) == working_tip
         assert _git(repo, "tag", "--list", "version/2.0") == ""
+        assert read_operation(repo) is None
 
     def test_invariant_holds_after_merge_and_after_next_save(self, repo: Path) -> None:
         """The grill regression: the naive ancestor check fails exactly here."""

@@ -1438,7 +1438,12 @@ class TestTreeChangesAreAnnounced:
                 "/api/git/fast-forward",
                 {"remote": "origin"},
                 "fast_forward_pair",
-                {"remote": "origin", "working_branch": "b"},
+                {
+                    "remote": "origin",
+                    "working_branch": "b",
+                    "fast_forwarded": [],
+                    "labels_added": [],
+                },
             ),
             (
                 "post",

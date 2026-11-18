@@ -11072,6 +11072,13 @@
           "title": "Fast Forwarded",
           "type": "array"
         },
+        "labels_added": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Labels Added",
+          "type": "array"
+        },
         "remote": {
           "title": "Remote",
           "type": "string"
@@ -11084,7 +11091,8 @@
       "required": [
         "remote",
         "working_branch",
-        "fast_forwarded"
+        "fast_forwarded",
+        "labels_added"
       ],
       "title": "GitFastForwardResponse",
       "type": "object"

@@ -61,6 +61,7 @@ describe("RemotePushControl", () => {
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+      labels_added: [],
     })
     mockBranchAway.mockResolvedValue({
       working_branch: "dev",
@@ -759,6 +760,31 @@ describe("RemotePushControl", () => {
       expect(screen.queryByTestId("git-navigation-confirm")).not.toBeInTheDocument()
     })
 
+    it("names the labels a catch-up brought alone, and keeps the canvas edits", async () => {
+      ways[0].setUp()
+      mockFastForward.mockResolvedValue({
+        remote: "origin",
+        working_branch: "dev",
+        fast_forwarded: [],
+        labels_added: ["2.0"],
+      })
+      useGraphStore.setState({ dirty: true })
+      const historyNonce = useGitStore.getState().historyNonce
+      render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+      await ways[0].click()
+      fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+
+      await waitFor(() =>
+        expect(mockAddToast).toHaveBeenCalledWith(
+          "success",
+          "Caught up - added version label 2.0 from origin",
+        ),
+      )
+      // No file changed, so the edits chosen over are kept, and the history is read again.
+      expect(useGraphStore.getState().dirty).toBe(true)
+      await waitFor(() => expect(useGitStore.getState().historyNonce).toBe(historyNonce + 1))
+    })
+
     it("closing the rejection dialog drops the question open in it", async () => {
       rejectPushWith(behind)
       useGraphStore.setState({ dirty: true })
@@ -864,6 +890,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+      labels_added: [],
     })
     mockBranchAway.mockResolvedValue({
       working_branch: "dev",

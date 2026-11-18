@@ -8,33 +8,29 @@ from collections import Counter
 from pathlib import Path
 
 from haute._git_core import (
-    NO_HOOKS,
     GitDomainError,
     GitError,
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
-    _checkout_back,
     _clear_content_caches,
-    _compensate,
-    _delete_branch_if_present,
     _get_current_branch,
-    _head_position,
     _is_ancestor,
     _ledger_or_branch_sha,
     _list_branches_with_tips,
     _refuse_too_large_for_history,
     _rev_parse,
-    _rewrite_tree,
     _run_git,
     _run_git_ok,
     _serialized_mutation,
+    _serialized_while_interrupted,
     _tree_of,
     _validate_ref_name,
     branch_category,
     is_eligible_working_branch,
     ledger_name,
 )
+from haute._git_operation import Operation
 from haute._gitignore_guard import ensure_gitignore_guards
 from haute._logging import get_logger
 
@@ -160,14 +156,21 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
     if _rev_parse(working, cwd=cwd) is None:
         raise GitDomainError(f"Working branch '{working}' does not exist.")
 
+    opening = Operation("open-ledger", cwd or current_project().root, cwd)
+    ledger = _open_ledger(opening, working)
+    opening.run()
+    return ledger
+
+
+def _open_ledger(operation: Operation, working: str) -> str:
+    """Add the steps that put HEAD on *working*'s ledger to *operation*: the ledger
+    spawned at the working branch's tip when there is none, then its checkout. Each is
+    a step only when it changes something. Returns the ledger's name."""
     ledger = ledger_name(working)
-    if _rev_parse(ledger, cwd=cwd) is None:
-        _run_git("branch", ledger, working, cwd=cwd)
+    if operation.value(f"refs/heads/{ledger}") is None:
+        operation.refs({f"refs/heads/{ledger}": operation.ref(f"refs/heads/{working}")})
         logger.info("ledger_spawned", working=working, ledger=ledger)
-
-    if _get_current_branch(cwd) != ledger:
-        _rewrite_tree("checkout", ledger, cwd=cwd)
-
+    operation.checkout(ledger)
     return ledger
 
 
@@ -186,7 +189,7 @@ def get_identity(cwd: Path | None = None) -> tuple[str | None, str | None]:
     )
 
 
-@_serialized_mutation
+@_serialized_while_interrupted
 def set_identity(
     user_name: str,
     user_email: str,
@@ -233,12 +236,6 @@ def set_working_branch(
     real ref.  The create path is all-or-nothing: a failure after the branch is
     created restores HEAD and deletes the half-created branch.
     """
-    from haute._git_state import (
-        read_working_branch,
-        restore_working_branch,
-        write_working_branch,
-    )
-
     _assert_git_repo(cwd)
     if create:
         _assert_new_branch_name(branch, cwd=cwd)
@@ -246,7 +243,6 @@ def set_working_branch(
     _assert_eligible_working(branch)
     _install_project_hook(project_root, cwd)
 
-    previous_working = read_working_branch(project_root)
     exists = _rev_parse(branch, cwd=cwd) is not None
     if create:
         if exists:
@@ -263,6 +259,7 @@ def set_working_branch(
         # Protected branches (main/master/etc.) are kept as-is.
         if _rev_parse("HEAD", cwd=cwd) is None:
             current_unborn = _get_current_branch(cwd)
+            default = current_unborn
             if branch_category(current_unborn) != "protected":
                 # A born 'main' can only coexist with an unborn non-protected HEAD
                 # via `git checkout --orphan` outside haute; the rename would then
@@ -272,8 +269,7 @@ def set_working_branch(
                         "Cannot seed the initial commit: HEAD is on an unborn branch "
                         "but 'main' already exists."
                     )
-                _run_git("branch", "-m", "main", cwd=cwd)
-                _clear_content_caches()
+                default = "main"
 
             # Seed staging is defence-in-depth: a file
             # enters the root commit only by matching a haute-owned pathspec
@@ -309,13 +305,12 @@ def set_working_branch(
                 # :(literal) so a filename containing glob characters cannot
                 # re-expand into a broader pathspec at add time.
                 _run_git("add", "--", *[f":(literal){f}" for f in seed_files], cwd=cwd)
-            # If nothing was staged (empty working tree) use --allow-empty so we
-            # still establish a root commit and the model remains consistent.
-            ok_diff, _ = _run_git_ok("diff", "--cached", "--quiet", cwd=cwd)
-            commit_extra = ["--allow-empty"] if ok_diff else []
+            # The staged index is the root commit's tree, the empty one when nothing
+            # was staged, so the model is consistent either way. Haute's own commit, as
+            # a save is: the project's hooks run at a milestone.
+            tree = _run_git("write-tree", cwd=cwd)
             try:
-                # Haute's own commit, as a save is: the project's hooks run at a milestone.
-                _run_git(*NO_HOOKS, "commit", *commit_extra, "-m", "Initial commit", cwd=cwd)
+                root = _run_git("commit-tree", tree, "-m", "Initial commit", cwd=cwd)
             except GitError as exc:
                 stderr = str(exc)
                 if any(
@@ -331,56 +326,33 @@ def set_working_branch(
                         "Cannot create the initial commit: set your git name and email first."
                     ) from exc
                 raise
-
-        # Capture pre-creation position for atomic rollback.
-        head = _head_position(cwd)
+            # The seed is permanent once made, whatever the pair creation below does.
+            seed = Operation("seed", project_root, cwd)
+            if default != current_unborn:
+                seed.head(f"refs/heads/{default}")
+            seed.refs({f"refs/heads/{default}": root})
+            seed.run()
+            _clear_content_caches()
 
         # A branch made from a save opens at an anchoring milestone (same tree, so
-        # the checkout changes no file and carries uncommitted edits across).
-        start = _branch_start(branch, cwd=cwd)
-        try:
-            _rewrite_tree("checkout", "-b", branch, *([start] if start else []), cwd=cwd)
-            resolve_ledger(branch, cwd=cwd)
-            write_working_branch(project_root, branch)
-        except Exception as exc:
-            # All-or-nothing: restore HEAD and delete the half-created branch so
-            # a retry is not blocked and the repo is left in a coherent state.
-            # Also drop the ledger resolve_ledger may have just spawned — leaving
-            # it orphaned would let a later fork off an advanced default read as
-            # `invalid` via check_invariants (tree mismatch vs the stale ledger).
-            _compensate(
-                exc,
-                "Creating the working branch",
-                [
-                    lambda: _checkout_back(head, cwd=cwd),
-                    lambda: _delete_branch_if_present(branch, cwd=cwd),
-                    lambda: _delete_branch_if_present(ledger_name(branch), cwd=cwd),
-                    lambda: restore_working_branch(project_root, previous_working),
-                ],
-            )
-            raise
+        # the checkout changes no file and carries uncommitted edits across). The
+        # pair is one operation, put back whole on any failure, so a retry is not
+        # blocked by a half-created branch or an orphaned ledger.
+        start = _branch_start(branch, cwd=cwd) or _run_git("rev-parse", "HEAD", cwd=cwd)
+        creation = Operation("create-branch", project_root, cwd)
+        creation.refs({f"refs/heads/{branch}": start, f"refs/heads/{ledger_name(branch)}": start})
+        creation.checkout(ledger_name(branch))
+        creation.working_branch(branch)
+        creation.run()
     else:
         if not exists:
             raise GitDomainError(f"Branch '{branch}' does not exist.")
-        # Adopt existing branch transactionally: restore HEAD, association, and
-        # any newly-spawned ledger when either checkout or state replacement fails.
-        ledger = ledger_name(branch)
-        ledger_existed = _rev_parse(ledger, cwd=cwd) is not None
-        head = _head_position(cwd)
-        try:
-            resolve_ledger(branch, cwd=cwd)
-            write_working_branch(project_root, branch)
-        except Exception as exc:
-            _compensate(
-                exc,
-                "Selecting the working branch",
-                [
-                    lambda: _checkout_back(head, cwd=cwd),
-                    lambda: ledger_existed or _delete_branch_if_present(ledger, cwd=cwd),
-                    lambda: restore_working_branch(project_root, previous_working),
-                ],
-            )
-            raise
+        # One operation: the ledger spawned if there is none, its checkout and the
+        # recorded working branch, put back whole on any failure.
+        selection = Operation("select-branch", project_root, cwd)
+        _open_ledger(selection, branch)
+        selection.working_branch(branch)
+        selection.run()
 
     logger.info("working_branch_set", branch=branch, created=create)
 
@@ -462,7 +434,7 @@ def get_prefs(project_root: Path) -> GitPrefs:
     return GitPrefs(skip_switch_confirm=bool(raw.get(_PREF_SKIP_SWITCH_CONFIRM, False)))
 
 
-@_serialized_mutation
+@_serialized_while_interrupted
 def set_prefs(prefs: GitPrefs, project_root: Path) -> GitPrefs:
     """Persist this clone's local UI preferences; returns the stored state."""
     from haute._git_state import write_pref

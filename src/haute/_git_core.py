@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import inspect
 import os
 import re
@@ -11,7 +12,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache, wraps
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Generic, Literal, ParamSpec, TypeVar, overload
 
 from haute._git_lock import repository_mutation
+from haute._git_state import OperationRecord, name_files, read_operation
 from haute._logging import get_logger
 from haute._project_context import current_project
 from haute._project_layout import VERSIONED_FILE_LIMIT_BYTES
@@ -158,7 +160,17 @@ class GitMilestoneForkError(GitDomainError):
 
 
 class GitTransactionError(GitDomainError):
-    """A Git mutation failed and its compensating rollback also failed."""
+    """A recorded operation that can be neither put back nor finished: its refs are
+    where no step of its record leaves them. Its record stays."""
+
+
+class GitInterruptedError(GitDomainError):
+    """A git action asked for while an operation's record is there: the operation
+    stopped part-way, and only Retry may act until it is finished or put back."""
+
+    def __init__(self, record: OperationRecord) -> None:
+        self.record = record
+        super().__init__(f"{record.words} stopped part-way. Choose Retry first.")
 
 
 class GitRemoteUnavailableError(GitDomainError):
@@ -175,15 +187,9 @@ class GitHistoryReadError(GitDomainError):
     """History could not be read, or a historical pipeline materialised or parsed safely."""
 
 
-# How many files a refusal over files in use names.
-_FILES_NAMED = 5
-
-
 def files_in_use_message(files: list[str]) -> str:
     """The analyst's message for *files* another program holds open."""
-    named = ", ".join(files[:_FILES_NAMED]) + (
-        f" and {len(files) - _FILES_NAMED} more" if len(files) > _FILES_NAMED else ""
-    )
+    named = name_files(files)
     one = len(files) == 1
     return (
         f"{named} {'is' if one else 'are'} open in another program, so Haute could not "
@@ -233,21 +239,35 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def _serialized_mutation(func: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Run a public mutator under the repository's shared reentrant lock."""
+def _serialized(func: Callable[_P, _R], *, while_interrupted: bool) -> Callable[_P, _R]:
     signature = inspect.signature(func)
 
     @wraps(func)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         bound = signature.bind_partial(*args, **kwargs)
-        location = bound.arguments.get("cwd")
-        if location is None:
-            location = bound.arguments.get("project_root")
+        cwd, project_root = bound.arguments.get("cwd"), bound.arguments.get("project_root")
+        location = cwd if cwd is not None else project_root
         root = Path(location) if location is not None else current_project().root
         with repository_mutation(root):
+            if not while_interrupted:
+                record = read_operation(Path(project_root) if project_root is not None else root)
+                if record is not None:
+                    raise GitInterruptedError(record)
             return func(*args, **kwargs)
 
     return wrapped
+
+
+def _serialized_mutation(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run a public mutator under the repository's shared reentrant lock, refusing with
+    ``GitInterruptedError`` while an operation that stopped part-way is recorded."""
+    return _serialized(func, while_interrupted=False)
+
+
+def _serialized_while_interrupted(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run a mutator under the lock even while an operation is recorded: Retry, and the
+    identity and preferences, which move no ref and touch no tracked file."""
+    return _serialized(func, while_interrupted=True)
 
 
 _GIT_LOCALE_ENV = {
@@ -260,6 +280,158 @@ _GIT_LOCALE_ENV = {
 def _git_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
     """Inherited process environment with stable Git output language."""
     return {**os.environ, **_GIT_LOCALE_ENV, **(overrides or {})}
+
+
+# ---------------------------------------------------------------------------
+# Ref moves. The refs that count are HEAD and everything under refs/ but
+# refs/remotes/ (git's copy of another repository, which a fetch replaces): local
+# branches, version labels and trash pins. Each moves only as a step of a recorded
+# operation (``_git_operation``), or as a save's one commit.
+# ---------------------------------------------------------------------------
+
+# Subcommands that move no ref that counts: reads, index and file writes, config, and
+# transport whose local writes land under refs/remotes/.
+_MOVES_NO_REF = frozenset(
+    {
+        "add",
+        "archive",
+        "bundle",
+        "cat-file",
+        "check-ignore",
+        "check-ref-format",
+        "clone",
+        "commit-tree",
+        "config",
+        "diff",
+        "for-each-ref",
+        "hash-object",
+        "hook",
+        # Creating a repository, or reinitialising one, moves no ref it already has.
+        "init",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "merge-base",
+        "push",
+        "read-tree",
+        "remote",
+        "restore",
+        "rev-list",
+        "rev-parse",
+        "rm",
+        "show",
+        "status",
+        "var",
+        "write-tree",
+    }
+)
+_MOVES_REFS = frozenset(
+    {
+        "am",
+        "branch",
+        "checkout",
+        "cherry-pick",
+        "commit",
+        "merge",
+        "pull",
+        "rebase",
+        "reset",
+        "revert",
+        "stash",
+        "switch",
+        "update-ref",
+        "worktree",
+    }
+)
+_TAG_LISTING = ("-l", "--list", "--points-at", "--merged", "--no-merged", "--contains")
+
+
+def _moves_local_refs(args: Sequence[str]) -> bool:
+    """Whether git *args* would move a ref that counts. A subcommand not classified here
+    raises, so a new kind of command is classified before it can run."""
+    index = 0
+    while index < len(args) - 1 and args[index] == "-c":
+        index += 2
+    sub, rest = (args[index], args[index + 1 :]) if index < len(args) else ("", ())
+    if sub in _MOVES_NO_REF:
+        return False
+    if sub in _MOVES_REFS:
+        return True
+    if sub == "symbolic-ref":
+        targets = [arg for arg in rest if not arg.startswith("-")]
+        return len(targets) > 1 or any(arg in ("-d", "--delete") for arg in rest)
+    if sub == "tag":
+        return not any(arg.split("=")[0] in _TAG_LISTING for arg in rest)
+    if sub == "fetch":
+        # Only a fetch that follows no tags, applies no configured mapping and names
+        # every destination, each under refs/remotes/, moves no ref: by default git
+        # follows tags into refs/tags/, and the remote's configured fetch refspecs,
+        # which may name any ref, update refs beside the ones a command names unless
+        # --refmap= empties them. The first operand is the repository (a remote, a
+        # URL, a bundle's path, which on Windows holds a colon).
+        refspecs = [arg for arg in rest if not arg.startswith("-")][1:]
+        return not (
+            "--no-tags" in rest
+            and "--refmap=" in rest
+            and refspecs
+            and all(
+                ":" in spec and spec.split(":", 1)[1].startswith("refs/remotes/")
+                for spec in refspecs
+            )
+        )
+    raise GitError(f"git {sub or '(no subcommand)'} is not classified as moving refs or not")
+
+
+@dataclass(slots=True)
+class _RefMovePermit:
+    """What may move a ref in this context: an operation's step, or one save commit."""
+
+    save: bool
+    commits: int = 0
+
+
+_REF_MOVE_PERMIT: contextvars.ContextVar[_RefMovePermit | None] = contextvars.ContextVar(
+    "haute_git_ref_move_permit", default=None
+)
+
+
+@contextlib.contextmanager
+def _ref_moves_permitted() -> Iterator[None]:
+    """Let the git commands inside move refs: entered only by a recorded operation's
+    steps and its recovery (``_git_operation``)."""
+    token = _REF_MOVE_PERMIT.set(_RefMovePermit(save=False))
+    try:
+        yield
+    finally:
+        _REF_MOVE_PERMIT.reset(token)
+
+
+@contextlib.contextmanager
+def _save_commit() -> Iterator[None]:
+    """Let one ``git commit`` move HEAD's branch: a save's one commit to the ledger,
+    the only ref move outside a recorded operation (entered only by ``commit_save``)."""
+    token = _REF_MOVE_PERMIT.set(_RefMovePermit(save=True))
+    try:
+        yield
+    finally:
+        _REF_MOVE_PERMIT.reset(token)
+
+
+def _git_argv(args: Sequence[str]) -> list[str]:
+    """The argument list for git *args*, refused when it would move a ref outside a
+    recorded operation's step or a save's one commit. Every runner builds with it."""
+    if _moves_local_refs(args):
+        permit = _REF_MOVE_PERMIT.get()
+        subcommand = _subcommand(tuple(args))
+        allowed = permit is not None and (
+            not permit.save or (subcommand == "commit" and permit.commits == 0)
+        )
+        if not allowed:
+            raise GitError(f"git {subcommand} would move a ref outside a recorded operation")
+        if permit is not None and permit.save:
+            permit.commits += 1
+    return ["git", *args]
 
 
 @overload
@@ -298,7 +470,7 @@ def _run_git_process(
     newlines, as a text-mode ``subprocess.run`` would."""
     try:
         completed = _run_process_group(
-            ["git", *args], cwd=cwd or current_project().root, env=env, timeout=timeout
+            _git_argv(args), cwd=cwd or current_project().root, env=env, timeout=timeout
         )
     except subprocess.TimeoutExpired as exc:
         raise _GitProcessTimeoutError() from exc
@@ -468,7 +640,7 @@ def _run_git(
     *env* overlays the inherited environment (used to preserve author/committer
     identity + dates when replaying commits via ``commit-tree``).
     """
-    cmd = ["git"] + list(args)
+    cmd = _git_argv(args)
     if input_text is None:
         result = subprocess.run(
             cmd,
@@ -504,7 +676,7 @@ def _run_git(
 
 def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
     """Run a git command and return (success, stdout).  Never raises."""
-    cmd = ["git"] + list(args)
+    cmd = _git_argv(args)
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -524,7 +696,7 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
     exits 1 for "not an ancestor" (a valid, cacheable answer) but >1 for an
     unreadable object (which must never be cached).
     """
-    cmd = ["git"] + list(args)
+    cmd = _git_argv(args)
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -563,6 +735,22 @@ def _remote_env(cwd: Path | None = None) -> dict[str, str]:
     return _git_env(overrides)
 
 
+#: Where a fetch keeps a remote's version labels: beside its branches and outside
+#: ``refs/tags/``, so no fetch adds a label to the clone. Catch up and Spin off add the
+#: ones they bring as a recorded step (``labels_to_adopt``).
+LABELS_NAMESPACE = "refs/remotes/haute-labels"
+
+
+#: Every fetch the core runs: no tag followed, no configured mapping applied, so only
+#: the refspecs it names, all under ``refs/remotes/``, are written.
+SAFE_FETCH = ("--no-tags", "--refmap=")
+
+
+def label_refspec(namespace: str) -> str:
+    """The refspec that fetches a repository's version labels for *namespace*."""
+    return f"+refs/tags/version/*:{LABELS_NAMESPACE}/{namespace}/version/*"
+
+
 def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     """Run a prompt-proof, time-bounded ``git fetch``; return success.
 
@@ -578,18 +766,22 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     any hang, so a legitimately-configured non-interactive helper (token cache)
     keeps working rather than being forced off.
 
-    With no explicit *refs*, fetch and prune the configured remote namespace.
+    With no explicit *refs*, fetch and prune the remote's branches into
+    ``refs/remotes/<remote>/`` and its version labels into ``LABELS_NAMESPACE``.
     Authoritative actions use that form so a genuinely absent optional pair leg
-    is represented by a missing tracking ref rather than a failed fetch.
+    is represented by a missing tracking ref rather than a failed fetch. *refs* are
+    branch names, each fetched to its tracking ref. Every refspec is explicit and no
+    tag is followed, so a fetch moves no ref of the clone's own.
     """
-    cmd = (
-        ["git", "fetch", remote, *refs, "--quiet"]
-        if refs
-        else ["git", "fetch", "--prune", remote, "--quiet"]
-    )
+    if refs:
+        refspecs = tuple(f"+refs/heads/{ref}:refs/remotes/{remote}/{ref}" for ref in refs)
+        args = ("fetch", *SAFE_FETCH, remote, *refspecs, "--quiet")
+    else:
+        everything = (f"+refs/heads/*:refs/remotes/{remote}/*", label_refspec(remote))
+        args = ("fetch", *SAFE_FETCH, "--prune", remote, *everything, "--quiet")
     try:
         result = _run_git_process(
-            *cmd[1:],
+            *args,
             cwd=cwd,
             env=_remote_env(cwd),
             timeout=_FETCH_TIMEOUT_SECONDS,
@@ -745,52 +937,6 @@ def _refuse_too_large_for_history(paths: list[str], root: Path, retry: str) -> N
             f"{'it' if one else 'them'} to the project's data/ folder, which stays on this "
             f"machine, and {retry}."
         )
-
-
-#: One compensating action of a rolled-back mutation. It reports ``False`` when it did not
-#: take effect; ``True`` or ``None`` (an action that raises when it fails) when it did.
-CompensationStep = Callable[[], bool | None]
-
-
-def _compensate(failure: Exception, action: str, steps: Iterable[CompensationStep]) -> None:
-    """Undo a failed mutation: run every step in order, the later ones even after one fails,
-    and return so the caller re-raises *failure*. When a step reported ``False`` or raised a
-    git or file error, raise :class:`GitTransactionError` from *failure*, naming *action*."""
-    complete = True
-    for step in steps:
-        try:
-            if step() is False:
-                complete = False
-        except (GitError, OSError):
-            complete = False
-    if not complete:
-        raise GitTransactionError(
-            f"{action} failed and automatic rollback was incomplete. "
-            "Inspect the repository before retrying."
-        ) from failure
-
-
-def _head_position(cwd: Path | None = None) -> tuple[str, bool]:
-    """Where HEAD is, for :func:`_checkout_back`: the branch it is on, or the commit it is
-    detached at (a checkout outside Haute), and whether it is attached."""
-    attached, branch = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
-    if attached:
-        return branch, True
-    return _run_git("rev-parse", "HEAD", cwd=cwd), False
-
-
-def _checkout_back(position: tuple[str, bool], cwd: Path | None = None) -> bool:
-    """Put HEAD back where :func:`_head_position` found it."""
-    target, attached = position
-    ok, _ = _run_git_ok("checkout", *(() if attached else ("--detach",)), target, cwd=cwd)
-    return ok
-
-
-def _delete_branch_if_present(branch: str, cwd: Path | None = None) -> bool:
-    if _rev_parse(branch, cwd=cwd) is None:
-        return True
-    ok, _ = _run_git_ok("branch", "-D", branch, cwd=cwd)
-    return ok
 
 
 def _free_pair_name(stem: str, *, bare_first: bool, cwd: Path | None = None) -> str:
@@ -1330,7 +1476,7 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
     # Read raw: each entry's two status letters may begin with a space, which a
     # stripped output would lose along with the path's first character.
     result = subprocess.run(
-        ["git", "status", "--porcelain", "-z", "--untracked-files=no"],
+        _git_argv(("status", "--porcelain", "-z", "--untracked-files=no")),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1359,17 +1505,21 @@ def _held_files(stderr: str) -> list[str]:
     return list(dict.fromkeys(_UNLINK_FAILED.findall(stderr)))
 
 
-def _run_git_capture(*args: str, cwd: Path | None = None) -> tuple[int, str]:
-    """Run a git command and return (returncode, stderr). Never raises."""
+def _run_git_capture(
+    *args: str, cwd: Path | None = None, input_text: str | None = None
+) -> tuple[int, str]:
+    """Run a git command and return (returncode, stderr), git's own failure included.
+
+    *input_text* reaches stdin as UTF-8 bytes, so a NUL-separated pathspec list keeps its
+    separators on Windows."""
     result = subprocess.run(
-        ["git", *args],
+        _git_argv(args),
         capture_output=True,
-        text=True,
-        encoding="utf-8",
         cwd=cwd or current_project().root,
         env=_git_env(),
+        input=input_text.encode("utf-8") if input_text is not None else None,
     )
-    return result.returncode, result.stderr.strip()
+    return result.returncode, result.stderr.decode("utf-8", errors="replace").strip()
 
 
 def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
@@ -1377,67 +1527,25 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
     merge), failing loud on a file it could not write.
 
     On Windows git cannot replace or remove a file another program holds open. A
-    checkout still exits 0, leaving that file at the old version under the new
-    HEAD (or behind, untracked, when the new HEAD drops it); a fast-forward exits
-    1 with the other files already written. So the files git names as not
-    replaced or removed, and any tracked file that became changed, are out of
-    step with HEAD: the stderr catches a file that was already changed before a
-    forced checkout, or left untracked, which the status comparison cannot. HEAD
-    is then put back where it was and the out-of-step files written from it; any
-    still out of step record the clone interrupted, for the analyst to retry once
-    the file is closed. Either way ``GitFilesInUseError`` names the files, and
-    the caller's own compensation runs as for any failure."""
+    checkout still exits 0, leaving that file at the old version under the new HEAD;
+    a fast-forward exits 1 with the other files already written, or 0 with a file
+    the remote deleted left behind, untracked. So the files git names as not
+    replaced or removed, and any tracked file that became changed, are out of step
+    with HEAD: the stderr catches a file that was already changed before a forced
+    checkout, or left untracked, which the status comparison cannot. Then
+    ``GitFilesInUseError`` names the files. Nothing is put back here: the command
+    is a step of a recorded operation, which puts everything back from its record."""
     _assert_no_git_op_in_progress(cwd)
-    attached, head = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
-    previous = head if attached else _run_git("rev-parse", "HEAD", cwd=cwd)
     before = _tracked_changes(cwd)
     code, stderr = _run_git_capture(*args, cwd=cwd)
     reported = _held_files(stderr)
     out_of_step = sorted((_tracked_changes(cwd) - before) | set(reported))
-    if not out_of_step:
-        if code != 0:
-            logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
-            raise GitError(stderr or f"git {_subcommand(args)} failed")
-        return
-    logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
-    held = reported or out_of_step
-    moved_ok, now = _run_git_ok("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd)
-    current = now if moved_ok else _run_git("rev-parse", "HEAD", cwd=cwd)
-    if current != previous:
-        detach = () if attached else ("--detach",)
-        if "-f" in args or "--force" in args:
-            # The command was to discard changes anyway: the put-back may too,
-            # and a file still held keeps what is on disk.
-            _run_git_ok("checkout", "-f", *detach, previous, cwd=cwd)
-        else:
-            # A file git left unreplaced still holds the previous version while its
-            # index entry moved on, and checkout refuses to overwrite such a "change".
-            # Staging what is on disk lets checkout carry it back untouched.
-            literal = [f":(literal){path}" for path in out_of_step]
-            staged, _ = _run_git_ok("add", "--", *literal, cwd=cwd)
-            # A file held with no sharing (Excel's open CSV) cannot even be read to
-            # stage, and checkout then refuses over it. With nothing changed before
-            # the command a forced put-back discards nothing, and the held file
-            # keeps what is on disk.
-            force = () if staged or before else ("-f",)
-            _run_git_ok("checkout", *force, *detach, previous, cwd=cwd)
-    left = sorted(_tracked_changes(cwd) - before)
-    if left:
-        _run_git_ok(
-            "restore",
-            "--source=HEAD",
-            "--staged",
-            "--worktree",
-            "--",
-            *[f":(literal){path}" for path in left],
-            cwd=cwd,
-        )
-        left = sorted(_tracked_changes(cwd) - before)
-    if left:
-        from haute._git_state import record_interrupted
-
-        record_interrupted(cwd or current_project().root, args[0], left)
-    raise GitFilesInUseError(held)
+    if out_of_step:
+        logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
+        raise GitFilesInUseError(reported or out_of_step)
+    if code != 0:
+        logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
+        raise GitError(stderr or f"git {_subcommand(args)} failed")
 
 
 def _remote_names(cwd: Path | None = None) -> list[str]:

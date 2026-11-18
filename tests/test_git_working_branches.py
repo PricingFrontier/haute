@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import haute._git_core as git_core
+import haute._git_operation as git_operation
 import haute._git_remote as git_remote
 import haute._git_setup as git_setup
 from haute._git import (
@@ -303,34 +304,32 @@ class TestSetWorkingBranchUnborn:
     def test_atomicity_rollback_on_post_create_failure(
         self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If resolve_ledger raises after checkout -b, HEAD is restored and branch deleted."""
-        from haute._git_state import read_working_branch
+        """If the ledger's checkout fails after the pair was created, the pair goes and
+        HEAD stays on the seeded default; the seed itself is permanent."""
+        from haute._git_state import read_operation, read_working_branch
 
         (unborn_repo / "main.py").write_text("x = 1\n")
 
-        def _failing_resolve(working: str, cwd: Path | None = None) -> str:
-            raise GitDomainError("injected resolve failure")
+        def _failing_checkout(*args: str, cwd: Path | None = None) -> None:
+            raise GitDomainError("injected checkout failure")
 
-        monkeypatch.setattr(git_setup, "resolve_ledger", _failing_resolve)
+        monkeypatch.setattr(git_operation, "_rewrite_tree", _failing_checkout)
 
-        with pytest.raises(GitDomainError, match="injected resolve failure"):
+        with pytest.raises(GitDomainError, match="injected checkout failure"):
             set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
 
-        # HEAD must not be left on the broken/unborn branch.
-        head = _git(unborn_repo, "symbolic-ref", "--short", "HEAD")
-        assert head != "initial-model", f"HEAD left on broken branch: {head}"
-        # No association written.
+        assert _git(unborn_repo, "symbolic-ref", "--short", "HEAD") == "main"
+        assert _parents(unborn_repo, "main") == []
         assert read_working_branch(unborn_repo) is None
-        # The half-created branch was deleted.
-        assert _git(unborn_repo, "branch", "--list", "initial-model") == ""
+        assert _git(unborn_repo, "branch", "--list", "initial-model*") == ""
+        assert read_operation(unborn_repo) is None
 
     def test_atomicity_rollback_also_deletes_orphan_ledger(
         self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If write_working_branch fails after resolve_ledger spawned the ledger,
-        the rollback deletes BOTH the working branch and its orphan ledger so a
+        """If recording the working branch fails after the ledger was checked out,
+        the put-back deletes BOTH the working branch and its orphan ledger so a
         later fork off an advanced default cannot read as invalid."""
-        import haute._git_state as git_state
         from haute._git import ledger_name
         from haute._git_state import read_working_branch
 
@@ -339,7 +338,7 @@ class TestSetWorkingBranchUnborn:
         def _failing_write(project_root: Path, branch: str) -> None:
             raise OSError("injected association-write failure")
 
-        monkeypatch.setattr(git_state, "write_working_branch", _failing_write)
+        monkeypatch.setattr(git_operation, "write_working_branch", _failing_write)
 
         with pytest.raises(OSError, match="injected association-write failure"):
             set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
@@ -793,20 +792,20 @@ class TestSetWorkingBranchUnbornNonDefault:
     def test_atomicity_unborn_non_default_rollback_on_resolve_failure(
         self, unborn_non_default_repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If resolve_ledger raises after checkout -b (non-default unborn repo),
-        rollback leaves HEAD valid, no association, no working branch or ledger.
+        """If the ledger's checkout fails (non-default unborn repo), the put-back
+        leaves HEAD valid, no association, no working branch or ledger.
         main-with-seed-commit may remain — it is a legitimate permanent state."""
         from haute._git_state import read_working_branch
 
         root = unborn_non_default_repo
         (root / "main.py").write_text("x = 1\n")
 
-        def _failing_resolve(working: str, cwd: Path | None = None) -> str:
-            raise GitDomainError("injected resolve failure")
+        def _failing_checkout(*args: str, cwd: Path | None = None) -> None:
+            raise GitDomainError("injected checkout failure")
 
-        monkeypatch.setattr(git_setup, "resolve_ledger", _failing_resolve)
+        monkeypatch.setattr(git_operation, "_rewrite_tree", _failing_checkout)
 
-        with pytest.raises(GitDomainError, match="injected resolve failure"):
+        with pytest.raises(GitDomainError, match="injected checkout failure"):
             set_working_branch("initial-branch", root, create=True, cwd=root)
 
         # HEAD must be valid (on main), not on the broken working branch.
@@ -816,15 +815,15 @@ class TestSetWorkingBranchUnbornNonDefault:
         assert read_working_branch(root) is None
         # The half-created working branch was deleted.
         assert _git(root, "branch", "--list", "initial-branch") == ""
-        # Its ledger was not created (resolve_ledger was the failure point).
+        # Its ledger was created with it and put back with it.
         assert _git(root, "branch", "--list", "initial-branch-save") == ""
 
-    def test_rename_then_commit_failure_leaves_unborn_main(
+    def test_commit_failure_leaves_the_unborn_branch_as_it_was(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Rename-to-main happens before the seed commit: if the commit fails
-        (identity unset) on an unborn non-default branch, the repo is left on an
-        unborn *main* (rename persisted, no commit) with a clear GitDomainError."""
+        """The seed's root commit is made before anything is renamed: if it fails
+        (identity unset) on an unborn non-default branch, HEAD stays on that unborn
+        branch, nothing is committed, and the GitDomainError says why."""
         root = tmp_path / "rename_then_fail"
         root.mkdir()
         _git(root, "init", "-b", "main")
@@ -851,12 +850,9 @@ class TestSetWorkingBranchUnbornNonDefault:
         with pytest.raises(GitDomainError, match="set your git name and email first"):
             set_working_branch("initial-branch", root, create=True, cwd=root)
 
-        # The unborn branch was renamed to main before the failing commit, and no
-        # commit exists — a coherent state a retry (with identity) resumes from.
-        assert _git(root, "symbolic-ref", "--short", "HEAD") == "main"
-        # Still unborn: no born branch refs exist, and the old name is gone.
+        # Nothing renamed, nothing committed: a retry with an identity starts afresh.
+        assert _git(root, "symbolic-ref", "--short", "HEAD") == "initial-branch"
         assert _git(root, "branch", "--format=%(refname:short)") == ""
-        assert _git(root, "branch", "--list", "initial-branch") == ""
 
     def test_born_main_with_unborn_orphan_head_raises_clear_error(self, tmp_path: Path) -> None:
         """If a born 'main' coexists with an unborn non-protected HEAD (only

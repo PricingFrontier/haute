@@ -1,40 +1,28 @@
-"""Crash-rollback safety-net tests for the v1 git engine.
-
-These exercise the mid-sequence failure paths in `haute._git` that never run on
-the happy path: the fork rollback (`_rollback_fork`), the parallel-fork lone-ref
-cleanup, the branch-away rollback, the branch-away
-user-facing guard refusals, and the atomic-push / fast-forward error raises.
+"""Failure-path tests for the v1 git engine that the recorded-operation tests do
+not cover: the branch-away user-facing guard refusals, and the atomic-push /
+fast-forward error raises. A failure part-way through an operation, and its put-back,
+is tested per step in ``tests/test_git_operations.py``.
 
 The fixtures, helpers and tmp-repo conventions mirror the git engine tests
 (``tests/_git_engine_helpers.py``).
-Failures are injected by wrapping the module-level ``_run_git`` so a chosen git
-subcommand raises mid-sequence; the rollback helpers use ``_run_git_ok`` (which
-is left intact) and so still run to completion, letting us assert the repo lands
-back in a coherent state.
 """
 
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
 import haute._git_core as git_core
 import haute._git_remote as git_remote
-import haute._git_transactions as git_transactions
 from haute._git import (
     GitDomainError,
     GitError,
     branch_away,
     commit_milestone,
     commit_save,
-    create_working_branch,
     fast_forward_pair,
-    ledger_name,
     push_working_pair,
     resolve_ledger,
-    set_working_branch,
 )
 
 WORKING = "pricing-dev"
@@ -68,192 +56,6 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "commit", "-m", "initial pipeline")
     _git(root, "checkout", "-b", WORKING)
     return root
-
-
-def _fork_setup(repo: Path) -> dict[str, str]:
-    """pricing-dev with one milestone M1 then two pending saves; HEAD on ledger."""
-    set_working_branch(WORKING, repo, cwd=repo)
-    _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save 1")
-    m1 = commit_milestone("M1", repo, cwd=repo).sha
-    s2 = _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save 2")
-    s3 = _write_and_save(repo, WORKING, {"rating.py": "# v4\n"}, message="save 3")
-    assert s2 is not None and s3 is not None
-    return {"m1": m1, "s2": s2, "s3": s3}
-
-
-def _fail_run_git_on(
-    monkeypatch: pytest.MonkeyPatch,
-    target: ModuleType,
-    trigger: Callable[[tuple[str, ...]], bool],
-    exc: Exception | None = None,
-) -> None:
-    """Patch ``_run_git`` so the FIRST call whose args satisfy *trigger* raises
-    *exc* (default ``GitError``); every other call passes through to the real
-    implementation. ``_run_git_ok`` (used by the rollback helpers) is untouched.
-    """
-    real = target._run_git
-    fired = {"done": False}
-
-    def wrapper(*args: str, **kwargs: object) -> str:
-        if not fired["done"] and trigger(args):
-            fired["done"] = True
-            raise exc if exc is not None else GitError("injected mid-sequence failure")
-        return real(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(target, "_run_git", wrapper)
-
-
-class TestRollbackFork:
-    """`_rollback_fork`: a mid-sequence move-mode fork failure rolls back cleanly —
-    ledger restored to its prior tip, HEAD off the new ledger, and no half-forked
-    refs leaked."""
-
-    def test_move_mode_failure_rolls_back(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from haute._git_state import read_working_branch
-
-        _fork_setup(repo)
-        ledger_tip_before = _git(repo, "rev-parse", LEDGER)
-        working_before = _git(repo, "rev-parse", WORKING)
-
-        # Fail the spawning-ledger rewind (`branch -f <ledger> <point>`), which runs
-        # AFTER the new ledger is checked out — so HEAD is on the new ledger and the
-        # full restore path (`branch -f` + `checkout`) in _rollback_fork runs.
-        _fail_run_git_on(
-            monkeypatch,
-            git_transactions,
-            lambda a: a[:2] == ("branch", "-f") and len(a) > 2 and a[2] == LEDGER,
-        )
-        with pytest.raises(GitError):
-            create_working_branch("moved", repo, move=True, cwd=repo)
-
-        # Spawning ledger restored to its prior tip; working branch untouched.
-        assert _git(repo, "rev-parse", LEDGER) == ledger_tip_before
-        assert _git(repo, "rev-parse", WORKING) == working_before
-        # HEAD is back on the spawning ledger, not the new one.
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
-        # The new pair's refs are gone — retry is not blocked.
-        assert _git(repo, "branch", "--list", "moved") == ""
-        assert _git(repo, "branch", "--list", "moved-save") == ""
-        assert read_working_branch(repo) == WORKING
-
-    def test_move_mode_unexpected_exception_rolls_back(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from haute._git_state import read_working_branch
-
-        _fork_setup(repo)
-        ledger_tip_before = _git(repo, "rev-parse", LEDGER)
-        working_before = _git(repo, "rev-parse", WORKING)
-        _fail_run_git_on(
-            monkeypatch,
-            git_transactions,
-            lambda a: a[:2] == ("branch", "-f") and len(a) > 2 and a[2] == LEDGER,
-            RuntimeError("injected unexpected failure"),
-        )
-
-        with pytest.raises(RuntimeError, match="injected unexpected failure"):
-            create_working_branch("moved-runtime", repo, move=True, cwd=repo)
-
-        assert _git(repo, "rev-parse", LEDGER) == ledger_tip_before
-        assert _git(repo, "rev-parse", WORKING) == working_before
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
-        assert _git(repo, "branch", "--list", "moved-runtime") == ""
-        assert _git(repo, "branch", "--list", "moved-runtime-save") == ""
-        assert read_working_branch(repo) == WORKING
-
-    def test_parallel_fork_lone_ref_cleanup(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Parallel (move=False) fork: if the ledger ref creation fails after the
-        working ref was created, the lone working ref is deleted (no leak)."""
-        _fork_setup(repo)
-
-        # Fail the SECOND `branch <ledger> <base>` — the new ledger ref creation,
-        # which runs after the working ref already exists.
-        _fail_run_git_on(
-            monkeypatch,
-            git_transactions,
-            lambda a: a[:1] == ("branch",) and len(a) >= 2 and a[1] == ledger_name("para"),
-        )
-        with pytest.raises(GitError):
-            create_working_branch("para", repo, cwd=repo)
-
-        # The lone working ref was cleaned up — neither ref of the pair survives.
-        assert _git(repo, "branch", "--list", "para") == ""
-        assert _git(repo, "branch", "--list", "para-save") == ""
-
-
-class TestRollbackBranchAway:
-    """A mid-sequence branch_away failure restores both
-    lineages — the canonical name is not left half-repointed, and the dated
-    set-aside name does not strand the original pair."""
-
-    def _add_bare_remote(self, repo: Path, tmp_path: Path) -> Path:
-        bare = tmp_path / "origin.git"
-        _git(repo, "init", "--bare", str(bare))
-        _git(repo, "remote", "add", "origin", str(bare))
-        return bare
-
-    def _diverge(self, repo: Path, bare: Path, tmp_path: Path) -> None:
-        """Push, advance the remote on another clone, advance locally → diverged."""
-        push_working_pair("origin", repo, cwd=repo)
-        other = tmp_path / "other"
-        _git(repo, "clone", str(bare), str(other))
-        _git(other, "config", "user.name", "Other")
-        _git(other, "config", "user.email", "other@example.com")
-        _git(other, "checkout", WORKING)
-        from haute._git_state import write_working_branch
-
-        write_working_branch(other, WORKING)
-        resolve_ledger(WORKING, cwd=other)
-        (other / "rating.py").write_text("# remote line\n")
-        commit_save(["rating.py"], WORKING, cwd=other)
-        commit_milestone("remote milestone", other, cwd=other)
-        push_working_pair("origin", other, cwd=other)
-        _write_and_save(repo, WORKING, {"local.py": "# local line\n"})
-        commit_milestone("local milestone", repo, cwd=repo, allow_fork=True)
-
-    def test_failure_restores_both_lineages(
-        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from haute._git_state import read_working_branch
-
-        resolve_ledger(WORKING, cwd=repo)
-        from haute._git_state import write_working_branch
-
-        write_working_branch(repo, WORKING)
-        bare = self._add_bare_remote(repo, tmp_path)
-        self._diverge(repo, bare, tmp_path)
-
-        old_w = _git(repo, "rev-parse", WORKING)
-        old_l = _git(repo, "rev-parse", LEDGER)
-        # Caches are wiped only once the adopted tree is in place.
-        (repo / ".haute_cache").mkdir()
-
-        # Fail the canonical working re-point (`branch <working> <remote_w>`),
-        # which runs after BOTH refs were renamed aside — so the rollback must
-        # rename both back and restore HEAD onto the original ledger.
-        _fail_run_git_on(
-            monkeypatch,
-            git_remote,
-            lambda a: a[:1] == ("branch",) and len(a) >= 3 and a[1] == WORKING,
-        )
-        with pytest.raises(GitError):
-            branch_away("origin", repo, cwd=repo)
-
-        # Both lineages intact at their original tips; canonical name NOT
-        # half-repointed to the remote.
-        assert _git(repo, "rev-parse", WORKING) == old_w
-        assert _git(repo, "rev-parse", LEDGER) == old_l
-        # HEAD restored onto the original ledger.
-        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
-        assert read_working_branch(repo) == WORKING
-        # No dated set-aside pair was left behind.
-        aside_refs = _git(repo, "branch", "--list", f"{WORKING}-local-*")
-        assert aside_refs == ""
-        assert (repo / ".haute_cache").is_dir()
 
 
 class TestBranchAwayGuards:

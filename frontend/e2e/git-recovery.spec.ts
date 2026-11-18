@@ -27,8 +27,8 @@ import { e2eGit, e2eProjectRoot, e2eWorkingBranch, resetE2eProject } from "./pro
 // another branch, and files another program held open through a git action.
 // The mistakes covered are the ones the screens warn about: choosing the
 // existing branch when the version open should be kept, closing the chooser,
-// saving before choosing, unusable names, and saving or committing while
-// files are still out of step.
+// saving before choosing, unusable names, and saving or committing while an
+// operation the server stopped part-way is still recorded.
 
 const work = e2eWorkingBranch
 const indicator = (page: Page) => page.getByTestId("toolbar-branch-indicator")
@@ -164,67 +164,84 @@ test.describe("a project switched to another branch outside Haute", () => {
   })
 })
 
-test.describe("files another program held open through a git action", () => {
-  const interruptedPath = resolve(e2eProjectRoot, ".haute", "interrupted.json")
+test.describe("an operation the server stopped part-way", () => {
+  const recordPath = resolve(e2eProjectRoot, ".haute", "operation.json")
+  let current = ""
+  let restored = ""
 
-  // What a switch leaves when rating/main.py could not be replaced: the file
-  // still holds the other version, and the clone records the interruption.
+  // What a restore leaves when the server stops after its ledger moved: the ledger
+  // holds the restored version of rating/main.py, the file on disk is still the one
+  // before, and the restore's record is there.
   test.beforeEach(() => {
     resetE2eProject()
+    current = readFileSync(pipelinePath, "utf8")
     // A preamble comment: a version a save keeps, so the document stays ready to save.
-    const current = readFileSync(pipelinePath, "utf8")
-    const other = current.replace("\npipeline = haute.Pipeline(", "\n# the other version\npipeline = haute.Pipeline(")
-    if (other === current) throw new Error("rating/main.py has no pipeline constructor to mark")
-    writeFileSync(pipelinePath, other)
+    restored = current.replace("\npipeline = haute.Pipeline(", "\n# the restored version\npipeline = haute.Pipeline(")
+    if (restored === current) throw new Error("rating/main.py has no pipeline constructor to mark")
+    const ledger = ledgerOf(work)
+    const before = e2eGit(["rev-parse", ledger]).trim()
+    writeFileSync(pipelinePath, restored)
+    e2eGit(["add", "rating/main.py"])
+    const tree = e2eGit(["write-tree"]).trim()
+    const commit = e2eGit(["commit-tree", tree, "-p", before, "-m", "Restored"]).trim()
+    e2eGit(["reset", "-q"])
+    writeFileSync(pipelinePath, current)
+    e2eGit(["update-ref", `refs/heads/${ledger}`, commit, before])
     writeFileSync(
-      interruptedPath,
+      recordPath,
       JSON.stringify({
-        operation: "switch",
-        files: ["rating/main.py"],
+        operation: "restore",
         at: new Date().toISOString(),
+        initial: { HEAD: `ref: refs/heads/${ledger}`, [`refs/heads/${ledger}`]: before },
+        steps: [
+          { kind: "refs", sets: { [`refs/heads/${ledger}`]: commit } },
+          { kind: "files", sets: {} },
+        ],
+        commit_point: 1,
+        files: ["rating/main.py"],
+        wipes_caches: true,
       }),
     )
   })
 
-  test("the toolbar names them, and Retry puts them back in step", async ({ page }) => {
+  test("the toolbar names it, and Retry finishes it", async ({ page }) => {
     await page.goto("/")
     await expect(indicator(page)).toHaveAttribute("data-branch-state", "interrupted")
-    await expect(indicator(page)).toContainText("Files in use")
-    await expect(chooser(page)).toHaveCount(0) // nothing to choose: close the files
+    await expect(indicator(page)).toContainText("Unfinished")
+    await expect(chooser(page)).toHaveCount(0) // nothing to choose: Retry first
 
     const retry = page.getByTestId("branch-indicator-retry-interrupted")
     await retry.focus()
     await expect(page.getByRole("tooltip")).toContainText(
-      "rating/main.py is open in another program",
+      "Restoring a version stopped part-way: rating/main.py.",
     )
 
     await retry.click()
-    await expect(toast(page, "The files are back in step with version history.")).toBeVisible()
+    await expect(toast(page, "Back in step with version history.")).toBeVisible()
     await expectOnBranch(page, work)
+    expect(readFileSync(pipelinePath, "utf8")).toBe(restored)
     expect(e2eGit(["status", "--porcelain", "--", "rating/main.py"])).toBe("")
-    expect(existsSync(interruptedPath)).toBe(false)
+    expect(existsSync(recordPath)).toBe(false)
   })
 
-  test("Save and Commit say to close the files first, not to choose a branch", async ({
-    page,
-  }) => {
+  test("Save and Commit name what stopped and ask for Retry, not a branch", async ({ page }) => {
     await page.goto("/")
     await expect(indicator(page)).toHaveAttribute("data-branch-state", "interrupted")
     const before = e2eGit(["rev-parse", ledgerOf(work)])
+    const refusal = "Restoring a version stopped part-way: rating/main.py. Choose Retry in the toolbar"
 
     await page.getByRole("button", { name: "Save", exact: true }).click()
-    await expect(toast(page, /Close them and choose Retry in the toolbar before saving/)).toBeVisible()
+    await expect(toast(page, `${refusal} before saving.`)).toBeVisible()
     await expect(chooser(page)).toHaveCount(0)
 
     await page.getByTestId("toolbar-save-commit").click()
-    await expect(
-      toast(page, /Close them and choose Retry in the toolbar before committing/),
-    ).toBeVisible()
+    await expect(toast(page, `${refusal} before committing.`)).toBeVisible()
     await expect(chooser(page)).toHaveCount(0)
     await expect(page.getByTestId("milestone-commit-modal")).toHaveCount(0)
 
-    // Nothing reached the history: a save now would record the other version.
+    // Nothing reached the history: a save now would record the version before.
     expect(e2eGit(["rev-parse", ledgerOf(work)])).toBe(before)
+    expect(readFileSync(pipelinePath, "utf8")).toBe(current)
   })
 })
 
@@ -299,7 +316,7 @@ test.describe("a file held open during a switch", () => {
         // asks for Retry once it is closed.
         await expect(indicator(page)).toHaveAttribute("data-branch-state", "interrupted")
         await page.getByTestId("branch-indicator-retry-interrupted").click()
-        await expect(toast(page, "The files are back in step with version history.")).toBeVisible()
+        await expect(toast(page, "Back in step with version history.")).toBeVisible()
       }
 
       // Nothing half-switched: the same branch and the same files.
