@@ -12,13 +12,13 @@ import useGraphStore from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import { solveIdentityConfig } from "../utils/modellingExportConfig"
-import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
+import { configField } from "../utils/configField"
 import {
   defaultExperimentName,
   effectiveMlflowDestination,
   mlflowDestinationConfigValue,
 } from "../utils/mlflowDestinations"
-import { CommittedTextField, SavedValueOption } from "../components/form"
+import { CommittedTextField, NumberField, SavedValueOption } from "../components/form"
 import MlflowDestinationSelector from "../components/MlflowDestinationSelector"
 import { withAlpha } from "../utils/color"
 import { classifyBandingNode } from "../utils/banding"
@@ -636,22 +636,28 @@ export default function OptimiserConfig({
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Max iterations</label>
-              <CommittedTextField
-                type="number" min={1} step={1}
-                value={String(maxIter)}
-                onCommit={(v) => onUpdate("max_iter", safeParseInt(v, 50))}
+              <NumberField
+                aria-label="Max iterations"
+                integer min={1}
+                required
+                value={maxIter}
+                onCommit={(v) => { if (v !== null) onUpdate("max_iter", v) }}
                 className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                 style={inputStyle}
+                problemClassName="mt-0.5 block text-[10px]"
               />
             </div>
             <div>
               <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Tolerance</label>
-              <CommittedTextField
-                type="number" step={0.000001}
-                value={String(tolerance)}
-                onCommit={(v) => onUpdate("tolerance", safeParseFloat(v, 1e-6))}
+              <NumberField
+                aria-label="Tolerance"
+                min={0} exclusiveMin
+                required
+                value={tolerance}
+                onCommit={(v) => { if (v !== null) onUpdate("tolerance", v) }}
                 className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                 style={inputStyle}
+                problemClassName="mt-0.5 block text-[10px]"
               />
             </div>
           </div>
@@ -659,22 +665,28 @@ export default function OptimiserConfig({
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>CD iterations</label>
-                <CommittedTextField
-                  type="number" min={1} step={1}
-                  value={String(maxCdIterations)}
-                  onCommit={(v) => onUpdate("max_cd_iterations", safeParseInt(v, 10))}
+                <NumberField
+                  aria-label="CD iterations"
+                  integer min={1}
+                  required
+                  value={maxCdIterations}
+                  onCommit={(v) => { if (v !== null) onUpdate("max_cd_iterations", v) }}
                   className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                   style={inputStyle}
+                  problemClassName="mt-0.5 block text-[10px]"
                 />
               </div>
               <div>
                 <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>CD tolerance</label>
-                <CommittedTextField
-                  type="number" step={0.0001}
-                  value={String(cdTolerance)}
-                  onCommit={(v) => onUpdate("cd_tolerance", safeParseFloat(v, 1e-3))}
+                <NumberField
+                  aria-label="CD tolerance"
+                  min={0} exclusiveMin
+                  required
+                  value={cdTolerance}
+                  onCommit={(v) => { if (v !== null) onUpdate("cd_tolerance", v) }}
                   className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
                   style={inputStyle}
+                  problemClassName="mt-0.5 block text-[10px]"
                 />
               </div>
             </div>

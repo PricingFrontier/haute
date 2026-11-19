@@ -1,48 +1,20 @@
 import type { CSSProperties } from "react"
-import { DraftTextField } from "../../components/form/CommittedTextField"
-import { useCommittedDraft } from "../../components/form/useCommittedDraft"
+import { NumberField as SharedNumberField } from "../../components/form/NumberField"
+import type { NumberRule } from "../../utils/numberRule"
 
 import { MODELLING_INPUT_STYLE } from "./styles"
 
-export type NumberBounds = {
-  min: number
-  max?: number
-  integer: boolean
-  required?: boolean
-  exclusiveMin?: boolean
-  exclusiveMax?: boolean
-}
-
-function describeRange({ min, max, integer, exclusiveMin = false, exclusiveMax = false }: NumberBounds): string {
-  const kind = integer ? "an integer" : "a number"
-  const lower = exclusiveMin ? `greater than ${min}` : `from ${min}`
-  if (max === undefined) return `${kind} ${lower}`
-  const upper = exclusiveMax ? ` and less than ${max}` : exclusiveMin ? ` and at most ${max}` : ` to ${max}`
-  return `${kind} ${lower}${upper}`
-}
-
-/** Why a typed value cannot be committed, or null when it can. */
-function numberDraftIssue(draft: string, bounds: NumberBounds): string | null {
-  const text = draft.trim()
-  if (text === "") return bounds.required ? `Enter ${describeRange(bounds)}` : null
-  const parsed = Number(text)
-  const inRange = Number.isFinite(parsed)
-    && (!bounds.integer || Number.isInteger(parsed))
-    && (bounds.exclusiveMin ? parsed > bounds.min : parsed >= bounds.min)
-    && (bounds.max === undefined || (bounds.exclusiveMax ? parsed < bounds.max : parsed <= bounds.max))
-  return inRange ? null : `Enter ${describeRange(bounds)}`
-}
+export type NumberBounds = NumberRule & { min: number; integer: boolean }
 
 /**
- * A numeric input that keeps its draft until a valid, in-range value commits
- * on blur or Enter, so one edit is one undo step. An invalid draft stays on
- * screen with its message and never reaches the config; clearing an optional
- * field commits `undefined`, clearing a required one is refused.
+ * The modelling panes' number box: the shared number field (`components/form/NumberField`)
+ * in their look. A valid, in-range value commits on blur or Enter as one undo step; text
+ * refused stays on screen with its message; clearing an optional field commits `undefined`
+ * and clearing a required one is refused.
  */
 export function NumberField({
   label,
   value,
-  step,
   placeholder,
   className = "h-7 w-14 min-w-0 rounded px-1.5 py-1 font-mono text-xs",
   style,
@@ -51,34 +23,20 @@ export function NumberField({
 }: NumberBounds & {
   label: string
   value: number | undefined
-  step: number | "any"
   placeholder?: string
   className?: string
   style?: CSSProperties
   onCommit: (value: number | undefined) => void
 }) {
-  const committed = value === undefined ? "" : String(value)
-  const draft = useCommittedDraft(committed, (typed) => {
-    if (numberDraftIssue(typed, bounds) !== null) return { ok: false }
-    const text = typed.trim()
-    if (text !== committed) onCommit(text === "" ? undefined : Number(text))
-  })
-  const error = draft.editing ? numberDraftIssue(draft.shown, bounds) : null
   return (
-    <>
-      <DraftTextField
-        draft={draft}
-        type="number"
-        aria-label={label}
-        aria-invalid={error !== null}
-        className={className}
-        style={{ ...MODELLING_INPUT_STYLE, ...style, borderColor: error ? "var(--danger)" : "var(--border)" }}
-        placeholder={placeholder}
-        min={bounds.min}
-        max={bounds.max}
-        step={step}
-      />
-      {error && <span role="alert" className="text-[10px]" style={{ color: "var(--danger)" }}>{error}</span>}
-    </>
+    <SharedNumberField
+      {...bounds}
+      value={value}
+      onCommit={(next) => onCommit(next ?? undefined)}
+      aria-label={label}
+      className={className}
+      style={{ ...MODELLING_INPUT_STYLE, ...style, borderColor: "var(--border)" }}
+      placeholder={placeholder}
+    />
   )
 }

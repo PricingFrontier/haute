@@ -490,6 +490,14 @@ describe("problems", () => {
     expect(messages(asOutputs(spec))).toEqual([])
   })
 
+  it("tells an Integer's allowed value is whole from its digits, as the server does", () => {
+    // Never from a rounded Number, which takes 1234567890123456789.5 for a whole number.
+    const spec = withTable(
+      column("policy_number", { type: "int", options: ["1234567890123456789.0", "1234567890123456789.5"], options_source: { file: "numbers.csv", column: "policy_number" } }),
+    )
+    expect(messages(spec)).toEqual([`Column "policy_number" in Table "t" allows "1234567890123456789.5", which isn't a whole number`])
+  })
+
   it("reads a number column's allowed values as its cells and the server read them", () => {
     const spec = withTable(
       column("limit", { type: "float", options: ["1,000", "$2,500.50", "0x10"], options_source: { file: "limits.csv", column: "limit" } }),

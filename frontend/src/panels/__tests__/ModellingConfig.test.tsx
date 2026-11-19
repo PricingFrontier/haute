@@ -365,7 +365,7 @@ describe("Training configuration readiness", () => {
       nodeId: "ebm", config: { algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500, interactions: 4 } },
     })
     expect(screen.getByRole("heading", { name: "Pairwise interactions" })).toBeInTheDocument()
-    expect(screen.getByLabelText("Maximum interaction count")).toHaveValue(4)
+    expect(screen.getByLabelText("Maximum interaction count")).toHaveValue("4")
   })
   it("shows issues before Train and links to the affected pane", () => {
     renderConfig({ activePane: "train", nodeId: "readiness", config: { algorithm: "catboost", target: "loss_ratio" } })
@@ -644,7 +644,7 @@ describe("ModellingConfig", () => {
         </GraphProvider>,
       )
       expect(screen.getByText(/Variance power/)).toBeTruthy()
-      expect(screen.getByRole("spinbutton", { name: "Variance power" })).toHaveValue(null)
+      expect(screen.getByRole("textbox", { name: "Variance power" })).toHaveValue("")
       expect(screen.getByRole("alert")).toHaveTextContent("Tweedie variance power")
     })
   })
@@ -658,8 +658,9 @@ describe("ModellingConfig", () => {
     it("renders one visible JSON editor without individual parameter fields", () => {
       renderConfig()
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toBeVisible()
+      // The JSON editor is the only box: no number field beside it.
       expect(document.querySelectorAll("textarea")).toHaveLength(1)
-      expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()
+      expect(document.querySelectorAll("input[inputmode=decimal], input[inputmode=numeric]")).toHaveLength(0)
     })
 
     it("textarea shows an empty object when config.params is empty", () => {
@@ -759,8 +760,8 @@ describe("ModellingConfig", () => {
 
     it("random evaluation shows validation and final-test inputs with the seed kept internal", () => {
       renderConfig()
-      expect(screen.getByLabelText("Validation set (%)")).toHaveValue(20)
-      expect(screen.getByLabelText("Test set (%)")).toHaveValue(20)
+      expect(screen.getByLabelText("Validation set (%)")).toHaveValue("20")
+      expect(screen.getByLabelText("Test set (%)")).toHaveValue("20")
       expect(screen.queryByLabelText("Evaluation seed")).not.toBeInTheDocument()
     })
 
@@ -1464,7 +1465,7 @@ describe("ModellingConfig", () => {
 
       await act(async () => held.resolve?.(3))
       expect(props.onUpdate).not.toHaveBeenCalledWith("theta", 3)
-      expect(screen.getByPlaceholderText("e.g. 1.5")).toHaveValue(7)
+      expect(screen.getByPlaceholderText("e.g. 1.5")).toHaveValue("7")
       expect(screen.getByRole("button", { name: "Estimate from data" })).toBeEnabled()
     })
 
@@ -2292,7 +2293,7 @@ describe("ModellingConfig", () => {
       renderConfig({
         nodeId: "node_1", config: { target: "loss_ratio", task: "regression", algorithm: "catboost", row_limit: 100000 },
       })
-      expect(screen.getByLabelText("Row limit")).toHaveValue(100000)
+      expect(screen.getByLabelText("Row limit")).toHaveValue("100000")
     })
   })
 

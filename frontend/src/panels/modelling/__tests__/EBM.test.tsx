@@ -30,7 +30,7 @@ describe("EBMInteractionsConfig (MOD-F04)", () => {
 
   it("switches between an automatic count and explicit pairs, keeping other params", () => {
     const onUpdate = renderInteractions({ params: { max_rounds: 500, interactions: 3 } })
-    expect(screen.getByLabelText("Maximum interaction count")).toHaveValue(3)
+    expect(screen.getByLabelText("Maximum interaction count")).toHaveValue("3")
     fireEvent.change(screen.getByLabelText("Maximum interaction count"), { target: { value: "7" } })
     fireEvent.blur(screen.getByLabelText("Maximum interaction count"))
     expect(onUpdate).toHaveBeenLastCalledWith("params", { max_rounds: 500, interactions: 7 })

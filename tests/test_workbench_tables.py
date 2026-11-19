@@ -1241,7 +1241,7 @@ def test_a_numbered_index_numbers_the_rows_as_they_stand_in_its_type(
     }
 
 
-#: How typed text is read, which the view's ``parseTypedNumber`` and ``filled`` hold
+#: How typed text is read, which the view's ``readTypedNumber`` and ``filled`` hold
 #: themselves to as well.
 TYPED_TEXT: dict[str, Any] = json.loads(
     (
@@ -1254,15 +1254,16 @@ TYPED_TEXT: dict[str, Any] = json.loads(
     "case", TYPED_TEXT["numbers"], ids=[case["name"] for case in TYPED_TEXT["numbers"]]
 )
 def test_typed_text_is_read_by_the_rule_the_view_applies(case: dict[str, Any]) -> None:
-    text, number = case["text"], case["number"]
+    text, field = case["text"], case["field"]
 
-    if number is None:
+    if field is None:
         assert (_typed("float", text), _typed("int", text)) == (text, text)
         return
-    assert _typed("float", text) == number
+    assert _typed("float", text) == field["float"]
     whole = _typed("int", text)
-    assert whole == (int(case["integer"]) if "integer" in case else number)
-    assert isinstance(whole, int) is case["whole"]
+    # A fraction in an Integer column is kept as the number it is, for the pipeline to refuse.
+    assert whole == (field["float"] if field["int"] is None else int(field["int"]))
+    assert isinstance(whole, int) is (field["int"] is not None)
 
 
 @pytest.mark.parametrize(

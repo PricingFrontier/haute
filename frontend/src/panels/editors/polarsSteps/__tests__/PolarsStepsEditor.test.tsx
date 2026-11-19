@@ -151,7 +151,7 @@ describe("PolarsStepsEditor", () => {
     render(<HistoryHarness />)
     await waitFor(() => expect(mockRender).toHaveBeenCalled(), { timeout: 5000 })
     fireEvent.click(screen.getByRole("button", { name: "Step 1: Limit rows" }))
-    const field = screen.getByRole("spinbutton", { name: "Row limit" })
+    const field = screen.getByRole("textbox", { name: "Row limit" })
     if (pendingPriorEdit) {
       fireEvent.change(field, { target: { value: "15" } })
       fireEvent.blur(field)
@@ -163,12 +163,12 @@ describe("PolarsStepsEditor", () => {
     expect(useGraphStore.getState().undoStack).toHaveLength(pendingPriorEdit ? 2 : 1)
     await act(() => useGraphStore.getState().undo())
     const restored = pendingPriorEdit ? 15 : 10
-    expect(field).toHaveValue(restored)
+    expect(field).toHaveValue(String(restored))
     await waitFor(() => expect(current().code).toBe(codeFor(restored)), { timeout: 5000 })
     expect(useGraphStore.getState().redoStack).toHaveLength(1)
     expect(useGraphStore.getState().dirty).toBe(pendingPriorEdit)
     await act(() => useGraphStore.getState().redo())
-    expect(field).toHaveValue(20)
+    expect(field).toHaveValue("20")
     await waitFor(() => expect(current().code).toBe(codeFor(20)), { timeout: 5000 })
     expect(useGraphStore.getState().undoStack).toHaveLength(pendingPriorEdit ? 2 : 1)
   }, UNDO_REDO_TIMEOUT_MS)

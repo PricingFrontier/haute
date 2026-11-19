@@ -38,6 +38,7 @@ import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import SearchableItemList from "./shared/SearchableItemList"
 import { indexAfterMove, isListMove, moveListItem } from "./shared/moveListItem"
 import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
+import { readTypedNumber } from "../../utils/typedNumbers"
 
 const EMPTY_CATEGORICAL: CategoricalRule = { value: "", assignment: "" }
 
@@ -300,8 +301,8 @@ export default function BandingEditor({
       // The open-ended band's boundary is blank, and Number("") is 0.
       if ((bp.boundary ?? "").trim() === "") continue
       // A date's band holds the whole of its day, so it is drawn ending there.
-      const position = temporal ? boundarySplitDayNumber(bp.boundary, rightClosed) : Number(bp.boundary)
-      if (position !== null && !isNaN(position)) boundaries.push(position)
+      const position = temporal ? boundarySplitDayNumber(bp.boundary, rightClosed) : readTypedNumber(bp.boundary)
+      if (position !== null) boundaries.push(position)
     }
     // Only the whole dataset's distribution is drawn, never the preview's.
     return stats?.bins.length ? { bins: stats.bins, boundaries } : null

@@ -56,7 +56,7 @@ describe("TermCard native", () => {
   it("shows spline controls, degree only for bs and ms, and hides Advanced until expanded", () => {
     renderNative({ type: "bs", df: 4, degree: 3 })
     expect(screen.getByRole("combobox", { name: "age df mode" })).toHaveValue("fixed")
-    expect(screen.getByRole("spinbutton", { name: "age df" })).toHaveValue(4)
+    expect(screen.getByRole("textbox", { name: "age df" })).toHaveValue("4")
     expect(screen.getByLabelText("Degree")).toHaveAttribute("aria-label", "age degree")
     expect(screen.getByText("Interior knots")).not.toBeVisible()
     const advanced = screen.getByRole("button", { name: "Advanced" })
@@ -66,11 +66,11 @@ describe("TermCard native", () => {
     cleanup()
     renderNative({ type: "ns" })
     expect(screen.getByRole("combobox", { name: "age df mode" })).toHaveValue("auto")
-    expect(screen.queryByRole("spinbutton", { name: "age df" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("spinbutton", { name: "age degree" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "age df" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "age degree" })).not.toBeInTheDocument()
     expect(screen.queryByRole("group", { name: "age monotonicity" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }))
-    expect(screen.getByRole("spinbutton", { name: "age k" })).toBeVisible()
+    expect(screen.getByRole("textbox", { name: "age k" })).toBeVisible()
     expect(screen.queryByRole("textbox", { name: "age knots" })).not.toBeInTheDocument()
   })
 
@@ -83,19 +83,19 @@ describe("TermCard native", () => {
 
   it("clearing a spline df field keeps Fixed mode and sibling settings", () => {
     const { onChangeField, onChangeSplineMode } = renderNative({ type: "bs", df: 6, degree: 2 })
-    const df = screen.getByRole("spinbutton", { name: "age df" })
+    const df = screen.getByRole("textbox", { name: "age df" })
     fireEvent.change(df, { target: { value: "" } })
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter an integer from 3 to 20")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number from 3 to 20.")
     fireEvent.blur(df)
     expect(onChangeField).not.toHaveBeenCalled()
     expect(onChangeSplineMode).not.toHaveBeenCalled()
     expect(screen.getByRole("combobox", { name: "age df mode" })).toHaveValue("fixed")
-    expect(screen.getByRole("spinbutton", { name: "age degree" })).toHaveValue(2)
+    expect(screen.getByRole("textbox", { name: "age degree" })).toHaveValue("2")
   })
 
   it("commits a numeric edit once, on blur or Enter, and never an out-of-range draft", () => {
     const { onChangeField } = renderNative({ type: "bs", df: 6 })
-    const df = screen.getByRole("spinbutton", { name: "age df" })
+    const df = screen.getByRole("textbox", { name: "age df" })
     fireEvent.change(df, { target: { value: "1" } })
     fireEvent.change(df, { target: { value: "12" } })
     expect(onChangeField).not.toHaveBeenCalled()
@@ -103,7 +103,7 @@ describe("TermCard native", () => {
     expect(onChangeField.mock.calls).toEqual([["df", 12]])
     fireEvent.change(df, { target: { value: "21" } })
     fireEvent.keyDown(df, { key: "Enter" })
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter an integer from 4 to 20")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number from 4 to 20.")
     expect(onChangeField.mock.calls).toEqual([["df", 12]])
     fireEvent.change(df, { target: { value: "9" } })
     fireEvent.keyDown(df, { key: "Enter" })
@@ -112,7 +112,7 @@ describe("TermCard native", () => {
 
   it("clears an optional numeric field to undefined", () => {
     const { onChangeField } = renderNative({ type: "bs", df: 6, degree: 2 })
-    const degree = screen.getByRole("spinbutton", { name: "age degree" })
+    const degree = screen.getByRole("textbox", { name: "age degree" })
     fireEvent.change(degree, { target: { value: "" } })
     fireEvent.blur(degree)
     expect(onChangeField).toHaveBeenCalledWith("degree", undefined)
@@ -171,17 +171,17 @@ describe("TermCard native", () => {
   it("edits target encoding prior weight and permutations", () => {
     const { onChangeField, view } = renderNative({ type: "target_encoding" }, { column: "brand", dtype: "String" })
     expect(screen.getByRole("combobox", { name: "brand prior weight mode" })).toHaveValue("auto")
-    expect(screen.queryByRole("spinbutton", { name: "brand prior weight" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "brand prior weight" })).not.toBeInTheDocument()
     fireEvent.change(screen.getByRole("combobox", { name: "brand prior weight mode" }), { target: { value: "fixed" } })
     expect(onChangeField).toHaveBeenCalledWith("prior_weight", 1)
     view.rerender(
       <TermCard kind="native" column="brand" dtype="String" spec={{ type: "target_encoding", prior_weight: 0 }} typeOptions={[]} onChangeType={vi.fn()} onChangeField={onChangeField} onChangeSplineMode={vi.fn()} onRemove={vi.fn()} />,
     )
-    expect(screen.getByRole("spinbutton", { name: "brand prior weight" })).toHaveValue(0)
+    expect(screen.getByRole("textbox", { name: "brand prior weight" })).toHaveValue("0")
     fireEvent.change(screen.getByRole("combobox", { name: "brand prior weight mode" }), { target: { value: "auto" } })
     expect(onChangeField).toHaveBeenCalledWith("prior_weight", undefined)
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }))
-    const permutations = screen.getByRole("spinbutton", { name: "brand n permutations" })
+    const permutations = screen.getByRole("textbox", { name: "brand n permutations" })
     fireEvent.change(permutations, { target: { value: "8" } })
     fireEvent.blur(permutations)
     expect(onChangeField).toHaveBeenCalledWith("n_permutations", 8)
@@ -323,7 +323,7 @@ describe("TermCard slot", () => {
 
   it("shows spline fields for a spline override and never monotonicity or levels", () => {
     const { onChangeSplineMode } = renderSlot({ column: "income", dtype: "Float64", override: { type: "bs", df: 5 } })
-    expect(screen.getByRole("spinbutton", { name: "income df" })).toHaveValue(5)
+    expect(screen.getByRole("textbox", { name: "income df" })).toHaveValue("5")
     expect(screen.queryByRole("group", { name: "income monotonicity" })).not.toBeInTheDocument()
     fireEvent.change(screen.getByRole("combobox", { name: "income df mode" }), { target: { value: "auto" } })
     expect(onChangeSplineMode).toHaveBeenCalledWith("auto")

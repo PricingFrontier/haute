@@ -1,23 +1,16 @@
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
-import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
+import { CommittedTextField, NumberField, SavedValueOption } from "../../components/form"
+import { readTypedNumber } from "../../utils/typedNumbers"
 
-function numberConfigText(value: unknown): string {
-  return value === null || value === undefined ? "" : String(value)
+/** A stored range bound or step count as a number: a JSON number, or text by the typed-number grammar. */
+function storedScenarioNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+  return typeof value === "string" ? readTypedNumber(value) : null
 }
 
-/** A range bound as typed: blank clears it (null), otherwise a finite number. */
-function parseScenarioNumber(raw: string): number | null {
-  const trimmed = raw.trim()
-  if (!trimmed) return null
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function rangeBoundError(raw: string): string | null {
-  return raw.trim() === "" || parseScenarioNumber(raw) !== null ? null : "Enter a number, or leave it blank."
-}
+const PROBLEM_CLASS = "mt-0.5 block px-1.5 py-0.5 rounded text-[10px] leading-snug"
 
 function RangeBoundField({
   label,
@@ -31,23 +24,19 @@ function RangeBoundField({
   onUpdate: OnUpdateConfig
 }) {
   return (
-    <ValidatedTextField
-      dataTestId={`scenario-${field}`}
-      ariaLabel={label}
-      containerClassName=""
-      className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
-      style={INPUT_STYLE}
-      inputMode="decimal"
-      value={numberConfigText(value)}
-      validate={rangeBoundError}
-      onCommit={(raw) => onUpdate(field, parseScenarioNumber(raw))}
-    />
+    <div>
+      <NumberField
+        data-testid={`scenario-${field}`}
+        aria-label={label}
+        className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
+        style={INPUT_STYLE}
+        value={storedScenarioNumber(value)}
+        onCommit={(next) => onUpdate(field, next)}
+        problemTestId={`scenario-${field}-error`}
+        problemClassName={PROBLEM_CLASS}
+      />
+    </div>
   )
-}
-
-/** The backend's `scenario_step_count` rule: a whole number of at least 1. */
-function stepCountError(raw: string): string | null {
-  return /^\s*\d+\s*$/.test(raw) && Number(raw) >= 1 ? null : "Steps must be a whole number of at least 1."
 }
 
 function StepsField({
@@ -61,17 +50,24 @@ function StepsField({
   ariaLabel?: string
   className: string
 }) {
+  // The backend's `scenario_step_count` rule: a whole number of at least 1.
   return (
-    <ValidatedTextField
-      dataTestId="scenario-steps"
-      ariaLabel={ariaLabel}
-      containerClassName=""
-      className={className}
-      style={INPUT_STYLE}
-      value={steps === null || steps === undefined ? "" : String(steps)}
-      validate={stepCountError}
-      onCommit={(v) => onUpdate("step_count", Number(v))}
-    />
+    <div>
+      <NumberField
+        data-testid="scenario-steps"
+        aria-label={ariaLabel}
+        className={className}
+        style={INPUT_STYLE}
+        integer
+        min={1}
+        required
+        unit="steps"
+        value={storedScenarioNumber(steps)}
+        onCommit={(next) => onUpdate("step_count", next)}
+        problemTestId="scenario-steps-error"
+        problemClassName={PROBLEM_CLASS}
+      />
+    </div>
   )
 }
 
@@ -95,8 +91,8 @@ export default function ScenarioExpanderEditor({
   const steps: unknown = config.step_count
   const stepCount = typeof steps === "number" && Number.isInteger(steps) && steps >= 1 ? steps : null
   const stepColumn = configField(config, "step_column", "")
-  const parsedMin = parseScenarioNumber(numberConfigText(minValue))
-  const parsedMax = parseScenarioNumber(numberConfigText(maxValue))
+  const parsedMin = storedScenarioNumber(minValue)
+  const parsedMax = storedScenarioNumber(maxValue)
 
   return (
     <div className="px-4 py-3 space-y-4">

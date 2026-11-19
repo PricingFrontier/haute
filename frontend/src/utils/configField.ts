@@ -16,14 +16,3 @@ export function configField<T>(config: Record<string, unknown>, key: string, fal
   return (val ?? fallback) as Widen<T>
 }
 
-/** Parse a float from a string, returning *fallback* when the result is NaN. */
-export function safeParseFloat(raw: string, fallback: number): number {
-  const v = parseFloat(raw)
-  return Number.isNaN(v) ? fallback : v
-}
-
-/** Parse an int from a string, returning *fallback* when the result is NaN. */
-export function safeParseInt(raw: string, fallback: number): number {
-  const v = parseInt(raw, 10)
-  return Number.isNaN(v) ? fallback : v
-}

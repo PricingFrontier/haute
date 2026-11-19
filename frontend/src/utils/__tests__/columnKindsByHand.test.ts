@@ -34,6 +34,10 @@ const NUMBER_STEM = /u?int|float|decimal/i
 
 /** `path::scope::rule` -> why the place names a type. */
 const NAMED_TYPES: Record<string, string> = {
+  "frontend/src/utils/constantValues.ts::constantValue::name":
+    "the column type a Constant's value runs as, as the server's constant_value and the typed-number case file name it",
+  "frontend/src/utils/constantValues.ts::heldWhole::name":
+    "the column type a Constant's whole number runs as, as the server's constant_value names it",
   "frontend/src/panels/editors/polarsSteps/catalogue.ts::CAST_DTYPES::name":
     "the Change types targets, each one type a cast names (the server's CAST_DTYPES)",
   "frontend/src/panels/editors/polarsSteps/catalogue.ts::COMMON_DTYPES::name":

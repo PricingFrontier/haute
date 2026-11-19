@@ -507,7 +507,7 @@ describe("RatingStepEditor", () => {
 
   it.each([
     { label: "Combined Output Column", key: "output_column", before: "technical_price", after: "loaded_price" },
-    { label: "Base Value", key: "base_value", before: "1.0", after: "2.5" },
+    { label: "Base Value", key: "base_value", before: "1.5", after: "2.5" },
   ])("shows the combined output's $label as undo leaves it, and a blur commits nothing", ({ label, key, before, after }) => {
     const combined = (value: string) => ({ output_column: "technical_price", operation: "multiply", base_value: "1.0", [key]: value })
     const onUpdate = vi.fn()
@@ -549,25 +549,45 @@ describe("RatingStepEditor", () => {
       editor({ tables: [table()] })
       expect(screen.getByLabelText("On miss")).toHaveValue("empty")
       expect(screen.getByLabelText("Default")).toBeDisabled()
-      expect(screen.getByLabelText("Default")).toHaveValue(null)
+      expect(screen.getByLabelText("Default")).toHaveValue("")
     })
 
     it.each([["1.0"], [1.25]])("reads a table whose default is %j as Use default, as the engine does", (defaultValue) => {
       editor({ tables: [table({ default_value: defaultValue })] })
       expect(screen.getByLabelText("On miss")).toHaveValue("default")
       expect(screen.getByLabelText("Default")).toBeEnabled()
-      expect(screen.getByLabelText("Default")).toHaveValue(Number(defaultValue))
+      expect(screen.getByLabelText("Default")).toHaveValue(String(Number(defaultValue)))
     })
 
-    it("writes a default of 1.0 on Use default, and removes it on Leave empty", () => {
+    it("writes a default of 1 on Use default, as a number, and removes it on Leave empty", () => {
       const onUpdate = editor({ tables: [table()] })
       fireEvent.change(screen.getByLabelText("On miss"), { target: { value: "default" } })
-      expect(onUpdate).toHaveBeenLastCalledWith("tables", [table({ default_value: "1.0" })])
+      expect(onUpdate).toHaveBeenLastCalledWith("tables", [table({ default_value: 1 })])
 
       cleanup()
       const second = editor({ tables: [table({ default_value: "1.3" })] })
       fireEvent.change(screen.getByLabelText("On miss"), { target: { value: "empty" } })
       expect(second).toHaveBeenLastCalledWith("tables", [table()])
+    })
+
+    // RTG-03: a decimal comma is refused at the field in words, in any browser language,
+    // never saved as fifteen; a Default is written as a number.
+    it.each([["1,5"], ["1 000,50"]])("refuses a Default typed %j in words and saves nothing", (typed) => {
+      const onUpdate = editor({ tables: [table({ default_value: 1 })] })
+      const field = screen.getByLabelText("Default")
+      fireEvent.change(field, { target: { value: typed } })
+      fireEvent.blur(field)
+      expect(field).toHaveValue(typed)
+      expect(screen.getByRole("alert")).toHaveTextContent("Use a point for decimals.")
+      expect(onUpdate).not.toHaveBeenCalled()
+    })
+
+    it("writes a Default typed with thousands as the number it is", () => {
+      const onUpdate = editor({ tables: [table({ default_value: 1 })] })
+      const field = screen.getByLabelText("Default")
+      fireEvent.change(field, { target: { value: "1,000.5" } })
+      fireEvent.blur(field)
+      expect(onUpdate).toHaveBeenLastCalledWith("tables", [table({ default_value: 1000.5 })])
     })
 
     it("sits under the table, after its rates", () => {
@@ -1054,7 +1074,7 @@ describe("RatingStepEditor", () => {
     const operationSelect = screen.getByDisplayValue("× Multiply")
     fireEvent.change(operationSelect, { target: { value: "add" } })
     expect(onUpdate).toHaveBeenCalledWith({
-      combined_outputs: [expect.objectContaining({ operation: "add", base_value: "0.0" })],
+      combined_outputs: [expect.objectContaining({ operation: "add", base_value: 0 })],
     })
   })
 
@@ -1107,7 +1127,7 @@ describe("RatingStepEditor", () => {
     expect(tablist.className).toContain("overflow-x-auto")
     expect(screen.getAllByText("technical_price").length).toBeGreaterThan(0)
     expect(screen.getByText("loaded_price")).toBeTruthy()
-    expect(screen.getByLabelText("Base Value")).toHaveValue(1)
+    expect(screen.getByLabelText("Base Value")).toHaveValue("1")
 
     fireEvent.keyDown(screen.getByRole("tab", { name: /technical_price/ }), { key: "ArrowRight" })
     expect(screen.getByRole("tab", { name: /loaded_price/ })).toHaveAttribute("aria-selected", "true")
@@ -1117,7 +1137,7 @@ describe("RatingStepEditor", () => {
     fireEvent.blur(baseValueInput)
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
       combined_outputs: expect.arrayContaining([
-        expect.objectContaining({ output_column: "loaded_price", base_value: "275.50" }),
+        expect.objectContaining({ output_column: "loaded_price", base_value: 275.5 }),
       ]),
     }))
 

@@ -347,7 +347,7 @@ test.describe("frontend canvas assurance", () => {
     await optimiserPanel.getByRole("tab", { name: "Constraints", exact: true }).click()
     // The fixture sweeps volume: its card shows the range in place of a fixed value.
     await expect(optimiserPanel.getByRole("radio", { name: "Sweep" })).toBeChecked()
-    await expect(optimiserPanel.getByRole("spinbutton", {
+    await expect(optimiserPanel.getByRole("textbox", {
       name: "volume constraint value",
     })).toHaveCount(0)
     const minRange = optimiserPanel.getByLabel("volume sweep from")

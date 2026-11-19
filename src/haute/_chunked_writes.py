@@ -89,7 +89,10 @@ def is_part_name(name: str) -> bool:
     ):
         return False
     stem = name[len(PART_PREFIX) : -len(PART_SUFFIX)]
-    return len(stem) >= 5 and stem.isascii() and stem.isdecimal() and stem == f"{int(stem):05d}"
+    if len(stem) < 5 or not (stem.isascii() and stem.isdecimal()):
+        return False
+    number = int(stem)
+    return stem == f"{number:05d}"
 
 
 def part_paths(directory: Path) -> list[Path]:

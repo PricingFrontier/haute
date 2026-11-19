@@ -140,7 +140,9 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.getByLabelText("Filter condition 1 values type")).toHaveValue("number")
 
     const input = screen.getByLabelText("Filter condition 1 values new value")
-    expect(input).toHaveAttribute("type", "number")
+    // A text box read by the typed-number grammar, never the browser's own number input.
+    expect(input).toHaveAttribute("type", "text")
+    expect(input).toHaveAttribute("inputmode", "decimal")
     fireEvent.change(input, { target: { value: "5" } })
     fireEvent.blur(input)
     fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
@@ -163,7 +165,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.blur(input)
     fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
     expect(spy).not.toHaveBeenCalled()
-    expect(screen.getAllByText("Enter a finite number.").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Enter a number.").length).toBeGreaterThan(0)
 
     // Once the box takes a number, that number is what is added.
     fireEvent.change(input, { target: { value: "7" } })
@@ -227,8 +229,8 @@ describe("step forms only build schema-valid payloads", () => {
     }
     render(<StepForm step={step} onChange={onChange} ctx={ctx} />)
     const places = screen.getByLabelText("Decimal places")
-    expect(places).toHaveAttribute("type", "number")
-    expect(places).toHaveAttribute("step", "1")
+    expect(places).toHaveAttribute("type", "text")
+    expect(places).toHaveAttribute("inputmode", "numeric")
     fireEvent.change(screen.getByLabelText("Function"), { target: { value: "clip" } })
     const clipped = onChange.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>
     expect(clipped.expr).toEqual({
@@ -496,11 +498,10 @@ describe("step forms only build schema-valid payloads", () => {
     }
     render(<Stateful initial={step} spy={spy} />)
     const places = screen.getByLabelText("Decimal places")
-    expect(places).toHaveAttribute("min", "0")
     fireEvent.change(places, { target: { value: "-1" } })
     fireEvent.blur(places)
     expect(spy).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter a value of at least 0.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number, 0 or more.")
   })
 
   it("refuses a quantile above 1 instead of clamping it", () => {
@@ -511,7 +512,7 @@ describe("step forms only build schema-valid payloads", () => {
     fireEvent.change(quantile, { target: { value: "1.5" } })
     fireEvent.blur(quantile)
     expect(spy).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter a value of at most 1.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a number from 0 to 1.")
   })
 
   it("group-by aggregations take an optional quantile and row filter", () => {

@@ -10,7 +10,7 @@
 import { useMemo } from "react"
 import { Plus, X } from "lucide-react"
 import type { OnUpdateConfig } from "../editors/_shared"
-import CommittedTextField from "../../components/form/CommittedTextField"
+import { NumberField } from "../../components/form/NumberField"
 import { configField } from "../../utils/configField"
 import {
   finalSelectedFeatureNames,
@@ -101,18 +101,15 @@ export function EBMInteractionsConfig({ config, onUpdate, columns }: Props) {
       {mode === "automatic" ? (
         <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
           Up to
-          <CommittedTextField
-            type="number"
+          <NumberField
+            integer
             min={0}
-            step={1}
+            required
             aria-label="Maximum interaction count"
             className={`${inputClass} w-20`}
             style={inputStyle}
-            value={String(count)}
-            onCommit={(text) => {
-              const next = Number.parseInt(text, 10)
-              write(Number.isFinite(next) && next >= 0 ? next : 0)
-            }}
+            value={count}
+            onCommit={(next) => write(next ?? 0)}
           />
           {count === 1 ? "interaction" : "interactions"}, the strongest pairs EBM finds on the training rows.
         </label>

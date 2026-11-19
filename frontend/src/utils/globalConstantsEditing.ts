@@ -7,6 +7,7 @@
  */
 
 import { isPlainObject } from "../types/guards"
+import { readTypedNumber } from "./typedNumbers"
 import {
   holdsSourceValue,
   valueProblem,
@@ -22,7 +23,7 @@ import {
 export function convertValue(text: string, from: GlobalConstantType, to: GlobalConstantType): string {
   if (text === "" || from === to || to === "text") return text
   if (to === "integer" && from === "float" && valueProblem("float", text) === null) {
-    const number = Number(text)
+    const number = readTypedNumber(text) as number
     return Number.isInteger(number) ? String(number) : ""
   }
   return valueProblem(to, text) === null ? text : ""

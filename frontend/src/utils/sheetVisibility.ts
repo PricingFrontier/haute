@@ -12,8 +12,6 @@ import { isDay } from "./isoDate"
 import {
   filled,
   type IndexProblem,
-  parseTypedNumber,
-  parseTypedWhole,
   presetRows,
   quoteTyped,
   rowFilled,
@@ -22,6 +20,7 @@ import {
   withPresetRows,
   type RowsByTable,
 } from "./sheetValues"
+import { readTypedNumber, readTypedWhole, trimTyped } from "./typedNumbers"
 
 export type ConditionTest = Condition["op"]
 export type CountTest = RowCount["op"]
@@ -180,8 +179,8 @@ const NOT_A_VALUE: Readonly<Record<ColumnType, string>> = {
 
 /** Whether stripped text is of a column's type: a whole number for an Integer; a number; a day; any text. */
 function ofType(type: ColumnType, text: string): boolean {
-  if (type === "int") return parseTypedWhole(text) !== null
-  if (type === "float") return parseTypedNumber(text) !== null
+  if (type === "int") return readTypedWhole(text) !== null
+  if (type === "float") return readTypedNumber(text) !== null
   if (type === "date") return isDay(text)
   return true
 }
@@ -192,7 +191,7 @@ function ofType(type: ColumnType, text: string): boolean {
  * YYYY-MM-DD day. A True/false column holds a tick, never text, and its tests take none.
  */
 export function valueFits(column: SchemaColumn, value: string): boolean {
-  const text = value.trim()
+  const text = trimTyped(value)
   if (column.type === "bool" || text === "") return false
   return ofType(column.type, text)
 }
@@ -272,7 +271,7 @@ function testFault(column: SchemaColumn, test: ColumnTest, other: SchemaColumn |
   if (takes === "none" && count > 0) return `tests ${name} with "${label}", which takes no value`
   if (takes === "one" && count > 1) return `tests ${name} with "${label}", which takes one value`
   for (const value of test.values) {
-    if (value.trim() === "") return `has a blank value for ${name}`
+    if (trimTyped(value) === "") return `has a blank value for ${name}`
     if (!valueFits(column, value)) return `tests ${name} against "${value}", which isn't ${NOT_A_VALUE[column.type]}`
   }
   return null
@@ -308,7 +307,7 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
   if (column === undefined) return "totals a column that is no longer in the schema"
   if (column.index === "numbered") return `totals ${column.name}, the index, which nothing is typed into`
   if (column.type !== "int" && column.type !== "float") return `totals ${column.name}, which is not a number column`
-  const value = condition.value.trim()
+  const value = trimTyped(condition.value)
   if (value === "") return `needs a number to compare its total of ${column.name} with`
   if (!ofType("float", value)) return `compares its total of ${column.name} with "${value}", which isn't a number`
   return null
@@ -316,9 +315,9 @@ function listFault(table: SchemaTable | undefined, condition: ListCondition): st
 
 /** Stripped text as the server types it for a column: an Integer's whole numbers exactly, a number column's other numbers as numbers. */
 function typed(type: ColumnType, text: string): bigint | number | string {
-  const stripped = text.trim()
-  if (type === "int") return parseTypedWhole(stripped) ?? parseTypedNumber(stripped) ?? stripped
-  if (type === "float") return parseTypedNumber(stripped) ?? stripped
+  const stripped = trimTyped(text)
+  if (type === "int") return readTypedWhole(stripped) ?? readTypedNumber(stripped) ?? stripped
+  if (type === "float") return readTypedNumber(stripped) ?? stripped
   return stripped
 }
 
@@ -334,18 +333,18 @@ const equals = (type: ColumnType, cell: Cell | undefined, value: string): boolea
  */
 function order(type: ColumnType, cell: Cell | undefined, value: string): number {
   if (typeof cell !== "string") return NaN
-  const text = cell.trim()
+  const text = trimTyped(cell)
   if (!ofType(type, text)) return NaN
   if (type === "date") {
-    const day = value.trim()
+    const day = trimTyped(value)
     return text < day ? -1 : text > day ? 1 : 0
   }
   // Neither is null: the cell is a number by ofType, and a fitting condition's value by valueFits.
   if (type === "int") {
-    const [cellWhole, valueWhole] = [parseTypedWhole(text) as bigint, parseTypedWhole(value) as bigint]
+    const [cellWhole, valueWhole] = [readTypedWhole(text) as bigint, readTypedWhole(value) as bigint]
     return cellWhole < valueWhole ? -1 : cellWhole > valueWhole ? 1 : 0
   }
-  return Math.sign((parseTypedNumber(text) ?? NaN) - (parseTypedNumber(value) ?? NaN))
+  return Math.sign((readTypedNumber(text) ?? NaN) - (readTypedNumber(value) ?? NaN))
 }
 
 /**
@@ -365,12 +364,12 @@ export function dayNumber(day: string): number {
 }
 
 /** Whether a cell holds a value of the type: text other than blank that the type reads (`_of_type` on the server). */
-const holdsValue = (type: ColumnType, cell: Cell | undefined): cell is string => typeof cell === "string" && cell.trim() !== "" && ofType(type, cell.trim())
+const holdsValue = (type: ColumnType, cell: Cell | undefined): cell is string => typeof cell === "string" && trimTyped(cell) !== "" && ofType(type, trimTyped(cell))
 
 /** Whether a cell holds `part`, at its start or its end, or does not, as `test` asks: both stripped and compared exactly, as `equals` compares text; an empty cell or a tick holds nothing. */
 function textPasses(test: ConditionTest, cell: Cell | undefined, part: string): boolean {
   if (typeof cell !== "string" || !filled(cell)) return test === "not_contains"
-  const [text, wanted] = [cell.trim(), part.trim()]
+  const [text, wanted] = [trimTyped(cell), trimTyped(part)]
   if (test === "contains") return text.includes(wanted)
   if (test === "not_contains") return !text.includes(wanted)
   return test === "starts_with" ? text.startsWith(wanted) : text.endsWith(wanted)
@@ -378,8 +377,8 @@ function textPasses(test: ConditionTest, cell: Cell | undefined, part: string): 
 
 /** Whether a Date's cell passes `test` against a real day with `days` added, as day numbers; a cell not a real day passes `not_equals` alone. */
 function dayPasses(test: ConditionTest, cell: Cell | undefined, day: string, days: number): boolean {
-  if (typeof cell !== "string" || !isDay(cell.trim())) return test === "not_equals"
-  const [found, wanted] = [dayNumber(cell.trim()), dayNumber(day.trim()) + days]
+  if (typeof cell !== "string" || !isDay(trimTyped(cell))) return test === "not_equals"
+  const [found, wanted] = [dayNumber(trimTyped(cell)), dayNumber(trimTyped(day)) + days]
   return test === "equals" ? found === wanted : test === "not_equals" ? found !== wanted : COUNTS[test as CountTest](found, wanted)
 }
 
@@ -503,8 +502,8 @@ function totalOf(table: SchemaTable, condition: RowTotal, rows: readonly Row[]):
   const type = (tableColumns(table).find((column) => column.name === condition.column) as SchemaColumn).type
   const numbers = rows.flatMap((row) => {
     const cell = row[condition.column]
-    const text = typeof cell === "string" ? cell.trim() : ""
-    const number = typeof cell === "string" && ofType(type, text) ? parseTypedNumber(text) : null
+    const text = typeof cell === "string" ? trimTyped(cell) : ""
+    const number = typeof cell === "string" && ofType(type, text) ? readTypedNumber(text) : null
     return number === null ? [] : [number]
   })
   if (numbers.length === 0 && condition.total !== "sum") return null
@@ -564,7 +563,7 @@ function conditionTester(spec: FormSpec, rows: RowsByTable, priced = false) {
     if (isRowCount(condition)) return COUNTS[condition.op](passing.length, condition.count)
     const found = totalOf(table, condition, passing)
     // A total that fits compares with a number.
-    return found !== null && COUNTS[condition.op](found, parseTypedNumber(condition.value.trim()) as number)
+    return found !== null && COUNTS[condition.op](found, readTypedNumber(trimTyped(condition.value)) as number)
   }
 
   const holds = (condition: SingleCondition, shown: ReadonlySet<string> | null): boolean => {

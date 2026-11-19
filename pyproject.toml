@@ -618,6 +618,9 @@ mypy_path = "src"
 explicit_package_bases = true
 # Point-in-time benchmark programs, kept as evidence rather than maintained.
 exclude = ["tests/", "docs/", "scripts/benchmarks/"]
+# No code reads text as a number with float, int or Decimal but the one reader
+# (specs/frontend-shared high-level, "Typed numbers").
+plugins = ["scripts/mypy_typed_numbers.py"]
 
 [[tool.mypy.overrides]]
 # The assistant's example pipelines are saved pipeline files, not library code:

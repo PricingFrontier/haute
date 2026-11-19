@@ -2,7 +2,7 @@
 import { ChevronDown, ChevronRight, X } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import type { CollectionWidget, FieldRef, FormSpec, TableInputWidget } from "../../api/types"
-import { ConfigCheckbox, EditorLabel, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { ConfigCheckbox, EditorLabel, FIELD_CLASS, INPUT_STYLE, LabelledRow, NumberField, QuietAction, SelectRow } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { columnKey, takesNothingTyped } from "../../utils/sheetVisibility"
 import {
@@ -40,8 +40,8 @@ function useSharedLook(widget: LookWidget) {
 }
 
 /** A width typed: blank for Auto, or a whole number of pixels, or of percent. */
-const pixels = (text: string): string | null => (text.trim() === "" ? null : wholeNumber({ min: COLUMN_WIDTH_MIN, max: COLUMN_WIDTH_MAX })(text))
-const percent = (text: string): string | null => (text.trim() === "" ? null : wholeNumber({ min: LABEL_WIDTH_MIN, max: LABEL_WIDTH_MAX })(text))
+const PIXELS = { min: COLUMN_WIDTH_MIN, max: COLUMN_WIDTH_MAX }
+const PERCENT = { min: LABEL_WIDTH_MIN, max: LABEL_WIDTH_MAX }
 
 /** A width in pixels, or, given `share`, in percent of its field, blank for Auto. */
 export function WidthRow({
@@ -59,15 +59,18 @@ export function WidthRow({
 }) {
   return (
     <LabelledRow label={label}>
-      <ValidatedTextField
-        dataTestId={testId}
-        value={value === null ? "" : String(value)}
+      <NumberField
+        data-testid={testId}
+        integer
+        {...(share ? PERCENT : PIXELS)}
+        value={value}
         placeholder="Auto"
-        onCommit={(text) => onCommit(text.trim() === "" ? null : Number(text))}
-        validate={share ? percent : pixels}
+        onCommit={onCommit}
         containerClassName="w-20"
         className={`${FIELD_CLASS} w-full tabular-nums`}
         style={INPUT_STYLE}
+        problemTestId={`${testId}-error`}
+        problemClassName="mt-0.5 block text-[10px] leading-snug"
       />
       {share && (
         <span className="text-xs" style={{ color: "var(--text-muted)" }}>

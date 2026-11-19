@@ -10,9 +10,9 @@
 import { Eye, EyeOff, List, X } from "lucide-react"
 import type { CSSProperties } from "react"
 import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
-import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, QuietAction, ValidatedTextField, wholeNumber } from "../components/form"
+import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, NumberField, QuietAction, ValidatedTextField } from "../components/form"
 import { hasInputs, hasOutputs, isOutputColumn, ownOutputs, tableColumns, typedInputs } from "../utils/quoteIdentity"
-import { parseTypedNumber } from "../utils/sheetValues"
+import { readTypedNumber, trimTyped } from "../utils/typedNumbers"
 import {
   columnKey,
   CONDITION_TESTS,
@@ -74,14 +74,9 @@ const KINDS: ReadonlyArray<{ value: ListKind; label: string }> = [
 /** A table's rows' place in the column select, never a column's key, whose `:` between its ids no id holds. */
 const rowsKey = (tableId: string) => `${tableId}#rows`
 const label = (column: SchemaColumn) => column.label || readableName(column.name)
-const countValid = wholeNumber({ min: 0, unit: "rows" })
-/** Days added to another Date: a whole number, a minus sign taking them away, up to `DAYS_MAX` either way. */
-const daysValid = (text: string): string | null => {
-  const days = text.trim()
-  return /^[+-]?\d+$/.test(days) && Math.abs(Number(days)) <= DAYS_MAX ? null : `Enter a whole number of days from -${DAYS_MAX} to ${DAYS_MAX}.`
-}
+const PROBLEM_CLASS = "mt-0.5 block text-[10px] leading-snug"
 /** A total's number: blank, which its fault names, or a number as the sample's are typed. */
-const numberValid = (text: string): string | null => (text.trim() === "" || parseTypedNumber(text.trim()) !== null ? null : "Enter a number.")
+const numberValid = (text: string): string | null => (trimTyped(text) === "" || readTypedNumber(text) !== null ? null : "Enter a number.")
 /** A number written with a thousands separator, `1,000` or `1,000,000.5`. */
 const GROUPED = /(?<![\d.])\d+(?:,\d{3})+(?:\.\d+)?(?!\d)/
 /** A number column's values, comma-separated: none with a thousands separator, which the split would cut in two. */
@@ -547,15 +542,20 @@ function ListFields({
             ))}
           </select>
           {isRowCount(condition) ? (
-            <ValidatedTextField
-              dataTestId={`${name}-count`}
-              ariaLabel={`${name} value`}
-              value={String(condition.count)}
-              validate={countValid}
-              onCommit={(text) => onChange({ ...condition, count: Number(text) })}
+            <NumberField
+              data-testid={`${name}-count`}
+              aria-label={`${name} value`}
+              integer
+              required
+              min={0}
+              unit="rows"
+              value={condition.count}
+              onCommit={(count) => { if (count !== null) onChange({ ...condition, count }) }}
               containerClassName="min-w-0 flex-1"
               className={`${FIELD_CLASS} w-full tabular-nums`}
               style={INPUT_STYLE}
+              problemTestId={`${name}-count-error`}
+              problemClassName={PROBLEM_CLASS}
             />
           ) : (
             <ValidatedTextField
@@ -679,15 +679,22 @@ function ColumnFields<T extends ColumnTest>({
       ) : (
         type === "date" && (
           <span className="flex min-w-0 flex-1 items-start gap-1">
-            <ValidatedTextField
-              dataTestId={`${name}-days`}
-              ariaLabel={`${name} days`}
-              value={String(test.days)}
-              validate={daysValid}
-              onCommit={(text) => onChange({ ...test, days: Number(text.trim()) })}
+            {/* Days added to another Date: a whole number, a minus sign taking them away. */}
+            <NumberField
+              data-testid={`${name}-days`}
+              aria-label={`${name} days`}
+              integer
+              required
+              min={-DAYS_MAX}
+              max={DAYS_MAX}
+              unit="days"
+              value={test.days}
+              onCommit={(days) => { if (days !== null) onChange({ ...test, days }) }}
               containerClassName="w-20 shrink-0"
               className={`${FIELD_CLASS} w-full tabular-nums`}
               style={INPUT_STYLE}
+              problemTestId={`${name}-days-error`}
+              problemClassName={PROBLEM_CLASS}
             />
             <span className="pt-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
               days

@@ -173,7 +173,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "rating",
     "root-cause-late-answers",
     "root-cause-store-check",
-    "root-cause-typed-numbers",
     "sandbox-security",
     "server-api",
     "tracing",

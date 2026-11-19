@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from "lucide-react"
 
 import CacheStoreSize from "./CacheStoreSize"
-import { CommittedTextField } from "./form"
+import { NumberField, type NumberRule } from "./form"
 import ModalShell from "./ModalShell"
 import ToggleButtonGroup from "./ToggleButtonGroup"
 import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
@@ -232,25 +232,25 @@ const NUMBER_INPUT_STYLE = {
 /** The settings a number field edits: every key but the caching switch. */
 type NumericSettingKey = Exclude<PipelineSettingKey, "caching">
 
+/** A figure to one decimal place, as the dialog shows it. */
+const roundedFigure = (value: number): number => Math.round(value * 10) / 10
+
 /** At most one decimal place, without a trailing ".0". */
 function formatFigure(value: number): string {
-  return String(Math.round(value * 10) / 10)
+  return String(roundedFigure(value))
 }
 
 const MAX_TIME_LIMIT_MINUTES = 10_080
 
-/** Each numeric setting's accepted range; `null` means the draft is ignored. */
-const PARSERS: Record<NumericSettingKey, (draft: number) => number | null> = {
-  chunk_rows: (draft) => Math.min(MAX_CHUNK_ROWS, Math.max(MIN_CHUNK_ROWS, Math.round(draft))),
-  cache_size_gb: (draft) => (draft > 0 ? draft : null),
-  preview_memory_gb: (draft) => (draft > 0 ? draft : null),
-  kept_free_gb: (draft) => (draft >= 0 ? draft : null),
-  pipeline_time_limit_minutes: (draft) =>
-    draft > 0 && draft <= MAX_TIME_LIMIT_MINUTES ? draft : null,
-  modelling_time_limit_minutes: (draft) =>
-    draft > 0 && draft <= MAX_TIME_LIMIT_MINUTES ? draft : null,
-  optimisation_time_limit_minutes: (draft) =>
-    draft > 0 && draft <= MAX_TIME_LIMIT_MINUTES ? draft : null,
+/** Each numeric setting's accepted range: a draft outside it is refused at the field in words. */
+const RULES: Record<NumericSettingKey, NumberRule> = {
+  chunk_rows: { integer: true, min: MIN_CHUNK_ROWS, max: MAX_CHUNK_ROWS },
+  cache_size_gb: { min: 0, exclusiveMin: true },
+  preview_memory_gb: { min: 0, exclusiveMin: true },
+  kept_free_gb: { min: 0 },
+  pipeline_time_limit_minutes: { min: 0, exclusiveMin: true, max: MAX_TIME_LIMIT_MINUTES },
+  modelling_time_limit_minutes: { min: 0, exclusiveMin: true, max: MAX_TIME_LIMIT_MINUTES },
+  optimisation_time_limit_minutes: { min: 0, exclusiveMin: true, max: MAX_TIME_LIMIT_MINUTES },
 }
 
 /**
@@ -275,36 +275,35 @@ function PipelineSettingField({
   const set = loaded?.settings[settingKey] ?? null
   const automatic = loaded?.automatic[settingKey] ?? null
   const shown = set ?? automatic
-  const shownText = loaded === null || shown === null ? "" : formatFigure(shown)
+  // The figure as it is shown, to one decimal place; a blur that leaves it commits nothing.
+  const shownFigure = loaded === null || shown === null ? null : roundedFigure(shown)
   const id = `pipeline-settings-${settingKey.replace(/_/g, "-")}`
   const unavailable = loaded === null || disabled
 
-  const commit = useCallback((next: string) => {
-    const raw = next.trim()
-    if (raw === shownText) return
-    if (raw === "") {
+  // A blank restores automatic.
+  const commit = useCallback((next: number | null) => {
+    if (next === null) {
       if (set !== null) void save(settingKey, null)
       return
     }
-    const parsed = Number(raw)
-    const value = Number.isFinite(parsed) ? PARSERS[settingKey](parsed) : null
-    if (value === null || formatFigure(value) === shownText) return
-    void save(settingKey, value)
-  }, [save, set, settingKey, shownText])
+    void save(settingKey, next)
+  }, [save, set, settingKey])
 
   return (
     <NumberSetting id={id} label={label} hint={hint}>
-      <div className="flex items-center gap-1.5 shrink-0">
-        <CommittedTextField
+      <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+        <NumberField
           id={id}
           data-testid={id}
-          type="number"
-          value={shownText}
+          {...RULES[settingKey]}
+          value={shownFigure}
           placeholder={loaded !== null && shown === null ? "No limit" : undefined}
           disabled={unavailable}
           onCommit={commit}
           className={NUMBER_INPUT_CLASS}
           style={NUMBER_INPUT_STYLE}
+          problemTestId={`${id}-problem`}
+          problemClassName="order-last basis-full text-right text-[10px]"
         />
         <span className="w-6 text-[11px]" style={{ color: "var(--text-muted)" }}>{unit}</span>
         {set !== null ? (
@@ -360,16 +359,20 @@ function PreviewSettings() {
         label="Preview rows"
         hint="Rows shown in a node preview. 0 means no limit."
       >
-        <input
+        <div className="flex flex-wrap items-center justify-end shrink-0">
+        <NumberField
           id="pipeline-settings-rows"
-          type="number"
+          integer
           min={0}
-          step={100}
+          required
           value={rowLimit}
-          onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
+          onCommit={(next) => { if (next !== null) setRowLimit(next) }}
           className={NUMBER_INPUT_CLASS}
           style={{ ...NUMBER_INPUT_STYLE, marginRight: FIELD_TAIL_WIDTH }}
+          problemTestId="pipeline-settings-rows-problem"
+          problemClassName="basis-full text-right text-[10px]"
         />
+        </div>
       </NumberSetting>
       <PipelineSettingField
         settingKey="chunk_rows"

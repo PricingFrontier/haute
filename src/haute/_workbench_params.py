@@ -14,7 +14,6 @@ its commit's params files hold.
 from __future__ import annotations
 
 import io
-import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -26,6 +25,7 @@ import polars as pl
 from haute._artifact_paths import ordinary_path_problem
 from haute._polars_utils import streaming_collect
 from haute._project_layout import pipeline_files_folder
+from haute._typed_numbers import read_typed_number, read_typed_whole
 from haute._workbench_config import WorkbenchError
 from haute._workbench_form import FormSpec, index_text_limit
 
@@ -239,19 +239,31 @@ def with_param_options(spec: FormSpec, project_root: Path) -> FormSpec:
 ParamValues = Callable[[str, str], list[str]]
 
 
+#: A column of each type by the name the form gives the type (``COLUMN_TYPES`` in the view).
+_COLUMN_OF_TYPE = {
+    "str": "a Text column",
+    "int": "an Integer column",
+    "float": "a Decimal column",
+    "bool": "a True/false column",
+    "date": "a Date column",
+}
+
+
 def _fits(value: str, kind: str) -> bool:
-    """Whether the allowed value *value* is one a column of type *kind* holds."""
-    try:
-        if kind == "int":
-            int(value)
-        elif kind == "float":
-            return math.isfinite(float(value))
-        elif kind == "date":
+    """Whether the allowed value *value* is one a column of type *kind* holds: a number as the
+    same text typed into a cell of the column is read, by the one grammar for a typed number,
+    thousands separators included."""
+    if kind == "int":
+        return read_typed_whole(value) is not None
+    if kind == "float":
+        return read_typed_number(value) is not None
+    if kind == "date":
+        try:
             date.fromisoformat(value)
-        elif kind == "bool":
-            return value.lower() in ("true", "false")
-    except ValueError:
-        return False
+        except ValueError:
+            return False
+    elif kind == "bool":
+        return value.lower() in ("true", "false")
     return True
 
 
@@ -279,8 +291,8 @@ def fill_sourced_options(tables: list[dict[str, Any]], read: ParamValues) -> Non
             misfit = next((value for value in values if not _fits(value, kind)), None)
             if misfit is not None:
                 raise ParamFileError(
-                    f"{source['file']} gives {where} the value {misfit!r}, which a {kind} "
-                    "column does not hold.",
+                    f"{source['file']} gives {where} the value {misfit!r}, which "
+                    f"{_COLUMN_OF_TYPE.get(kind, f'a {kind} column')} does not hold.",
                     path=source["file"],
                 )
             if column.get("index") == "values" and kind == "str":

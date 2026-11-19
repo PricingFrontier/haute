@@ -1,5 +1,6 @@
 import { isObjectLiteral } from "../../../utils/objectLiteral"
 import { castFamily } from "../../../utils/polarsDtypes"
+import { readTypedNumber, trimTyped } from "../../../utils/typedNumbers"
 
 // ─── Rating Table Types & Pure Utilities ──────────────────────────
 
@@ -20,8 +21,8 @@ export type RatingTable = {
   factors: string[]
   factor_dtypes?: Record<string, RatingFactorDtype>
   output_column: string
-  /** Fills every miss (On miss: Use default); absent, null or blank leaves a miss empty. */
-  default_value?: string | null
+  /** Fills every miss (On miss: Use default); absent or null leaves a miss empty. */
+  default_value?: number | null
   entries: Record<string, string | number>[]
 }
 
@@ -43,10 +44,10 @@ export function newRatingTable(): RatingTable {
 /**
  * Whether a table's misses take its default (On miss: Use default) rather than
  * staying empty: the engine's rule, a `default_value` that is not blank. A
- * normalised table holds a number's default as its text, so a number counts.
+ * normalised table holds its default as a number, as the settings file does.
  */
 export function tableUsesDefault(table: RatingTable): boolean {
-  return typeof table.default_value === "string" && table.default_value.trim() !== ""
+  return typeof table.default_value === "number"
 }
 
 function isEntry(value: unknown): value is Record<string, string | number> {
@@ -126,10 +127,14 @@ function normaliseFactorDtypes(raw: unknown, factors: string[]): Record<string, 
   return Object.keys(factorDtypes).length > 0 ? factorDtypes : undefined
 }
 
-function normaliseDefaultValue(raw: unknown): { default_value?: string | null } {
-  if (typeof raw === "string" || raw === null) return { default_value: raw }
-  if (typeof raw === "number") return { default_value: String(raw) }
-  return {}
+/**
+ * A table's Default as the editor holds it: a number, as the field writes it; text a settings
+ * file holds read by the one grammar for a typed number, a blank leaving misses empty.
+ */
+function normaliseDefaultValue(raw: unknown): { default_value?: number | null } {
+  if (raw === null) return { default_value: null }
+  const value = storedNumber(raw)
+  return value === null ? {} : { default_value: value }
 }
 
 function normaliseRatingTable(raw: unknown): RatingTable {
@@ -198,7 +203,7 @@ export function relativityTextColor(value: number): string {
 }
 
 export function tableStats(entries: Record<string, string | number>[]): { min: number; max: number; avg: number; count: number } | null {
-  const vals = entries.map(e => typeof e.value === 'number' ? e.value : parseFloat(String(e.value ?? ''))).filter(v => !isNaN(v))
+  const vals = entries.map(e => storedNumber(e.value)).filter((v): v is number => v !== null)
   if (vals.length === 0) return null
   const min = vals.reduce((a, b) => Math.min(a, b), Infinity)
   const max = vals.reduce((a, b) => Math.max(a, b), -Infinity)
@@ -225,7 +230,7 @@ export function buildCartesianEntries(
   factors: string[],
   bandingLevels: Record<string, string[]>,
   existing: Record<string, string | number>[],
-  defaultValue: string | null | undefined,
+  defaultValue: number | null | undefined,
 ): Record<string, string | number>[] {
   if (factors.length === 0) return []
   const levelArrays = factors.map(f => bandingLevels[f] || [])
@@ -235,14 +240,11 @@ export function buildCartesianEntries(
   for (const e of existing) {
     const key = factors.map(f => String(e[f] ?? "")).join("\x1F")
     const v = e.value
-    if (v !== undefined && v !== null && v !== "") {
-      const parsed = typeof v === "number" ? v : parseFloat(String(v))
-      if (!Number.isNaN(parsed)) existingLookup.set(key, parsed)
-    }
+    const parsed = storedNumber(v)
+    if (parsed !== null) existingLookup.set(key, parsed)
   }
 
-  const parsedDef = defaultValue != null && String(defaultValue).trim() ? parseFloat(String(defaultValue)) : 1.0
-  const defVal = Number.isNaN(parsedDef) ? 1.0 : parsedDef
+  const defVal = resolveDefault(defaultValue)
   const entries: Record<string, string | number>[] = []
 
   function recurse(depth: number, current: Record<string, string>) {
@@ -379,22 +381,28 @@ export function extractTableEntryFactorLevels(
 }
 
 /**
- * A relativity as typed or pasted: a number written as JavaScript reads one
- * (`1.25`, `-0.5`, `1e-3`), blank, or anything else, which is refused rather
- * than replaced (`1,5` is not one and a half).
+ * A relativity as typed or pasted: a number by the one grammar for a typed number
+ * (`1.25`, `-0.5`, `1e-3`, `1,000`), blank, or anything else, which is refused rather
+ * than replaced (`1,5` could be one and a half or fifteen).
  */
 export type TypedRelativity = { kind: "value"; value: number } | { kind: "blank" } | { kind: "invalid" }
 
 export function parseRelativity(text: string): TypedRelativity {
-  const trimmed = text.trim()
-  if (!trimmed) return { kind: "blank" }
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? { kind: "value", value: parsed } : { kind: "invalid" }
+  if (trimTyped(text) === "") return { kind: "blank" }
+  const parsed = readTypedNumber(text)
+  return parsed !== null ? { kind: "value", value: parsed } : { kind: "invalid" }
+}
+
+/**
+ * A stored relativity or default as a number: a JSON number as it is, text by the one grammar
+ * for a typed number; null for anything else, a blank among it.
+ */
+export function storedNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+  return typeof value === "string" ? readTypedNumber(value) : null
 }
 
 /** Resolve the table's defaultValue to a safe numeric fallback. */
-export function resolveDefault(defaultValue: string | number | null | undefined): number {
-  const raw = typeof defaultValue === "number" ? defaultValue
-    : typeof defaultValue === "string" && defaultValue.trim() ? parseFloat(defaultValue) : 1
-  return Number.isNaN(raw) ? 1 : raw
+export function resolveDefault(defaultValue: unknown): number {
+  return storedNumber(defaultValue) ?? 1
 }

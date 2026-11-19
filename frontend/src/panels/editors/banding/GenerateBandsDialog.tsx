@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react"
 import { withAlpha } from "../../../utils/color"
+import { DECIMAL_COMMA, readTypedNumber, readTypedWhole } from "../../../utils/typedNumbers"
 import {
   CALENDAR_UNITS,
   generateCalendarBreakpoints,
@@ -52,26 +53,27 @@ const INPUT_STYLE = {
   color: "var(--text-primary)",
 }
 
+/** A number as the dialog's box shows it, a blank for none. */
+const shownNumber = (value: number | null | undefined): string => (value === null || value === undefined ? "" : String(value))
+
 function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, initial }: NumericProps) {
-  const [start, setStart] = useState<number | "">(initial?.start ?? dataMin ?? "")
-  const [end, setEnd] = useState<number | "">(initial?.end ?? dataMax ?? "")
+  // The dialog's own text until Generate, read then by the one grammar for a typed number.
+  const [start, setStart] = useState(shownNumber(initial?.start ?? dataMin))
+  const [end, setEnd] = useState(shownNumber(initial?.end ?? dataMax))
 
   // About ten bands at the range's own scale, when the data's range is known.
   const suggestedStep = (dataMin != null && dataMax != null && dataMax > dataMin)
     ? suggestedBandStep(dataMax - dataMin)
-    : ""
-  const [step, setStep] = useState<number | "">(initial?.step ?? suggestedStep)
+    : null
+  const [step, setStep] = useState(shownNumber(initial?.step ?? suggestedStep))
   const [error, setError] = useState<string | null>(null)
 
   const handleGenerate = () => {
     setError(null)
 
-    const s = typeof start === "number" ? start : parseFloat(String(start))
-    const e = typeof end === "number" ? end : parseFloat(String(end))
-    const st = typeof step === "number" ? step : parseFloat(String(step))
-
-    if (isNaN(s) || isNaN(e) || isNaN(st)) {
-      setError("All fields must be valid numbers")
+    const [s, e, st] = [start, end, step].map(readTypedNumber)
+    if (s === null || e === null || st === null) {
+      setError([start, end, step].some((text) => text.includes(",")) ? DECIMAL_COMMA : "All fields must be valid numbers")
       return
     }
 
@@ -101,9 +103,10 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
           </label>
           <input
             id="gen-start"
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={start}
-            onChange={(e) => setStart(e.target.value === "" ? "" : parseFloat(e.target.value))}
+            onChange={(e) => setStart(e.target.value)}
             className={INPUT_CLASS}
             style={INPUT_STYLE}
             placeholder="0"
@@ -115,9 +118,10 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
           </label>
           <input
             id="gen-end"
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={end}
-            onChange={(e) => setEnd(e.target.value === "" ? "" : parseFloat(e.target.value))}
+            onChange={(e) => setEnd(e.target.value)}
             className={INPUT_CLASS}
             style={INPUT_STYLE}
             placeholder="100"
@@ -129,9 +133,10 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
           </label>
           <input
             id="gen-step"
-            type="number"
+            type="text"
+            inputMode="decimal"
             value={step}
-            onChange={(e) => setStep(e.target.value === "" ? "" : parseFloat(e.target.value))}
+            onChange={(e) => setStep(e.target.value)}
             className={INPUT_CLASS}
             style={INPUT_STYLE}
             placeholder="10"
@@ -150,7 +155,7 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
 function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, initial, rightClosed }: CalendarProps) {
   const [start, setStart] = useState(initial?.start ?? dataMin ?? "")
   const [end, setEnd] = useState(initial?.end ?? dataMax ?? "")
-  const [step, setStep] = useState<number | "">(initial?.step ?? 1)
+  const [step, setStep] = useState(String(initial?.step ?? 1))
   const [unit, setUnit] = useState<CalendarUnit>(initial?.unit ?? "months")
   const [error, setError] = useState<string | null>(null)
 
@@ -158,7 +163,8 @@ function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, 
     setError(null)
     let breakpoints: GeneratedBreakpoints
     try {
-      breakpoints = generateCalendarBreakpoints({ start, end, step: step === "" ? NaN : step, unit }, rightClosed)
+      const whole = readTypedWhole(step)
+      breakpoints = generateCalendarBreakpoints({ start, end, step: whole === null ? NaN : Number(whole), unit }, rightClosed)
     } catch (err) {
       // The generator refuses settings it cannot use with a message for the user.
       if (!(err instanceof RangeError)) throw err
@@ -204,11 +210,10 @@ function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, 
           <div className="flex gap-2">
             <input
               id="gen-step"
-              type="number"
-              min={1}
-              step={1}
+              type="text"
+              inputMode="numeric"
               value={step}
-              onChange={(e) => setStep(e.target.value === "" ? "" : Number(e.target.value))}
+              onChange={(e) => setStep(e.target.value)}
               className={INPUT_CLASS}
               style={INPUT_STYLE}
             />

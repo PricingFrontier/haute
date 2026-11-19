@@ -68,7 +68,7 @@ describe("BreakpointGrid", () => {
     expect(newBreakpoints[1]).toEqual({ boundary: "", label: "" })
   })
 
-  it("newly added breakpoint renders as editable number input", () => {
+  it("newly added breakpoint renders as an editable number box", () => {
     render(
       <BreakpointGrid
         breakpoints={[
@@ -79,9 +79,36 @@ describe("BreakpointGrid", () => {
         accentColor={ACCENT}
       />,
     )
-    // Both rows should have number inputs
-    const numberInputs = screen.getAllByRole("spinbutton")
-    expect(numberInputs).toHaveLength(2)
+    // Both rows' boundaries are text boxes read by the typed-number grammar, never the
+    // browser's own number input, which drops a comma by the browser's language.
+    const boundaries = [screen.getByLabelText("Breakpoint 1 boundary"), screen.getByLabelText("Breakpoint 2 boundary")]
+    for (const boundary of boundaries) {
+      expect(boundary).toHaveAttribute("type", "text")
+      expect(boundary).toHaveAttribute("inputmode", "decimal")
+    }
+  })
+
+  // RTG-03: "40,5" could be 40.5 or 405; it is refused at the cell in words, in any browser
+  // language, and never stored as 405.
+  it("refuses a boundary typed with a decimal comma, saying why, and stores nothing", () => {
+    const onUpdate = vi.fn()
+    render(<BreakpointGrid breakpoints={[{ boundary: "40", label: "Low" }]} onUpdate={onUpdate} accentColor={ACCENT} />)
+    const boundary = screen.getByLabelText("Breakpoint 1 boundary")
+    fireEvent.change(boundary, { target: { value: "40,5" } })
+    fireEvent.blur(boundary)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(boundary).toHaveValue("40,5")
+    expect(boundary).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByRole("img", { name: "Use a point for decimals." })).toBeInTheDocument()
+  })
+
+  it("stores a boundary typed with thousands as the number it is", () => {
+    const onUpdate = vi.fn()
+    render(<BreakpointGrid breakpoints={[{ boundary: "40", label: "Low" }]} onUpdate={onUpdate} accentColor={ACCENT} />)
+    const boundary = screen.getByLabelText("Breakpoint 1 boundary")
+    fireEvent.change(boundary, { target: { value: "1,000.5" } })
+    fireEvent.blur(boundary)
+    expect(onUpdate.mock.calls[0][0][0].boundary).toBe("1000.5")
   })
 
   it("delete button removes breakpoint", () => {

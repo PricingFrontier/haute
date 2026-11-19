@@ -1240,9 +1240,10 @@ class TestBandingHardening:
         ("boundary", "message"),
         [
             ("abc", "unreadable boundary"),
-            ("nan", "non-finite"),
-            ("inf", "non-finite"),
-            ("-inf", "non-finite"),
+            # Words Python reads as numbers are not numbers by the typed-number grammar.
+            ("nan", "unreadable boundary"),
+            ("inf", "unreadable boundary"),
+            ("-inf", "unreadable boundary"),
         ],
     )
     def test_unusable_boundary_raises(self, boundary, message):
@@ -1458,16 +1459,25 @@ class TestBreakpointsMode:
         with pytest.raises(ValueError, match="unreadable boundary"):
             _breakpoints_to_rules(breakpoints)
 
+    def test_a_boundary_with_a_decimal_comma_is_refused_and_thousands_read(self):
+        # RTG-03: "40,5" could be 40.5 or 405; the typed-number grammar refuses it.
+        from haute._rating import parse_breakpoint_boundary
+
+        with pytest.raises(ValueError, match="unreadable boundary"):
+            parse_breakpoint_boundary("40,5")
+        assert parse_breakpoint_boundary("1,000") == 1000.0
+        assert parse_breakpoint_boundary(" 40.5 ") == 40.5
+
     def test_breakpoints_nan_boundary_raises(self):
         """A breakpoint with boundary='nan' should raise ValueError."""
         breakpoints = [{"boundary": "nan", "label": "Bad"}]
-        with pytest.raises(ValueError, match="non-finite"):
+        with pytest.raises(ValueError, match="unreadable boundary"):
             _breakpoints_to_rules(breakpoints)
 
     def test_breakpoints_inf_boundary_raises(self):
         """A breakpoint with boundary='inf' should raise ValueError."""
         breakpoints = [{"boundary": "inf", "label": "Bad"}]
-        with pytest.raises(ValueError, match="non-finite"):
+        with pytest.raises(ValueError, match="unreadable boundary"):
             _breakpoints_to_rules(breakpoints)
 
     def test_breakpoints_duplicate_boundary_raises(self):

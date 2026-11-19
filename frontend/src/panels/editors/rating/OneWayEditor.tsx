@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import type { RatingTable } from "./ratingTableUtils"
-import { tableStats, resolveDefault } from "./ratingTableUtils"
-import { ControlledNumberCell } from "./ControlledNumberCell"
+import { resolveDefault, storedNumber, tableStats } from "./ratingTableUtils"
+import { NumberCell } from "../shared/NumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import { useGridCellSelection } from "./useGridCellSelection"
@@ -23,7 +23,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
   const lookup = new Map<string, number>()
   for (const e of entries) {
     const k = String(e[factor] ?? "")
-    if (k) lookup.set(k, typeof e.value === "number" ? e.value : parseFloat(String(e.value ?? "1")))
+    if (k) lookup.set(k, storedNumber(e.value) ?? NaN)
   }
 
   const safeDefault = resolveDefault(defaultValue)
@@ -78,8 +78,8 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  <ControlledNumberCell
-                    val={val}
+                  <NumberCell
+                    value={val}
                     onCommit={(v) => updateCell(level, v)}
                     aria-label={`Relativity for ${factor} ${level}`}
                     className="rating-editor-number-cell w-full px-1.5 py-1 rounded-none text-[11px] font-mono text-center cursor-text"

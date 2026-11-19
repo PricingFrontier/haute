@@ -1,7 +1,7 @@
 /** An Import's panel (specs/workbench). */
 import { X } from "lucide-react"
 import type { FormSpec, ImportWidget, SchemaColumn, SchemaTable, SqlImport } from "../../api/types"
-import { CommittedTextArea, CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, SelectRow, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextArea, CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, NumberField, SelectRow } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { hasInputs, tableColumns } from "../../utils/quoteIdentity"
 import { columnKey } from "../../utils/sheetVisibility"
@@ -78,14 +78,16 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
             />
           </LabelledRow>
           <LabelledRow label="Header row">
-            <ValidatedTextField
-              dataTestId="import-header-row"
-              value={String(source.header_row)}
-              onCommit={(text) => change((spec) => updateImportSource(spec, widget.id, { header_row: Number(text) }))}
-              validate={wholeNumber({ min: 1, max: HEADER_ROW_MAX })}
+            <NumberField
+              data-testid="import-header-row"
+              integer required min={1} max={HEADER_ROW_MAX}
+              value={source.header_row}
+              onCommit={(header_row) => { if (header_row !== null) change((spec) => updateImportSource(spec, widget.id, { header_row })) }}
               containerClassName="w-16"
               className={`${FIELD_CLASS} w-full tabular-nums`}
               style={INPUT_STYLE}
+              problemTestId="import-header-row-error"
+              problemClassName="mt-0.5 block text-[10px] leading-snug"
             />
           </LabelledRow>
         </Section>

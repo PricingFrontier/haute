@@ -38,11 +38,11 @@ SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the cont
 uses. The main session ran each again on the three databases. `WB-59` comes from the same
 phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
-`WB-60` to `WB-62` come from the plan's phase 5, a reader from a second model family (Codex)
+`WB-60` and `WB-61` come from the plan's phase 5, a reader from a second model family (Codex)
 over the code changed since the 31 October audit. A worker ran each in a browser, and the
 main session ran each journey again on 13 November 2026.
 
-`WB-63` to `WB-66` and `WB-68` come from the review plan's phase 5, a reader from a second
+`WB-63` to `WB-66` come from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
@@ -70,7 +70,6 @@ A cause several packages here share has its own file and is taken first:
 | WB-41 | Planned | P2 | `useQuoteListStore` fences `loadingMore` across list switches, `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
 | WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
 | WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
-| WB-48 | Planned | P3 | A typed number with a comma out of place is kept as typed and flagged, on the sheet and on the server alike. |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
@@ -84,12 +83,10 @@ A cause several packages here share has its own file and is taken first:
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
 | WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
 | WB-61 | Planned | P3 | Text being typed in the designer's Preview is kept when a test quote's Open answers late. |
-| WB-62 | Planned | P3 | A whole number of more than 15 digits is shown digit for digit in a column with a Number format. |
 | WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
 | WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
 | WB-65 | Planned | P3 | A single-precision column for a Decimal field is named as a difference, not left to round values. |
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
-| WB-68 | Planned | P3 | A number in a params file is read as the same text typed in a cell, thousands separators included. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
 | WB-73 | Planned | P2 | The store check reports a missing unique constraint on the operation key, so one alternative sent twice cannot make two options. |
@@ -619,47 +616,6 @@ editor's behaviour while editing is unchanged.
 `src/haute/_workbench_app.py::build_release`;
 `src/haute/_quote_store/_book.py::_missing`; `specs/workbench/high-level.md`.
 
-### WB-48 — A comma out of place is not dropped from a typed number
-**Why:** Confirmed on both sides by reading and by calling the two parsers.
-A typed number is read after every currency sign, space and comma is
-removed, wherever the comma sits. `1,234.50` reads as intended, but `1,5`
-reads as 15, `1,00` as 100 and `1 000,50` as 100050. The sheet and the server
-share the rule deliberately, so they agree with each other, and both are
-wrong for a decimal comma or a slip of the key. A column shown in the general
-format keeps the text as typed on the sheet, so the underwriter sees `1,5`
-while the pipeline prices 15.
-
-At the edge of what counts as a space the two halves are not one rule at
-all, reproduced on 10 November 2026 by running both on the same texts:
-JavaScript and Python strip different characters. A typed 5 with a
-byte-order mark before it (U+FEFF, which text copied out of a file can
-carry) shows on the sheet as the number 5, unmarked, while the server keeps
-the text as typed; a cell holding only that character counts as filled on
-the server and as empty on the sheet. The separator controls U+001C to
-U+001F, and U+0085, go the other way: the sheet marks a 1 and a 2 with one
-of them between as "Not a number", and the server reads 12. The server's
-comment gives the reason for the shared rule as "a cell the view marks is
-one the server would keep as typed"; for these seven texts it is not.
-
-**Plan:** Accept a comma only as a thousands separator in its place: groups
-of three digits after the first group, before any decimal point. Text with a
-comma anywhere else is not a number: the sheet marks the cell and the server
-keeps the text as typed, as both already do for other text in a number
-column. Change the two parsers and their shared cases together. Name the
-characters both sides strip in one list beside those cases, in place of
-each language's own notion of whitespace.
-
-**Acceptance:** `1,234`, `1,234.5` and `£12,000` read as numbers; `1,5`,
-`1,00`, `12,34,567` and `1 000,50` are marked on the sheet and kept as text
-by the server. A 5 behind U+FEFF, and a 1 and a 2 around U+001C, read the
-same on both sides. The cases live in the fixture both test suites read.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_tables.py::_typed`;
-`frontend/src/utils/sheetValues.ts::parseTypedNumber`;
-`frontend/src/utils/sheetValues.ts::parseTypedWhole`.
-
 ### WB-49 — The hosted check retries its probes
 **Why:** Read from the source. After a rollout, the hosted check polls the
 app's health with retries, then sends two more requests once each: one
@@ -1048,29 +1004,6 @@ the Open answers, and the Open's values are dropped.
 `frontend/src/components/form/CommittedTextField.tsx`;
 `specs/workbench/low-level.md`.
 
-### WB-62 — A whole number of more than 15 digits is shown as typed in a formatted column
-**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
-app. An Integer column with a Number format, no decimal places and
-grouping shows `123456789012345678`, once the cell is left, as
-123,456,789,012,345,680, and `9007199254740993` as
-9,007,199,254,740,992. An Integer output in the same format shows the
-priced value the same way. Only the display is wrong: the pricing request
-sends the digits typed, the answer returns them, and the store holds them.
-The specification sends integers above JavaScript's safe range to the
-browser as "exact decimal strings"; the formatter reads the text through a
-JavaScript number before it groups the digits.
-
-**Plan:** Format a whole number's digits from its text, as the pivot
-formatter the same code calls already does for a text it is given.
-
-**Acceptance:** Both numbers above are shown with every digit as typed,
-grouped, in an input cell and in an output.
-
-**Dependencies:** `WB-48` is about typed numbers with a comma out of place.
-
-**Evidence:** `frontend/src/utils/sheetValues.ts`;
-`specs/workbench/low-level.md`.
-
 ### WB-63 — An app opened before a column was added keeps that column's values
 **Why:** Reproduced on 14 November 2026 on SQLite, PostgreSQL 16 and SQL
 Server 2022. An app on the old release has the store open. The owner runs
@@ -1156,27 +1089,6 @@ After the reorder `01` shows 100 and `02` shows 200.
 
 **Evidence:** `src/haute/_workbench_test_quotes.py`;
 `src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
-
-### WB-68 — A number in a params file is read as the same number typed in a cell
-**Why:** Reproduced on 14 November 2026. A field takes its allowed values
-from a params file. With `1,000` for an Integer field, `1,000.00` for a
-Decimal one, or `1.0` for an Integer one, the form does not load: 409,
-"limits.csv gives policy.limit the value '1,000', which a int column does
-not hold." The same text typed into a cell of the same type is read as
-1000, 1000.0 and 1. A file saved from a spreadsheet with thousands
-separators is such a file. The message also names the type by its code
-name, "a int", "a float".
-
-**Plan:** Read a params value with the function that reads a typed cell,
-and name the type in the message as the form does.
-
-**Acceptance:** The three files above load with the values the cell
-gives. A value that is not a number is refused with the type's own name.
-
-**Dependencies:** `WB-48` is about typed numbers with a comma out of place.
-
-**Evidence:** `src/haute/_workbench_params.py`;
-`src/haute/_workbench_tables.py`.
 
 ### WB-70 — A creation repeated under its key is answered with the quote it made
 **Why:** Reproduced on 16 November 2026 with two instances of the

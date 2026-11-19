@@ -1,3 +1,4 @@
+import { readTypedNumber } from "../../../utils/typedNumbers"
 import type { BandingFactor, BandingMode, CategoricalRule, BreakpointRule } from "../../../types/banding"
 import { isNumericDtype, isTemporalDtype } from "../../../utils/polarsDtypes"
 
@@ -219,7 +220,6 @@ export type BoundaryKind = "number" | "date" | "datetime"
 
 const MS_PER_DAY = 86_400_000
 const SECONDS_PER_DAY = 86_400
-const NUMBER_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const DATETIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?$/
 /**
@@ -270,7 +270,7 @@ function matchedDayNumber(match: RegExpMatchArray | null): number | null {
 /** A breakpoint boundary's kind; null when it is blank or unreadable. */
 export function boundaryKind(boundary: string): BoundaryKind | null {
   const text = boundary.trim()
-  if (NUMBER_PATTERN.test(text)) return Number.isFinite(Number(text)) ? "number" : null
+  if (readTypedNumber(text) !== null) return "number"
   if (matchedDayNumber(text.match(DATE_PATTERN)) !== null) return "date"
   if (matchedDayNumber(text.match(DATETIME_PATTERN)) !== null) return "datetime"
   return null

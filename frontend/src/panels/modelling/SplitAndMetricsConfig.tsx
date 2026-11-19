@@ -1,4 +1,4 @@
-import { CommittedTextField, ConfigSection, SavedValueOption } from "../../components/form"
+import { CommittedTextField, ConfigSection, NumberField as SharedNumberField, SavedValueOption } from "../../components/form"
 import type { EvaluationPreview } from "../../api/types"
 import { fractionToPercent } from "../../utils/formatValue"
 import { evaluationConfigurationIssues } from "../../utils/trainingObjective"
@@ -124,13 +124,12 @@ export function SplitAndMetricsConfig({
     <div className="space-y-3">
       <ConfigSection title="Row limit">
         <div className="flex items-center gap-2">
-          <CommittedTextField
+          <SharedNumberField
             aria-label="Row limit"
-            type="number"
+            integer
             min={0}
-            step={100000}
-            value={rowLimit == null ? "" : String(rowLimit)}
-            onCommit={(next) => onRowLimitChange(next === "" ? null : Math.max(0, Number(next)))}
+            value={rowLimit}
+            onCommit={onRowLimitChange}
             placeholder="All rows"
             className="h-8 w-full min-w-0 rounded px-2 font-mono text-[13px]"
             style={MODELLING_INPUT_STYLE}
@@ -271,7 +270,6 @@ export function SplitAndMetricsConfig({
                 exclusiveMax
                 integer={false}
                 required
-                step={1}
                 className="h-8 w-full rounded px-2 font-mono text-[13px]"
                 onCommit={(v) =>
                   v !== undefined &&
@@ -290,7 +288,6 @@ export function SplitAndMetricsConfig({
               max={10}
               integer
               required
-              step={1}
               className="h-8 w-full rounded px-2 font-mono text-[13px]"
               onCommit={(v) =>
                 v !== undefined &&
@@ -351,7 +348,6 @@ export function SplitAndMetricsConfig({
               exclusiveMax
               integer={false}
               required
-              step={1}
               className="h-8 w-full rounded px-2 font-mono text-[13px]"
               onCommit={(v) =>
                 v !== undefined && updateTest(v === 0 ? null : { size: v / 100 })

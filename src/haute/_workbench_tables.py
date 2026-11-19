@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -31,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from haute._graph_utils import is_frame_label
 from haute._json_safe import to_json_safe
 from haute._output_assembler import prune_document
+from haute._typed_numbers import read_typed_number, read_typed_whole, trim_typed
 from haute._workbench_form import (
     IDENTITY_COLUMNS,
     QUOTE_DETAILS_NAME,
@@ -472,7 +472,7 @@ def key_collisions(table: SchemaTable) -> list[str]:
 
 
 def _missing_index(value: Any) -> bool:
-    return value is None or (isinstance(value, str) and not value.strip())
+    return value is None or (isinstance(value, str) and not trim_typed(value))
 
 
 def request_key_problem(table: WorkbenchTable, keys: Sequence[Any]) -> str | None:
@@ -771,7 +771,7 @@ def preset_rows(
         if not _filled(raw):
             loose.append(row)
             continue
-        at = places.get(_typed(column.type, raw.strip())) if isinstance(raw, str) else None
+        at = places.get(_typed(column.type, trim_typed(raw))) if isinstance(raw, str) else None
         if at is not None and placed[at] is None:
             placed[at] = row
     free = iter(loose)
@@ -828,7 +828,7 @@ def typed_index_problems(
                 ):
                     blank.append(number)
                 continue
-            value = _typed(index.type, raw.strip()) if isinstance(raw, str) else raw
+            value = _typed(index.type, trim_typed(raw)) if isinstance(raw, str) else raw
             if isinstance(value, str) and (limit := index_text_limit(value)):
                 long.append((number, limit))
             places.setdefault(value, []).append(number)
@@ -877,9 +877,9 @@ def _record(
         raw = row.get(column.name)
         if column.index == "numbered":
             record[column.name] = numbered_value(column, number)
-        elif isinstance(raw, str) and raw.strip():
+        elif isinstance(raw, str) and trim_typed(raw):
             # Typed text, even in a box: a column whose type changed keeps what was typed.
-            record[column.name] = _typed(column.type, raw.strip())
+            record[column.name] = _typed(column.type, trim_typed(raw))
         elif raw is True:
             # A ticked box, even in a column that is no longer True/false.
             record[column.name] = True
@@ -909,28 +909,16 @@ def _starting(table: SchemaTable, column: SchemaColumn, raw: str | bool | None) 
 
 
 def _filled(raw: str | bool | None) -> bool:
-    return raw is True or (isinstance(raw, str) and raw.strip() != "")
-
-
-#: A decimal number, once a currency sign, separators and spaces are gone: the one rule the
-#: view's ``parseTypedNumber`` (``frontend/src/utils/sheetValues.ts``) applies too, so a cell
-#: the view marks is one the server would keep as typed.
-_NUMBER = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
-_WHOLE = re.compile(r"[+-]?[0-9]+")
+    return raw is True or (isinstance(raw, str) and trim_typed(raw) != "")
 
 
 def _typed(column_type: str, text: str) -> Any:
-    """Typed text as its column's type holds it; text that isn't of that type, as typed."""
+    """Typed text as its column's type holds it, read by the one grammar for a typed number
+    (``haute._typed_numbers``, the view's ``readTypedNumber``); text that isn't of that type,
+    as typed. An Integer column's digits are read exactly however large, not through a float."""
     if column_type not in ("int", "float"):
         return text
-    cleaned = re.sub(r"[$£€,\s]", "", text)
-    if _NUMBER.fullmatch(cleaned) is None:
-        return text
-    if column_type == "int" and _WHOLE.fullmatch(cleaned):
-        # Digits alone are a whole number, read exactly however large: not through a float
-        # (``parseTypedWhole`` in the view, for a Show when's tests).
-        return int(cleaned)
-    number = float(cleaned)
-    if not math.isfinite(number):
-        return text
-    return int(number) if column_type == "int" and number.is_integer() else number
+    if column_type == "int" and (whole := read_typed_whole(text)) is not None:
+        return whole
+    number = read_typed_number(text)
+    return text if number is None else number

@@ -2,6 +2,7 @@ import { CommittedTextField, ConfigSection } from "../../components/form"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { configField } from "../../utils/configField"
 import { isNumericDtype } from "../../utils/polarsDtypes"
+import { readTypedWhole } from "../../utils/typedNumbers"
 import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
@@ -40,7 +41,8 @@ export type TargetAndTaskConfigProps = {
 function positiveClassValue(raw: string, targetDtype: string): string | number | null {
   const trimmed = raw.trim()
   if (trimmed === "") return null
-  if (isNumericDtype(targetDtype) && /^-?\d+$/.test(trimmed)) return Number(trimmed)
+  const whole = isNumericDtype(targetDtype) ? readTypedWhole(trimmed) : null
+  if (whole !== null && Number.isSafeInteger(Number(whole))) return Number(whole)
   return trimmed
 }
 
@@ -164,12 +166,7 @@ export function TargetAndTaskConfig({
                         step={0.01}
                         value={variancePower}
                         aria-valuetext={String(variancePower)}
-                        onChange={(event) =>
-                          onUpdate(
-                            "variance_power",
-                            parseFloat(event.target.value),
-                          )
-                        }
+                        onChange={(event) => onUpdate("variance_power", event.currentTarget.valueAsNumber)}
                         className="min-w-0 flex-1 accent-[var(--model-accent)]"
                       />
                     )}
@@ -182,7 +179,6 @@ export function TargetAndTaskConfig({
                       exclusiveMax
                       integer={false}
                       required
-                      step="any"
                       className="h-7 w-14 shrink-0 rounded px-1.5 py-1 font-mono text-xs [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                       onCommit={(value) =>
                         onUpdate("variance_power", value ?? null)

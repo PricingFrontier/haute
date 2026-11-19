@@ -17,7 +17,7 @@ import CommittedTextField, { CommittedTextArea, ValidatedTextField } from "../Co
 import type { OnUpdateConfig } from "../../../panels/editors/_shared"
 import { BandingRulesGrid } from "../../../panels/editors/banding/BandingRulesGrid"
 import { BreakpointGrid } from "../../../panels/editors/banding/BreakpointGrid"
-import { ControlledNumberCell } from "../../../panels/editors/rating/ControlledNumberCell"
+import { NumberCell } from "../../../panels/editors/shared/NumberCell"
 import { IoArgumentsEditor } from "../../../panels/editors/_IoFormatEditor"
 import { HyperparametersConfig } from "../../../panels/modelling/HyperparametersConfig"
 import { formatHyperparameters, formatTuningSearchSpace } from "../../../panels/modelling/hyperparameters"
@@ -240,7 +240,7 @@ const ENTRIES: Entry[] = [
     initial: { cv_folds: 5 },
     moved: { cv_folds: 3 },
     view: (config, onUpdate) => (
-      <NumberField label="Folds" value={config.cv_folds as number} step={1} min={2} integer onCommit={(v) => onUpdate("cv_folds", v)} />
+      <NumberField label="Folds" value={config.cv_folds as number} min={2} integer onCommit={(v) => onUpdate("cv_folds", v)} />
     ),
     field: () => screen.getByLabelText("Folds") as HTMLInputElement,
     typed: "7",
@@ -291,7 +291,7 @@ const ENTRIES: Entry[] = [
     initial: { value: 1.25 },
     moved: { value: 1.1 },
     view: (config, onUpdate) => (
-      <ControlledNumberCell aria-label="Relativity" val={config.value as number} onCommit={(v) => onUpdate("value", v)} />
+      <NumberCell aria-label="Relativity" value={config.value as number} onCommit={(v) => onUpdate("value", v)} />
     ),
     field: () => screen.getByLabelText("Relativity") as HTMLInputElement,
     typed: "1.5",

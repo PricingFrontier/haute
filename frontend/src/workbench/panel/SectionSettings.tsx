@@ -1,7 +1,7 @@
 /** A section's own panel (specs/workbench). */
 import { Trash2 } from "lucide-react"
 import type { FormSpec, Page, Section as SheetSection } from "../../api/types"
-import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, QuietAction, ValidatedTextField, wholeNumber } from "../../components/form"
+import { CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, NumberField, QuietAction } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { takesNothingTyped } from "../../utils/sheetVisibility"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
@@ -21,7 +21,6 @@ export function SectionSettings({ form, page, section, index }: { form: FormSpec
   const change = useWorkbenchFormStore((s) => s.change)
   const selectSection = useWorkbenchViewStore((s) => s.selectSection)
   const least = leastSectionHeight(section.widgets)
-  const height = wholeNumber({ min: least, unit: "pixels" })
   const addBelow = () => {
     const form = useWorkbenchFormStore.getState().form
     const added = createSection(page, undefined, form === null ? [] : formPartIds(form))
@@ -53,14 +52,16 @@ export function SectionSettings({ form, page, section, index }: { form: FormSpec
       <Section title="Layout">
         <div className="flex items-start gap-2">
           <LabelledRow label="Height">
-            <ValidatedTextField
-              dataTestId="section-height"
-              value={String(section.height)}
-              onCommit={(text) => change((spec) => setSectionHeight(spec, section.id, Number(text)))}
-              validate={height}
+            <NumberField
+              data-testid="section-height"
+              integer required min={least} unit="pixels"
+              value={section.height}
+              onCommit={(height) => { if (height !== null) change((spec) => setSectionHeight(spec, section.id, height)) }}
               containerClassName="w-20"
               className={`${FIELD_CLASS} w-full tabular-nums`}
               style={INPUT_STYLE}
+              problemTestId="section-height-error"
+              problemClassName="mt-0.5 block text-[10px] leading-snug"
             />
           </LabelledRow>
           <button

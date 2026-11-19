@@ -37,6 +37,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
+from haute._typed_numbers import trim_typed
 from haute._workbench_form import (
     CollectionWidget,
     ColumnType,
@@ -333,7 +334,7 @@ def _list_holds(
         return _COUNTS[condition.op](len(passing), condition.count)
     total = _total(table, condition, passing)
     return total is not None and _COUNTS[condition.op](
-        total, _typed("float", condition.value.strip())
+        total, _typed("float", trim_typed(condition.value))
     )
 
 
@@ -383,7 +384,7 @@ def _total(
         for row in rows
         if isinstance(cell := row.get(total.column), str)
         and _of_type(column_type, cell)
-        and isinstance(number := _typed("float", cell.strip()), float)
+        and isinstance(number := _typed("float", trim_typed(cell)), float)
     ]
     if not numbers and total.total != "sum":
         return None
@@ -542,7 +543,7 @@ def _fits(
 def _of_type(column_type: ColumnType, text: str) -> bool:
     """Whether typed *text* is a value a column of the type holds: a real day for a Date, a
     number for a Decimal, a whole one for an Integer, else text other than blank."""
-    text = text.strip()
+    text = trim_typed(text)
     if column_type == "date":
         return _is_day(text)
     if column_type in ("int", "float"):
@@ -604,7 +605,7 @@ def _passes(
     if not isinstance(cell, str) or not _of_type(column_type, cell):
         return False
     compare = _COMPARISONS[op]
-    return compare(_typed(column_type, cell.strip()), _typed(column_type, value.strip()))
+    return compare(_typed(column_type, trim_typed(cell)), _typed(column_type, trim_typed(value)))
 
 
 def _text_passes(op: ConditionTest, cell: str | bool | None, value: str) -> bool:
@@ -613,7 +614,7 @@ def _text_passes(op: ConditionTest, cell: str | bool | None, value: str) -> bool
     empty cell, or a tick, holds nothing."""
     if not isinstance(cell, str) or not _filled(cell):
         return op == "not_contains"
-    text, part = cell.strip(), value.strip()
+    text, part = trim_typed(cell), trim_typed(value)
     if op == "contains":
         return part in text
     if op == "not_contains":
@@ -627,9 +628,9 @@ def _day_passes(op: ConditionTest, cell: str | bool | None, day: str, days: int)
     """Whether a Date's *cell* passes *op* against the real *day* with *days* added, each
     compared as its day number, so no day past the calendar's ends is ever made; a cell that
     is not a real day passes ``not_equals`` alone."""
-    if not isinstance(cell, str) or not _is_day(cell.strip()):
+    if not isinstance(cell, str) or not _is_day(trim_typed(cell)):
         return op == "not_equals"
-    found, wanted = _day_number(cell.strip()), _day_number(day.strip()) + days
+    found, wanted = _day_number(trim_typed(cell)), _day_number(trim_typed(day)) + days
     if op == "equals":
         return found == wanted
     if op == "not_equals":
@@ -648,5 +649,5 @@ def _equals_any(column_type: ColumnType, cell: str | bool | None, values: Sequen
     type: numbers as numbers, text and days as text. A tick never equals a value."""
     if not isinstance(cell, str) or not _filled(cell):
         return False
-    typed = _typed(column_type, cell.strip())
-    return any(typed == _typed(column_type, value.strip()) for value in values)
+    typed = _typed(column_type, trim_typed(cell))
+    return any(typed == _typed(column_type, trim_typed(value)) for value in values)

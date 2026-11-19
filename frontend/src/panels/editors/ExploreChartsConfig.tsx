@@ -65,6 +65,7 @@ import type { SimpleNode } from "../editors/_shared"
 import useAutoUpdateExplorePivots from "../explore/useAutoUpdateExplorePivots"
 import useExplorePivotActions from "../explore/useExplorePivotActions"
 import { apiErrorMessage } from "../../api/errors"
+import { readNumberDraft } from "../../utils/numberRule"
 
 type ChartAxisChange = Partial<
   Pick<ChartAxisConfig, "title" | "minimum" | "maximum" | "number_format">
@@ -608,11 +609,16 @@ function AxisBoundInput({
   other: number | null
   onCommit: (value: number | null) => void
 }) {
-  const parse = (draft: string) => (draft.trim() === "" ? null : Number(draft))
+  // Read by the one grammar for a typed number (specs/frontend-shared, "Typed numbers").
+  const parse = (draft: string): number | null => {
+    const read = readNumberDraft(draft)
+    return read.ok ? read.value : null
+  }
   const validate = (draft: string): string | null => {
-    const next = parse(draft)
+    const read = readNumberDraft(draft)
+    if (!read.ok) return read.problem
+    const next = read.value
     if (next === null) return null
-    if (!Number.isFinite(next)) return "Axis bounds must be finite numbers."
     if (other !== null && (bound === "minimum" ? next >= other : other >= next)) {
       return "Axis minimum must be less than maximum."
     }
