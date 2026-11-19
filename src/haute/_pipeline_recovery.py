@@ -284,6 +284,8 @@ def _exception_message(exc: BaseException) -> str:
 def _node_failure_code(exc: BaseException) -> str:
     if isinstance(exc, ParseError) and "removed_node_instance" in exc.context:
         return "node_instance_removed"
+    if isinstance(exc, ConfigError) and "singleton_name" in exc.context:
+        return "node_name_invalid"
     if isinstance(exc, ConfigError):
         return "node_config_invalid"
     if isinstance(exc, ParseError):

@@ -777,6 +777,33 @@ export interface PipelineSettingsValues {
   preview_memory_gb: number | null;
 }
 /**
+ * The repairs each asked node admits, in the order the request named them.
+ */
+export interface PipelineRepairOptionsResponse {
+  /**
+   * @maxItems 256
+   */
+  nodes: PipelineRepairNodeOptions[];
+  source_revision: string;
+}
+/**
+ * Recover and Reset for one unavailable node, each dry-run against the named revision.
+ */
+export interface PipelineRepairNodeOptions {
+  recover: PipelineRepairOption;
+  reset: PipelineRepairOption;
+  target_recovery_id: string;
+  target_source_file: string;
+}
+/**
+ * Whether one repair's plan builds for the node, and the refusal when it does not.
+ */
+export interface PipelineRepairOption {
+  available: boolean;
+  code: string | null;
+  reason: string | null;
+}
+/**
  * Versioned editor load result; never a canonical executable graph.
  */
 export interface PipelineEditorDocument {

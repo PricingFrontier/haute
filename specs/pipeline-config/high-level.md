@@ -159,7 +159,9 @@ most one request input and one response node, so each has one name: a Quote Inpu
 a Workbench Output `workbench_output` (`SINGLETON_NODE_NAMES`, READ-46), in a pipeline or a
 submodel module. A file whose function for one of them has another name is refused, naming
 the name it must have, as is a standalone run of it; a save, a deploy and an assistant
-edit refuse a graph that names one otherwise.
+edit refuse a graph that names one otherwise. The editor's recovery document reports it
+as `node_name_invalid`, which Recover and Reset refuse with that message: rebuilding
+settings cannot rename a node.
 
 **Wiring.** In the statically parsed source graph, edges come from exactly two declared
 sources: explicit `connect()` calls and function parameter names matching other node names.

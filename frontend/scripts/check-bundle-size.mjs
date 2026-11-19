@@ -289,7 +289,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 302.6 KiB); 1,817 KiB (approved) restores about 1.5 KiB headroom. Merged with typed numbers
 // (FES-06, 19 November 2026), the two bring the total to 1,817.1 KiB (initial 303.0 KiB);
 // 1,819 KiB (approved) restores about 1.9 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1819
+// Server-admitted repairs (19 November 2026): the repair-options question, the shared repair
+// actions and the options answer's generated validator bring the total to 1,819.7 KiB
+// (initial 304.0 KiB); 1,822 KiB (approved) restores about 2.3 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1822
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -433,7 +436,10 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // engine, the shared data point, App's saves and git gates, the graph store's Undo of a
 // version-control entry). Nothing lazy became eager. The merged initial bundle is 302.6 KiB;
 // 304 KiB (approved) restores ~1.4 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 304
+// Server-admitted repairs (19 November 2026): the recovery inspector's repair question
+// (`useRepairOptions`) and its shared `RepairActions` bring the merged initial bundle to
+// 304.0 KiB; 305 KiB (approved) restores ~1 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 305
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

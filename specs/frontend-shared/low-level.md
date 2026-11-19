@@ -55,6 +55,7 @@
 | `frontend/src/utils/serial.ts` | `serial()`, a turn queue: each piece of work given to it runs once the one before has settled, failed or not, so each acts on the state as it is when its turn comes, its promise the work's own. The workbench's form store (its reads, syncs and saves) and the editor's project Save take turns through one each. |
 | `frontend/src/utils/answers.ts` | The one way an answer from the server is written to state ("Late answers", below): `ask(belongsTo, { pending })` takes the parts the answer belongs to and gives an `Asked` (`current()`, `signal`, `answer(request, { ok, failed, stale })`, `release()`); `answer(belongsTo, request, handlers, { pending, inFlight })` asks, answers once and lets go; `requestKind()` a kind of request of which only the newest is current, with `newest(kind)` and `under(kind)` its parts and `bump()`; `watch(store, select, holds)` a piece of a store's state an answer was asked under. It reads no store: each store makes its own parts. The editor's, the panels', the Workbench's and the underwriter app's requests all go through it. |
 | `frontend/src/hooks/useRequestKind.ts` | `useRequestKind()`, a `requestKind()` held for one mounted component and bumped when it unmounts, so the answers its requests are waiting for are dropped. |
+| `frontend/src/hooks/useRepairOptions.ts` | `useRepairOptions(targets)`, which of Recover and Reset the server's dry run admits for each unavailable node an inspector shows, asked of the document's revision in one request, or in batches of `REPAIR_OPTIONS_BATCH` (the contract's bound) when more, any failed batch failing all: `offersFor(target)` is `checking` until answered, `available`, `unavailable` with the refusal, or `failed` with the question's error (nothing admitted), and `retry()` asks again. |
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
 | `frontend/src/utils/documentation.ts` | The published documentation's URLs, which the editor's server does not serve: `DOCUMENTATION_URL` (the site, for the toolbar's Help menu) and `NODE_REFERENCE_URL` (the node reference, for the unknown-node-type banner). |
 | `frontend/src/utils/dtypeColors.ts` | A column type's badge colour by its kind (`columnKind`): `getDtypeColor` for a type as `str(dtype)` renders it and `getKindColor` for a kind (integers blue, floats and decimals green, text amber, booleans purple, dates rose, every other kind slate). |
@@ -1674,8 +1675,11 @@ recovery objects.
 
 ## Minimal repair transport
 
-`api/client.ts` exposes one apply call per repair family; there is no dry-run
-call or plan hash. The removal call sends the root document source, current raw
+`api/client.ts` exposes one apply call per repair family, and there is no plan hash.
+`fetchRepairOptions` asks `/api/pipeline/repair/options` which of Recover and Reset each
+named unavailable node admits; `useRepairOptions` asks it, in one request for every node
+an inspector shows, of the document's revision on show and again when the revision
+changes or the user asks again after a failure. The removal call sends the root document source, current raw
 revision, target source/recovery identity, and explicit `delete_config`; the
 recovery call sends `action: reset | recover` and no deletion option to
 `/api/pipeline/repair/recover/apply`. Runtime parsers reject unknown keys,

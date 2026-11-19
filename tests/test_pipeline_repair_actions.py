@@ -369,6 +369,137 @@ def test_recovery_actions_round_trip_through_api(tmp_path, client, monkeypatch):
     assert rejected.status_code == 422
 
 
+def _camel_case_input(root: Path) -> None:
+    """A data input whose sidecar names its discriminator in camelCase: Recover drops the
+    key and cannot rebuild, Reset starts it afresh."""
+    (root / "haute.toml").write_text('[project]\nname="demo"\n')
+    (root / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.data_input(config="in.json")\ndef source(): ...\n',
+        encoding="utf-8",
+    )
+    (root / "in.json").write_text(
+        json.dumps({"inputType": "file", "format": "parquet", "path": "in.parquet"}),
+        encoding="utf-8",
+    )
+
+
+def _options_request(root: Path, *target_ids: str) -> dict:
+    document = load_pipeline_editor_document(root / "main.py", project_root=root)
+    by_id = {node.authored_id: node for node in document.nodes}
+    return {
+        "source_file": document.source_file,
+        "source_revision": document.source_revision,
+        "targets": [
+            {
+                "target_source_file": by_id[target_id].source_file,
+                "target_recovery_id": by_id[target_id].recovery_id,
+            }
+            for target_id in target_ids
+        ],
+    }
+
+
+def test_repair_options_dry_run_each_repair_of_each_node_and_write_nothing(
+    tmp_path, client, monkeypatch
+):
+    """Each repair is offered exactly when its plan builds; a refused one carries the
+    plan's own refusal. One request answers every node an inspector shows from one read
+    of the revision, and every plan is previewed in isolation, so no artifact changes. A
+    node whose connections are wrong is refused by the server, not by the editor."""
+    from haute import _pipeline_repair_actions as actions
+
+    _camel_case_input(tmp_path)
+    with (tmp_path / "main.py").open("a", encoding="utf-8") as source:
+        source.write('\n\n@pipeline.explore(config="look.json")\ndef look(): ...\n')
+    (tmp_path / "look.json").write_text("{}", encoding="utf-8")
+    use_project(tmp_path)
+    request = _options_request(tmp_path, "source", "look")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    reads: list[str] = []
+    read_document = actions._document_at_revision
+
+    def counted(*args, **kwargs):
+        reads.append(args[1])
+        return read_document(*args, **kwargs)
+
+    monkeypatch.setattr(actions, "_document_at_revision", counted)
+
+    answer = client.post("/api/pipeline/repair/options", json=request)
+
+    assert answer.status_code == 200, answer.text
+    options = answer.json()
+    assert reads == ["main.py"]
+    assert options["source_revision"] == request["source_revision"]
+    source, look = options["nodes"]
+    assert source["target_recovery_id"] == request["targets"][0]["target_recovery_id"]
+    assert source["reset"] == {"available": True, "code": None, "reason": None}
+    assert source["recover"]["available"] is False
+    assert source["recover"]["code"] == "repair_action_unsupported"
+    assert "'inputType' is now 'input_type'" in source["recover"]["reason"]
+    assert look["target_recovery_id"] == request["targets"][1]["target_recovery_id"]
+    refused = {
+        "available": False,
+        "code": "repair_action_unsupported",
+        "reason": "Explore nodes must have exactly one incoming edge.",
+    }
+    assert look["recover"] == refused
+    assert look["reset"] == refused
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_repair_options_question_and_answer_share_one_bound():
+    """The editor batches its question by the answer's bound (the generated contract), so
+    the request's bound must be the same one."""
+    from haute.schemas import PipelineRepairOptionsRequest, PipelineRepairOptionsResponse
+
+    asked = PipelineRepairOptionsRequest.model_json_schema()["properties"]["targets"]
+    answered = PipelineRepairOptionsResponse.model_json_schema()["properties"]["nodes"]
+    assert asked["maxItems"] == answered["maxItems"]
+
+
+def test_repair_options_follow_the_plan_for_a_refusal_no_code_names(tmp_path, monkeypatch):
+    """No list of diagnostic codes decides the answer. With the up-front list emptied, a
+    response node under another name is still refused: rebuilding its settings leaves the
+    name, so the plan's own preview fails, naming the rename it needs."""
+    from haute import _pipeline_repair_actions as actions
+    from haute.schemas import PipelineRepairOptionsRequest
+
+    monkeypatch.setattr(actions, "SETTINGS_UNMENDABLE_CODES", frozenset())
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.output(config="r.json")\ndef response(): ...\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "r.json").write_text('{"output_mapping": []}', encoding="utf-8")
+
+    options = actions.recovery_action_options(
+        project_root=tmp_path,
+        request=PipelineRepairOptionsRequest(**_options_request(tmp_path, "response")),
+    )
+    (node,) = options.nodes
+    for option in (node.recover, node.reset):
+        assert option.available is False
+        assert option.reason is not None
+        assert "would still not load" in option.reason
+        assert "rename 'response' to 'quote_response'" in option.reason
+
+
+def test_repair_options_refuse_a_stale_revision(tmp_path, client):
+    _camel_case_input(tmp_path)
+    use_project(tmp_path)
+    request = _options_request(tmp_path, "source")
+    (tmp_path / "main.py").write_text(
+        (tmp_path / "main.py").read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
+
+    answer = client.post("/api/pipeline/repair/options", json=request)
+
+    assert answer.status_code == 409
+    assert answer.json()["detail"]["code"] == "repair_revision_conflict"
+
+
 @pytest.mark.parametrize("case", ["shared", "required_setting", "missing"])
 def test_config_reset_ownership_and_required_settings(tmp_path, case):
     from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
@@ -631,6 +762,36 @@ def test_recover_reports_a_source_type_keyword_rather_than_converting_it(tmp_pat
     assert ("/source_type", "retained") in changes
     assert plan.response.previous_config is not None
     assert plan.response.previous_config["source_type"] == "run"
+
+
+def test_a_recover_it_cannot_rebuild_names_the_nodes_own_diagnostic(tmp_path):
+    """A camelCase discriminator is dropped, never renamed, so Recover cannot rebuild the
+    node; its refusal names the key the settings need, not the candidate's own failure."""
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.data_input(config="in.json")\ndef source(): ...\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "in.json").write_text(
+        json.dumps({"inputType": "file", "format": "parquet", "path": "in.parquet"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PipelineRepairError) as refused:
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "source", "recover")
+        )
+    message = str(refused.value)
+    assert message.startswith(
+        "Recover settings cannot rebuild these settings: "
+        "Node 'source' (dataInput) uses the camelCase keys"
+    )
+    assert "'inputType' is now 'input_type'" in message
+    assert "discriminator" not in message
+    assert "inputType" in (tmp_path / "in.json").read_text(encoding="utf-8")
 
 
 def test_both_save_paths_write_one_sidecar_for_one_configuration(tmp_path):

@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { readEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within, act } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within, act, waitFor } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { OnUpdateConfigResult, SimpleNode, SimpleEdge } from "../editors/_shared"
@@ -31,7 +31,7 @@ import {
 import { documentRequestScope } from "../../utils/requestGateway"
 import { addressKey, childAddress } from "../../utils/nodeAddress"
 
-const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
+const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, submodelPortEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, fetchRepairOptions, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   steppedCodePaneProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
@@ -45,15 +45,42 @@ const { transformEditorProps, steppedCodePaneProps, edgeJoinEditorProps, explore
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
   fetchExplorePivotMembers: vi.fn(),
+  fetchRepairOptions: vi.fn(),
   // When enabled, the ExplorePivotsConfig mock refetches members from a child
   // passive effect keyed on currentConfigHash — the exact timing of the real
   // FilterMemberPicker, which runs BEFORE any NodePanel parent effect.
   simulatePickerRefetch: { enabled: false },
 }))
 
+type RepairAsk = { sourceRevision: string; targets: { sourceFile: string; recoveryId: string }[] }
+
+/** The server's dry run: every asked repair admitted, except those refused by recovery id. */
+function answerRepairs(refusals: Record<string, { recover?: string; reset?: string }> = {}) {
+  const option = (reason?: string) => reason === undefined
+    ? { available: true, code: null, reason: null }
+    : { available: false, code: "repair_action_unsupported", reason }
+  fetchRepairOptions.mockImplementation(async (args: RepairAsk) => ({
+    source_revision: args.sourceRevision,
+    nodes: args.targets.map((target) => ({
+      target_source_file: target.sourceFile,
+      target_recovery_id: target.recoveryId,
+      recover: option(refusals[target.recoveryId]?.recover),
+      reset: option(refusals[target.recoveryId]?.reset),
+    })),
+  }))
+}
+
+/** A repair button once the server's answer has enabled it. */
+async function enabledButton(name: string): Promise<HTMLElement> {
+  const button = await screen.findByRole("button", { name })
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
+}
+
 vi.mock("../../api/client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../api/client")>(),
   fetchExplorePivotMembers,
+  fetchRepairOptions,
 }))
 
 // Mock all editor components — we only care that the right one renders
@@ -387,6 +414,9 @@ describe("NodePanel", () => {
     useNodeDataStore.getState().reset()
     useDocumentStatusStore.getState().reset()
     useGraphStore.getState().resetForTests()
+    // The server admits every repair unless a test says otherwise.
+    fetchRepairOptions.mockReset()
+    answerRepairs()
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
@@ -457,8 +487,9 @@ describe("NodePanel", () => {
     expect(screen.queryByTestId("TransformEditor")).not.toBeInTheDocument()
   })
 
-  it.each(["instance", "polars"])("removed node reuse form %s shows its diagnostic and removal only", (decorator) => {
+  it.each(["instance", "polars"])("removed node reuse form %s shows its diagnostic and removal only", async (decorator) => {
     const message = 'Removed node-level instance: use modules/<name>.py and pipeline.submodel(<name>.submodel, "<original>").'
+    answerRepairs({ copy: { recover: message, reset: message } })
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded", capabilities: { can_repair: true },
       diagnostics: [{ diagnostic_id: "removed", code: "node_instance_removed", severity: "error", scope: "node", message,
@@ -469,11 +500,35 @@ describe("NodePanel", () => {
       label: "copy", description: "", nodeType: "polars", config: {}, _authoredDecorator: decorator,
       _loadAvailability: "unavailable", _loadDiagnosticIds: ["removed"], _sourceFile: "main.py", _recoveryId: "copy",
     } }) })
+    expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent(
+      `Recover settings and Reset node aren't available: ${message}`,
+    )
     expect(screen.getByTestId("node-recovery-diagnostics")).toHaveTextContent(message)
     expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Remove unavailable node" }))
     expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "copy" })
+  })
+
+  it("a misnamed request node shows its rename and removal only", async () => {
+    const message = "A Quote Input is always named 'quote_input', since a pipeline holds one; rename 'quote_input_1' to 'quote_input', and each connect() that names it."
+    answerRepairs({ quote_input_1: { recover: message, reset: message } })
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "degraded", capabilities: { can_repair: true },
+      diagnostics: [{ diagnostic_id: "misnamed", code: "node_name_invalid", severity: "error", scope: "node", message,
+        element_id: "quote_input_1", source_file: "main.py", source_span: null, remediation: null, incident_id: null }],
+    }))
+    const onRemoveUnavailableNode = vi.fn()
+    renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: {
+      label: "quote_input_1", description: "", nodeType: "apiInput", config: {},
+      _loadAvailability: "unavailable", _loadDiagnosticIds: ["misnamed"], _sourceFile: "main.py", _recoveryId: "quote_input_1",
+    } }) })
+    expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent(
+      `Recover settings and Reset node aren't available: ${message}`,
+    )
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
   })
 
   it("offers remove only for an unavailable recoverable node", () => {
@@ -503,6 +558,7 @@ describe("NodePanel", () => {
       _sourceFile: "main.py", _recoveryId: "unavailable@10",
     } }) })
     expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
+    expect(fetchRepairOptions).not.toHaveBeenCalled()
   })
 
   it("does not offer remove for a blocked node even with repair capability", () => {
@@ -517,18 +573,19 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
   })
 
-  it("offers no migration for unavailable submodels and reset for known ordinary nodes only", () => {
+  it("offers no migration for unavailable submodels and reset for known ordinary nodes only", async () => {
     const onRemoveUnavailableNode = vi.fn()
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ load_status: "degraded", capabilities: { can_repair: true } }))
     const { unmount } = renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Inputs", description: "", nodeType: "submodel", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "inputs@1" } }) })
     expect(screen.queryByRole("button", { name: "Update to current format" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+    // A submodel has no settings of its own to rebuild, so nothing is asked about it.
+    expect(fetchRepairOptions).not.toHaveBeenCalled()
     unmount()
     onRemoveUnavailableNode.mockClear()
     renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Broken", description: "", nodeType: "polars", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "broken@1" } }) })
-    const resetButton = screen.getByRole("button", { name: "Reset node" })
-    expect(resetButton).toBeInTheDocument()
+    const resetButton = await enabledButton("Reset node")
     fireEvent.click(resetButton)
     expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
     expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "broken@1", action: "reset" })
@@ -582,13 +639,20 @@ describe("NodePanel", () => {
       remediation: null,
       incident_id: null,
     }
-
-    it("recovers, resets or removes each one by its own identity in the submodel's file", () => {
+    const loadSubmodelDocument = (fixture: Parameters<typeof makePipelineEditorDocument>[0] = {}) => {
       useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
         load_status: "degraded",
         capabilities: { can_repair: true },
-        diagnostics: [orderDiagnostic],
+        source_file: "rating/main.py",
+        source_revision: "revision-1",
+        ...fixture,
       }))
+    }
+    const joinReset = "An Edge Join cannot be reset: a new join has no keys to write. Recover its settings, which keeps its keys, or remove it."
+
+    it("recovers, resets or removes each one by its own identity in the submodel's file", async () => {
+      answerRepairs({ claim_join: { reset: joinReset } })
+      loadSubmodelDocument({ diagnostics: [orderDiagnostic] })
       const onRemoveUnavailableNode = vi.fn()
       renderPanel({
         onRemoveUnavailableNode,
@@ -601,14 +665,25 @@ describe("NodePanel", () => {
         ]),
       })
 
+      // One question names every node the inspector can rebuild, and never the submodel itself.
+      expect(fetchRepairOptions).toHaveBeenCalledTimes(1)
+      expect(fetchRepairOptions).toHaveBeenCalledWith({
+        sourceFile: "rating/main.py",
+        sourceRevision: "revision-1",
+        targets: [
+          { sourceFile: "rating/modules/data_inputs.py", recoveryId: "claim_join" },
+          { sourceFile: "rating/modules/data_inputs.py", recoveryId: "banded" },
+        ],
+      }, expect.anything())
       const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
       const [join, banded] = listed.getAllByRole("listitem")
       expect(listed.getAllByRole("listitem")).toHaveLength(2)
       expect(join).toHaveTextContent("claim_join")
       expect(join).toHaveTextContent(orderDiagnostic.message)
-      // A new Edge Join has no keys to write, so the join is never reset.
+      fireEvent.click(await enabledButton("Recover settings for claim_join"))
+      // The server refuses the join's reset: a new Edge Join has no keys to write.
       expect(within(join).queryByRole("button", { name: "Reset node claim_join" })).not.toBeInTheDocument()
-      fireEvent.click(within(join).getByRole("button", { name: "Recover settings for claim_join" }))
+      expect(join).toHaveTextContent(`Reset node isn't available: ${joinReset}`)
       fireEvent.click(within(join).getByRole("button", { name: "Remove node claim_join" }))
       fireEvent.click(within(banded).getByRole("button", { name: "Reset node banded" }))
       expect(onRemoveUnavailableNode.mock.calls).toEqual([
@@ -621,12 +696,35 @@ describe("NodePanel", () => {
       expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
     })
 
-    it("only removes a node recovery cannot rebuild, and offers nothing without repair capability", () => {
-      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
-        load_status: "degraded",
-        capabilities: { can_repair: true },
-        diagnostics: [{ ...orderDiagnostic, diagnostic_id: "removed-copy", code: "node_instance_removed", element_id: "copied", message: "Removed node-level reuse form." }],
-      }))
+    it("holds each node's repairs until answered, and asks again when the revision changes", async () => {
+      fetchRepairOptions.mockImplementationOnce(() => new Promise<never>(() => {}))
+      loadSubmodelDocument()
+      renderPanel({
+        onRemoveUnavailableNode: vi.fn(),
+        node: card,
+        submodels: definition([innerNode("banded", "banding", "unavailable")]),
+      })
+      const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
+      expect(listed.getByRole("button", { name: "Recover settings for banded" })).toBeDisabled()
+      expect(listed.getByRole("button", { name: "Reset node banded" })).toBeDisabled()
+      expect(listed.getByRole("button", { name: "Remove node banded" })).toBeEnabled()
+
+      answerRepairs({ banded: { recover: "Its bands no longer parse." } })
+      act(() => loadSubmodelDocument({ source_revision: "revision-2" }))
+      expect(await enabledButton("Reset node banded")).toBeInTheDocument()
+      expect(fetchRepairOptions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sourceRevision: "revision-2" }), expect.anything(),
+      )
+      expect(listed.queryByRole("button", { name: "Recover settings for banded" })).not.toBeInTheDocument()
+      expect(listed.getByRole("listitem")).toHaveTextContent("Recover settings isn't available: Its bands no longer parse.")
+    })
+
+    it("only removes a node recovery cannot rebuild, and offers nothing without repair capability", async () => {
+      const removed = "Removed node-level reuse form."
+      answerRepairs({ copied: { recover: removed, reset: removed } })
+      loadSubmodelDocument({
+        diagnostics: [{ ...orderDiagnostic, diagnostic_id: "removed-copy", code: "node_instance_removed", element_id: "copied", message: removed }],
+      })
       const onRemoveUnavailableNode = vi.fn()
       const { unmount } = renderPanel({
         onRemoveUnavailableNode,
@@ -638,6 +736,9 @@ describe("NodePanel", () => {
       })
       const listed = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
       expect(listed.getAllByRole("listitem")).toHaveLength(2)
+      expect(await listed.findByTestId("node-repair-refusals")).toHaveTextContent(
+        `Recover settings and Reset node aren't available: ${removed}`,
+      )
       expect(listed.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
         "Remove node copied",
         "Remove node legacy",
@@ -649,10 +750,8 @@ describe("NodePanel", () => {
       })
       unmount()
 
-      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
-        load_status: "degraded",
-        capabilities: { can_repair: false },
-      }))
+      fetchRepairOptions.mockClear()
+      loadSubmodelDocument({ capabilities: { can_repair: false } })
       renderPanel({
         onRemoveUnavailableNode: vi.fn(),
         node: card,
@@ -661,10 +760,13 @@ describe("NodePanel", () => {
       const unrepairable = within(screen.getByRole("region", { name: "Unavailable nodes in this submodel" }))
       expect(unrepairable.getByRole("listitem")).toHaveTextContent("claim_join")
       expect(unrepairable.queryByRole("button")).not.toBeInTheDocument()
+      expect(fetchRepairOptions).not.toHaveBeenCalled()
     })
   })
 
-  it("recovers an unavailable Edge Join but never resets it: a new join has no keys to write", () => {
+  it("recovers an unavailable Edge Join but never resets it: a new join has no keys to write", async () => {
+    const refusal = "An Edge Join cannot be reset: a new join has no keys to write."
+    answerRepairs({ "joined@3": { reset: refusal } })
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",
       capabilities: { can_repair: true },
@@ -676,12 +778,15 @@ describe("NodePanel", () => {
         _sourceFile: "main.py", _recoveryId: "joined@3",
       } }),
     })
-    expect(screen.getByRole("button", { name: "Recover settings" })).toBeInTheDocument()
+    expect(await enabledButton("Recover settings")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.getByTestId("node-repair-refusals")).toHaveTextContent(`Reset node isn't available: ${refusal}`)
     expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
   })
 
-  it("only removes a node whose connections are wrong: rebuilding its settings cannot mend them", () => {
+  it("only removes a node whose connections are wrong: rebuilding its settings cannot mend them", async () => {
+    const message = "Explore nodes must have exactly one incoming edge."
+    answerRepairs({ "look@3": { recover: message, reset: message } })
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",
       capabilities: { can_repair: true },
@@ -690,7 +795,7 @@ describe("NodePanel", () => {
         code: "node_topology_invalid",
         severity: "error",
         scope: "node",
-        message: "Explore nodes must have exactly one incoming edge.",
+        message,
         element_id: "look@3",
         source_file: "main.py",
         source_span: null,
@@ -705,12 +810,15 @@ describe("NodePanel", () => {
         _loadDiagnosticIds: ["explore-topology"], _sourceFile: "main.py", _recoveryId: "look@3",
       } }),
     })
+    expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent(
+      `Recover settings and Reset node aren't available: ${message}`,
+    )
     expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeInTheDocument()
   })
 
-  it("recovers settings for an unavailable known polars node as the primary action", () => {
+  it("recovers settings for an unavailable known polars node as the primary action", async () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
       load_status: "degraded",
       capabilities: { can_repair: true },
@@ -731,7 +839,7 @@ describe("NodePanel", () => {
       }),
     })
 
-    fireEvent.click(screen.getByRole("button", { name: "Recover settings" }))
+    fireEvent.click(await enabledButton("Recover settings"))
     expect(onRemoveUnavailableNode).toHaveBeenCalledTimes(1)
     expect(onRemoveUnavailableNode).toHaveBeenCalledWith({
       sourceFile: "modules/child.py",
@@ -739,6 +847,89 @@ describe("NodePanel", () => {
       action: "recover",
     })
     expect(props.onUpdateNode).not.toHaveBeenCalled()
+  })
+
+  describe("the server's dry run decides which repairs show", () => {
+    const pending = () => new Promise<never>(() => {})
+    const loadBroken = (revision = "revision-7") => {
+      useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+        load_status: "degraded", capabilities: { can_repair: true },
+        source_file: "main.py", source_revision: revision,
+      }))
+    }
+    const brokenNode = () => makeNode({ data: {
+      label: "source", description: "", nodeType: "dataInput", _loadAvailability: "unavailable",
+      _sourceFile: "main.py", _recoveryId: "source",
+    } })
+
+    it("asks for the node at the document's revision, and holds both buttons until answered", () => {
+      fetchRepairOptions.mockImplementation(pending)
+      loadBroken()
+      renderPanel({ onRemoveUnavailableNode: vi.fn(), node: brokenNode() })
+      expect(fetchRepairOptions).toHaveBeenCalledWith({
+        sourceFile: "main.py", sourceRevision: "revision-7", targets: [{ sourceFile: "main.py", recoveryId: "source" }],
+      }, expect.anything())
+      expect(screen.getByRole("button", { name: "Recover settings" })).toBeDisabled()
+      expect(screen.getByRole("button", { name: "Reset node" })).toBeDisabled()
+      expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeEnabled()
+    })
+
+    it("withholds a refused repair and says why, keeping the one it admits", async () => {
+      const reason = "Node 'source' (dataInput) uses the camelCase keys Haute wrote before its keys were snake_case: 'inputType' is now 'input_type'."
+      answerRepairs({ source: { recover: reason } })
+      loadBroken()
+      const onRemoveUnavailableNode = vi.fn()
+      renderPanel({ onRemoveUnavailableNode, node: brokenNode() })
+      expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent(`Recover settings isn't available: ${reason}`)
+      expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+      fireEvent.click(await enabledButton("Reset node"))
+      expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "source", action: "reset" })
+    })
+
+    it("names one shared reason once for both repairs", async () => {
+      const reason = "A Quote Input is always named 'quote_input', since a pipeline holds one."
+      answerRepairs({ source: { recover: reason, reset: reason } })
+      loadBroken()
+      renderPanel({ onRemoveUnavailableNode: vi.fn(), node: brokenNode() })
+      expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent(
+        `Recover settings and Reset node aren't available: ${reason}`,
+      )
+      expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+      expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeEnabled()
+    })
+
+    it("admits nothing when the question fails, says why, and asks again on request", async () => {
+      fetchRepairOptions.mockRejectedValueOnce(new Error("offline"))
+      loadBroken()
+      renderPanel({ onRemoveUnavailableNode: vi.fn(), node: brokenNode() })
+      expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent(
+        "Recover settings and Reset node couldn't be checked: offline",
+      )
+      expect(screen.getByRole("button", { name: "Recover settings" })).toBeDisabled()
+      expect(screen.getByRole("button", { name: "Reset node" })).toBeDisabled()
+      expect(screen.getByRole("button", { name: "Remove unavailable node" })).toBeEnabled()
+
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }))
+      expect(await enabledButton("Recover settings")).toBeInTheDocument()
+      expect(screen.getByRole("button", { name: "Reset node" })).toBeEnabled()
+      expect(fetchRepairOptions).toHaveBeenCalledTimes(2)
+      expect(screen.queryByTestId("node-repair-refusals")).not.toBeInTheDocument()
+    })
+
+    it("asks again when the document's revision changes, offering only what the new answer admits", async () => {
+      loadBroken()
+      renderPanel({ onRemoveUnavailableNode: vi.fn(), node: brokenNode() })
+      expect(await enabledButton("Recover settings")).toBeInTheDocument()
+
+      answerRepairs({ source: { recover: "Its settings changed." } })
+      act(() => loadBroken("revision-8"))
+      expect(await screen.findByTestId("node-repair-refusals")).toHaveTextContent("Recover settings isn't available: Its settings changed.")
+      expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
+      expect(fetchRepairOptions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sourceRevision: "revision-8" }), expect.anything(),
+      )
+    })
   })
 
   it.each(["ready", "blocked"] as const)(

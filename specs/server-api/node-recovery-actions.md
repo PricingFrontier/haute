@@ -161,8 +161,19 @@ available; the consumer's custom code is never rewritten on the submodel's behal
 ## Recovery apply API
 
 `POST /api/pipeline/repair/recover/apply` accepts source file/revision, target source
-file/recovery id, and `action: reset | recover`; there is no dry-run step or
-plan hash. Responses carry `repair_kind: reset_node | recover_node`, the
+file/recovery id, and `action: reset | recover`; it builds its plan afresh, so there is
+no plan hash to confirm. `POST /api/pipeline/repair/options` takes the source file and
+revision with the targets an inspector shows, and answers, for each target's Recover and
+Reset, whether its plan builds and the plan's refusal when it does not. It reads the
+revision once, builds the plans an apply would, each verified in the isolated preview, so
+it writes nothing, and its answer cannot drift from an apply's: the editor offers a repair
+only when this answers it available and keeps no refusal rules of its own, so a refusal no
+diagnostic code anticipates still withholds the button and shows its reason. A diagnostic
+code a rebuild can never mend (`node_topology_invalid`, `node_instance_removed`,
+`node_name_invalid`) is refused before any plan, with the diagnostic's own message; an
+Edge Join's Reset is refused, since a new join has no keys; a refused recover leads with the node's own
+diagnostics; and a plan whose preview still fails names what remains outside the
+settings. Responses carry `repair_kind: reset_node | recover_node`, the
 applied artifacts, their bounded display diffs (`changes`) and the authoritative
 document. Recover responses additionally carry the engine's field-outcome report
 (`field_changes`: path, `outcome: retained | defaulted | needs_input | removed`, reason),

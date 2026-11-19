@@ -127,6 +127,7 @@ from haute.schemas import (
     OutputDestinationResponse,
     PipelineEditorDocument,
     PipelineRepairApplyResponse,
+    PipelineRepairOptionsResponse,
     PipelineSettingsResponse,
     PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderResponse,
@@ -415,6 +416,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
         PolarsStepsRenderResponse,
         PolarsFreeCodeColumnsResponse,
         PipelineSettingsResponse,
+        PipelineRepairOptionsResponse,
     ),
     "optimiser": (
         OptimiserSolveResponse,

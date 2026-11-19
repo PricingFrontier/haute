@@ -63,6 +63,8 @@ export interface EditorIdentityBatchRequest {
 export type {
   EditorIdentitiesResponse as EditorIdentityBatchResponse,
   EditorIdentityResponseNode as EditorNodeIdentity,
+  PipelineRepairOption,
+  PipelineRepairOptionsResponse,
   PipelineSettingsResponse,
   PipelineSettingsValues,
   PolarsFreeCodeColumnsResponse,
