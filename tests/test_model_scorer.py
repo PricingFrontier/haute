@@ -205,7 +205,6 @@ class TestModelScorerInit:
             registered_model="my_model",
             version="3",
             alias="",
-            artifact_path="",
             mlflow_destination="",
         )
         scorer = ModelScorer(
@@ -246,7 +245,7 @@ class TestModelScorerDestination:
         )
         scorer.score(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
 
-        assert mock_load.call_args.kwargs["destination"] == "local"
+        assert mock_load.call_args.args[0].mlflow_destination == "local"
 
     @patch("haute._mlflow_io._score_eager")
     @patch("haute._mlflow_io.load_mlflow_model")
@@ -257,7 +256,7 @@ class TestModelScorerDestination:
         scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         scorer.score(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
 
-        assert mock_load.call_args.kwargs["destination"] == ""
+        assert mock_load.call_args.args[0].mlflow_destination == ""
 
 
 # ===========================================================================
@@ -464,7 +463,7 @@ class TestModelScorerScore:
         """Concurrent streaming chunk calls should share one first model load."""
         sm = _make_scoring_model(feature_names=["a", "b"])
 
-        def slow_load(**_: Any) -> ScoringModel:
+        def slow_load(*_args: Any, **_: Any) -> ScoringModel:
             time.sleep(0.05)
             return sm
 
@@ -848,11 +847,8 @@ class TestScoreFromConfig:
 
         assert "pred" in collected.columns
         mock_load.assert_called_once_with(
-            source_type="run",
-            run_id="abc123",
-            artifact_path="model.cbm",
+            RunModelSource(run_id="abc123", artifact_path="model.cbm", mlflow_destination=""),
             task="regression",
-            destination="",
             backend=ANY,
         )
 

@@ -1522,7 +1522,7 @@ class TestCodegenExecValidation:
             scored = _collect(_run_generated(code, features, directory=tmp_path))
 
         assert scored["prediction"].to_list() == [0.5, 0.5]
-        assert load_model.call_args.kwargs["run_id"] == "abc123"
+        assert load_model.call_args.args[0].run_id == "abc123"
 
     def test_transform_with_code_exec(self, tmp_path: Path) -> None:
         """transform code with real Polars expression executes correctly."""

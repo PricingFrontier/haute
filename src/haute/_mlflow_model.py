@@ -371,13 +371,15 @@ def _resolve_in_run(
                 candidates,
             )
         path = candidates[0]
+    # A path that leaves the run, or names a suffix no family loads, is refused
+    # before the store is asked.
     validate_artifact_path(path)
+    family = family_for_artifact(path)
     entry = artifacts.entry(path)
     if entry is None:
         held = _candidates(artifacts)
         holds = f" It holds {', '.join(held)}." if held else " It holds no model Haute can score."
         raise _refused(f"{reference} holds no artifact {path!r}.{holds}", reference, held)
-    family = family_for_artifact(path)
     if entry.is_dir:
         inside = artifacts.listing(path)
         if family.load_file is not None or not _is_pyfunc_folder(inside):

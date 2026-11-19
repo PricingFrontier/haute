@@ -154,7 +154,6 @@ def source_for(kind: str, model_path: Path, contract: Path | None) -> ModelSourc
         registered_model="ext",
         version="1",
         alias="",
-        artifact_path=model_path.name,
         mlflow_destination="",
     )
 
@@ -777,19 +776,18 @@ def test_a_registered_model_and_its_logged_contract_come_from_one_run(
         client.set_terminated(run.info.run_id)
         client.create_model_version("ext", f"runs:/{run.info.run_id}", run.info.run_id)
     client.set_registered_model_alias("ext", "champion", "1")
-    fetch = _mlflow_io._run_contract_if_logged
+    fetch = _mlflow_io.fetch_resolved_files
 
-    def promote_then_fetch(*args: Any) -> str | None:
-        # The alias moves after the model was resolved and before its contract is read.
+    def promote_then_fetch(*args: Any) -> Any:
+        # The alias moves after the model was resolved and before its files are read.
         client.set_registered_model_alias("ext", "champion", "2")
         return fetch(*args)
 
-    monkeypatch.setattr(_mlflow_io, "_run_contract_if_logged", promote_then_fetch)
+    monkeypatch.setattr(_mlflow_io, "fetch_resolved_files", promote_then_fetch)
     source = RegisteredModelSource(
         registered_model="ext",
         version="",
         alias="champion",
-        artifact_path="ext.cbm",
         mlflow_destination="",
     )
     frame = data(seed=13)

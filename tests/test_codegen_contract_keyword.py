@@ -176,7 +176,7 @@ def _graph(response: str = "fan_in") -> PipelineGraph:
     )
 
 
-def _loaded_model(**_kwargs: object) -> ScoringModel:
+def _loaded_model(*_args: object, **_kwargs: object) -> ScoringModel:
     return ScoringModel(
         model=MagicMock(),
         feature_names=list(MODEL_FEATURES),
@@ -185,7 +185,7 @@ def _loaded_model(**_kwargs: object) -> ScoringModel:
     )
 
 
-def _unreachable_model(**_kwargs: object) -> ScoringModel:
+def _unreachable_model(*_args: object, **_kwargs: object) -> ScoringModel:
     raise OSError("the model registry cannot be reached")
 
 

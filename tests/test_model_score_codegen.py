@@ -344,8 +344,8 @@ class TestModelScoreStandaloneRun:
             {"a": 1.0, "b": 2.0, "prediction": 0.25},
             {"a": 3.0, "b": 4.0, "prediction": 0.75},
         ]
-        assert mock_load.call_args.kwargs["source_type"] == "run"
-        assert mock_load.call_args.kwargs["run_id"] == "run123"
+        assert mock_load.call_args.args[0].source_type == "run"
+        assert mock_load.call_args.args[0].run_id == "run123"
 
     def test_hook_receives_the_scored_frame(self, tmp_path, monkeypatch):
         graph = _model_score_graph(
@@ -554,7 +554,7 @@ class TestModelScoreDestinationPersistence:
             collected = result.collect()
 
         assert "prediction" in collected.columns
-        assert mock_load.call_args.kwargs["destination"] == "server"
+        assert mock_load.call_args.args[0].mlflow_destination == "server"
 
     def test_score_from_config_defaults_destination_to_auto(self, tmp_path):
         """An absent sidecar destination forwards the auto sentinel."""
@@ -582,4 +582,4 @@ class TestModelScoreDestinationPersistence:
         ) as mock_load:
             score_from_config(lf, config=str(config_path), base_dir=str(tmp_path)).collect()
 
-        assert mock_load.call_args.kwargs["destination"] == ""
+        assert mock_load.call_args.args[0].mlflow_destination == ""

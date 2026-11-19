@@ -2949,7 +2949,9 @@ df = src.with_columns(
             return lf.with_columns(pl.lit(0.75).alias(output_col))
 
         _preview_cache.clear()
-        monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", lambda **_: FakeScoringModel())
+        monkeypatch.setattr(
+            "haute._mlflow_io.load_mlflow_model", lambda *_args, **_: FakeScoringModel()
+        )
         monkeypatch.setattr("haute._mlflow_io._score_eager", fake_score_eager)
 
         p = tmp_path / "score.parquet"

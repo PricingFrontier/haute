@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 
 from haute._config_validation import validate_node_config
+from haute._model_source import RegisteredModelSource
 from haute._types import NodeType
 from haute.errors import ConfigError, NodeConfigError
 from tests._project import use_project
@@ -95,9 +96,9 @@ class TestLoadFollowsTheAlias:
 
         def champion_predictions() -> np.ndarray:
             model = load_mlflow_model(
-                source_type="registered",
-                registered_model="freq",
-                alias="champion",
+                RegisteredModelSource(
+                    registered_model="freq", version="", alias="champion", mlflow_destination=""
+                ),
                 task="regression",
             )
             return np.asarray(model.predict(frame))
@@ -159,12 +160,16 @@ class TestCacheIdentityFollowsTheAlias:
     def test_a_newer_version_moves_latest(self, registry: Any) -> None:
         latest = _registered_score_fingerprint({"version": "latest"})
         assert _mlflow_registered_version_signature({"version": ""}) == "2"
-        source = registry.get_model_version("freq", "2")
+        second, first = (registry.get_model_version("freq", v) for v in ("2", "1"))
 
-        registry.create_model_version("freq", source.source, source.run_id)
-
-        assert _registered_score_fingerprint({"version": "latest"}) != latest
+        # A newer version of the same file is the same model: the identity stays.
+        registry.create_model_version("freq", second.source, second.run_id)
         assert _mlflow_registered_version_signature({"version": "latest"}) == "3"
+        assert _registered_score_fingerprint({"version": "latest"}) == latest
+
+        registry.create_model_version("freq", first.source, first.run_id)
+        assert _mlflow_registered_version_signature({"version": "latest"}) == "4"
+        assert _registered_score_fingerprint({"version": "latest"}) != latest
 
     def test_a_concrete_version_needs_no_registry_lookup(self) -> None:
         with patch("haute._mlflow_utils.resolve_mlflow_source") as resolve:
@@ -378,17 +383,11 @@ class TestDeployRecordsTheResolvedAlias:
             )
         assert answer["prediction"].is_not_null().all()
 
-    def test_the_bundle_records_alias_version_and_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_the_bundle_records_alias_version_and_run(self, registry: Any, tmp_path: Path) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._utils import model_source_line
         from tests.conftest import make_graph
-        from tests.test_deploy import _write_cached_model
 
-        use_project(tmp_path)
-        # The model and the contract its run logged, as a preview leaves them.
-        _write_cached_model(tmp_path, "run_7", "model.cbm", b"model")
         graph = make_graph(
             {
                 "nodes": [
@@ -408,21 +407,18 @@ class TestDeployRecordsTheResolvedAlias:
             }
         )
         model_sources: dict[str, dict[str, Any]] = {}
-        with patch(
-            "haute.deploy._bundler._resolve_registered_model",
-            return_value=("run_7", "model.cbm", "7"),
-        ) as resolve:
-            collect_artifacts(graph, [], tmp_path, model_sources=model_sources)
+        artifacts = collect_artifacts(graph, [], tmp_path, model_sources=model_sources)
 
-        resolve.assert_called_once_with("freq", "", backend=ANY, alias="champion")
+        run_id = registry.get_model_version("freq", "1").run_id
+        assert sorted(artifacts) == ["score__feature_contract.json", "score__model_1.cbm"]
         assert model_sources == {
             "score": {
                 "registered_model": "freq",
                 "alias": "champion",
-                "version": "7",
-                "run_id": "run_7",
+                "version": "1",
+                "run_id": run_id,
             }
         }
         assert model_source_line("score", model_sources["score"]) == (
-            "Model score: freq @champion -> version 7 (run run_7)"
+            f"Model score: freq @champion -> version 1 (run {run_id})"
         )

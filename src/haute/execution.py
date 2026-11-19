@@ -149,6 +149,9 @@ class _RuntimeInputs:
     #: A ``run`` or ``registered`` source resolves through an MLflow backend,
     #: whose resolved identity is signed too.
     mlflow_sourced: bool = False
+    #: That source names a scoring model, signed by the identity of the model the
+    #: model resolution answers it with rather than by its backend and version.
+    scoring_model: bool = False
 
 
 def _path_field(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -207,6 +210,7 @@ _RUNTIME_INPUTS: Mapping[NodeType, _RuntimeInputs | None] = node_type_table(
             local_paths=_model_score_paths,
             identifier_paths=("artifact_path",),
             mlflow_sourced=True,
+            scoring_model=True,
         ),
         NodeType.BANDING: None,
         NodeType.RATING_STEP: None,
@@ -1112,7 +1116,7 @@ def _runtime_input_fingerprint_entry(
         and inputs.mlflow_sourced
         and config.get("source_type") in ("run", "registered")
     ):
-        if node.data.nodeType is NodeType.MODEL_SCORE:
+        if inputs.scoring_model:
             files["model"] = _scoring_model_signature(config)
         else:
             files["mlflow_backend"] = mlflow_backend_signature(config)

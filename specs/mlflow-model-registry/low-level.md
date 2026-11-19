@@ -419,7 +419,7 @@ the scoring errors and the route returns them as `400`.
 2. Resolve the cwd-relative cache root once through `_disk_cache_root()`
    (`Path.cwd() / ".cache" / "models"`), then compute the safe cache path
    of each stored artifact (`_artifact_cache_path`: `<root>/<backend
-   digest>/<run_id>/<sha256 of artifact path>/<identity token>/artifact<suffix>`
+   digest>/<run_id>/<path digest>/<identity token>/artifact<suffix>`, the path digest the first 16 hex characters of the artifact path's sha256, kept short against Windows' 260-character path limit
    — the backend digest is validated as lowercase hex, the run id and
    artifact path as before, the token as 16 lowercase hex characters, and the
    result must resolve under the root). Two backends therefore never share a
@@ -440,7 +440,7 @@ the scoring errors and the route returns them as `400`.
    the temp directory is always cleaned up in a `finally`.
 5. With the model (and its contract, when the resolution names one) in
    place, `fetch_resolved_files` writes the resolution record beside the
-   model's identity directories (`<root>/<digest>/<run_id>/<sha256 of
+   model's identity directories (`<root>/<digest>/<run_id>/<path digest of
    artifact path>/resolved.json`: the model's identity, and the contract's
    path and identity or `null`), replacing it atomically, and removes the
    older identity directories of the model's path and the contract's path

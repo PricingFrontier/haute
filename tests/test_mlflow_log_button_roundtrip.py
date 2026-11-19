@@ -34,6 +34,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute._model_source import RunModelSource
 from tests._project import use_project
 from tests.training_artifacts_support import publish_trained_job
 
@@ -374,7 +375,10 @@ class TestCatboostButtonRoundTrip:
         score_frame = pl.DataFrame({"x": [0.1, 0.9], "c": ["red", "blue"]}).to_pandas()
         native = np.asarray(native_model.predict_proba(score_frame))
 
-        haute_model = load_mlflow_model(source_type="run", run_id=run_id, task="classification")
+        haute_model = load_mlflow_model(
+            RunModelSource(run_id=run_id, artifact_path="", mlflow_destination=""),
+            task="classification",
+        )
         np.testing.assert_allclose(haute_model.predict_proba(score_frame), native, rtol=1e-9)
 
         with mlflow_fluent_operation():
@@ -385,7 +389,10 @@ class TestCatboostButtonRoundTrip:
         assert served["pred_label"].tolist() == np.where(native[:, 1] > 0.5, 1, 0).tolist()
 
         with pytest.raises(ConfigError, match="trained for classification"):
-            load_mlflow_model(source_type="run", run_id=run_id, task="regression")
+            load_mlflow_model(
+                RunModelSource(run_id=run_id, artifact_path="", mlflow_destination=""),
+                task="regression",
+            )
 
 
 # ---------------------------------------------------------------------------

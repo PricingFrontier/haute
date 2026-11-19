@@ -375,7 +375,7 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
     ),
     ("routes/_job_store.py", "<module>", "optimiser", "set"): (1, "a job store prefix"),
     ("routes/_job_store.py", "<module>", "explore", "set"): (1, "a job store prefix"),
-    ("routes/mlflow.py", "_run_summaries._match", "optimiser", "compare:artifact_filter"): (
+    ("routes/mlflow.py", "_run_artifacts", "optimiser", "compare:artifact_filter"): (
         1,
         "the MLflow run browser's artifact filter",
     ),

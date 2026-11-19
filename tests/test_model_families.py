@@ -24,6 +24,7 @@ from haute._model_flavors import (
     model_file_suffixes,
     register_model_family,
 )
+from haute._model_source import RunModelSource
 from haute.errors import ConfigError
 from tests._project import use_project
 
@@ -151,10 +152,13 @@ def test_a_registered_family_loads_from_a_run_artifact_and_by_discovery(
     run_id = _log_to_local_run(_write_stub(tmp_path), tmp_path, monkeypatch, artifact_dir="models")
 
     named = load_mlflow_model(
-        source_type="run", run_id=run_id, artifact_path="models/model.stub", task="regression"
+        RunModelSource(run_id=run_id, artifact_path="models/model.stub", mlflow_destination=""),
+        task="regression",
     )
     clear_model_cache()
-    discovered = load_mlflow_model(source_type="run", run_id=run_id, task="regression")
+    discovered = load_mlflow_model(
+        RunModelSource(run_id=run_id, artifact_path="", mlflow_destination=""), task="regression"
+    )
 
     assert named.flavor == discovered.flavor == "stub"
     assert _scores(named) == _scores(discovered) == [8.0, 12.0]
@@ -176,7 +180,9 @@ def test_an_unrecognised_suffix_is_refused_naming_the_supported_suffixes() -> No
     with pytest.raises(ConfigError, match=suffixes) as local:
         load_local_model("model.pkl")
     with pytest.raises(ConfigError, match=suffixes) as run:
-        load_mlflow_model(source_type="run", run_id="abc123", artifact_path="model.pkl")
+        load_mlflow_model(
+            RunModelSource(run_id="abc123", artifact_path="model.pkl", mlflow_destination="")
+        )
 
     assert local.value.context["supported_suffixes"] == BUILT_IN_SUFFIXES
     assert run.value.context["supported_suffixes"] == BUILT_IN_SUFFIXES

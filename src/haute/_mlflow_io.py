@@ -9,7 +9,7 @@ download, load, and lock selection. The backend is part of every cache
 identity, so the same run ID and artifact path on two destinations — or on
 two endpoints of one category — never alias:
 
-- disk cache: ``.cache/models/<backend digest>/<run_id>/<sha256 of
+- disk cache: ``.cache/models/<backend digest>/<run_id>/<16 hex of the sha256 of
   artifact_path>/<identity token>/artifact<suffix>``, one copy per identity the
   store gave the file's bytes, beside the ``resolved.json`` record of the copy
   the last resolved load used;
@@ -296,7 +296,7 @@ def _artifact_cache_path(
 ) -> Path:
     """Return the safe disk-cache path of one identity of a run artifact on one backend.
 
-    ``<cache_root>/<backend digest>/<run_id>/<sha256 of artifact_path>/<token>/artifact<suffix>``
+    ``<cache_root>/<backend digest>/<run_id>/<path digest>/<token>/artifact<suffix>``
     — the backend partition means two destinations never share a cached
     file even for identical run IDs and artifact paths, and the token
     (:attr:`StoredArtifact.token`) means two identities of one path are two
@@ -323,8 +323,14 @@ def _artifact_cache_path(
 
 
 def _artifact_cache_dir(backend_digest: str, run_id: str, artifact_path: str) -> Path:
-    """The cache-root-relative folder every identity of one run artifact sits in."""
-    return Path(backend_digest) / run_id / sha256(artifact_path.encode("utf-8")).hexdigest()
+    """The cache-root-relative folder every identity of one run artifact sits in.
+
+    Named by 16 hex characters of the path's sha256, unique among one run's
+    artifacts and short, because every character counts against Windows'
+    260-character path limit beneath a project folder.
+    """
+    digest = sha256(artifact_path.encode("utf-8")).hexdigest()[:16]
+    return Path(backend_digest) / run_id / digest
 
 
 def _resolution_record_path(
@@ -1467,7 +1473,7 @@ def _resolve_artifact_local(
     """Return a local copy of one identity of a run artifact, downloading only if needed.
 
     Saves downloaded artifacts under
-    ``.cache/models/<backend digest>/<run_id>/<sha256 of path>/<token>/`` so they
+    ``.cache/models/<backend digest>/<run_id>/<path digest>/<token>/`` so they
     survive server restarts without re-downloading from remote tracking servers
     (saves ~30 s+ for Databricks-hosted artifacts) while never serving one
     backend's bytes for another's run, nor one identity's bytes for another's.

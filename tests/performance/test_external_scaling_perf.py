@@ -56,8 +56,12 @@ class _MlflowArtifacts:
         self.calls = 0
 
     def list_artifacts(self, run_id: str) -> list[SimpleNamespace]:
+        # Every Haute run logs its model at the top level, which one listing finds.
         self.calls += 1
-        return [SimpleNamespace(path=f"models/{run_id}.cbm")]
+        return [
+            SimpleNamespace(path=f"{run_id}.cbm", is_dir=False, file_size=4096),
+            SimpleNamespace(path="evaluation", is_dir=True, file_size=None),
+        ]
 
 
 def _representative_runs(count: int) -> list[SimpleNamespace]:
