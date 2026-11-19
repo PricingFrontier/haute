@@ -721,10 +721,11 @@ class TestLint:
         monkeypatch: pytest.MonkeyPatch,
     ):
         use_project(project_dir)
-        # Create a haute.toml pointing to main.py
+        # Make it a project whose haute.toml points to main.py
         (project_dir / "haute.toml").write_text(
             '[project]\nname = "test"\npipeline = "main.py"\n',
         )
+        make_haute_project(project_dir)
         result = runner.invoke(cli, ["lint"], catch_exceptions=False)
         assert result.exit_code == 0, result.output
 

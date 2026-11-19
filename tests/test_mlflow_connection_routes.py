@@ -312,7 +312,7 @@ class TestSettings:
         toml_path.write_text("[project\n", encoding="utf-8")
         resp = client.put("/api/mlflow/settings", json={"folder": "team-runs"})
         assert resp.status_code == 400
-        assert "not valid TOML" in resp.json()["detail"]
+        assert "is malformed and could not be parsed" in resp.json()["detail"]
         assert toml_path.read_text(encoding="utf-8") == "[project\n"
 
     def test_malformed_section_is_reported_not_5xx(self, client, project_root: Path) -> None:

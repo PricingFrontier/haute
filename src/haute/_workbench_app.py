@@ -48,6 +48,7 @@ from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddlew
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
 from haute._project_context import ProjectContext, ProjectContextMiddleware, project_scope
+from haute._project_settings import settings_path
 from haute._types import PipelineGraph
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate, no_environment
 from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment, store_environments
@@ -361,7 +362,7 @@ def resolve_release(project_dir: Path) -> ResolvedRelease:
             form = with_param_options(document.spec, project_dir)
         except ParamFileError as exc:
             raise WorkbenchAppError(f"{config.form}: {exc.message}") from exc
-        deploy_config = DeployConfig.from_toml(project_dir / "haute.toml")
+        deploy_config = DeployConfig.from_project(project_dir)
         deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
         # The workbench nodes take their tables from the form the release ships, read once.
         resolved = resolve_config(deploy_config, form=document)
@@ -508,7 +509,7 @@ def _check_output(project_dir: Path, release_dir: Path) -> None:
     if where.exists() and not where.is_dir():
         raise WorkbenchAppError(f"{release_dir} is a file: name a folder for the release.")
     if where.is_dir() and any(where.iterdir()):
-        if (where / "haute.toml").exists() or (where / ".git").exists() or not _is_release(where):
+        if settings_path(where).exists() or (where / ".git").exists() or not _is_release(where):
             raise WorkbenchAppError(
                 f"{release_dir} holds files that are not a release: name an empty directory."
             )
@@ -574,7 +575,7 @@ def image_reference(project_dir: Path) -> str:
     from haute.deploy._config import DeployConfig
     from haute.deploy._container import _validate_model_name
 
-    config = DeployConfig.from_toml(project_dir / "haute.toml")
+    config = DeployConfig.from_project(project_dir)
     registry = config.container.registry.rstrip("/")
     if not registry:
         raise WorkbenchAppError(

@@ -19,7 +19,7 @@ import click
 
 from haute._project import resolve_pipeline_file
 from haute._project_context import current_project
-from haute.cli._helpers import EXPECTED_FAILURES
+from haute.cli._helpers import EXPECTED_FAILURES, HauteCommand, pipeline_file_project
 from haute.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -82,9 +82,9 @@ def _structural_problems(flattened: PipelineGraph) -> list[str]:
 
 def handle_lint(config: LintConfig) -> None:
     """Run the command in the project holding its pipeline file."""
-    from haute._project_context import project_holding, project_scope
+    from haute._project_context import project_scope
 
-    with project_scope(project_holding(Path(config.pipeline_file).resolve().parent)):
+    with project_scope(pipeline_file_project(Path(config.pipeline_file))):
         _handle_lint_in_project(config)
 
 
@@ -140,7 +140,7 @@ def _handle_lint_in_project(config: LintConfig) -> None:
     click.echo("  ✓ No issues found.")
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="pipeline_file")
 @click.argument("pipeline_file", required=False)
 def lint(pipeline_file: str | None) -> None:
     """Check a pipeline as the editor's save does, without running it.

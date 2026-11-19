@@ -7,11 +7,19 @@ import shutil
 import tempfile
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import click
 
-from haute._project_context import current_project
+from haute._project_context import (
+    ProjectContext,
+    current_project,
+    find_project,
+    installed_project,
+    project_scope,
+    resolve_project,
+)
+from haute._project_settings import ProjectSettings, has_settings, read_project_settings
 
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
@@ -98,11 +106,118 @@ ENDPOINT_SUFFIX_HELP = 'Suffix appended to endpoint name (e.g. "-staging").'
 
 
 # ---------------------------------------------------------------------------
+# What a command needs of the project
+# ---------------------------------------------------------------------------
+
+#: What a command needs of the project, as the CLI specification's table states it:
+#:
+#: * ``none`` — the shell's folder; no project is looked for (``init``, ``gpu-setup``).
+#: * ``pipeline_file`` — the shell's folder, where the pipeline file is found; the command
+#:   then runs in the project holding the file (:func:`pipeline_file_project`).
+#: * ``project_if_any`` — the project holding the shell's folder, from any folder inside it;
+#:   the shell's folder when no ``haute.toml`` is above it.
+#: * ``project`` — the project holding the shell's folder; refused without one.
+ProjectNeed = Literal["none", "pipeline_file", "project_if_any", "project"]
+PROJECT_NEEDS: tuple[ProjectNeed, ...] = ("none", "pipeline_file", "project_if_any", "project")
+
+
+def project_for(need: ProjectNeed, start: Path) -> ProjectContext:
+    """The project a command with *need* works in, found from *start* by the one finder.
+
+    A project found has its ``haute.toml`` parsed once here, so a file the settings parse
+    refuses ends every command that finds it in the parse's words before the command runs.
+    Raises :class:`~haute._project.NoProjectError` for a ``project`` need with no
+    ``haute.toml`` at or above *start*, and
+    :class:`~haute._project.ProjectOutsideGitError` for a ``haute.toml`` outside a git
+    repository, for the ``project_if_any`` and ``project`` needs.
+    """
+    if need in ("none", "pipeline_file"):
+        return ProjectContext.at(start)
+    found = resolve_project(start) if need == "project" else find_project(start)
+    if found is None:
+        return ProjectContext.at(start)
+    read_project_settings(found.root)
+    return found
+
+
+def _installed_meets(need: ProjectNeed, installed: ProjectContext) -> None:
+    """A project a caller installed (a test) is kept; it still meets the need's checks."""
+    if need in ("none", "pipeline_file"):
+        return
+    if not has_settings(installed.root):
+        if need == "project":
+            from haute._project import NoProjectError
+
+            raise NoProjectError(installed.root)
+        return
+    read_project_settings(installed.root)
+
+
+class HauteCommand(click.Command):
+    """A ``haute`` command, built with what it needs of the project (``need``).
+
+    Before the command runs, :meth:`invoke` reads the shell's working directory once and
+    installs the project :func:`project_for` finds there; a caller that installed one already
+    keeps it. A refusal ends at the ``haute`` group in one line, the same for every command
+    with the same need.
+    """
+
+    def __init__(self, *args: Any, need: ProjectNeed, **kwargs: Any) -> None:
+        if need not in PROJECT_NEEDS:
+            raise ValueError(f"A command's need is one of {PROJECT_NEEDS}, not {need!r}.")
+        super().__init__(*args, **kwargs)
+        self.need: ProjectNeed = need
+
+    def invoke(self, ctx: click.Context) -> Any:
+        installed = installed_project()
+        if installed is None:
+            # The CLI is an entry point: the command starts from the shell's folder. The
+            # project stays installed on the root context until the command line ends, so the
+            # ``haute`` group answers a failure in it (an incident under its ``.haute/``).
+            ctx.find_root().with_resource(project_scope(project_for(self.need, Path.cwd())))
+        else:
+            _installed_meets(self.need, installed)
+        return super().invoke(ctx)
+
+
+class HauteCommandGroup(click.Group):
+    """A ``haute`` sub-group (``ci``, ``app``), whose commands are :class:`HauteCommand`."""
+
+    command_class = HauteCommand
+
+
+def pipeline_file_project(pipeline_file: Path) -> ProjectContext:
+    """The project a ``pipeline_file`` command runs in: the one holding the file, or the
+    file's folder when no ``haute.toml`` is above it; its settings parsed once, as
+    :func:`project_for` parses a found project's."""
+    from haute._project_context import project_holding
+
+    context = project_holding(pipeline_file.resolve().parent)
+    read_project_settings(context.root)
+    return context
+
+
+def command_settings() -> ProjectSettings | None:
+    """The settings of the command's project, read now; ``None`` without a ``haute.toml``."""
+    return read_project_settings(current_project().root)
+
+
+def require_command_settings() -> ProjectSettings:
+    """The settings of a ``project`` command's project, whose need guarantees a ``haute.toml``."""
+    settings = command_settings()
+    if settings is None:
+        from haute._project import NoProjectError
+
+        raise NoProjectError(current_project().root)
+    return settings
+
+
+# ---------------------------------------------------------------------------
 # Model name resolution — CLI > HAUTE_MODEL_NAME > haute.toml > error
 # ---------------------------------------------------------------------------
 
 
-def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
+def resolve_model_name(cli_arg: str | None, settings: ProjectSettings | None) -> str:
     """Resolve the model name for a CLI command.
 
     Encodes the precedence rule used across every CLI command that accepts
@@ -117,8 +232,8 @@ def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
         positional argument).  ``None`` or an empty string means no CLI value
         was given, and a non-empty ``HAUTE_MODEL_NAME`` environment variable
         is used next.
-    toml_path:
-        Path to a ``haute.toml`` file to read ``[deploy].model_name`` from.
+    settings:
+        The project's parsed ``haute.toml`` to read ``[deploy].model_name`` from.
         ``None`` means no project config is available.
 
     Returns
@@ -135,10 +250,6 @@ def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
         ``[deploy].model_name`` entry.  The message always names both
         user-facing fixes (``--model-name`` flag or
         ``[deploy].model_name`` in ``haute.toml``).
-    FileNotFoundError
-        When *toml_path* is given but does not exist — a missing config
-        file is a programmer bug (the caller passed a wrong path), not a
-        fallback to auto-discovery.
     """
     if cli_arg is not None and cli_arg != "":
         return cli_arg
@@ -147,35 +258,24 @@ def resolve_model_name(cli_arg: str | None, toml_path: Path | None) -> str:
     if environment_name:
         return environment_name
 
-    if toml_path is None:
+    if settings is None:
         raise ValueError(
             "model_name is required — pass --model-name on the command line "
             "or run inside a Haute project with [deploy].model_name set in "
             "haute.toml."
         )
 
-    if not toml_path.exists():
-        raise FileNotFoundError(
-            f"haute.toml not found at {toml_path}. "
-            "Pass --model-name explicitly or cd to a Haute project."
-        )
-
-    import tomllib
-
-    with open(toml_path, "rb") as fh:
-        data = tomllib.load(fh)
-
-    deploy_section = data.get("deploy")
-    if not isinstance(deploy_section, dict):
+    deploy_section = settings.table("deploy")
+    if deploy_section is None:
         raise ValueError(
-            f"haute.toml at {toml_path} has no [deploy] section. "
+            f"haute.toml at {settings.path} has no [deploy] section. "
             "Add a [deploy] block with model_name, or pass --model-name."
         )
 
     model_name = deploy_section.get("model_name")
     if not model_name:
         raise ValueError(
-            f"haute.toml at {toml_path} has no [deploy].model_name. "
+            f"haute.toml at {settings.path} has no [deploy].model_name. "
             "Add model_name under [deploy], or pass --model-name."
         )
 

@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from haute._project_context import current_project
-from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
+from haute.cli._helpers import (
+    ENDPOINT_SUFFIX_HELP,
+    HauteCommand,
+    require_command_settings,
+    resolve_transport,
+)
 
 if TYPE_CHECKING:
     import polars as pl
@@ -54,12 +59,7 @@ def handle_impact(config: ImpactConfig) -> None:
         format_terminal,
     )
 
-    toml_path = current_project().root / "haute.toml"
-    if not toml_path.exists():
-        click.echo("Error: No haute.toml found.", err=True)
-        raise SystemExit(1)
-
-    deploy_config = DeployConfig.from_toml(toml_path)
+    deploy_config = DeployConfig.from_settings(require_command_settings())
     click.echo("  \u2713 Loaded config from haute.toml")
     project_root = current_project().root
 
@@ -257,7 +257,7 @@ def _impact_records(
     return records, input_df, len(records), f"test quotes ({label})"
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="project")
 @click.option(
     "--sample",
     default=10000,

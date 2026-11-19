@@ -295,11 +295,13 @@ def _remote_secrets_or_reason(remote: str, project_dir: Path) -> RemoteSecrets |
             "sets the deploy's secrets only where a remote fetches from and pushes to one "
             "GitHub repository."
         )
-    toml_path = project_dir / "haute.toml"
-    if not toml_path.is_file():
-        return "No haute.toml found: this is not a Haute project."
+    from haute._project_settings import read_project_settings
+
     try:
-        config = DeployConfig.from_toml(toml_path)
+        settings = read_project_settings(project_dir)
+        if settings is None:
+            return "No haute.toml found: this is not a Haute project."
+        config = DeployConfig.from_settings(settings)
         if config.ci.provider != "github":
             return (
                 f"This project's CI provider is {config.ci.provider}: Haute sets the deploy's "

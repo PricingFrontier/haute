@@ -43,7 +43,7 @@ def _resolve_minimal_live_quote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     )
     toml_path.write_text(original_toml + container_section, encoding="utf-8")
 
-    config = DeployConfig.from_toml(toml_path)
+    config = DeployConfig.from_project(toml_path.parent)
     return resolve_config(config)
 
 

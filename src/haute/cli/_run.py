@@ -18,7 +18,7 @@ import click
 
 from haute._project import resolve_pipeline_file
 from haute._project_context import current_project
-from haute.cli._helpers import EXPECTED_FAILURES
+from haute.cli._helpers import EXPECTED_FAILURES, HauteCommand, pipeline_file_project
 from haute.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -64,9 +64,9 @@ def run_frames(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
 
     The command prints these frames; a failure is said and exits as the command exits.
     """
-    from haute._project_context import project_holding, project_scope
+    from haute._project_context import project_scope
 
-    with project_scope(project_holding(Path(config.pipeline_file).resolve().parent)):
+    with project_scope(pipeline_file_project(Path(config.pipeline_file))):
         return _run_in_project(config)
 
 
@@ -194,7 +194,7 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
     return collected
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="pipeline_file")
 @click.argument("pipeline_file", required=False)
 @click.option(
     "--node",

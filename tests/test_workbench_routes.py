@@ -231,13 +231,14 @@ def test_the_tables_are_served_from_the_form_as_it_is_now(project: Path) -> None
 def test_a_form_key_in_haute_toml_is_refused_naming_what_replaced_it(project: Path) -> None:
     enable(project, '[workbench]\nenabled = true\nform = "forms/form.json"\n')
 
+    # The settings parse refuses the retired key for every reader, in its own words.
     for route in ("/api/workbench", "/api/workbench/tables", "/api/workbench/form"):
         refused = client().get(route)
-        assert refused.status_code == 409
-        assert refused.json()["detail"] == (
-            "[workbench].form was removed: the form is the pipeline folder's workbench/ folder; "
+        assert refused.status_code == 422
+        assert (
+            "[workbench] form was removed: the form is the pipeline folder's workbench/ folder; "
             "delete the key"
-        )
+        ) in refused.json()["detail"]
 
 
 def test_a_missing_folder_answers_409_pointing_to_version_history(project: Path) -> None:

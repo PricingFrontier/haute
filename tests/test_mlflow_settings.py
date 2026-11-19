@@ -222,7 +222,7 @@ class TestLoadSaveSettings:
     ) -> None:
         toml_path = project_root / "haute.toml"
         toml_path.write_text("[project\nname = 'main'\n", encoding="utf-8")
-        with pytest.raises(MlflowConfigError, match="not valid TOML"):
+        with pytest.raises(MlflowConfigError, match="is malformed and could not be parsed"):
             save_mlflow_settings(MlflowSettings(folder=folder), project_root)
         assert toml_path.read_text(encoding="utf-8") == "[project\nname = 'main'\n"
 

@@ -153,7 +153,7 @@ def _project(
 
 
 def _resolve(project: Path) -> ResolvedDeploy:
-    return resolve_config(DeployConfig.from_toml(project / "haute.toml"))
+    return resolve_config(DeployConfig.from_project(project))
 
 
 def _score_bundle(resolved: ResolvedDeploy, build: Path, quotes: list[dict]) -> list[dict]:

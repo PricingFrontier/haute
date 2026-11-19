@@ -40,6 +40,12 @@ READER = "haute._typed_numbers"
 #: anyone. Each exception covers its one call (a second of the same call in one function is
 #: ``call#2``), so another conversion beside it is still refused.
 NOT_TYPED: dict[str, str] = {
+    "haute._project_settings._parse_bytes::int(at.group(1))": (
+        "the line tomllib's own refusal names in digits, not text anyone types"
+    ),
+    "haute._project_settings._parse_bytes::int(at.group(2))": (
+        "the column tomllib's own refusal names in digits, not text anyone types"
+    ),
     "haute._chunked_writes.<module>::int(path.name[len(PART_PREFIX) : -len(PART_SUFFIX)])": (
         "a chunk file's number in its own name, which Haute wrote"
     ),

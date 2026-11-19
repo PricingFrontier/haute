@@ -364,7 +364,7 @@ class TestDeployRecordsTheResolvedAlias:
         )
         assert "artifact_path" not in file_config
 
-        with resolve_config(DeployConfig.from_toml(tmp_path / "haute.toml")) as resolved:
+        with resolve_config(DeployConfig.from_project(tmp_path)) as resolved:
             parsed = next(node for node in resolved.full_graph.nodes if node.id == "scored")
             served = next(node for node in resolved.pruned_graph.nodes if node.id == "scored")
             assert parsed.data.config == file_config

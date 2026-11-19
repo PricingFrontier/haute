@@ -633,7 +633,7 @@ def test_update_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> 
     result = runner.invoke(cli, ["ci", "update"])
 
     assert result.exit_code == 1
-    assert "No haute.toml found" in result.output
+    assert "No haute.toml in" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +700,7 @@ def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypat
     result = runner.invoke(cli, ["ci", "registry-host"])
 
     assert result.exit_code == 1
-    assert "No haute.toml found" in result.output
+    assert "No haute.toml in" in result.output
 
 
 # ---------------------------------------------------------------------------

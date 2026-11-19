@@ -19,7 +19,12 @@ import click
 from haute._project import resolve_pipeline_file
 from haute._project_context import current_project
 from haute._scaffold import BUILD_AND_PUSH_ONLY_TARGETS
-from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, EXPECTED_FAILURES
+from haute.cli._helpers import (
+    ENDPOINT_SUFFIX_HELP,
+    EXPECTED_FAILURES,
+    HauteCommand,
+    command_settings,
+)
 from haute.errors import DeployError
 
 # Map of provider-name → env var set by that provider when a job is running.
@@ -60,7 +65,7 @@ class DeployCliConfig:
 
     Distinct from :class:`haute.deploy._config.DeployConfig` — this is the
     raw shape of command-line arguments; the handle function turns it into
-    a fully populated :class:`DeployConfig` via ``from_toml`` or
+    a fully populated :class:`DeployConfig` via ``from_settings`` or
     ``from_cli_args``.
     """
 
@@ -102,9 +107,9 @@ def handle_deploy(config: DeployCliConfig) -> None:
         raise SystemExit(1)
 
     # 1. Load config — prefer haute.toml when present, else build from CLI.
-    toml_path = current_project().root / "haute.toml"
-    if toml_path.exists():
-        deploy_config = DeployConfig.from_toml(toml_path)
+    settings = command_settings()
+    if settings is not None:
+        deploy_config = DeployConfig.from_settings(settings)
         click.echo("  \u2713 Loaded config from haute.toml")
     else:
         try:
@@ -284,7 +289,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
         resolved_deploy.close()
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="project_if_any")
 @click.argument("pipeline_file", required=False)
 @click.option("--model-name", default=None, help="Override model name from haute.toml.")
 @click.option("--dry-run", is_flag=True, help="Validate and score test quotes without deploying.")

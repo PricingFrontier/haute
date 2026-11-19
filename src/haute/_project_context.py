@@ -31,6 +31,7 @@ __all__ = [
     "ProjectContextMiddleware",
     "context_thread",
     "current_project",
+    "find_project",
     "graph_pipeline_dir",
     "project_holding",
     "project_scope",
@@ -86,18 +87,30 @@ class ProjectContext:
         caches) are found in. A malformed ``haute.toml``, or a pipeline it names
         outside the root, raises :class:`~haute.errors.ConfigError`.
         """
-        from haute._project import _toml_configured_pipeline
+        from haute._project_settings import read_project_settings
 
-        configured = _toml_configured_pipeline(self.root)
+        settings = read_project_settings(self.root)
+        configured = None if settings is None else settings.configured_pipeline
         return self.root if configured is None else configured.resolve().parent
 
 
-def resolve_project(start: Path) -> ProjectContext:
-    """Resolve the Haute project that holds *start*: the one project resolver.
+def find_project(start: Path) -> ProjectContext | None:
+    """The Haute project holding *start*, or ``None`` when no ``haute.toml`` is at or above it.
 
-    The root is the first folder at or above *start* holding a ``haute.toml``
-    inside a git repository; anywhere else raises
-    :class:`~haute.errors.ConfigError`.
+    The one finder (``haute._project.find_project_root``): a ``haute.toml`` outside a git
+    repository raises :class:`~haute._project.ProjectOutsideGitError`.
+    """
+    from haute._project import find_project_root
+
+    root = find_project_root(start)
+    return None if root is None else ProjectContext.at(root)
+
+
+def resolve_project(start: Path) -> ProjectContext:
+    """Resolve the Haute project that holds *start*: the finder, for a caller that needs one.
+
+    Raises :class:`~haute._project.NoProjectError` when no folder at or above *start* holds
+    a ``haute.toml``, and as :func:`find_project` raises otherwise.
     """
     from haute._project import get_project_root
 
@@ -175,17 +188,13 @@ def standalone_project_scope(source_file: str | Path | None) -> Iterator[Project
 
 
 def project_holding(folder: Path) -> ProjectContext:
-    """The Haute project holding *folder*, or *folder* itself when no project does.
+    """The Haute project holding *folder*, or *folder* itself when no ``haute.toml`` is above it.
 
-    What a pipeline file given to a standalone run or a CLI command runs in.
+    What a pipeline file given to a standalone run or a CLI command runs in. A ``haute.toml``
+    outside a git repository is refused as the finder refuses it, never run beside.
     """
-    from haute._project import get_project_root
-    from haute.errors import ConfigError
-
-    try:
-        return ProjectContext.at(get_project_root(folder))
-    except ConfigError:
-        return ProjectContext.at(folder)
+    found = find_project(folder)
+    return ProjectContext.at(folder) if found is None else found
 
 
 class ProjectContextMiddleware:
