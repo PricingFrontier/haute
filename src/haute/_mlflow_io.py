@@ -1610,9 +1610,11 @@ def fetch_resolved_files(mlflow: Any, resolved: ResolvedModel) -> FetchedFiles:
     """Copy a resolved model file, and its contract, into the disk cache under their identities.
 
     Then record them as the copies the last resolved load of the artifact used
-    (the record a disk-cache-only load reads) and remove the older copies of
-    both paths. Only a file-loaded family is copied; a pyfunc folder loads
-    through MLflow.
+    (the record a disk-cache-only load reads), under the artifact's lock, which
+    every load of that path holds. Older copies of the paths are left alone: a
+    model another load, or another process, holds in memory still names its
+    contract's copy, so only eviction of the whole run directory removes them.
+    Only a file-loaded family is copied; a pyfunc folder loads through MLflow.
     """
     if not resolved.loads_from_file:
         raise ValueError(f"{resolved.artifact.path!r} is a pyfunc folder; it is not copied.")
@@ -1624,7 +1626,8 @@ def fetch_resolved_files(mlflow: Any, resolved: ResolvedModel) -> FetchedFiles:
             if resolved.contract is None
             else Path(_resolve_artifact_local(mlflow, backend, run_id, resolved.contract))
         )
-        _record_resolution(resolved)
+        with _artifact_io_lock(backend.digest, run_id, resolved.artifact.path):
+            _record_resolution(resolved)
     return FetchedFiles(model, contract)
 
 
@@ -1647,31 +1650,6 @@ def _record_resolution(resolved: ResolvedModel) -> None:
     payload = json.dumps(record, sort_keys=True).encode("utf-8")
     if not record_path.is_file() or record_path.read_bytes() != payload:
         atomic_write_bytes(record_path, payload)
-    for stored in (resolved.artifact, contract):
-        if stored is not None:
-            _remove_older_copies(root, resolved, stored)
-
-
-def _remove_older_copies(root: Path, resolved: ResolvedModel, stored: StoredArtifact) -> None:
-    """Remove the copies of *stored*'s path under identities other than its own.
-
-    Housekeeping, like eviction: it never raises into a load that only asked for
-    a model. A copy that survives (held open by another process) or a folder that
-    cannot be listed is logged and left for a later pass or for eviction.
-    """
-    from haute._file_ops import remove_tree
-
-    folder = root / _artifact_cache_dir(resolved.backend.digest, resolved.run_id, stored.path)
-    try:
-        copies = [copy for copy in folder.iterdir() if copy.is_dir()]
-    except OSError as exc:
-        logger.warning(
-            "mlflow_disk_cache_stale_copy_kept", path=str(folder), error_type=type(exc).__name__
-        )
-        return
-    for copy in copies:
-        if copy.name != stored.token and not remove_tree(copy):
-            logger.warning("mlflow_disk_cache_stale_copy_kept", path=str(copy))
 
 
 def clear_model_cache(run_id: str | None = None) -> int:

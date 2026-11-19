@@ -254,8 +254,9 @@ Out of scope (owned elsewhere):
   downloads nothing. Every load asks the store, once, what the reference
   resolves to; only a load confined to the disk cache (the assistant's data
   check) does not, and it reads the copy the last resolved load recorded.
-  When a newer copy of a path is recorded, the older copies of that path are
-  removed. The root is
+  Older copies of a path stay until eviction removes the run's directory, since
+  a model another load or process still holds names its contract's copy, and a
+  memory hit puts back its own copies and record if they have gone. The root is
   resolved from the process cwd through the single `_disk_cache_root()` helper
   used by resolution, clear, and fast-path lookup. Oldest-first
   eviction targets at most 50 inactive run directories. Under the active-runs

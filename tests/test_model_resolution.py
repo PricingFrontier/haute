@@ -583,7 +583,7 @@ class TestALoggedAgainFileScores:
         np.testing.assert_allclose(_scores(source, head), retrained.predict(head), rtol=1e-6)
         assert len(downloads) == 2
 
-        # The copy of the bytes the run no longer holds is removed; only the current one stays.
+        # Each identity keeps its copy, and the record names the one the run holds now.
         from haute._mlflow_io import disk_cached_run_model
 
         cached = disk_cached_run_model(
@@ -591,7 +591,8 @@ class TestALoggedAgainFileScores:
         )
         assert cached is not None
         copies = [path for path in cached.model_path.parent.parent.iterdir() if path.is_dir()]
-        assert copies == [cached.model_path.parent]
+        assert len(copies) == 2 and cached.model_path.parent in copies
+        assert cached.model_path.read_bytes() == _stored_bytes(store, "relogged", "model.cbm")
 
     def test_bytes_that_come_back_are_scored_with_their_own_copies(
         self, store: _Store, tmp_path: Path
@@ -638,25 +639,50 @@ class TestALoggedAgainFileScores:
         with disk_cache_only_model_loads():
             np.testing.assert_allclose(_scores(source, head), models["a"].predict(head))
 
-    def test_removing_older_copies_never_fails_a_load(self, tmp_path: Path) -> None:
-        from haute._mlflow_io import _remove_older_copies
-        from haute._mlflow_model import ResolvedModel, StoredArtifact
+    def test_a_warm_hit_for_one_answer_leaves_another_loads_copies(
+        self, store: _Store, tmp_path: Path
+    ) -> None:
+        """An operation still holding answer A takes its hit after B loaded: B keeps its copies."""
+        from haute._mlflow_io import disk_cached_run_model, load_resolved_model
+        from haute._mlflow_model import resolve_model
         from haute._mlflow_utils import resolve_backend
-        from haute._model_flavors import family_for_artifact
+        from haute._model_source import load_bound_model
+        from haute.modelling._feature_contract import build_contract, save_contract
 
-        use_project(tmp_path)
-        stored = StoredArtifact("model.cbm", "size:1")
-        resolved = ResolvedModel(
-            backend=resolve_backend(""),
-            run_id="run",
-            artifact=stored,
-            family=family_for_artifact("model.cbm"),
-            contract=None,
-            version="",
-            reference="MLflow run 'run'",
-        )
-        # No folder of copies at all: nothing to remove, and nothing raised.
-        _remove_older_copies(tmp_path / ".cache" / "models", resolved, stored)
+        run_id = store.client.create_run(store.experiment_id).info.run_id
+        for name, scale, target in (("a", 6.0, "y"), ("b", 60.0, "z")):
+            folder = tmp_path / name
+            folder.mkdir()
+            _catboost(store.frame, scale).save_model(str(folder / "model.cbm"))
+            save_contract(
+                build_contract(
+                    features=_FEATURES,
+                    feature_types={"x0": "Float64", "x1": "Float64"},
+                    categorical_features=[],
+                    target_name=target,
+                    target_type="Float64",
+                    task="regression",
+                ),
+                folder / "model.feature_contract.json",
+            )
+        source = _run_source(run_id, "model.cbm")
+
+        def log(name: str) -> None:
+            for file in ("model.cbm", "model.feature_contract.json"):
+                store.client.log_artifact(run_id, str(tmp_path / name / file))
+
+        log("a")
+        answer_a = resolve_model(source, backend=resolve_backend(""))
+        model_a = load_resolved_model(answer_a, "regression")
+        log("b")
+        bound_b = load_bound_model(source, "regression")
+        copies_b = disk_cached_run_model(run_id=run_id, artifact_path="model.cbm", destination="")
+        assert copies_b is not None and copies_b.contract_path is not None
+
+        assert load_resolved_model(answer_a, "regression") is model_a
+        assert copies_b.model_path.is_file() and copies_b.contract_path.is_file()
+        assert bound_b.contract_path is not None and Path(bound_b.contract_path).is_file()
+        assert model_a.run_contract_path is not None and Path(model_a.run_contract_path).is_file()
 
 
 # ---------------------------------------------------------------------------

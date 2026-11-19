@@ -446,11 +446,11 @@ the scoring errors and the route returns them as `400`.
    place, `fetch_resolved_files` writes the resolution record beside the
    model's identity directories (`<root>/<digest>/<run_id>/<path digest of
    artifact path>/resolved.json`: the model's identity, and the contract's
-   path and identity or `null`), replacing it atomically, and removes the
-   older identity directories of the model's path and the contract's path
-   through the shared retrying `remove_tree` (a tree that survives, held
-   open by another process, is logged as `mlflow_disk_cache_stale_copy_kept`
-   and removed by a later pass or by eviction). The record is what a
+   path and identity or `null`), replacing it atomically under the
+   artifact's I/O lock, which every load of that path holds. Older identity
+   directories are left in place: a model another load, or another process,
+   holds in memory names its contract's copy, so only eviction of the whole
+   run directory removes them. The record is what a
    disk-cache-only load reads (`_recorded_resolution`), and
    `disk_cached_run_model` builds the assistant's `DiskCachedRunModel` from
    it.
