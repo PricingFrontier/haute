@@ -189,11 +189,12 @@ def test_a_refusal_crosses_a_worker_boundary(tmp_path: Path) -> None:
     error = _refusal(tmp_path, b"[project\n")
     copy = pickle.loads(pickle.dumps(error))
 
-    assert (str(copy), copy.path, copy.line, copy.column) == (
+    assert (str(copy), copy.path, copy.line, copy.column, copy.raw) == (
         str(error),
         error.path,
         error.line,
         error.column,
+        error.raw,
     )
 
 

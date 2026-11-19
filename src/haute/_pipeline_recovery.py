@@ -2464,6 +2464,13 @@ def project_settings_editor_document(
         pipeline_name=failure.path.name,
         pipeline_description="",
         source_file=source_file,
+        # The revision of the bytes the parse refused, as a pipeline file's document carries
+        # its own: the editor's client takes no document without one.
+        source_revision=pipeline_recovery_revision(
+            project_root=root,
+            artifacts=[("project_settings", failure.path)],
+            known_bytes={failure.path: failure.raw},
+        ),
         source_text=failure.text.replace("\r\n", "\n").replace("\r", "\n"),
         sources=[],
         active_source=None,

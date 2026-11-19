@@ -1147,3 +1147,28 @@ class TestBroadcastTreeChange:
         assert events == [
             ("parse.error", {"error": server.PIPELINE_NOT_IN_VERSION, "source_file": "gone.py"})
         ]
+
+
+def test_the_watcher_starts_on_a_haute_toml_the_settings_parse_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A misspelt key the editor's load names must not stop live sync: the watcher starts
+    on the project root, which holds the pipeline folder, instead of crashing in a loop."""
+    import asyncio
+
+    from haute import server
+
+    use_project(tmp_path)
+    (tmp_path / "haute.toml").write_text('[project]\npipline = "rating/main.py"\n')
+    watched: list[tuple[object, ...]] = []
+
+    async def fake_awatch(*dirs: object, **_kw: object):  # type: ignore[no-untyped-def]
+        watched.append(dirs)
+        return
+        yield  # an async generator that yields no batch
+
+    monkeypatch.setattr("watchfiles.awatch", fake_awatch)
+
+    asyncio.run(server._file_watcher())
+
+    assert watched == [(tmp_path.resolve(),)]

@@ -56,9 +56,9 @@ PATH_SETTINGS: frozenset[tuple[str, str]] = frozenset(
 class ProjectSettingsError(ConfigError):
     """``haute.toml`` cannot be read as settings: its message names the file and what is wrong.
 
-    It carries the file and its text as read (a byte that is not UTF-8 shown replaced), and
-    the line and column TOML named, so the editor shows the file with the fault marked
-    without opening it again.
+    It carries the file, the bytes the parse read and their text (a byte that is not UTF-8
+    shown replaced), and the line and column TOML named, so the editor shows the file with
+    the fault marked, at the revision of those bytes, without opening it again.
     """
 
     def __init__(
@@ -69,17 +69,19 @@ class ProjectSettingsError(ConfigError):
         text: str = "",
         line: int | None = None,
         column: int | None = None,
+        raw: bytes = b"",
     ) -> None:
         super().__init__(message)
         self.path = path
         self.text = text
         self.line = line
         self.column = column
+        self.raw = raw
 
     def __reduce__(self) -> tuple[Any, ...]:
         return (
             _restore_settings_error,
-            (type(self), self.message, self.path, self.text, self.line, self.column),
+            (type(self), self.message, self.path, self.text, self.line, self.column, self.raw),
         )
 
 
@@ -90,9 +92,10 @@ def _restore_settings_error(
     text: str,
     line: int | None,
     column: int | None,
+    raw: bytes,
 ) -> ProjectSettingsError:
     """A :class:`ProjectSettingsError` as a worker sent it."""
-    return error_type(message, path=path, text=text, line=line, column=column)
+    return error_type(message, path=path, text=text, line=line, column=column, raw=raw)
 
 
 def settings_path(folder: Path) -> Path:
@@ -223,6 +226,15 @@ _TOML_POSITION = re.compile(r"\(at line (\d+), column (\d+)\)")
 
 
 def _parse(path: Path, raw: bytes) -> ProjectSettings:
+    try:
+        return _parse_bytes(path, raw)
+    except ProjectSettingsError as exc:
+        # The bytes refused, so the editor's document of them carries their revision.
+        exc.raw = raw
+        raise
+
+
+def _parse_bytes(path: Path, raw: bytes) -> ProjectSettings:
     body = raw.removeprefix(_BOM)
     try:
         text = body.decode("utf-8")

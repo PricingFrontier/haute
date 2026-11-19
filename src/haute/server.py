@@ -61,8 +61,9 @@ from haute._project_context import (
     current_project,
     resolve_project,
 )
+from haute._project_settings import ProjectSettingsError
 from haute._sandbox import contained_path
-from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute._workbench_config import read_workbench_config
 from haute.errors import ConfigError, NotFoundError, PathOutsideProjectError
 from haute.routes._background_jobs import stop_background_jobs
 from haute.routes._error_handlers import install_failure_answers
@@ -675,7 +676,8 @@ def _workbench_form_file(project_root: Path) -> tuple[str, Path] | None:
     which the workbench's own routes report."""
     try:
         config = read_workbench_config(project_root)
-    except WorkbenchConfigError:
+    except ConfigError:
+        # The workbench's table refused, or the settings parse refused the whole file.
         return None
     return (config.form, config.form_folder.resolve()) if config.enabled else None
 
@@ -790,7 +792,13 @@ async def _file_watcher() -> None:
         return
 
     root = current_project().root
-    pipe_dir = current_project().pipeline_dir
+    try:
+        pipe_dir = current_project().pipeline_dir
+    except ProjectSettingsError as exc:
+        # The editor's load shows the refusal as the document's issue; the root, which is
+        # watched recursively, holds whatever pipeline folder the file is fixed to name.
+        logger.warning("file_watcher_settings_refused", error=exc.message)
+        pipe_dir = root
     watch_dirs = [root]
     if pipe_dir != root:
         watch_dirs.append(pipe_dir)

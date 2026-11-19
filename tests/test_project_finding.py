@@ -319,6 +319,8 @@ def test_the_editor_names_what_the_parse_refuses_instead_of_an_empty_canvas(
 
     assert document["load_status"] == "source_only"
     assert document["source_file"] == "haute.toml"
+    # The editor's client takes no live document without a revision.
+    assert document["source_revision"]
     assert '"rating/main.py"' in document["source_text"]
     [issue] = document["diagnostics"]
     assert issue["code"] == "project_settings_invalid"
