@@ -1,4 +1,4 @@
-"""Shared MLflow helpers used by _mlflow_io, _optimiser_io, and deploy/_bundler.
+"""Shared MLflow helpers used by the model resolution, _mlflow_io, _optimiser_io and deploy.
 
 Eliminates duplication of:
   - ``resolve_version()``: resolve "latest" to a concrete version number
@@ -7,9 +7,11 @@ Eliminates duplication of:
     to a concrete tracking URI, registry URI, secret-free identity, and filesystem digest
   - ``backend_identity()``: secret-free identity derivation per backend
   - ``resolve_backend()``: destination resolution to a ``ResolvedBackend``
+  - ``pinned_client()``: a client pinned to a backend's tracking and registry URIs
   - ``resolve_mlflow_source()``: import mlflow, create a destination-pinned client,
     resolve a source_type/run_id/registered_model to a concrete run_id, and return
-    the ``ResolvedBackend`` alongside the client
+    the ``ResolvedBackend`` alongside the client, for the callers that want only a
+    run, a version or a client; which model scores is ``_mlflow_model.resolve_model``'s
 
 Databricks credential binding:
   MLflow authenticates a bare ``databricks`` tracking URI from the general
@@ -605,6 +607,21 @@ def resolve_backend(destination: str = "", project_root: Path | None = None) -> 
     )
 
 
+def pinned_client(backend: ResolvedBackend) -> MlflowClient:
+    """A client pinned to *backend*'s tracking and registry URIs.
+
+    Raises:
+        ImportError: ``mlflow`` is not installed.
+    """
+    try:
+        from mlflow.tracking import MlflowClient
+    except ImportError:
+        raise ImportError("mlflow is not installed. Install it with: pip install mlflow") from None
+
+    allow_file_store_if_local(backend.tracking_uri, backend.mode)
+    return MlflowClient(tracking_uri=backend.tracking_uri, registry_uri=backend.registry_uri)
+
+
 def resolve_mlflow_source(
     *,
     source_type: str,
@@ -617,8 +634,10 @@ def resolve_mlflow_source(
 ) -> tuple[str, str, ModuleType, Any, ResolvedBackend]:
     """Import mlflow, pin a client to the destination, and resolve a model source.
 
-    Handles the boilerplate shared across ``_mlflow_io``, ``_optimiser_io``,
-    and ``deploy/_bundler``:
+    For the callers that want only a run, a version or a client: the optimiser's
+    reader and the execution plan's version of an Optimiser Apply. Which model a
+    Model Scoring node scores is the model resolution's
+    (:func:`haute._mlflow_model.resolve_model`), never this function's.
 
     1. Import ``mlflow`` (with a friendly :class:`ImportError`).
     2. Resolve the backend (or use the supplied ``backend`` without re-resolving).
@@ -655,21 +674,10 @@ def resolve_mlflow_source(
     if backend is not None and destination != "":
         raise ValueError("Cannot specify both 'backend' and a non-empty 'destination'")
 
-    try:
-        import mlflow
-    except ImportError:
-        raise ImportError("mlflow is not installed. Install it with: pip install mlflow") from None
-
-    from mlflow.tracking import MlflowClient
-
     if backend is None:
         backend = resolve_backend(destination)
-
-    allow_file_store_if_local(backend.tracking_uri, backend.mode)
-    client = MlflowClient(
-        tracking_uri=backend.tracking_uri,
-        registry_uri=backend.registry_uri,
-    )
+    client = pinned_client(backend)
+    import mlflow
 
     resolved_run_id = run_id
     resolved_version = version

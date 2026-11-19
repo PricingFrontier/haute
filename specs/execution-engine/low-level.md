@@ -2001,22 +2001,26 @@ present a structural or schema result as execution evidence.
   Local even when the environment configures a remote. Generated scripts read the
   same field from the node's config sidecar (`score_from_config`, the optimiser-apply
   config), and `validate_node_config` rejects any other value with `ConfigError`.
-  The field is classified as an artifact input in the execution cache, and the
-  runtime-input fingerprint entry of an MLflow-sourced `MODEL_SCORE` or
-  `OPTIMISER_APPLY` node additionally records the *resolved* backend identity
-  (`resolve_backend(mlflow_destination).identity`, secret-free; or an
-  "unresolved" marker with the configuration reason when resolution fails), so
-  a changed server URL or local folder, a repointed profile, or a node's changed
-  destination misses the dataframe and preview caches instead of
-  replaying predictions loaded from another backend, and removed prerequisites
-  can never be served from a warm entry. A `registered` source also records
-  `registered_version`: the concrete version its alias, `latest` or empty
-  version resolves to through the registry at fingerprint time (a concrete
-  version is recorded as given), so moving an alias or registering a newer
-  version misses both caches; a failed lookup records an "unresolved" marker
-  naming only the exception type plus a random attempt id, so every failed
-  lookup is a distinct identity and an entry cached after one failure is never
-  served during another, and execution reports the failure.
+  The field is classified as an artifact input in the execution cache. The
+  runtime-input fingerprint entry of an MLflow-sourced `MODEL_SCORE` node
+  records `model`, the model resolution's `ResolvedModel.identity_record()`
+  (the resolved backend identity, secret-free; the run; the artifact's path and
+  the identity the store gives its bytes; the contract's), read through the
+  operation's `model_resolution_scope`, so the identity the result is stored
+  under is the model the execution scores. A changed server URL or local
+  folder, a repointed profile, a node's changed destination, a moved alias, a
+  newer `latest`, and a file logged again over its own path each miss the
+  dataframe and preview caches instead of replaying predictions from the
+  model they replaced. A destination that does not resolve records an
+  "unresolved" marker with the configuration reason, and any other failed
+  resolution one naming only the exception type plus a random attempt id, so
+  every failed lookup is a distinct identity and an entry cached after one
+  failure is never served during another; execution reports the failure. An
+  MLflow-sourced `OPTIMISER_APPLY` node, whose result is not a scoring model,
+  records the resolved backend identity (`mlflow_backend`) and, for a
+  `registered` source, `registered_version`, the concrete version its alias,
+  `latest` or empty version resolves to through the registry at fingerprint
+  time (a concrete version is recorded as given), with the same markers.
 - **File-sourced Model Score nodes sign their model and contract.** A
   `MODEL_SCORE` node with `source_type: "file"` lists `model_path` among its
   local runtime input path fields (beside `feature_contract_path`), so

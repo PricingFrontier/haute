@@ -17,9 +17,10 @@ from haute.errors import DeployError
 from haute.graph_utils import PipelineGraph
 
 if TYPE_CHECKING:
-    from mlflow.tracking import MlflowClient
-
+    from haute._mlflow_io import FetchedFiles
+    from haute._mlflow_model import ResolvedModel
     from haute._mlflow_utils import ResolvedBackend
+    from haute._model_source import RegisteredModelSource, RunModelSource
 
 logger = get_logger(component="deploy.bundler")
 
@@ -96,14 +97,43 @@ def collect_artifacts(
             downloaded file's name, the key the deployed scorer finds the bundled
             model by. The graph's own configs are never written to.
 
+    A run or registered ``modelScore`` node is answered by the model resolution,
+    once for the whole bundle (``model_resolution_scope``), so a run with no
+    artifact path is resolved here, never when served, and one that resolves
+    to a pyfunc folder is refused.
+
     Returns:
         Dict of artifact_name → absolute_path.
 
     Raises:
         FileNotFoundError: If a referenced artifact file does not exist.
     """
-    input_set = set(input_node_ids)
-    project_root = (project_root or pipeline_dir).resolve()
+    from haute._mlflow_model import model_resolution_scope
+
+    with model_resolution_scope():
+        return _collect_artifacts(
+            pruned_graph,
+            set(input_node_ids),
+            pipeline_dir,
+            project_root=(project_root or pipeline_dir).resolve(),
+            resources=resources,
+            snapshot_provenance=snapshot_provenance,
+            model_sources=model_sources,
+            served_configs=served_configs,
+        )
+
+
+def _collect_artifacts(
+    pruned_graph: PipelineGraph,
+    input_set: set[str],
+    pipeline_dir: Path,
+    *,
+    project_root: Path,
+    resources: ExitStack | None,
+    snapshot_provenance: dict[str, dict[str, Any]] | None,
+    model_sources: dict[str, dict[str, Any]] | None,
+    served_configs: dict[str, dict[str, Any]] | None,
+) -> dict[str, Path]:
     artifacts = ArtifactKeys()
 
     for node in pruned_graph.nodes:
@@ -193,59 +223,36 @@ def collect_artifacts(
 
             # The node's stored destination ("" = local) is resolved to exactly
             # one backend, after the skip guards so an unconfigured node stays a
-            # silent skip, and that object is threaded through both the registry
-            # lookup and the download: a settings save mid-bundle cannot split
-            # the two across backends.
+            # silent skip, and the model resolution answers the reference at it.
             from haute._mlflow_utils import resolve_backend
 
-            if isinstance(model_source, RegisteredModelSource):
-                backend = resolve_backend(model_source.mlflow_destination)
-                run_id, artifact_path, resolved_version = _resolve_registered_model(
-                    model_source.registered_model,
-                    model_source.version,
-                    backend=backend,
-                    alias=model_source.alias,
-                )
-                if model_sources is not None:
-                    model_sources[nid] = {
-                        "registered_model": model_source.registered_model,
-                        "alias": model_source.alias,
-                        "version": resolved_version,
-                        "run_id": run_id,
-                    }
-            else:
-                artifact_path = model_source.artifact_path
-                if not artifact_path:
-                    # A run without an artifact path is discovered when served.
-                    continue
-                run_id = model_source.run_id
-                backend = resolve_backend(model_source.mlflow_destination)
-
-            _validate_mlflow_artifact_identifier(nid, artifact_path)
+            resolved = _resolve_bundled_model(
+                nid, model_source, resolve_backend(model_source.mlflow_destination)
+            )
+            if isinstance(model_source, RegisteredModelSource) and model_sources is not None:
+                model_sources[nid] = {
+                    "registered_model": model_source.registered_model,
+                    "alias": model_source.alias,
+                    "version": resolved.version,
+                    "run_id": resolved.run_id,
+                }
 
             # Download from MLflow at deploy time so the artifact is
             # bundled into the container / MLflow model package.
-            local_path = _download_model_artifact(
-                run_id,
-                artifact_path,
-                pipeline_dir,
-                backend=backend,
-            )
+            fetched = _fetch_bundled_model(resolved)
             # The served config names the downloaded file, the key the scorer finds
             # the bundled model by; the parsed graph's config is left as it was.
-            served_name = Path(artifact_path).name
+            served_name = Path(resolved.artifact.path).name
             if served_configs is not None:
                 served_configs[nid] = {**config, "artifact_path": served_name}
-            artifacts.add(nid, f"{nid}__{served_name}", local_path)
+            artifacts.add(nid, f"{nid}__{served_name}", fetched.model)
 
             # An MLflow model is served under the contract its run logged beside
             # it, the one the preview binds, so each request is checked against
             # training's features, dtypes and offset; a model whose run logged
             # none is served against the features it names, as the preview scores it.
-            if explicit_contract is None:
-                run_contract = _run_contract(backend, run_id, artifact_path)
-                if run_contract is not None:
-                    artifacts.add(nid, f"{nid}__feature_contract.json", run_contract)
+            if explicit_contract is None and fetched.contract is not None:
+                artifacts.add(nid, f"{nid}__feature_contract.json", fetched.contract)
 
         elif artifact == "dataset" and nid not in input_set:
             _collect_static_data_input(
@@ -319,25 +326,37 @@ def _collect_model_file(
         artifacts.add(node_id, f"{node_id}__{CONTRACT_FILENAME}", sibling)
 
 
-def _run_contract(backend: ResolvedBackend, run_id: str, artifact: str) -> Path | None:
-    """The contract run *run_id* logged beside *artifact*, or ``None`` when it logged none.
+def _resolve_bundled_model(
+    nid: str, model_source: RunModelSource | RegisteredModelSource, backend: ResolvedBackend
+) -> ResolvedModel:
+    """The model a run or registered node's reference resolves to, refusing a pyfunc folder."""
+    from haute._mlflow_model import resolve_model
 
-    The run's client is opened only to list the run when the contract is not
-    already cached, as the model's own download is.
-    """
-    import mlflow
+    resolved = resolve_model(model_source, backend=backend)
+    if not resolved.loads_from_file:
+        raise DeployError(
+            f"Node {nid!r} scores the MLflow pyfunc model folder {resolved.artifact.path!r} of "
+            f"{resolved.reference}, and a deployment cannot bundle a pyfunc folder. Log the "
+            "model's native file to the run and score that, or choose a model file.",
+            node_id=nid,
+            field="artifact_path",
+        )
+    _validate_mlflow_artifact_identifier(nid, resolved.artifact.path)
+    return resolved
 
-    from haute._mlflow_io import _run_contract_if_logged
-    from haute._mlflow_utils import resolve_mlflow_source
 
-    def client() -> MlflowClient:
-        opened: MlflowClient = resolve_mlflow_source(
-            source_type="run", run_id=run_id, backend=backend
-        )[3]
-        return opened
+def _fetch_bundled_model(resolved: ResolvedModel) -> FetchedFiles:
+    """The local copies of a resolved model and its contract, from the shared model cache."""
+    from haute._mlflow_io import fetch_resolved_files
 
-    logged = _run_contract_if_logged(mlflow, client, backend, run_id, artifact)
-    return None if logged is None else Path(logged)
+    try:
+        import mlflow
+    except ImportError:
+        raise ImportError(
+            "mlflow is required to bundle MODEL_SCORE artifacts. "
+            "Install it with: pip install mlflow"
+        ) from None
+    return fetch_resolved_files(mlflow, resolved)
 
 
 def _collect_static_data_input(
@@ -731,104 +750,6 @@ def _validate_mlflow_artifact_identifier(node_id: str, artifact_path: str) -> No
 def _artifact_name(node_id: str, path: Path) -> str:
     """Generate a unique artifact name from node ID and filename."""
     return f"{node_id}__{path.name}"
-
-
-def _resolve_registered_model(
-    registered_model: str,
-    version: str,
-    *,
-    backend: ResolvedBackend,
-    alias: str = "",
-) -> tuple[str, str, str]:
-    """Resolve a registered model name + version or alias to (run_id, artifact_path, version).
-
-    Uses MLflow's model registry to look up the concrete run that produced
-    the model version, then auto-discovers the artifact path within that run.
-
-    Args:
-        registered_model: Registered model name (e.g. ``"my-model"``).
-        version: Version string (``"1"``, ``"2"``, ``"latest"``, or ``""``).
-        backend: The backend the caller already resolved for this node. It is
-            used as-is, so the registry lookup and the download that follows
-            can never land on different destinations.
-        alias: Registered model alias, resolved once to the version it targets.
-
-    Returns:
-        Tuple of ``(run_id, artifact_path, resolved_version)``.
-
-    Raises:
-        ImportError: If ``mlflow`` is not installed.
-        ValueError: If the model or version cannot be found, or if the
-            resolved model version has no associated run.
-    """
-    from haute._mlflow_io import _find_model_artifact
-    from haute._mlflow_utils import resolve_mlflow_source
-
-    run_id, resolved_version, _mlflow, client, _backend = resolve_mlflow_source(
-        source_type="registered",
-        registered_model=registered_model,
-        version=version,
-        backend=backend,
-        alias=alias,
-    )
-
-    if not run_id:
-        raise ValueError(
-            f"Registered model '{registered_model}' version {resolved_version} "
-            "has no associated run_id. Cannot download artifact."
-        )
-
-    # Auto-discover the artifact path (e.g. "model.cbm" or "model/")
-    artifact_path, _flavor = _find_model_artifact(client, run_id)
-
-    logger.info(
-        "registered_model_resolved",
-        model=registered_model,
-        alias=alias,
-        version=resolved_version,
-        run_id=run_id,
-        artifact_path=artifact_path,
-        backend_mode=backend.mode,
-        backend_digest=backend.digest,
-    )
-
-    return run_id, artifact_path, resolved_version
-
-
-def _download_model_artifact(
-    run_id: str,
-    artifact_path: str,
-    pipeline_dir: Path,
-    *,
-    backend: ResolvedBackend,
-) -> Path:
-    """Download a MODEL_SCORE .cbm artifact from MLflow, with local caching.
-
-    Uses the same ``.cache/models/`` directory as ``_mlflow_io`` so that
-    previously downloaded models aren't re-fetched; *backend* selects the
-    digest partition within that cache, so two destinations never share a
-    cached file for the same run and artifact path.
-    """
-    from haute._mlflow_io import _resolve_artifact_local
-
-    try:
-        import mlflow
-    except ImportError:
-        raise ImportError(
-            "mlflow is required to bundle MODEL_SCORE artifacts. "
-            "Install it with: pip install mlflow"
-        ) from None
-
-    local_path = _resolve_artifact_local(
-        mlflow,
-        backend,
-        run_id,
-        artifact_path,
-    )
-    resolved = Path(local_path)
-    if not resolved.is_file():
-        raise FileNotFoundError(f"MODEL_SCORE artifact not found after download: {local_path}")
-    return resolved
 
 
 def _check_exists(path: Path, node_id: str, node_type: str) -> None:

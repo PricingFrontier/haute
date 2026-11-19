@@ -274,6 +274,18 @@ class NodeConfigError(ConfigError, HauteValidationError):
         super().__init__(message, setting=setting)
 
 
+class ModelResolutionError(ConfigError):
+    """An MLflow reference that does not resolve to one model, or a copy that is not it.
+
+    The message names the reference and the candidates the run holds; ``context``
+    carries ``reference`` and ``candidates`` for a caller that reads them, and is
+    not rendered a second time.
+    """
+
+    def _render(self) -> str:
+        return self.message
+
+
 class MlflowConfigError(ConfigError):
     """Invalid or incomplete MLflow tracking-destination configuration.
 

@@ -515,8 +515,9 @@ never because it could not be reached.
   execution cache, and execution-context/admission machinery
   (`haute._execution_admission`, `haute._execution_context`).
 - **[mlflow-model-registry](../mlflow-model-registry/high-level.md)** — `_bundler.py`
-  downloads `modelScore` model artefacts and feature contracts from MLflow at bundle
-  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`) and copies a
+  bundles the model and feature contract the model resolution answers for a run or
+  registered `modelScore` node, at bundle time (`_mlflow_model.resolve_model`,
+  `_mlflow_io.fetch_resolved_files`), refuses one that resolves to a pyfunc folder, and copies a
   file-sourced node's model file and contract from the project; `_mlflow.py`
   registers the deployed pipeline itself as a new MLflow model version. `_scorer.py`
   loads bundled models via `haute._mlflow_io.load_local_model_cached`, which binds each
@@ -625,8 +626,9 @@ most: a silent wrong answer here mis-prices real policies.
   JSON static sources are not batch-deployable; a project-local import other than the
   `utility` package is refused when the deploy is resolved; bundled local `modelScore` serving supports
   every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
-  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
-  directory cannot currently be bundled and served by this path.
+  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a Model
+  Scoring node whose MLflow reference resolves to a pyfunc model folder is refused for a
+  bundle, naming the node, the run and the folder.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite or missing values
   (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`). A quote production prices
@@ -646,7 +648,10 @@ MLflow stacks. A container image installs only what scoring imports (decided
 and `price-contour` — then `haute` itself with
 `--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
 `mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
-at run time. Every one of these roots is pinned to the version installed in the deploying
+at run time. A Model Scoring node chosen by run or registered model is resolved when the
+bundle is built, a run with no artifact path included, so its model file is bundled and
+its engine follows from the file the resolution named; no Model Scoring node loads from
+MLflow when served, and none needs `mlflow` in the image. Every one of these roots is pinned to the version installed in the deploying
 environment, and their whole closure is locked for the image (see **Dependency locks**),
 bounded by haute's own requirement ranges, since haute is installed beside it.
 `price-contour` is pinned to the version haute's compatibility guard verified

@@ -38,13 +38,19 @@ that did not choose it.
 ## Scope
 
 In scope:
-- Resolving an MLflow model source — a specific run's artifact, or a
-  registered model version (including `"latest"`) — to a concrete run ID
-  and artifact path via the tracking/registry API.
-- Auto-discovering the model artifact within a run when no artifact path
-  is given (each registered family's suffixes in registration order —
-  CatBoost `.cbm`, RustyStats `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`,
-  EBM `.ebm`, t-boost `.tboost` — then a pyfunc model directory).
+- Resolving a Model Scoring node's MLflow reference — a run, with or
+  without an artifact path, or a registered model version by number,
+  `"latest"` or alias — to one model, once, for every consumer (the model
+  resolution, `_mlflow_model.py`): the store, the run, the artifact (a model
+  file or an MLflow pyfunc model folder), its model family, the feature
+  contract logged beside a native model when there is one, and what
+  identifies the bytes of each as the store gives them.
+- Finding the model in a run when no artifact path is given, by one
+  discovery rule the loader, the run picker and deploy share (a file any
+  registered family loads — CatBoost `.cbm`, RustyStats `.rsglm`, XGBoost
+  `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost` — at the run's top
+  level, else one folder down, else a pyfunc model folder), refusing a run
+  that holds several by name with the candidates.
 - Resolving a project model file (`source_type="file"`) through the
   runtime sandbox, and the contract it scores under (explicit, or saved
   beside it), and inspecting such a file for the node editor
@@ -119,11 +125,12 @@ Out of scope (owned elsewhere):
 ## Behaviour
 
 - A model is located one of three ways: `source_type="run"` with a
-  `run_id` (and optional `artifact_path`, auto-discovered if omitted),
-  `source_type="registered"` with a `registered_model` name and a
+  `run_id` (and optional `artifact_path`, found by the discovery rule if
+  omitted), `source_type="registered"` with a `registered_model` name and a
   `version` (a literal version number, or `"latest"`, which resolves to
-  the highest numeric version currently registered), or `source_type="file"`
-  with a `model_path` naming a model file in the project. A file source
+  the highest numeric version currently registered) or an `alias`, or
+  `source_type="file"` with a `model_path` naming a model file in the
+  project. A file source
   resolves its path through the runtime sandbox (a path outside the project is
   refused), loads it through the family the suffix names, and scores under the
   feature contract `feature_contract_path` names or, without one, the contract
@@ -135,6 +142,47 @@ Out of scope (owned elsewhere):
   explanation and deploy all take that parsed source, so an invalid source
   fails with the same error everywhere and no context loads a different model
   for the same config.
+- An MLflow source is answered by one model resolution, and everything that
+  needs the scoring model takes that answer and searches nothing of its own:
+  the loader, the key of the local copy, the run picker's listing, the deploy
+  bundle and the image's dependency list it gives, and the identity a node's
+  stored preview result is kept under. The resolution answers with the store,
+  the run, the artifact, its family, the contract logged beside a native
+  model (`<stem>.feature_contract.json` in the same folder) when there is one,
+  and an identity for the bytes of each: on a local store, where the files
+  are on disk, the stored file's content hash; on a server or Databricks,
+  the size its listing reports, the only description of a stored file every
+  artifact store gives without a download. A file logged again over its own
+  path on a remote store with exactly the same number of bytes is therefore
+  not told apart from the one it replaced; on a local store it is.
+  - A run with an artifact path resolves to that path, which the run must
+    hold.
+  - A registered version resolves through its source. A source naming a file
+    or folder in its run's artifacts (`runs:/<run>/<path>`, or the run's
+    artifact location followed by the path) resolves to that path; a source
+    naming the run itself is the run with no path. A version registered from
+    a logged model (`models:/m-...`), as MLflow 3 registers `runs:/<run>/model`
+    and as Haute's candidate runs are promoted, resolves to the model its run
+    holds, found by the discovery rule: Haute logs the native file at the run
+    root beside the logged model. A version with no run, or whose source lies
+    outside its run's artifacts, is refused by name. A registered source
+    reads no `artifact_path`; the version's source names the file.
+  - A run with no path is searched here, once, by the one discovery rule: the
+    model files any registered family loads at the run's top level; when
+    there are none, those one folder down in folders that are not pyfunc model
+    folders; when there are none, the run's top-level pyfunc model folders (a
+    folder holding an `MLmodel` file). The level that holds a model is the
+    answer, and a level that holds several is refused by name with the
+    candidates, never decided by order.
+  - A reference that cannot be resolved to one model — no model, several, an
+    artifact the run does not hold, a folder that is not a pyfunc model — is
+    refused with a `ConfigError` naming the reference and the candidates the
+    run holds, in the same words in the preview, `haute run`, the trace and
+    the deploy.
+  - Within one operation (a preview, a trace, a run, a bundle) a reference is
+    resolved once and every consumer of that operation shares the answer, so
+    the identity a result is stored under and the model it was computed from
+    are the same model.
 - A loaded model is bound to the feature contract it scores under before
   anything scores it. A contract that records a model identity must describe
   the loaded model. A CatBoost file records no baseline of its own, so its
@@ -192,17 +240,21 @@ Out of scope (owned elsewhere):
   project-relative contract it would score under. Inspection loads the model
   and binds the contract exactly as scoring does, so a file the node would
   refuse is reported with the same error (`400`).
-- Loaded models are cached in two tiers. An in-memory LRU (16 entries)
-  holds fully-loaded `ScoringModel` objects keyed by the resolved source
-  identity plus `task` plus the byte-identity fingerprint of the locally
-  resolved native-model file. Replacing those local bytes under the same
-  source reference invalidates the in-memory entry. The loader does not poll
-  MLflow to detect a remote artifact overwritten behind an already-populated
-  native disk-cache path; that local file remains authoritative until cache
-  clear/eviction or a failed load deletes it and triggers the bounded retry.
-  A disk cache under `.cache/models/<run_id>/...`
-  holds the downloaded bytes for CatBoost and RustyStats artifacts (not
-  pyfunc, which relies on MLflow's own local artifact cache). The root is
+- Loaded models are cached in two tiers, both keyed on the resolved model.
+  An in-memory LRU (16 entries) holds fully-loaded `ScoringModel` objects
+  keyed by the store, the run, the artifact, the identities of the model's
+  bytes and its contract's, and `task`, so a file logged again over its own
+  path, a moved alias and a newer `latest` are each a different entry, and
+  two references that resolve to one file share one. A disk cache under
+  `.cache/models/<backend digest>/<run_id>/...` holds the downloaded bytes of
+  every file-loaded family, each copy under the identity it was downloaded
+  at (not pyfunc, which relies on MLflow's own local artifact cache), so a
+  file logged again downloads once more and a run whose files are unchanged
+  downloads nothing. Every load asks the store, once, what the reference
+  resolves to; only a load confined to the disk cache (the assistant's data
+  check) does not, and it reads the copy the last resolved load recorded.
+  When a newer copy of a path is recorded, the older copies of that path are
+  removed. The root is
   resolved from the process cwd through the single `_disk_cache_root()` helper
   used by resolution, clear, and fast-path lookup. Oldest-first
   eviction targets at most 50 inactive run directories. Under the active-runs
@@ -214,10 +266,9 @@ Out of scope (owned elsewhere):
   later download triggers another eviction pass. Both caches persist
   across calls within a process; the disk cache also survives process
   restarts.
-- When the caller already knows the exact run + artifact (the common
-  case once a pipeline is configured), loading can skip the tracking
-  server round-trip entirely and go straight to the in-memory or
-  disk cache.
+- A run's model therefore needs its store reachable to score, as a
+  registered model always has: a load whose resolution fails reports that
+  failure, and a warm local copy is never served in its place.
 - Concurrent requests for the *same* artifact never each download or load
   it independently — one caller does the work, the rest wait and reuse
   the result. Concurrent requests for *different* artifacts proceed in
@@ -286,7 +337,11 @@ Out of scope (owned elsewhere):
   explanation that doesn't add up is never shown to a user.
 - The discovery endpoints only ever read from the configured MLflow
   tracking server; they never touch the model cache and have no
-  side effects on it.
+  side effects on it. The run picker lists a run exactly when the discovery
+  rule finds a model in it, with the models it finds: one folder down and a
+  pyfunc-only run included. Choosing a run that holds one model fills the
+  node's artifact path with it; choosing one that holds several leaves the
+  path empty, so the node is refused naming them until one is chosen.
 - The status endpoint truthfully reports the resolved backend in all three
   modes (databricks / server / local) including where runs will actually go,
   and reports a misconfigured selection (for example Databricks chosen with
@@ -320,19 +375,15 @@ Out of scope (owned elsewhere):
   Only a failure Haute cannot explain is retried: a model Haute read and
   refused (any `HauteError` or `HauteValidationError`) fails once with its
   own message and keeps its cached file.
-- **The in-memory cache key includes local artifact byte identity, not just
-  the source reference.** Keying only on run/version/path would let a
-  long-lived process continue serving its old deserialised object after the
-  corresponding disk-cache file was replaced. The fingerprint
-  (`_mlflow_io._local_artifact_fingerprint`) reuses the deploy
-  path's `artifact_identity_fingerprint` (a stat-gated content hash) rather
-  than minting a parallel derivation, so the serve-path cache and the
-  deploy-side output-schema cache agree on what "the same artifact" means.
-  It is a required keyword argument on `_model_cache_key` specifically so no
-  call site can silently omit it; the one documented exception is a pyfunc
-  model, which loads by MLflow URI with no local artifact file to
-  fingerprint and is keyed with an empty string instead. This protects the
-  memory cache from locally changed bytes; it is not remote freshness polling.
+- **One resolution, asked once per operation, keys everything.** Each
+  consumer once searched a run by a rule of its own, and the local copy was
+  kept under the store, the run and the path, none of which changes when a
+  file is logged again; so a registered version scored the first file of its
+  run, the picker hid runs the loader could load, and the old bytes went on
+  scoring. Keying the local copy, the in-memory entry and a stored preview
+  result on what the store says the bytes are makes a changed file a miss
+  everywhere at the cost of one listing per operation, and an unchanged one a
+  hit without a download.
 - **Cache eviction cascades to feature-validation state.** The
   feature-validation cache in `_model_scorer.py` is keyed by *content*
   (feature names, categorical set, offset column) rather than by model
@@ -398,10 +449,10 @@ Out of scope (owned elsewhere):
   node calls `ModelScorer.score()` / `score_frame()` directly, and a
   standalone run of a saved pipeline scores through `score_from_config`
   from the Model Score decorator.
-- Is consumed by [deploy](../deploy/high-level.md), which loads and
-  bundles models via the same `load_mlflow_model` /
-  `resolve_mlflow_source` primitives, bundles a file source's model and
-  contract, and serves bundled models through `load_local_model_cached`, and by
+- Is consumed by [deploy](../deploy/high-level.md), which bundles the model
+  and contract the model resolution answers for an MLflow source (and a file
+  source's model and contract), and serves bundled models through
+  `load_local_model_cached`, and by
   [optimiser](../optimiser/high-level.md), which loads MLflow-backed
   models to evaluate during optimisation.
 - Feeds the [tracing](../tracing/high-level.md) component: per-prediction
@@ -422,15 +473,19 @@ Out of scope (owned elsewhere):
 - Missing required source arguments (`run_id` for `"run"`,
   `registered_model` for `"registered"`), an invalid `source_type`, or no
   versions found for a registered model: `ValueError`.
-- No matching model artifact found in a run after checking every
-  registered suffix and a pyfunc model directory (top level and one level of
-  subdirectories): an internal `_ArtifactNotFoundError` whose message names
-  them
-  (a `FileNotFoundError` subclass). A *different* `FileNotFoundError` or
-  an MLflow `MlflowException` raised by the tracking client itself (e.g.
-  a credential or network failure) is never caught here — it propagates
-  as the real infrastructure error instead of being reported as "no
-  model artifact found."
+- A reference the model resolution cannot answer with one model — a run
+  that holds no model by the discovery rule, one that holds several at the
+  level that answers, an artifact path the run does not hold, a folder that
+  is not a pyfunc model, a registered version with no run or with a source
+  outside its run's artifacts: `ModelResolutionError` (a `ConfigError`)
+  naming the reference and the candidates found. An MLflow
+  `MlflowException` raised by the tracking client itself (a missing run, a
+  credential or network failure) is never caught here — it propagates as
+  the real error instead of being reported as "no model".
+- A copy whose bytes do not match the identity the store gave for them (the
+  file was logged again between the listing and the download): a
+  `ModelResolutionError` saying the model changed while it was loaded, and
+  nothing is kept under that identity.
 - A model file or run artifact whose suffix no family registers:
   `ConfigError` naming the supported suffixes, raised before any download.
 - A CatBoost model whose metadata cannot be read: `ConfigError` naming the
@@ -501,9 +556,11 @@ Out of scope (owned elsewhere):
   synthetic all-null prediction is substituted.
 
 **Pyfunc cache boundary.** Pyfunc models never populate Haute's on-disk artifact
-cache under `.cache/models/`; only CatBoost and RustyStats artifacts do. On each
-Haute cache miss, a pyfunc model is re-resolved through MLflow's
-`pyfunc.load_model` path and its separate local caching behaviour.
+cache under `.cache/models/`; only file-loaded families do. A pyfunc folder's
+identity is its listing (each file's name and size, one level), and on each
+Haute cache miss it loads through MLflow's `pyfunc.load_model` path and its
+separate local caching behaviour. A deployment cannot bundle a pyfunc folder: a
+node whose reference resolves to one is refused for a bundle by name.
 
 ## Shared native-model pyfunc
 

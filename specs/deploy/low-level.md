@@ -230,9 +230,8 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    download. Each model-score node's source is read through `parse_model_source`, the
    parser every other Model Scoring consumer uses: a node with no `source_type` is untouched
    and is not bundled (the preview passes it through too), a chosen source with an empty
-   `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
-   run source without an `artifact_path` is discovered when served, and any other invalid
-   source raises its `ConfigError`. A file source (`source_type: "file"`) is copied from the
+   `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, and
+   any other invalid source raises its `ConfigError`. A file source (`source_type: "file"`) is copied from the
    project: its `model_path` resolves with scoring's rule (the project before the
    pipeline directory, unlike other local artefacts, so the bundle holds the file the
    preview scored) and must exist, and the model is bundled under
@@ -240,24 +239,25 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
    Its contract, the explicit `feature_contract_path` (also project-first for every
    Model Scoring source) or else the first existing sibling (`model_contract_path`, which
    refuses a sibling that leaves the project through a symlink as a `DeployError`), is
-   bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. For a run or registered source without an explicit
-   contract, the contract logged beside the model in the run is bundled
-   (`_run_contract_if_logged`, the reader the preview's loader uses), so an MLflow-sourced
-   model is served bound to the contract the preview binds and each request is checked
-   against it. A run that logged none (a completed listing of the run finds no contract
-   beside the model; a failed download or listing is raised, never read as absence)
-   bundles no contract, and its model is served against the features its file names, as
-   the preview scores it. A node left unbundled is then refused by the deploy
-   scorer's passthrough guard below. The bundler resolves each model-score node's
-   `mlflow_destination` to one
-   backend exactly once and passes that object to both registered-model resolution
-   (`_resolve_registered_model`, which resolves a stored `alias` once to its current
-   version and returns `(run_id, artifact_path, resolved_version)`) and the download itself
-   (`_download_model_artifact`), so
-   the bundle is built from the destination the pipeline author browsed and a settings save
-   mid-bundle cannot split lookup and download across backends; the download lands in the
-   shared model disk cache under that backend's digest partition, and an unconfigured
-   explicit destination fails with `MlflowConfigError` rather than resolving another backend.
+   bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. A run
+   or registered source is answered by the model resolution
+   (`haute._mlflow_model.resolve_model`, the answer the preview's loader scores), inside the
+   `model_resolution_scope` `collect_artifacts` opens, so a run with no artifact path is
+   resolved here, when the bundle is built, never when served. A reference that resolves to
+   a pyfunc model folder is refused as a `DeployError` naming the node, the run and the
+   folder: a bundle does not carry a pyfunc folder. Otherwise the model, and the contract the
+   resolution found beside it when the node names no explicit contract, are fetched into the
+   shared model disk cache under their identities (`fetch_resolved_files`), so an
+   MLflow-sourced model is served bound to the contract the preview binds and each request is
+   checked against it; a run that logged none bundles no contract, and its model is served
+   against the features its file names, as the preview scores it. A node left unbundled is
+   then refused by the deploy scorer's passthrough guard below. The bundler resolves each
+   model-score node's `mlflow_destination` to one backend exactly once and passes that object
+   to the resolution and the download, so the bundle is built from the destination the
+   pipeline author browsed and a settings save mid-bundle cannot split lookup and download
+   across backends; the download lands in the shared model disk cache under that backend's
+   digest partition, and an unconfigured explicit destination fails with `MlflowConfigError`
+   rather than resolving another backend.
    The downloaded model is bundled under `<node>__<its file name>`, and the node's config as
    it is served, `artifact_path` naming that file, is handed back through `served_configs`;
    `resolve_config` builds the shipped graph from it with `GraphNode.with_config`
@@ -1037,7 +1037,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 |---|---|---|
 | `haute.errors.DeployError` | `src/haute/deploy/_config.py` (unpinned base image, escaped pipeline, unsupported live source, invalid output projection), `_bundler.py` (escaped/malformed artefact path, invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure), `_container.py` / `_mlflow.py` (expected target operational failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id`, `field`, and the underlying provider/schema `error`) rendered into `str()`. The CLI formats this expected domain family concisely. |
 | `ValueError` | `_pruner.py` (missing/multiple output nodes, a configured `liveSwitch` input not connected to the graph, or a `liveSwitch` the output reaches that maps no input to `live`), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite or missing predictions; `ImpactAlignmentError`, a count other than one prediction per quote) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
-| `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
+| `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_mlflow_io._resolve_artifact_local` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), or an unexpected backend implementation defect | Uncaught to caller with its original type/traceback. Expected Docker, dependency-pinning, credential, connectivity, and backend-response failures use `DeployError` instead. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches`, through `modelling/_feature_contract.py::assert_schema_matches_contract`, the check the preview runs too (live schema disagrees with bundled training contract on feature set or dtype; a categorical value the model never saw is never one, the model scores it) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
 | `QuoteInputError` (`quote_input_invalid`) | `_request_frame.py::frame_rows`, a flat Quote Input's value that its declared type does not hold | A public contract error: the container's `/quote` answers 422 with `to_payload()`, before admission for a single quote and through the batch worker's public-error transport for a batch; the Databricks model raises it from `predict`. |

@@ -643,6 +643,29 @@ describe("ModelScoreEditor", () => {
     })
   })
 
+  it("a run holding several models leaves the artifact path empty, never the first", () => {
+    mockMlflow.browseExpId = "exp-1"
+    mockMlflow.runs = [
+      {
+        run_id: "run-two",
+        run_name: "pair",
+        metrics: {},
+        artifacts: ["frequency.cbm", "severity.cbm"],
+      },
+    ]
+    const props = defaultProps()
+    props.config = { source_type: "run", artifact_path: "old.cbm" }
+    render(<ModelScoreEditor {...props} />)
+    fireEvent.change(screen.getByDisplayValue("Select a run..."), {
+      target: { value: "run-two" },
+    })
+    expect(props.onUpdate).toHaveBeenCalledWith({
+      run_id: "run-two",
+      run_name: "pair",
+      artifact_path: "",
+    })
+  })
+
   it("persisted model shows as option even when not in models list", () => {
     const props = defaultProps()
     props.config = { registered_model: "unlisted-model" }

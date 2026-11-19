@@ -3038,12 +3038,12 @@ same seed derivation `diff_seed_nodes` uses (one shared helper with a flag for
 the preamble widening, not a copy). Eligibility applies the high-level
 precedence with: `SINK_ONLY_NODE_TYPES` in `src/haute/_types.py`; a Load File's
 `file_type`; a Model Scoring node's locality, decided by the same
-`resolve_backend` (configuration only) and disk-cache path helpers
-(`_disk_cache_root`, `_artifact_cache_path`, with the contract artifact its run logged
-or the marker recording that it logged none)
-that the fast path of `load_mlflow_model` in `src/haute/_mlflow_io.py` uses, as
-a file-existence test only, so the check counts as local exactly what a preview
-would load without a tracking or registry call; an Apply Optimisation node's
+`resolve_backend` (configuration only) and the resolution record the last
+resolved load of the node's run artifact wrote in the disk model cache
+(`disk_cached_run_model` in `src/haute/_mlflow_io.py`: the copies of the model
+and of the contract its run logged beside it, when it logged one, that the
+record names), as a file-existence test only, so the check counts as local
+exactly what a disk-cache-only load answers without a tracking or registry call; an Apply Optimisation node's
 `source_type`; the lineage (`source_lineage_graph` in `src/haute/execution.py`,
 under the candidate graph's `active_source`); and each snapshot-backed input's
 published state from `input_snapshot_read_status`, a shared read-only helper
@@ -3089,15 +3089,16 @@ stays authoritative) remain readable. It then reads the start binding:
 - `source_generation`, one digest over `dataframe_graph_input_identity(...).digest`
   (in `src/haute/execution.py`) for the lineage, which already signs local input
   files, snapshot generation pointers, a file-sourced Apply Optimisation artifact
-  (`_local_runtime_input_path_fields` lists its `artifact_path`) and the resolved
-  MLflow backend of each run-sourced node, and over the identity of each local
-  Model Scoring node's cached artifact and the contract (or absence marker) beside
-  it, which every load binds (`DiskCachedRunModel.identity` in
+  (`_local_runtime_input_path_fields` lists its `artifact_path`) and the recorded
+  resolution of each run-sourced Model Scoring node (read inside
+  `disk_cache_only_model_loads`, so from the disk model cache's resolution record,
+  never the store), and over the bytes of each local Model Scoring node's cached
+  model, the contract beside it and the record (`DiskCachedRunModel.identity` in
   `src/haute/_mlflow_io.py`), which that identity does not sign;
 - `freshness_tokens`, the `observe_freshness` token (in
   `src/haute/_json_shred/_source_proof.py`: a native file revision or a stat,
-  never content) of every file the digest signs, cached model files and the
-  contracts (or absence markers) beside them included, keyed by the resolved path. For a snapshot-backed input
+  never content) of every file the digest signs, cached model files, the
+  contracts beside them and their resolution records included, keyed by the resolved path. For a snapshot-backed input
   that is the generation pointer and also the original local source files, whose
   content the identity signs through `source_signature`: `runtime_input_signed_paths`
   lists them through `signed_source_files` (`src/haute/_input_providers.py`, the
@@ -3187,10 +3188,11 @@ failure collecting the output measurement belongs to the node. A node whose
 lineage holds a recorded failure is `upstream_failed` naming it and is neither
 built nor collected, and nodes with no failed ancestor continue. The measuring
 walk returns one record per checked node, never a frame. Its Model Scoring
-builds load a model only from the disk model cache, through a disk-only form of
-`load_mlflow_model`'s fast path that raises where the full path would call
-`resolve_mlflow_source` and download, so a cache file removed after eligibility
-is an execution failure rather than a network call.
+builds load a model only from the disk model cache: inside
+`disk_cache_only_model_loads`, `load_mlflow_model` answers a run artifact from the
+resolution record the last resolved load wrote and raises where a load would ask
+the store or download, so a cache file removed after eligibility is an execution
+failure rather than a network call.
 
 **Error records.** `execution_error_record`, beside `_execution_failure` in
 `src/haute/assistant/_tools.py`, returns the structured error record rather than

@@ -75,7 +75,11 @@ from haute._json_shred._snapshots import (
     api_input_table_statuses,
 )
 from haute._logging import get_logger
-from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
+from haute._mlflow_io import (
+    DiskCachedRunModel,
+    disk_cache_only_model_loads,
+    disk_cached_run_model,
+)
 from haute._node_specs import SINK_ONLY_NODE_TYPES, STRUCTURAL_NODE_TYPES
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import (
@@ -1396,14 +1400,17 @@ def read_binding(lineage: PipelineGraph, scenario: str) -> BindingRead:
     """Read a lineage's source generation, freshness tokens and identity components.
 
     The source generation digests the runtime input identity execution caches
-    sign together with each local Model Scoring node's cached model and the
-    contract (or absence marker) every load binds, which that identity does not
-    sign. It hashes inputs, so it is read only in the worker.
+    sign together with the bytes of each local Model Scoring node's cached model,
+    the contract beside it and their resolution record, which that identity does
+    not sign. It hashes inputs, so it is read only in the worker.
     """
     components = identity_components(lineage)
     paths: list[str] = components["paths"]
     tokens = {path: _freshness_token(path) for path in paths}
-    inputs = dataframe_graph_input_identity(lineage, target_node_id=None, source=scenario)
+    # A Model Scoring node's identity is the disk cache's record of its model,
+    # never a question to the store, as the measuring walk's loads are.
+    with disk_cache_only_model_loads():
+        inputs = dataframe_graph_input_identity(lineage, target_node_id=None, source=scenario)
     models = {node_id: cached.identity() for node_id, cached in _cached_models(lineage).items()}
     generation = content_hash_bytes(
         canonical_json({"inputs": inputs.digest, "models": models}).encode("utf-8")

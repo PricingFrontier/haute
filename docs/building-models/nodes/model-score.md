@@ -29,9 +29,13 @@ With **Experiment Run**:
 | Field | What it does |
 |---|---|
 | **EXPERIMENT** | The MLflow experiment to browse (**Select an experiment...** until you choose). |
-| **RUN** | A finished run in that experiment that holds a model. An experiment without one shows **No finished runs with a model artifact in this experiment yet.** |
+| **RUN** | A finished run in that experiment that holds a model, at its top level, one folder down, or as an MLflow pyfunc model folder. An experiment without one shows **No finished runs with a model artifact in this experiment yet.** |
 | **RUN ID** | The chosen run's ID. You can also paste one here. |
-| **ARTIFACT PATH** | The model's path inside the run (for example `model.cbm`). Picking a run fills it with the run's first artifact. |
+| **ARTIFACT PATH** | The model's path inside the run (for example `model.cbm`). Picking a run that holds one model fills it in. A run that holds several leaves it empty, and the node's error names the models so you can type the one to score. |
+
+A registered version scores the file it was registered from. A version registered from a logged model, as `runs:/<run>/model` registers under MLflow 3, scores the model file its run holds, which every Haute training run logs beside the logged model.
+
+Each preview, run and deploy asks MLflow what the run holds now, so a model file logged again over the same path is the one that scores. The model is downloaded only when its file changed.
 
 With **Registered Model**:
 
@@ -220,7 +224,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | `experiment_id` | text | For a run source, the MLflow experiment's id. |
     | `run_id` | text | For a run source, the MLflow run whose model is scored. |
     | `run_name` | text | For a run source, the run's name, shown when the panel reopens. |
-    | `artifact_path` | text | For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`. |
+    | `artifact_path` | text | For a run source, the model's path inside the run's artifacts, such as `model.cbm`; empty for the run's one model. A registered version's source names its file. |
     | `registered_model` | text | For a registered source, the registered model's name, such as `catalog.schema.model`. |
     | `version` | text | For a registered source, the version scored, or `latest`; absent when `alias` is set. |
     | `alias` | text | For a registered source, the alias whose version is scored, such as `champion`; excludes `version`. |

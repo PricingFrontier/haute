@@ -4,8 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_mlflow_io.py` | Model loading, disk + in-memory caching (keyed in part on artifact byte identity via `_local_artifact_fingerprint`), per-artifact I/O locks, artifact discovery, flavor-specific loaders, the `ScoringModel` carrier, predict-frame preparation per flavor, the shared eager-scoring delegate (`_score_eager`) used by both `_model_scorer.py` and deploy. |
-| `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, `runtime_environment_inference` (scopes MLflow's uv-project auto-detection and uv-file logging off so a logged model records the executing interpreter), `bind_mlflow_databricks_credentials` (binds every MLflow Databricks request to the dedicated MLflow pair or the selected profile; see modelling), `ensure_experiment` (a bound client's experiment id, first creating a new Databricks experiment's missing workspace folder with the bound credentials; see modelling), `resolve_backend` (a destination key — or the empty string for the local folder — to a `ResolvedBackend` carrying the tracking/registry URIs plus a secret-free backend identity and filesystem digest; see Key types), and `resolve_mlflow_source` (import mlflow, resolve that backend, build a client pinned to it, resolve `source_type` to a concrete run ID/version, and return the backend alongside the client). |
+| `src/haute/_mlflow_model.py` | The model resolution: `resolve_model(source, backend=)` answers a run or registered source with one `ResolvedModel` (see Key types), `run_model_candidates` is the one discovery rule over a run's artifacts, and `model_resolution_scope` shares one answer per reference across an operation. The only module that lists a run's artifacts for a scoring model (`tests/test_model_resolution.py` fails on another). |
+| `src/haute/_mlflow_io.py` | Model loading from a `ResolvedModel`, disk + in-memory caching keyed on its identities, per-artifact I/O locks, flavor-specific loaders, the `ScoringModel` carrier, predict-frame preparation per flavor, the shared eager-scoring delegate (`_score_eager`) used by both `_model_scorer.py` and deploy. |
+| `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, `runtime_environment_inference` (scopes MLflow's uv-project auto-detection and uv-file logging off so a logged model records the executing interpreter), `bind_mlflow_databricks_credentials` (binds every MLflow Databricks request to the dedicated MLflow pair or the selected profile; see modelling), `ensure_experiment` (a bound client's experiment id, first creating a new Databricks experiment's missing workspace folder with the bound credentials; see modelling), `resolve_backend` (a destination key — or the empty string for the local folder — to a `ResolvedBackend` carrying the tracking/registry URIs plus a secret-free backend identity and filesystem digest; see Key types), `pinned_client` (a client pinned to a backend's tracking and registry URIs), and `resolve_mlflow_source` (import mlflow, resolve that backend, build a client pinned to it, resolve `source_type` to a concrete run ID/version, and return the backend alongside the client) for the callers that want only a run, a version or a client: the optimiser's reader and the execution plan's version of an Optimiser Apply. It never answers which model scores. |
 | `src/haute/_mlflow_errors.py` | The one MLflow failure classifier (`classify_mlflow_error`: MLflow error codes, HTTP 401/403/404, and transport-only connectivity across the exception chain — any other local OS error is `unknown`; it runs inside error handlers and never raises, so when `mlflow.exceptions` or `requests` cannot be imported only the remaining rules apply), `MlflowRemoteError` (a classified write failure with haute's own message), the write-path copy `MLFLOW_LOG_FAILURE_MESSAGES`, and the shared missing-package status and detail. |
 | `src/haute/_model_flavors.py` | The model family registry, the one place a scoring family is described: `ModelFamily` (one adapter per family — see Key types), `register_model_family`, the lookups by flavor (`model_family`), by Haute training algorithm (`family_for_algorithm`) and by artifact suffix (`family_for_artifact`), the registered file suffixes (`model_file_suffixes`), and `model_family_fixture`, the table the frontend's generated `modelFamilies.json` mirrors. `ModelFlavor` (`Literal`) types the built-in flavors and `_SUPPORTED_FLAVORS` is derived from it via `get_args`; the built-in registrations are exactly that set. Dependency-free leaf module: loaders and offset readers are bound lazily by module path, so importing it imports no engine and no other `haute` module (see high-level Design rationale for why). |
 | `src/haute/_model_source.py` | The Model Scoring node's model source: `parse_model_source` turns a node config into a typed `ModelSource` (`RunModelSource`, `RegisteredModelSource` or `FileModelSource`) once, owning every source default and validation rule; `resolve_model_file` and `model_contract_path` resolve a file source's model and the contract it scores under; and `load_scoring_model(source, task, ...)` is the one entry point that loads a source and binds it to that contract. Every Model Scoring consumer — the executor's builder, the column-contract planner, the standalone scorer, the trace explanation and the deploy bundler and scorer — takes the parsed source, and only this module calls the MLflow and local-file loaders. |
@@ -36,13 +37,33 @@
   through this declared surface. Scoring reads the offset column and link
   from the carrier, so a contract-bound offset applies without touching the
   raw model, which a cached carrier may share.
-- **`_ArtifactNotFoundError(FileNotFoundError)`** — internal sentinel
-  raised by the artifact-probing helpers when a probe completes and finds
-  nothing. Deliberately a subclass of `FileNotFoundError` (the public
-  contract callers expect) while `_find_model_artifact`'s internal
-  `try/except _ArtifactNotFoundError` narrows to only the sentinel, so a
-  bare `FileNotFoundError`/`MlflowException` from a real infrastructure
-  problem is never swallowed.
+- **`StoredArtifact`** (`_mlflow_model.py`, frozen slotted dataclass) — one
+  file or folder of a run as the store describes it: `path` (run-relative,
+  validated by `_validate_artifact_path`) and `identity`, what identifies
+  its bytes as the store gives them: `sha256:<hex>` (the content hash of a
+  file in a local `file:` artifact location, read through the shared
+  stat-gated `file_signature`), `size:<bytes>` (a file elsewhere: the size
+  the listing reports, all MLflow's artifact stores give without a
+  download), or `listing:<hex>` (a pyfunc folder: the hash of its one-level
+  listing, each entry's name, kind and size). `token` is the first 16 hex
+  characters of sha256(`identity`), the filesystem-safe name a local copy is
+  kept under.
+- **`ResolvedModel`** (`_mlflow_model.py`, frozen slotted dataclass) — the
+  model resolution's answer: `backend` (the `ResolvedBackend`), `run_id`,
+  `artifact` (a `StoredArtifact`: a model file, or a pyfunc folder),
+  `family` (the `ModelFamily` `family_for_artifact` names), `contract` (the
+  `StoredArtifact` of `<stem>.feature_contract.json` beside a native model,
+  or `None` when the run holds none there and always for a pyfunc folder),
+  `version` (the concrete registered version, `""` for a run source) and
+  `reference` (how messages name what was asked for: `MLflow run 'abc'`,
+  `version 1 of registered model 'severity'`). `loads_from_file` is
+  `family.load_file is not None`. `identity_record()` is the secret-free
+  mapping a stored preview result is kept under: the backend identity, the
+  run, the artifact's path and identity, and the contract's (or `None`).
+- **`ModelResolutionError(ConfigError)`** (`haute.errors`) — a reference the
+  resolution cannot answer with one model, or a copy whose bytes do not
+  match the identity the store gave; its context carries `reference` and
+  `candidates`.
 - **`_ModelCacheWithCascade(LRUCache[tuple[str, ...], ScoringModel])`**
   — overrides `put`, `clear`, and adds `evict_matching`. `put` diffs the
   cache's live keys before/after the base `put()` to detect evictions and
@@ -86,8 +107,8 @@
   follows. **One backend per operation:** a
   load, download, registry lookup, or bundling step resolves the backend
   exactly once and threads that object through
-  (`resolve_mlflow_source(backend=...)`, the bundler's registered-model
-  resolution and download); no helper re-resolves from a destination key
+  (`resolve_model(source, backend=...)`, and the bundler's resolution and
+  download); no helper re-resolves from a destination key
   mid-operation, so a settings save during an operation cannot split it
   across two backends.
 - **`ModelFamily`** (`_model_flavors.py`, frozen slotted dataclass) — one
@@ -122,7 +143,8 @@
   Model Scoring node, a union discriminated by each class's `source_type`
   class variable: `RunModelSource` (`run_id`, `artifact_path`,
   `mlflow_destination`), `RegisteredModelSource` (`registered_model`,
-  `version`, `alias`, `artifact_path`, `mlflow_destination`) and
+  `version`, `alias`, `mlflow_destination`: the version's source names its
+  file, so a registered source reads no `artifact_path`) and
   `FileModelSource` (`model_path`, as configured). All are frozen
   slotted dataclasses whose fields are named after the config keys they come
   from: the Model Score config model
@@ -158,21 +180,15 @@
   `explain_model_score_from_config` sets on every failure it raises; the trace
   labels a failure with it (`model_explanation` when it is `None`).
 - **Cache key shapes:**
-  - Model cache key: `_model_cache_key(...)` →
-    `(source_type, run_id, artifact_path, task, artifact_fingerprint,
-    backend_identity)`, or with an extra element inserted before
-    `artifact_path` when `version` is non-empty: `(source_type, run_id,
-    version, artifact_path, task, artifact_fingerprint, backend_identity)`.
-    `run_id` stays fixed at slot 1 regardless of `version`'s presence so a
-    targeted `clear_model_cache(run_id=...)` can match on `key[1]` without
-    branching on key shape; `backend_identity` (the `ResolvedBackend`
-    identity, a required keyword) is always the last element, so the same
-    run ID and artifact path on two backends — or on two endpoints of the
-    same category — never alias.
-    `artifact_fingerprint` (`_local_artifact_fingerprint`, a required
-    keyword arg) is the byte-identity hash of the local model file for
-    `catboost`/`rustystats`; pyfunc models (no local file — loaded by
-    MLflow URI) key with `artifact_fingerprint=""`.
+  - Model cache key: `_model_cache_key(resolved, task)` →
+    `("mlflow", run_id, artifact path, artifact identity, contract identity
+    or "", task, backend_identity)`, built from the `ResolvedModel` alone,
+    so every reference that resolves to one file and its contract shares one
+    entry, and any changed byte identity is a different entry. `run_id` is
+    slot 1 so a targeted `clear_model_cache(run_id=...)` matches on
+    `key[1]`; `backend_identity` is always the last element, so the same run
+    ID and artifact path on two backends — or on two endpoints of the same
+    category — never alias.
   - Feature-validation cache key:
     `((tuple(feature_names), frozenset(cat_feature_names),
     offset_column), tuple(schema.items()))` — content-addressed, never
@@ -186,6 +202,10 @@
   `_disk_cache_active_runs: Counter[str]` (under
   `_disk_cache_active_runs_guard`, tracks run directories currently
   "in use" so eviction skips them).
+- **Module-level state in `_mlflow_model.py`:** `_RESOLUTIONS:
+  ContextVar[dict | None]`, the answers of the open `model_resolution_scope`
+  keyed by the backend identity and the source; `None` outside a scope, where
+  every call asks the store.
 - **Module-level state in `_model_scorer.py`:** `_feature_validation_cache
   : LRUCache[...]` (same max size as the model cache);
   `_feature_validation_last_entry` (single-slot fast path, see Control
@@ -261,26 +281,21 @@ The defaults above live only in this parser. `load_scoring_model(source,
 task, *, feature_contract_path=None, base_dir=None)` loads the source and binds
 it to its contract:
 
-- **Run and registered.** It passes the source's fields to `load_mlflow_model`
-  (a run source passes no version) and is the only caller of
-  `load_mlflow_model` in the package. The contract is the explicit
-  `feature_contract_path`; without one, a native model (a family with a file
-  loader) is bound to the contract its run logged beside the model artifact
-  when there is one (the loaded carrier's `run_contract_path`), as the deploy
-  bundler ships it; a model whose run logged none, and a pyfunc model
-  directory, score unbound, checked against the features the model names.
-  `load_mlflow_model` reads that contract with the model, from the run it
-  resolved a registered version, alias or `latest` (and an absent artifact
-  path) to once, through the disk cache (`_run_contract_if_logged`). Absence
-  is decided only by a completed listing of the contract's directory in the
-  run, after its download fails, and is recorded in the disk cache as a marker
-  where the contract would sit (`artifact.absent`), so the fast path and a
-  disk-cache-only load see it; a download that fails while the listing names
-  the contract, and a failed listing, are raised, never read as absence. The
-  destination resolves to one `ResolvedBackend` at the
-  start, which the load (`load_mlflow_model(..., backend=)`) uses for both
-  reads. An alias that moves, or a settings change, during the load therefore
-  cannot pair one version's or one backend's model with another's contract.
+- **Run and registered.** It passes the source to `load_mlflow_model(source,
+  task=, backend=)` and is the only caller of `load_mlflow_model` in the
+  package. The contract is the explicit `feature_contract_path`; without
+  one, a native model (a family with a file loader) is bound to the contract
+  its run logged beside the model artifact when there is one (the loaded
+  carrier's `run_contract_path`), as the deploy bundler ships it; a model
+  whose run logged none, and a pyfunc model directory, score unbound,
+  checked against the features the model names. Whether the run logged a
+  contract is part of the resolution's answer (`ResolvedModel.contract`,
+  read from the same listing as the model), so the model and its contract
+  come from one resolution of one run, and a contract logged after an
+  earlier load is seen by the next one. The destination resolves to one
+  `ResolvedBackend` at the start, which the load uses throughout. An alias
+  that moves, or a settings change, during the load therefore cannot pair
+  one version's or one backend's model with another's contract.
 - **File.** `resolve_model_file(model_path, base_dir)` resolves the path through
   `resolve_node_input_path` (the project root first, then the pipeline directory
   `base_dir`, project root enforced) and raises `ConfigError` naming the file
@@ -357,7 +372,7 @@ contract, and returns `ModelFileInspection`: `model_path`, `flavor`, `label`,
 and the project-relative `contract_path` (or `None`). Its `ConfigError`s are
 the scoring errors and the route returns them as `400`.
 
-### Model loading — `load_mlflow_model(...)` (`_mlflow_io.py`)
+### Model loading — `load_mlflow_model(source, *, task, backend=None)` (`_mlflow_io.py`)
 
 1. Validate `task` is `"regression"` or `"classification"` (CatBoost loads
    additionally check it against the model file: `_load_catboost_model` reads
@@ -366,89 +381,76 @@ the scoring errors and the route returns them as `400`.
    `MultiClassOneVsAll` — is scored as regression or any other loss as
    classification; a file without a recorded loss keeps the node's task, and
    `_load_with_bounded_retry` re-raises the `ConfigError` without treating the
-   file as corrupt), then resolve
-   the backend exactly once (`resolve_backend(destination)`, `""` = the local folder)
-   before any cache lookup. An unresolvable destination raises
-   `MlflowConfigError` here, so a previously cached artifact can never be
-   served for a destination whose prerequisites are gone, and every later
-   step of this load uses that same `ResolvedBackend`.
-2. **Fast path.** If `source_type == "run"` and both `run_id` and
-   `artifact_path` are given, resolve the artifact's family with
-   `family_for_artifact` before building any cache key (an unregistered
-   suffix raises its `ConfigError` here, before any network access), since
-   the key includes an artifact-fingerprint component that differs by family:
-   - **Pyfunc** has no local artifact file to fingerprint, so the key is
-     built once with `artifact_fingerprint=""` (no tracking-server round
-     trip). Check the in-memory cache; on a hit, record a hit and return
-     immediately.
-   - **File-loaded families** (every family with a `load_file`) first check
-     whether the disk-cached file and the cached contract its run logged
-     beside it (or the marker recording that the run logged none) already
-     exist under the backend's digest partition;
-     if so, compute
-     `_local_artifact_fingerprint` from that file (a stat-gated memo, so an
-     unchanged file is cheap), build the key with that fingerprint, and
-     check the in-memory cache. On a hit, record a hit and return; on a
-     miss, acquire the per-artifact lock, re-check the memory cache (a
-     concurrent caller may have finished while this one waited), then load
-     directly from the disk-cached file, record the cached contract, if any,
-     as its `run_contract_path`, populate the memory cache, and return.
-   - In both native and pyfunc cases, if the disk-cached file vanishes
-     between the existence check and acquiring the lock (a concurrent
-     corrupt-retry deleted it), or the file was never disk-cached to begin
-     with, fall through to the full path.
-3. **Full path.** Call `resolve_mlflow_source(destination=...)` (imports
-   mlflow, resolves the same backend, builds a client pinned to its
-   tracking and registry URIs, resolves `source_type` to a concrete
-   `run_id`/`version`, and returns the backend). If `artifact_path` was empty,
-   auto-discover it via `_find_model_artifact`. Resolve the family from the
-   resolved artifact path. For a file-loaded family, resolve the local artifact
-   file up front (`_resolve_artifact_local`, which treats an already-present
-   disk-cache file as authoritative and downloads only when that path is absent)
-   and compute its fingerprint; for pyfunc, the fingerprint is `""`. Build
-   the real cache key with that fingerprint.
-4. Check the memory cache again under the resolved key; on a hit, return.
-5. Acquire the per-`(backend digest, run_id, artifact)` lock; re-check the
-   cache (single-flight); on a hit, return. Otherwise record a miss, then load:
-   file-loaded families go through `_load_with_bounded_retry`, which reads
-   the contract the run logged beside the artifact, if any
-   (`_run_contract_if_logged`), calls the family's `load_file` and records the
-   contract as the carrier's `run_contract_path`; the
-   directory family loads via MLflow's
-   pyfunc flavor (`_load_pyfunc_model` + `_wrap_pyfunc(model, task=task)`,
-   see "Pyfunc inputs and outputs" under edge cases). For a file-loaded
-   family, the bounded retry may have deleted
-   and re-downloaded the artifact, so the fingerprint is re-derived after
-   loading (a no-op stat when nothing changed) and the cache key rebuilt
-   from it before the result is stored, so the stored entry is always keyed
-   by the bytes actually loaded. Store the result in the memory cache
-   before releasing the lock. `_resolve_artifact_local`,
-   `_load_with_bounded_retry`, and `_load_pyfunc_model` all receive the
-   `ResolvedBackend` (never a bare tracking URI), and log only its `mode`
-   and `digest`.
+   file as corrupt), then resolve the backend exactly once
+   (`resolve_backend(source.mlflow_destination)`, `""` = the local folder)
+   before any cache lookup, unless the caller passed one. An unresolvable
+   destination raises `MlflowConfigError` here, so a previously cached
+   artifact can never be served for a destination whose prerequisites are
+   gone, and every later step of this load uses that same `ResolvedBackend`.
+2. **Disk-cache-only loads.** Inside `disk_cache_only_model_loads()` (the
+   assistant's measuring walk) nothing asks the store: a run source with an
+   artifact path is answered from the resolution record the last resolved
+   load of that artifact wrote (`_recorded_resolution`, below), and any other
+   source, or an artifact with no record or a recorded copy that is gone,
+   raises `ModelNotInDiskCacheError`.
+3. **Resolve.** Otherwise `resolve_model(source, backend=backend)` answers
+   the reference (see Model resolution below; inside an open
+   `model_resolution_scope` a reference already answered is not asked again).
+4. **Load the answer** (`load_resolved_model(resolved, task)`): build the key
+   from the `ResolvedModel` (`_model_cache_key`) and check the in-memory
+   cache; on a hit, record a hit and return. Otherwise take the
+   per-`(backend digest, run_id, artifact path)` lock, re-check (a concurrent
+   caller may have loaded it while this one waited), and record a miss. A
+   file-loaded family goes through `_load_with_bounded_retry`, which fetches
+   the model and its contract into the disk cache under their identities
+   (`fetch_resolved_files`), calls the family's `load_file` and records the
+   contract's copy as the carrier's `run_contract_path`. The directory family
+   loads via MLflow's pyfunc flavor (`_load_pyfunc_model` +
+   `_wrap_pyfunc(model, task=task)`, see "Pyfunc inputs and outputs" under
+   edge cases). Store the result in the memory cache before releasing the
+   lock. `_resolve_artifact_local`, `_load_with_bounded_retry`, and
+   `_load_pyfunc_model` all receive the `ResolvedBackend` (never a bare
+   tracking URI), and log only its `mode` and `digest`.
 
-### Disk-cache resolution — `_resolve_artifact_local` (`_mlflow_io.py`)
+### Disk cache — `fetch_resolved_files` / `_resolve_artifact_local` (`_mlflow_io.py`)
 
 1. Mark the run "active" (`_disk_cache_run_in_use`) so eviction skips it
    for the duration.
 2. Resolve the cwd-relative cache root once through `_disk_cache_root()`
    (`Path.cwd() / ".cache" / "models"`), then compute the safe cache path
-   (`_artifact_cache_path`: `<root>/<backend digest>/<run_id>/<sha256 of
-   artifact_path>/artifact<suffix>` — the backend digest is validated as
-   lowercase hex, the run id and artifact path as before, and the result
-   must resolve under the root). Two backends therefore never share a
-   cached file even for identical run IDs and artifact paths.
-3. If the file already exists, return it (cache hit, no lock needed for
-   the existence check itself).
+   of each stored artifact (`_artifact_cache_path`: `<root>/<backend
+   digest>/<run_id>/<sha256 of artifact path>/<identity token>/artifact<suffix>`
+   — the backend digest is validated as lowercase hex, the run id and
+   artifact path as before, the token as 16 lowercase hex characters, and the
+   result must resolve under the root). Two backends therefore never share a
+   cached file even for identical run IDs and artifact paths, and two
+   identities of one path are two files.
+3. If the file already exists, use it (no lock needed for the existence
+   check itself).
 4. Otherwise acquire the per-artifact lock, re-check existence (another
    thread may have just finished downloading), and if still missing:
    download to a fresh `tempfile.mkdtemp` directory via
    `mlflow.artifacts.download_artifacts`, verify the downloaded file
    exists (falling back to a name-based lookup if `download_artifacts`
-   nested it), then `shutil.move` it into the cache path. Any exception
-   during download/move deletes a partially-written cache file before
-   re-raising; the temp directory is always cleaned up in a `finally`.
-5. After a successful download, run `_evict_disk_cache`. It counts run
+   nested it), and verify its bytes match the identity the store gave (its
+   size for `size:`, its content hash for `sha256:`); a mismatch raises
+   `ModelResolutionError` ("changed while it was loaded") and keeps nothing.
+   Then `shutil.move` it into the cache path. Any exception during
+   download/move deletes a partially-written cache file before re-raising;
+   the temp directory is always cleaned up in a `finally`.
+5. With the model (and its contract, when the resolution names one) in
+   place, `fetch_resolved_files` writes the resolution record beside the
+   model's identity directories (`<root>/<digest>/<run_id>/<sha256 of
+   artifact path>/resolved.json`: the model's identity, and the contract's
+   path and identity or `null`), replacing it atomically, and removes the
+   older identity directories of the model's path and the contract's path
+   through the shared retrying `remove_tree` (a tree that survives, held
+   open by another process, is logged as `mlflow_disk_cache_stale_copy_kept`
+   and removed by a later pass or by eviction). The record is what a
+   disk-cache-only load reads (`_recorded_resolution`), and
+   `disk_cached_run_model` builds the assistant's `DiskCachedRunModel` from
+   it.
+6. After a successful download, run `_evict_disk_cache`. It counts run
    directories across every backend-digest directory (a run cached on two
    backends is two directories) and excludes run
    directories currently marked active by *any* in-flight caller. For each
@@ -473,31 +475,72 @@ the scoring errors and the route returns them as `400`.
 
 ### Bounded retry — `_load_with_bounded_retry` (`_mlflow_io.py`)
 
-Up to `_LOAD_MAX_ATTEMPTS` = 2 attempts. Each attempt resolves the local
-artifact path (re-downloading if a previous attempt deleted it) and tries
-to load it. `AttributeError`/`TypeError`/`KeyError` re-raise immediately
-(programmer/library-contract error, not corruption), and so does every
-`HauteError` and `HauteValidationError`: each is a refusal of bytes Haute
-could read (the wrong task, a file without Haute's record, a contract that
-does not describe the model, another engine version), which re-downloading
-cannot fix. Any other exception:
-log a warning, delete the cached file (so the next attempt re-downloads),
-and — if attempts remain — sleep `_LOAD_BACKOFF_BASE_S * 2**(attempt-1) +
+Up to `_LOAD_MAX_ATTEMPTS` = 2 attempts. Each attempt fetches the resolved
+files (re-downloading if a previous attempt deleted the model's copy) and
+tries to load the model. `AttributeError`/`TypeError`/`KeyError` re-raise
+immediately (programmer/library-contract error, not corruption), and so does
+every `HauteError` and `HauteValidationError` (a `ModelResolutionError`
+among them): each is a refusal of bytes Haute could read (the wrong task, a
+file without Haute's record, a contract that does not describe the model,
+another engine version, bytes that are not the identity the store gave),
+which re-downloading cannot fix. Any other exception: log a warning, delete
+the cached model file (so the next attempt re-downloads), and — if attempts
+remain — sleep `_LOAD_BACKOFF_BASE_S * 2**(attempt-1) +
 random.uniform(0, _LOAD_BACKOFF_JITTER_S)` before retrying. After the
 final attempt fails, raise `RuntimeError` naming the run/artifact/flavor
 and wrapping the last error (`raise ... from last_err`).
 
-### Artifact discovery — `_find_model_artifact` (`_mlflow_io.py`)
+### Model resolution — `resolve_model(source, *, backend)` (`_mlflow_model.py`)
 
-Probes each registered family's suffixes in registration order through
-`_find_artifact_by_extension` (top-level then one level of subdirectories),
-catching only `_ArtifactNotFoundError` between probes. If none matches,
-lists the run's artifacts directly looking for a `model` directory, then one
-level deeper for anything ending `/MLmodel` or named `MLmodel`. Raises
-`_ArtifactNotFoundError` if nothing matches, naming every registered suffix
-and the pyfunc directory (`supported_model_files_description`); any
-`MlflowException` or bare `FileNotFoundError` from `client.list_artifacts`
-itself is not caught and propagates.
+The one answer to which model a run or registered source scores. It builds a
+client pinned to the backend (`pinned_client`) and:
+
+1. **Registered.** Resolves the version (`resolve_version`: an alias through
+   the registry, `latest` or empty to the highest version, a number as
+   given) and reads it (`get_model_version`). A version without a `run_id`
+   is refused. Its `source` is read against its run:
+   - `runs:/<run_id>` or `runs:/<run_id>/<path>`: the run it names, at that
+     path (none for the run itself);
+   - the run's artifact location (`get_run(run_id).info.artifact_uri`)
+     followed by `/<path>`, or that location itself: that path in the run
+     (none for the location itself);
+   - `models:/...` (a version registered from a logged model, which MLflow 3
+     makes of `runs:/<run>/model`): the version's run with no path;
+   - anything else is outside its run's artifacts and refused. The source
+     text is never echoed (it can carry a storage location).
+   The path found is validated by `_validate_artifact_path`, and the version
+   then resolves as a run source at that path, or with none.
+2. **Run with a path.** Lists the path's folder (`list_artifacts(run_id,
+   parent)`, the top level for a top-level path), which must hold the path:
+   a file is the model, and its family is `family_for_artifact(path)` (an
+   unregistered suffix raises its `ConfigError`); a folder must hold an
+   `MLmodel` file (one listing of the folder) and is a pyfunc model. The
+   same listing of the parent gives the contract beside a native model
+   (`<stem>.feature_contract.json`), when it is there.
+3. **Run with no path.** `run_model_candidates(client, run_id)` is the one
+   discovery rule: the files at the run's top level whose suffix a
+   registered family loads; when there are none, one listing of each
+   top-level folder, giving the files a family loads one folder down in
+   folders that hold no `MLmodel` file; when there are none, the top-level
+   folders that do (pyfunc models). The first non-empty level answers, in
+   listing order. No candidate, or more than one, raises
+   `ModelResolutionError` naming the run and the candidates (for none, the
+   supported files, `supported_model_files_description`); one resolves as a
+   run with that path, reusing the listings already made.
+4. **Identities.** For a file in a local `file:` artifact location (the run's
+   `artifact_uri`, read once per resolution and only for a local backend) the
+   identity is `sha256:` of the stored file's content (`file_signature`,
+   memoised per freshness token); elsewhere `size:` from the listing. A pyfunc
+   folder's is `listing:` of its own listing.
+
+`resolve_mlflow_source` keeps answering the callers that want a run, a
+version and a client, never a model. `model_resolution_scope()` opens a
+memo (`_RESOLUTIONS`) that `resolve_model` reads and fills; a scope opened
+inside another shares the outer memo. The preview and trace entry points, a
+graph walk, a standalone `haute run`, and deploy's `collect_artifacts` each
+open one, so the identity a stored result is kept under, the planner's load,
+the scorer's load and the trace's explanation are one answer. A failed
+resolution is not memoised.
 
 ### Cache clearing — `clear_model_cache(run_id=None)` (`_mlflow_io.py`)
 
@@ -679,9 +722,9 @@ into a `ValueError` naming the model and alias. `resolve_mlflow_source`,
 `load_mlflow_model`, `load_mlflow_optimiser_artifact`, `ModelScorer`,
 `score_from_config`, both node builders, runtime apply, the deploy scorer's
 request-time optimiser load and both explanation paths thread `alias` through
-unchanged. The model cache key uses the resolved version and its artifact
-fingerprint, so moving the alias misses the cached entry and loads the newly
-targeted version. `/api/mlflow/model-versions` adds `aliases` (sorted alias
+unchanged. The model resolution answers the version the alias targets now,
+and the model cache key is the file that version's source names, so moving the
+alias misses the cached entry and loads the newly targeted version. `/api/mlflow/model-versions` adds `aliases` (sorted alias
 names) to each `MlflowModelVersionSummary`, from the registered model's alias
 map (`client.get_registered_model(name).aliases`), because Unity Catalog
 version search results do not carry aliases.
@@ -699,10 +742,15 @@ answer discovery queries. Every discovery route declares
 `destination: Literal["", "databricks", "server", "local"] = ""`, so an
 unknown value is a `422` before any backend work.
 `list_runs` is O(N) in `max_results` — MLflow has no batch artifacts API,
-so each candidate run gets its own `client.list_artifacts` call to check
-for a matching model/optimiser-result artifact; a run whose artifact
-listing itself fails is logged and skipped rather than failing the whole
-response. The route emits exactly one `mlflow_run_discovery_completed`
+so each candidate run is checked on its own. With `artifact_filter=model` a
+run's `artifacts` are `run_model_candidates(client, run_id)`, the discovery
+rule the loader resolves a run with no path by (one listing for a run whose
+model sits at its top level, as every Haute run's does, and one more per
+top-level folder otherwise), and a run is listed exactly when that is not
+empty; with `artifact_filter=optimiser` they are the run's top-level
+`optimiser_result.json` (`_optimiser_result_listed`, the optimiser result's
+own lookup, not a search for a scoring model). A run whose artifact listing
+itself fails is logged and skipped rather than failing the whole response. The route emits exactly one `mlflow_run_discovery_completed`
 measurement after every attempted search (including a failed search), with
 `outcome`, `max_results`, `search_calls`, `artifact_calls`, `runs_scanned`,
 `runs_returned`, `artifact_failures`, `search_ms`, aggregate `artifact_ms`,
@@ -712,8 +760,8 @@ other provider payload. Tracking-client setup failures remain owned by the
 existing setup event because no run search was attempted.
 
 The representative certificate uses the public route implementation with the
-maximum 100 candidates. It requires exactly one search and no more than 100
-artifact calls, local handler time (total less measured provider calls) below
+maximum 100 candidates, each holding its model at the top level. It requires
+exactly one search and no more than 100 artifact calls, local handler time (total less measured provider calls) below
 500 ms, response-model JSON serialization below 250 ms, and a representative
 payload below 1 MiB. Provider latency is deliberately not replaced with a
 machine-local claim: production phase measurements provide that evidence, with
@@ -865,8 +913,9 @@ endpoint.
   profile, or a node's changed destination to the newly selected
   backend's artifact.
 - **Every disk-cache caller resolves its root through `_disk_cache_root()`**.
-  Artifact resolution, blanket/targeted clear, and the native-model fast path
-  therefore cannot drift to different cwd-derived locations.
+  Artifact resolution, blanket/targeted clear, the resolution record and the
+  disk-cache-only load therefore cannot drift to different cwd-derived
+  locations.
 - **`_artifact_cache_path` asserts the computed path stays under the
   resolved cache root** as defence-in-depth beyond the string-level
   validation above.
@@ -877,17 +926,13 @@ endpoint.
   references them, so the lock table never grows unboundedly across a
   long-running process; concurrent loads of the same run on different
   backends never serialise on each other.
-- **Double-checked locking appears at three sites**: the fast-path memory
-  cache check, the fast-path disk-cache-file check, and the full-path
-  memory cache check — each re-checks the cache immediately after
-  acquiring the relevant lock, because a concurrent caller may have
+- **Double-checked locking appears at two sites**: the memory cache check
+  and the disk-cache-file check — each re-checks immediately after
+  acquiring the per-artifact lock, because a concurrent caller may have
   completed the same work while this caller was waiting to acquire.
-- **The in-memory cache key's artifact-fingerprint component is a required
-  keyword argument to `_model_cache_key`**, not one with a default of
-  `""` — so a new call site cannot silently omit byte-identity from the
-  key by forgetting the parameter. `""` is only ever passed explicitly, and
-  only for pyfunc (the one flavor with no local artifact file to
-  fingerprint).
+- **The in-memory cache key is built from the `ResolvedModel` alone**
+  (`_model_cache_key(resolved, task)`), so no call site can key a model by
+  less than the identities the store gave for its bytes and its contract.
 - **Disk-cache eviction excludes any run currently "in use"** —
   `_disk_cache_active_runs` is a reference count, not a boolean, so
   nested/concurrent callers touching the same run correctly keep it
@@ -1013,12 +1058,13 @@ endpoint.
 | `mlflow` not installed | `ImportError` | `resolve_mlflow_source`; routes' `_ensure_tracking` converts to `HTTPException(503)` with `MLFLOW_NOT_INSTALLED_DETAIL`, the same status and detail the modelling and optimiser log routes return. |
 | Model Scoring config with an unknown or non-string `source_type`, an empty `run_id`/`registered_model` (`IncompleteModelSourceError`), or a version beside an alias | `ConfigError` | `parse_model_source`, identically for the builder, the planner, `score_from_config` and the trace explanation; the deploy scorer's passthrough guard re-raises it as `DeployError`, and the deploy bundler skips only `IncompleteModelSourceError`. |
 | Missing `run_id`/`registered_model`, invalid `source_type`, no versions found | `ValueError` | `resolve_mlflow_source` / `resolve_version`. |
-| No matching artifact in a run | `_ArtifactNotFoundError` (⊂ `FileNotFoundError`) | `_find_model_artifact` and its per-extension helpers; a genuine `MlflowException`/bare `FileNotFoundError` from `list_artifacts` is not caught here. |
-| Model file or run artifact with a suffix no family registers | `ConfigError` naming the registered suffixes (`supported_suffixes`) | `family_for_artifact`, called by `load_local_model`, the `load_mlflow_model` fast and full paths, the deploy bundler and the trace explanation, before any download. |
+| A reference that does not resolve to one model: no model or several in a run with no path, an artifact path the run does not hold, a folder without `MLmodel`, a version with no run or a source outside its run's artifacts | `ModelResolutionError` (`ConfigError`) naming the reference and the candidates | `resolve_model` / `run_model_candidates`, the same words in every consumer; a genuine `MlflowException` from `list_artifacts`, `get_run` or the registry (a missing run, a credential or network failure) is not caught. |
+| A copy whose bytes do not match the identity the store gave (logged again during the load) | `ModelResolutionError` naming the artifact; nothing is kept under that identity | `_resolve_artifact_local`; re-raised immediately by `_load_with_bounded_retry`. |
+| Model file or run artifact with a suffix no family registers | `ConfigError` naming the registered suffixes (`supported_suffixes`) | `family_for_artifact`, called by `load_local_model`, the model resolution, the deploy bundler and the trace explanation, before any download. |
 | Local path naming the directory family (a pyfunc model) | `ConfigError` (it loads only from MLflow) | `load_local_model`. |
 | CatBoost model metadata cannot be read | `ConfigError` naming the model source (chained from the read failure) | `_wrap_catboost`; re-raised immediately by `_load_with_bounded_retry`. |
 | A contract offset column without its `offset_link` for a CatBoost model whose metadata declares no offset, or a model/contract offset disagreement | `ConfigError` naming the model and the remedy | `bind_feature_contract`, for file, run, registered and deployed models alike. |
-| A run's contract download fails while a listing names it, or the listing fails | The download or listing error, re-raised (retried by `_load_with_bounded_retry`) | `_run_contract_if_logged`. |
+| A contract the resolution named fails to download, or a listing fails | The download or listing error, re-raised (a download is retried by `_load_with_bounded_retry`) | `fetch_resolved_files` / `resolve_model`. |
 | File source with a missing model file, an explicit contract that does not exist, or a path outside the project | `ConfigError` naming the file / `RuntimePathOutsideProjectError` | `resolve_model_file`, `model_contract_path`; also `GET /api/model-file` as `400`. |
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |
 | Bug in load dispatch (bad attribute/type/key) | `AttributeError` / `TypeError` / `KeyError` | Re-raised immediately from `_load_with_bounded_retry`, never retried. |

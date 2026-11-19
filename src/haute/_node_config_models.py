@@ -425,7 +425,8 @@ class ModelScoreConfig(CodeSurfaceConfig, total=False):
     run_name: str
     """For a run source, the run's name, shown when the panel reopens."""
     artifact_path: str
-    """For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`."""
+    """For a run source, the model's path inside the run's artifacts, such as `model.cbm`; empty for
+    the run's one model. A registered version's source names its file."""
     registered_model: str
     """For a registered source, the registered model's name, such as `catalog.schema.model`."""
     version: str
