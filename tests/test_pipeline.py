@@ -39,7 +39,7 @@ class TestNode:
 
     def test_multi_input_node(self):
         def join(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+            return pl.concat([a, b], how="horizontal")
 
         n = Node(name="join", description="", fn=join, is_source=False)
         assert n.n_inputs == 2
@@ -483,14 +483,10 @@ class TestPipelinePortAwareExecution:
 
         @p.polars
         def combine(quotes: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFrame:
-            if not isinstance(quotes, pl.DataFrame) or not isinstance(drivers, pl.DataFrame):
+            # Each port's own frame, lazy, as every way of running gives a node its inputs.
+            if not isinstance(quotes, pl.LazyFrame) or not isinstance(drivers, pl.LazyFrame):
                 return pl.DataFrame({"quote_id": [-1], "driver_id": [-1]})
-            return pl.DataFrame(
-                {
-                    "quote_id": quotes["quote_id"],
-                    "driver_id": drivers["driver_id"],
-                }
-            )
+            return pl.concat([quotes, drivers], how="horizontal")
 
         p.connect("quote_input", "combine", source_port="quotes")
         p.connect("quote_input", "combine", source_port="drivers")
@@ -526,14 +522,10 @@ class TestPipelinePortAwareExecution:
 
         @p.polars
         def combine(quotes: pl.DataFrame, drivers: pl.DataFrame) -> pl.DataFrame:
-            if not isinstance(quotes, pl.DataFrame) or not isinstance(drivers, pl.DataFrame):
+            # Each port's own frame, lazy, as every way of running gives a node its inputs.
+            if not isinstance(quotes, pl.LazyFrame) or not isinstance(drivers, pl.LazyFrame):
                 return pl.DataFrame({"quote_id": [-1], "driver_id": [-1]})
-            return pl.DataFrame(
-                {
-                    "quote_id": quotes["quote_id"],
-                    "driver_id": drivers["driver_id"],
-                }
-            )
+            return pl.concat([quotes, drivers], how="horizontal")
 
         p.connect("quote_input", "combine", source_port="quotes")
         p.connect("quote_input", "combine", source_port="drivers")
@@ -706,7 +698,7 @@ class TestNodeProperties:
 
     def test_multi_input_node_insufficient_dataframes_raises(self):
         def join(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+            return pl.concat([a, b], how="horizontal")
 
         n = Node(name="join", description="", fn=join, is_source=False)
         with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing arity mismatch raises, not specific type
@@ -894,7 +886,7 @@ class TestPipelineEdgeCases:
 
         @p.polars
         def d(b: pl.DataFrame, c: pl.DataFrame) -> pl.DataFrame:
-            return b.hstack(c.select("c"))
+            return pl.concat([b, c.select("c")], how="horizontal")
 
         p.connect("a", "b").connect("a", "c").connect("b", "d").connect("c", "d")
         result = p.run(source="batch")
@@ -920,7 +912,7 @@ class TestPipelineEdgeCases:
 
         @p.polars
         def merge(src1: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
-            return src1.hstack(src2.rename({"x": "y"}))
+            return pl.concat([src1, src2.rename({"x": "y"})], how="horizontal")
 
         p.connect("src1", "merge").connect("src2", "merge")
         with pytest.raises(ExecutionError, match="[Mm]ark exactly one source"):
@@ -955,7 +947,7 @@ class TestPipelineEdgeCases:
 
         @p.polars
         def combine(quote_input: pl.DataFrame, static_src: pl.DataFrame) -> pl.DataFrame:
-            return quote_input.hstack(static_src)
+            return pl.concat([quote_input, static_src], how="horizontal")
 
         p.connect("quote_input", "combine").connect("static_src", "combine")
         input_df = pl.DataFrame({"x": [42]})
@@ -1012,7 +1004,7 @@ class TestPipelineEdgeCases:
 
         @p.polars
         def merge(quote_input: pl.DataFrame, src2: pl.DataFrame) -> pl.DataFrame:
-            return quote_input.hstack(src2.rename({"x": "y"}))
+            return pl.concat([quote_input, src2.rename({"x": "y"})], how="horizontal")
 
         p.connect("quote_input", "merge").connect("src2", "merge")
         input_df = pl.DataFrame({"x": [42]})
@@ -1032,7 +1024,7 @@ class TestPipelineEdgeCases:
 
         @p.polars
         def combine(quote_input: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
-            return quote_input.hstack(static)
+            return pl.concat([quote_input, static], how="horizontal")
 
         p.connect("quote_input", "combine").connect("static", "combine")
         input_df = pl.DataFrame({"x": [10]})
@@ -1342,7 +1334,7 @@ class TestNodeArityValidation:
 
         @p.polars
         def needs_two(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
-            return a.hstack(b)
+            return pl.concat([a, b], how="horizontal")
 
         p.connect("a", "needs_two")
         with pytest.raises(ExecutionError, match="parameter 'b' names no input"):
@@ -1377,7 +1369,7 @@ class TestApiInputDecoratorMarksSeed:
 
         @p.polars
         def combine(quote_input: pl.DataFrame, static: pl.DataFrame) -> pl.DataFrame:
-            return quote_input.hstack(static)
+            return pl.concat([quote_input, static], how="horizontal")
 
         p.connect("quote_input", "combine").connect("static", "combine")
         result = p.score(pl.DataFrame({"x": [9]}))

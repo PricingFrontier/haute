@@ -30,6 +30,7 @@ from haute._builders import _build_node_fn
 from haute._execution_admission import create_admitted_execution_context
 from haute._types import PipelineGraph
 from haute.deploy._container import _generate_app_source
+from haute.deploy._request_frame import RequestReader
 from haute.deploy._request_rows import RowRefusal, prove_request_rows, request_rows
 from haute.deploy._schema import _read_sample_row, infer_output_schema
 from haute.deploy._scorer import QuoteRequest, reads_records, score_graph
@@ -629,7 +630,7 @@ def test_the_databricks_model_hands_the_quote_input_its_records(sample):
     graph = _graph(sample)
     frame = pd.DataFrame(QUOTES)
 
-    request = _request(graph, ["request"], frame, {}, frozenset())
+    request = _request(RequestReader.of(graph, ["request"], {}), frame)
 
     assert isinstance(request, QuoteRequest)
     assert [record["drivers"] for record in request.records] == [q["drivers"] for q in QUOTES]

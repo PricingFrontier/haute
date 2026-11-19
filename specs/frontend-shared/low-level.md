@@ -1199,7 +1199,7 @@ same Vitest config.
   fallback.
 - **Turns** (`frontend/src/utils/__tests__/serial.test.ts`): `serial` running work one after
   another, a failure passing the turn on. The newest of a kind of request is the late-answer
-  helper's (`answers.test.tsx`).
+  helper's (`frontend/src/utils/__tests__/answers.test.tsx`).
 - **API client** (`frontend/src/api/__tests__/client.test.ts`,
   `frontend/src/api/__tests__/client.retry.test.ts`, `frontend/src/api/__tests__/client.contract.test.ts`): unit tests cover
   retry/backoff/abort semantics directly; the contract suite covers concrete

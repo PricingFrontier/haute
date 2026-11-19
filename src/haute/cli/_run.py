@@ -3,7 +3,8 @@
 Split into:
 
 * :class:`RunConfig` — the typed bag of CLI inputs.
-* :func:`handle_run` — the pure function that does the work.
+* :func:`run_frames` — the work: the frames the command collects.
+* :func:`handle_run` — the work, its frames printed.
 * :func:`run` — the thin ``@click.command`` entry point.
 """
 
@@ -51,14 +52,25 @@ def _fail(message: str) -> NoReturn:
 
 
 def handle_run(config: RunConfig) -> None:
-    """Run the command in the project holding its pipeline file."""
+    """Run the command in the project holding its pipeline file, and print its output."""
+    for label, df in run_frames(config):
+        shown = "" if config.rows is None else f", first {config.rows:,}"
+        click.echo(f"\nOutput - {label} ({df.height:,} rows{shown}):")
+        click.echo(df)
+
+
+def run_frames(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
+    """What the command collects, by display name, run in the project holding its file.
+
+    The command prints these frames; a failure is said and exits as the command exits.
+    """
     from haute._project_context import project_holding, project_scope
 
     with project_scope(project_holding(Path(config.pipeline_file).resolve().parent)):
-        _handle_run_in_project(config)
+        return _run_in_project(config)
 
 
-def _handle_run_in_project(config: RunConfig) -> None:
+def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
     """Run the pipeline in *config.pipeline_file* to its output node, or *config.node*, lazily.
 
     The output node's ancestors are walked once as lazy plans
@@ -179,11 +191,7 @@ def _handle_run_in_project(config: RunConfig) -> None:
             raise
     finally:
         context.release_admission(preserve_primary_error=True)
-
-    for label, df in collected:
-        shown = "" if config.rows is None else f", first {config.rows:,}"
-        click.echo(f"\nOutput - {label} ({df.height:,} rows{shown}):")
-        click.echo(df)
+    return collected
 
 
 @click.command()

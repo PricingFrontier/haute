@@ -947,6 +947,7 @@ def test_a_deployment_answering_quote_by_quote_scores_its_test_quotes_one_reques
         output_node_id="out",
         artifacts={name: Path(path) for name, path in remap.items()},
         request_rows=SORTED,
+        input_schema=QUOTE_SCHEMA,
     )
 
     [result] = score_test_quotes(resolved, quotes_dir)

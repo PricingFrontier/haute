@@ -27,7 +27,7 @@ from haute.errors import ConfigError, ExecutionError, NodeConfigError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
 from tests._project import use_project
-from tests.conftest import write_node_config
+from tests.conftest import make_output_config, write_node_config
 
 
 def _run_file(directory: Path, source: str, name: str = "main.py") -> dict[str, Any]:
@@ -257,6 +257,61 @@ def test_run_and_score_never_resolve_a_source_switch_s_inactive_branch(tmp_path:
     opened.clear()
     assert _collect(pipeline.run(source="batch")).to_dicts() == [{"source": "batch"}]
     assert opened == ["history", "cleaned"]
+
+
+def test_a_source_feeding_an_inactive_input_and_a_side_branch_is_never_opened(
+    tmp_path: Path,
+) -> None:
+    """A run runs the one subgraph its response reads through active edges, as the walker
+    prunes a switch's inactive inputs before it takes a target's ancestors: a batch source
+    that also feeds a branch beside the response is not opened live."""
+    switch = write_node_config(
+        tmp_path,
+        NodeType.LIVE_SWITCH,
+        "switch",
+        {"input_scenario_map": {"quote_input": "live", "history": "batch"}},
+    )
+    response = write_node_config(
+        tmp_path,
+        NodeType.OUTPUT,
+        "quote_response",
+        make_output_config(["source"], source_port="switch"),
+    )
+    namespace = _run_file(
+        tmp_path,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n'
+        "opened = []\n\n\n"
+        "@pipeline.api_input\n"
+        "def quote_input() -> pl.LazyFrame:\n"
+        '    opened.append("quote_input")\n'
+        '    return pl.LazyFrame({"source": ["live"]})\n\n\n'
+        "@pipeline.polars\n"
+        "def history() -> pl.LazyFrame:\n"
+        '    opened.append("history")\n'
+        '    return pl.LazyFrame({"source": ["batch"]})\n\n\n'
+        "@pipeline.polars\n"
+        "def peek(history: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    opened.append("peek")\n'
+        "    return history\n\n\n"
+        f'@pipeline.live_switch(config="{switch}")\n'
+        "def switch(quote_input, history): ...\n\n\n"
+        f'@pipeline.output(config="{response}")\n'
+        "def quote_response(switch): ...\n\n\n"
+        'pipeline.connect("quote_input", "switch")\n'
+        'pipeline.connect("history", "switch")\n'
+        'pipeline.connect("history", "peek")\n'
+        'pipeline.connect("switch", "quote_response")\n',
+    )
+    pipeline, opened = namespace["pipeline"], namespace["opened"]
+
+    assert _collect(pipeline.run(source="live")).to_dicts() == [{"source": "live"}]
+    assert opened == ["quote_input"]
+
+    opened.clear()
+    assert _collect(pipeline.run(source="batch")).to_dicts() == [{"source": "batch"}]
+    assert opened == ["history"]
 
 
 def test_an_edge_join_declaration_joins_its_base_and_join_inputs(tmp_path: Path) -> None:

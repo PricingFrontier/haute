@@ -25,6 +25,7 @@ import haute
 from haute._mlflow_io import _artifact_cache_path
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
 from haute._project_context import context_thread, current_project
+from haute.deploy._request_frame import RequestReader
 from haute.deploy._request_rows import RequestRows
 from haute.deploy._served_haute import ServedHaute
 from haute.graph_utils import PipelineGraph
@@ -2398,8 +2399,7 @@ class TestHauteModelEdgeCases:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"a": pl.Int64(), "b": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"a": pl.Int64(), "b": pl.Float64()})
 
         input_pd = pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})
         mock_result = pl.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})

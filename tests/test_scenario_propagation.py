@@ -352,7 +352,7 @@ class TestSelectedColumnsSilentDrop:
 
     def test_nonexistent_columns_silently_excluded(self):
         """Columns in selected_columns that don't exist are ignored."""
-        from haute._execute_lazy import _apply_selected_columns
+        from haute._node_apply import _apply_selected_columns
 
         df = pl.DataFrame({"a": [1], "b": [2]})
         result = _apply_selected_columns(
@@ -362,7 +362,7 @@ class TestSelectedColumnsSilentDrop:
 
     def test_all_nonexistent_is_refused(self):
         """If ALL selected columns are nonexistent, the selection is refused."""
-        from haute._execute_lazy import _apply_selected_columns
+        from haute._node_apply import _apply_selected_columns
 
         df = pl.DataFrame({"a": [1], "b": [2]})
         with pytest.raises(NodeConfigError, match="no longer has any"):

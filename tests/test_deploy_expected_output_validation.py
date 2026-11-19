@@ -251,8 +251,9 @@ def test_score_test_quotes_walks_into_a_workbench_outputs_tables(tmp_path: Path)
 
 
 def test_validate_deploy_lets_a_workbench_quote_leave_a_table_out(tmp_path: Path) -> None:
-    """A Quote Input's cases must hold every column; a Workbench Input's quote need not
-    hold every table, and its reader says what does not fit when the quote is scored."""
+    """A Quote Input's cases must hold every column, as the service reads a request; a
+    Workbench Input's quote need not hold every table, and its reader says what does not
+    fit when the quote is scored."""
     quotes_dir = tmp_path / "quotes"
     quotes_dir.mkdir()
     _write_json(quotes_dir / "golden.json", [{"input": {"policy": {"limit": 7}}}])
@@ -279,16 +280,23 @@ def test_validate_deploy_lets_a_workbench_quote_leave_a_table_out(tmp_path: Path
         score_graph.return_value = pl.DataFrame({"premium": [70.0]})
         with pytest.raises(DeployError) as refused:
             validate_deploy(flat)
-    assert any(
-        "missing required input column(s) ['Area', 'VehPower']" in error
-        for error in refused.value.context["test_quote_errors"]
-    )
+    assert refused.value.context["test_quote_errors"] == [
+        f"test quote 'golden.json' failed: Quote 0 has no 'VehPower'. {_EVERY_COLUMN}"
+    ]
+
+
+#: What the service's refusal of a quote leaving out a column adds.
+_EVERY_COLUMN = (
+    "Every quote gives each column the input names (null for a value it does not have); "
+    "only an exposure may be left out, priced as a full policy term."
+)
 
 
 def test_validation_names_every_row_missing_columns_reading_each_file_once(
     tmp_path: Path,
 ) -> None:
-    """DEP-R14: one report holds every row's missing columns, and a file is read once."""
+    """DEP-R14: one report names every row the service would refuse, in the service's words
+    (``RequestReader``), and a file is read once."""
     import haute.deploy._validators as validators
 
     quotes_dir = tmp_path / "quotes"
@@ -320,10 +328,8 @@ def test_validation_names_every_row_missing_columns_reading_each_file_once(
 
     errors = refused.value.context["test_quote_errors"]
     assert errors == [
-        "test quote 'golden.json' row 0 failed: missing required input column(s) ['Area']; "
-        "provided columns ['VehPower'].",
-        "test quote 'golden.json' row 2 failed: missing required input column(s) "
-        "['VehPower']; provided columns ['Area'].",
+        f"test quote 'golden.json' failed: Quote 0 has no 'Area'. {_EVERY_COLUMN}",
+        f"test quote 'golden.json' failed: Quote 2 has no 'VehPower'. {_EVERY_COLUMN}",
     ]
     assert sorted(reads) == ["golden.json", "other.json"]
     # The file holding the misfits is not scored; the other one is, once.
