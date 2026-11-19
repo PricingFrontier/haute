@@ -548,17 +548,18 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
             )
         history = _roadmap_history_markers(text)
         assert not history, f"{name} retains delivered/superseded package history: {history}"
-        table_rows = [line for line in text.splitlines() if line.startswith("| `")]
-        resolved = [
-            match.groups()
-            for line in table_rows
-            if (match := re.match(r"^\| `([A-Z0-9-]+)` \| \[[^\]]+\]\(([a-z0-9-]+)\.md\) \|", line))
-        ]
+        resolved = _markdown_table_records(
+            _h2_sections(text)["Packages this resolves"],
+            required_columns=("package", "roadmap", "what it records", "expected"),
+            context=name,
+        )
         assert resolved, f"{name} lists no package it resolves"
-        assert len(resolved) == len(table_rows), f"{name} has a resolves row that cannot be read"
-        for listed, component in resolved:
-            assert package_owners.get(listed) == component, (
-                f"{name} lists {listed} under {component}, which does not hold it"
+        for row in resolved:
+            listed = row["package"].strip().strip("`")
+            target = re.fullmatch(r"\[[^\]]+\]\(([a-z0-9-]+)\.md\)", row["roadmap"].strip())
+            assert target is not None, f"{name} row {listed} does not link its roadmap"
+            assert package_owners.get(listed) == target.group(1), (
+                f"{name} lists {listed} under {target.group(1)}, which does not hold it"
             )
 
     for retired_root in (
