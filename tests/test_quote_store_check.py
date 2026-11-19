@@ -1097,6 +1097,26 @@ def test_a_store_its_search_path_finds_behind_an_empty_schema_is_accepted(
         assert _judged(target, None) == ([], [])
 
 
+@pytest.mark.parametrize(
+    "server",
+    [
+        pytest.param(name, marks=pytest.mark.store_servers)
+        for name in configured()
+        if name == "sqlserver"
+    ],
+)
+def test_a_schema_named_in_another_case_is_the_same_on_sql_server(
+    server: str, tmp_path: Path
+) -> None:
+    # SQL Server compares identifiers under the database's collation, which ignores case on
+    # the CI's server as by default: STORE is the schema its catalogue spells store.
+    with database(server, tmp_path) as target:
+        target.script("CREATE SCHEMA store")
+        target.script(target.sql(FORM, sql_schema="STORE"))
+
+        assert _judged(target, "STORE") == ([], [])
+
+
 def _dropped(target: Target, lines: tuple[TableLines, ...], sql_schema: str) -> None:
     """The store *lines* made in *sql_schema* dropped with its schemas, each table after
     those referring to it, so the server's catalogue stays the size of one store."""

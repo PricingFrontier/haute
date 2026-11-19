@@ -341,7 +341,11 @@ class _ReferredSchema:
     def __init__(self, connection: Connection, inspector: Inspector, sql_schema: str | None):
         self._connection = connection
         self._sql_schema = sql_schema
-        self._read = inspector.default_schema_name if sql_schema is None else sql_schema
+        self._read = (
+            inspector.default_schema_name
+            if sql_schema is None
+            else _spelled(connection, sql_schema)
+        )
         self._on_path: dict[str, str | None] = {}
 
     def of(self, table: str, foreign: Any) -> str | None:
@@ -370,6 +374,19 @@ class _ReferredSchema:
                 {"name": name},
             ).scalar()
         return self._on_path[name]
+
+
+def _spelled(connection: Connection, sql_schema: str) -> str:
+    """*sql_schema* as the database's catalogue spells it. SQL Server compares identifiers
+    under the database's collation, so a schema named in another case may be the same one,
+    which its catalogue, and so each reflected reference, spells its own way; PostgreSQL and
+    SQLite keep a name as Haute quotes it."""
+    if connection.dialect.name != "mssql":
+        return sql_schema
+    spelled = connection.execute(
+        text("SELECT SCHEMA_NAME(SCHEMA_ID(:name))"), {"name": sql_schema}
+    ).scalar()
+    return sql_schema if spelled is None else str(spelled)
 
 
 def _sqlite_numbered(
