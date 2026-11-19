@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+import polars as pl
 import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
@@ -89,10 +90,11 @@ class Project:
 
 def _pipeline(folder: Path, data_root: Path, name: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    config = write_data_input_config(folder, name, "data/x.csv")
+    # Parquet is read directly, with no snapshot to build: the run is about the project.
+    config = write_data_input_config(folder, name, "data/x.parquet")
     (folder / f"{name}.py").write_text(_PIPELINE.format(name=name, config=config), encoding="utf-8")
     (data_root / "data").mkdir(exist_ok=True)
-    (data_root / "data" / "x.csv").write_text("x\n1\n2\n", encoding="utf-8")
+    pl.DataFrame({"x": [1, 2]}).write_parquet(data_root / "data" / "x.parquet")
 
 
 def _project(
