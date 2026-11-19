@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -65,8 +66,9 @@ from haute._quote_store._catalogue import (
     read_catalogue,
     table_problems,
 )
-from haute._quote_store._compare import Difference, compare
-from haute._quote_store._migrate import _SCRIPT_TRANSACTIONS, PROVIDER_DIALECTS
+from haute._quote_store._compare import Difference, compare, read_store_catalogue
+from haute._quote_store._environment import StoreLocation
+from haute._quote_store._migrate import _SCRIPT_TRANSACTIONS, PROVIDER_DIALECTS, create_table
 from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._schema import (
     ACTIVITY_TABLE,
@@ -377,8 +379,9 @@ def _tables(lines: tuple[TableLines, ...], sql_schema: str | None) -> list[Table
 
 
 def render(lines: tuple[TableLines, ...], backend: str, sql_schema: str | None = None) -> str:
-    """*lines* as SQL for *backend*, rendered as the SQL Haute writes is: Alembic's offline
-    CREATE TABLE and CREATE INDEX for each table in turn, in the script's one transaction."""
+    """*lines* as SQL for *backend*, rendered as the SQL Haute writes is: each table made by
+    Alembic offline as the store's are (:func:`_migrate.create_table`), in turn, in the
+    script's one transaction."""
     dialect = PROVIDER_DIALECTS[backend]
     buffer = io.StringIO()
     options: dict[str, Any] = {"as_sql": True, "output_buffer": buffer, "literal_binds": True}
@@ -388,14 +391,9 @@ def render(lines: tuple[TableLines, ...], backend: str, sql_schema: str | None =
     begin, commit = _SCRIPT_TRANSACTIONS[dialect]
     buffer.write(begin)
     for table in _tables(lines, sql_schema):
-        operations.impl.create_table(table)
+        create_table(operations, table)
     buffer.write(commit)
     return buffer.getvalue()
-
-
-def _statements(sql: str) -> list[str]:
-    """The statements of *sql*, each whole, in no order."""
-    return sorted(statement.strip() for statement in sql.split(";\n") if statement.strip())
 
 
 def _engine_dialect(backend: str) -> Dialect:
@@ -1006,9 +1004,7 @@ _PLACES = [
 def test_the_description_renders_the_sql_haute_writes(backend: str, sql_schema: str | None) -> None:
     written = Target(backend, "").sql(FORM, sql_schema=sql_schema)
 
-    # Statement for statement, each line alike: Alembic writes a table's CREATE INDEX
-    # statements in the order its set of indexes gives them, which a run does not fix.
-    assert _statements(render(describe(FORM), backend, sql_schema)) == _statements(written)
+    assert render(describe(FORM), backend, sql_schema) == written
 
 
 def test_a_line_the_description_does_not_know_fails_it() -> None:
@@ -1219,3 +1215,52 @@ def test_a_reference_to_quote_details_in_another_schema_is_named_from_any_schema
         for each in refusal
     ), refusal
     assert any(_table_mark(ACTIVITY_TABLE, "refers")(mark) for mark in marks), marks
+
+
+#: How many times the check and the schema pane's read each run beside the DDL: SQL Server
+#: made about one check in thirty a deadlock's victim in this churn before each was run
+#: again (19 November 2026), so a check that is not run again fails here near certainly.
+_BESIDE_DDL = 75
+
+
+@pytest.mark.parametrize(
+    "server", [pytest.param(name, marks=pytest.mark.store_servers) for name in configured()]
+)
+def test_the_check_and_the_pane_read_the_store_beside_ddl_its_owners_run(
+    server: str, tmp_path: Path
+) -> None:
+    # The owners add and drop a column of the store's and make and drop a table elsewhere in
+    # the database, again and again, while the app checks the store and the pane reads it.
+    with database(server, tmp_path) as target:
+        target.script(target.sql(FORM))
+        target.script("CREATE SCHEMA other")
+        stop = threading.Event()
+        churned: list[BaseException] = []
+
+        def churn() -> None:
+            made = 0
+            try:
+                while not stop.is_set():
+                    made += 1
+                    target.script(f"CREATE TABLE other.t{made} (a INTEGER PRIMARY KEY)")
+                    target.script("ALTER TABLE policy ADD churned INTEGER NULL")
+                    target.script("ALTER TABLE policy DROP COLUMN churned")
+                    target.script(f"DROP TABLE other.t{made}")
+            except BaseException as exc:  # noqa: BLE001 - said by the test below
+                churned.append(exc)
+
+        owners = threading.Thread(target=churn)
+        owners.start()
+        location = StoreLocation(HOSTED, target.url, sign_in=target.sign_in)
+        try:
+            for _ in range(_BESIDE_DDL):
+                engine, _ = open_engine(
+                    target.url, FORM, environment=HOSTED, sign_in=target.sign_in
+                )
+                engine.dispose()
+                assert read_store_catalogue(location).table("policy") is not None
+        finally:
+            stop.set()
+            owners.join()
+
+    assert not churned, churned

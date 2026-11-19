@@ -45,6 +45,7 @@ from haute._quote_store._store import (
     QuoteStoreUnreachableError,
     make_engine,
     reaching,
+    read_store,
 )
 from haute._workbench_form import FormSpec
 
@@ -244,15 +245,18 @@ def _reading_engine(location: StoreLocation) -> Engine:
 
 def read_store_catalogue(location: StoreLocation) -> Catalogue:
     """The store's tables the database at *location* holds, with the quotes counted in each,
-    read under its sign-in and nothing written. A server not reached is said naming what places
-    it (:func:`._store.reaching`), and any other refusal of the database's, a file that is no
+    read under its sign-in and nothing written, run again where the database asks
+    (:func:`._store.read_store`). A server not reached is said naming what places it
+    (:func:`._store.reaching`), and any other refusal of the database's, a file that is no
     database or tables its sign-in may not read, naming the same, never what the driver
     said, a database not reached saying it may be waking from a pause (_WAKING)."""
     engine = _reading_engine(location)
     try:
         with reaching(location.url, location.environment, location.named_by):
-            with engine.connect() as connection:
-                return read_catalogue(connection, location.sql_schema, count=True)
+            return read_store(
+                engine,
+                lambda connection: read_catalogue(connection, location.sql_schema, count=True),
+            )
     except QuoteStoreUnreachableError as exc:
         raise QuoteStoreUnreachableError(f"{exc} {_WAKING}") from None
     except DBAPIError:

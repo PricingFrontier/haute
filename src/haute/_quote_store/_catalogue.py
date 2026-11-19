@@ -15,7 +15,7 @@ constrains.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -53,9 +53,20 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.mssql import TINYINT
 from sqlalchemy.engine import Inspector
-from sqlalchemy.exc import CompileError
+from sqlalchemy.exc import CompileError, DBAPIError
 from sqlalchemy.sql.elements import ColumnClause
 from sqlalchemy.types import TypeDecorator, TypeEngine
+
+from haute._workbench_config import WorkbenchError
+
+
+class CatalogueMovedError(WorkbenchError):
+    """The database's tables changed while they were read: a table or column the read took
+    from the catalogue was gone, or another, by the time its quotes were counted, as DDL run
+    beside the read changes them. Read again (:func:`._store.read_store` does)."""
+
+    error_code = "quote_store_moved"
+
 
 #: The columns every table of the store leads with: the quote's identity.
 IDENTITY = ("quote_reference", "quote_option")
@@ -278,7 +289,17 @@ def read_catalogue(
             ),
         )
         found.append((table, reflected, numbered))
-    counts = _counted(connection, list(countable.items()), sql_schema)
+    try:
+        counts = _counted(connection, list(countable.items()), sql_schema)
+    except DBAPIError:
+        # The names counted were the catalogue's a moment before: a count that fails where
+        # they are no longer its read a catalogue DDL beside the read has since changed.
+        if _columns_held(connection, sql_schema, countable):
+            raise
+        raise CatalogueMovedError(
+            "The database's tables changed while they were read, as SQL run beside the read "
+            "changes them: read them again once it has run."
+        ) from None
     tables: list[CatalogueTable] = []
     for table, reflected, numbered in found:
         quotes, counted = counts[table.name] if table.name in countable else (None, {})
@@ -302,6 +323,19 @@ def read_catalogue(
             )
         )
     return Catalogue(tables=tuple(tables))
+
+
+def _columns_held(
+    connection: Connection, sql_schema: str | None, counted: Mapping[str, list[str]]
+) -> bool:
+    """Whether the catalogue holds each of *counted*'s tables with the columns counted in it,
+    read afresh after the failed count's transaction is rolled back."""
+    connection.rollback()
+    held = inspect(connection).get_multi_columns(schema=sql_schema, filter_names=list(counted))
+    return all(
+        [column["name"] for column in held.get((sql_schema, name), [])] == columns
+        for name, columns in counted.items()
+    )
 
 
 def _distinct(sets: Iterable[tuple[str, ...]]) -> tuple[tuple[str, ...], ...]:

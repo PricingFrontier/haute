@@ -11,9 +11,16 @@ from typing import Any
 
 import pytest
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import OperationalError
 
-from haute._quote_store import QuoteStoreMismatchError, open_book, store_url
-from haute._quote_store._store import make_engine, writing
+from haute._quote_store import (
+    QuoteStoreEnvironmentError,
+    QuoteStoreMismatchError,
+    open_book,
+    store_url,
+)
+from haute._quote_store import _store as store_module
+from haute._quote_store._store import RERUN_WAITS, make_engine, read_store, rerun_asked, writing
 from haute._workbench_form import FormSpec, with_quote_details
 from tests._store_servers import Target
 
@@ -193,3 +200,166 @@ def test_foreign_keys_are_held_on_every_connection(url: str) -> None:
             )
     finally:
         engine.dispose()
+
+
+def _ended(original: BaseException, statement: str | None = "SELECT 1") -> OperationalError:
+    """*original*, a driver's error, as SQLAlchemy raises it from *statement*."""
+    return OperationalError(statement, {}, original)
+
+
+def _deadlock_victim() -> OperationalError:
+    """SQL Server ending a catalogue read as a deadlock's victim, as mssql-python raises it."""
+    from mssql_python.exceptions import OperationalError as DriverOperationalError
+
+    return _ended(
+        DriverOperationalError(
+            driver_error="Serialization failure",
+            ddbc_error="Transaction (Process ID 74) was deadlocked on lock resources with "
+            "another process and has been chosen as the deadlock victim. Rerun the transaction.",
+        )
+    )
+
+
+def test_a_transaction_the_database_asks_to_run_again_is_told_from_other_errors() -> None:
+    import psycopg.errors
+    from mssql_python.exceptions import ProgrammingError as DriverProgrammingError
+
+    assert rerun_asked(_deadlock_victim())
+    assert rerun_asked(_ended(psycopg.errors.DeadlockDetected("deadlock detected")))
+    assert rerun_asked(_ended(psycopg.errors.SerializationFailure("could not serialize")))
+    assert not rerun_asked(
+        _ended(DriverProgrammingError(driver_error="Column not found", ddbc_error="no column"))
+    )
+    assert not rerun_asked(_ended(psycopg.errors.UndefinedTable("no such table")))
+    # Refused before any statement, it is a database not reached, never run again.
+    assert not rerun_asked(_ended(psycopg.errors.SerializationFailure("x"), statement=None))
+    assert not rerun_asked(ValueError("not the database's"))
+
+
+def test_a_read_the_database_ends_as_a_deadlock_s_victim_is_run_again(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waited: list[float] = []
+    monkeypatch.setattr(store_module.time, "sleep", waited.append)
+    runs: list[Any] = []
+
+    def read(connection: Any) -> Any:
+        runs.append(connection)
+        if len(runs) < 3:
+            raise _deadlock_victim()
+        return connection.exec_driver_sql("SELECT 1").scalar()
+
+    engine = make_engine(url)
+    try:
+        assert read_store(engine, read) == 1
+    finally:
+        engine.dispose()
+
+    assert len(runs) == 3
+    assert waited == list(RERUN_WAITS[:2])
+
+
+def test_a_read_ended_every_time_or_refused_otherwise_raises(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store_module.time, "sleep", lambda _: None)
+    runs: list[str] = []
+
+    def always_a_victim(connection: Any) -> None:
+        runs.append("victim")
+        raise _deadlock_victim()
+
+    def refused(connection: Any) -> None:
+        runs.append("refused")
+        raise _ended(ValueError("permission denied"))
+
+    engine = make_engine(url)
+    try:
+        with pytest.raises(OperationalError, match="deadlock victim"):
+            read_store(engine, always_a_victim)
+        assert runs == ["victim"] * (len(RERUN_WAITS) + 1)
+        runs.clear()
+        with pytest.raises(OperationalError, match="permission denied"):
+            read_store(engine, refused)
+        assert runs == ["refused"]
+    finally:
+        engine.dispose()
+
+
+def test_the_check_and_the_schema_pane_run_a_read_again_when_the_database_asks(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._quote_store import _compare as compare_module
+    from haute._quote_store._compare import read_store_catalogue
+    from haute._quote_store._environment import StoreLocation
+
+    _hosted(url, form(POLICY, VEHICLES))
+    monkeypatch.setattr(store_module.time, "sleep", lambda _: None)
+    real = store_module.read_catalogue
+    ended: list[str] = []
+
+    def once_a_victim(*args: Any, **kwargs: Any) -> Any:
+        if len(ended) % 2 == 0:
+            ended.append("victim")
+            raise _deadlock_victim()
+        ended.append("read")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(store_module, "read_catalogue", once_a_victim)
+    monkeypatch.setattr(compare_module, "read_catalogue", once_a_victim)
+
+    open_book(url, form(POLICY, VEHICLES), environment="test", haute_version="1").close()
+    assert {table.name for table in read_store_catalogue(StoreLocation("test", url)).tables} >= {
+        "policy",
+        "vehicles",
+    }
+    assert ended == ["victim", "read", "victim", "read"]
+
+
+def test_a_count_the_catalogue_moved_under_is_read_again(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._quote_store import _catalogue as catalogue_module
+    from haute._quote_store._compare import read_store_catalogue
+    from haute._quote_store._environment import StoreLocation
+
+    _hosted(url, form(POLICY, VEHICLES))
+    monkeypatch.setattr(store_module.time, "sleep", lambda _: None)
+    real = catalogue_module._counted
+    counted: list[int] = []
+
+    def moved_once(*args: Any) -> Any:
+        counted.append(len(counted))
+        if len(counted) == 1:
+            # The owners drop a column between the catalogue's read and the count.
+            _raw(url, "ALTER TABLE vehicles DROP COLUMN reg")
+        return real(*args)
+
+    monkeypatch.setattr(catalogue_module, "_counted", moved_once)
+
+    read = read_store_catalogue(StoreLocation("test", url))
+
+    vehicles = read.table("vehicles")
+    assert vehicles is not None and vehicles.column("reg") is None
+    assert len(counted) == 2
+
+
+def test_a_count_that_fails_on_the_tables_as_read_is_not_read_again(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._quote_store import _catalogue as catalogue_module
+    from haute._quote_store._compare import read_store_catalogue
+    from haute._quote_store._environment import StoreLocation
+
+    _hosted(url, form(POLICY, VEHICLES))
+    counted: list[int] = []
+
+    def refused(*args: Any) -> Any:
+        counted.append(1)
+        raise _ended(ValueError("permission denied"))
+
+    monkeypatch.setattr(catalogue_module, "_counted", refused)
+
+    with pytest.raises(QuoteStoreEnvironmentError, match="tables could not be read"):
+        read_store_catalogue(StoreLocation("test", url))
+    assert counted == [1]
