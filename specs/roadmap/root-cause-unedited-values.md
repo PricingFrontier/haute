@@ -61,15 +61,18 @@ their own again.
 **Plan:** Keep the specification's rule and give it one home on each side
 and its full reach.
 
-- Widen what is named from "steps edited" to "node edited". A node the
-  baseline holds unchanged is untouched: its code and its settings are
-  taken as the file holds them. A node the baseline does not hold, or
-  holds differently, is named, and what the request carries for it is
-  read. A node inside a submodel is named by its scope and id, as now.
+- Name what was edited part by part, not node by node. A node's steps and
+  its settings are named separately, each by comparison with the
+  baseline's, as steps are now. A part that is not named is taken as the
+  file holds it; only a named part is read from the request. So a node
+  whose label or one setting changed still has its steps unread and its
+  code kept, and a node whose step changed still has its settings file
+  kept. A node the baseline does not hold has every part named. A node
+  inside a submodel is named by its scope and id, as now.
 - One function in the browser builds what is sent for every request that
   carries the document, the saves and the requests that run the graph
   alike, from the document and its baseline.
-- One base model on the server carries the document and the named nodes
+- One base model on the server carries the document and the named parts
   and applies the rule before any node is built. The save, the node save,
   the assistant's apply and each request that runs the editor's graph use
   it; none applies the rule for itself.
@@ -84,10 +87,12 @@ number and text round trip as JavaScript performs it and makes each
 request that carries the document, in three states. With nothing edited, a
 save leaves every file byte for byte, settings files included, and a
 preview, a trace, an Explore request and a training estimate give the
-column types and values the file computes. With one node edited, a step in
-one case and a setting in another, the edit reaches the saved file and the
-run, and every neighbouring node's values keep their exact spelling and
-meaning. With a new node the baseline does not hold, at the root and
+column types and values the file computes. With one node edited, the edit
+reaches the saved file and the run, every neighbouring node's values keep
+their exact spelling and meaning, and so do the parts of the edited node
+that were not edited: after a change of its label or of one setting its
+code is byte for byte and `pl.lit(1.0)` is still a decimal, and after a
+change of one step its settings file is byte for byte. With a new node the baseline does not hold, at the root and
 inside a submodel, the node is saved and run as sent. A further test
 changes one field of an untouched node in transit and requires the file's
 value used. A request model that carries the document and does not use

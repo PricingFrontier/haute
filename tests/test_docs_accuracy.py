@@ -548,8 +548,14 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
             )
         history = _roadmap_history_markers(text)
         assert not history, f"{name} retains delivered/superseded package history: {history}"
-        resolved = re.findall(r"^\| `([A-Z0-9-]+)` \| \[([a-z0-9-]+)\]\(", text, flags=re.MULTILINE)
+        table_rows = [line for line in text.splitlines() if line.startswith("| `")]
+        resolved = [
+            match.groups()
+            for line in table_rows
+            if (match := re.match(r"^\| `([A-Z0-9-]+)` \| \[[^\]]+\]\(([a-z0-9-]+)\.md\) \|", line))
+        ]
         assert resolved, f"{name} lists no package it resolves"
+        assert len(resolved) == len(table_rows), f"{name} has a resolves row that cannot be read"
         for listed, component in resolved:
             assert package_owners.get(listed) == component, (
                 f"{name} lists {listed} under {component}, which does not hold it"

@@ -80,9 +80,11 @@ specification before the change.
 model files and a version registered from the second, a run with one file
 a folder down, a run holding only a pyfunc folder, a native model with a
 feature contract beside it, and a file logged again over its own path. For
-each reference it requires the same model from the loader, the picker's
-listing, the bundle and the image's dependency list, and the scores of
-that model's own `predict`. After the file is logged again, the same
+each reference to a native model it requires the same model from the
+loader, the picker's listing, the bundle and the image's dependency list,
+and the scores of that model's own `predict`. For the pyfunc folder it
+requires the same model from the loader and the picker's listing, and the
+bundle's refusal naming the node. After the file is logged again, the same
 preview and the same trace, asked a second time with nothing else changed,
 give the new model's scores. A test fails when code outside the model
 resolution searches a run's artifacts for a scoring model; the optimiser

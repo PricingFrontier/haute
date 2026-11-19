@@ -44,8 +44,9 @@ open the file with `tomllib` themselves and look up their own table: the
 configured pipeline in `_project.py`, the editor's pipeline route,
 `haute serve` for its host, the model name in the commands' helpers, the
 workbench's settings, the assistant's settings and the MLflow settings.
-None of the seven checks a key and each meets a byte-order mark its own
-way. So the reading of one file depends on which reader a command happens
+Three of them refuse an unknown key in their own table (the workbench's,
+the assistant's and the MLflow settings) and four check none, and each
+meets a byte-order mark its own way. No reader owns the file as a whole. So the reading of one file depends on which reader a command happens
 to reach: `PCF-02` recorded the commands disagreeing on a mark and on a
 misspelt key, and the editor loading an empty canvas with no issue.
 `PCF-02`'s own table of which command does what was taken on 11 November
@@ -79,10 +80,13 @@ next would bring another.
   file reaches the next call, and nothing holds the settings for the life
   of a process.
 - One finder, walking up from a starting folder, and each command states
-  what it needs of it. `init` needs no project. A pipeline run as Python,
-  and `status` and `deploy` given a model explicitly, run without a
-  `haute.toml`, as the CLI specification has them. Every other command
-  needs a project, and without one refuses in the same words.
+  what it needs of it. No command's need changes. The pull request begins
+  with a table of every command and what it needs today, and keeps it:
+  `init` and `gpu-setup` need no project; `haute run` and `haute lint`
+  given a file, a pipeline run as Python, and `status` and `deploy` given
+  a model explicitly, run in a folder without a `haute.toml`; `smoke` and
+  `impact` need one. Commands with the same need refuse in the same words
+  when it is not met.
 - One list of a project's pipelines, those beside the configured one
   included, for every check that asks what else uses a file.
 - The editor's load reports what the parse refuses as an issue of the
@@ -95,8 +99,9 @@ table of projects: started from a folder inside the project; with a
 byte-order mark; with a misspelt key; with a misspelt table; with a
 backslash in a path; with no git repository; with no `haute.toml` at all;
 and with a second pipeline beside the configured one. Commands that need a
-project give the same reading or the same refusal, in the same words, and
-the commands that run without one still run. A setting edited between two
+project give the same reading or the same refusal, in the same words. Each
+command that runs without a project or without a `haute.toml` today still
+does: `haute run` and `haute lint` on a file in a bare folder among them. A setting edited between two
 calls to a running server is read by the second. A command without a row
 in the test fails it. A second test fails when a module other than the
 parse's own opens `haute.toml`. The acceptance of `PCF-02` and `CLI-02` is

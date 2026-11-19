@@ -42,9 +42,10 @@ loads as ready, and the next Commit takes the leftovers into version
 history (`SRV-05`).
 
 That it committed. The route records a save as committed only after the
-service returns, and the service's last act is to remove the settings
-files the graph no longer uses. A failure there, after every file is
-written, answers the save as failed, and the removal is never tried again
+service returns. Once its files are written the service removes the
+settings files the graph no longer uses, and only then captures the save
+in version history and builds its answer. A failure in the removal, after
+every file is written, leaves the service before either and answers the save as failed, and the removal is never tried again
 because the graph on disk no longer names the file (`SRV-03`).
 
 What it answered. The server answers a repeat of a committed save, under
