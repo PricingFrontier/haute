@@ -83,6 +83,7 @@ from haute.errors import (
     ConflictError,
     ForbiddenError,
     HauteError,
+    InvalidPathError,
     InvalidRequestError,
     ParseError,
     PathOutsideProjectError,
@@ -469,24 +470,48 @@ def _prune_emptied_config_folders(root: Path, path: Path) -> None:
         logger.warning("stale_config_folder_not_removed", folder=str(folder), error=str(exc))
 
 
-def _remove_saved_away(
-    root: Path, removes: Sequence[Removal], warnings: list[str]
-) -> tuple[list[Path], list[Removal]]:
+def _recorded_path(root: Path, rel: str) -> Path | None:
+    """The file *rel* a save's record names, inside the project as it resolves now; None, and
+    logged, for one that leaves it (a folder replaced by a link since the record was made)."""
+    try:
+        return contained_path(root, rel)
+    except (PathOutsideProjectError, InvalidPathError):
+        logger.warning("save_record_path_outside_project", path=rel)
+        return None
+
+
+class _Removals(NamedTuple):
+    """What removing a committed save's stale files did: the files removed now; each file
+    the record named that is gone, whenever it went, for the capture; and the removals that
+    failed, kept for the next save."""
+
+    removed: list[Path]
+    gone: list[str]
+    remaining: list[Removal]
+
+
+def _remove_saved_away(root: Path, removes: Sequence[Removal], warnings: list[str]) -> _Removals:
     """Remove the stale files a committed save names: each that still holds the bytes it
     held when the save planned its removal, marked a self-write deletion first. One that
-    cannot be removed is a warning naming it, and is returned to be kept for the next save."""
-    removed: list[Path] = []
-    remaining: list[Removal] = []
+    cannot be removed is a warning naming it, and is kept for the next save. One already
+    gone (removed before a server died, say) is still the save's to capture."""
+    done = _Removals([], [], [])
     for removal in removes:
-        path = root / removal.file
+        path = _recorded_path(root, removal.file)
+        if path is None:
+            continue
         try:
-            if _artifact_digest(path) != removal.digest:
-                # Gone already, or written since by someone else: not this save's to remove.
+            current = _artifact_digest(path)
+            if current is None:
+                done.gone.append(removal.file)
+                continue
+            if current != removal.digest:
+                # Written since by someone else: not this save's to remove.
                 continue
             mark_self_write(path, deleted=True)
             path.unlink()
         except OSError as exc:
-            remaining.append(removal)
+            done.remaining.append(removal)
             reason = exc.strerror or type(exc).__name__
             warnings.append(
                 f"Saved, but {removal.file} could not be removed ({reason}). "
@@ -494,18 +519,43 @@ def _remove_saved_away(
             )
             logger.warning("stale_config_not_removed", path=removal.file, error=str(exc))
             continue
-        removed.append(path)
+        done.removed.append(path)
+        done.gone.append(removal.file)
         logger.info("stale_config_removed", path=removal.file)
         _prune_emptied_config_folders(root, path)
-    return removed, remaining
+    return done
+
+
+def _remove_staging(root: Path, writes: Sequence[str]) -> list[str]:
+    """Remove the staging files atomic writes of *writes* left (a writer killed before its
+    rename), so no Commit takes them; the files whose staging could not be removed, to be
+    tried again."""
+    targets = {path: rel for rel in writes if (path := _recorded_path(root, rel)) is not None}
+    left: list[str] = []
+    by_stem = {(path.parent, path.stem): rel for path, rel in targets.items()}
+    for staged in staging_files_of(targets):
+        try:
+            staged.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:  # tried again at the next settle
+            logger.warning("save_staging_not_removed", path=str(staged), error=str(exc))
+            stem = staged.name.rsplit(".", 2)[0]
+            rel = by_stem.get((staged.parent, stem))
+            if rel is not None:
+                left.append(rel)
+            continue
+        logger.info("save_staging_removed", path=str(staged))
+    return list(dict.fromkeys(left))
 
 
 def _finish_committed(
     root: Path, record: SaveRecord, *, commit_message: str | None = None
 ) -> FinishedSave:
-    """Finish the committed save *record* names: remove its stale files, capture what it
-    wrote and removed, keep its answer as the receipt of its operation, and forget the
-    record, or keep only the removals that failed. The save runs it once its files commit,
+    """Finish the committed save *record* names: remove its stale files and any staging file
+    left beside what it wrote, capture what it wrote and removed, keep its answer as the
+    receipt of its operation, and forget the record, or keep only what is still to do (a
+    removal that failed, a staging file still held). The save runs it once its files commit,
     and a settle runs it for a save a server died in, or that raised, after it committed.
 
     Something outside Haute (an IDE, a formatter on watch, a commit hook) may rewrite what
@@ -513,13 +563,15 @@ def _finish_committed(
     the editor's next save is made against the revision there."""
     answer = None if record.answer is None else SavePipelineResponse.model_validate(record.answer)
     warnings = [] if answer is None else list(answer.warnings)
-    removed, remaining = _remove_saved_away(root, record.removes, warnings)
-    written = {root / rel: _artifact_digest(root / rel) for rel in record.writes}
+    removals = _remove_saved_away(root, record.removes, warnings)
+    staging_left = _remove_staging(root, record.writes)
+    written = {
+        path: _artifact_digest(path)
+        for rel in record.writes
+        if (path := _recorded_path(root, rel)) is not None
+    }
     captured = capture_save_in_ledger(
-        root,
-        [*record.writes, *(path.relative_to(root).as_posix() for path in removed)],
-        warnings,
-        commit_message,
+        root, [*record.writes, *removals.gone], warnings, commit_message
     )
     response: SavePipelineResponse | None = None
     payload: dict[str, Any] | None = None
@@ -539,14 +591,19 @@ def _finish_committed(
         response = answer.model_copy(update=update)
         if record.operation is not None and record.digest is not None:
             keep_receipt(root, record.operation, record.digest, response)
-    if remaining:
+    if removals.remaining or staging_left:
         write_record(
             root,
-            SaveRecord(source_file=record.source_file, removes=tuple(remaining), committed=True),
+            SaveRecord(
+                source_file=record.source_file,
+                writes=tuple(staging_left),
+                removes=tuple(removals.remaining),
+                committed=True,
+            ),
         )
     else:
         clear_record(root, record.source_file)
-    return FinishedSave(response, removed, payload)
+    return FinishedSave(response, removals.removed, payload)
 
 
 def _settle_record(root: Path, record: SaveRecord | None) -> SaveRecord | None:
@@ -559,14 +616,7 @@ def _settle_record(root: Path, record: SaveRecord | None) -> SaveRecord | None:
     if record.committed:
         _finish_committed(root, record)
         return read_record(root, record.source_file)
-    for rel in record.writes:
-        for staged in staging_files_of(root / rel):
-            try:
-                staged.unlink()
-            except OSError as exc:  # tried again at the next settle
-                logger.warning("save_staging_not_removed", path=str(staged), error=str(exc))
-                continue
-            logger.info("save_staging_removed", path=str(staged))
+    _remove_staging(root, record.writes)
     return record
 
 
@@ -860,15 +910,17 @@ class SavePipelineService:
 
         # The save's record, before its first file is replaced: what it writes and deletes,
         # and what it removes once committed. A record a settle left (a save that never
-        # committed, removals not yet made) is carried: its files may hold either save until
-        # this one commits, and its removals are made unless this save writes the file.
+        # committed, removals and staging files not yet removed) is carried: its files may
+        # hold either save until this one commits, the staging beside them is removed when it
+        # does, and its removals are made unless this save writes the file.
         planned_folded = {self._project_file(path).casefold() for path in [*planned, *deletes]}
         removes = {removal.file.casefold(): removal for removal in self._stale_config_files()}
         if carried is not None:
             for removal in carried.removes:
                 if removal.file.casefold() not in planned_folded:
                     removes.setdefault(removal.file.casefold(), removal)
-        carried_writes = carried.writes if carried is not None and not carried.committed else ()
+        # A committed record carries only the files whose staging is still to remove.
+        carried_writes = carried.writes if carried is not None else ()
         record = SaveRecord(
             source_file=source_file,
             operation=body.operation,

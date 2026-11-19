@@ -302,6 +302,9 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       keepDraft()
     },
     key: (write) => write.write.body.operation,
+    // The key is bound to what the write saves: the values, the version saved over and
+    // priced or not (`basis`); the server prices the values again.
+    content: (write) => write.basis,
   })
 
   /**
@@ -526,12 +529,16 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       const held = creationKey(release.pipeline_name || "app", release.principal, askedFor(from))
       // Refused, it was not made and never will be: the next asks anew. Unanswered, it may
       // have been: the key stays held.
+      // The key is held under what was asked for (`creationKey`), so each creation under it
+      // is that one: made from the source as the server holds it, and answered with the quote
+      // made once the key landed. Only the key is kept, so nothing else is held.
       const creationHold: KeyedHold<QuoteCreation> = {
         held: () => null,
         hold: (creation) => {
           if (creation === null) releaseOperation(held)
         },
         key: (creation) => creation.operation,
+        content: () => held,
       }
       let made: WorkbenchAppQuote | null = null
       const failedToOpen = (error: unknown) => set({ status: "error", loadError: apiErrorMessage(error) })

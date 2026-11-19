@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
+from haute._file_ops import is_staging_name
 from haute._git_core import (
     NO_HOOKS,
     GitDomainError,
@@ -143,7 +144,8 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
 
     Only names the Files panels show are swept (``versioned_name``): dot-names, the
     deploy's build folder among them, ``__pycache__`` and bytecode stay out even where
-    ``.gitignore`` lacks them.
+    ``.gitignore`` lacks them. So does an atomic write's staging file (``is_staging_name``),
+    which a writer killed before its rename leaves beside its target.
     """
     if pipeline_folder is None:
         return []
@@ -170,7 +172,7 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
     return [
         path
         for path in dict.fromkeys(untracked.split("\0") + staged.split("\0"))
-        if path and versioned_name(path)
+        if path and versioned_name(path) and not is_staging_name(PurePosixPath(path).name)
     ]
 
 

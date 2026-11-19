@@ -24,11 +24,12 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from haute._file_ops import atomic_write_text
 from haute._git_state import name_files
 from haute._logging import get_logger
+from haute.errors import ConflictError
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 logger = get_logger(component="save_records")
@@ -43,6 +44,12 @@ _RECEIPTS = "receipts"
 
 class SaveOperationReusedError(Exception):
     """An operation names a committed save whose request was different."""
+
+
+class SaveRecordsUnavailableError(ConflictError):
+    """The project's ``.haute/saves/`` folder is reached through a link: a save's record
+    and its receipts are kept only in the project's own folder, which a save would otherwise
+    write and a settle remove files by."""
 
 
 def save_request_digest(body: SavePipelineRequest) -> str:
@@ -98,22 +105,33 @@ def _optional_str(value: object) -> bool:
     return value is None or isinstance(value, str)
 
 
+def _project_file(value: object) -> bool:
+    """Whether *value* is a project-relative, ``/``-separated file path as a record names one:
+    never absolute, never climbing, never another drive."""
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value:
+        return False
+    path = PurePosixPath(value)
+    return not path.is_absolute() and all(part not in ("", ".", "..") for part in value.split("/"))
+
+
 def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
     if not isinstance(raw, dict):
         return None
     writes, removes, answer = raw.get("writes"), raw.get("removes"), raw.get("answer")
+    recorded = raw.get("source_file")
     if not (
-        raw.get("source_file") == source_file
+        _project_file(recorded)
+        and isinstance(recorded, str)
+        # One file, however a case-insensitive file system spells it (the record's key).
+        and recorded.casefold() == source_file.casefold()
         and _optional_str(raw.get("operation"))
         and _optional_str(raw.get("digest"))
         and _optional_str(raw.get("base_revision"))
         and isinstance(writes, list)
-        and all(isinstance(path, str) for path in writes)
+        and all(_project_file(path) for path in writes)
         and isinstance(removes, list)
         and all(
-            isinstance(r, dict)
-            and isinstance(r.get("file"), str)
-            and _optional_str(r.get("digest"))
+            isinstance(r, dict) and _project_file(r.get("file")) and _optional_str(r.get("digest"))
             for r in removes
         )
         and isinstance(raw.get("committed"), bool)
@@ -121,7 +139,7 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
     ):
         return None
     return SaveRecord(
-        source_file=source_file,
+        source_file=recorded,
         operation=raw["operation"],
         digest=raw["digest"],
         base_revision=raw["base_revision"],
@@ -132,8 +150,17 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
     )
 
 
-def _saves_dir(project_root: Path) -> Path:
-    return project_root.joinpath(*_SAVES)
+def _saves_folder(project_root: Path, name: str) -> Path:
+    """``.haute/saves/<name>`` in the project, refused when it is reached through a link:
+    what a save writes there, and what a settle removes files by, stays in the project."""
+    root = project_root.resolve()
+    folder = root.joinpath(*_SAVES, name)
+    if os.path.normcase(folder.resolve()) != os.path.normcase(folder):
+        raise SaveRecordsUnavailableError(
+            "Saves are recorded in the project's .haute/saves/ folder, which is reached "
+            "through a link. Remove the link and save again."
+        )
+    return folder
 
 
 def _key(text: str) -> str:
@@ -142,7 +169,7 @@ def _key(text: str) -> str:
 
 def _record_path(project_root: Path, source_file: str) -> Path:
     # One case, so the spellings a case-insensitive file system gives one file share it.
-    return _saves_dir(project_root) / _RECORDS / f"{_key(source_file.casefold())}.json"
+    return _saves_folder(project_root, _RECORDS) / f"{_key(source_file.casefold())}.json"
 
 
 def write_record(project_root: Path, record: SaveRecord) -> None:
@@ -177,7 +204,7 @@ def clear_record(project_root: Path, source_file: str) -> None:
 def saved_records(project_root: Path) -> list[SaveRecord]:
     """Every readable record in the project. One that cannot be read names no pipeline file,
     so it is left for its pipeline's document to report."""
-    folder = _saves_dir(project_root) / _RECORDS
+    folder = _saves_folder(project_root, _RECORDS)
     records: list[SaveRecord] = []
     try:
         entries = sorted(folder.glob("*.json"))
@@ -190,7 +217,11 @@ def saved_records(project_root: Path) -> list[SaveRecord]:
             logger.warning("save_record_unreadable", path=str(path))
             continue
         source_file = raw.get("source_file") if isinstance(raw, dict) else None
-        record = _parse_record(raw, source_file) if isinstance(source_file, str) else None
+        record = (
+            _parse_record(raw, source_file)
+            if isinstance(source_file, str) and _project_file(source_file)
+            else None
+        )
         if record is None or _record_path(project_root, record.source_file) != path:
             logger.warning("save_record_unreadable", path=str(path))
             continue
@@ -232,7 +263,12 @@ def interrupted_save(project_root: Path, source_file: str) -> SaveRecord | None:
     """The record of a save of *source_file* that stopped before it committed, or None."""
     if is_running(project_root, source_file):
         return None
-    record = read_record(project_root, source_file)
+    try:
+        record = read_record(project_root, source_file)
+    except SaveRecordsUnavailableError:
+        # A folder reached through a link holds no record a save of Haute's wrote: the load
+        # reports none, and the next Save refuses with the link named.
+        return None
     if record is None or record.committed:
         return None
     return record
@@ -259,7 +295,7 @@ def interruption_words(record: SaveRecord) -> tuple[str, str]:
 
 
 def _receipt_path(project_root: Path, operation: str) -> Path:
-    return _saves_dir(project_root) / _RECEIPTS / f"{_key(operation)}.json"
+    return _saves_folder(project_root, _RECEIPTS) / f"{_key(operation)}.json"
 
 
 def replay_receipt(project_root: Path, operation: str, digest: str) -> SavePipelineResponse | None:

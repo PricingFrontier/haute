@@ -18,6 +18,7 @@ import {
   gitDeleteBranch,
   patchPipelineSettings,
   post,
+  postRawStream,
   putMlflowSettings,
   request,
   sendKeyed,
@@ -132,6 +133,13 @@ describe("a keyed write leaves only through sendHeld", () => {
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
+  it("is refused by the raw stream before anything is sent", async () => {
+    await expect(postRawStream("/api/pipeline/save", { operation: "save-1" })).rejects.toThrow(
+      "/api/pipeline/save names an operation key: a keyed write is sent through sendHeld.",
+    )
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
   it("is refused by sendKeyed without a ticket sendHeld gave it", () => {
     expect(() => sendKeyed("/api/pipeline/save", { operation: "save-1" }, { sending: true } as KeyedTicket)).toThrow(
       "/api/pipeline/save is a keyed write: it is sent through sendHeld.",
@@ -157,7 +165,7 @@ describe("sendHeld", () => {
     ["a gateway's 504 page", () => Promise.resolve(new Response("<html>Gateway Timeout</html>", { status: 504 }))],
     ["an answer that does not parse", () => Promise.resolve(new Response("<!DOCTYPE html>", { status: 200 }))],
   ])("keeps a write held after %s, and refuses one under another key before it", async (_case, answer) => {
-    const hold = memoryHold<Save>((save) => save.operation)
+    const hold = memoryHold<Save>((save) => save.operation, (save) => save.content)
     mockFetch.mockImplementationOnce(answer)
 
     await expect(sendHeld(hold, first, send)).rejects.toBeDefined()
@@ -174,8 +182,20 @@ describe("sendHeld", () => {
     expect(hold.held()).toBeNull()
   })
 
+  it("refuses other content under the held write's key before it is sent", async () => {
+    const hold = memoryHold<Save>((save) => save.operation, (save) => save.content)
+    mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    await expect(sendHeld(hold, first, send)).rejects.toBeInstanceOf(TypeError)
+
+    await expect(sendHeld(hold, { operation: first.operation, content: "changed" }, send)).rejects.toThrow(
+      "A held keyed write is sent again exactly: other content takes a new key.",
+    )
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(hold.held()).toBe(first)
+  })
+
   it("lets a write go once an answer below 500 refuses it", async () => {
-    const hold = memoryHold<Save>((save) => save.operation)
+    const hold = memoryHold<Save>((save) => save.operation, (save) => save.content)
     mockFetch.mockReturnValueOnce(answered({ detail: "stale_document_revision: moved" }, 409))
 
     await expect(sendHeld(hold, first, send)).rejects.toBeInstanceOf(ApiError)

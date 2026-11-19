@@ -45,7 +45,7 @@ import shutil
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -180,15 +180,33 @@ def _temp_path_for(target: Path) -> Path:
     return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
 
 
-def staging_files_of(target: Path) -> list[Path]:
-    """The staging files atomic writes of *target* left beside it (:func:`_temp_path_for`):
-    a writer killed before its rename leaves one, which nothing else would remove."""
-    pattern = re.compile(rf"{re.escape(target.stem)}\.[0-9a-f]{{8}}\.tmp")
-    try:
-        entries = list(target.parent.iterdir())
-    except (FileNotFoundError, NotADirectoryError):
-        return []
-    return [entry for entry in entries if pattern.fullmatch(entry.name) and entry.is_file()]
+_STAGING_NAME = re.compile(r"(?P<stem>.+)\.[0-9a-f]{8}\.tmp")
+
+
+def is_staging_name(name: str) -> bool:
+    """Whether the file name *name* is an atomic write's staging file (:func:`_temp_path_for`):
+    never a project's file to version."""
+    return _STAGING_NAME.fullmatch(name) is not None
+
+
+def staging_files_of(targets: Iterable[Path]) -> list[Path]:
+    """The staging files atomic writes of *targets* left beside them (:func:`_temp_path_for`):
+    a writer killed before its rename leaves one, which nothing else would remove. Each
+    folder is listed once."""
+    stems: dict[Path, set[str]] = {}
+    for target in targets:
+        stems.setdefault(target.parent, set()).add(target.stem)
+    found: list[Path] = []
+    for folder, names in stems.items():
+        try:
+            entries = list(folder.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for entry in entries:
+            match = _STAGING_NAME.fullmatch(entry.name)
+            if match is not None and match["stem"] in names and entry.is_file():
+                found.append(entry)
+    return found
 
 
 def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:

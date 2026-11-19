@@ -978,8 +978,10 @@ reconciliation rather than dropping them or committing a second mutation.
     save sent). The held save's answer is handled as its own: acknowledged under the
     same `saveRequestSeq`/`appliedSaveSeq` and observed-revision fences, marking its
     snapshot saved, so edits made since stay dirty; then, while the graph is still
-    dirty, the save is built again on the revision it answered and sent under a new
-    operation. A held save refused as stale (another writer saved before it, and it
+    dirty or the save would send other than the held one did (its sources, its active
+    source), the save is built again on the revision it answered and sent under a new
+    operation. A save that lands drops the warning of a save that stopped part-way from
+    the document's status (`acknowledgeSave`): the document on disk no longer has it. A held save refused as stale (another writer saved before it, and it
     never landed) sets the reload banner and sends nothing newer; any other refusal
     lets it go and the new save is sent; a held save whose fate is unknown again
     stays held, is reported, and sends nothing newer. A held save is dropped when the

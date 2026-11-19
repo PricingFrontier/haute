@@ -375,6 +375,31 @@ describe("MlflowExportSection", () => {
     expect(onLogAttempted).toHaveBeenCalledTimes(2)
   })
 
+  it("sends a lost log again exactly as it was sent, before a log asked with other settings", async () => {
+    const logged: Awaited<ReturnType<typeof logToMlflow>> = { operation_id: null, logged_at: null, status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null }
+    mockLogToMlflow.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    const { rerender } = render(<MlflowExportSection {...makeProps({ config: { mlflow_experiment: "freq" } })} />)
+    fireEvent.click(logButton())
+    await screen.findByRole("button", { name: "Retry" })
+    const lost = mockLogToMlflow.mock.calls[0][0]
+
+    // Retry after the settings changed sends the lost log as it was sent.
+    rerender(<MlflowExportSection {...makeProps({ config: { mlflow_experiment: "sev" } })} />)
+    mockLogToMlflow.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(2))
+    expect(mockLogToMlflow.mock.calls[1][0]).toEqual(lost)
+
+    // A log asked for with the new settings sends the lost one first, then itself.
+    await screen.findByRole("button", { name: "Retry" })
+    mockLogToMlflow.mockResolvedValueOnce(logged).mockResolvedValueOnce({ ...logged, experiment_name: "sev", run_id: "r2" })
+    fireEvent.click(logButton())
+    await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(4))
+    expect(mockLogToMlflow.mock.calls[2][0]).toEqual(lost)
+    expect(mockLogToMlflow.mock.calls[3][0]).toMatchObject({ experiment_name: "sev" })
+    expect(mockLogToMlflow.mock.calls[3][0].operation_id).not.toBe(lost.operation_id)
+  })
+
   it("offers no retry when the server refused the log", async () => {
     mockLogToMlflow.mockRejectedValue(new ApiError("HTTP 400", 400, "Unknown destination.", undefined, "Unknown destination."))
     render(<MlflowExportSection {...makeProps()} />)

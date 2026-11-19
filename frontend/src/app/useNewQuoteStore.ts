@@ -13,7 +13,7 @@
  */
 import { create } from "zustand"
 import { createAppQuote, openAppQuote, type QuoteSource } from "../api/app"
-import { keyedWriteSettled, sendHeld, type KeyedHold } from "../api/keyedWrites"
+import { contentWithout, keyedWriteSettled, sendHeld, type KeyedHold } from "../api/keyedWrites"
 import { apiErrorCode, apiErrorMessage, apiErrorRawDetail } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
@@ -211,6 +211,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         else keepCreation(key, kept)
       },
       key: (kept) => kept.operation,
+      content: (kept) => contentWithout(kept, "operation"),
     }
     const sending = sendHeld(hold, creation, ({ operation, form_revision, release, values, source, reference }, ticket) =>
       createAppQuote({ operation, form_revision, release, values }, source, reference, ticket))

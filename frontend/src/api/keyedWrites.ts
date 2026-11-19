@@ -11,16 +11,18 @@ import { ApiError } from "./client"
 /**
  * Where one kind of keyed write is held while its fate is unknown: in memory, or in
  * browser storage so a reload sends it again. `key` is the operation key a write is
- * sent under.
+ * sent under, and `content` what that key is bound to: a write whose content changes takes
+ * a new key.
  */
 export interface KeyedHold<W> {
   held(): W | null
   hold(write: W | null): void
   key(write: W): string
+  content(write: W): string
 }
 
 /** A hold in this page's memory, for writes a reload need not send again. */
-export function memoryHold<W>(key: (write: W) => string): KeyedHold<W> {
+export function memoryHold<W>(key: (write: W) => string, content: (write: W) => string): KeyedHold<W> {
   let held: W | null = null
   return {
     held: () => held,
@@ -28,7 +30,14 @@ export function memoryHold<W>(key: (write: W) => string): KeyedHold<W> {
       held = write
     },
     key,
+    content,
   }
+}
+
+/** `body` as the content an operation key is bound to: everything but `field`, the key. */
+export function contentWithout(body: object, field: string): string {
+  const { [field]: _key, ...content } = body as Record<string, unknown>
+  return JSON.stringify(content)
 }
 
 /** Proof that a keyed write is being sent by `sendHeld`: what `sendKeyed` asks for. */
@@ -55,9 +64,9 @@ export function keyedWriteSettled(error: unknown): boolean {
 /**
  * Send `write`, a keyed write, through `send`, holding it in `hold` from the moment it is
  * sent until an answer settles it (`keyedWriteSettled`); its answer is returned and its
- * failure thrown. A write under another key than the held one's is refused before it is
- * sent: the held one goes first, exactly. `send` sends the body through `sendKeyed` with
- * the ticket it is given.
+ * failure thrown. While a write is held, only that write goes, exactly: one under another
+ * key, or other content under its key, is refused before it is sent. `send` sends the body
+ * through `sendKeyed` with the ticket it is given.
  */
 export async function sendHeld<W, T>(
   hold: KeyedHold<W>,
@@ -67,6 +76,9 @@ export async function sendHeld<W, T>(
   const held = hold.held()
   if (held !== null && hold.key(held) !== hold.key(write)) {
     throw new Error("Another keyed write is held: it is sent again before anything newer.")
+  }
+  if (held !== null && hold.content(held) !== hold.content(write)) {
+    throw new Error("A held keyed write is sent again exactly: other content takes a new key.")
   }
   const ticket: KeyedTicket = { sending: true }
   liveTickets.add(ticket)

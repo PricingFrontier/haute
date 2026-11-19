@@ -434,7 +434,9 @@ unless `allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetc
 only the names `_project_layout.versioned_name` accepts, the rule the Files panels show and
 take: a path with a dot-name part (`.env.local`, `.DS_Store`, an editor's lock file,
 `.ipynb_checkpoints/`, `.haute_build/`) or a `__pycache__` part, or a `*.pyc` file, stays
-out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out. The route passes `pipeline_folder` from
+out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out. So does an
+atomic write's staging file (`src/haute/_file_ops.py::is_staging_name`, `<stem>.<8 hex>.tmp`),
+which a writer killed before its rename leaves beside its target. The route passes `pipeline_folder` from
 `_project_layout.pipeline_folder`; `None` (no pipeline folder below the root) adds nothing.
 Any swept path inside the pipeline folder that is a file larger than
 `VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's

@@ -219,6 +219,10 @@ def test_a_server_killed_at_each_step_of_a_save_leaves_it_committed_or_reported(
         if document.source_revision == answer.source_revision and not interrupted:
             seen.add("committed")
             assert not (snapshot / OLD).exists(), snapshot.name
+            # The removal reached version history, even when the server died after it and
+            # before its capture.
+            ledger = _git(snapshot, "ls-tree", "-r", "--name-only", f"{WORKING}-save")
+            assert OLD not in ledger.splitlines(), snapshot.name
             repeat = _service(snapshot)
             assert _without_sha(repeat.save(request)) == _without_sha(answer)
             assert repeat.replayed, snapshot.name
@@ -458,3 +462,128 @@ def test_an_unreadable_receipt_answers_nothing_and_the_repeat_is_saved_against_i
 
     with pytest.raises(StaleDocumentRevisionError):
         _service(project).save(request)
+
+
+def _link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:  # Windows withholds the symlink privilege by default
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+
+def test_a_record_naming_a_path_outside_the_project_removes_nothing_there(
+    project: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "config.json").write_text("{}", encoding="utf-8")
+    import hashlib
+
+    digest = hashlib.sha256(b"{}").hexdigest()
+    save_records.write_record(
+        project,
+        save_records.SaveRecord(
+            source_file="rating/main.py",
+            removes=(save_records.Removal("../outside/config.json", digest),),
+            committed=True,
+        ),
+    )
+    settle_saves(project)
+
+    assert (outside / "config.json").is_file()
+    # A record that names a path outside the project is not one a save wrote.
+    assert _interruption(_document(project)) == [
+        "A save stopped part-way, and its record cannot be read."
+    ]
+
+
+def test_a_removal_reached_through_a_link_out_of_the_project_is_left_alone(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_unlink = Path.unlink
+
+    def removal_held(self: Path, missing_ok: bool = False) -> None:
+        if self.name == "Old.json":
+            raise PermissionError(errno.EACCES, "held")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", removal_held)
+        _service(project).save(_the_save(project))
+    assert save_records.read_record(project, "rating/main.py") is not None
+
+    # The folder the removal names becomes a link to another folder holding the same bytes.
+    outside = tmp_path / "outside-banding"
+    shutil.copytree(project / "rating" / "config" / "banding", outside)
+    shutil.rmtree(project / "rating" / "config" / "banding")
+    _link(project / "rating" / "config" / "banding", outside)
+    settle_saves(project)
+
+    assert (outside / "Old.json").is_file()
+
+
+def test_a_records_folder_reached_through_a_link_refuses_the_save(
+    project: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside-saves"
+    outside.mkdir()
+    shutil.rmtree(project / ".haute" / "saves")
+    _link(project / ".haute" / "saves", outside)
+    before = (project / "rating" / "main.py").read_bytes()
+
+    with pytest.raises(save_records.SaveRecordsUnavailableError, match="reached through a link"):
+        _service(project).save(_the_save(project))
+
+    assert list(outside.iterdir()) == []
+    assert (project / "rating" / "main.py").read_bytes() == before
+
+
+def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._git_transactions import _pipeline_folder_new_files
+
+    staged = project / "rating" / "config" / "banding" / "Bands.0123abcd.tmp"
+    staged.write_text("{}", encoding="utf-8")
+    save_records.write_record(
+        project,
+        save_records.SaveRecord(
+            source_file="rating/main.py", writes=("rating/config/banding/Bands.json",)
+        ),
+    )
+    held = [True]
+    real_unlink = Path.unlink
+
+    def staging_held(self: Path, missing_ok: bool = False) -> None:
+        if held[0] and self.name == staged.name:
+            raise PermissionError(errno.EACCES, "held by another program")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", staging_held)
+    settle_saves(project)
+    _service(project).save(_request(project, {"Bands": "35", "Old": "50"}, "op-held-0001"))
+
+    # The save landed, and the staging file it could not remove is still its to remove.
+    assert staged.is_file()
+    assert _interruption(_document(project)) == []
+    assert "rating/config/banding/Bands.0123abcd.tmp" not in _pipeline_folder_new_files(
+        "rating", cwd=project
+    )
+
+    held[0] = False
+    settle_saves(project)
+
+    assert not staged.exists()
+    assert save_records.read_record(project, "rating/main.py") is None
+
+
+def test_a_record_is_read_by_any_spelling_of_its_file(project: Path) -> None:
+    save_records.write_record(
+        project,
+        save_records.SaveRecord(source_file="rating/main.py", writes=("rating/main.py",)),
+    )
+
+    record = save_records.read_record(project, "Rating/Main.py")
+
+    assert record is not None and record.readable
+    assert record.source_file == "rating/main.py"

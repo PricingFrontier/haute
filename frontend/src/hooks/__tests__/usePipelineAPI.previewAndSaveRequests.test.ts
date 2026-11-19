@@ -306,7 +306,8 @@ describe("usePipelineAPI - preview and save requests", () => {
       async function afterALostSave(first: unknown = new TypeError("Failed to fetch")) {
         mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
         mockSave.mockRejectedValueOnce(first)
-        const { result } = renderHook(() => usePipelineAPI(makeParams()))
+        const params = makeParams()
+        const { result } = renderHook(() => usePipelineAPI(params))
         await waitFor(() => expect(result.current.loading).toBe(false))
         let saved!: boolean
         await act(async () => { saved = await result.current.handleSave() })
@@ -366,6 +367,22 @@ describe("usePipelineAPI - preview and save requests", () => {
         expect(useGraphStore.getState().dirty).toBe(false)
       })
 
+      it("saves a source chosen since once the held save lands, though the graph is as it saved", async () => {
+        const result = await afterALostSave()
+        act(() => {
+          useSettingsStore.getState().setSources(["live", "staging"])
+          useSettingsStore.getState().setActiveSource("staging")
+        })
+
+        mockSave.mockResolvedValueOnce(written("revision-written"))
+        mockSave.mockResolvedValueOnce(written("revision-since"))
+        expect(await save(result)).toBe(true)
+
+        expect(mockSave).toHaveBeenCalledTimes(3)
+        expect(sent(1)).toEqual(sent(0))
+        expect([sent(2).active_source, sent(2).base_revision]).toEqual(["staging", "revision-written"])
+      })
+
       it("sets the reload banner when it is refused as stale, and sends nothing newer", async () => {
         const result = await afterALostSave()
         typeSince()
@@ -417,6 +434,33 @@ describe("usePipelineAPI - preview and save requests", () => {
         expect(mockSave).toHaveBeenCalledTimes(2)
         expect(sent(1).operation).not.toBe(sent(0).operation)
       })
+    })
+
+    it("no longer reports a save that stopped part-way once a save lands", async () => {
+      const interrupted = {
+        diagnostic_id: "save_interrupted:abc",
+        code: "save_interrupted",
+        severity: "warning" as const,
+        scope: "pipeline" as const,
+        message: "A save stopped part-way, so these files may each hold a different save: rating/main.py.",
+        element_id: null,
+        source_file: "rating/main.py",
+        source_span: null,
+        remediation: "Saving the pipeline writes them all again.",
+        incident_id: null,
+      }
+      mockLoad.mockResolvedValue({
+        document: makePipelineEditorDocument({ source_file: "rating/main.py", source_revision: "revision-test", diagnostics: [interrupted] }),
+        documentFingerprint: "fingerprint-loaded",
+      })
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      expect(useDocumentStatusStore.getState().diagnostics.map((d) => d.code)).toEqual(["save_interrupted"])
+
+      mockSave.mockResolvedValueOnce(makeSavePipelineResponse({ source_revision: "revision-saved", document_fingerprint: "fingerprint-saved" }))
+      await act(async () => { await result.current.handleSave() })
+
+      expect(useDocumentStatusStore.getState().diagnostics).toEqual([])
     })
 
     describe("of stepped nodes (CGEN-11)", () => {

@@ -695,6 +695,9 @@ export async function postRawStream(
   body: unknown,
   options: Pick<ApiClientOptions, "signal"> = {},
 ): Promise<Response> {
+  if (namesOperationKey(body)) {
+    throw new Error(`${url} names an operation key: a keyed write is sent through sendHeld.`)
+  }
   const response = await fetch(url, {
     method: "POST",
     credentials: "same-origin",

@@ -17,7 +17,7 @@
 import { useState, useCallback, useRef } from "react"
 import { Loader2, FlaskConical } from "lucide-react"
 import { logToMlflow } from "../../api/client"
-import { keyedWriteSettled, memoryHold, sendHeld } from "../../api/keyedWrites"
+import { contentWithout, keyedWriteSettled, memoryHold, sendHeld } from "../../api/keyedWrites"
 import { apiErrorCode, apiErrorMessage } from "../../api/errors"
 import { newOperationId } from "./exportReceipts"
 import { configField } from "../../utils/configField"
@@ -49,6 +49,14 @@ type MlflowResult = {
 
 /** Remote failures the user resolves from MLflow settings (test or fix the connection). */
 const CONNECTION_ERROR_CODES = new Set(["mlflow_connectivity", "mlflow_authentication"])
+
+/** A log as it is sent: the job, where it goes, and the operation that makes a repeat log once. */
+type MlflowLog = {
+  job_id: string
+  experiment_name: string | null
+  destination: "" | MlflowDestinationKey
+  operation_id: string
+}
 
 type MlflowExportSectionProps = {
   /** The completed job to log, or null when no trained model is exportable. */
@@ -90,21 +98,18 @@ export function MlflowExportSection({
   const confirmingLogAgain = confirmedFor === confirmationKey
   // A log answers while the section shows.
   const section = useRequestKind()
-  // A log whose answer never came, held with its operation: the next log sends it again.
-  const heldLog = useRef(memoryHold<string>((operationId) => operationId))
+  // A log whose answer never came, held as it was sent: the next log sends it again first.
+  const heldLog = useRef(memoryHold<MlflowLog>(
+    (log) => log.operation_id,
+    (log) => contentWithout(log, "operation_id"),
+  ))
 
-  const logOperation = useCallback(async (operationId: string) => {
-    if (!trainJobId) return
+  /** Send `log`; resolves once it is answered or has failed. */
+  const logOperation = useCallback(async (log: MlflowLog) => {
     setConfirmedFor(null)
     setMlflowResult(null)
     onMlflowResult?.(null)
-    await answer([under(section)], () => sendHeld(heldLog.current, operationId, (heldId, ticket) => logToMlflow({
-      job_id: trainJobId,
-      experiment_name: configField(config, "mlflow_experiment", "") || null,
-      // Read at click time, so choosing Local folder after training sends "".
-      destination: configField(config, "mlflow_destination", "") as "" | MlflowDestinationKey,
-      operation_id: heldId,
-    }, ticket)), {
+    await answer([under(section)], () => sendHeld(heldLog.current, log, (held, ticket) => logToMlflow(held, ticket)), {
       ok: (result) => {
         setMlflowResult(result)
         onMlflowResult?.(result)
@@ -116,8 +121,8 @@ export function MlflowExportSection({
           error: apiErrorMessage(e, "Logging to MLflow failed."),
           error_code: apiErrorCode(e),
           // A response that never arrived, or a server failure, may still have logged the
-          // run, so Retry resends this operation; a refused request can start a new one.
-          operation_id: keyedWriteSettled(e) ? null : operationId,
+          // run, so Retry resends this log as it was sent; a refused one can start anew.
+          operation_id: keyedWriteSettled(e) ? null : log.operation_id,
         }
         setMlflowResult(errResult)
         onMlflowResult?.(errResult)
@@ -126,22 +131,42 @@ export function MlflowExportSection({
       // An attempt answered once the section is gone still has the job's receipts read again.
       stale: () => onLogAttempted?.(),
     }, { inFlight: setLoggingToMlflow })
-  }, [trainJobId, config, onMlflowResult, onLogAttempted, section, setMlflowResult, setLoggingToMlflow])
+  }, [onMlflowResult, onLogAttempted, section, setMlflowResult, setLoggingToMlflow])
+
+  /** Send the log held after its answer was lost, exactly as it was sent. */
+  const retryHeldLog = useCallback(async () => {
+    const held = heldLog.current.held()
+    if (held !== null) await logOperation(held)
+  }, [logOperation])
 
   const canLog = !!trainJobId && availability.available && !loggingToMlflow
-  const handleLogExperiment = useCallback(() => {
-    if (!canLog) return
+  const handleLogExperiment = useCallback(async () => {
+    if (!canLog || !trainJobId) return
     if (lastReceipt && !confirmingLogAgain) {
       setConfirmedFor(confirmationKey)
       return
     }
-    void logOperation(heldLog.current.held() ?? newOperationId())
-  }, [canLog, lastReceipt, confirmingLogAgain, confirmationKey, logOperation])
+    const next: MlflowLog = {
+      job_id: trainJobId,
+      experiment_name: configField(config, "mlflow_experiment", "") || null,
+      // Read at click time, so choosing Local folder after training sends "".
+      destination: configField(config, "mlflow_destination", "") as "" | MlflowDestinationKey,
+      operation_id: newOperationId(),
+    }
+    const held = heldLog.current.held()
+    if (held !== null) {
+      // A log whose answer was lost goes first, exactly as it was sent; it is the log asked
+      // for when it asks for the same, and otherwise the new log follows once it is answered.
+      await logOperation(held)
+      if (heldLog.current.held() !== null || contentWithout(held, "operation_id") === contentWithout(next, "operation_id")) return
+    }
+    await logOperation(next)
+  }, [canLog, trainJobId, lastReceipt, confirmingLogAgain, confirmationKey, config, logOperation])
 
   return (
     <div className="space-y-1.5">
       <button
-        onClick={handleLogExperiment}
+        onClick={() => void handleLogExperiment()}
         disabled={!canLog}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-60"
         style={{
@@ -171,7 +196,7 @@ export function MlflowExportSection({
             {`This result is already logged to ${lastReceipt.experiment_name}. Logging again creates a new run.`}
           </div>
           <div className="flex gap-2">
-            <button type="button" onClick={handleLogExperiment} disabled={!canLog} className="underline disabled:opacity-60" style={{ color: "var(--text-accent)" }}>
+            <button type="button" onClick={() => void handleLogExperiment()} disabled={!canLog} className="underline disabled:opacity-60" style={{ color: "var(--text-accent)" }}>
               Log as a new run
             </button>
             <button type="button" onClick={() => setConfirmedFor(null)} className="underline" style={{ color: "var(--text-muted)" }}>
@@ -227,7 +252,7 @@ export function MlflowExportSection({
           {mlflowResult.operation_id && (
             <button
               type="button"
-              onClick={() => void logOperation(mlflowResult.operation_id!)}
+              onClick={() => void retryHeldLog()}
               className="underline ml-2"
               style={{ color: "var(--text-accent)" }}
             >

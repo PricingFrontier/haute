@@ -10,7 +10,7 @@ import {
   previewRecoveryNode,
   savePipeline,
 } from "../api/client"
-import { sendHeld, type KeyedHold } from "../api/keyedWrites"
+import { contentWithout, sendHeld, type KeyedHold } from "../api/keyedWrites"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { syncConnectionId } from "../api/syncConnection"
 import {
@@ -644,14 +644,21 @@ function saveHold(sourceFile: string): KeyedHold<SentSave> {
       else heldSaves.set(sourceFile, save)
     },
     key: (save) => save.request.operation,
+    content: (save) => contentWithout(save.request, "operation"),
   }
 }
 
-/** Whether two saves save the same, their operation keys aside. */
-function sameSave(a: SentSave["request"], b: SentSave["request"]): boolean {
-  const { operation: _a, ...one } = a
-  const { operation: _b, ...other } = b
-  return JSON.stringify(one) === JSON.stringify(other)
+/**
+ * Whether a save would save what `held` saved: everything it sends but its operation key,
+ * the revision it is made on and the tab's connection, which a repeat on the revision the
+ * held save answered changes without changing what is saved.
+ */
+function savesWhatHeldSaved(held: SentSave["request"], save: SentSave["request"]): boolean {
+  const content = (request: SentSave["request"]) => {
+    const { operation: _operation, base_revision: _base, connection_id: _connection, ...saved } = request
+    return JSON.stringify(saved)
+  }
+  return content(held) === content(save)
 }
 
 export default function usePipelineAPI({
@@ -1934,15 +1941,19 @@ export default function usePipelineAPI({
     const held = hold.held()
     const now = build(held?.request.operation ?? operationKey())
     if (held === null) return (await send(now)) === "saved"
-    if (sameSave(held.request, now.request)) return (await send(held)) === "saved"
+    if (hold.content(held) === hold.content(now)) return (await send(held)) === "saved"
     // A save whose answer was lost goes first, exactly as it was sent.
     const repeated = await send(held)
     // Refused as stale it never landed, and nothing newer is sent over it; still held, its
     // fate is unknown, and nothing newer is sent before it.
     if (repeated === "stale" || hold.held() !== null) return false
-    // Landed, what was typed since is saved on the revision it answered, if anything was.
-    if (repeated === "saved" && !useGraphStore.getState().dirty) return true
-    return (await send(build(operationKey()))) === "saved"
+    // Landed, what was changed since (the graph, the sources) is saved on the revision it
+    // answered, if anything was.
+    const next = build(operationKey())
+    if (repeated === "saved" && savesWhatHeldSaved(held.request, next.request) && !useGraphStore.getState().dirty) {
+      return true
+    }
+    return (await send(next)) === "saved"
   }, [descriptionRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   // Returns true when the save succeeded, false on failure — callers that
