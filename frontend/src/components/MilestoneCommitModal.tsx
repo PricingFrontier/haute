@@ -3,9 +3,11 @@ import { AlertTriangle } from "lucide-react"
 
 import { ApiError, commitMilestone, parseGitMilestoneFork } from "../api/client"
 import type { GitMilestoneFork } from "../api/types"
-import useGitStore from "../stores/useGitStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { answer, ask, under } from "../utils/answers"
 import ModalShell from "./ModalShell"
 
 interface MilestoneCommitModalProps {
@@ -33,6 +35,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
   // U4/D4: set when committing would fork the remote — drives the warn +
   // "commit anyway (creates a fork)" confirm instead of a generic error.
   const [fork, setFork] = useState<GitMilestoneFork | null>(null)
+  const life = useRequestKind()
 
   const trimmed = message.trim()
   // The flow only opens this modal once the working branch is ready, but guard
@@ -43,45 +46,44 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
 
   const submit = async (allowFork = false) => {
     if (!canSubmit) return
-    setBusy(true)
+    const label = versionLabel.trim() || null
+    const refused = (detail: string) => addToast("error", `Could not commit: ${detail}`)
+    // The commit and what it tells the app belong to the git store; the dialog's own state
+    // and its close, to the dialog.
+    const here = ask([under(life)])
     try {
-      const label = versionLabel.trim() || null
-      const result = await commitMilestone(trimmed, label, { allowFork })
-      await loadStatus({ refresh: true }) // not a read begun before the action
-      notifyMilestoneCommitted() // refresh an open Git panel + select the new milestone (S38)
-      addToast(
-        "success",
-        label
-          ? `Committed milestone ${result.short_sha} (${label})`
-          : `Committed milestone ${result.short_sha}`,
-      )
-      onConfirmed()
-    } catch (err: unknown) {
-      // U4/D4: a 409 means committing now would fork the remote — surface the
-      // warn + "commit anyway" confirm rather than a dead-end error toast.
-      if (err instanceof ApiError && err.status === 409) {
-        const body = (err.body as { detail?: unknown } | undefined)?.detail
-        try {
-          const parsed = await parseGitMilestoneFork(body)
-          if (parsed) {
-            setFork(parsed)
-            return
-          }
-        } catch (parseError) {
-          addToast("error", `Could not commit: ${apiErrorMessage(parseError, "malformed fork response")}`)
-          return
-        }
-        // A structured 409 this client cannot read: name the status rather
-        // than print the unread body.
-        if (typeof body === "object" && body !== null) {
-          addToast("error", `Could not commit: ${err.message}`)
-          return
-        }
-      }
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Could not commit: ${detail}`)
+      await answer([gitStorePart()], commitMilestone(trimmed, label, { allowFork }), {
+        ok: (result, asked) => asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
+          ok: () => {
+            notifyMilestoneCommitted() // refresh an open Git panel + select the new milestone (S38)
+            addToast(
+              "success",
+              label
+                ? `Committed milestone ${result.short_sha} (${label})`
+                : `Committed milestone ${result.short_sha}`,
+            )
+            here.apply(onConfirmed)
+          },
+        }),
+        failed: (err, asked) => {
+          // U4/D4: a 409 means committing now would fork the remote — surface the
+          // warn + "commit anyway" confirm rather than a dead-end error toast.
+          if (!(err instanceof ApiError && err.status === 409)) return refused(apiErrorMessage(err, "unknown error"))
+          const body = (err.body as { detail?: unknown } | undefined)?.detail
+          return asked.answer(parseGitMilestoneFork(body), {
+            ok: (parsed) => {
+              if (parsed) here.apply(() => setFork(parsed))
+              // A structured 409 this client cannot read: name the status rather
+              // than print the unread body.
+              else if (typeof body === "object" && body !== null) refused(err.message)
+              else refused(apiErrorMessage(err, "unknown error"))
+            },
+            failed: (parseError) => refused(apiErrorMessage(parseError, "malformed fork response")),
+          })
+        },
+      }, { inFlight: setBusy })
     } finally {
-      setBusy(false)
+      here.release()
     }
   }
 

@@ -23,6 +23,7 @@ import type { SimpleNode } from "../panels/editors/_shared"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import type { Part } from "./answers"
 import { isSubmodelDefinition, nodeData, type SubmodelPortData } from "../types/node"
 import { documentGraphPayload } from "./buildGraph"
 import { addressKey, childAddress, nodeFrame, rootAddress, type FrameTarget, type NodeAddress } from "./nodeAddress"
@@ -146,6 +147,20 @@ function nodeAtFor(view: ViewAtPreparation): (address: Pick<NodeAddressPayload, 
         : definitionNodes(view, occurrence)
     return (pool.find((node) => node.id === node_id) as unknown as SimpleNode | undefined) ?? null
   }
+}
+
+/**
+ * Whether the node at *address* is in the document as it stands: one of the pipeline's own,
+ * a child of the open occurrence, or a child of another occurrence in its definition. What a
+ * late answer about a node is checked against (`utils/answers.ts`, `node`).
+ */
+export function nodeExists(address: NodeAddress): boolean {
+  return nodeAtFor(viewNow())({ occurrence: address.occurrence, node_id: address.node }) !== null
+}
+
+/** The node at *address*, as an answer's part (`utils/answers.ts`): it holds while the node is there. */
+export function nodePart(address: NodeAddress): Part {
+  return { holds: () => nodeExists(address), subscribe: (listener) => useGraphStore.subscribe(() => listener()) }
 }
 
 function definitionNodes(view: ViewAtPreparation, occurrence: string): readonly Node[] {

@@ -1,7 +1,9 @@
+import { draftPart } from "../components/form/useCommittedDraft"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
-import useGraphStore from "../stores/useGraphStore"
+import useGraphStore, { unsavedEditsPart } from "../stores/useGraphStore"
 import useUIStore from "../stores/useUIStore"
-import useWorkbenchStore from "../stores/useWorkbenchStore"
+import useWorkbenchStore, { formEditsPart } from "../stores/useWorkbenchStore"
+import type { BelongsTo } from "../utils/answers"
 
 /**
  * Whether the project holds unsaved edits (specs/frontend-git-ui): the pipeline's canvas,
@@ -18,6 +20,16 @@ export default function useProjectDirty(): boolean {
 /** `useProjectDirty` read now, outside a component: a toolbar undo's switch asks it. */
 export function isProjectDirty(): boolean {
   return useGraphStore.getState().dirty || useWorkbenchStore.getState().formDirty
+}
+
+/**
+ * What an action that replaces the project's files (a switch, a catch-up, a spin-off) drops
+ * is what was chosen over when it was asked, as a late answer's parts: no edit made on the
+ * canvas or in the form since, and no text being typed. An edit made while it ran keeps every
+ * unsaved edit, and the files it brought wait behind the sync banner (specs/frontend-git-ui).
+ */
+export function chosenOverParts(): BelongsTo {
+  return [unsavedEditsPart(), formEditsPart(), draftPart()]
 }
 
 /**

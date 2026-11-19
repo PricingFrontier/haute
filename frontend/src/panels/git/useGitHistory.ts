@@ -8,6 +8,8 @@ import {
 } from "../../api/client"
 import type { GitGraphResponse, GitLedgerSave, GitMilestoneEntry } from "../../api/types"
 import { apiErrorMessage } from "../../api/errors"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, ask, newest, under } from "../../utils/answers"
 import {
   readBranchHistory,
   readGraphCache,
@@ -141,92 +143,82 @@ export function useGitHistory({
 }: UseGitHistoryOptions) {
   const [state, dispatch] = useReducer(reducer, branchKey, initialState)
   const stateRef = useRef(state)
-  const generationRef = useRef(0)
-  const aliveRef = useRef(false)
   const consumedNonceRef = useRef({ historyNonce, commitNonce })
+  // The refresh asked last owns the rows, the graph and the loading flag; an unmount ends it.
+  const refreshes = useRequestKind()
+  const life = useRequestKind()
 
   const applyAction = useCallback((action: GitHistoryAction) => {
     stateRef.current = reducer(stateRef.current, action)
     dispatch(action)
   }, [])
 
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-      generationRef.current += 1
-    }
-  }, [])
-
   const refresh = useCallback(async () => {
-    if (!aliveRef.current) return null
-    const requestGeneration = ++generationRef.current
+    const rows = ask([newest(refreshes)], {
+      pending: (loading) => applyAction({ type: "loading", value: loading }),
+    })
     const scope = branchKey
-    const ownsRequest = () => (
-      aliveRef.current && requestGeneration === generationRef.current
-    )
-    applyAction({ type: "loading", value: true })
     applyAction({ type: "load-error", message: null })
     const wasCold = stateRef.current.milestones.length === 0
       || stateRef.current.rowsBranch !== scope
 
-    const graphSettled = getGitGraph(50).then(
-      (graph) => {
-        if (!ownsRequest()) return
+    // The graph answers under the same refresh, whenever it comes.
+    const graphSettled = answer([under(refreshes)], getGitGraph(50), {
+      ok: (graph) => {
         const json = serializePayload(graph)
         writeGraphCache(graph, json)
         applyAction({ type: "graph", graph, json })
       },
-      () => {},
-    )
+      failed: () => {},
+    })
 
+    let read = null as { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
     try {
-      const [milestoneResponse, pendingResponse] = await Promise.all([
-        getMilestones(50, scope),
-        getPendingSaves(scope),
-      ])
-      if (wasCold) {
-        await Promise.race([
-          graphSettled,
-          new Promise((resolve) => setTimeout(resolve, 250)),
-        ])
-      }
-      if (!ownsRequest()) return null
-
-      const resolvedBranch = scope ?? milestoneResponse.working_branch
-      const milestonesJson = serializePayload(milestoneResponse.entries)
-      const pendingJson = serializePayload(pendingResponse.saves)
-      if (resolvedBranch !== null) {
-        writeBranchHistory(resolvedBranch, {
-          milestones: milestoneResponse.entries,
-          milestonesJson,
-          pending: pendingResponse.saves,
-          pendingJson,
-        })
-      }
-      applyAction({
-        type: "rows",
-        branch: resolvedBranch,
-        milestones: milestoneResponse.entries,
-        pending: pendingResponse.saves,
-        milestonesJson,
-        pendingJson,
+      await rows.answer(Promise.all([getMilestones(50, scope), getPendingSaves(scope)]), {
+        ok: ([milestoneResponse, pendingResponse], asked) => asked.answer(
+          wasCold
+            ? Promise.race([graphSettled, new Promise((resolve) => setTimeout(resolve, 250))])
+            : Promise.resolve(),
+          {
+            ok: () => {
+              const resolvedBranch = scope ?? milestoneResponse.working_branch
+              const milestonesJson = serializePayload(milestoneResponse.entries)
+              const pendingJson = serializePayload(pendingResponse.saves)
+              if (resolvedBranch !== null) {
+                writeBranchHistory(resolvedBranch, {
+                  milestones: milestoneResponse.entries,
+                  milestonesJson,
+                  pending: pendingResponse.saves,
+                  pendingJson,
+                })
+              }
+              applyAction({
+                type: "rows",
+                branch: resolvedBranch,
+                milestones: milestoneResponse.entries,
+                pending: pendingResponse.saves,
+                milestonesJson,
+                pendingJson,
+              })
+              read = {
+                milestones: milestoneResponse.entries,
+                pending: pendingResponse.saves,
+              }
+            },
+          },
+        ),
+        failed: (error) => {
+          // Toasted, and kept for the panel, so the failure still shows once the toast fades.
+          const message = `Failed to load version history: ${apiErrorMessage(error, "unknown error")}`
+          addToast("error", message)
+          applyAction({ type: "load-error", message })
+        },
       })
-      return {
-        milestones: milestoneResponse.entries,
-        pending: pendingResponse.saves,
-      }
-    } catch (error) {
-      if (!ownsRequest()) return null
-      // Toasted, and kept for the panel, so the failure still shows once the toast fades.
-      const message = `Failed to load version history: ${apiErrorMessage(error, "unknown error")}`
-      addToast("error", message)
-      applyAction({ type: "load-error", message })
-      return null
     } finally {
-      if (ownsRequest()) applyAction({ type: "loading", value: false })
+      rows.release()
     }
-  }, [addToast, applyAction, branchKey])
+    return read
+  }, [addToast, applyAction, branchKey, refreshes])
 
   useEffect(() => {
     void refresh()
@@ -241,12 +233,16 @@ export function useGitHistory({
   useEffect(() => {
     if (commitNonce === consumedNonceRef.current.commitNonce) return
     consumedNonceRef.current.commitNonce = commitNonce
-    void refresh().then((result) => {
-      if (result !== null && result.milestones.length > 0 && !peeking) {
-        applyAction({ type: "select", sha: result.milestones[0].sha })
-      }
+    const asked = ask([under(life)])
+    void asked.answer(refresh(), {
+      ok: (result) => {
+        if (result !== null && result.milestones.length > 0 && !peeking) {
+          applyAction({ type: "select", sha: result.milestones[0].sha })
+        }
+      },
     })
-  }, [applyAction, commitNonce, peeking, refresh])
+    return () => asked.release()
+  }, [applyAction, commitNonce, peeking, refresh, life])
 
   const toggleExpand = useCallback(async (sha: string) => {
     const current = stateRef.current.expanded[sha]
@@ -262,20 +258,20 @@ export function useGitHistory({
     }
 
     applyAction({ type: "expand", sha, value: "loading" })
-    try {
-      const response = await getMilestoneSaves(sha)
-      if (!aliveRef.current) return
-      writeMilestoneSaves(sha, response.saves)
-      applyAction({ type: "resolve-expansion", sha, saves: response.saves })
-    } catch (error) {
-      if (!aliveRef.current) return
-      addToast(
-        "error",
-        `Failed to load the saves in this milestone: ${apiErrorMessage(error, "unknown error")}`,
-      )
-      applyAction({ type: "resolve-expansion", sha })
-    }
-  }, [addToast, applyAction])
+    await answer([under(life)], getMilestoneSaves(sha), {
+      ok: (response) => {
+        writeMilestoneSaves(sha, response.saves)
+        applyAction({ type: "resolve-expansion", sha, saves: response.saves })
+      },
+      failed: (error) => {
+        addToast(
+          "error",
+          `Failed to load the saves in this milestone: ${apiErrorMessage(error, "unknown error")}`,
+        )
+        applyAction({ type: "resolve-expansion", sha })
+      },
+    })
+  }, [addToast, applyAction, life])
 
   const selectSha = useCallback((sha: string | null) => {
     applyAction({ type: "select", sha })

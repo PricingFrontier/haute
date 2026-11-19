@@ -14,7 +14,9 @@ import type {
   ModelSaveDestinationResponse,
   SaveModelResponse,
 } from "../../api/types"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import { MODEL_COLORS } from "../../theme/colors"
+import { answer, ask, newest, under } from "../../utils/answers"
 import { configField } from "../../utils/configField"
 import type { OnUpdateConfig } from "../editors/_shared"
 import PathPickerField from "../editors/shared/PathPickerField"
@@ -59,21 +61,19 @@ export function ModelFileExportSection({
   const extension = modelFileExtension(algorithm)
   const [destinationState, setDestinationState] = useState<DestinationState>()
   const [saveState, setSaveState] = useState<SaveState>()
+  const resolutions = useRequestKind()
+  // A save answers while the section shows.
+  const section = useRequestKind()
 
   useEffect(() => {
     if (!path) return
-    const controller = new AbortController()
-    resolveModelSaveDestination({ output_path: path, algorithm }, { signal: controller.signal }).then(
-      (response) => {
-        if (!controller.signal.aborted) setDestinationState({ path, algorithm, response })
-      },
-      (caught: unknown) => {
-        if (controller.signal.aborted) return
-        setDestinationState({ path, algorithm, error: apiErrorMessage(caught, "Could not resolve destination.") })
-      },
-    )
-    return () => controller.abort()
-  }, [algorithm, path])
+    const asked = ask([newest(resolutions)])
+    void asked.answer((signal) => resolveModelSaveDestination({ output_path: path, algorithm }, { signal }), {
+      ok: (response) => setDestinationState({ path, algorithm, response }),
+      failed: (caught) => setDestinationState({ path, algorithm, error: apiErrorMessage(caught, "Could not resolve destination.") }),
+    })
+    return () => asked.release()
+  }, [algorithm, path, resolutions])
 
   // A resolution answers for the path and the model format it was asked
   // about; until the current pair's arrives, none is shown.
@@ -88,18 +88,24 @@ export function ModelFileExportSection({
     if (!trainJobId || !path || saving) return
     if (overwrite && visibleSave?.phase !== "confirm_overwrite") return
     setSaveState({ phase: "saving", path })
-    try {
-      const response = await saveTrainedModel({ job_id: trainJobId, output_path: path, overwrite })
-      setSaveState({ phase: "success", path, response })
-      onSaved?.()
-    } catch (caught) {
-      const message = apiErrorMessage(caught, "Model save failed.")
-      setSaveState(
-        apiErrorCode(caught) === "model_file_exists"
-          ? { phase: "confirm_overwrite", path, message }
-          : { phase: "error", path, message },
-      )
-    }
+    await answer([under(section)], saveTrainedModel({ job_id: trainJobId, output_path: path, overwrite }), {
+      ok: (response) => {
+        setSaveState({ phase: "success", path, response })
+        onSaved?.()
+      },
+      failed: (caught) => {
+        const message = apiErrorMessage(caught, "Model save failed.")
+        setSaveState(
+          apiErrorCode(caught) === "model_file_exists"
+            ? { phase: "confirm_overwrite", path, message }
+            : { phase: "error", path, message },
+        )
+      },
+      // A save answered once the section is gone still has the job's receipts read again.
+      stale: (settled) => {
+        if ("value" in settled) onSaved?.()
+      },
+    })
   }
 
   return (

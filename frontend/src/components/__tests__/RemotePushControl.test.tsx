@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { act, render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import RemotePushControl from "../RemotePushControl"
 import { ApiError } from "../../api/client"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import { makeGitWorkingBranch } from "../../test-utils/factories"
+import { makeGitWorkingBranch, makeNode } from "../../test-utils/factories"
 
 const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
@@ -684,8 +684,8 @@ describe("RemotePushControl", () => {
     ]
 
     afterEach(() => {
-      useGraphStore.setState({ dirty: false })
-      useWorkbenchStore.setState({ formDirty: false })
+      useGraphStore.getState().resetForTests()
+      useWorkbenchStore.setState({ formDirty: false, formEdits: null })
       useWorkbenchFormStore.setState({ reload: useWorkbenchFormStore.getInitialState().reload })
     })
 
@@ -738,6 +738,50 @@ describe("RemotePushControl", () => {
         expect(onSave).toHaveBeenCalledOnce()
       })
 
+      it("keeps every unsaved edit when one was made while it ran", async () => {
+        const reload = vi.fn(async () => {})
+        useWorkbenchFormStore.setState({ reload })
+        useWorkbenchStore.setState({ formDirty: true })
+        useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
+        useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.2" } })))
+        let answered: (value: unknown) => void = () => {}
+        request.mockReturnValueOnce(new Promise((resolve) => (answered = resolve)))
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await click()
+        fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+        await waitFor(() => expect(request).toHaveBeenCalledWith("origin"))
+
+        // The Git panel is no concern of the edit: the Default is set while the answer waits.
+        useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.5" } })))
+        await act(async () => answered({ remote: "origin", fast_forwarded: ["dev"], labels_added: [], set_aside_as: "dev-aside" }))
+
+        expect(useGraphStore.getState().nodes[0].data.label).toBe("Default 1.5")
+        expect(useGraphStore.getState().dirty).toBe(true)
+        expect(reload).not.toHaveBeenCalled()
+      })
+
+      it("says what it did, and reads the branch again, when an edit is made while the form reads again", async () => {
+        let reread: () => void = () => {}
+        const reload = vi.fn(() => new Promise<void>((resolve) => (reread = resolve)))
+        useWorkbenchFormStore.setState({ reload })
+        useWorkbenchStore.setState({ formDirty: true })
+        useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
+        useGraphStore.setState({ dirty: true })
+        const historyNonce = useGitStore.getState().historyNonce
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await click()
+        fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+        await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+
+        // Git has moved the files; the canvas, as the remote's, is edited before the form is read.
+        useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.5" } })))
+        await act(async () => reread())
+
+        await waitFor(() => expect(useGitStore.getState().historyNonce).toBe(historyNonce + 1))
+        expect(mockAddToast).toHaveBeenCalledWith("success", expect.any(String))
+        expect(useGraphStore.getState().nodes[0].data.label).toBe("Default 1.5")
+      })
+
       it("keeps the edits when it fails", async () => {
         request.mockRejectedValueOnce(new Error("ref locked on remote"))
         render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
@@ -749,6 +793,25 @@ describe("RemotePushControl", () => {
         )
         expect(useGraphStore.getState().dirty).toBe(true)
       })
+    })
+
+    it("drops the form's edits chosen over when the canvas, as saved, takes the remote's document before the answer", async () => {
+      ways[0].setUp()
+      const reload = vi.fn(async () => {})
+      useWorkbenchFormStore.setState({ reload })
+      useWorkbenchStore.setState({ formDirty: true, formEdits: { edited: true } })
+      let answered: (value: unknown) => void = () => {}
+      mockFastForward.mockReturnValueOnce(new Promise((resolve) => (answered = resolve)))
+      render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+      await ways[0].click()
+      fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+      await waitFor(() => expect(mockFastForward).toHaveBeenCalledWith("origin"))
+
+      // Live sync brings the caught-up document to the canvas, which has no unsaved edits.
+      useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
+      await act(async () => answered({ remote: "origin", fast_forwarded: ["dev"], labels_added: [] }))
+
+      await waitFor(() => expect(reload).toHaveBeenCalledOnce())
     })
 
     it("catches up at once, asking nothing, while the project is clean", async () => {

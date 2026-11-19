@@ -1,6 +1,8 @@
 import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react"
 import { commitOpenDrafts } from "../components/form/useCommittedDraft"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { answer, type Part } from "../utils/answers"
 import { EditorNameCollisionError } from "../utils/editorIdentities"
 import type { Edge, Node } from "@xyflow/react"
 
@@ -87,6 +89,16 @@ export type GraphCommitController = {
  * The pure planner computes candidates; this hook alone decides whether an
  * asynchronous candidate still owns the graph/document fence and may commit.
  */
+/** What a commit request's fence reads: the graph and the document's status. */
+function graphOrDocument(listener: () => void): () => void {
+  const graph = useGraphStore.subscribe(listener)
+  const document = useDocumentStatusStore.subscribe(listener)
+  return () => {
+    graph()
+    document()
+  }
+}
+
 export default function useGraphCommitController({
   
   
@@ -248,62 +260,75 @@ export default function useGraphCommitController({
     draft: PendingDraft,
     firstRequest: GraphCommitRequest,
   ): Promise<OnUpdateConfigResult> => {
-    const superseded = (request: GraphCommitRequest): OnUpdateConfigResult | null => {
-      if (movedRef.current.has(draft)) return { ok: false, error: NODE_MOVED_UPDATE }
-      if (contextInvalidated(request)) {
-        retireDraft(nodeId, draft)
-        return { ok: false, error: SUPERSEDED_UPDATE }
-      }
-      if (draftsRef.current.get(nodeId) !== draft) return { ok: true }
+    /** Why a reply for this draft is wanted no more, or null while it is. */
+    const supersededBy = (request: GraphCommitRequest): "moved" | "replaced" | "superseded" | null => {
+      if (movedRef.current.has(draft)) return "moved"
+      if (contextInvalidated(request)) return "superseded"
+      if (draftsRef.current.get(nodeId) !== draft) return "replaced"
       // A rename of the node, issued after this request.
-      if (requestInvalidated(request)) {
-        retireDraft(nodeId, draft)
-        return { ok: false, error: SUPERSEDED_UPDATE }
-      }
+      if (requestInvalidated(request)) return "superseded"
       return null
     }
-    let request = firstRequest
-    try {
-      for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
-        const liveNode = canvasGraph().nodes.find((node) => node.id === nodeId)
-        if (!liveNode) {
-          retireDraft(nodeId, draft)
-          return { ok: false, error: `Cannot update missing node "${nodeId}".` }
-        }
-        if (attempt > 1) request = beginRequest(nodeId)
-        const resolved = await resolveNodeIdentities([{ ...liveNode, data: draft.data }])
-        const outcome = superseded(request)
-        if (outcome) return outcome
-        if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-          throw new Error("identity resolver returned an invalid node")
-        }
-        // New definitions it is resolved against resolve it again; a move of the node itself
-        // has retired the draft already (above).
-        if (requestIsStale(request)) continue
-        const finalPlan = prepare(nodeId, resolved[0].data, true)
-        if (!finalPlan.ok) {
-          retireDraft(nodeId, draft)
-          return finalPlan
-        }
-        // Retired first, so its own commit is not taken for the node moving under it.
-        retireDraft(nodeId, draft)
-        commit(finalPlan)
-        return { ok: true }
-      }
+    /** A reply the draft's request was superseded under, settled: a newer draft carries its edits. */
+    const settleSuperseded = (request: GraphCommitRequest): OnUpdateConfigResult => {
+      const why = supersededBy(request)
+      if (why === "moved") return { ok: false, error: NODE_MOVED_UPDATE }
+      if (why === "replaced") return { ok: true }
       retireDraft(nodeId, draft)
-      return {
-        ok: false,
-        error: "Node update was not applied because the graph kept changing while identity resolution was running.",
-      }
-    } catch (error: unknown) {
-      const outcome = superseded(request)
-      if (outcome) return outcome
-      retireDraft(nodeId, draft)
-      return {
-        ok: false,
-        error: `Update node failed: ${error instanceof Error ? error.message : String(error)}`,
-      }
+      return { ok: false, error: SUPERSEDED_UPDATE }
     }
+    const failedUpdate = (error: unknown): OnUpdateConfigResult => {
+      retireDraft(nodeId, draft)
+      return { ok: false, error: `Update node failed: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    const attempt = async (n: number, request: GraphCommitRequest): Promise<OnUpdateConfigResult> => {
+      const liveNode = canvasGraph().nodes.find((node) => node.id === nodeId)
+      if (!liveNode) {
+        retireDraft(nodeId, draft)
+        return { ok: false, error: `Cannot update missing node "${nodeId}".` }
+      }
+      let result: OnUpdateConfigResult = { ok: true }
+      // The reply belongs to the draft as the node's newest, unmoved, in the context it was asked in.
+      const wanted: Part = { holds: () => supersededBy(request) === null, subscribe: graphOrDocument }
+      await answer([wanted], resolveNodeIdentities([{ ...liveNode, data: draft.data }]), {
+        // What using the answer throws is the update's failure (`failed`).
+        ok: async (resolved) => {
+          if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+            throw new Error("identity resolver returned an invalid node")
+          }
+          // New definitions it is resolved against resolve it again; a move of the node
+          // itself has retired the draft already.
+          if (requestIsStale(request)) {
+            if (n < MAX_IDENTITY_ATTEMPTS) {
+              result = await attempt(n + 1, beginRequest(nodeId))
+              return
+            }
+            retireDraft(nodeId, draft)
+            result = {
+              ok: false,
+              error: "Node update was not applied because the graph kept changing while identity resolution was running.",
+            }
+            return
+          }
+          const finalPlan = prepare(nodeId, resolved[0].data, true)
+          // Retired first, so its own commit is not taken for the node moving under it.
+          retireDraft(nodeId, draft)
+          if (!finalPlan.ok) {
+            result = finalPlan
+            return
+          }
+          commit(finalPlan)
+        },
+        failed: (error) => {
+          result = failedUpdate(error)
+        },
+        stale: () => {
+          result = settleSuperseded(request)
+        },
+      })
+      return result
+    }
+    return attempt(1, firstRequest)
   }, [beginRequest, commit, contextInvalidated, prepare, requestInvalidated, requestIsStale, resolveNodeIdentities, retireDraft])
 
   // A draft is a whole node built on the node as it was: the moment an Undo, a Redo or a
@@ -383,73 +408,75 @@ export default function useGraphCommitController({
           }
       return { ...currentNode, data: candidateData }
     }
-    const pending = (async (): Promise<OnUpdateConfigResult> => {
-      try {
-        for (let attempt = 1; attempt <= MAX_IDENTITY_ATTEMPTS; attempt += 1) {
-          const currentNode = canvasGraph().nodes.find((node) => node.id === nodeId)
-          if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
-          const isSubmodel = isOccurrence(currentNode)
-          const request = beginRequest(nodeId)
-          const namingKey = readNamingContextKey()
-          let resolved: Node[]
-          try {
-            resolved = await resolveRenameIdentities([candidateFor(currentNode)])
-          } catch (error: unknown) {
-            // A newer edit or another document supersedes a refusal as it
-            // would an acceptance; only then may a stale refusal be retried.
-            if (requestInvalidated(request)) {
-              return {
-                ok: false,
-                error: "Rename was not applied because the document, editing capability, or a newer node edit superseded it.",
-              }
-            }
-            // A refusal judged against names that have since changed may no
-            // longer hold: the other node may have been renamed away.
-            if (error instanceof EditorNameCollisionError && readNamingContextKey() !== namingKey) {
-              continue
-            }
-            throw error
-          }
-          if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-            throw new Error("identity resolver returned an invalid node")
-          }
-          if (requestInvalidated(request)) {
-            return {
-              ok: false,
-              error: "Rename was not applied because the document, editing capability, or a newer node edit superseded it.",
-            }
-          }
-          if (requestIsStale(request)) continue
-          // Another node's name or the support code changed while the server
-          // judged this one: its verdict no longer holds.
-          if (readNamingContextKey() !== namingKey) continue
-          if (isSubmodel) {
-            const resolvedFn = resolved[0].data?._functionName
-            if (resolvedFn !== label) {
-              return {
-                ok: false,
-                error: `Occurrence names must be identifiers; use "${resolvedFn ?? ""}".`,
-              }
-            }
-          }
-          const prepared = prepare(nodeId, resolved[0].data, true)
-          if (!prepared.ok) return prepared
-          commit(prepared)
-          return { ok: true }
-        }
+    const superseded: OnUpdateConfigResult = {
+      ok: false,
+      error: "Rename was not applied because the document, editing capability, or a newer node edit superseded it.",
+    }
+    // The server's own wording names the other node, helper or reserved name.
+    const failedRename = (error: unknown): OnUpdateConfigResult => error instanceof EditorNameCollisionError
+      ? { ok: false, error: error.message }
+      : { ok: false, error: `Rename failed: ${error instanceof Error ? error.message : String(error)}` }
+    const attempt = async (n: number): Promise<OnUpdateConfigResult> => {
+      if (n > MAX_IDENTITY_ATTEMPTS) {
         return {
           ok: false,
           error: "Rename was not applied because the graph kept changing while identity resolution was running.",
         }
-      } catch (error: unknown) {
-        // The server's own wording names the other node, helper or reserved name.
-        if (error instanceof EditorNameCollisionError) return { ok: false, error: error.message }
-        return {
-          ok: false,
-          error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
-        }
       }
-    })()
+      const currentNode = canvasGraph().nodes.find((node) => node.id === nodeId)
+      if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
+      const isSubmodel = isOccurrence(currentNode)
+      const request = beginRequest(nodeId)
+      const namingKey = readNamingContextKey()
+      let result: OnUpdateConfigResult = superseded
+      // A newer edit or another document supersedes a refusal as it would an acceptance.
+      const wanted: Part = { holds: () => !requestInvalidated(request), subscribe: graphOrDocument }
+      await answer([wanted], resolveRenameIdentities([candidateFor(currentNode)]), {
+        ok: async (resolved) => {
+          try {
+            if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+              throw new Error("identity resolver returned an invalid node")
+            }
+            // Another node's name or the support code changed while the server judged this
+            // one: its verdict no longer holds.
+            if (requestIsStale(request) || readNamingContextKey() !== namingKey) {
+              result = await attempt(n + 1)
+              return
+            }
+            if (isSubmodel) {
+              const resolvedFn = resolved[0].data?._functionName
+              if (resolvedFn !== label) {
+                result = { ok: false, error: `Occurrence names must be identifiers; use "${resolvedFn ?? ""}".` }
+                return
+              }
+            }
+            const prepared = prepare(nodeId, resolved[0].data, true)
+            if (!prepared.ok) {
+              result = prepared
+              return
+            }
+            commit(prepared)
+            result = { ok: true }
+          } catch (error: unknown) {
+            result = failedRename(error)
+          }
+        },
+        failed: async (error) => {
+          // A refusal judged against names that have since changed may no longer hold: the
+          // other node may have been renamed away.
+          if (error instanceof EditorNameCollisionError && readNamingContextKey() !== namingKey) {
+            result = await attempt(n + 1)
+            return
+          }
+          result = failedRename(error)
+        },
+        stale: () => {
+          result = superseded
+        },
+      })
+      return result
+    }
+    const pending = attempt(1)
     registerPendingCommit(pending)
     return pending
   }, [beginRequest, commit, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])

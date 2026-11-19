@@ -21,6 +21,8 @@ import useGraphStore from "../stores/useGraphStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import { apiErrorCode } from "../api/errors"
 import { canonicalJson } from "../utils/canonicalJson"
+import { ask, newest, type Part } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
@@ -261,8 +263,9 @@ export default function useTracing({
   useEffect(() => {
     nodesRef.current = nodes
   }, [nodes])
-  const traceRequestSeq = useRef(0)
-  const traceAbort = useRef<AbortController | null>(null)
+  // The newest trace wins: clearing, a new semantic context or another trace ends the one
+  // asked before, and aborts it; so does unmounting.
+  const traces = useRequestKind()
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const retryRequest = useRef<{
     rowIndex: number
@@ -280,9 +283,7 @@ export default function useTracing({
   // are automatically cleaned up. This is called on node delete (via edge
   // handlers) ensuring deleted node IDs are never referenced by trace state.
   const clearTrace = useCallback(() => {
-    traceRequestSeq.current += 1
-    traceAbort.current?.abort()
-    traceAbort.current = null
+    traces.bump()
     if (progressTimer.current) clearTimeout(progressTimer.current)
     progressTimer.current = null
     activeSemanticContextToken.current = null
@@ -292,7 +293,7 @@ export default function useTracing({
     setStoredTraceResult(null)
     setStoredTracedCell(null)
     setStoredTraceState(IDLE_TRACE_STATE)
-  }, [])
+  }, [traces])
 
   // What a 409's recovery notice belongs to. The preview refresh it starts
   // replaces the seed plan and may raise the node-data epoch; the notice
@@ -343,19 +344,16 @@ export default function useTracing({
       activeSemanticContextToken.current !== null &&
       activeSemanticContextToken.current !== semanticContextToken
     ) {
-      traceRequestSeq.current += 1
-      traceAbort.current?.abort()
-      traceAbort.current = null
+      traces.bump()
       if (progressTimer.current) clearTimeout(progressTimer.current)
       progressTimer.current = null
       activeSemanticContextToken.current = null
       activeRequestContext.current = null
       retryRequest.current = null
     }
-  }, [semanticContextToken])
+  }, [semanticContextToken, traces])
 
   useEffect(() => () => {
-    traceAbort.current?.abort()
     if (progressTimer.current) clearTimeout(progressTimer.current)
   }, [])
 
@@ -378,12 +376,14 @@ export default function useTracing({
     // seed plan describes.
     if (!previewTarget) return
     const graph = preparePipelineRequest(documentRequestScope).graph
-    const requestId = traceRequestSeq.current + 1
-    traceRequestSeq.current = requestId
-    traceAbort.current?.abort()
+    const newestTrace = newest(traces)
+    // The trace belongs to the document it was asked of; once that moves, it is cleared.
+    const documentAsTraced: Part = {
+      holds: documentStillCurrent,
+      subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+    }
+    const asked = ask([newestTrace, documentAsTraced])
     if (progressTimer.current) clearTimeout(progressTimer.current)
-    const controller = new AbortController()
-    traceAbort.current = controller
     const requestContext = canonicalJson({
       semanticContext,
       rowIndex,
@@ -398,15 +398,13 @@ export default function useTracing({
     setStoredTracedCell({ rowIndex, column })
     setStoredTraceState({ status: "loading", progressVisible: false })
     progressTimer.current = setTimeout(() => {
-      if (
-        traceRequestSeq.current === requestId &&
-        activeRequestContext.current === requestContext &&
-        documentStillCurrent()
-      ) {
-        setStoredTraceState({ status: "loading", progressVisible: true })
-      }
+      asked.apply(() => setStoredTraceState({ status: "loading", progressVisible: true }))
     }, TRACE_PROGRESS_DELAY_MS)
-    traceCell({
+    const stopProgress = () => {
+      if (progressTimer.current) clearTimeout(progressTimer.current)
+      progressTimer.current = null
+    }
+    void asked.answer((signal) => traceCell({
       graph,
       row_index: rowIndex,
       target: frameTargetPayload(previewTarget),
@@ -420,47 +418,19 @@ export default function useTracing({
         identity_digest: entry.identity_digest,
         generation_id: entry.generation_id,
       })),
-      signal: controller.signal,
-    })
-      .then((data) => {
-        if (
-          traceRequestSeq.current !== requestId ||
-          activeRequestContext.current !== requestContext
-        ) return
-        if (!documentStillCurrent()) {
-          if (progressTimer.current) clearTimeout(progressTimer.current)
-          progressTimer.current = null
-          retryRequest.current = null
-          activeRequestContext.current = null
-          setStoredTraceResult(null)
-          setStoredTracedCell(null)
-          setStoredTraceState(IDLE_TRACE_STATE)
-          return
-        }
-        if (progressTimer.current) clearTimeout(progressTimer.current)
-        progressTimer.current = null
+      signal,
+    }), {
+      ok: (data) => {
+        stopProgress()
         if (data.status === "ok") {
           setStoredTraceResult(data.trace)
           setStoredTraceState({ status: "ready" })
         } else {
           setStoredTraceState({ status: "error", message: "Unable to trace this value.", detail: "The trace service returned an unsuccessful response.", retryable: true })
         }
-      })
-      .catch((err) => {
-        if (traceRequestSeq.current !== requestId) return
-        if (controller.signal.aborted) return
-        if (!documentStillCurrent()) {
-          if (progressTimer.current) clearTimeout(progressTimer.current)
-          progressTimer.current = null
-          retryRequest.current = null
-          activeRequestContext.current = null
-          setStoredTraceResult(null)
-          setStoredTracedCell(null)
-          setStoredTraceState(IDLE_TRACE_STATE)
-          return
-        }
-        if (progressTimer.current) clearTimeout(progressTimer.current)
-        progressTimer.current = null
+      },
+      failed: (err) => {
+        stopProgress()
         if ((err as { status?: unknown })?.status === 409) {
           refreshPreview?.(selectedNode)
           retryRequest.current = null
@@ -476,13 +446,19 @@ export default function useTracing({
         }
         setStoredTraceResult(null)
         setStoredTraceState({ status: "error", message: "Unable to trace this value. Check the details and try again.", detail: technicalDetail(err), retryable: true })
-      })
-      .finally(() => {
-        if (traceRequestSeq.current === requestId) {
-          traceAbort.current = null
-        }
-      })
-  }, [selectedNode, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewTarget])
+      },
+      // A trace a newer one overtook says nothing; one whose document moved is cleared.
+      stale: () => {
+        if (!newestTrace.holds()) return
+        stopProgress()
+        retryRequest.current = null
+        activeRequestContext.current = null
+        setStoredTraceResult(null)
+        setStoredTracedCell(null)
+        setStoredTraceState(IDLE_TRACE_STATE)
+      },
+    })
+  }, [selectedNode, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan, previewTarget, traces])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

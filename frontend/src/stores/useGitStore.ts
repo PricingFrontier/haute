@@ -21,14 +21,33 @@ import {
   retryGitStorageSync,
 } from "../api/client"
 import type { GitBindStorageResponse, GitDeletedBranch, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
+import { answer, newest, requestKind, under, type Part, type Settled } from "../utils/answers"
 import { createSingleFlight } from "./singleFlight"
 
 const statusFlight = createSingleFlight<GitWorkingBranchResponse | null>()
+/** The status request that owns the single-flight's slot: each one issued takes a turn, and a
+ *  reset or a stall detaching it ends its turn, so its answer publishes nothing. */
+const statusAsked = requestKind()
+/** What the store's own writes are asked under: a reset (tests) ends it. */
+const storeAsked = requestKind()
+
+/** The git store as it is, as an answer's part: a git write's follow-ups that belong to no
+ *  component (a repair's toast, the readiness read again) hold until the store is reset. */
+export function gitStorePart(): Part {
+  return under(storeAsked)
+}
+
+/** A write's answer handed to its caller whatever came of the store meanwhile. */
+function settledValue<T>(settled: Settled<T>): T {
+  if ("error" in settled) throw settled.error
+  return settled.value
+}
 
 /** Tests that hold a mocked getWorkingBranch open forever leave the
  *  single-flight stuck, starving every later loadStatus() in the same file. */
 export const resetGitStatusRequestForTests = () => {
   statusFlight.reset()
+  statusAsked.bump()
 }
 
 /** Which modal is open. */
@@ -198,18 +217,16 @@ const useGitStore = create<GitState>()((set, get) => ({
 
   loadStatus: (options) =>
     // Single-flight/queue/reset/stall bookkeeping lives in ./singleFlight;
-    // this fetcher owns only publication. Identity-guarded settle: after
+    // this fetcher owns only publication, as the newest status request: after
     // resetGitStatusRequestForTests() (or a stall detach) this request must
-    // neither publish state nor null out a NEWER request's slot. The guard is
-    // re-checked before EVERY set() — any yield point (the await below) or
-    // synchronous subscriber reacting to a set() could have detached this
-    // request in the meantime — and each settle path performs a single set()
-    // so a passed check can't go stale mid-handler.
+    // neither publish state nor null out a NEWER request's slot. Each settle
+    // path performs a single set(), checked in the turn it runs.
     statusFlight.load(
-      (isCurrent) =>
-        getWorkingBranch()
-          .then((status) => {
-            if (!isCurrent()) return status
+      () => {
+        let read: GitWorkingBranchResponse | null = null
+        return answer([newest(statusAsked)], getWorkingBranch(), {
+          ok: (status) => {
+            read = status
             // Binding runs in the background, so its dialog is closed by the
             // time a failure lands. Bring it back — the user asked for durable
             // storage and must find out they haven't got it. Never steals
@@ -222,25 +239,30 @@ const useGitStore = create<GitState>()((set, get) => ({
               statusError: null,
               ...(surfaceBindFailure ? { modal: "storage" as const } : {}),
             })
-            return status
-          })
-          .catch(async (error: unknown) => {
-            if (!isCurrent()) return null
+          },
+          failed: async (error, asked) => {
             // Readiness is best-effort editor chrome. Keep the last successful
             // state for gating, but expose this failure for an explicit retry.
             const { apiErrorMessage } = await import("../api/errors")
-            if (!isCurrent()) return null
-            set({
+            asked.apply(() => set({
               loading: false,
               statusError: apiErrorMessage(error, "Unable to check Git status"),
-            })
-            return null
-          }),
+            }))
+          },
+          // A detached request still answers its own awaiters.
+          stale: (settled) => {
+            if ("value" in settled) read = settled.value
+          },
+        }).then(() => read)
+      },
       {
         refresh: options?.refresh,
         detachedValue: () => null,
         onStart: () => set({ loading: true, statusError: null }),
-        onStale: (error) => set({ loading: false, statusError: error.message }),
+        onStale: (error) => {
+          statusAsked.bump()
+          set({ loading: false, statusError: error.message })
+        },
         // loadStatus never rejects — awaiters (mutations, modals) branch on
         // null instead of wrapping in try/catch.
         staleResult: () => null,
@@ -274,15 +296,22 @@ const useGitStore = create<GitState>()((set, get) => ({
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
 
   bindStorage: async (remoteUrl) => {
-    const result = await bindGitStorage(remoteUrl)
-    // refresh: joining a status request issued BEFORE the bind would publish
-    // pre-bind readiness as the final state.
-    await get().loadStatus({ refresh: true })
-    return result
+    let bound!: GitBindStorageResponse
+    await answer([gitStorePart()], bindGitStorage(remoteUrl), {
+      ok: async (result) => {
+        bound = result
+        // refresh: joining a status request issued BEFORE the bind would publish
+        // pre-bind readiness as the final state.
+        await get().loadStatus({ refresh: true })
+      },
+      stale: (settled) => {
+        bound = settledValue(settled)
+      },
+    })
+    return bound
   },
   acknowledgeBind: async () => {
-    const status = await acknowledgeGitBind()
-    set({ status })
+    await answer([gitStorePart()], acknowledgeGitBind(), { ok: (status) => set({ status }) })
   },
   forkStorage: async (sourceUrl, targetUrl) => {
     // No readiness refresh: forking writes only to the volume — this
@@ -291,18 +320,37 @@ const useGitStore = create<GitState>()((set, get) => ({
   },
   checkUpstream: async () => checkGitUpstream(),
   pullUpstream: async () => {
-    const result = await pullGitUpstream()
-    // refresh: same pre-mutation-join hazard as bindStorage.
-    await get().loadStatus({ refresh: true })
-    return result
+    let pulled!: GitFastForwardResponse
+    await answer([gitStorePart()], pullGitUpstream(), {
+      ok: async (result) => {
+        pulled = result
+        // refresh: same pre-mutation-join hazard as bindStorage.
+        await get().loadStatus({ refresh: true })
+      },
+      stale: (settled) => {
+        pulled = settledValue(settled)
+      },
+    })
+    return pulled
   },
   retrySync: async () => {
-    const status = await retryGitStorageSync()
-    set({ status })
-    return status
+    let retried!: GitWorkingBranchResponse | null
+    await answer([gitStorePart()], retryGitStorageSync(), {
+      ok: (status) => {
+        retried = status
+        set({ status })
+      },
+      stale: (settled) => {
+        retried = settledValue(settled)
+      },
+    })
+    return retried
   },
 
-  resetForTests: () => set(freshGitData()),
+  resetForTests: () => {
+    storeAsked.bump()
+    set(freshGitData())
+  },
 }))
 
 /** One-call reset of the whole git-store family between tests: the data state

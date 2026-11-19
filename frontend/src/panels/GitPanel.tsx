@@ -10,9 +10,11 @@ import GitNavigationConfirm from "../components/GitNavigationConfirm"
 import RemotePushControl from "../components/RemotePushControl"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
-import useGitStore from "../stores/useGitStore"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useDirtyNavigation from "../hooks/useDirtyNavigation"
-import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import { chosenOverParts, discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, ask, under, type Asked } from "../utils/answers"
 import { createWorkingBranch, setWorkingBranch } from "../api/client"
 import type { GitLedgerSave, GitFileChange } from "../api/types"
 import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
@@ -167,6 +169,9 @@ function GitPanelBranchScope({
   const [dotMenu, setDotMenu] = useState<{ sha: string; x: number; y: number } | null>(null)
   const [laneMenu, setLaneMenu] = useState<{ branch: string; x: number; y: number } | null>(null)
   const [switching, setSwitching] = useState(false)
+  const life = useRequestKind()
+  // The history read again, and awaited, while this scope still shows.
+  const refreshHere = (here: Asked) => here.answer(Promise.resolve(), { ok: () => refresh() })
 
   // The row context menu. ALWAYS preventDefault (never fall through to the
   // browser menu) and always open an app menu. Fork-from-history is only
@@ -192,35 +197,41 @@ function GitPanelBranchScope({
   const startBranchAt = (sha: string, x: number, y: number) =>
     setForkDraft({ sha, mode: "switch", name: "", x, y })
 
+  // A branch op and what it tells the app belong to the git store; the naming step and the
+  // history shown, to this scope.
   const submitFork = async () => {
     if (!forkDraft || !forkDraft.name.trim()) return
-    setForking(true)
+    const here = ask([under(life)])
     try {
-      const res = await createWorkingBranch(forkDraft.name.trim(), {
+      await answer([gitStorePart()], createWorkingBranch(forkDraft.name.trim(), {
         at: forkDraft.sha,
         move: forkDraft.mode === "move",
         switch: forkDraft.mode === "switch",
-      })
-      addToast(
-        "success",
-        forkDraft.mode === "move"
-          ? `Created ${res.working_branch} and moved your work`
-          : `Created ${res.working_branch}`,
-      )
-      setForkDraft(null)
-      if (res.switched) {
-        window.location.reload()
-        return
-      }
-      await refresh()
-    } catch (err) {
-      // Said in the naming step, which stays open with the name to put right: a
-      // toast would sit over its Create button at the window's right edge.
-      const detail = apiErrorMessage(err, "unknown error")
-      setForkDraft((draft) => draft && { ...draft, error: `Could not create branch: ${detail}` })
-      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
+      }), {
+        ok: (res) => {
+          addToast(
+            "success",
+            forkDraft.mode === "move"
+              ? `Created ${res.working_branch} and moved your work`
+              : `Created ${res.working_branch}`,
+          )
+          here.apply(() => setForkDraft(null))
+          if (res.switched) {
+            window.location.reload()
+            return
+          }
+          return refreshHere(here)
+        },
+        failed: (err) => {
+          // Said in the naming step, which stays open with the name to put right: a
+          // toast would sit over its Create button at the window's right edge.
+          const detail = apiErrorMessage(err, "unknown error")
+          here.apply(() => setForkDraft((draft) => draft && { ...draft, error: `Could not create branch: ${detail}` }))
+          void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
+        },
+      }, { inFlight: setForking })
     } finally {
-      setForking(false)
+      here.release()
     }
   }
 
@@ -235,23 +246,38 @@ function GitPanelBranchScope({
   // returns to "current" view, refreshes, and the switch is recorded as an
   // undoable history entry.
   const performSwitch = async (branch: string) => {
-    setSwitching(true)
     const from = workingBranch
-    try {
-      await setWorkingBranch(branch, false)
-      discardCanvasEdits()
-      await discardFormEdits()
-      addToast("success", `Switched to ${branch}`)
-      if (from !== null) recordSwitch(from, branch, onSave)
-      setViewBranch(null)
-      await loadStatus({ refresh: true }) // not a read begun before the action
-      await refresh()
-    } catch (err) {
+    const refused = (err: unknown) => {
       const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch branch: ${detail}`)
       void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
+    }
+    const here = ask([under(life)])
+    // What is dropped is what was chosen over when the switch was asked: an edit made while
+    // it ran keeps every unsaved edit.
+    const chosenOver = ask(chosenOverParts())
+    try {
+      await answer([gitStorePart()], setWorkingBranch(branch, false), {
+        ok: (_, asked) => {
+          const drop = chosenOver.current()
+          if (drop) discardCanvasEdits()
+          return asked.answer(drop ? discardFormEdits() : Promise.resolve(), {
+            ok: () => {
+              addToast("success", `Switched to ${branch}`)
+              if (from !== null) recordSwitch(from, branch, onSave)
+              setViewBranch(null)
+              return asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
+                ok: () => refreshHere(here),
+              })
+            },
+            failed: refused,
+          })
+        },
+        failed: refused,
+      }, { inFlight: setSwitching })
     } finally {
-      setSwitching(false)
+      here.release()
+      chosenOver.release()
     }
   }
 

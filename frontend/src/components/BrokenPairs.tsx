@@ -2,7 +2,9 @@ import { useState } from "react"
 import { AlertTriangle } from "lucide-react"
 
 import type { GitWorkingBranchResponse } from "../api/types"
+import { useRequestKind } from "../hooks/useRequestKind"
 import useGitStore from "../stores/useGitStore"
+import { answer, under } from "../utils/answers"
 import { brokenPairText, repairBrokenPair } from "../utils/brokenPairs"
 
 /** The branch pairs readiness reports broken, each with its Repair (GIT-R16). `onRepaired`
@@ -12,6 +14,7 @@ export default function BrokenPairs({
 }: { onRepaired?: (status: GitWorkingBranchResponse | null) => void } = {}) {
   const pairs = useGitStore((s) => s.status?.broken_pairs)
   const [repairing, setRepairing] = useState<string | null>(null)
+  const life = useRequestKind()
   if (!pairs || pairs.length === 0) return null
 
   return (
@@ -30,10 +33,9 @@ export default function BrokenPairs({
             data-testid="git-broken-pair-repair"
             disabled={repairing !== null}
             onClick={() => {
-              setRepairing(pair.ledger)
-              void repairBrokenPair(pair)
-                .then((status) => onRepaired?.(status))
-                .finally(() => setRepairing(null))
+              void answer([under(life)], repairBrokenPair(pair), { ok: (status) => onRepaired?.(status) }, {
+                inFlight: (flying) => setRepairing(flying ? pair.ledger : null),
+              })
             }}
             className="px-2 py-0.5 rounded text-[12px] font-semibold disabled:opacity-50"
             style={{ color: "var(--text-accent)" }}

@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { fetchSchema } from "../api/client"
 import type { SchemaReader } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { SchemaInfo } from "../panels/editors/_shared"
+import { newest, signalPart, answer } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 
 /** One schema read: the file and reader settings it is for, and how it went. */
 type SchemaRead =
@@ -31,24 +33,18 @@ export function useSchemaFetch(path?: string, reader?: SchemaReader) {
   const readerKey = reader ? JSON.stringify(reader) : ""
   const identity = path ? readIdentity(path, readerKey) : ""
   const [read, setRead] = useState<SchemaRead | null>(null)
-  // The read last asked for: a reply to any other is stale.
-  const latestRequest = useRef(0)
+  // The read last asked for: a reply to any other is stale, and so is one whose caller let go.
+  const reads = useRequestKind()
 
   const fetchForPath = useCallback((fetchPath: string, signal?: AbortSignal) => {
-    const request = ++latestRequest.current
     const asked = readIdentity(fetchPath, readerKey)
     setRead({ identity: asked, status: "loading" })
-    fetchSchema(fetchPath, { signal }, readerKey ? (JSON.parse(readerKey) as SchemaReader) : undefined)
-      .then((data) => {
-        if (signal?.aborted || request !== latestRequest.current) return
-        setRead({ identity: asked, status: "ready", schema: data })
-      })
-      .catch((err: unknown) => {
-        if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) return
-        if (request !== latestRequest.current) return
-        setRead({ identity: asked, status: "error", error: apiErrorMessage(err) })
-      })
-  }, [readerKey])
+    const parts = signal ? [newest(reads), signalPart(signal)] as const : [newest(reads)] as const
+    void answer(parts, (own) => fetchSchema(fetchPath, { signal: signal ?? own }, readerKey ? (JSON.parse(readerKey) as SchemaReader) : undefined), {
+      ok: (data) => setRead({ identity: asked, status: "ready", schema: data }),
+      failed: (err) => setRead({ identity: asked, status: "error", error: apiErrorMessage(err) }),
+    })
+  }, [readerKey, reads])
 
   // Fetch whenever the path or the reader settings change; abort on cleanup.
   useEffect(() => {

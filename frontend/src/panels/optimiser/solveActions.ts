@@ -11,11 +11,9 @@ import { cancelOptimiserSolve, solveOptimiser } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
 import { FAILED_JOB_STATUSES } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
-import {
-  captureDocumentExecutionFence,
-  isDocumentExecutionFenceCurrent,
-} from "../../stores/useDocumentStatusStore"
+import { executionPart } from "../../stores/useDocumentStatusStore"
 import useNodeResultsStore, { type SolveProgress } from "../../stores/useNodeResultsStore"
+import { answer, watch } from "../../utils/answers"
 import { hashConfig } from "../../utils/configHash"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { canvasTarget, prepareNodeRequest, resultKey, type RequestScope } from "../../utils/requestGateway"
@@ -80,8 +78,8 @@ type StartSolveArgs = {
  * answered after the view changed stays with the occurrence it was started in.
  */
 export async function startOptimiserSolve({ nodeId, config, allNodes, requestScope }: StartSolveArgs): Promise<void> {
-  const documentFence = captureDocumentExecutionFence()
-  if (!isDocumentExecutionFenceCurrent(documentFence)) return
+  const documentFence = executionPart()
+  if (!documentFence.holds()) return
   // Taken before preparing, which can refuse: its failure is the node's too.
   const key = resultKey(nodeId)
   const nodeLabel = allNodes.find((candidate) => candidate.id === nodeId)?.data.label || "Optimiser"
@@ -92,22 +90,24 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, requestSco
   const { startSolveJob, failSolveJob } = useNodeResultsStore.getState()
   // Its own key, so a start that fails in two occurrences records two jobs.
   const startupFailureId = `startup-failure:${key}`
-  try {
+  await answer([documentFence], async () => {
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-    const result = await solveOptimiser({ graph: target.graph, target: target.node })
-    if (!isDocumentExecutionFenceCurrent(documentFence)) return
-    if (result.status === "started" && result.job_id) {
-      startSolveJob(key, result.job_id, nodeLabel, constraints, configHash, source, structuralVersion)
-    } else if (result.status === "error") {
+    return solveOptimiser({ graph: target.graph, target: target.node })
+  }, {
+    ok: (result) => {
+      if (result.status === "started" && result.job_id) {
+        startSolveJob(key, result.job_id, nodeLabel, constraints, configHash, source, structuralVersion)
+      } else if (result.status === "error") {
+        startSolveJob(key, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
+        failSolveJob(key, result.error || "Unknown error")
+      }
+    },
+    failed: (error) => {
+      const message = apiErrorMessage(error)
       startSolveJob(key, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
-      failSolveJob(key, result.error || "Unknown error")
-    }
-  } catch (error) {
-    if (!isDocumentExecutionFenceCurrent(documentFence)) return
-    const message = apiErrorMessage(error)
-    startSolveJob(key, startupFailureId, nodeLabel, constraints, configHash, source, structuralVersion)
-    failSolveJob(key, message, solveFailureStatus(error, message))
-  }
+      failSolveJob(key, message, solveFailureStatus(error, message))
+    },
+  })
 }
 
 /**
@@ -120,14 +120,21 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, requestSco
 export async function stopOptimiserSolve(key: string): Promise<void> {
   const job = useNodeResultsStore.getState().solveJobs[key]
   if (!job) return
-  const documentFence = captureDocumentExecutionFence()
-  const status = await cancelOptimiserSolve(job.jobId)
   // The reply belongs to the job it cancelled: if polling finished that job and
   // another started meanwhile, or the document changed, it must not touch them.
-  if (!isDocumentExecutionFenceCurrent(documentFence)) return
-  if (useNodeResultsStore.getState().solveJobs[key]?.jobId !== job.jobId) return
-  const { completeSolveJob, failSolveJob, updateSolveProgress } = useNodeResultsStore.getState()
-  if (status.status === "completed" && status.result) completeSolveJob(key, status.result, status)
-  else if (FAILED_JOB_STATUSES.has(status.status)) failSolveJob(key, status.message || "Optimisation stopped", status)
-  else updateSolveProgress(key, status)
+  // A refusal is the caller's to report, late or not.
+  await answer([
+    executionPart(),
+    watch(useNodeResultsStore, (state) => state.solveJobs[key]?.jobId, (_, now) => now === job.jobId),
+  ], cancelOptimiserSolve(job.jobId), {
+    ok: (status) => {
+      const { completeSolveJob, failSolveJob, updateSolveProgress } = useNodeResultsStore.getState()
+      if (status.status === "completed" && status.result) completeSolveJob(key, status.result, status)
+      else if (FAILED_JOB_STATUSES.has(status.status)) failSolveJob(key, status.message || "Optimisation stopped", status)
+      else updateSolveProgress(key, status)
+    },
+    stale: (settled) => {
+      if ("error" in settled) throw settled.error
+    },
+  })
 }

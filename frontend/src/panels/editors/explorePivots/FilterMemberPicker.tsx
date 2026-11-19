@@ -6,6 +6,8 @@ import type { PivotFilterPlacement, PivotMember } from "../../explore/pivotConfi
 import { INPUT_STYLE } from "../_shared"
 import { memberIdentity, type LoadPivotFilterMembers } from "./placements"
 import { apiErrorMessage } from "../../../api/errors"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { ask, newest } from "../../../utils/answers"
 
 const FILTER_MEMBER_SEARCH_DEBOUNCE_MS = 250
 
@@ -33,33 +35,32 @@ export default function FilterMemberPicker({
     response: ExplorePivotMembersResponse | null
     error: string | null
   }>({ requestKey: null, identity: null, response: null, error: null })
+  const memberReads = useRequestKind()
 
   useEffect(() => {
     if (!open || !loadMembers) return
 
-    const controller = new AbortController()
-    const load = () => loadMembers(placement.field, search, controller.signal)
-      .then((nextResponse) => {
-        if (controller.signal.aborted) return
-        if (nextResponse.field !== null && nextResponse.field !== placement.field) {
-          throw new Error("Filter member response did not match the requested field.")
-        }
-        setLoadState({
-          requestKey,
-          identity: currentConfigHash,
-          response: nextResponse,
-          error: null,
-        })
-      })
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return
-        setLoadState({
-          requestKey,
-          identity: currentConfigHash,
-          response: null,
-          error: apiErrorMessage(reason),
-        })
-      })
+    const asked = ask([newest(memberReads)])
+    const load = () => void asked.answer(async (signal) => {
+      const nextResponse = await loadMembers(placement.field, search, signal)
+      if (nextResponse.field !== null && nextResponse.field !== placement.field) {
+        throw new Error("Filter member response did not match the requested field.")
+      }
+      return nextResponse
+    }, {
+      ok: (nextResponse) => setLoadState({
+        requestKey,
+        identity: currentConfigHash,
+        response: nextResponse,
+        error: null,
+      }),
+      failed: (reason) => setLoadState({
+        requestKey,
+        identity: currentConfigHash,
+        response: null,
+        error: apiErrorMessage(reason),
+      }),
+    })
     const timer = search === ""
       ? null
       : window.setTimeout(load, FILTER_MEMBER_SEARCH_DEBOUNCE_MS)
@@ -67,9 +68,9 @@ export default function FilterMemberPicker({
 
     return () => {
       if (timer !== null) window.clearTimeout(timer)
-      controller.abort()
+      asked.release()
     }
-  }, [currentConfigHash, loadMembers, open, placement.field, requestKey, search])
+  }, [currentConfigHash, loadMembers, open, placement.field, requestKey, search, memberReads])
 
   const currentLoadState =
     loadState.requestKey === requestKey && loadState.identity === currentConfigHash

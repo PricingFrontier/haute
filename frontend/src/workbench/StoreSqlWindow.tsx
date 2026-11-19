@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { createPortal } from "react-dom"
 import { Copy, Download } from "lucide-react"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "../components/ModalShell"
 import { ModalFormHeader } from "../components/ModalForm"
 import { QuietAction } from "../components/form"
+import { useRequestKind } from "../hooks/useRequestKind"
 import { downloadTextFile, writeClipboardText } from "../panels/editors/shared/tableClipboard"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
 import { comparisonFailure, useDatabaseComparison, environmentState } from "../stores/useStoreCompareStore"
+import { ask, under } from "../utils/answers"
 
 const QUIET_STYLE = { color: "var(--text-secondary)" } as const
 
@@ -29,11 +31,10 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
   else if (environment === null) reason = "Select a database on the schema pane to export SQL."
   else if (reason === null && read.status === "idle") reason = "Refresh the database on the schema pane before exporting SQL."
   else if (reason === null && comparison === null) reason = "Wait for the database comparison to finish."
-  const mounted = useRef(false)
+  // An export answers while the window is open.
+  const open = useRequestKind()
   useEffect(() => {
-    mounted.current = true
     void verify()
-    return () => { mounted.current = false }
   }, [environment, verify])
   const sql = comparison?.sql
   const disabled = reason !== null || sql === undefined
@@ -42,26 +43,34 @@ export default function StoreSqlWindow({ onClose }: { onClose: () => void }) {
 
   const exportSql = async (download: boolean) => {
     if (disabled || sql === undefined || environment === null) return
+    const asked = ask([under(open)])
     let exportedSql = sql
     try {
       const pending = verify().then((verified) => {
-        if (verified === null || !mounted.current || useWorkbenchViewStore.getState().mode === "preview" || useWorkbenchFormStore.getState().stale) throw new Error("The database comparison changed. Try exporting again.")
+        if (verified === null || !asked.current() || useWorkbenchViewStore.getState().mode === "preview" || useWorkbenchFormStore.getState().stale) throw new Error("The database comparison changed. Try exporting again.")
         exportedSql = verified.sql
         return verified.sql
       })
       // clipboard.write must run within the click, while its item waits for validation.
-      const exporting = download ? pending.then((sql) => {
-        if (!downloadTextFile(sql, `${environment}-database-schema.sql`, "application/sql")) {
-          throw new Error("SQL download is unavailable in this browser. Use Copy SQL.")
-        }
+      const exporting = download ? asked.answer(pending, {
+        ok: (verifiedSql) => {
+          if (!downloadTextFile(verifiedSql, `${environment}-database-schema.sql`, "application/sql")) {
+            throw new Error("SQL download is unavailable in this browser. Use Copy SQL.")
+          }
+        },
       }) : writeClipboardText(pending)
       // Even an early clipboard refusal waits for verification so its notice is
       // attached to the current query, whose equivalent statements may reorder.
-      const results = await Promise.allSettled([pending, exporting])
-      for (const result of results) if (result.status === "rejected") throw result.reason
-      setNotice({ environment, sql: exportedSql, error: false, text: download ? "SQL downloaded." : "SQL copied." })
-    } catch (error: unknown) {
-      setNotice({ environment, sql: exportedSql, error: true, text: apiErrorMessage(error) })
+      await asked.answer(Promise.allSettled([pending, exporting]), {
+        ok: (results) => {
+          const refused = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
+          setNotice(refused === undefined
+            ? { environment, sql: exportedSql, error: false, text: download ? "SQL downloaded." : "SQL copied." }
+            : { environment, sql: exportedSql, error: true, text: apiErrorMessage(refused.reason) })
+        },
+      })
+    } finally {
+      asked.release()
     }
   }
 

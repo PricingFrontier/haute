@@ -5,12 +5,14 @@ import { cancelNodeData, getNodeDataProfile } from "../api/client"
 import type { ExecutionMetrics, NodeDataProfile } from "../api/types"
 import {
   captureDocumentExecutionFence,
+  executionPart,
   isDocumentExecutionFenceCurrent,
 } from "../stores/useDocumentStatusStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
+import { answer, watch } from "../utils/answers"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { NodeDataCache } from "./useNodeDataCache"
 
@@ -111,12 +113,21 @@ export default function useNodeDataProfile({
   const failure =
     recordedFailure && recordedFailure.dataVersion === dataVersion ? recordedFailure.message : null
 
-  const ask = useCallback(
-    async (
-      askedVersion: string,
-      askedEpoch: number,
-      fence = captureDocumentExecutionFence(),
-    ) => {
+  /** A failed read of the profile, recorded as well as announced: the failure is what the
+   *  retry action is offered from, so a failed request is never a silent dead end. */
+  const failedRead = useCallback((version: string) => (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err)
+    if (slotKey) reportProfileFailure(slotKey, version, message)
+    addToast("error", `Reading the data profile failed: ${message}`)
+  }, [addToast, reportProfileFailure, slotKey])
+
+  const cancelFailed = useCallback((err: unknown) => addToast(
+    "error",
+    `Cancelling the data profile failed: ${err instanceof Error ? err.message : String(err)}`,
+  ), [addToast])
+
+  const askProfile = useCallback(
+    async (askedVersion: string, askedEpoch: number, requestKey: string | null) => {
       if (!nodeId || !slotKey) return
       // The graph is read from the store; listing the panel's graph and the preamble
       // renews this callback.
@@ -127,49 +138,58 @@ export default function useNodeDataProfile({
       // Taken before the request: a Stop for this node, pressed while it is in
       // flight, is read by it after the answer.
       const askedKey = nodeKey
-      // Inside an open submodel, the whole pipeline and the node's address.
-      const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-      const response = await getNodeDataProfile({
-        graph: target.graph,
-        target: target.node,
-        source: activeSource,
-      })
-      if (!isDocumentExecutionFenceCurrent(fence) || askedEpoch !== useNodeDataStore.getState().epoch) return
-      if (response.status === "completed" && response.result) {
-        observeProfile(slotKey, response.result)
-        return
-      }
-      if ((response.status === "started" || response.status === "joined") && response.job_id) {
-        if (response.status === "started") {
-          if (askedKey !== null && stoppedNodesRef.current.has(askedKey)) {
-            // Stop was pressed while this request was in flight.
-            void cancelNodeData(response.job_id).catch((err: unknown) => {
-              addToast(
-                "error",
-                `Cancelling the data profile failed: ${err instanceof Error ? err.message : String(err)}`,
-              )
+      // The profile belongs to the document as it was asked of, at the node-data epoch the
+      // consumer asked at; while it is asked, the same request is not asked again.
+      await answer([
+        executionPart(),
+        watch(useNodeDataStore, (state) => state.epoch, (_asked, now) => now === askedEpoch),
+      ], () => {
+        // Inside an open submodel, the whole pipeline and the node's address.
+        const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
+        return getNodeDataProfile({
+          graph: target.graph,
+          target: target.node,
+          source: activeSource,
+        })
+      }, {
+        ok: (response) => {
+          if (response.status === "completed" && response.result) {
+            observeProfile(slotKey, response.result)
+            return
+          }
+          if ((response.status === "started" || response.status === "joined") && response.job_id) {
+            if (response.status === "started" && askedKey !== null && stoppedNodesRef.current.has(askedKey)) {
+              // Stop was pressed while this request was in flight.
+              void answer([executionPart()], cancelNodeData(response.job_id), { failed: cancelFailed })
+            }
+            startProfileJob(slotKey, {
+              jobId: response.job_id,
+              message: response.message || "Profiling data",
+              startedByLabel: nodeLabel,
+              // The version this job profiles, so its outcome is never attributed
+              // to a generation published while it ran. The response's point is
+              // authoritative; a started job always has one.
+              dataVersion: response.point.data_version ?? askedVersion,
+              // Only a job this tab started is its to stop.
+              startedHere: response.status === "started",
             })
           }
-        }
-        startProfileJob(slotKey, {
-          jobId: response.job_id,
-          message: response.message || "Profiling data",
-          startedByLabel: nodeLabel,
-          // The version this job profiles, so its outcome is never attributed
-          // to a generation published while it ran. The response's point is
-          // authoritative; a started job always has one.
-          dataVersion: response.point.data_version ?? askedVersion,
-          // Only a job this tab started is its to stop.
-          startedHere: response.status === "started",
-        })
-      }
+        },
+        failed: failedRead(askedVersion),
+      }, {
+        pending: (waiting) => {
+          if (waiting) asked.current = requestKey
+          else if (asked.current === requestKey) asked.current = null
+        },
+      })
     },
     [
       requestScope,
       activeSource,
-      addToast,
       allNodes,
+      cancelFailed,
       edges,
+      failedRead,
       nodeId,
       nodeKey,
       nodeLabel,
@@ -189,54 +209,26 @@ export default function useNodeDataProfile({
     if (stopped) return
     const requestKey = `${slotKey}:${dataVersion}:${epoch}`
     if (profile || job || failure || asked.current === requestKey) return
-    const fence = captureDocumentExecutionFence()
-    if (!isDocumentExecutionFenceCurrent(fence)) return
-    asked.current = requestKey
-    void ask(dataVersion, epoch, fence).catch((err: unknown) => {
-      if (!isDocumentExecutionFenceCurrent(fence) || epoch !== useNodeDataStore.getState().epoch) return
-      const message = err instanceof Error ? err.message : String(err)
-      // Recorded as well as announced: the failure is what the retry action is
-      // offered from, so a failed request is never a silent dead end.
-      reportProfileFailure(slotKey, dataVersion, message)
-      addToast("error", `Reading the data profile failed: ${message}`)
-    }).finally(() => {
-      if (asked.current === requestKey) asked.current = null
-    })
+    if (!isDocumentExecutionFenceCurrent(captureDocumentExecutionFence())) return
+    void askProfile(dataVersion, epoch, requestKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToast, cache.availability, dataVersion, enabled, epoch, failure, job, profile, slotKey, stopped])
+  }, [cache.availability, dataVersion, enabled, epoch, failure, job, profile, slotKey, stopped])
 
   const refresh = useCallback(async () => {
     setStopped(nodeKey, false)
     if (!dataVersion) return
     if (slotKey) clearProfileFailure(slotKey)
-    const fence = captureDocumentExecutionFence()
     const requestEpoch = useNodeDataStore.getState().epoch
-    const requestKey = slotKey ? `${slotKey}:${dataVersion}:${requestEpoch}` : null
-    asked.current = requestKey
-    await ask(dataVersion, requestEpoch, fence).catch((err: unknown) => {
-      if (!isDocumentExecutionFenceCurrent(fence) || requestEpoch !== useNodeDataStore.getState().epoch) return
-      const message = err instanceof Error ? err.message : String(err)
-      if (slotKey) reportProfileFailure(slotKey, dataVersion, message)
-      addToast("error", `Reading the data profile failed: ${message}`)
-    }).finally(() => {
-      if (asked.current === requestKey) asked.current = null
-    })
-  }, [addToast, ask, clearProfileFailure, dataVersion, nodeKey, reportProfileFailure, setStopped, slotKey])
+    await askProfile(dataVersion, requestEpoch, slotKey ? `${slotKey}:${dataVersion}:${requestEpoch}` : null)
+  }, [askProfile, clearProfileFailure, dataVersion, nodeKey, setStopped, slotKey])
 
   const cancel = useCallback(async () => {
     setStopped(nodeKey, true)
     // The poller moves the cancelled job to its terminal state, so this only
     // asks; it never writes the shared store itself.
     if (!job?.startedHere) return
-    try {
-      await cancelNodeData(job.jobId)
-    } catch (err: unknown) {
-      addToast(
-        "error",
-        `Cancelling the data profile failed: ${err instanceof Error ? err.message : String(err)}`,
-      )
-    }
-  }, [addToast, job, nodeKey, setStopped])
+    await answer([executionPart()], cancelNodeData(job.jobId), { failed: cancelFailed })
+  }, [cancelFailed, job, nodeKey, setStopped])
 
   const resume = useCallback(() => {
     setStopped(nodeKey, false)

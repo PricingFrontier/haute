@@ -28,6 +28,10 @@ const cancelInputSnapshotBuild = vi.fn(async (_jobId: string) => {})
 vi.mock("../ensureInputSnapshots", () => ({
   ensureInputSnapshots: (nodes: unknown[], options?: unknown) => ensureInputSnapshots(nodes, options),
   cancelInputSnapshotBuild: (jobId: string) => cancelInputSnapshotBuild(jobId),
+  cancelInputSnapshotBuilds: async (jobIds: string[]) => {
+    for (const jobId of jobIds) await cancelInputSnapshotBuild(jobId)
+    return null
+  },
 }))
 
 import {

@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useReducer, useRef } from "react"
+import { useCallback, useReducer } from "react"
 
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, newest } from "../utils/answers"
 import { nodeNameIssue } from "../utils/nodeNameValidation"
 import type { OnUpdateConfigResult } from "./editors/_shared"
 
@@ -81,17 +83,11 @@ export function useNodeRenameSession(nodeId: string): NodeRenameSession {
     pending: false,
     error: null,
   })
-  const generationRef = useRef(0)
-  const mountedRef = useRef(false)
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-    }
-  }, [])
+  const renames = useRequestKind()
 
   const commit = useCallback<NodeRenameSession["commit"]>((label, onRenameNode) => {
-    const generation = ++generationRef.current
+    // Every commit, refused here or sent, puts an earlier rename's answer out of date.
+    const belongsTo = [newest(renames)] as const
     if (!onRenameNode) {
       dispatch({ type: "settled", error: "Node rename handler is unavailable." })
       return
@@ -109,19 +105,14 @@ export function useNodeRenameSession(nodeId: string): NodeRenameSession {
     } catch (error: unknown) {
       pending = Promise.reject(error)
     }
-    void pending
-      .then((result) => {
-        if (!mountedRef.current || generationRef.current !== generation) return
-        dispatch({ type: "settled", error: result.ok ? null : result.error })
-      })
-      .catch((error: unknown) => {
-        if (!mountedRef.current || generationRef.current !== generation) return
-        dispatch({
-          type: "settled",
-          error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
-        })
-      })
-  }, [nodeId])
+    void answer(belongsTo, pending, {
+      ok: (result) => dispatch({ type: "settled", error: result.ok ? null : result.error }),
+      failed: (error) => dispatch({
+        type: "settled",
+        error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+    })
+  }, [nodeId, renames])
 
   return { ...state, commit }
 }

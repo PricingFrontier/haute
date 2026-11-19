@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 
 import { fetchCacheUsage } from "../api/client"
 import type { CacheUsageResponse } from "../api/types"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { ask, newest } from "../utils/answers"
 import { formatByteSize } from "../utils/formatBytes"
 
 export interface CacheStoreSizeProps {
@@ -19,18 +21,17 @@ export interface CacheStoreSizeProps {
  */
 export default function CacheStoreSize({ refreshKey }: CacheStoreSizeProps) {
   const [usage, setUsage] = useState<CacheUsageResponse | null>(null)
+  const reads = useRequestKind()
 
   useEffect(() => {
     if (refreshKey === null) return
-    const controller = new AbortController()
-    fetchCacheUsage({ signal: controller.signal }).then(
-      (next) => setUsage(next),
-      () => {
-        if (!controller.signal.aborted) setUsage(null)
-      },
-    )
-    return () => controller.abort()
-  }, [refreshKey])
+    const asked = ask([newest(reads)])
+    void asked.answer((signal) => fetchCacheUsage({ signal }), {
+      ok: (next) => setUsage(next),
+      failed: () => setUsage(null),
+    })
+    return () => asked.release()
+  }, [reads, refreshKey])
 
   if (usage === null) return null
   return (

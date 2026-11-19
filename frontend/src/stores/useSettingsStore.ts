@@ -20,8 +20,10 @@ import type {
   PipelineSettingsResponse,
   PipelineSettingsValues,
 } from "../api/types"
+import { answer, newest, requestKind, under, watch } from "../utils/answers"
 import type { MlflowInventoryState } from "../utils/mlflowDestinations"
 import { portableKey } from "../utils/portableKey"
+import { serial } from "../utils/serial"
 import useToastStore from "./useToastStore"
 
 export const MIN_CHUNK_ROWS = 1000
@@ -50,11 +52,16 @@ export type AddSourceResult =
 // overrides a pending save or settings a save confirmed after the load began,
 // only the latest save's response decides what is displayed, and saves reach
 // the server in order.
-let _settingsLoadSeq = 0
-let _settingsSaveSeq = 0
-let _settingsConfirmations = 0
-let _settingsSaves: Promise<void> = Promise.resolve()
+const settingsLoads = requestKind()
+const settingsSaves = requestKind()
+/** Each save the server confirms ends the turn a load began under. */
+const settingsConfirmations = requestKind()
+const takeSaveTurn = serial()
+/** The saves queued so far, settled. */
+let _settingsSaves: Promise<unknown> = Promise.resolve()
 
+/** The MLflow inventory fetch asked for last. */
+const mlflowAsked = requestKind()
 let _mlflowFetchingGuard = false
 let _mlflowRefetchQueued = false
 
@@ -154,34 +161,25 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
       await _settingsSaves
       return
     }
-    const request = ++_settingsLoadSeq
-    const confirmations = _settingsConfirmations
-    try {
-      const settings = await getPipelineSettings()
-      // A save confirmed since this load began, or a newer load, holds newer
-      // settings; a pending save shows its own value, and its failure restores
-      // the settings confirmed before it, not this answer.
-      if (
-        confirmations !== _settingsConfirmations
-        || request !== _settingsLoadSeq
-        || Object.keys(get()._pendingPipelineSettings).length > 0
-      ) {
-        return
-      }
-      set({
+    // A save confirmed since this load began, or a newer load, holds newer
+    // settings; a pending save shows its own value, and its failure restores
+    // the settings confirmed before it, not this answer.
+    const belongsTo = [
+      newest(settingsLoads),
+      under(settingsConfirmations),
+      watch(useSettingsStore, (state) => Object.keys(state._pendingPipelineSettings).length === 0),
+    ] as const
+    await answer(belongsTo, getPipelineSettings(), {
+      ok: (settings) => set({
         _confirmedPipelineSettings: settings,
         pipelineSettings: settings,
         pipelineSettingsError: null,
-      })
-    } catch (e) {
-      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
-        return
-      }
-      set({
+      }),
+      failed: (e) => set({
         pipelineSettings: null,
         pipelineSettingsError: apiErrorMessage(e, "Could not load the pipeline settings."),
-      })
-    }
+      }),
+    })
   },
   savePipelineSetting: async (key, value) => {
     const state = get()
@@ -197,7 +195,9 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
       await _settingsSaves
       return
     }
-    const request = ++_settingsSaveSeq
+    // Only the latest save's response is displayed: it holds every earlier
+    // save's key too, because saves reach the server in order.
+    const belongsTo = [newest(settingsSaves)] as const
     set({
       pipelineSettings: { ...shown, settings: { ...shown.settings, [key]: value } },
       _pendingPipelineSettings: { ...pending, [key]: value },
@@ -211,34 +211,40 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({ _pendingPipelineSettings: rest })
       }
     }
-    const save = async () => {
-      try {
-        const settings = await patchPipelineSettings({ [key]: value })
-        _settingsConfirmations += 1
-        set({ _confirmedPipelineSettings: settings })
-        settle()
-        // Only the latest save's response is displayed: it holds every
-        // earlier save's key too, because saves reach the server in order.
-        if (request === _settingsSaveSeq) {
+    const confirmed = (settings: PipelineSettingsResponse) => {
+      settingsConfirmations.bump()
+      set({ _confirmedPipelineSettings: settings })
+      settle()
+    }
+    const refused = (e: unknown) => {
+      settle()
+      // Every failed save is reported: another key's later save does not
+      // retry this one.
+      useToastStore.getState().addToast(
+        "error",
+        apiErrorMessage(e, "Could not save the pipeline settings."),
+      )
+    }
+    const save = () =>
+      answer(belongsTo, patchPipelineSettings({ [key]: value }), {
+        ok: (settings) => {
+          confirmed(settings)
           set({ pipelineSettings: settings, _pendingPipelineSettings: {} })
-        }
-      } catch (e) {
-        settle()
-        // Every failed save is reported: another key's later save does not
-        // retry this one.
-        useToastStore.getState().addToast(
-          "error",
-          apiErrorMessage(e, "Could not save the pipeline settings."),
-        )
-        if (request === _settingsSaveSeq) {
+        },
+        failed: (e) => {
+          refused(e)
           set({
             pipelineSettings: get()._confirmedPipelineSettings,
             _pendingPipelineSettings: {},
           })
-        }
-      }
-    }
-    _settingsSaves = _settingsSaves.then(save)
+        },
+        // A later save's answer is the one shown; this one is still confirmed, or reported.
+        stale: (settled) => {
+          if ("value" in settled) confirmed(settled.value)
+          else refused(settled.error)
+        },
+      })
+    _settingsSaves = takeSaveTurn(save)
     await _settingsSaves
   },
 
@@ -266,7 +272,6 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     if (_mlflowFetchingGuard) return
     if (state.mlflow.status !== "pending" && !canRetry) return
     _mlflowFetchingGuard = true
-    set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     // The deadline also aborts the request, so it does not run on unseen.
     const inventoryRequest = new AbortController()
@@ -281,8 +286,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
         MLFLOW_INVENTORY_TIMEOUT_MS,
       )
     })
-    Promise.race([getMlflowDestinations(true, { signal: inventoryRequest.signal }), timeout])
-      .then((data) => {
+    void answer([newest(mlflowAsked)], () => Promise.race([getMlflowDestinations(true, { signal: inventoryRequest.signal }), timeout]), {
+      ok: (data) => {
         // The probes' verdicts live in the entries; only the package facts
         // decide whether the inventory itself is usable.
         const usable = data.mlflow_installed && data.mlflow_importable
@@ -295,8 +300,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
             detail: data.detail,
           },
         })
-      })
-      .catch((e) => {
+      },
+      failed: (e) => {
         console.warn("MLflow inventory check failed:", e)
         set({
           mlflow: {
@@ -305,8 +310,13 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
             detail: e instanceof Error ? e.message : "MLflow inventory check failed",
           },
         })
-      })
-      .finally(() => {
+      },
+    }, {
+      pending: (fetching) => {
+        if (fetching) {
+          set({ _mlflowFetching: true, _mlflowLastAttempt: Date.now() })
+          return
+        }
         clearTimeout(timeoutId)
         _mlflowFetchingGuard = false
         set({ _mlflowFetching: false })
@@ -318,7 +328,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
           set({ mlflow: mlflowPending() })
           get().fetchMlflow()
         }
-      })
+      },
+    })
   },
   invalidateMlflow: () => {
     if (_mlflowFetchingGuard) {

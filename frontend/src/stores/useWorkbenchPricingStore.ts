@@ -10,6 +10,7 @@ import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchTablesResponse } from "../api/types"
 import { fetchWorkbenchFormTables } from "../api/workbench"
+import { answer, watch } from "../utils/answers"
 import { canonicalJson } from "../utils/canonicalJson"
 import { quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { pricingBasis, type SampleRow } from "../utils/workbenchForm"
@@ -170,7 +171,7 @@ interface WorkbenchPricingState {
   priceNow: () => Promise<void>
 }
 
-const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => {
+const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get, api) => {
   /** The sample as the form has it now, through the view host's pricer; an answer once it left is nobody's. */
   const priceOnce = async () => {
     const { pricer } = get()
@@ -189,18 +190,11 @@ const useWorkbenchPricingStore = create<WorkbenchPricingState>()((set, get) => {
     // Stamped with the context it is priced in: an answer for one moved on since is shown
     // stale, and the move asks for another.
     const basis = previewBasis(form)
-    set({ pricing: true })
-    try {
-      const priced = await priceForm(form, pricer)
-      // The view left meanwhile: a late answer is nobody's.
-      if (get().pricer !== pricer) return
-      set({ price: { basis, ...priced }, error: null })
-    } catch (error: unknown) {
-      if (get().pricer !== pricer) return
-      set({ price: null, error: apiErrorMessage(error) })
-    } finally {
-      set({ pricing: false })
-    }
+    // The view left meanwhile: a late answer is nobody's.
+    await answer([watch(api, (state) => state.pricer)], () => priceForm(form, pricer), {
+      ok: (priced) => set({ price: { basis, ...priced }, error: null }),
+      failed: (error) => set({ price: null, error: apiErrorMessage(error) }),
+    }, { pending: (pricing) => set({ pricing }) })
   }
   const loop = pricingLoop(priceOnce, PRICING_DELAY_MS)
 

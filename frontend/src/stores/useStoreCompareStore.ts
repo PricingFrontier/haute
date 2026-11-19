@@ -7,6 +7,7 @@ import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
 import type { FormSpec, WorkbenchCatalogueTable, WorkbenchStoreCompareResponse, WorkbenchStoreRename } from "../api/types"
 import { fetchStoreCatalogue, fetchStoreCompare } from "../api/workbench"
+import { answer, watch } from "../utils/answers"
 import useDocumentStatusStore from "./useDocumentStatusStore"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
 import useWorkbenchStore from "./useWorkbenchStore"
@@ -76,21 +77,25 @@ export function comparisonStatus(state: StoreCompareState, form: FormSpec | null
   return answer.matches ? "Compatible" : "Changes needed"
 }
 
-const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
+const useStoreCompareStore = create<StoreCompareState>()((set, get, api) => {
   const update = (name: string, value: EnvironmentComparison) =>
     set((state) => ({ environments: { ...state.environments, [name]: value } }))
 
   const readDatabase = (name: string, refresh: boolean) => {
     const pending: CatalogueRead = { status: "reading" }
     update(name, { read: pending, compared: { status: "none" } })
-    void fetchStoreCatalogue(name, refresh).then((answer) => {
-      if (answer.environment !== name) throw new Error("The database check answered for a different environment. Check again.")
-      if (get().environments[name]?.read !== pending) return
-      update(name, { read: { status: "read", tables: answer.tables, checkedAt: answer.checked_at, target: answer.target }, compared: { status: "none" } })
-    }).catch((error: unknown) => {
-      if (get().environments[name]?.read === pending) {
-        update(name, { read: { status: "failed", message: apiErrorMessage(error) }, compared: { status: "none" } })
-      }
+    const failed = (error: unknown) =>
+      update(name, { read: { status: "failed", message: apiErrorMessage(error) }, compared: { status: "none" } })
+    // A read answers while it is the environment's: a newer read, or a reset, replaces it.
+    void answer([watch(api, (state) => state.environments[name]?.read)], fetchStoreCatalogue(name, refresh), {
+      ok: (catalogue) => {
+        if (catalogue.environment !== name) {
+          failed(new Error("The database check answered for a different environment. Check again."))
+          return
+        }
+        update(name, { read: { status: "read", tables: catalogue.tables, checkedAt: catalogue.checked_at, target: catalogue.target }, compared: { status: "none" } })
+      },
+      failed,
     })
   }
 
@@ -98,16 +103,21 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
     const { renames } = get()
     const pending: Compared = { status: "comparing", form, renames, read }
     update(name, { read, compared: pending })
-    const current = () => get().environments[name]?.compared === pending && get().renames === renames && useWorkbenchFormStore.getState().form === form
-    try {
-      const answer = await fetchStoreCompare(form, name, read.tables, renames, read.target)
-      if (!current()) return null
-      update(name, { read, compared: { ...pending, status: "compared", answer } })
-      return answer
-    } catch (error: unknown) {
-      if (current()) update(name, { read, compared: { ...pending, status: "failed", message: apiErrorMessage(error) } })
-      return null
-    }
+    // A comparison answers while it is the environment's, made of the renames and the form as they are.
+    const belongsTo = [
+      watch(api, (state) => state.environments[name]?.compared),
+      watch(api, (state) => state.renames),
+      watch(useWorkbenchFormStore, (state) => state.form, (_, now) => now === form),
+    ] as const
+    let compared: WorkbenchStoreCompareResponse | null = null
+    await answer(belongsTo, fetchStoreCompare(form, name, read.tables, renames, read.target), {
+      ok: (comparison) => {
+        update(name, { read, compared: { ...pending, status: "compared", answer: comparison } })
+        compared = comparison
+      },
+      failed: (error) => update(name, { read, compared: { ...pending, status: "failed", message: apiErrorMessage(error) } }),
+    })
+    return compared
   }
 
   return {
@@ -139,8 +149,14 @@ const useStoreCompareStore = create<StoreCompareState>()((set, get) => {
       const form = useWorkbenchFormStore.getState().form
       const { read } = environmentState(get())
       if (name === null || form === null || read.status !== "read" || currentComparison(get(), form) === null) return null
-      const answer = await compareEnvironment(form, name, read)
-      return get().environment === name && currentComparison(get(), form) === answer ? answer : null
+      let verified: WorkbenchStoreCompareResponse | null = null
+      // The comparison of the environment chosen, as it stands: another chosen meanwhile verifies nothing.
+      await answer([watch(api, (state) => state.environment)], compareEnvironment(form, name, read), {
+        ok: (compared) => {
+          if (currentComparison(get(), form) === compared) verified = compared
+        },
+      })
+      return verified
     },
     reset: () => set({ environment: null, environments: {}, renames: [] }),
   }

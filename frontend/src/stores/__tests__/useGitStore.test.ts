@@ -595,6 +595,69 @@ describe("useGitStore durable-storage actions", () => {
   })
 })
 
+// A store write's answer belongs to the store as it is: settling after a reset (a test's
+// teardown) it publishes nothing and refreshes nothing, and still answers its caller.
+describe("useGitStore writes that settle after the store is reset", () => {
+  beforeEach(async () => {
+    await resetGitStoreForTests()
+    vi.clearAllMocks()
+  })
+
+  const held = <T,>() => {
+    let settle!: { resolve: (value: T) => void; reject: (error: unknown) => void }
+    const promise = new Promise<T>((resolve, reject) => { settle = { resolve, reject } })
+    return { promise, ...settle }
+  }
+
+  it("a bind hands back its answer without reading readiness again", async () => {
+    const answered = held<Awaited<ReturnType<typeof bindGitStorage>>>()
+    vi.mocked(bindGitStorage).mockReturnValueOnce(answered.promise)
+    const bound = useGitStore.getState().bindStorage("uc://cat.sch.vol/projects/demo")
+    useGitStore.getState().resetForTests()
+
+    const result = { outcome: "pending" as const, remote_url: "uc://cat.sch.vol/projects/demo", message: "Saving" }
+    answered.resolve(result)
+
+    await expect(bound).resolves.toEqual(result)
+    expect(getWorkingBranch).not.toHaveBeenCalled()
+  })
+
+  it("a bind refused after the reset still rejects its caller", async () => {
+    const answered = held<Awaited<ReturnType<typeof bindGitStorage>>>()
+    vi.mocked(bindGitStorage).mockReturnValueOnce(answered.promise)
+    const bound = useGitStore.getState().bindStorage("uc://cat.sch.vol/projects/demo")
+    useGitStore.getState().resetForTests()
+
+    answered.reject(new Error("volume not found"))
+
+    await expect(bound).rejects.toThrow("volume not found")
+  })
+
+  it("a pull hands back its answer without reading readiness again", async () => {
+    const answered = held<Awaited<ReturnType<typeof pullGitUpstream>>>()
+    vi.mocked(pullGitUpstream).mockReturnValueOnce(answered.promise)
+    const pulled = useGitStore.getState().pullUpstream()
+    useGitStore.getState().resetForTests()
+
+    answered.resolve({ working_branch: "dev" } as never)
+
+    await expect(pulled).resolves.toEqual({ working_branch: "dev" })
+    expect(getWorkingBranch).not.toHaveBeenCalled()
+  })
+
+  it("a sync retry hands back the readiness it returns without storing it", async () => {
+    const answered = held<GitWorkingBranchResponse>()
+    vi.mocked(retryGitStorageSync).mockReturnValueOnce(answered.promise)
+    const retried = useGitStore.getState().retrySync()
+    useGitStore.getState().resetForTests()
+
+    answered.resolve(READY)
+
+    await expect(retried).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toBeNull()
+  })
+})
+
 describe("useGitStore reopens the storage dialog when a background bind fails", () => {
   const failedBind = (): GitWorkingBranchResponse => ({
     ...READY,

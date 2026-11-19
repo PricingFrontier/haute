@@ -314,6 +314,26 @@ asked of the shared draft from outside React. A code editor keeps its own rule f
 change from outside that arrives while it holds typing not yet flushed waits until that typing
 is committed or reverted.
 
+**Late answers.** An answer from the server is written to the page only while what asked for
+it is as it was. Every request whose answer is written to state, or followed by anything that
+writes state, is asked through one helper (`utils/answers.ts`), which records, when it is
+asked, what the answer belongs to: the newest request of its kind, or the one a further page
+belongs to; the pipeline document on show, or for an answer about running it, the document's
+execution fence; the graph as it stood (an edit, an Undo, a Redo, a view change or a load moves
+it); a node, by address; whether a field holds text typed and not committed, asked of the
+shared draft; and any other state the answer was asked under, such as the Workbench form, the
+branch a list was read on or the file a panel shows. An answer that arrives once any of these
+has moved is dropped, or handed back marked stale to a caller that settles it: a repair whose
+document live sync has already replaced closes its dialog and keeps the document on show; a
+deleted file still leaves the list. What runs after an answer (a flag cleared, a list read
+again, a toast) runs in the helper's handlers, under the same check. A flag a request set
+while it waited, such as a list's loading of a further page, is reset the moment the request
+stops being current, not when its answer comes, so dropping the answer never leaves it set. A
+read is aborted at that moment; a write is never aborted, since what it did would then be
+unknown, and its answer is dropped or settled. A component's requests are let go when it
+unmounts, and an effect's when it runs again. No code writes state after waiting for the
+server any other way: a scan of the browser source fails for any function that does.
+
 **Typed numbers.** Text typed as a number is read by one grammar, the same in every field, in
 every browser language and on the server. A number is, once the typed spaces are trimmed from
 either end: an optional sign and an optional currency sign (`$`, `£` or `€`, either side of the
@@ -380,8 +400,8 @@ edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl
 `import haute` are always included, has no delete button and never goes through the utility
 file routes. The app applies every change with the graph store's raw preamble setter, so
 importing text immediately affects derived dirty state without making an undo entry per
-keystroke. Module reads and `Imports` selection transitions are fenced by a monotonic
-selection generation so a late utility file response cannot steal a newer selection;
+keystroke. Module reads and `Imports` selection transitions each take the turn of the panel's
+selections (see "Late answers") so a late utility file response cannot steal a newer selection;
 before and after each utility module read, pending and in-flight autosaves are drained,
 and per-module unsaved drafts and rejected save errors are retained so typing while a
 read is pending never loses an unpersisted draft or replaces it with disk bytes.

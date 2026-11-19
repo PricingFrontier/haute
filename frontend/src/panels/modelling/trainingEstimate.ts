@@ -1,4 +1,5 @@
 import { ApiError } from "../../api/client"
+import { ask, signalPart } from "../../utils/answers"
 
 /** Backoff before each retry of an estimate refused by another evaluation preview. */
 export const SUPERSEDED_PREVIEW_RETRY_DELAYS_MS: readonly number[] = [150, 400, 1_000, 2_000]
@@ -83,23 +84,40 @@ export async function estimateAfterSupersededPreviews<T>(
 ): Promise<T> {
   let previewRetries = 0
   let snapshotWaitedMs = 0
-  // Bounded by the two budgets: every retry spends one of them.
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await request()
-    } catch (error) {
-      if (signal.aborted) throw error
-      const holders = transientEstimateHolders(error)
-      if (holders === "evaluation_preview" && previewRetries < delaysMs.length) {
-        await abortableDelay(delaysMs[previewRetries], signal)
-        previewRetries += 1
-      } else if (holders === "input_snapshot" && snapshotWaitedMs + snapshotDelayMs <= snapshotLimitMs) {
-        onWaiting?.()
-        await abortableDelay(snapshotDelayMs, signal)
-        snapshotWaitedMs += snapshotDelayMs
-      } else {
-        throw error
-      }
+  // Each attempt is the caller's while its signal holds: once aborted, an answer is handed
+  // back as it came, and nothing waits again or says it is waiting.
+  const caller = ask([signalPart(signal)])
+  try {
+    // Bounded by the two budgets: every retry spends one of them.
+    for (let attempt = 0; ; attempt += 1) {
+      let answered: { value: T } | null = null
+      let pauseMs = 0
+      await caller.answer(request, {
+        ok: (value) => {
+          answered = { value }
+        },
+        failed: (error) => {
+          const holders = transientEstimateHolders(error)
+          if (holders === "evaluation_preview" && previewRetries < delaysMs.length) {
+            pauseMs = delaysMs[previewRetries]
+            previewRetries += 1
+          } else if (holders === "input_snapshot" && snapshotWaitedMs + snapshotDelayMs <= snapshotLimitMs) {
+            onWaiting?.()
+            pauseMs = snapshotDelayMs
+            snapshotWaitedMs += snapshotDelayMs
+          } else {
+            throw error
+          }
+        },
+        stale: (settled) => {
+          if ("error" in settled) throw settled.error
+          answered = { value: settled.value }
+        },
+      })
+      if (answered !== null) return (answered as { value: T }).value
+      await abortableDelay(pauseMs, signal)
     }
+  } finally {
+    caller.release()
   }
 }

@@ -2,7 +2,6 @@ import {
   useMemo,
   useState,
   useCallback,
-  useRef,
 } from "react"
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
@@ -15,6 +14,8 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
 import { apiErrorMessage } from "../../api/errors"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, newest } from "../../utils/answers"
 import { FrameTableActions } from "./FrameTableActions"
 import { JsonPreview } from "./JsonPreview"
 import {
@@ -416,7 +417,7 @@ export default function OutputEditor({
     | { key: string; status: "error"; error: string }
     | null
   >(null)
-  const outputReqSeq = useRef(0)
+  const assemblies = useRequestKind()
   const currentAssembled = assembled?.key === previewKey ? assembled : null
   const outputDoc = currentAssembled?.status === "ok" ? currentAssembled.doc : null
   // The pre-cap document length (the dry-run's `row_count`), so a capped doc can
@@ -432,20 +433,18 @@ export default function OutputEditor({
     void edges
     void submodels
     void preamble
-    const reqId = ++outputReqSeq.current
     const key = previewKey
     setAssembled({ key, status: "loading" })
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-    outputAssembleDryRun({
+    void answer([newest(assemblies)], outputAssembleDryRun({
       graph: target.graph,
       target: target.node,
       // The live working copy's mapping — the editor's CURRENT (unsaved) state.
       outputMapping: persistedMapping,
       rowLimit: PREVIEW_ROW_LIMIT,
       source: activeSource,
-    })
-      .then((res) => {
-        if (outputReqSeq.current !== reqId) return
+    }), {
+      ok: (res) => {
         if (res.status !== "ok") {
           // A run that completed but the node errored (200 + status:"error").
           setAssembled({ key, status: "error", error: res.error || "Assembly failed" })
@@ -454,14 +453,12 @@ export default function OutputEditor({
         const doc = Array.isArray(res.document) ? res.document : []
         const total = typeof res.row_count === "number" && res.row_count > 0 ? res.row_count : doc.length
         setAssembled({ key, status: "ok", doc, total })
-      })
-      .catch((err: unknown) => {
-        if (outputReqSeq.current !== reqId) return
-        // The route returns structured 422/400/404/503/504/500 — surface the
-        // detail message (ApiError carries it) rather than a bare status.
-        setAssembled({ key, status: "error", error: apiErrorMessage(err, "Output preview failed") })
-      })
-  }, [requestScope, allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey])
+      },
+      // The route returns structured 422/400/404/503/504/500 — surface the
+      // detail message (ApiError carries it) rather than a bare status.
+      failed: (err) => setAssembled({ key, status: "error", error: apiErrorMessage(err, "Output preview failed") }),
+    })
+  }, [requestScope, allNodes, edges, submodels, preamble, nodeId, persistedMapping, activeSource, previewKey, assemblies])
 
   // Expanding the preview with no document of the current mapping (none yet,
   // or one of an earlier mapping) kicks off a run; while it is open, the
@@ -985,27 +982,22 @@ function FrameBlock({
   const [dataTotal, setDataTotal] = useState(0)
   const [dataLoading, setDataLoading] = useState(false)
   const [dataError, setDataError] = useState<string | null>(null)
-  const dataReqSeq = useRef(0)
+  const dataReads = useRequestKind()
 
   const runDataPreview = useCallback(() => {
-    const reqId = ++dataReqSeq.current
-    setDataLoading(true)
     setDataError(null)
-    loadFrameData()
-      .then(({ rows: r, total }) => {
-        if (dataReqSeq.current !== reqId) return
+    void answer([newest(dataReads)], loadFrameData(), {
+      ok: ({ rows: r, total }) => {
         setDataRows(r)
         setDataTotal(total)
-        setDataLoading(false)
-      })
-      .catch((err: unknown) => {
-        if (dataReqSeq.current !== reqId) return
+      },
+      failed: (err) => {
         const message = apiErrorMessage(err, "Frame data preview failed")
         setDataRows(null)
         setDataError(message)
-        setDataLoading(false)
-      })
-  }, [loadFrameData])
+      },
+    }, { pending: setDataLoading })
+  }, [loadFrameData, dataReads])
 
   const toggleDataPreview = useCallback(() => {
     setDataPreviewOpen((open) => {

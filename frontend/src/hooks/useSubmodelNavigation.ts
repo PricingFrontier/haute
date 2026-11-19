@@ -10,6 +10,7 @@ import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useToastStore from "../stores/useToastStore"
 import useGraphStore from "../stores/useGraphStore"
 import useUIStore from "../stores/useUIStore"
+import { answer, type Part } from "../utils/answers"
 import {
   isSubmodelDefinition,
   isSubmodelInstanceConfig,
@@ -221,6 +222,12 @@ export default function useSubmodelNavigation({
     sourceRevisionRef,
   ])
 
+  /** A transform's answers belong to the document as it was sent: its request's fence, as a part. */
+  const transformPart = useCallback((request: TransformRequestContext): Part => ({
+    holds: () => !transformRequestIsStale(request),
+    subscribe: (listener) => useGraphStore.subscribe(() => listener()),
+  }), [transformRequestIsStale])
+
   const createSubmodelTransform = useCallback(async (
     selection: { name: string; nodeIds: string[] } | { nodeId: string },
   ): Promise<SubmodelCreateResult> => {
@@ -238,61 +245,71 @@ export default function useSubmodelNavigation({
         base_revision: request.sourceRevision,
         preserved_blocks: request.preservedBlocks,
       }
-      const data = "nodeId" in selection
-        ? await createNodeInstance({ ...payload, node_id: selection.nodeId })
-        : await createSubmodel({ ...payload, name: selection.name, node_ids: selection.nodeIds })
-      if (transformRequestIsStale(request)) {
-        return { ok: false, error: STALE_CREATE_SUBMODEL }
+      let result: SubmodelCreateResult = { ok: false, error: STALE_CREATE_SUBMODEL }
+      const failed = (err: unknown) => {
+        result = { ok: false, error: `Create submodel failed: ${apiErrorMessage(err)}` }
       }
-      const newGraph = data.graph
-      if (newGraph) {
-        const nextNodes = newGraph.nodes ?? []
-        const nextEdges = normalizeEdges(newGraph.edges ?? [])
-        const nextSubmodels = newGraph.submodels ?? {}
-        const nextPreamble = newGraph.preamble ?? request.preamble
-        const nextPreservedBlocks = newGraph.preserved_blocks ?? request.preservedBlocks
-        const resolved = await resolveCanonicalIdentities({
-          nodes: nextNodes,
-          edges: nextEdges,
-          submodels: nextSubmodels,
-          reservedApiInputFrameLabels,
-        })
-        if (transformRequestIsStale(request)) {
-          return { ok: false, error: STALE_CREATE_SUBMODEL }
-        }
-        const committedNodes = "instance_name" in data
-          ? resolved.nodes.map(node => ({ ...node, selected: node.id === data.instance_name }))
-          : resolved.nodes
-        const selected = "instance_name" in data
-          ? committedNodes.find(node => node.id === data.instance_name)
-          : undefined
-        if ("instance_name" in data && !selected) {
-          throw new Error(`Create Instance returned no occurrence ${data.instance_name}. Reload the pipeline and retry.`)
-        }
-        preservedBlocksRef.current = nextPreservedBlocks
-        useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-          committedNodes,
-          resolved.edges,
-          resolved.submodels,
-          nextPreamble,
-        )
-        if (selected) {
-          setSelectedNode(selected)
-          setLastSelectedId?.(selected.id)
-        }
-        addToast("success", "nodeId" in selection
-          ? "Instance created"
-          : `Submodel "${selection.name}" created - save to apply`)
-        setTimeout(() => fitView({ padding: 0.8 }), 100)
-      }
-      return { ok: true }
+      const created: Promise<Awaited<ReturnType<typeof createNodeInstance>> | Awaited<ReturnType<typeof createSubmodel>>> = "nodeId" in selection
+        ? createNodeInstance({ ...payload, node_id: selection.nodeId })
+        : createSubmodel({ ...payload, name: selection.name, node_ids: selection.nodeIds })
+      await answer([transformPart(request)], created, {
+        ok: async (data, asked) => {
+          const newGraph = data.graph
+          if (!newGraph) {
+            result = { ok: true }
+            return
+          }
+          const nextNodes = newGraph.nodes ?? []
+          const nextEdges = normalizeEdges(newGraph.edges ?? [])
+          const nextSubmodels = newGraph.submodels ?? {}
+          const nextPreamble = newGraph.preamble ?? request.preamble
+          const nextPreservedBlocks = newGraph.preserved_blocks ?? request.preservedBlocks
+          await asked.answer(resolveCanonicalIdentities({
+            nodes: nextNodes,
+            edges: nextEdges,
+            submodels: nextSubmodels,
+            reservedApiInputFrameLabels,
+          }), {
+            ok: (resolved) => {
+              const committedNodes = "instance_name" in data
+                ? resolved.nodes.map(node => ({ ...node, selected: node.id === data.instance_name }))
+                : resolved.nodes
+              const selected = "instance_name" in data
+                ? committedNodes.find(node => node.id === data.instance_name)
+                : undefined
+              if ("instance_name" in data && !selected) {
+                throw new Error(`Create Instance returned no occurrence ${data.instance_name}. Reload the pipeline and retry.`)
+              }
+              preservedBlocksRef.current = nextPreservedBlocks
+              useGraphStore.getState().setNodesAndEdgesAndSubmodels(
+                committedNodes,
+                resolved.edges,
+                resolved.submodels,
+                nextPreamble,
+              )
+              if (selected) {
+                setSelectedNode(selected)
+                setLastSelectedId?.(selected.id)
+              }
+              addToast("success", "nodeId" in selection
+                ? "Instance created"
+                : `Submodel "${selection.name}" created - save to apply`)
+              setTimeout(() => fitView({ padding: 0.8 }), 100)
+              result = { ok: true }
+            },
+            failed,
+          })
+        },
+        failed,
+      })
+      return result
     } catch (err: unknown) {
       return {
         ok: false,
         error: `Create submodel failed: ${apiErrorMessage(err)}`,
       }
     }
-  }, [preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
+  }, [preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformPart, reservedApiInputFrameLabels, resolveCanonicalIdentities, setSelectedNode, setLastSelectedId])
 
   const handleCreateSubmodel = useCallback((name: string, nodeIds: string[]) =>
     createSubmodelTransform({ name, nodeIds }), [createSubmodelTransform])
@@ -445,58 +462,64 @@ export default function useSubmodelNavigation({
       addToast("error", "Return to the main pipeline before dissolving a submodel.")
       return
     }
+    const failed = (err: unknown) => addToast("error", `Dissolve failed: ${apiErrorMessage(err)}`)
+    let request: TransformRequestContext
+    let occurrence: ReturnType<typeof canonicalOccurrence>
     try {
-      const request = beginTransformRequest()
-      const occurrence = canonicalOccurrence(
+      request = beginTransformRequest()
+      occurrence = canonicalOccurrence(
         instanceId,
         request.graph.nodes,
         request.graph.submodels,
       )
-      const displayName = occurrence.label
-      const data = await dissolveSubmodel({
-        instance_id: occurrence.instanceId,
-        graph: request.graph,
-        preamble: request.preamble,
-        source_file: request.sourceFile,
-        pipeline_name: request.pipelineName,
-        pipeline_description: descriptionRef.current,
-        base_revision: request.sourceRevision,
-        preserved_blocks: request.preservedBlocks,
-      })
-      if (transformRequestIsStale(request)) {
-        addToast("error", "Dissolve submodel was not applied because the workspace changed while the transform was running.")
-        return
-      }
-      const flat = data.graph
-      if (flat) {
+    } catch (err: unknown) {
+      failed(err)
+      return
+    }
+    const displayName = occurrence.label
+    const notApplied = () => addToast("error", "Dissolve submodel was not applied because the workspace changed while the transform was running.")
+    await answer([transformPart(request)], dissolveSubmodel({
+      instance_id: occurrence.instanceId,
+      graph: request.graph,
+      preamble: request.preamble,
+      source_file: request.sourceFile,
+      pipeline_name: request.pipelineName,
+      pipeline_description: descriptionRef.current,
+      base_revision: request.sourceRevision,
+      preserved_blocks: request.preservedBlocks,
+    }), {
+      ok: async (data, asked) => {
+        const flat = data.graph
+        if (!flat) return
         const nextNodes = flat.nodes ?? []
         const nextEdges = normalizeEdges(flat.edges ?? [])
         const nextSubmodels = flat.submodels ?? {}
         const nextPreamble = flat.preamble ?? request.preamble
-        const resolved = await resolveCanonicalIdentities({
+        await asked.answer(resolveCanonicalIdentities({
           nodes: nextNodes,
           edges: nextEdges,
           submodels: nextSubmodels,
           reservedApiInputFrameLabels,
+        }), {
+          ok: (resolved) => {
+            preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
+            useGraphStore.getState().setNodesAndEdgesAndSubmodels(
+              resolved.nodes,
+              resolved.edges,
+              resolved.submodels,
+              nextPreamble,
+            )
+            addToast("success", `Submodel "${displayName}" dissolved - save to apply`)
+            setTimeout(() => fitView({ padding: 0.8 }), 100)
+          },
+          failed,
+          stale: notApplied,
         })
-        if (transformRequestIsStale(request)) {
-          addToast("error", "Dissolve submodel was not applied because the workspace changed while the transform was running.")
-          return
-        }
-        preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
-        useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-          resolved.nodes,
-          resolved.edges,
-          resolved.submodels,
-          nextPreamble,
-        )
-        addToast("success", `Submodel "${displayName}" dissolved - save to apply`)
-        setTimeout(() => fitView({ padding: 0.8 }), 100)
-      }
-    } catch (err: unknown) {
-      addToast("error", `Dissolve failed: ${apiErrorMessage(err)}`)
-    }
-  }, [preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
+      },
+      failed,
+      stale: notApplied,
+    })
+  }, [preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformPart, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 
   return {
     viewStack,

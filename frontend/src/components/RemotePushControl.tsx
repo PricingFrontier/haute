@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   AlertTriangle,
   ArrowDown,
@@ -21,10 +21,12 @@ import {
 } from "../api/client"
 import type { GitCiSecrets, GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
 import useDirtyNavigation, { type DirtyNavigationQuestion } from "../hooks/useDirtyNavigation"
-import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import { chosenOverParts, discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, newest, under, type Asked, type Settled } from "../utils/answers"
 import GitNavigationConfirm from "./GitNavigationConfirm"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
@@ -95,15 +97,14 @@ export default function RemotePushControl({
   // .env sets them or a later Push to that remote reports otherwise.
   const [missingSecrets, setMissingSecrets] = useState<Record<string, GitCiSecrets>>({})
   const [settingSecrets, setSettingSecrets] = useState(false)
-  // Monotonic request id: a slower fetch must not clobber a newer one (e.g. a
+  // The newest read of the remotes wins: a slower one must not clobber a newer one (e.g. a
   // post-push reload landing after the user has already changed selection).
-  const reqId = useRef(0)
+  const remotesAsked = useRequestKind()
+  // The control's own state is written while it shows; what a write did is said either way.
+  const life = useRequestKind()
 
-  const load = useCallback(async () => {
-    const id = ++reqId.current
-    try {
-      const res = await getGitRemotes()
-      if (id !== reqId.current) return // superseded by a newer load
+  const load = useCallback(() => answer([newest(remotesAsked)], getGitRemotes(), {
+    ok: (res) => {
       setRemotes(res.remotes)
       setLoadError(false)
       // Keep a still-valid selection; otherwise default to the sole remote (a
@@ -115,15 +116,16 @@ export default function RemotePushControl({
             ? res.remotes[0].name
             : "",
       )
-    } catch {
-      // Remotes are best-effort chrome. Preserve the last-good list after a
-      // transient refresh failure, but distinguish a failed cold load from a
-      // confirmed empty remote configuration.
-      if (id === reqId.current) setLoadError(true)
-    } finally {
-      if (id === reqId.current) setLoaded(true)
-    }
-  }, [])
+      setLoaded(true)
+    },
+    // Remotes are best-effort chrome. Preserve the last-good list after a
+    // transient refresh failure, but distinguish a failed cold load from a
+    // confirmed empty remote configuration.
+    failed: () => {
+      setLoadError(true)
+      setLoaded(true)
+    },
+  }), [remotesAsked])
 
   useEffect(() => {
     void load()
@@ -134,17 +136,21 @@ export default function RemotePushControl({
   // Catch up and Spin off move the branch: the readiness is read with a request issued
   // after them, the branch list and history refetch, and the remotes' divergence reloads.
   const reloadAfterTreeChange = useCallback(async () => {
-    await useGitStore.getState().loadStatus({ refresh: true })
-    useGitStore.getState().notifyHistoryChanged()
-    await load()
-  }, [load])
+    const historyChanged = () => useGitStore.getState().notifyHistoryChanged()
+    await answer([under(life)], useGitStore.getState().loadStatus({ refresh: true }), {
+      ok: async () => {
+        historyChanged()
+        await load()
+      },
+      stale: historyChanged,
+    })
+  }, [life, load])
 
   const doPush = useCallback(async () => {
     if (!selected) return
     setConfirming(false)
-    setPushing(true)
-    try {
-      const res = await gitPush(selected)
+    // What a push did is said whether or not the control still shows.
+    const pushed = (res: Awaited<ReturnType<typeof gitPush>>) => {
       if (res.bootstrapped_default) {
         addToast(
           "success",
@@ -169,54 +175,58 @@ export default function RemotePushControl({
           `Couldn't set the deploy's secrets on ${secrets.repository}: ${secrets.problem}`,
         )
       }
-      setMissingSecrets((reports) =>
-        secrets?.state === "missing"
-          ? { ...reports, [res.remote]: secrets }
-          : withoutRemote(reports, res.remote),
-      )
-      await load() // ahead/behind now reflect the synced state
-    } catch (err) {
-      // A non-fast-forward rejection (409) carries the per-leg fork data — show
-      // the honest modal rather than a generic error toast (M7). Anything else
-      // (offline, auth, server) stays a toast.
-      if (err instanceof ApiError && err.status === 409) {
+    }
+    const refused = (err: unknown) => addToast("error", `Push failed: ${apiErrorMessage(err, "unknown error")}`)
+    await answer([under(life)], gitPush(selected), {
+      ok: async (res) => {
+        pushed(res)
+        const secrets = res.ci_secrets
+        setMissingSecrets((reports) =>
+          secrets?.state === "missing"
+            ? { ...reports, [res.remote]: secrets }
+            : withoutRemote(reports, res.remote),
+        )
+        await load() // ahead/behind now reflect the synced state
+      },
+      failed: async (err, asked) => {
+        // A non-fast-forward rejection (409) carries the per-leg fork data — show
+        // the honest modal rather than a generic error toast (M7). Anything else
+        // (offline, auth, server) stays a toast.
+        if (!(err instanceof ApiError && err.status === 409)) {
+          refused(err)
+          return
+        }
         const body = (err.body as { detail?: unknown } | undefined)?.detail
-        let parsed: GitPushRejection | null
-        try {
-          parsed = await parseGitPushRejection(body)
-        } catch (parseError) {
-          addToast(
+        await asked.answer(parseGitPushRejection(body), {
+          ok: async (parsed) => {
+            if (parsed) {
+              setRejection(parsed)
+              await load() // badges now reflect the freshly-known divergence
+              return
+            }
+            // A structured 409 this client cannot read: name the status rather
+            // than print the unread body.
+            if (typeof body === "object" && body !== null) addToast("error", `Push failed: ${err.message}`)
+            else refused(err)
+          },
+          failed: (parseError) => addToast(
             "error",
             `Push failed: ${apiErrorMessage(parseError, "malformed divergence response")}`,
-          )
-          return
-        }
-        if (parsed) {
-          setRejection(parsed)
-          await load() // badges now reflect the freshly-known divergence
-          return
-        }
-        // A structured 409 this client cannot read: name the status rather
-        // than print the unread body.
-        if (typeof body === "object" && body !== null) {
-          addToast("error", `Push failed: ${err.message}`)
-          return
-        }
-      }
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Push failed: ${detail}`)
-    } finally {
-      setPushing(false)
-    }
-  }, [selected, addToast, load])
+          ),
+        })
+      },
+      stale: (settled) => {
+        if ("value" in settled) pushed(settled.value)
+        else refused(settled.error)
+      },
+    }, { inFlight: setPushing })
+  }, [selected, addToast, life, load])
 
   // The push panel's Set from .env: only the secrets the repository lacks are set.
   const doSetSecrets = useCallback(async () => {
     if (!selected) return
     const target = selected
-    setSettingSecrets(true)
-    try {
-      const report = await gitSetCiSecrets(target)
+    const set = (report: GitCiSecrets) => {
       const n = report.newly_set.length
       addToast(
         "success",
@@ -224,13 +234,17 @@ export default function RemotePushControl({
           ? `Set ${deploySecrets(n)} on ${report.repository} from .env`
           : `${report.repository} already has the deploy's secrets`,
       )
-      setMissingSecrets((reports) => withoutRemote(reports, target))
-    } catch (err) {
-      addToast("error", `Couldn't set the deploy's secrets: ${apiErrorMessage(err, "unknown error")}`)
-    } finally {
-      setSettingSecrets(false)
     }
-  }, [selected, addToast])
+    const refused = (err: unknown) => addToast("error", `Couldn't set the deploy's secrets: ${apiErrorMessage(err, "unknown error")}`)
+    await answer([under(life)], gitSetCiSecrets(target), {
+      ok: (report) => {
+        set(report)
+        setMissingSecrets((reports) => withoutRemote(reports, target))
+      },
+      failed: refused,
+      stale: (settled) => ("value" in settled ? set(settled.value) : refused(settled.error)),
+    }, { inFlight: setSettingSecrets })
+  }, [selected, addToast, life])
 
   const onPushClick = () => {
     if (!selected) return
@@ -238,38 +252,55 @@ export default function RemotePushControl({
     else void doPush()
   }
 
+  // Catch up's and Spin off's answer belongs to the edits chosen over when it was pressed
+  // (`chosenOverParts`): an edit made while it ran keeps every unsaved edit. A canvas as saved
+  // takes the remote's document whenever it arrives, before the answer or after.
+  /** What a catch-up or a spin-off did, said whatever came of the edits; its branch moved. */
+  const treeMoved = useCallback(async (said: string) => {
+    addToast("success", said)
+    setRejection(null)
+    await reloadAfterTreeChange()
+  }, [addToast, reloadAfterTreeChange])
+  /** A failed catch-up or spin-off: a held file can interrupt the clone. */
+  const notMoved = useCallback((what: string, err: unknown) => {
+    addToast("error", `Couldn't ${what}: ${apiErrorMessage(err, "unknown error")}`)
+    void useGitStore.getState().loadStatus({ refresh: true })
+  }, [addToast])
+  /**
+   * The files are the remote's now: the edits chosen over them go, as after a switch. Git has
+   * moved them whatever an edit made during the form's reload does to *asked*, so what it did
+   * is said either way.
+   */
+  const dropChosenOver = useCallback(async (asked: Asked, said: string) => {
+    discardCanvasEdits()
+    const moved = () => treeMoved(said)
+    await asked.answer(discardFormEdits(), { ok: moved, stale: moved })
+  }, [treeMoved])
+
   // D1/D2: a conflict-free catch-up (fast-forward only). Used by the standalone
   // "Catch up" button and the rejection modal's behind-only path.
   const doCatchUp = useCallback(async (target: string) => {
-    setCatchingUp(true)
-    try {
-      const res = await gitFastForward(target)
+    const said = (res: Awaited<ReturnType<typeof gitFastForward>>) => {
       const n = res.fast_forwarded.length
-      if (n === 0) {
-        // Only labels came: no file changed, so the edits on the canvas stay.
-        const labels = res.labels_added
-        addToast(
-          "success",
-          `Caught up - added version label${labels.length === 1 ? "" : "s"} ${labels.join(", ")} from ${res.remote}`,
-        )
-        setRejection(null)
-        await reloadAfterTreeChange() // the history shows the labels
-        return
-      }
-      // The files are the remote's now: edits chosen over them go, as after a switch.
-      discardCanvasEdits()
-      await discardFormEdits()
-      addToast("success", `Caught up - updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`)
-      setRejection(null)
-      await reloadAfterTreeChange()
-    } catch (err) {
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Couldn't catch up: ${detail}`)
-      void useGitStore.getState().loadStatus({ refresh: true }) // a held file can interrupt the clone
-    } finally {
-      setCatchingUp(false)
+      if (n > 0) return `Caught up - updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`
+      const labels = res.labels_added
+      return `Caught up - added version label${labels.length === 1 ? "" : "s"} ${labels.join(", ")} from ${res.remote}`
     }
-  }, [addToast, reloadAfterTreeChange])
+    const settle = (settled: Settled<Awaited<ReturnType<typeof gitFastForward>>>) => {
+      if ("value" in settled) void treeMoved(said(settled.value))
+      else notMoved("catch up", settled.error)
+    }
+    await answer(chosenOverParts(), gitFastForward(target), {
+      ok: async (res, asked) => {
+        // Only labels came: no file changed, so the edits on the canvas stay, and the
+        // history shows the labels.
+        if (res.fast_forwarded.length === 0) await treeMoved(said(res))
+        else await dropChosenOver(asked, said(res))
+      },
+      failed: (err) => notMoved("catch up", err),
+      stale: settle,
+    }, { inFlight: setCatchingUp })
+  }, [dropChosenOver, notMoved, treeMoved])
 
   // A clean catch-up is offered only when a leg is behind and NO leg has local
   // work the remote lacks (ahead/diverged) — matches the engine's ff precondition.
@@ -282,25 +313,17 @@ export default function RemotePushControl({
   // M3: set the local fork aside and adopt the remote. The never-merge-locally
   // escape for a genuinely diverged fork.
   const doBranchAway = useCallback(async (target: string) => {
-    setBranchingAway(true)
-    try {
-      const res = await gitBranchAway(target)
-      discardCanvasEdits()
-      await discardFormEdits()
-      addToast(
-        "success",
-        `Set your version aside as ${res.set_aside_as} - you're now on the shared copy`,
-      )
-      setRejection(null)
-      await reloadAfterTreeChange()
-    } catch (err) {
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Couldn't spin off a copy: ${detail}`)
-      void useGitStore.getState().loadStatus({ refresh: true }) // a held file can interrupt the clone
-    } finally {
-      setBranchingAway(false)
-    }
-  }, [addToast, reloadAfterTreeChange])
+    const said = (res: Awaited<ReturnType<typeof gitBranchAway>>) =>
+      `Set your version aside as ${res.set_aside_as} - you're now on the shared copy`
+    await answer(chosenOverParts(), gitBranchAway(target), {
+      ok: (res, asked) => dropChosenOver(asked, said(res)),
+      failed: (err) => notMoved("spin off a copy", err),
+      stale: (settled) => {
+        if ("value" in settled) void treeMoved(said(settled.value))
+        else notMoved("spin off a copy", settled.error)
+      },
+    }, { inFlight: setBranchingAway })
+  }, [dropChosenOver, notMoved, treeMoved])
 
   // Both rewrite the project's files from the remote, so unsaved edits in the canvas or
   // the workbench's form are asked about first. Each acts on the remote it is given, which

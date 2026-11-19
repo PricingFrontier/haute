@@ -3,6 +3,8 @@ import { apiErrorCode } from "../api/errors"
 import useToastStore from "../stores/useToastStore"
 import { hashConfig } from "../utils/configHash"
 import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
+import { ask, newest } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 
 export interface UseStaleConfigEstimateResult<TEstimate> {
   configHash: string
@@ -109,6 +111,7 @@ export function useStaleConfigEstimate<TEstimate>(
     INITIAL_STATE as EstimateState<TEstimate>,
   )
 
+  const estimates = useRequestKind()
   const endpointRef = useRef(endpoint)
   const toastLabelRef = useRef(toastLabel)
   useEffect(() => {
@@ -120,31 +123,21 @@ export function useStaleConfigEstimate<TEstimate>(
     if (!enabled) return
     if (!nodeId) return
 
-    const controller = new AbortController()
+    // The estimate belongs to this run of the effect: inputs that change let it go, and abort it.
+    const asked = ask([newest(estimates)])
     dispatch({ type: "start" })
-
-    endpointRef
-      .current(undefined, { signal: controller.signal })
-      .then((result) => {
-        if (controller.signal.aborted) return
-        dispatch({ type: "resolve", estimate: result })
-      })
-      .catch((err: unknown) => {
-        if (
-          (err instanceof DOMException && err.name === "AbortError") ||
-          controller.signal.aborted
-        ) {
-          return
-        }
+    void asked.answer((signal) => endpointRef.current(undefined, { signal }), {
+      ok: (result) => dispatch({ type: "resolve", estimate: result }),
+      failed: (err) => {
         const msg = executionErrorDetailMessage(err) ?? (err instanceof Error ? err.message : String(err))
         dispatch({ type: "reject", message: msg, code: apiErrorCode(err) })
         useToastStore
           .getState()
           .addToast("warning", `${toastLabelRef.current}: ${msg}`)
-      })
-
-    return () => controller.abort()
-  }, [nodeId, estimateInputsHash, context.source, structureKey, estimateKey, enabled])
+      },
+    })
+    return () => asked.release()
+  }, [nodeId, estimateInputsHash, context.source, structureKey, estimateKey, enabled, estimates])
 
   return { ...state, configHash, isStale }
 }

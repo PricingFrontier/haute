@@ -18,11 +18,6 @@ file edited by hand, then each operation that replaces working files.
 open editor, also on 11 November, run again by the main session with two
 tabs and with a terminal.
 
-`VCS-10` comes from the review plan's phase 5, a reader
-from a second model family (Codex) over the code changed since the 31
-October audit. A worker drove each journey in a browser and the main
-session ran each again on 15 November 2026.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -34,7 +29,6 @@ session ran each again on 15 November 2026.
 | VCS-07 | Planned | P2 | A branch name that cannot exist beside another branch is refused naming the clash, when a branch is created, restored or brought back from Deleted. |
 | VCS-08 | Planned | P2 | A switch, a catch-up, an archive and a new branch that meet a file edited by hand name it and offer to record it or put it back, instead of "Operation failed" or advice that does not apply. |
 | VCS-09 | Planned | P2 | An open tab learns when the project changes branch, and a save made from a tab that shows another branch is refused naming both, instead of landing on the other branch, moving the checkout back or leaving its files uncommitted with "see server log". |
-| VCS-10 | Planned | P2 | An edit made while Catch up is running is still there when it answers, or could not be made. |
 
 ## Planned improvements
 
@@ -451,22 +445,3 @@ under it.
 `frontend/src/hooks/useWebSocketSync.ts`;
 `specs/git-integration/low-level.md`.
 
-### VCS-10 — An edit made while Catch up runs is kept, or cannot be made
-**Why:** Reproduced on 15 November 2026 in the browser, with a remote one
-commit ahead and the answer to Catch up held back. While the answer was
-on its way the Git panel was closed and a Rating Step's Default set to
-1.5; Save was offered. When the answer arrived the Default read 1 again
-and the file holds 1, with no question and no message. Catch up discards
-the canvas's unsaved edits after the server answers, so it also discards
-edits made since the button was pressed.
-
-**Plan:** Decide what to discard when Catch up is pressed, not when it
-answers; or make the canvas read-only until the answer.
-
-**Acceptance:** In the journey above the Default still reads 1.5 and is
-unsaved after the answer, or it could not be edited meanwhile.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/RemotePushControl.tsx`;
-`specs/frontend-git-ui/high-level.md`.

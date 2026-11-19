@@ -140,6 +140,9 @@ mutation starts, and a Cancel while it saves drops the mutation.
 An in-app switch reloads no page. The server publishes the new branch's documents and form
 once the switch has answered. When the analyst chose Discard, the switch drops the canvas's
 edits and asks for the document again only after it succeeds, so a failed switch keeps them.
+What it drops is what was chosen over when it was asked: an edit made on the canvas or in the
+form while the switch ran keeps every unsaved edit, and the new branch's documents wait behind
+the sync banner, as for Catch up below.
 
 The toolbar's Undo or Redo of a switch is a switch too, and asks the same question about
 unsaved edits before it checks out the other branch. The git panel may be closed, so the
@@ -234,7 +237,12 @@ when that is open, and closing the dialog drops it; on the control's row, select
 remote drops it). Cancel sends nothing, Discard goes
 ahead, and Save first goes ahead only once the save has succeeded. Once either succeeds,
 the edits chosen over are dropped as after a switch, and the readiness, the branch list
-and the history are read again. A catch-up that brought only version labels (one a colleague
+and the history are read again. What is dropped is what was chosen over when the button was
+pressed: an edit made on the canvas or in the form while the request ran is kept, unsaved, with
+any text still being typed when it answers, and the remote's files wait behind the sync banner
+as any change on disk under unsaved edits does. A canvas as saved takes the remote's document
+whenever it arrives, before the answer or after, as it takes any change on disk, and the form
+edits chosen over are still dropped. A catch-up that brought only version labels (one a colleague
 published for a milestone already here) wrote no file: its toast names them, "Caught up -
 added version label 2.0 from <remote>", the edits on the canvas stay, and the history is
 read again to show them.

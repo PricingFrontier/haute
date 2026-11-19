@@ -46,6 +46,8 @@ import KeyPickerModal from "../../components/KeyPickerModal"
 import Tooltip from "../../components/Tooltip"
 import { ValidatedTextField } from "../../components/form"
 import { apiErrorMessage } from "../../api/errors"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, newest } from "../../utils/answers"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
@@ -89,19 +91,13 @@ export default function ApiInputEditor({
   if (stagedInference !== null && stagedInference.draft !== config) setStagedInference(null)
   const pendingInferred = stagedInference !== null && stagedInference.draft === config ? stagedInference.tables : null
   // The editor's latest config and update, for an inference reply that arrives
-  // after renders, and the generation that invalidates a reply on unmount
-  // (another node or document) or a newer inference.
+  // after renders; a reply is dropped on unmount (another node or document) or a
+  // newer inference.
   const latest = useRef({ config, onUpdate })
   useEffect(() => {
     latest.current = { config, onUpdate }
   })
-  const inferGeneration = useRef(0)
-  useEffect(() => {
-    const generations = inferGeneration
-    return () => {
-      generations.current += 1
-    }
-  }, [])
+  const inferences = useRequestKind()
   // The most-recent-inference snapshot: a single snapshot overwritten on every
   // infer (never accumulated), so a key deleted from a frame — or whose whole
   // frame was deleted — can still be offered by the inventory.
@@ -373,46 +369,40 @@ export default function ApiInputEditor({
     if (!currentPath) return
     const source = currentPath
     const askedFrom = config
-    const generation = ++inferGeneration.current
-    const isCurrent = () => generation === inferGeneration.current
-    setInferringSource(source)
     setInferError(null)
-    try {
-      const result = await inferJsonCacheSchema({ path: source })
-      if (!isCurrent()) return
-      if (latest.current.config !== askedFrom) {
-        setInferError("The node changed while this inference ran, so it was not applied.")
-        return
-      }
-      // Route the raw /infer response through `readV2` so unknown column
-      // types are coerced instead of being raw-cast into state. Infer is
-      // fresh backend output that was never user-persisted, so it opts
-      // into dropping structurally-incomplete tables/columns via
-      // `{ dropIncomplete: true }` — unlike the disk/render read paths,
-      // which now KEEP blanks so the editor surfaces them for repair
-      // (render-gate invariant) instead of silently deleting them.
-      const inferred = readV2(
-        { tables: result.tables as unknown[] },
-        { dropIncomplete: true },
-      ).tables
-      // Refresh the single most-recent-inference snapshot on EVERY infer,
-      // whether or not the replace gate is later confirmed.
-      setLastInfer(inferred)
-      const update = latest.current.onUpdate
-      const askedShape = classifyConfig(askedFrom)
-      const askedV2 = askedShape.kind === "v2" ? askedShape.v2 : emptyV2(source)
-      if (askedV2.tables.length === 0) {
-        // First run — nothing to clobber, apply in one click.
-        const committed = update(writeV2({ ...askedV2, tables: inferred }))
-        if (!committed.ok) setInferError(committed.error)
-      } else {
-        setStagedInference({ draft: askedFrom, tables: inferred })
-      }
-    } catch (e) {
-      if (isCurrent()) setInferError(apiErrorMessage(e))
-    } finally {
-      if (generation === inferGeneration.current) setInferringSource(null)
-    }
+    await answer([newest(inferences)], inferJsonCacheSchema({ path: source }), {
+      ok: (result) => {
+        if (latest.current.config !== askedFrom) {
+          setInferError("The node changed while this inference ran, so it was not applied.")
+          return
+        }
+        // Route the raw /infer response through `readV2` so unknown column
+        // types are coerced instead of being raw-cast into state. Infer is
+        // fresh backend output that was never user-persisted, so it opts
+        // into dropping structurally-incomplete tables/columns via
+        // `{ dropIncomplete: true }` — unlike the disk/render read paths,
+        // which now KEEP blanks so the editor surfaces them for repair
+        // (render-gate invariant) instead of silently deleting them.
+        const inferred = readV2(
+          { tables: result.tables as unknown[] },
+          { dropIncomplete: true },
+        ).tables
+        // Refresh the single most-recent-inference snapshot on EVERY infer,
+        // whether or not the replace gate is later confirmed.
+        setLastInfer(inferred)
+        const update = latest.current.onUpdate
+        const askedShape = classifyConfig(askedFrom)
+        const askedV2 = askedShape.kind === "v2" ? askedShape.v2 : emptyV2(source)
+        if (askedV2.tables.length === 0) {
+          // First run — nothing to clobber, apply in one click.
+          const committed = update(writeV2({ ...askedV2, tables: inferred }))
+          if (!committed.ok) setInferError(committed.error)
+        } else {
+          setStagedInference({ draft: askedFrom, tables: inferred })
+        }
+      },
+      failed: (e) => setInferError(apiErrorMessage(e)),
+    }, { pending: (waiting) => setInferringSource(waiting ? source : null) })
   }
   const confirmInferred = () => {
     if (!pendingInferred) return

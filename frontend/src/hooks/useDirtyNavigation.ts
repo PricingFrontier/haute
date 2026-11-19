@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 
+import { documentPart } from "../stores/useDocumentStatusStore"
 import useQuestionStore from "../stores/useQuestionStore"
+import { answer, under } from "../utils/answers"
 import useProjectDirty, { isProjectDirty } from "./useProjectDirty"
+import { useRequestKind } from "./useRequestKind"
 
 /** The question a branch change asks, after "You have unsaved changes." */
 export const CHANGING_BRANCHES = "Save them before changing branches?"
@@ -28,12 +31,12 @@ export interface DirtyNavigationQuestion {
 export default function useDirtyNavigation(onSave?: () => Promise<boolean>) {
   const dirty = useProjectDirty()
   const [pending, setPending] = useState<PendingNavigation | null>(null)
-  // The open question, as Save first reads it once its save has answered.
-  const asking = useRef<PendingNavigation | null>(null)
-  useEffect(() => () => { asking.current = null }, [])
+  // Save first's answer belongs to the question open when it was pressed: once that question
+  // is answered another way, or the component goes, it proceeds with nothing.
+  const questions = useRequestKind()
 
   const ask = (next: PendingNavigation | null) => {
-    asking.current = next
+    questions.bump()
     setPending(next)
   }
 
@@ -50,9 +53,13 @@ export default function useDirtyNavigation(onSave?: () => Promise<boolean>) {
       pending.proceed()
     },
     onSave: async () => {
-      if (!(await savedFirst(onSave)) || asking.current !== pending) return
-      ask(null)
-      pending.proceed()
+      await answer([under(questions)], savedFirst(onSave), {
+        ok: (saved) => {
+          if (!saved) return
+          ask(null)
+          pending.proceed()
+        },
+      })
     },
   }
 
@@ -73,16 +80,23 @@ interface PendingNavigation {
  */
 export async function leaveUnsavedEdits(title: string, onSave?: () => Promise<boolean>): Promise<boolean> {
   if (!isProjectDirty()) return true
-  const answer = await useQuestionStore.getState().ask({
+  const choice = await useQuestionStore.getState().ask({
     title,
     text: `You have unsaved changes. ${CHANGING_BRANCHES}`,
     confirm: "Discard",
     danger: true,
     ...(onSave === undefined ? {} : { other: "Save first" }),
   })
-  if (answer === null) return false
-  if (answer.choice === "confirm") return true
-  return (await savedFirst(onSave)) || leaveUnsavedEdits(title, onSave)
+  if (choice === null) return false
+  if (choice.choice === "confirm") return true
+  // A save that did not save asks again, while the document is still the one asked about.
+  let leave = false
+  await answer([documentPart()], savedFirst(onSave), {
+    ok: async (saved) => {
+      leave = saved || (await leaveUnsavedEdits(title, onSave))
+    },
+  })
+  return leave
 }
 
 /** Whether Save first saved: false for a save that answered false, threw, or was not given. */

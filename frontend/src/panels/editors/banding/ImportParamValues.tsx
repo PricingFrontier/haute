@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { apiErrorMessage } from "../../../api/errors"
 import { fetchParamFile } from "../../../api/workbench"
 import { useParamsFiles } from "../../../hooks/useParamsFiles"
-import { latest } from "../../../utils/latest"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { answer, newest } from "../../../utils/answers"
 
 const SELECT_CLASS = "w-full px-1.5 py-1 rounded text-[11px] font-mono focus:outline-none"
 const LABEL_CLASS = "text-[11px] font-medium block mb-0.5"
@@ -16,7 +17,8 @@ const SELECT_STYLE = {
  * Categorical's Import from params (specs/frontend-node-editors): a CSV in the pipeline
  * folder's `files/params/`, then one of its columns, whose distinct values are handed to
  * `onImport`, those already ruled left out. A read answers only while it is the latest and
- * the panel is open, so one the user has moved on from changes nothing.
+ * the panel is open (the editor keys it by its factor, so removing the factor closes it), so
+ * one the user has moved on from changes nothing.
  */
 export function ImportParamValues({
   existingValues,
@@ -42,14 +44,7 @@ export function ImportParamValues({
     existingRef.current = existingValues
     onImportRef.current = onImport
   }, [existingValues, onImport])
-  const mounted = useRef(false)
-  const [reads] = useState(latest)
-  useEffect(() => {
-    mounted.current = true
-    return () => {
-      mounted.current = false
-    }
-  }, [])
+  const reads = useRequestKind()
 
   const chooseFile = (chosen: string) => {
     // A column of the file left still being read no longer answers.
@@ -67,18 +62,15 @@ export function ImportParamValues({
       reads.bump()
       return
     }
-    const ticket = reads.take()
-    void fetchParamFile(file, chosen)
-      .then(({ values }) => {
-        if (!mounted.current || !reads.is(ticket)) return
+    void answer([newest(reads)], fetchParamFile(file, chosen), {
+      ok: ({ values }) => {
         const ruled = new Set(existingRef.current)
         const fresh = values.filter((value) => !ruled.has(value))
         if (fresh.length === 0) setNothingNew(true)
         else onImportRef.current(fresh)
-      })
-      .catch((error: unknown) => {
-        if (mounted.current && reads.is(ticket)) setProblem(apiErrorMessage(error))
-      })
+      },
+      failed: (error) => setProblem(apiErrorMessage(error)),
+    })
   }
 
   return (

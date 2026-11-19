@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Check, Copy, Download } from "lucide-react"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, under } from "../../utils/answers"
 import { sanitiseLabelForFilesystem } from "../../utils/apiInputPorts"
 import type { TableGrid } from "../editors/FrameTableActions"
 
@@ -31,6 +33,7 @@ export default function ExploreTableActions({
   const [ack, setAck] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const life = useRequestKind()
   const clipboardOk = clipboardWriteAvailable()
   const empty = grid.rows.length === 0
   const filename = exploreExportFilename(source, tableSlug)
@@ -47,16 +50,13 @@ export default function ExploreTableActions({
   }, [])
 
   const copy = useCallback(async () => {
-    try {
-      const { buildTsv, writeClipboardText } = await import(
-        "../editors/shared/tableClipboard"
-      )
-      await writeClipboardText(buildTsv([grid.headers, ...grid.rows]))
-      flashAck("Copied")
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Copy failed")
-    }
-  }, [flashAck, grid])
+    await answer([under(life)], import("../editors/shared/tableClipboard").then(
+      ({ buildTsv, writeClipboardText }) => writeClipboardText(buildTsv([grid.headers, ...grid.rows])),
+    ), {
+      ok: () => flashAck("Copied"),
+      failed: (reason) => setError(reason instanceof Error ? reason.message : "Copy failed"),
+    })
+  }, [flashAck, grid, life])
 
   const download = useCallback(async () => {
     try {

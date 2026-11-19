@@ -10,9 +10,11 @@ import { Check, ChevronDown, ChevronRight, ClipboardCheck, FolderOpen, Play, Rep
 import { useState, type FormEvent } from "react"
 import type { WorkbenchTestQuoteMove } from "../api/types"
 import { SidePanel } from "../haute-ui"
+import { useRequestKind } from "../hooks/useRequestKind"
 import { confirmed } from "../stores/useQuestionStore"
 import useWorkbenchTestQuotesStore, { type QuoteRun } from "../stores/useWorkbenchTestQuotesStore"
 import useWorkbenchViewStore from "../stores/useWorkbenchViewStore"
+import { answer, under } from "../utils/answers"
 
 const MIN_WIDTH = 320
 /** At most half the window, so the sheet stays in view. */
@@ -80,6 +82,7 @@ export default function TestQuotesPanel() {
   const setPanelWidth = useWorkbenchViewStore((s) => s.setPanelWidth)
   const [name, setName] = useState("")
   const [expanded, setExpanded] = useState<string | null>(null)
+  const panel = useRequestKind()
 
   const results = Object.values(runs).filter((r): r is Extract<QuoteRun, { status: "done" }> => r.status === "done")
   const count = (outcome: Outcome) => results.filter((r) => r.outcome === outcome).length
@@ -89,7 +92,11 @@ export default function TestQuotesPanel() {
 
   const onSave = async (event: FormEvent) => {
     event.preventDefault()
-    if (await save({ name: name.trim() })) setName("")
+    await answer([under(panel)], save({ name: name.trim() }), {
+      ok: (saved) => {
+        if (saved) setName("")
+      },
+    })
   }
   const onReplace = async () => {
     if (opened === null) return

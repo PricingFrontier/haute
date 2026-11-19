@@ -55,6 +55,8 @@ import {
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import useConfirmedConfigUpdate from "./useConfirmedConfigUpdate"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { answer, under } from "../../utils/answers"
 import {
   ExploreConfigCard,
   ExploreConfigCardEmptyState,
@@ -663,6 +665,8 @@ export default function ExploreChartsConfig({
   const parsedCharts = useMemo(() => parseExploreCharts(config), [config])
   const parsedPivots = useMemo(() => parseExplorePivots(config), [config])
   const confirmThenCurrent = useConfirmedConfigUpdate(config, onUpdate)
+  // A question answered once the editor has gone changes nothing.
+  const life = useRequestKind()
   const configuredChartExists =
     !parsedCharts.ok ||
     configuredId === null ||
@@ -690,13 +694,16 @@ export default function ExploreChartsConfig({
   // A deletion asks first, then removes the card from the config as it stands
   // once answered, so an edit made while the dialog was open survives it.
   const deleteChart = async (target: ExploreChartConfig) => {
-    const current = await confirmThenCurrent({ title: `Delete ${target.name}?`, confirm: "Delete", danger: true })
-    const state = current && parseExploreCharts(current.config)
-    if (!current || !state?.ok) return
-    if (useUIStore.getState().exploreConfiguredChartIds[nodeId] === target.id) {
-      setExploreConfiguredChart(nodeId, null)
-    }
-    current.onUpdate("charts", state.charts.filter((candidate) => candidate.id !== target.id))
+    await answer([under(life)], confirmThenCurrent({ title: `Delete ${target.name}?`, confirm: "Delete", danger: true }), {
+      ok: (current) => {
+        const state = current && parseExploreCharts(current.config)
+        if (!current || !state?.ok) return
+        if (useUIStore.getState().exploreConfiguredChartIds[nodeId] === target.id) {
+          setExploreConfiguredChart(nodeId, null)
+        }
+        current.onUpdate("charts", state.charts.filter((candidate) => candidate.id !== target.id))
+      },
+    })
   }
 
   if (!persistedChart)
@@ -802,23 +809,26 @@ export default function ExploreChartsConfig({
       commit(sourcedFrom(chart, next))
       return
     }
-    const current = await confirmThenCurrent({
+    await answer([under(life)], confirmThenCurrent({
       title: "Change the source Pivot?",
       text: "Changing the source Pivot resets chart mappings and series overrides.",
       confirm: "Change",
+    }), {
+      ok: (current) => {
+        // The chart and the Pivot as they stand once answered: either may have
+        // been edited, or deleted, while the dialog was open.
+        const currentCharts = current && parseExploreCharts(current.config)
+        const currentPivots = current && parseExplorePivots(current.config)
+        if (!current || !currentCharts?.ok || !currentPivots?.ok) return
+        const source = currentPivots.pivots.find((p) => p.id === id)
+        const target = currentCharts.charts.find((c) => c.id === chart.id)
+        if (!source || !target) return
+        current.onUpdate(
+          "charts",
+          currentCharts.charts.map((c) => (c.id === target.id ? sourcedFrom(target, source) : c)),
+        )
+      },
     })
-    // The chart and the Pivot as they stand once answered: either may have
-    // been edited, or deleted, while the dialog was open.
-    const currentCharts = current && parseExploreCharts(current.config)
-    const currentPivots = current && parseExplorePivots(current.config)
-    if (!current || !currentCharts?.ok || !currentPivots?.ok) return
-    const source = currentPivots.pivots.find((p) => p.id === id)
-    const target = currentCharts.charts.find((c) => c.id === chart.id)
-    if (!source || !target) return
-    current.onUpdate(
-      "charts",
-      currentCharts.charts.map((c) => (c.id === target.id ? sourcedFrom(target, source) : c)),
-    )
   }
   let data: ReturnType<typeof adaptPivotChartData> | null = null
   let dataError: string | null = null

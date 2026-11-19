@@ -1012,4 +1012,7 @@ toast.
   and the dirty-graph guard applies when a renderable document arrives. A versioned system load failure replaces
   the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
   valid document update clears that failure atomically. A failed or stale repair leaves the current recovery
-  canvas unchanged; no migration or upgrade action exists.
+  canvas unchanged; no migration or upgrade action exists. A repair's answer is applied only while the
+  document it was asked under is still the one on show: when live sync or another adoption replaced it while
+  the repair ran (a colleague's save received meanwhile), the dialog closes and the canvas keeps the newer
+  document, with no Save offered for the repair's.

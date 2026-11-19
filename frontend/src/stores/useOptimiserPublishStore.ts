@@ -15,11 +15,8 @@ import { create } from "zustand"
 import { logOptimiserToMlflow, saveOptimiser } from "../api/client"
 import { apiErrorCode, apiErrorMessage } from "../api/errors"
 import type { MlflowDestinationKey, MlflowLogResponse, SaveOptimiserResponse } from "../api/types"
-import useDocumentStatusStore, {
-  captureDocumentExecutionFence,
-  isDocumentExecutionFenceCurrent,
-  type DocumentExecutionFence,
-} from "./useDocumentStatusStore"
+import { answer, watch, type BelongsTo, type Part } from "../utils/answers"
+import useDocumentStatusStore, { executionPart } from "./useDocumentStatusStore"
 
 export type SaveReceipt = SaveOptimiserResponse & { pointIndex: number | null }
 export type LogReceipt = MlflowLogResponse & { pointIndex: number | null }
@@ -90,87 +87,73 @@ function stateFor(byResultKey: Record<string, OptimiserPublishState>, resultKey:
   return current && current.jobId === jobId ? current : { jobId, ...EMPTY }
 }
 
-const useOptimiserPublishStore = create<Store>((set, get) => {
-  const patch = (
-    resultKey: string,
-    jobId: string,
-    fence: DocumentExecutionFence,
-    update: Partial<OptimiserPublishState>,
-  ) => {
-    // A reply for a document the editor has moved past is nobody's now.
-    if (!isDocumentExecutionFenceCurrent(fence)) return
-    set((store) => {
-      // A reply for a job the node has moved past is dropped.
-      const current = store.byResultKey[resultKey]
-      if (current && current.jobId !== jobId) return store
-      return { byResultKey: { ...store.byResultKey, [resultKey]: { ...stateFor(store.byResultKey, resultKey, jobId), ...update } } }
-    })
+const useOptimiserPublishStore = create<Store>((set, get, api) => {
+  const patch = (resultKey: string, jobId: string, update: Partial<OptimiserPublishState>) => {
+    set((store) => ({
+      byResultKey: { ...store.byResultKey, [resultKey]: { ...stateFor(store.byResultKey, resultKey, jobId), ...update } },
+    }))
   }
+  /**
+   * What a reply belongs to: the document the editor showed as it was asked (`document`), and
+   * the job the node's state is kept for once it is (a job the node has moved past drops it).
+   */
+  const replyOf = (document: Part, resultKey: string): BelongsTo => [
+    document,
+    watch(api, (store) => store.byResultKey[resultKey]?.jobId),
+  ]
 
   return {
     byResultKey: {},
 
     save: async ({ resultKey, jobId, pointIndex, outputPath, version, stale, overwrite = false }) => {
-      const fence = captureDocumentExecutionFence()
-      set((store) => ({
-        byResultKey: {
-          ...store.byResultKey,
-          [resultKey]: { ...stateFor(store.byResultKey, resultKey, jobId), saving: true, saveError: null, overwritePrompt: null },
+      const document = executionPart()
+      patch(resultKey, jobId, { saving: true, saveError: null, overwritePrompt: null })
+      await answer(replyOf(document, resultKey), saveOptimiser({
+        job_id: jobId,
+        output_path: outputPath,
+        point_index: pointIndex ?? undefined,
+        version,
+        overwrite,
+        stale,
+      }), {
+        ok: (response) => patch(resultKey, jobId, { saving: false, saveReceipt: { ...response, pointIndex } }),
+        failed: (error) => {
+          if (apiErrorCode(error) === RESULT_EXISTS_CODE && !overwrite) {
+            patch(resultKey, jobId, {
+              saving: false,
+              overwritePrompt: { message: apiErrorMessage(error), request: { resultKey, jobId, pointIndex, outputPath, version, stale } },
+            })
+            return
+          }
+          patch(resultKey, jobId, { saving: false, saveError: apiErrorMessage(error) })
         },
-      }))
-      try {
-        const response = await saveOptimiser({
-          job_id: jobId,
-          output_path: outputPath,
-          point_index: pointIndex ?? undefined,
-          version,
-          overwrite,
-          stale,
-        })
-        patch(resultKey, jobId, fence, { saving: false, saveReceipt: { ...response, pointIndex } })
-      } catch (error) {
-        if (apiErrorCode(error) === RESULT_EXISTS_CODE && !overwrite) {
-          patch(resultKey, jobId, fence, {
-            saving: false,
-            overwritePrompt: { message: apiErrorMessage(error), request: { resultKey, jobId, pointIndex, outputPath, version, stale } },
-          })
-          return
-        }
-        patch(resultKey, jobId, fence, { saving: false, saveError: apiErrorMessage(error) })
-      }
+      })
     },
 
     log: async ({ resultKey, jobId, pointIndex, destination, experimentName, stale }) => {
-      const fence = captureDocumentExecutionFence()
-      set((store) => ({
-        byResultKey: {
-          ...store.byResultKey,
-          [resultKey]: { ...stateFor(store.byResultKey, resultKey, jobId), logging: true, logError: null, logErrorCode: null },
-        },
-      }))
-      try {
-        const response = await logOptimiserToMlflow({
-          job_id: jobId,
-          point_index: pointIndex ?? undefined,
-          // Read at click time, so a switch back to Local folder after the solve sends "".
-          destination: destination as "" | MlflowDestinationKey,
-          // The node's current experiment; blank logs to the default it shows.
-          experiment_name: experimentName || null,
-          stale,
-        })
-        patch(resultKey, jobId, fence, { logging: false, logReceipt: { ...response, pointIndex } })
-      } catch (error) {
-        patch(resultKey, jobId, fence, {
+      const document = executionPart()
+      patch(resultKey, jobId, { logging: true, logError: null, logErrorCode: null })
+      await answer(replyOf(document, resultKey), logOptimiserToMlflow({
+        job_id: jobId,
+        point_index: pointIndex ?? undefined,
+        // Read at click time, so a switch back to Local folder after the solve sends "".
+        destination: destination as "" | MlflowDestinationKey,
+        // The node's current experiment; blank logs to the default it shows.
+        experiment_name: experimentName || null,
+        stale,
+      }), {
+        ok: (response) => patch(resultKey, jobId, { logging: false, logReceipt: { ...response, pointIndex } }),
+        failed: (error) => patch(resultKey, jobId, {
           logging: false,
           logError: apiErrorMessage(error),
           logErrorCode: apiErrorCode(error) ?? null,
-        })
-      }
+        }),
+      })
     },
 
     dismissOverwrite: (resultKey, jobId) => {
       if (get().byResultKey[resultKey]?.jobId !== jobId) return
-      patch(resultKey, jobId, captureDocumentExecutionFence(), { overwritePrompt: null })
+      patch(resultKey, jobId, { overwritePrompt: null })
     },
   }
 })

@@ -20,7 +20,7 @@ import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
 import { cellKey, cellProblem, newQuoteValues } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
-import { latest } from "../utils/latest"
+import { answer, newest, requestKind, under } from "../utils/answers"
 import {
   asRenewal,
   clearDraft,
@@ -184,7 +184,7 @@ function opened(title: string, base: Values, source: QuoteSource | null, address
 }
 
 /** The window filling being read, newest wins: a quote read after the window closed or opened again fills nothing. */
-const fills = latest()
+const fills = requestKind()
 
 const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
   const update = (change: Partial<NewQuoteWindow>): void => {
@@ -201,41 +201,49 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     const sentFrom = here()
     update({ status: "sending", kept: creation, error: null, taken: null, releaseMoved: false })
     const { operation, form_revision, release, values, source, reference } = creation
-    try {
-      const answer = await createAppQuote({ operation, form_revision, release, values }, source, reference)
+    // Answered, or refused, it is made or never will be: the tab keeps it no longer.
+    const letGo = () => {
       if (key !== null) forgetCreation(key)
-      const done = get().shown
-      set({ shown: null })
-      const savedAsNew = done?.savedFrom != null
-      // Saved as new: the open quote's values kept in this browser are in the new quote now.
-      if (done?.savedFrom != null) {
-        const { draftKey, values: sheets } = done.savedFrom
-        const draft = draftKey === null ? null : readDraft(draftKey)
-        if (draftKey !== null && draft !== null && valuesKey(draft.values) === valuesKey(sheets)) clearDraft(draftKey)
-        useToastStore.getState().addToast("success", `Saved as ${answer.quote.label}`)
-      }
-      // Answered once the page moved on, Back included, the quote is made and the page stays,
-      // as it does when the leave guard keeps the quote behind the window: either says so.
-      const opened = here() === sentFrom && (await navigate(quotePath(answer.quote.reference, answer.quote.option), { force: savedAsNew })) === "moved"
-      if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${answer.quote.label}`)
-    } catch (error: unknown) {
-      if (apiErrorRefused(error)) {
-        // Refused, it was not made and never will be: the window takes typing again, saying why.
-        if (key !== null) forgetCreation(key)
-        const moved = releaseMoved(error)
-        if (moved) useAppStore.getState().noteReleaseChanged()
-        update({
-          status: "editing",
-          kept: null,
-          error: apiErrorMessage(error),
-          taken: apiErrorCode(error) === "reference_taken" ? takenBy(error) : null,
-          releaseMoved: moved,
-        })
-      } else {
-        // No answer, or a server failure: it may have been made, so it stays kept.
-        update({ status: "unknown", error: apiErrorMessage(error) })
-      }
     }
+    // The window closes nothing while it sends (`shut`), and opens no other: its answer is always
+    // the window's.
+    await answer([under(fills)], createAppQuote({ operation, form_revision, release, values }, source, reference), {
+      ok: async (made) => {
+        letGo()
+        const done = get().shown
+        set({ shown: null })
+        const savedAsNew = done?.savedFrom != null
+        // Saved as new: the open quote's values kept in this browser are in the new quote now.
+        if (done?.savedFrom != null) {
+          const { draftKey, values: sheets } = done.savedFrom
+          const draft = draftKey === null ? null : readDraft(draftKey)
+          if (draftKey !== null && draft !== null && valuesKey(draft.values) === valuesKey(sheets)) clearDraft(draftKey)
+          useToastStore.getState().addToast("success", `Saved as ${made.quote.label}`)
+        }
+        // Answered once the page moved on, Back included, the quote is made and the page stays,
+        // as it does when the leave guard keeps the quote behind the window: either says so.
+        const opened = here() === sentFrom && (await navigate(quotePath(made.quote.reference, made.quote.option), { force: savedAsNew })) === "moved"
+        if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${made.quote.label}`)
+      },
+      failed: (error) => {
+        if (apiErrorRefused(error)) {
+          // Refused, it was not made and never will be: the window takes typing again, saying why.
+          letGo()
+          const moved = releaseMoved(error)
+          if (moved) useAppStore.getState().noteReleaseChanged()
+          update({
+            status: "editing",
+            kept: null,
+            error: apiErrorMessage(error),
+            taken: apiErrorCode(error) === "reference_taken" ? takenBy(error) : null,
+            releaseMoved: moved,
+          })
+        } else {
+          // No answer, or a server failure: it may have been made, so it stays kept.
+          update({ status: "unknown", error: apiErrorMessage(error) })
+        }
+      },
+    })
   }
 
   const offerKept = (): boolean => {
@@ -280,18 +288,17 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
       const named = options.label === undefined ? "quote" : options.label
       const title = from.relation === "renewal" ? `Renew ${named}` : `Duplicate ${named}`
       const source = { reference: from.reference, option: from.option, relation: from.relation }
-      const ticket = fills.take()
+      const belongsTo = [newest(fills)] as const
       set({ shown: { ...opened(title, {}, source, options.addressed ?? false), status: "loading" } })
-      try {
-        // Its values on the current sheets, without the details the app set for it.
-        const read = await openAppQuote(from.reference, from.option)
-        if (!fills.is(ticket)) return
-        const values = withoutAppDetails(read.values as Values)
-        const base = from.relation === "renewal" ? asRenewal(values) : values
-        update({ status: "editing", base, details: typedDetails(base), dropped: read.dropped })
-      } catch (error: unknown) {
-        if (fills.is(ticket)) update({ status: "failed", error: apiErrorMessage(error) })
-      }
+      // Its values on the current sheets, without the details the app set for it.
+      await answer(belongsTo, openAppQuote(from.reference, from.option), {
+        ok: (read) => {
+          const values = withoutAppDetails(read.values as Values)
+          const base = from.relation === "renewal" ? asRenewal(values) : values
+          update({ status: "editing", base, details: typedDetails(base), dropped: read.dropped })
+        },
+        failed: (error) => update({ status: "failed", error: apiErrorMessage(error) }),
+      })
     },
 
     openSaveAsNew: () => {

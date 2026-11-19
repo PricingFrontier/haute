@@ -1,10 +1,12 @@
 import { useState } from "react"
 
 import { setWorkingBranch } from "../api/client"
-import useGitStore from "../stores/useGitStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import useUIStore from "../stores/useUIStore"
+import { answer, ask, under } from "../utils/answers"
 import { ModalFormActions, ModalFormHeader } from "./ModalForm"
 import ModalShell from "./ModalShell"
 
@@ -29,6 +31,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const addToast = useToastStore((s) => s.addToast)
   const [busy, setBusy] = useState(false)
+  const life = useRequestKind()
 
   const recorded = status?.working_branch ?? "(unknown)"
   const current = status?.current_branch ?? "(unknown)"
@@ -45,18 +48,25 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
       return
     }
     const target = choice === "home" ? recorded : current
-    setBusy(true)
+    // The switch and what it tells the app belong to the git store; going on to the queued
+    // action belongs to this dialog, which a close ends.
+    const here = ask([under(life)])
     try {
-      await setWorkingBranch(target, false)
-      await loadStatus({ refresh: true }) // not a read begun before the action
-      addToast("success", `Working branch set to ${target}`)
-      onConfirmed()
-    } catch (err: unknown) {
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Could not switch working branch: ${detail}`)
-      void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
+      await answer([gitStorePart()], setWorkingBranch(target, false), {
+        ok: (_, asked) => asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
+          ok: () => {
+            addToast("success", `Working branch set to ${target}`)
+            here.apply(onConfirmed)
+          },
+        }),
+        failed: (err) => {
+          const detail = apiErrorMessage(err, "unknown error")
+          addToast("error", `Could not switch working branch: ${detail}`)
+          void loadStatus({ refresh: true }) // a held file can leave the clone interrupted
+        },
+      }, { inFlight: setBusy })
     } finally {
-      setBusy(false)
+      here.release()
     }
   }
 

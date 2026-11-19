@@ -27,6 +27,8 @@ import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import useToastStore from "../stores/useToastStore"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
+import { answer, newest, watch } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 
 type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((edges: Edge[]) => Edge[]), submodels: Record<string, unknown>) => void
 
@@ -157,7 +159,7 @@ export default function useSubmodelBoundaryEditing({
   resolveGraphIdentities = resolveEditorGraphIdentities,
 }: UseSubmodelBoundaryEditingParams) {
   const addToast = useToastStore((store) => store.addToast)
-  const identityRequestSerialRef = useRef(0)
+  const identityRequests = useRequestKind()
   // An edit waiting for server names, prepared at one semantic generation of
   // the document: it commits, and later boundary gestures build on it, only while
   // that generation is current.
@@ -216,7 +218,8 @@ export default function useSubmodelBoundaryEditing({
     result: SubmodelBoundaryEditResult,
     onSettled?: (committed: boolean) => void,
   ): boolean => {
-    const serial = ++identityRequestSerialRef.current
+    // The newest boundary edit's identities win; one a newer edit overtook settles quietly.
+    const newestEdit = newest(identityRequests)
     if (parentOccurrenceHandlesAreResolved(result)) {
       pendingBoundaryCandidateRef.current = null
       commit(result)
@@ -230,70 +233,60 @@ export default function useSubmodelBoundaryEditing({
       definitionId: result.definitionId,
     }
     pendingBoundaryCandidateRef.current = candidate
-    void resolveGraphIdentities({
+    const dropCandidate = () => {
+      if (pendingBoundaryCandidateRef.current === candidate) pendingBoundaryCandidateRef.current = null
+    }
+    // A semantic edit, Undo, Redo, navigation or a reload made meanwhile, even one back to
+    // identical content, voids the candidate; moving nodes does not.
+    const workspace = watch(useGraphStore, ({ focus, semanticGeneration }) => JSON.stringify([focus?.instanceId ?? null, focus?.definitionId ?? null, semanticGeneration]))
+    void answer([newestEdit, workspace], resolveGraphIdentities({
       nodes: result.parentNodes,
       edges: result.parentEdges,
       submodels: result.submodels,
       reservedApiInputFrameLabels,
-    }).then((resolved) => {
-      if (
-        identityRequestSerialRef.current !== serial
-      ) {
-        onSettled?.(false)
-        return
-      }
-      // A semantic edit, Undo, Redo, navigation or a reload made meanwhile, even one
-      // back to identical content, voids the candidate; moving nodes does not.
-      const { focus, semanticGeneration } = useGraphStore.getState()
-      if (
-        focus === null
-        || semanticGeneration !== candidate.generation
-        || focus.instanceId !== candidate.instanceId
-        || focus.definitionId !== candidate.definitionId
-      ) {
-        if (pendingBoundaryCandidateRef.current === candidate) {
-          pendingBoundaryCandidateRef.current = null
+    }), {
+      ok: (resolved) => {
+        dropCandidate()
+        const focus = useGraphStore.getState().focus
+        if (focus === null) throw new Error("A boundary edit's identities answered with no submodel open")
+        const previousParent = { nodes: focus.rootNodes, edges: focus.rootEdges, submodels: useGraphStore.getState().submodels }
+        const rebound = reconcileGraphInputBindings(previousParent, {
+          nodes: resolved.nodes, edges: resolved.edges, submodels: result.submodels,
+        })
+        if (!rebound.ok) {
+          reportBoundaryError(new Error(rebound.error))
+          onSettled?.(false)
+          return
         }
-        reportBoundaryError(
-          new Error("the workspace changed while parent identities were resolving"),
-        )
+        commit(withCurrentLayout({
+          ...result,
+          parentNodes: rebound.nodes,
+          parentEdges: rebound.edges,
+        }))
+        onSettled?.(true)
+      },
+      failed: (error) => {
+        dropCandidate()
+        reportBoundaryError(error)
         onSettled?.(false)
-        return
-      }
-      if (pendingBoundaryCandidateRef.current === candidate) {
-        pendingBoundaryCandidateRef.current = null
-      }
-      const previousParent = { nodes: focus.rootNodes, edges: focus.rootEdges, submodels: useGraphStore.getState().submodels }
-      const rebound = reconcileGraphInputBindings(previousParent, {
-        nodes: resolved.nodes, edges: resolved.edges, submodels: result.submodels,
-      })
-      if (!rebound.ok) throw new Error(rebound.error)
-      commit(withCurrentLayout({
-        ...result,
-        parentNodes: rebound.nodes,
-        parentEdges: rebound.edges,
-      }))
-      onSettled?.(true)
-    }).catch((error: unknown) => {
-      if (identityRequestSerialRef.current !== serial) {
+      },
+      stale: () => {
+        if (newestEdit.holds()) {
+          dropCandidate()
+          reportBoundaryError(new Error("the workspace changed while parent identities were resolving"))
+        }
         onSettled?.(false)
-        return
-      }
-      if (pendingBoundaryCandidateRef.current === candidate) {
-        pendingBoundaryCandidateRef.current = null
-      }
-      reportBoundaryError(error)
-      onSettled?.(false)
+      },
     })
     return false
   }, [
     commit,
+    identityRequests,
     reportBoundaryError,
     reservedApiInputFrameLabels,
     resolveGraphIdentities,
   ])
   useEffect(() => () => {
-    identityRequestSerialRef.current += 1
     pendingBoundaryCandidateRef.current = null
   }, [])
   const commitBoundaryConnection = useCallback((connection: Connection): boolean => {

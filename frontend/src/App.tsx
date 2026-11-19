@@ -17,6 +17,7 @@ import {
 import "@xyflow/react/dist/style.css"
 
 import { restoreVersion } from "./api/client"
+import { apiErrorMessage } from "./api/errors"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
@@ -26,7 +27,7 @@ import DataPreview, { type PreviewData } from "./panels/DataPreview"
 import ExplorePreview from "./panels/ExplorePreview"
 
 import { TraceStatePanel } from "./panels/TraceStatePanel"
-import type { ProjectFilePlace } from "./api/types"
+import type { GitWorkingBranchResponse, ProjectFilePlace } from "./api/types"
 import type { TraceResult } from "./types/trace"
 import QuestionDialog from "./components/QuestionDialog"
 import ToastContainer from "./components/Toast"
@@ -85,7 +86,7 @@ import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
 import { PreviewRunContext, type PreviewRun } from "./panels/previewRunContext"
 import InputImportButton from "./components/InputImportButton"
 import AskAssistantButton from "./components/AskAssistantButton"
-import useDocumentStatusStore, { documentReadOnlyReason } from "./stores/useDocumentStatusStore"
+import useDocumentStatusStore, { documentPart, documentReadOnlyReason } from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import {
@@ -112,6 +113,8 @@ import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
 import { serial } from "./utils/serial"
+import { answer, ask, newest, watch, type Asked, type Part, type Settled } from "./utils/answers"
+import { useRequestKind } from "./hooks/useRequestKind"
 import { PaletteRevealStrip } from "./haute-ui"
 
 // ---------------------------------------------------------------------------
@@ -524,11 +527,17 @@ function FlowEditorOverlays({
         <SubmodelDialog
           nodeCount={submodelDialog.nodeIds.length}
           onClose={() => setSubmodelDialog(null)}
-          onSubmit={async (name) => {
-            const result = await onCreateSubmodel(name, submodelDialog.nodeIds)
-            // A refused name keeps the dialog open with it, showing why.
-            if (result.ok) setSubmodelDialog(null)
-            return result
+          onSubmit={(name) => {
+            const created = onCreateSubmodel(name, submodelDialog.nodeIds)
+            // A refused name keeps the dialog open with it, showing why; a dialog closed or
+            // opened again since is not this one to close.
+            void answer([watch(useUIStore, (state) => state.submodelDialog)], created, {
+              ok: (result) => {
+                if (result.ok) setSubmodelDialog(null)
+              },
+              failed: () => undefined, // the dialog says why
+            })
+            return created
           }}
         />
       )}
@@ -536,10 +545,15 @@ function FlowEditorOverlays({
         <RenameDialog
           defaultValue={renameDialog.currentLabel}
           onCancel={() => setRenameDialog(null)}
-          onConfirm={async (newName) => {
-            const result = await onRenameNode(renameDialog.nodeId, newName)
-            if (result.ok) setRenameDialog(null)
-            return result
+          onConfirm={(newName) => {
+            const renamed = onRenameNode(renameDialog.nodeId, newName)
+            void answer([watch(useUIStore, (state) => state.renameDialog)], renamed, {
+              ok: (result) => {
+                if (result.ok) setRenameDialog(null)
+              },
+              failed: () => undefined, // the dialog says why
+            })
+            return renamed
           }}
         />
       )}
@@ -1039,6 +1053,7 @@ function FlowEditor() {
     nodeIdCounter,
   })
 
+  const readinessAsked = useRequestKind()
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
   // modal). A healthy clone fires nothing. After a restore's reload, say what was
@@ -1049,16 +1064,20 @@ function FlowEditor() {
       sessionStorage.removeItem(JUST_RESTORED_KEY)
       addToast("success", `Restored ${justRestored} as a new save.`)
     }
-    void loadGitReadiness().then((st) => {
-      if (!st) return
-      const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted"
-      // The branch chooser lists the pairs a crash split, with their Repair; when it does
-      // not open, they are reported here.
-      if (quiet || st.state === "divergent") reportBrokenPairs(st.broken_pairs)
-      if (quiet) return
-      useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
+    const asked = ask([newest(readinessAsked)])
+    void asked.answer(loadGitReadiness(), {
+      ok: (st) => {
+        if (!st) return
+        const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted"
+        // The branch chooser lists the pairs a crash split, with their Repair; when it does
+        // not open, they are reported here.
+        if (quiet || st.state === "divergent") reportBrokenPairs(st.broken_pairs)
+        if (quiet) return
+        useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
+      },
     })
-  }, [loadGitReadiness, addToast])
+    return () => asked.release()
+  }, [loadGitReadiness, addToast, readinessAsked])
 
   const handleDocumentReloadRef = useRef<(() => void) | null>(null)
   const wsStatus = useWebSocketSync({
@@ -1424,68 +1443,108 @@ function FlowEditor() {
   // enabled and never on start.
   const saveProjectNow = useCallback(async (): Promise<boolean> => {
     // The fence that disables Save in both toolbars, and the pipeline save's own
-    // checks, read as they are now: before the form is saved, and again after each
-    // wait, since the assistant's turn can start or the document can change while the
-    // save waits. A save asked for during the assistant's turn or of a document that
-    // cannot be saved is refused by the pipeline's save anyway; refused before the form
-    // is saved it never saves the form ahead of a pipeline that is not, and refused
-    // after, it saves no pipeline on a fence that closed meanwhile.
-    const refused = (): boolean => {
+    // checks: the save is asked under them, so the assistant's turn starting or the
+    // document changing while it waits refuses it, saying why, before the next step. A
+    // save asked for during the assistant's turn or of a document that cannot be saved is
+    // refused by the pipeline's save anyway; refused before the form is saved it never
+    // saves the form ahead of a pipeline that is not, and refused after, it saves no
+    // pipeline on a fence that closed meanwhile.
+    const refusal = (): string | null => {
       if (useUIStore.getState().assistantTurn !== null) {
-        addToast("error", "The assistant is working on the pipeline: wait for its turn to finish, then save.")
-        return true
+        return "The assistant is working on the pipeline: wait for its turn to finish, then save."
       }
       const documentStatus = useDocumentStatusStore.getState()
       const capabilities = documentStatus.capabilities
       if (capabilities?.can_mutate !== true || capabilities.can_save !== true || !documentStatus.graphSynchronized) {
-        addToast("error", documentReadOnlyReason())
-        return true
+        return documentReadOnlyReason()
       }
+      return null
+    }
+    const refuse = () => {
+      const reason = refusal()
+      if (reason !== null) addToast("error", reason)
+    }
+    if (refusal() !== null) {
+      refuse()
       return false
     }
-    if (refused()) return false
+    const savable: Part = {
+      holds: () => refusal() === null,
+      subscribe: (listener) => {
+        const ui = useUIStore.subscribe(listener)
+        const document = useDocumentStatusStore.subscribe(listener)
+        return () => {
+          ui()
+          document()
+        }
+      },
+    }
+    const said = (error: string) => addToast("error", error)
+    const workbench = useWorkbenchStore.getState()
+    let saved = false
     // The values still being typed in the panels and the workbench's form are committed
     // first, so the form saved is the one on screen.
-    const settled = await settleEdits()
-    if (!settled.ok) {
-      addToast("error", settled.error)
-      return false
-    }
-    if (refused()) return false
-    // What earlier writes left off the ledger is captured first; a capture that fails
-    // says so, and the project is saved all the same.
-    await captureUncaptured()
-    const workbench = useWorkbenchStore.getState()
-    if (workbench.enabled) {
+    await answer([savable], settleEdits(), {
+      ok: async (settled, asked) => {
+        if (!settled.ok) return said(settled.error)
+        // What earlier writes left off the ledger is captured first; a capture that fails
+        // says so, and the project is saved all the same.
+        await asked.answer(captureUncaptured(), {
+          ok: async () => {
+            await asked.answer(saveForm(asked), {
+              ok: async (formSaved) => {
+                if (!formSaved) return
+                // Through the same barrier again, as edits can be made while the save waits:
+                // a value still being typed is committed and an update of a node still
+                // resolving its identity lands or fails before the pipeline is saved, and a
+                // failure saves nothing.
+                await asked.answer(settleEdits(), {
+                  ok: async (pending) => {
+                    if (!pending.ok) return said(pending.error)
+                    // The connections held to the tables just fetched at once, rather than on
+                    // a render: one an undo put back while the save waited goes too.
+                    if (workbench.enabled && !holdConnections()) return said(WORKBENCH_TABLES_UNREAD)
+                    saved = await handleSave()
+                  },
+                  stale: refuse,
+                })
+              },
+              stale: refuse,
+            })
+          },
+          stale: refuse,
+        })
+      },
+      stale: refuse,
+    })
+    return saved
+
+    /**
+     * The workbench's form saved first, and its tables read again for the connections the
+     * pipeline holds to them: whether the pipeline may be saved. A form save refused (stale,
+     * or failed) saves no pipeline: what is saved runs on the form that was saved, never
+     * over a form the view does not show.
+     */
+    async function saveForm(asked: Asked): Promise<boolean> {
+      if (!workbench.enabled) return true
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
-      // A form save refused (stale, or failed) saves no pipeline: what is saved runs on
-      // the form that was saved, never over a form the view does not show.
-      if (!(await formStore.getState().flush())) return false
-      if (refused()) return false
-      workbench.refreshTables()
-      const read = await workbench.awaitTables()
-      if (refused()) return false
-      if (!read) {
-        addToast("error", WORKBENCH_TABLES_UNREAD)
-        return false
-      }
+      let read = false
+      await asked.answer(formStore.getState().flush(), {
+        ok: async (flushed) => {
+          if (!flushed) return
+          workbench.refreshTables()
+          await asked.answer(workbench.awaitTables(), {
+            ok: (tables) => {
+              if (tables) read = true
+              else said(WORKBENCH_TABLES_UNREAD)
+            },
+            stale: refuse,
+          })
+        },
+        stale: refuse,
+      })
+      return read
     }
-    // Through the same barrier again, as edits can be made while the save waits: a value
-    // still being typed is committed and an update of a node still resolving its identity
-    // lands or fails before the pipeline is saved, and a failure saves nothing.
-    const pending = await settleEdits()
-    if (!pending.ok) {
-      addToast("error", pending.error)
-      return false
-    }
-    if (refused()) return false
-    // The connections held to the tables just fetched at once, rather than on a render:
-    // one an undo put back while the save waited goes too.
-    if (workbench.enabled && !holdConnections()) {
-      addToast("error", WORKBENCH_TABLES_UNREAD)
-      return false
-    }
-    return handleSave()
   }, [addToast, handleSave, holdConnections, settleEdits])
   const saveProjectNowRef = useRef(saveProjectNow)
   useEffect(() => { saveProjectNowRef.current = saveProjectNow }, [saveProjectNow])
@@ -1498,34 +1557,41 @@ function FlowEditor() {
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.
   const flushSaveThenMilestone = useCallback(async () => {
-    const ok = await saveProject()
-    if (ok) useGitStore.getState().openModal("milestone")
+    await answer([documentPart()], saveProject(), {
+      ok: (saved) => {
+        if (saved) useGitStore.getState().openModal("milestone")
+      },
+    })
   }, [saveProject])
 
   // Save-gate: resolve Git readiness before deciding whether to save now or
   // queue the action behind branch/divergence setup. Save is the project's
   // save, the same from either toolbar and from Ctrl/Cmd+S.
   const requestSave = useCallback(async () => {
-    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
-      void saveProject()
-      return
+    const decide = (st: GitWorkingBranchResponse | null) => {
+      if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
+        void saveProject()
+        return
+      }
+      // An operation stopped part-way: a save would record the files as it left them,
+      // and no branch choice finishes it.
+      if (st.state === "interrupted") {
+        addToast("error", interruptedRefusal(st.errors[0], "saving"))
+        return
+      }
+      useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+        pendingAction: "save",
+      })
     }
-    // An operation stopped part-way: a save would record the files as it left them,
-    // and no branch choice finishes it.
-    if (st.state === "interrupted") {
-      addToast("error", interruptedRefusal(st.errors[0], "saving"))
-      return
-    }
-    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
-      pendingAction: "save",
-    })
+    const known = useGitStore.getState().status
+    if (known) decide(known)
+    else await answer([documentPart()], useGitStore.getState().loadStatus(), { ok: decide })
   }, [addToast, saveProject])
 
   // Commit uses the same readiness gate, but a ready repository first flushes
   // the fenced graph and only then opens the milestone modal.
-  const requestCommit = useCallback(async () => {
-    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+
+  const decideCommit = useCallback((st: GitWorkingBranchResponse | null) => {
     if (st === null) {
       const detail = useGitStore.getState().statusError
       addToast("error", detail ? `Git unavailable: ${detail}` : "Git readiness is unavailable - commit is disabled.")
@@ -1552,6 +1618,12 @@ function FlowEditor() {
     })
   }, [addToast, flushSaveThenMilestone])
 
+  const requestCommit = useCallback(async () => {
+    const known = useGitStore.getState().status
+    if (known) decideCommit(known)
+    else await answer([documentPart()], useGitStore.getState().loadStatus(), { ok: decideCommit })
+  }, [decideCommit])
+
   const handleGitModalConfirmed = useCallback(() => {
     const pending = useGitStore.getState().pendingAction
     useGitStore.getState().closeModal()
@@ -1566,23 +1638,30 @@ function FlowEditor() {
     async (saveFirst: boolean) => {
       const { restoreTarget: target, closeRestore } = useGitStore.getState()
       if (!target) return
-      try {
-        if (saveFirst && !await saveProject()) {
-          addToast("error", "Save failed - staying on the current version.")
-          closeRestore()
-          return
-        }
-        await restoreVersion(target.sha)
+      // A restore that landed reloads the page, whatever came of the canvas meanwhile, so
+      // the client starts again from the files on disk; one refused says why.
+      const restored = () => {
         sessionStorage.setItem(JUST_RESTORED_KEY, target.label)
         window.location.reload()
-      } catch (err: unknown) {
-        const { apiErrorMessage } = await import("./api/errors")
-        const detail = apiErrorMessage(err, "unknown error")
-        addToast("error", `Could not restore this version: ${detail}`)
+      }
+      const refused = (err: unknown) => {
+        addToast("error", `Could not restore this version: ${apiErrorMessage(err, "unknown error")}`)
         closeRestore()
         // A restore stopped by a file held open leaves the clone interrupted.
         void useGitStore.getState().loadStatus({ refresh: true })
       }
+      const settle = (settled: Settled<unknown>) => ("value" in settled ? restored() : refused(settled.error))
+      await answer([documentPart()], saveFirst ? saveProject() : Promise.resolve(true), {
+        ok: async (saved, asked) => {
+          if (!saved) {
+            addToast("error", "Save failed - staying on the current version.")
+            closeRestore()
+            return
+          }
+          await asked.answer(restoreVersion(target.sha), { ok: restored, failed: refused, stale: settle })
+        },
+        failed: refused,
+      })
     },
     [addToast, saveProject],
   )
@@ -1677,9 +1756,10 @@ function FlowEditor() {
       return
     }
     if (toolbarDissolveInFlightRef.current) return
-    toolbarDissolveInFlightRef.current = true
-    void handleDissolveSubmodel(selectedSubmodelId).finally(() => {
-      toolbarDissolveInFlightRef.current = false
+    void answer([documentPart()], handleDissolveSubmodel(selectedSubmodelId), {}, {
+      inFlight: (flying) => {
+        toolbarDissolveInFlightRef.current = flying
+      },
     })
   }, [selectedSubmodelId, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
   const handleToolbarCreateInstance = useCallback(() => {

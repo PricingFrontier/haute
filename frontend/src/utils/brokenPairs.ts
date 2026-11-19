@@ -7,8 +7,9 @@
 import { repairBranchPair } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { GitBrokenPair, GitWorkingBranchResponse } from "../api/types"
-import useGitStore from "../stores/useGitStore"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
+import { answer, type Asked } from "./answers"
 
 /** What went wrong with *pair*, in the analyst's words. */
 export function brokenPairText(pair: GitBrokenPair): string {
@@ -30,14 +31,25 @@ export function reportBrokenPairs(pairs: GitBrokenPair[]): void {
  *  read after the repair is the answer. */
 export async function repairBrokenPair(pair: GitBrokenPair): Promise<GitWorkingBranchResponse | null> {
   const { addToast } = useToastStore.getState()
-  try {
-    const repaired = await repairBranchPair(pair.ledger)
-    addToast("success", `Repaired ${repaired.working}`)
-  } catch (err) {
-    addToast("error", `Could not repair ${pair.working}: ${apiErrorMessage(err, "unknown error")}`)
+  let status: GitWorkingBranchResponse | null = null
+  const readAgain = (asked: Asked) => {
+    const git = useGitStore.getState()
+    return asked.answer(git.loadStatus({ refresh: true }), { // not a read begun before the repair
+      ok: (read) => {
+        status = read
+        git.notifyHistoryChanged()
+      },
+    })
   }
-  const git = useGitStore.getState()
-  const status = await git.loadStatus({ refresh: true }) // not a read begun before the repair
-  git.notifyHistoryChanged()
+  await answer([gitStorePart()], repairBranchPair(pair.ledger), {
+    ok: (repaired, asked) => {
+      addToast("success", `Repaired ${repaired.working}`)
+      return readAgain(asked)
+    },
+    failed: (err, asked) => {
+      addToast("error", `Could not repair ${pair.working}: ${apiErrorMessage(err, "unknown error")}`)
+      return readAgain(asked)
+    },
+  })
   return status
 }

@@ -7,6 +7,8 @@ import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import { columnFingerprint } from "../utils/columnFingerprint"
+import { ask, newest } from "../utils/answers"
+import { useRequestKind } from "./useRequestKind"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 
 type DataInputColumn = { name: string; dtype: string }
@@ -94,6 +96,7 @@ export function useDataInputColumns(
   // Read cache state via refs so the fetch effect doesn't re-fire when the
   // store is updated with fresh columns (which would cause an infinite loop:
   // effect fires → setColumnsCache → cachedColumns changes → effect re-fires).
+  const columnReads = useRequestKind()
   const cachedColumnsRef = useRef(cachedColumns)
   const isCacheFreshRef = useRef(isCacheFresh)
   useEffect(() => { cachedColumnsRef.current = cachedColumns }, [cachedColumns])
@@ -144,22 +147,21 @@ export function useDataInputColumns(
       prevColumnFingerprint.current = fallbackColumnsFingerprint
       setDataInputColumns(fallbackColumnsRef.current)
     }
-    // Abort in-flight request when deps change (prevents stale responses overwriting fresh data)
-    const controller = new AbortController()
-    // Fetch fresh columns (cached value shown meanwhile)
+    // The read belongs to this run of the effect: when its inputs change it is let go, and
+    // aborted, so a stale response never overwrites fresh data. Cached columns show meanwhile.
+    const asked = ask([newest(columnReads)])
     const requestStructuralVersion = structuralVersion
-    Promise.resolve()
-      .then(() => {
-        const target = prepareNodeRequest(requestScope, canvasTarget(dataInput))
-        return previewNode({
-          graph: target.graph,
-          target: target.wireTarget,
-          rowLimit: 1,
-          source: activeSource,
-          signal: controller.signal,
-        })
+    void asked.answer((signal) => {
+      const target = prepareNodeRequest(requestScope, canvasTarget(dataInput))
+      return previewNode({
+        graph: target.graph,
+        target: target.wireTarget,
+        rowLimit: 1,
+        source: activeSource,
+        signal,
       })
-      .then((result) => {
+    }, {
+      ok: (result) => {
         const fingerprint = columnFingerprint(result.columns)
         // Only update local state if columns actually changed (avoids re-render cascade)
         if (fingerprint !== prevColumnFingerprint.current) {
@@ -167,14 +169,14 @@ export function useDataInputColumns(
           setDataInputColumns(result.columns)
         }
         setColumnsCache(inputKey, result.columns, requestStructuralVersion, activeSource)
-      })
-      .catch((e) => {
-        if (e instanceof DOMException && e.name === "AbortError") return
+      },
+      failed: (e) => {
         const detail = e instanceof Error ? e.message : String(e)
         addToast("warning", `Column fetch failed for "${dataInput}": ${detail}`)
         if (!cachedColumnsRef.current) setDataInputColumns([])
-      })
-    return () => controller.abort()
+      },
+    })
+    return () => asked.release()
     // cachedColumns and isCacheFresh intentionally read via refs to break the
     // store-update → effect-refire loop.  The effect should only re-run when
     // the *inputs* change (dataInput, graph structure, source), not when the
@@ -193,6 +195,7 @@ export function useDataInputColumns(
     addToast,
     enabled,
     fallbackColumnsFingerprint,
+    columnReads,
   ])
 
   return shown.key === cacheKey ? shown.columns : initialColumns

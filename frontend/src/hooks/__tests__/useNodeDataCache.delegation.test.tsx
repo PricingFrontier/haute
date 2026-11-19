@@ -281,6 +281,53 @@ describe("delegated data-point builds", () => {
     )
   })
 
+  it("keeps the control of a build Stop came before the start of, whose cancellation failed", async () => {
+    answerPoint("missing")
+    mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
+    let admit: (started: unknown) => void = () => {}
+    mockBuildInputCache.mockImplementation(() => new Promise((resolve) => {
+      admit = resolve as never
+    }))
+    mockInputCacheJob.mockResolvedValue({ status: "running", message: "Building" } as never)
+    mockCancelInputCacheJob.mockRejectedValue(new Error("the server is unreachable"))
+    const banding = renderConsumer("banding")
+    await waitFor(() => expect(banding.result.current.availability).toBe("missing"))
+
+    const building = act(async () => {
+      await banding.result.current.run()
+    })
+    await waitFor(() => expect(mockBuildInputCache).toHaveBeenCalled())
+    // Stop while the server has not yet said which job it admitted.
+    await act(async () => {
+      await banding.result.current.cancel()
+    })
+    await act(async () => {
+      admit({ job_id: "input-job-5", status: "running", joined: false })
+    })
+    await building
+
+    expect(mockCancelInputCacheJob).toHaveBeenCalledWith("input-job-5")
+    const retained = useNodeDataStore.getState().slots["source||live"].delegatedBuild
+    expect(retained?.message).toMatch(/cancel it again/i)
+    expect(banding.result.current.availability).toBe("building")
+
+    mockCancelInputCacheJob.mockResolvedValue({
+      job_id: "input-job-5",
+      cancellation_requested: true,
+      status: "cancelled",
+    } as never)
+    mockInputCacheJob.mockResolvedValue({ status: "cancelled", message: "Cancelled" } as never)
+    await act(async () => {
+      retained?.cancel()
+      await Promise.resolve()
+    })
+
+    expect(mockCancelInputCacheJob).toHaveBeenLastCalledWith("input-job-5")
+    await waitFor(() =>
+      expect(useNodeDataStore.getState().slots["source||live"].delegatedBuild).toBeNull(),
+    )
+  })
+
   it("reports a build that never stops after it was cancelled, keeping its control", async () => {
     vi.useFakeTimers()
     try {

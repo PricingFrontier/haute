@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { useState } from "react"
+import { StrictMode, useState } from "react"
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react"
 import { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "../_DatabricksSelector"
 
@@ -87,6 +87,15 @@ describe("WarehousePicker", () => {
       expect.stringContaining("Dev Warehouse"),
     ])
     expect(mockGetWarehouses).toHaveBeenCalledTimes(1)
+  })
+
+  it("reads again when StrictMode mounts it a second time, and selects a sole warehouse", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses: [warehouses[0]] })
+    const onSelect = vi.fn()
+    render(<StrictMode><WarehousePicker httpPath="" onSelect={onSelect} /></StrictMode>)
+
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("/sql/1.0/warehouses/abc"))
+    expect(onSelect).toHaveBeenCalledTimes(1)
   })
 
   it("tags serverless warehouses", async () => {
@@ -385,6 +394,72 @@ describe("CatalogTablePicker", () => {
     expect(screen.getByText("Loading...")).toBeInTheDocument()
 
     await act(async () => { resolve!({ catalogs: catalogItems }) })
+  })
+
+  /** A list answer kept back, let go by the test. */
+  function heldAnswer<T>() {
+    let resolve!: (value: T) => void
+    let reject!: (error: unknown) => void
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+
+  async function chooseTwoCatalogs() {
+    mockGetCatalogs.mockResolvedValue({ catalogs: catalogItems })
+    const first = heldAnswer<{ schemas: typeof schemaItems }>()
+    const second = heldAnswer<{ schemas: typeof schemaItems }>()
+    mockGetSchemas.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const view = render(<CatalogTablePicker table="" onSelect={vi.fn()} />)
+    fireEvent.focus(getCatalogSelect())
+    await waitForCatalogOption("staging")
+    fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
+    fireEvent.change(getCatalogSelect(), { target: { value: "staging" } })
+    return { view, first, second }
+  }
+
+  it.each(["second first", "first last"])("lists the chosen catalog's schemas with the answers delivered %s", async (order) => {
+    const { first, second } = await chooseTwoCatalogs()
+    const mainSchemas = { schemas: [{ name: "main_only", comment: "" }] }
+    const stagingSchemas = { schemas: [{ name: "staging_only", comment: "" }] }
+    await act(async () => {
+      if (order === "second first") {
+        second.resolve(stagingSchemas)
+        first.resolve(mainSchemas)
+      } else {
+        first.resolve(mainSchemas)
+        second.resolve(stagingSchemas)
+      }
+    })
+    await waitForSchemaOption("staging_only")
+    expect(Array.from(getSchemaSelect().options).map((option) => option.value)).toEqual(["", "staging_only"])
+  })
+
+  it("shows no error of an older catalog's failure against the newer choice", async () => {
+    const { first, second } = await chooseTwoCatalogs()
+    await act(async () => {
+      second.resolve({ schemas: [{ name: "staging_only", comment: "" }] })
+      first.reject(new Error("main is unreachable"))
+    })
+    await waitForSchemaOption("staging_only")
+    expect(screen.queryByText("main is unreachable")).toBeNull()
+  })
+
+  it("drops a catalog's schemas, and their failure, once another catalog is shown without a choice", async () => {
+    mockGetCatalogs.mockResolvedValue({ catalogs: catalogItems })
+    const held = heldAnswer<{ schemas: typeof schemaItems }>()
+    mockGetSchemas.mockReturnValueOnce(held.promise)
+    const view = render(<CatalogTablePicker table="" onSelect={vi.fn()} />)
+    fireEvent.focus(getCatalogSelect())
+    await waitForCatalogOption("main")
+    fireEvent.change(getCatalogSelect(), { target: { value: "main" } })
+    // An Undo, or another editor, puts the table of another catalog in the config.
+    view.rerender(<CatalogTablePicker table="staging.default.users" onSelect={vi.fn()} />)
+    expect(getCatalogSelect().value).toBe("staging")
+    await act(async () => held.reject(new Error("main is unreachable")))
+    expect(screen.queryByText("main is unreachable")).toBeNull()
   })
 
   it("selecting a catalog fetches schemas and clears schema/table", async () => {

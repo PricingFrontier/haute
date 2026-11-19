@@ -1,5 +1,5 @@
 import { useRequestScope, useResultKey } from "../useGraph"
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 
 import { cancelExplorePivot, runExplorePivot } from "../../api/client"
 import type {
@@ -9,10 +9,7 @@ import type {
   JobStatus,
 } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
-import {
-  captureDocumentExecutionFence,
-  isDocumentExecutionFenceCurrent,
-} from "../../stores/useDocumentStatusStore"
+import { executionPart } from "../../stores/useDocumentStatusStore"
 import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
@@ -24,6 +21,7 @@ import {
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
 import { apiErrorMessage } from "../../api/errors"
+import { answer, ask, watch } from "../../utils/answers"
 import type { SimpleEdge, SimpleNode } from "../editors/_shared"
 import {
   pivotCalculationIdentity,
@@ -134,33 +132,6 @@ export default function useExplorePivotActions({
     [],
   )
 
-  // A superseding submission can overlap the one it replaced. The visible
-  // submitting flag belongs to the LATEST submission generation only: an
-  // obsolete request settling (in either order) never touches the flag, and
-  // the latest request settling clears it immediately — so a superseded
-  // request can neither strand the flag on nor clear it prematurely.
-  // Counted by the pivot's result key.
-  const submissionGenerations = useRef<Record<string, number>>({})
-  const beginSubmitting = useCallback(
-    (requestKey: string, pivotId: string): number => {
-      const key = explorePivotResultKey(requestKey, pivotId)
-      const generation = (submissionGenerations.current[key] ?? 0) + 1
-      submissionGenerations.current[key] = generation
-      setCardSubmitting(requestKey, pivotId, true)
-      return generation
-    },
-    [setCardSubmitting],
-  )
-  const endSubmitting = useCallback(
-    (requestKey: string, pivotId: string, generation: number) => {
-      // The counter is monotonic and never reset: deleting it here would let
-      // a later submission reuse an obsolete in-flight request's generation.
-      if (submissionGenerations.current[explorePivotResultKey(requestKey, pivotId)] !== generation) return
-      setCardSubmitting(requestKey, pivotId, false)
-    },
-    [setCardSubmitting],
-  )
-
   // Both are reached after the request's await, so they take the result key
   // the request was made under.
   const startStoredJob = useCallback(
@@ -228,8 +199,8 @@ export default function useExplorePivotActions({
       // Taken before the request and used after it.
       const requestKey = nodeKey
       const key = explorePivotResultKey(requestKey, pivot.id)
-      const documentFence = captureDocumentExecutionFence()
-      if (!isPivotConfigured(pivot) || !isDocumentExecutionFenceCurrent(documentFence)) {
+      const documentFence = executionPart()
+      if (!isPivotConfigured(pivot) || !documentFence.holds()) {
         if (autoClaimToken !== undefined) {
           useNodeResultsStore.getState().releaseExplorePivotStart(key, autoClaimToken)
         }
@@ -247,91 +218,22 @@ export default function useExplorePivotActions({
           )
       // Every submission owns a claim generation. A newer automatic target or
       // manual Retry replaces it, so a stale response never overwrites newer
-      // work shared by another mounted consumer.
-      const claimCurrent = () =>
-        useNodeResultsStore.getState().pivotStartClaims[key]?.token
-          === startToken && isDocumentExecutionFenceCurrent(documentFence)
+      // work shared by another mounted consumer. The visible submitting flag
+      // is the submission's while it is current: one replaced clears it at
+      // once, before the newer one sets it, and its late answer touches nothing.
+      const claimed = watch(
+        useNodeResultsStore,
+        (state) => state.pivotStartClaims[key]?.token,
+        (_, now) => now === startToken,
+      )
       setNotice(requestKey, pivot.id, null)
       // The graph reads the preamble from the store; listing it renews this callback.
       void allNodes
       void edges
       void submodels
       void preamble
-      const submissionGeneration = beginSubmitting(requestKey, pivot.id)
 
-      try {
-        // Inside an open submodel, the whole pipeline and the node's address.
-        const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
-        const response = await runExplorePivot({
-          graph: target.graph,
-          target: target.node,
-          pivot,
-          source: activeSource,
-        })
-        if (!claimCurrent()) return
-
-        if (response.status === "cache_required") {
-          const message = response.failure?.message ?? response.message
-          persistStartFailure(
-            pivot,
-            requestKey,
-            key,
-            calculationIdentity,
-            message,
-            "contract_error",
-            requestedDataVersion,
-            response.failure,
-          )
-          return
-        }
-
-        if (response.status === "completed") {
-          if (!response.result) {
-            throw new Error("Pivot completed without a result")
-          }
-          const jobId = response.job_id ?? `cached:${key}`
-          startStoredJob(
-            pivot,
-            requestKey,
-            key,
-            jobId,
-            calculationIdentity,
-            requestedDataVersion,
-          )
-          completeJob(key, jobId, response.result, {
-            status: "completed",
-            progress: 1,
-            message: response.message || "Completed",
-            result: response.result,
-            failure: null,
-            terminal_reason: "completed",
-            execution_metrics: response.result.execution_metrics,
-          })
-          return
-        }
-
-        if (!response.job_id) {
-          throw new Error("Pivot job did not return a job id")
-        }
-        startStoredJob(
-          pivot,
-          requestKey,
-          key,
-          response.job_id,
-          calculationIdentity,
-          requestedDataVersion,
-        )
-        updateProgress(key, response.job_id, {
-          status: "running",
-          progress: 0.05,
-          message: response.message || "Starting",
-          result: null,
-          failure: null,
-          terminal_reason: null,
-          execution_metrics: null,
-        })
-      } catch (error) {
-        if (!claimCurrent()) return
+      const startFailed = (error: unknown) => {
         const terminalReason = executionTerminalReasonFromError(error)
         persistStartFailure(
           pivot,
@@ -344,23 +246,107 @@ export default function useExplorePivotActions({
           null,
           executionMetricsFromError(error),
         )
-      } finally {
-        useNodeResultsStore.getState().releaseExplorePivotStart(key, startToken)
-        endSubmitting(requestKey, pivot.id, submissionGeneration)
       }
+
+      await answer([documentFence, claimed], async () => {
+        // Inside an open submodel, the whole pipeline and the node's address.
+        const target = prepareNodeRequest(requestScope, canvasTarget(node.id))
+        return runExplorePivot({
+          graph: target.graph,
+          target: target.node,
+          pivot,
+          source: activeSource,
+        })
+      }, {
+        // An answer the pivot cannot use is its start's failure, as a refused one is.
+        ok: (response) => {
+          try {
+            if (response.status === "cache_required") {
+              const message = response.failure?.message ?? response.message
+              persistStartFailure(
+                pivot,
+                requestKey,
+                key,
+                calculationIdentity,
+                message,
+                "contract_error",
+                requestedDataVersion,
+                response.failure,
+              )
+              return
+            }
+
+            if (response.status === "completed") {
+              if (!response.result) {
+                startFailed(new Error("Pivot completed without a result"))
+                return
+              }
+              const jobId = response.job_id ?? `cached:${key}`
+              startStoredJob(
+                pivot,
+                requestKey,
+                key,
+                jobId,
+                calculationIdentity,
+                requestedDataVersion,
+              )
+              completeJob(key, jobId, response.result, {
+                status: "completed",
+                progress: 1,
+                message: response.message || "Completed",
+                result: response.result,
+                failure: null,
+                terminal_reason: "completed",
+                execution_metrics: response.result.execution_metrics,
+              })
+              return
+            }
+
+            if (!response.job_id) {
+              startFailed(new Error("Pivot job did not return a job id"))
+              return
+            }
+            startStoredJob(
+              pivot,
+              requestKey,
+              key,
+              response.job_id,
+              calculationIdentity,
+              requestedDataVersion,
+            )
+            updateProgress(key, response.job_id, {
+              status: "running",
+              progress: 0.05,
+              message: response.message || "Starting",
+              result: null,
+              failure: null,
+              terminal_reason: null,
+              execution_metrics: null,
+            })
+          } catch (error: unknown) {
+            startFailed(error)
+          }
+        },
+        failed: startFailed,
+      }, {
+        pending: (waiting) => setCardSubmitting(requestKey, pivot.id, waiting),
+        // The start's claim is held until its answer settles, current or not.
+        inFlight: (flying) => {
+          if (!flying) useNodeResultsStore.getState().releaseExplorePivotStart(key, startToken)
+        },
+      })
     },
     [
       requestScope,
       activeSource,
       allNodes,
-      beginSubmitting,
       completeJob,
       edges,
-      endSubmitting,
       node.id,
       nodeKey,
       persistStartFailure,
       preamble,
+      setCardSubmitting,
       setNotice,
       startStoredJob,
       submodels,
@@ -373,25 +359,26 @@ export default function useExplorePivotActions({
       // Taken before the request and used after it.
       const requestKey = nodeKey
       const key = explorePivotResultKey(requestKey, pivot.id)
-      const documentFence = captureDocumentExecutionFence()
-      // The reply belongs to the job it cancelled: polling may have retired that
-      // job and another started, or the document changed, while it was pending.
-      const replyIsCurrent = () =>
-        isDocumentExecutionFenceCurrent(documentFence)
-        && useNodeResultsStore.getState().pivotJobs[key]?.jobId === jobId
+      const documentFence = executionPart()
+      // A failed cancellation's notice belongs to the job it cancelled: polling
+      // may have retired that job and another started while it was pending.
+      const job = ask([watch(useNodeResultsStore, (state) => state.pivotJobs[key]?.jobId, (_, now) => now === jobId)])
       setNotice(requestKey, pivot.id, null)
       try {
-        const response = await cancelExplorePivot(jobId)
-        if (!isDocumentExecutionFenceCurrent(documentFence)) return
-        if (response.status === "completed" && response.result) {
-          completeJob(key, jobId, response.result, response)
-        } else {
-          failJob(key, jobId, response.message || "Cancelled", response)
-        }
-      } catch (error) {
-        // A failed cancellation request does not prove the calculation stopped.
-        // Keep the active job so background polling can resolve it.
-        if (replyIsCurrent()) setNotice(requestKey, pivot.id, { message: apiErrorMessage(error) })
+        await answer([documentFence], cancelExplorePivot(jobId), {
+          ok: (response) => {
+            if (response.status === "completed" && response.result) {
+              completeJob(key, jobId, response.result, response)
+            } else {
+              failJob(key, jobId, response.message || "Cancelled", response)
+            }
+          },
+          // A failed cancellation request does not prove the calculation stopped.
+          // Keep the active job so background polling can resolve it.
+          failed: (error) => job.apply(() => setNotice(requestKey, pivot.id, { message: apiErrorMessage(error) })),
+        })
+      } finally {
+        job.release()
       }
     },
     [completeJob, failJob, nodeKey, setNotice],

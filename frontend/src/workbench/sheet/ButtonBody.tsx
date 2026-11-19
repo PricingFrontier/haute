@@ -2,11 +2,13 @@
 import { useState } from "react"
 import { apiErrorMessage } from "../../api/errors"
 import { exportWorkbenchFile } from "../../api/workbench"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import type { ExportWidget } from "../../api/types"
 import { downloadBlob } from "../../panels/editors/shared/tableClipboard"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
+import { answer, under } from "../../utils/answers"
 import { exportFormatShown, type ButtonWidget } from "../../utils/workbenchForm"
 import { useSheetValues } from "../useSheetValues"
 import { FORMAT_MARKS } from "../widgetKinds"
@@ -70,20 +72,17 @@ function ButtonFace({
 function CellsExportButton({ widget, colours, problem }: { widget: ExportWidget; colours: SheetColours; problem: string | null }) {
   const { price, basis } = useSheetValues()
   const [pressed, setPressed] = useState(false)
+  // A press answers while the button shows.
+  const shown = useRequestKind()
   const current = price !== null && price.basis === basis
   const disabled = problem !== null || !current || pressed
   const press = async () => {
     const { form } = useWorkbenchFormStore.getState()
     if (form === null || price === null) return
-    setPressed(true)
-    try {
-      const file = await exportWorkbenchFile(form, widget.id, price)
-      downloadBlob(file.blob, file.fileName)
-    } catch (error: unknown) {
-      useToastStore.getState().addToast("error", apiErrorMessage(error))
-    } finally {
-      setPressed(false)
-    }
+    await answer([under(shown)], () => exportWorkbenchFile(form, widget.id, price), {
+      ok: (file) => downloadBlob(file.blob, file.fileName),
+      failed: (error) => useToastStore.getState().addToast("error", apiErrorMessage(error)),
+    }, { pending: setPressed })
   }
   return <ButtonFace widget={widget} colours={colours} disabled={disabled} faded={disabled} onPress={() => void press()} />
 }

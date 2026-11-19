@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   GitBranch, Archive, Trash2, Plus, AlertTriangle,
   RotateCcw, ChevronRight, ChevronDown, ArrowRightLeft,
@@ -15,10 +15,12 @@ import {
   undeleteBranch,
 } from "../api/client"
 import type { GitDeletedBranch, GitManagedBranch } from "../api/types"
-import useGitStore from "../stores/useGitStore"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useDirtyNavigation from "../hooks/useDirtyNavigation"
-import { discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import { chosenOverParts, discardCanvasEdits, discardFormEdits } from "../hooks/useProjectDirty"
+import { useRequestKind } from "../hooks/useRequestKind"
 import useToastStore from "../stores/useToastStore"
+import { answer, ask, newest, under, type Asked } from "../utils/answers"
 import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
 import BrokenPairs from "./BrokenPairs"
@@ -75,23 +77,26 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
 
   // Persisted "don't ask again" for switching (loaded once; whole-environment).
   const [skipSwitchConfirm, setSkipSwitchConfirm] = useState(false)
+  const listings = useRequestKind()
+  const prefsAsked = useRequestKind()
+  const life = useRequestKind()
   // A save/commit can start a refresh while the mount request is still in
   // flight. Only the newest request may publish its branch flags; otherwise an
   // older dirty listing can restore badges that the newer request just cleared.
-  const refresh = useCallback(async () => {
-    try {
-      await loadBranches()
-    } catch (err) {
-      setActionError(`Failed to load branches: ${apiErrorMessage(err, "error")}`)
-    }
-  }, [loadBranches])
-
+  // The store keeps that order; here only the newest listing's failure is said.
   useEffect(() => {
-    void refresh()
-    void getGitPrefs()
-      .then((p) => setSkipSwitchConfirm(p.skip_switch_confirm))
-      .catch(() => {})
-  }, [refresh])
+    const listing = ask([newest(listings)])
+    void listing.answer(loadBranches(), {
+      failed: (err) => setActionError(`Failed to load branches: ${apiErrorMessage(err, "error")}`),
+    })
+    const prefs = ask([newest(prefsAsked)])
+    // A preference not read leaves the switch confirmation on.
+    void prefs.answer(getGitPrefs(), { ok: (p) => setSkipSwitchConfirm(p.skip_switch_confirm), failed: () => {} })
+    return () => {
+      listing.release()
+      prefs.release()
+    }
+  }, [loadBranches, listings, prefsAsked])
 
   // The toolbar branch name asks the manager to expand (S38).
   useEffect(() => {
@@ -102,12 +107,13 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   // milestone commits). The commit refresh is essential because the preceding
   // save refresh still sees its ledger entries as unmerged.
   useEffect(() => {
-    if (historyNonce > 0 || commitNonce > 0) {
-      void loadBranches({ refresh: true }).catch((err) => {
-        setActionError(`Failed to load branches: ${apiErrorMessage(err, "error")}`)
-      })
-    }
-  }, [historyNonce, commitNonce, loadBranches])
+    if (historyNonce === 0 && commitNonce === 0) return
+    const asked = ask([newest(listings)])
+    void asked.answer(loadBranches({ refresh: true }), {
+      failed: (err) => setActionError(`Failed to load branches: ${apiErrorMessage(err, "error")}`),
+    })
+    return () => asked.release()
+  }, [historyNonce, commitNonce, loadBranches, listings])
 
   // Right-click on a branch row: the row's actions as a context menu.
   const [rowMenu, setRowMenu] = useState<{ b: GitManagedBranch; x: number; y: number } | null>(
@@ -122,46 +128,58 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
     }
   }
 
-  const run = async (
+  // A branch op and what it tells the app (toasts, history entries, readiness)
+  // belong to the git store; the manager's own state (*here*), to the manager.
+  const run = async <T,>(
     name: string,
     verb: string,
-    fn: () => Promise<boolean | void>,
-    opts: { reloadOnDone?: boolean; reloadWhen?: (result: boolean | void) => boolean } = {},
+    request: Promise<T>,
+    landed: (result: T, here: Asked, asked: Asked) => unknown,
+    opts: { reloadWhen?: (result: T) => boolean; refused?: (err: unknown, here: Asked) => void } = {},
   ) => {
-    setBusy(name)
     setActionError(null)
-    try {
-      const result = await fn()
-      if (opts.reloadOnDone || opts.reloadWhen?.(result)) {
-        reloadApp()
-        return
-      }
-      await loadStatus({ refresh: true }) // not a read begun before the action
-      // A branch op changes the fork forest — nudge the Git panel to refetch
-      // its history + graph; BranchManager's nonce effect performs the one
-      // shared branch-list refresh.
-      useGitStore.getState().notifyHistoryChanged()
-    } catch (err) {
+    const here = ask([under(life)])
+    const refused = (err: unknown) => {
+      opts.refused?.(err, here)
       const detail = apiErrorMessage(err, "unknown error")
-      setActionError(`Could not ${verb}: ${detail}`) // persistent
+      here.apply(() => setActionError(`Could not ${verb}: ${detail}`)) // persistent
       addToast("error", `Could not ${verb}: ${detail}`) // splash
       // A file held open can leave the clone interrupted: show it in the toolbar.
       void loadStatus({ refresh: true })
+    }
+    try {
+      await answer([gitStorePart()], request, {
+        ok: (result, asked) => asked.answer(async () => landed(result, here, asked), {
+          ok: () => {
+            if (opts.reloadWhen?.(result)) {
+              reloadApp()
+              return
+            }
+            return asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
+              // A branch op changes the fork forest — nudge the Git panel to refetch
+              // its history + graph; BranchManager's nonce effect performs the one
+              // shared branch-list refresh.
+              ok: () => useGitStore.getState().notifyHistoryChanged(),
+            })
+          },
+          failed: refused,
+        }),
+        failed: refused,
+      }, { inFlight: (flying) => setBusy(flying ? name : null) })
     } finally {
-      setBusy(null)
+      here.release()
     }
   }
 
   // -- create -----------------------------------------------------------------
   const doCreate = (name: string, move: boolean) =>
-    run(name, move ? "create & move" : "create branch", async () => {
-      const res = await createWorkingBranch(name, { move })
+    run(name, move ? "create & move" : "create branch", createWorkingBranch(name, { move }), (_, here) => {
       addToast("success", move ? `Created ${name} and moved your work` : `Created ${name}`)
-      setNewBranch("")
-      setConfirmMove(null)
-      // A move switches you over; a parallel create leaves you put.
-      return res.switched
-    }, { reloadWhen: (switched) => switched === true })
+      here.apply(() => {
+        setNewBranch("")
+        setConfirmMove(null)
+      })
+    }, { reloadWhen: (res) => res.switched === true }) // a move switches you over; a parallel create leaves you put
 
   const onCreateClick = () => {
     const name = newBranch.trim()
@@ -183,20 +201,26 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       if (dontAsk) {
         setSkipSwitchConfirm(true)
         // The switch goes ahead; a choice not saved is asked again next time, so say so.
-        void setGitPrefs({ skip_switch_confirm: true }).catch((err: unknown) => {
-          addToast("error", `Couldn't save "Don't ask again" on this machine: ${apiErrorMessage(err, "unknown error")}`)
+        void answer([gitStorePart()], setGitPrefs({ skip_switch_confirm: true }), {
+          failed: (err) => addToast("error", `Couldn't save "Don't ask again" on this machine: ${apiErrorMessage(err, "unknown error")}`),
         })
       }
       setConfirmSwitch(null)
       setDontAskSwitch(false)
       const from = branches.find((x) => x.is_current && !x.is_archived)?.name ?? null
-      void run(b.name, "switch", async () => {
-        await setWorkingBranch(b.name, false)
-        discardCanvasEdits()
-        await discardFormEdits()
-        addToast("success", `Switched to ${b.name}`)
-        if (from !== null) recordSwitch(from, b.name, onSave)
-      })
+      // What is dropped is what was chosen over when the switch was asked: an edit made while
+      // it ran keeps every unsaved edit.
+      const chosenOver = ask(chosenOverParts())
+      void run(b.name, "switch", setWorkingBranch(b.name, false), (_, _here, asked) => {
+        const drop = chosenOver.current()
+        if (drop) discardCanvasEdits()
+        return asked.answer(drop ? discardFormEdits() : Promise.resolve(), {
+          ok: () => {
+            addToast("success", `Switched to ${b.name}`)
+            if (from !== null) recordSwitch(from, b.name, onSave)
+          },
+        })
+      }).finally(() => chosenOver.release())
     })
   }
 
@@ -215,48 +239,43 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       // Archiving the CURRENT branch moves you off it — that flow keeps the
       // full reload (and records no history entry, since a reload clears the
       // stacks anyway). Archiving any other branch is an in-app, undoable op.
-      void run(b.name, "archive", async () => {
-        const res = await gitArchiveBranch(b.name)
+      void run(b.name, "archive", gitArchiveBranch(b.name), (res) => {
         addToast("success", `Archived ${b.name}`)
         if (!b.is_current) recordArchive(b.name, res.archived_as)
-      }, { reloadOnDone: b.is_current })
+      }, { reloadWhen: () => b.is_current })
     }
     if (b.is_current) navigation.guard(archive)
     else archive()
   }
 
   const doDelete = (b: GitManagedBranch) =>
-    run(b.name, "delete", async () => {
-      const res = await gitDeleteBranch(b.name, true) // dialog already confirmed the loss
-      setConfirmDelete(null)
+    run(b.name, "delete", gitDeleteBranch(b.name, true), (res, here) => { // dialog already confirmed the loss
+      here.apply(() => setConfirmDelete(null))
       addToast("success", `Deleted ${b.name}`)
       // Deletes are trash-preserving server-side, so undo (undelete) is an
       // instant ref restore. Current-branch deletes keep the reload flow.
       if (!b.is_current) recordDelete(b.name, res.trash_id)
-    }, { reloadOnDone: b.is_current })
+    }, { reloadWhen: () => b.is_current })
 
   const restore = (b: GitManagedBranch) =>
-    run(b.name, "restore", async () => {
-      const res = await restoreBranch(b.name)
+    run(b.name, "restore", restoreBranch(b.name), (res) => {
       addToast("success", `Restored ${b.name}`)
       recordRestore(b.name, res.restored_as)
     })
 
   // A deletion whose name a branch has again restores under another name.
   const undelete = (d: GitDeletedBranch, asName: string | null) =>
-    run(d.id, "restore", async () => {
-      try {
-        const res = await undeleteBranch(d.id, asName)
-        setRestoreAs(null)
-        addToast("success", `Restored ${res.branch}`)
-      } catch (err) {
+    run(d.id, "restore", undeleteBranch(d.id, asName), (res, here) => {
+      here.apply(() => setRestoreAs(null))
+      addToast("success", `Restored ${res.branch}`)
+    }, {
+      refused: (err, here) => {
         // The listing hides ledgers, so a name can be taken by one it never
         // showed: the server's refusal opens the name box all the same.
         if (asName === null && apiErrorMessage(err, "").includes("another name")) {
-          setRestoreAs({ id: d.id, name: `${d.branch}-restored` })
+          here.apply(() => setRestoreAs({ id: d.id, name: `${d.branch}-restored` }))
         }
-        throw err
-      }
+      },
     })
   const nameTaken = (name: string) => branches.some((b) => b.name === name)
   const onUndeleteClick = (d: GitDeletedBranch) => {

@@ -4,10 +4,23 @@ import {
   applyRemoveBrokenConnection,
   applyRemoveUnavailableNode,
 } from "../api/client"
+import type { WithDocumentFingerprint } from "../api/client"
 import type { PipelineEditorDocument } from "../types/pipelineDocument"
+import type {
+  RecoverUnavailableNodeApplyResponse,
+  RemoveBrokenConnectionApplyResponse,
+  RemoveUnavailableNodeApplyResponse,
+} from "../types/pipelineRepair"
 import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
+import { documentPart } from "../stores/useDocumentStatusStore"
+import { answer } from "../utils/answers"
+
+type RepairApplyResponse =
+  | RemoveUnavailableNodeApplyResponse
+  | RemoveBrokenConnectionApplyResponse
+  | RecoverUnavailableNodeApplyResponse
 
 export interface PipelineRepairTarget {
   sourceFile: string
@@ -47,52 +60,57 @@ function PipelineRepairDialogContent({
   const [error, setError] = useState<string | null>(null)
   const applyingRef = useRef(false)
 
+  // The repair is applied to the document on show when it was pressed: once live sync or
+  // another adoption has replaced it, its answer is that document's no more, and the
+  // canvas keeps the newer one; the dialog closes, its repair done or overtaken.
   const apply = async () => {
     if (applyingRef.current) return
-    applyingRef.current = true
-    setApplying(true)
     setError(null)
-    try {
-      const { value: response, documentFingerprint } = action === "remove"
-        ? await applyRemoveUnavailableNode({
+    const request: Promise<WithDocumentFingerprint<RepairApplyResponse>> = action === "remove"
+      ? applyRemoveUnavailableNode({
+          sourceFile,
+          sourceRevision,
+          targetSourceFile: target.sourceFile,
+          targetRecoveryId: target.recoveryId,
+          deleteConfig,
+        })
+      : action === "remove_connection"
+        ? applyRemoveBrokenConnection({
+            sourceFile,
+            sourceRevision,
+            targetSourceFile: target.sourceFile,
+            targetConnectionId: target.recoveryId,
+          })
+        : applyRecoverUnavailableNode({
             sourceFile,
             sourceRevision,
             targetSourceFile: target.sourceFile,
             targetRecoveryId: target.recoveryId,
-            deleteConfig,
+            action,
           })
-        : action === "remove_connection"
-          ? await applyRemoveBrokenConnection({
-              sourceFile,
-              sourceRevision,
-              targetSourceFile: target.sourceFile,
-              targetConnectionId: target.recoveryId,
-            })
-          : await applyRecoverUnavailableNode({
-              sourceFile,
-              sourceRevision,
-              targetSourceFile: target.sourceFile,
-              targetRecoveryId: target.recoveryId,
-              action,
-            })
-      if (isRecover) {
-        // Transient session record for the panel's dismissible summary.
-        useRecoverySummaryStore.getState().recordSummary({
-          sourceFile,
-          recoveryId: target.recoveryId,
-          fieldChanges: response.field_changes,
-          completeness: response.completeness,
-          previousConfig: response.previous_config,
-          changes: response.changes,
-        })
-      }
-      onApplied(response.document, documentFingerprint)
-    } catch (err) {
-      setError(apiErrorMessage(err, "Could not apply this repair."))
-    } finally {
-      applyingRef.current = false
-      setApplying(false)
-    }
+    await answer([documentPart()], request, {
+      ok: ({ value: response, documentFingerprint }) => {
+        if (isRecover) {
+          // Transient session record for the panel's dismissible summary.
+          useRecoverySummaryStore.getState().recordSummary({
+            sourceFile,
+            recoveryId: target.recoveryId,
+            fieldChanges: response.field_changes,
+            completeness: response.completeness,
+            previousConfig: response.previous_config,
+            changes: response.changes,
+          })
+        }
+        onApplied(response.document, documentFingerprint)
+      },
+      failed: (err) => setError(apiErrorMessage(err, "Could not apply this repair.")),
+      stale: () => onClose(),
+    }, {
+      inFlight: (flying) => {
+        applyingRef.current = flying
+        setApplying(flying)
+      },
+    })
   }
 
   const requestClose = () => {

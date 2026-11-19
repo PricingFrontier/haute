@@ -8,6 +8,8 @@ import { apiErrorMessage } from "../../api/errors"
 import type { ModelFileInspectionResponse } from "../../api/types"
 import { MODEL_FILE_SUFFIXES } from "../../utils/modelFamilies"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
+import { useRequestKind } from "../../hooks/useRequestKind"
+import { ask, newest } from "../../utils/answers"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
 import { clearedMlflowSelection, effectiveMlflowDestination } from "../../utils/mlflowDestinations"
@@ -74,17 +76,16 @@ export default function ModelScoreEditor({
   // Inspect the chosen file as scoring loads it; a response for a path the
   // node no longer holds is discarded.
   const [modelFile, setModelFile] = useState<ModelFileState | null>(null)
+  const inspections = useRequestKind()
   useEffect(() => {
     if (sourceType !== "file" || !modelPath) return
-    const controller = new AbortController()
-    inspectModelFile(modelPath, featureContractPath || undefined, { signal: controller.signal })
-      .then((inspection) => setModelFile({ path: modelPath, contractPath: featureContractPath, inspection }))
-      .catch((e: unknown) => {
-        if (controller.signal.aborted) return
-        setModelFile({ path: modelPath, contractPath: featureContractPath, error: apiErrorMessage(e) })
-      })
-    return () => controller.abort()
-  }, [sourceType, modelPath, featureContractPath])
+    const asked = ask([newest(inspections)])
+    void asked.answer((signal) => inspectModelFile(modelPath, featureContractPath || undefined, { signal }), {
+      ok: (inspection) => setModelFile({ path: modelPath, contractPath: featureContractPath, inspection }),
+      failed: (e) => setModelFile({ path: modelPath, contractPath: featureContractPath, error: apiErrorMessage(e) }),
+    })
+    return () => asked.release()
+  }, [sourceType, modelPath, featureContractPath, inspections])
   const currentModelFile =
     sourceType === "file" && modelFile?.path === modelPath && modelFile.contractPath === featureContractPath
       ? modelFile

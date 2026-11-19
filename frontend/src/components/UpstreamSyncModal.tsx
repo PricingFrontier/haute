@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react"
 
 import type { GitUpstreamStatus } from "../api/types"
-import useGitStore from "../stores/useGitStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import useGitStore, { gitStorePart } from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
+import { answer, ask, newest, under } from "../utils/answers"
 import ModalShell from "./ModalShell"
 
 interface UpstreamSyncModalProps {
@@ -33,40 +35,43 @@ export default function UpstreamSyncModal({ onClose }: UpstreamSyncModalProps) {
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
   const [busy, setBusy] = useState(false)
+  const checks = useRequestKind()
+  const life = useRequestKind()
 
-  // State is written from the promise's callbacks, never synchronously in the
+  // State is written from the answer's handlers, never synchronously in the
   // effect body — the check is a network round trip, so "checking" is the
   // component's initial state rather than something an effect switches on.
   useEffect(() => {
-    let cancelled = false
-    checkUpstream()
-      .then((result) => {
-        if (cancelled) return
+    const asked = ask([newest(checks)])
+    void asked.answer(checkUpstream(), {
+      ok: (result) => {
         setStatus(result)
         setChecking(false)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
+      },
+      failed: (err) => {
         setError(apiErrorMessage(err, "Could not compare this project with its parent"))
         setChecking(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [checkUpstream])
+      },
+    })
+    return () => asked.release()
+  }, [checkUpstream, checks])
 
   const catchUp = async () => {
     if (busy) return
-    setBusy(true)
     setError(null)
+    // The catch-up and its toast belong to the git store; the dialog's error and its close,
+    // to the dialog.
+    const here = ask([under(life)])
     try {
-      await pullUpstream()
-      addToast("success", "Caught up with the parent project.")
-      onClose()
-    } catch (err: unknown) {
-      setError(apiErrorMessage(err, "Could not catch up with the parent project"))
+      await answer([gitStorePart()], pullUpstream(), {
+        ok: () => {
+          addToast("success", "Caught up with the parent project.")
+          here.apply(onClose)
+        },
+        failed: (err) => here.apply(() => setError(apiErrorMessage(err, "Could not catch up with the parent project"))),
+      }, { inFlight: setBusy })
     } finally {
-      setBusy(false)
+      here.release()
     }
   }
 

@@ -7,7 +7,7 @@ import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
-import { makeGitWorkingBranch } from "../../test-utils/factories"
+import { makeGitWorkingBranch, makeNode } from "../../test-utils/factories"
 
 const mockGetWorkingBranches = vi.fn()
 const mockSetWorkingBranch = vi.fn()
@@ -213,6 +213,29 @@ describe("BranchManager", () => {
     fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
     fireEvent.click(await screen.findByTestId("git-navigation-discard"))
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+  })
+
+  it("keeps every unsaved edit when one was made while the switch ran", async () => {
+    const reload = vi.fn(async () => {})
+    useWorkbenchFormStore.setState({ reload })
+    useWorkbenchStore.setState({ formDirty: true })
+    useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
+    useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.2" } })))
+    let switched: (value: unknown) => void = () => {}
+    mockSetWorkingBranch.mockReturnValueOnce(new Promise((resolve) => (switched = resolve)))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-switch-go"))
+    fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+
+    useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.5" } })))
+    await act(async () => switched({ working_branch: "experiment" }))
+
+    expect(useGraphStore.getState().nodes[0].data.label).toBe("Default 1.5")
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it("drops the canvas's edits and asks for the document once a switch chosen over them succeeds, and keeps them when it fails", async () => {

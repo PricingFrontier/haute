@@ -3,6 +3,8 @@ import { ApiError, getTrainStatus } from "../../api/client"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore, { type CachedTrainResult } from "../../stores/useNodeResultsStore"
+import { ask, newest } from "../../utils/answers"
+import { useRequestKind } from "../../hooks/useRequestKind"
 import {
   clearTrainedJobHandle,
   readTrainedJobHandle,
@@ -41,18 +43,18 @@ export function useTrainedJobRestore(
   const restoreTrainResult = useNodeResultsStore((state) => state.restoreTrainResult)
   const markTrainResultExpired = useNodeResultsStore((state) => state.markTrainResultExpired)
   const hasCachedResult = Boolean(cachedResult)
+  const reads = useRequestKind()
   useEffect(() => {
     if (!enabled || !sourceFile || !resultKey || hasCachedResult || hasTrainJob) return
     const handle = readTrainedJobHandle(sourceFile, resultKey)
     if (!handle) return
-    const controller = new AbortController()
     const forget = () => {
       clearTrainedJobHandle(sourceFile, resultKey)
       markTrainResultExpired(resultKey, handle.jobId)
     }
-    getTrainStatus(handle.jobId, { signal: controller.signal }).then(
-      (status) => {
-        if (controller.signal.aborted) return
+    const asked = ask([newest(reads)])
+    void asked.answer((signal) => getTrainStatus(handle.jobId, { signal }), {
+      ok: (status) => {
         if (status.status === "completed" && status.result && status.result.status !== "error") {
           const currentLineage = trainingLineage(graphRef.current())
           restoreTrainResult(resultKey, {
@@ -72,13 +74,12 @@ export function useTrainedJobRestore(
           forget()
         }
       },
-      (caught: unknown) => {
-        if (controller.signal.aborted) return
+      failed: (caught) => {
         // A job the server no longer holds is forgotten; a transient failure
         // keeps the handle so the next visit tries again.
         if (caught instanceof ApiError && caught.status === 404) forget()
       },
-    )
-    return () => controller.abort()
-  }, [enabled, sourceFile, resultKey, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired])
+    })
+    return () => asked.release()
+  }, [enabled, sourceFile, resultKey, hasCachedResult, hasTrainJob, restoreTrainResult, markTrainResultExpired, reads])
 }

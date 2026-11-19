@@ -16,7 +16,7 @@
  *
  * Per `specs/frontend-shared/low-level.md` ("MLflow settings modal").
  */
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react"
 import ModalShell from "./ModalShell"
 import {
@@ -25,6 +25,8 @@ import {
   testMlflowConnection,
 } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, ask, newest, under } from "../utils/answers"
 import type {
   MlflowSettingsResponse,
   MlflowTestConnectionResponse,
@@ -103,8 +105,12 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
     databricks: null,
   })
   // A test result belongs to the draft it probed, per remote: any draft edit
-  // bumps both sequences so a completion for the old target is discarded.
-  const testSeqRef = useRef<Record<RemoteKey, number>>({ server: 0, databricks: 0 })
+  // ends both remotes' tests so a completion for the old target is discarded.
+  const serverTests = useRequestKind()
+  const databricksTests = useRequestKind()
+  const loads = useRequestKind()
+  // A save answers while the dialog is open.
+  const dialog = useRequestKind()
 
   const inventoryLoading = state.status === "loading"
   useEffect(() => {
@@ -112,87 +118,74 @@ export default function MlflowSettingsModal({ onClose }: { onClose: () => void }
   }, [inventoryLoading, fetchMlflow])
 
   useEffect(() => {
-    let cancelled = false
-    getMlflowSettings()
-      .then((data) => {
-        if (cancelled) return
+    const asked = ask([newest(loads)])
+    void asked.answer(getMlflowSettings(), {
+      ok: (data) => {
         setSettings(data)
         setServerDraft(data.tracking_uri)
         setFolderDraft(data.folder)
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return
-        setLoadError(apiErrorMessage(e, "Failed to load MLflow settings"))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+      },
+      failed: (e) => setLoadError(apiErrorMessage(e, "Failed to load MLflow settings")),
+    })
+    return () => asked.release()
+  }, [loads])
 
   /** A draft edit invalidates every displayed result and the save receipt. */
   const handleDraftEdit = useCallback(() => {
-    testSeqRef.current = {
-      server: testSeqRef.current.server + 1,
-      databricks: testSeqRef.current.databricks + 1,
-    }
+    serverTests.bump()
+    databricksTests.bump()
     setResults({ server: null, databricks: null })
     setSaved(false)
-  }, [])
+  }, [databricksTests, serverTests])
 
   const handleTest = useCallback(
     async (key: RemoteKey) => {
       if (testing[key] || saving) return
-      setTesting((prev) => ({ ...prev, [key]: true }))
+      const belongsTo = [newest(key === "server" ? serverTests : databricksTests)] as const
       setResults((prev) => ({ ...prev, [key]: null }))
-      const seq = (testSeqRef.current[key] += 1)
-      try {
-        // The server is probed against the draft, not the saved value;
-        // Databricks has nothing to draft, so the key alone identifies it.
-        const result = await testMlflowConnection(
-          key === "server"
-            ? { destination: "server", tracking_uri: serverDraft.trim() }
-            : { destination: "databricks" },
-        )
-        if (seq === testSeqRef.current[key]) setResults((prev) => ({ ...prev, [key]: result }))
-      } catch (e: unknown) {
-        if (seq === testSeqRef.current[key]) {
-          setResults((prev) => ({
-            ...prev,
-            [key]: {
-              ok: false,
-              category: "unknown",
-              detail: apiErrorMessage(e, "Connection test failed"),
-            },
-          }))
-        }
-      } finally {
-        setTesting((prev) => ({ ...prev, [key]: false }))
-      }
+      // The server is probed against the draft, not the saved value;
+      // Databricks has nothing to draft, so the key alone identifies it.
+      await answer(belongsTo, testMlflowConnection(
+        key === "server"
+          ? { destination: "server", tracking_uri: serverDraft.trim() }
+          : { destination: "databricks" },
+      ), {
+        ok: (result) => setResults((prev) => ({ ...prev, [key]: result })),
+        failed: (e) => setResults((prev) => ({
+          ...prev,
+          [key]: {
+            ok: false,
+            category: "unknown",
+            detail: apiErrorMessage(e, "Connection test failed"),
+          },
+        })),
+      }, { pending: (waiting) => setTesting((prev) => ({ ...prev, [key]: waiting })) })
     },
-    [testing, saving, serverDraft],
+    [testing, saving, serverDraft, serverTests, databricksTests],
   )
 
   const handleSave = useCallback(async () => {
     if (saving) return
-    setSaving(true)
     setSaveError("")
     setSaved(false)
-    try {
-      const updated = await putMlflowSettings({
-        tracking_uri: serverDraft.trim(),
-        folder: folderDraft.trim(),
-      })
-      setSettings(updated)
-      setServerDraft(updated.tracking_uri)
-      setFolderDraft(updated.folder)
-      setSaved(true)
-      invalidateMlflow()
-    } catch (e: unknown) {
-      setSaveError(apiErrorMessage(e, "Saving MLflow settings failed"))
-    } finally {
-      setSaving(false)
-    }
-  }, [saving, serverDraft, folderDraft, invalidateMlflow])
+    await answer([under(dialog)], () => putMlflowSettings({
+      tracking_uri: serverDraft.trim(),
+      folder: folderDraft.trim(),
+    }), {
+      ok: (updated) => {
+        setSettings(updated)
+        setServerDraft(updated.tracking_uri)
+        setFolderDraft(updated.folder)
+        setSaved(true)
+        invalidateMlflow()
+      },
+      failed: (e) => setSaveError(apiErrorMessage(e, "Saving MLflow settings failed")),
+      // Saved once the dialog closed, the inventory still reads the new settings.
+      stale: (settled) => {
+        if ("value" in settled) invalidateMlflow()
+      },
+    }, { inFlight: setSaving })
+  }, [saving, serverDraft, folderDraft, invalidateMlflow, dialog])
 
   const fieldStyle = {
     background: "var(--bg-input)",

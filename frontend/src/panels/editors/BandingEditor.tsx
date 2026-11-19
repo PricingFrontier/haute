@@ -2,6 +2,7 @@ import { useState } from "react"
 import { expectRows, followRows, rowIdentity, type RowChange, type RowIdentity } from "../../utils/rowKeys"
 import { ArrowRight, Plus } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { useRowKeys } from "./shared/useRowKeys"
 import { CommittedTextField } from "../../components/form"
 import { ColumnSelector } from "../modelling/ColumnSelector"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
@@ -108,9 +109,14 @@ export default function BandingEditor({
     factor: factors[safeIdx] ?? null,
   })
 
-  // Every write of the factors says what it does, so a stash's identities follow it.
+  // The factors' identities while the editor shows: what a factor's import is kept by.
+  const factorKeys = useRowKeys(factors)
+
+  // Every write of the factors says what it does, so a stash's identities, and the editor's,
+  // follow it.
   const commitFactors = (next: BandingFactor[], change: RowChange, rules = ruleStash?.rules) => {
     if (nodeId && rules) setBandingRuleStash(nodeId, { identity: expectRows(factorIdentity(), next, change), rules })
+    factorKeys.expect(next, change)
     onUpdate("factors", next)
   }
 
@@ -373,11 +379,12 @@ export default function BandingEditor({
   const breakpointsEmpty = factor.banding === "breakpoints" && (factor.rules || []).length === 0
   const categoricalEmpty = factor.banding === "categorical" && (factor.rules || []).length === 0
 
-  // Import opens where it was pressed, as Generate does; another factor's starts afresh.
-  // Its key is its own: the rules grid beside it is keyed by the factor's index.
+  // Import opens where it was pressed, as Generate does; another factor's starts afresh. It
+  // belongs to its factor by identity, never position: a removed factor's import goes with
+  // it, and its read answers nothing into the factor that takes its place.
   const importOptions = (
     <ImportParamValues
-      key={`import-${safeIdx}`}
+      key={`import-${factorKeys.keys[safeIdx]}`}
       existingValues={(factor.rules || []).map(r => (r as CategoricalRule).value).filter(Boolean)}
       onImport={handleImportValues}
       onClose={() => setShowImport(false)}

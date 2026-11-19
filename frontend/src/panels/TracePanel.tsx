@@ -7,6 +7,8 @@ import { SidePanelClose } from "../haute-ui"
 import { StepCard } from "../trace/StepCard"
 import { TraceNavigationContext, TraceStepsContext, type TraceNavigation } from "../trace/traceContext"
 import useUIStore from "../stores/useUIStore"
+import { useRequestKind } from "../hooks/useRequestKind"
+import { answer, under } from "../utils/answers"
 import { formatTraceValue, traceValuePresentation } from "../trace/traceFormatting"
 import {
   defaultExpandedStepIds,
@@ -116,6 +118,8 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const storyKey = traceStoryKey(trace)
   const [showHidden, setShowHidden] = useState(false)
   const [exportStatus, setExportStatus] = useState<ExportStatus>({ state: "idle" })
+  // An export's outcome is said only while the panel shows.
+  const life = useRequestKind()
   const omittedDiagnosticIndices = useMemo(
     () => new Set(trace.omissions.map((omission) => omission.diagnostic_index)),
     [trace.omissions],
@@ -220,33 +224,33 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const rowIdPresentation = traceValuePresentation(trace.row_id_value, trace.row_id_column ?? "row")
 
   const copyTrace = async () => {
-    try {
-      const { copyTraceMarkdown } = await loadTraceExport()
-      await copyTraceMarkdown(trace, (value) => navigator.clipboard.writeText(value))
-      setExportStatus({ state: "copied" })
-    } catch (error) {
-      setExportStatus(exportFailure("copied", error))
-    }
+    await answer([under(life)], loadTraceExport().then(
+      ({ copyTraceMarkdown }) => copyTraceMarkdown(trace, (value) => navigator.clipboard.writeText(value)),
+    ), {
+      ok: () => setExportStatus({ state: "copied" }),
+      failed: (error) => setExportStatus(exportFailure("copied", error)),
+    })
   }
 
   const downloadTrace = async (extension: "md" | "csv") => {
-    try {
-      const [exporter, { downloadTextFile }] = await Promise.all([
-        loadTraceExport(),
-        import("./editors/shared/tableClipboard"),
-      ])
+    await answer([under(life)], Promise.all([
+      loadTraceExport(),
+      import("./editors/shared/tableClipboard"),
+    ]).then(([exporter, { downloadTextFile }]) => {
       const markdown = extension === "md"
-      const downloaded = downloadTextFile(
+      return downloadTextFile(
         markdown ? exporter.traceToMarkdown(trace) : exporter.traceToCsv(trace),
         exporter.traceExportFilename(trace, extension),
         markdown ? "text/markdown;charset=utf-8" : "text/csv;charset=utf-8",
       )
-      if (!downloaded) {
-        setExportStatus(exportFailure("downloaded", "this browser cannot save files from the page"))
-      }
-    } catch (error) {
-      setExportStatus(exportFailure("downloaded", error))
-    }
+    }), {
+      ok: (downloaded) => {
+        if (!downloaded) {
+          setExportStatus(exportFailure("downloaded", "this browser cannot save files from the page"))
+        }
+      },
+      failed: (error) => setExportStatus(exportFailure("downloaded", error)),
+    })
   }
 
   const printTrace = async () => {
@@ -255,13 +259,16 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
       setExportStatus(exportFailure("printed", "the browser blocked the print window"))
       return
     }
-    try {
-      const { printTraceReport } = await loadTraceExport()
-      printTraceReport(trace, () => printWindow)
-    } catch (error) {
-      printWindow.close()
-      setExportStatus(exportFailure("printed", error))
-    }
+    await answer([under(life)], loadTraceExport().then(({ printTraceReport }) => printTraceReport(trace, () => printWindow)), {
+      failed: (error) => {
+        printWindow.close()
+        setExportStatus(exportFailure("printed", error))
+      },
+      // The panel gone, a window it could not fill still closes.
+      stale: (settled) => {
+        if ("error" in settled) printWindow.close()
+      },
+    })
   }
 
   return (

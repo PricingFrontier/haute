@@ -1,5 +1,7 @@
 import useToastStore from "../../../stores/useToastStore"
 import { apiErrorMessage } from "../../../api/errors"
+import { useRequestKind } from "../../../hooks/useRequestKind"
+import { answer, under } from "../../../utils/answers"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "./tableClipboard"
 
 /** A grid of two text columns: its fields in column order, the headers a copy is written under, and what a failed copy calls it. */
@@ -66,6 +68,7 @@ export function useTwoColumnGridClipboard<F extends string>(
   onUpdate: (rows: GridRow<F>[]) => void,
 ) {
   const addToast = useToastStore((s) => s.addToast)
+  const life = useRequestKind()
 
   const handleCellPaste = (
     e: React.ClipboardEvent<HTMLInputElement>,
@@ -88,8 +91,8 @@ export function useTwoColumnGridClipboard<F extends string>(
   }
 
   const copyTsv = () => {
-    void writeClipboardText(gridTsv(grid, rows)).catch((error: unknown) => {
-      addToast("error", `Could not copy ${grid.name} TSV: ${apiErrorMessage(error)}`)
+    void answer([under(life)], writeClipboardText(gridTsv(grid, rows)), {
+      failed: (error) => addToast("error", `Could not copy ${grid.name} TSV: ${apiErrorMessage(error)}`),
     })
   }
 

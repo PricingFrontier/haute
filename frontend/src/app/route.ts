@@ -9,6 +9,7 @@
  */
 import { useSyncExternalStore, type MouseEvent } from "react"
 import type { QuoteSource, QuotesQuery } from "../api/app"
+import { answer, newest, requestKind, type Part } from "../utils/answers"
 
 export type AppRoute =
   | { page: "quotes"; query: QuotesQuery }
@@ -99,6 +100,9 @@ let place = placeOf(window.history.state)
 window.history.replaceState({ ...(window.history.state as object | null), place }, "")
 /** A traversal the app made itself: back to where the page was while the guard asks, or on once it allows. */
 let traversing: "back" | "on" | null = null
+/** Each move of the page takes a turn: a move asked, or made, while the guard asks about an
+ *  earlier one wins, and the earlier one's answer moves nothing. */
+const moves = requestKind()
 
 const notify = () => {
   current = `${window.location.pathname}${window.location.search}`
@@ -119,12 +123,24 @@ export type Moved = "moved" | "here" | "kept"
 /** Move to `path`, asking the leave guard first. */
 export async function navigate(path: string, { replace = false, force = false } = {}): Promise<Moved> {
   if (path === current) return "here"
-  if (!force && guard !== null && !(await guard())) return "kept"
-  if (replace) window.history.replaceState({ place }, "", path)
-  else window.history.pushState({ place: ++place }, "", path)
-  notify()
-  window.scrollTo?.(0, 0)
-  return "moved"
+  const move = (): Moved => {
+    if (replace) window.history.replaceState({ place }, "", path)
+    else window.history.pushState({ place: ++place }, "", path)
+    notify()
+    window.scrollTo?.(0, 0)
+    return "moved"
+  }
+  if (force || guard === null) {
+    moves.bump()
+    return move()
+  }
+  let moved: Moved = "kept"
+  await answer([newest(moves)], guard(), {
+    ok: (allowed) => {
+      if (allowed) moved = move()
+    },
+  })
+  return moved
 }
 
 /**
@@ -143,15 +159,18 @@ function onPopState(event: PopStateEvent): void {
   if (traversing === "on" || leaving === null || delta === 0) {
     traversing = null
     place = target
+    moves.bump()
     notify()
     return
   }
   traversing = "back"
   window.history.go(delta)
-  void leaving().then((allowed) => {
-    if (!allowed) return
-    traversing = "on"
-    window.history.go(-delta)
+  void answer([newest(moves)], leaving(), {
+    ok: (allowed) => {
+      if (!allowed) return
+      traversing = "on"
+      window.history.go(-delta)
+    },
   })
 }
 
@@ -165,6 +184,15 @@ function subscribe(listener: () => void): () => void {
 }
 
 const snapshot = () => current
+
+/**
+ * The page's address as it is now, as an answer's part (`utils/answers.ts`): it holds until
+ * the page moves, so what an answer does on this page is not done on another.
+ */
+export function routePart(): Part {
+  const at = window.location.href
+  return { holds: () => window.location.href === at, subscribe }
+}
 
 /** Where the page is, read again whenever it moves. */
 export function useAppRoute(): AppRoute {
