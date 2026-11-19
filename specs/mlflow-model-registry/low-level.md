@@ -1111,59 +1111,55 @@ Tests live across primary files under `tests/`. Strategy is unit-level with `mlf
 real artifacts fixture-built in `tmp_path`; there is no test that talks
 to a live MLflow tracking server.
 
-- **`tests/test_mlflow_io.py`** — the bulk of `_mlflow_io.py` coverage:
-  run/registered loading (happy path, missing args, invalid source
-  type), pyfunc auto-detect and auto-discovery fallback, in-memory cache
-  hit/LRU-eviction, CatBoost loader dispatch by task, model wrapping
-  (CatBoost cat-feature extraction, pyfunc signature extraction with its
-  optional inputs), a Haute refusal of a readable model (a task mismatch, a
-  LightGBM file with two Haute records) raised once with its own message
-  and the cached file kept, an unreadable CatBoost class-label record
-  raised rather than replaced by `classes_`,
-  predict-frame preparation for
-  every flavor/dtype/null/categorical combination, artifact-by-extension
-  discovery (top-level, subdirectory, "prefers top-level" ordering,
-  missing → labeled error), classification proba shape handling
-  (1-D/`(n,1)`/`(n,2)`/multiclass/zero-width/3-D, eager-vs-batch
+- **`tests/test_mlflow_io.py`** — the bulk of `_mlflow_io.py` coverage,
+  loads resolving against a fake store (`tests/_mlflow_fakes.py`) whose
+  downloads serve the bytes it lists: run and registered loading, the one
+  discovery rule (`TestTheRunDiscoveryRule`, and a store failure propagated
+  rather than read as no model), pyfunc loading, the contract beside a model
+  (`TestTheContractBesideAModel`), in-memory cache hit after one listing and
+  LRU eviction, a discovered reference and a named one sharing an entry, a
+  load whose copies are on disk downloading nothing, a disk-cache-only load
+  answering from the record without the store, a download that is not the
+  listed bytes refused and not retried (by size and by content), two
+  identities of one path kept as two copies, CatBoost loader dispatch by task,
+  model wrapping (CatBoost cat-feature extraction, pyfunc signature extraction
+  with its optional inputs), a Haute refusal of a readable model (a task
+  mismatch, a LightGBM file with two Haute records) raised once with its own
+  message and the cached file kept, an unreadable CatBoost class-label record
+  raised rather than replaced by `classes_`, predict-frame preparation for
+  every flavor/dtype/null/categorical combination, classification proba shape
+  handling (1-D/`(n,1)`/`(n,2)`/multiclass/zero-width/3-D, eager-vs-batch
   agreement), RustyStats loading (`required_columns` contract, including
   against a real RustyStats model), local-model dispatch by extension,
-  `_find_model_artifact`'s full priority order and its propagation of a
-  bare `FileNotFoundError`/`MlflowException` past the internal sentinel,
   `_resolve_artifact_local`'s cache-hit/miss/download-failure/partial-
   write-cleanup/nested-path paths, `clear_model_cache` (blanket, targeted,
-  nonexistent, invalid run_id), the fast-cache-check and post-resolve
-  cache-check paths of `load_mlflow_model` (now exercised with the
-  artifact-fingerprint component of the cache key present), the bounded
-  retry for both native flavors, `_score_eager`'s dispatch for every
-  task/flavor combination, and `TestFlavorSsot` (predict-frame preparation
-  over every registered family, described above).
+  nonexistent, invalid run_id), the bounded retry for both native flavors,
+  `_score_eager`'s dispatch for every task/flavor combination, and
+  `TestFlavorSsot` (predict-frame preparation over every registered family,
+  described above).
 - **`tests/test_mlflow_io_concurrency.py`** — single-flight download and
   load correctness under real threads: a second caller waits rather than
   re-downloading, distinct artifacts proceed concurrently, a failed
   download releases the lock for the next caller, concurrent same-model
   loads produce exactly one shared instance, same-basename artifacts
-  under different runs/versions store distinct bytes and models,
-  disk-cache-eviction races with an in-flight load of the run being
-  considered for eviction (several scenarios: eviction skips an
-  active run, eviction re-checks activity before deleting, eviction
-  atomically tombstones before lock-free deletion, the fast disk-cache path
-  marks a run active before probing), and waiters on both the fast-path and
-  full-resolve-path reusing a model that finished loading while they
-  waited.
+  under different runs and registered versions store distinct bytes and
+  models, disk-cache-eviction races with an in-flight load of the run being
+  considered for eviction (eviction skips an active run, re-checks activity
+  before deleting, atomically tombstones before lock-free deletion, and a
+  load, and a disk-cache-only load, mark the run active before probing its
+  copy or record), a waiter reusing a model that finished loading while it
+  waited, with and without a copy on disk, and a copy that vanishes while a
+  caller waits downloaded again.
 - **`tests/test_mlflow_model_cache_key_contract.py`** — pins cache-key
-  *completeness* specifically for the artifact-fingerprint component:
-  `TestFastPathArtifactPerturbation` and `TestFullPathArtifactPerturbation`
-  each rewrite the local artifact's bytes in place (disk-cache file for the
-  fast path, resolved local path for the full path) under an unchanged run
-  reference and assert the next `load_mlflow_model` call returns a model
-  built from the new bytes rather than the stale in-memory entry;
-  `TestKeyContract` covers the key-shape invariants directly (`run_id`
-  fixed at slot 1 regardless of `version`'s presence, the backend identity
-  fixed as the last element, pyfunc keyed with an
-  empty-string fingerprint). These tests simulate re-log/retrain replacement
-  by rewriting the already-resolved local artifact path; they pin local-byte
-  invalidation of the in-memory cache, not detection of an unseen remote
-  overwrite behind an unchanged disk-cache file.
+  *completeness* against a real local MLflow store: a file logged again over
+  its path with the same byte count (`TestFastPathArtifactPerturbation`), a
+  registered version's file logged again and `latest` following a new version
+  (`TestFullPathArtifactPerturbation`), a moved alias, and a contract logged
+  later each give a model built from the new bytes rather than the stale
+  in-memory entry, while an unchanged artifact is a hit; three references to
+  one file share one entry; `TestKeyContract` covers the key shape
+  (`_model_cache_key(resolved, task)`: `run_id` at slot 1, the backend
+  identity last).
 - **`tests/test_mlflow_io_real_pyfunc.py`** — pyfunc wrapping and predict-
   frame dtype fidelity against a real (non-mocked) MLflow pyfunc model,
   including the named-column signature contract and declared-dtype
@@ -1226,7 +1222,8 @@ to a live MLflow tracking server.
   Databricks (while configuring Databricks alone never retargets a node that did
   not choose it), and a changed endpoint to the newly selected backend's artifact; removing an
   explicit destination's prerequisites after warming raises
-  `MlflowConfigError` instead of serving the cached artifact; targeted
+  `MlflowConfigError` instead of serving the cached artifact, without asking
+  any store; a model's listing and its contract come from the one backend; targeted
   `clear_model_cache(run_id)` clears every backend partition; eviction
   counts run directories across partitions; concurrent loads on different
   backends stay isolated.

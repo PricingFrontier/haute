@@ -550,9 +550,6 @@ strict = [
 # results: tmp_path-rooted, but the static taint cannot see through the
 # helper call.
 "tests/test_mlflow_io.py" = [
-    "e3a8abef5db2df64",  # TestLoadMlflowModelFastCache.test_disk_cache_hit_for_native_run_artifact_skips_mlflow_resolution
-    "a45b565659956df9",  # TestLoadMlflowModelFastCache.test_fast_path_cache_hit_for_run_with_artifact
-    "c512b49a673d33ee",  # TestModelCache.test_cache_hit
     "250cb0f7464ed816",  # TestResolveArtifactLocal.test_cache_hit_returns_local_path
 ]
 "tests/test_mlflow_io_concurrency.py" = [
@@ -564,10 +561,10 @@ strict = [
     "8f65abbc6d479bf3",  # TestArtifactDiskIdentity.test_eviction_skips_run_directory_with_model_load_in_flight
     "f76161771aaf1138",  # TestArtifactDiskIdentity.test_eviction_tombstones_before_delete_without_blocking_new_run_users
     "d5973af1e64436e8",  # TestArtifactDiskIdentity.test_eviction_tombstones_before_delete_without_blocking_new_run_users
-    "258d8011c4075dce",  # TestArtifactDiskIdentity.test_fast_disk_cache_path_marks_run_active_before_probe
+    "fc0ef25d1cdb4259",  # TestArtifactDiskIdentity.test_a_load_marks_its_run_active_before_probing_its_disk_copy
     "95e755ce9e349b0b",  # TestArtifactDiskIdentity.test_restart_load_ignores_poisoned_same_basename_cache_entry
-    "b30e540854bd032b",  # TestLockAcquisitionRaces.test_fast_path_falls_through_when_file_vanishes_while_waiting
-    "37e566c8fd185b7c",  # TestLockAcquisitionRaces.test_fast_path_waiter_reuses_model_cached_while_waiting
+    "54932813dd4f7c2a",  # TestLockAcquisitionRaces.test_a_waiter_reuses_the_model_cached_while_it_waited
+    "e258ec9ecab74955",  # TestLockAcquisitionRaces.test_a_copy_that_vanishes_while_waiting_is_downloaded_again
 ]
 "tests/test_model_score_executor.py" = [
     "22ee01c87b75519b",  # TestResolveArtifactLocal.test_disk_cache_hit

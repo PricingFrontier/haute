@@ -221,11 +221,12 @@ class TestCatBoostPredictOffset:
         download: re-fetching the same bytes cannot make the metadata readable."""
         from unittest.mock import MagicMock, patch
 
-        from haute._mlflow_io import _load_with_bounded_retry
+        from haute._mlflow_io import FetchedFiles, _load_with_bounded_retry
+        from haute._mlflow_model import ResolvedModel, StoredArtifact
         from haute._mlflow_utils import ResolvedBackend
+        from haute._model_flavors import model_family
 
         model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
-        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: haute_scratch / "cache")
         backend = ResolvedBackend(
             mode="local",
             tracking_uri="file:///mlruns",
@@ -233,24 +234,27 @@ class TestCatBoostPredictOffset:
             identity="local:mlruns|registry=file:///mlruns",
             digest="0123456789abcdef",
         )
+        resolved = ResolvedModel(
+            backend=backend,
+            run_id="run-7",
+            artifact=StoredArtifact("model.cbm", f"size:{model_path.stat().st_size}"),
+            family=model_family("catboost"),
+            contract=None,
+            version="",
+            reference="MLflow run 'run-7'",
+        )
 
         with (
             patch(
-                "haute._mlflow_io._resolve_artifact_local", return_value=str(model_path)
-            ) as resolve,
+                "haute._mlflow_io.fetch_resolved_files",
+                return_value=FetchedFiles(model_path, None),
+            ) as fetch,
             pytest.raises(ConfigError, match=r"run 'run-7'.*artifact 'model\.cbm'"),
         ):
-            _load_with_bounded_retry(
-                mlflow_mod=MagicMock(),
-                client=MagicMock(),
-                backend=backend,
-                run_id="run-7",
-                artifact="model.cbm",
-                flavor="catboost",
-                task="regression",
-            )
-        # The model and the contract its run logged, each read once: never retried.
-        assert resolve.call_count == 2
+            _load_with_bounded_retry(mlflow_mod=MagicMock(), resolved=resolved, task="regression")
+        # The model's files are fetched once: the refusal is never retried.
+        assert fetch.call_count == 1
+        assert model_path.is_file()
 
     def test_predict_missing_offset_column_fails_loud(self) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")

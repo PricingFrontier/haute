@@ -12,6 +12,8 @@ debug log line that silently drops information.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -54,6 +56,7 @@ class TestModelScoreColumnDetectionLoud:
         silently bypassed during planning.
         """
         from haute._contracts import get_node_contract
+        from haute._mlflow_utils import resolve_backend
         from haute._types import NodeType
 
         config: dict[str, Any] = {
@@ -72,7 +75,9 @@ class TestModelScoreColumnDetectionLoud:
 
         assert produced == {"pred"}
         assert referenced == {"a", "b"}
-        assert mock_load.call_args.kwargs["destination"] == expected
+        (source,) = mock_load.call_args.args
+        assert source.mlflow_destination == expected
+        assert mock_load.call_args.kwargs["backend"] == resolve_backend(expected)
 
     def test_missing_run_id_raises_config_error(self) -> None:
         from haute._builders import _model_score_columns
@@ -253,14 +258,52 @@ class TestArtifactLoadCorruptionRaises:
     violation.
     """
 
-    def test_second_corruption_raises_with_diagnostic(self, tmp_path: Path) -> None:
+    @staticmethod
+    @contextmanager
+    def _run_holding(artifact: str, payload: bytes) -> Iterator[list[str]]:
+        """A run whose one model is *payload*; yields the downloads its loads make.
+
+        The resolution answers the run with that file, as the store would list
+        it; each download writes the stored bytes afresh.
+        """
+        from haute._mlflow_model import ResolvedModel, StoredArtifact
+        from haute._model_flavors import family_for_artifact
+
+        downloads: list[str] = []
+
+        def resolution(source: Any, *, backend: Any) -> ResolvedModel:
+            return ResolvedModel(
+                backend=backend,
+                run_id=source.run_id,
+                artifact=StoredArtifact(source.artifact_path, f"size:{len(payload)}"),
+                family=family_for_artifact(source.artifact_path),
+                contract=None,
+                version="",
+                reference=f"MLflow run {source.run_id!r}",
+            )
+
+        def download(artifact_uri: str, dst_path: str, **_kwargs: Any) -> str:
+            downloads.append(artifact_uri)
+            out = Path(dst_path) / Path(artifact).name
+            out.write_bytes(payload)
+            return str(out)
+
+        with (
+            patch("haute._mlflow_io.model_resolution", side_effect=resolution),
+            patch("mlflow.artifacts.download_artifacts", side_effect=download),
+        ):
+            yield downloads
+
+    @staticmethod
+    def _source(run_id: str, artifact: str) -> Any:
+        from haute._model_source import RunModelSource
+
+        return RunModelSource(run_id=run_id, artifact_path=artifact, mlflow_destination="")
+
+    def test_second_corruption_raises_with_diagnostic(self) -> None:
         """If both the first load AND the retry load fail, the second
         exception must propagate — no third attempt, no silent fallback.
         """
-
-        corrupt_file = tmp_path / "corrupt.cbm"
-        corrupt_file.write_bytes(b"garbage bytes")
-
         call_count = 0
 
         def _always_fails(path: str, task: str) -> Any:
@@ -269,47 +312,31 @@ class TestArtifactLoadCorruptionRaises:
             raise RuntimeError(f"corrupt read attempt {call_count}")
 
         with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_x", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(corrupt_file),
-            ),
-            patch(
-                "haute._mlflow_io._load_catboost_model",
-                side_effect=_always_fails,
-            ),
+            self._run_holding("corrupt.cbm", b"garbage bytes") as downloads,
+            patch("haute._mlflow_io._load_catboost_model", side_effect=_always_fails),
         ):
             with pytest.raises(RuntimeError) as exc_info:
-                load_mlflow_model(
-                    source_type="run",
-                    run_id="run_x",
-                    artifact_path="corrupt.cbm",
-                    task="regression",
-                )
+                load_mlflow_model(self._source("run_x", "corrupt.cbm"), task="regression")
 
         # Bounded retry: one retry only, total two attempts, then raise.
         assert call_count == 2, (
             f"Expected exactly two load attempts (1 fresh + 1 retry); saw {call_count}. "
             f"Unbounded retry masks persistent corruption."
         )
+        # The suspect copy was deleted and fetched again for the retry.
+        assert downloads == ["runs:/run_x/corrupt.cbm"] * 2
         # Diagnostic: the surfaced error must include SOMETHING pointing at
         # the cache path or the retry having been attempted so an operator
         # can act on it.
         err_text = str(exc_info.value)
         assert "corrupt" in err_text.lower()
 
-    def test_retry_on_first_failure_succeeds_on_second(self, tmp_path: Path) -> None:
+    def test_retry_on_first_failure_succeeds_on_second(self) -> None:
         """The bounded retry path still works for the single-corruption
         case — a fresh download on the retry recovers.  (This test pins the
         existing behaviour so the loud-error fix doesn't accidentally
         remove the retry altogether.)
         """
-        corrupt_file = tmp_path / "corrupt.cbm"
-        corrupt_file.write_bytes(b"first bad bytes")
-
         fake_model = MagicMock()
         fake_model.feature_names_ = ["a"]
         fake_model.get_cat_feature_indices.return_value = []
@@ -324,37 +351,21 @@ class TestArtifactLoadCorruptionRaises:
             return fake_model
 
         with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_y", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(corrupt_file),
-            ),
-            patch(
-                "haute._mlflow_io._load_catboost_model",
-                side_effect=_fails_then_succeeds,
-            ),
+            self._run_holding("corrupt.cbm", b"first bad bytes") as downloads,
+            patch("haute._mlflow_io._load_catboost_model", side_effect=_fails_then_succeeds),
         ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="run_y",
-                artifact_path="corrupt.cbm",
-                task="regression",
-            )
+            result = load_mlflow_model(self._source("run_y", "corrupt.cbm"), task="regression")
 
         assert call_count == 2
+        assert len(downloads) == 2, "the retry did not fetch the model again"
         assert isinstance(result, ScoringModel)
         assert result.flavor == "catboost"
+        assert result.raw_model is fake_model
 
-    def test_rustystats_corruption_also_bounded(self, tmp_path: Path) -> None:
+    def test_rustystats_corruption_also_bounded(self) -> None:
         """Same rule for RustyStats: persistent corruption must raise after
         the first retry, not loop.
         """
-        corrupt_file = tmp_path / "corrupt.rsglm"
-        corrupt_file.write_bytes(b"garbage bytes")
-
         call_count = 0
 
         def _always_fails(path: str, *, source: str | None = None) -> Any:
@@ -363,64 +374,38 @@ class TestArtifactLoadCorruptionRaises:
             raise RuntimeError(f"corrupt rustystats attempt {call_count}")
 
         with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_rs", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(corrupt_file),
-            ),
-            patch(
-                "haute._mlflow_io._load_rustystats_model",
-                side_effect=_always_fails,
-            ),
+            self._run_holding("corrupt.rsglm", b"garbage bytes"),
+            patch("haute._mlflow_io._load_rustystats_model", side_effect=_always_fails),
         ):
-            with pytest.raises(RuntimeError):
-                load_mlflow_model(
-                    source_type="run",
-                    run_id="run_rs",
-                    artifact_path="corrupt.rsglm",
-                    task="regression",
-                )
+            with pytest.raises(RuntimeError, match="retry exhausted"):
+                load_mlflow_model(self._source("run_rs", "corrupt.rsglm"), task="regression")
 
         assert call_count == 2, (
             f"RustyStats corruption must be bounded to two attempts; got {call_count}"
         )
 
-    def test_persistently_corrupt_file_not_unlinked_forever(self, tmp_path: Path) -> None:
+    def test_persistently_corrupt_file_not_unlinked_forever(self) -> None:
         """After the final failure the retry must surface a diagnostic so
         the operator can act.  Absence of such a diagnostic is itself a
         silent-failure regression.
         """
-        corrupt_file = tmp_path / "corrupt.cbm"
-        corrupt_file.write_bytes(b"garbage")
+        call_count = 0
 
         def _always_fails(path: str, task: str) -> Any:
+            nonlocal call_count
+            call_count += 1
             raise RuntimeError("persistent corruption")
 
         with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run_p", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(corrupt_file),
-            ),
-            patch(
-                "haute._mlflow_io._load_catboost_model",
-                side_effect=_always_fails,
-            ),
+            self._run_holding("corrupt.cbm", b"garbage"),
+            patch("haute._mlflow_io._load_catboost_model", side_effect=_always_fails),
         ):
             with pytest.raises(RuntimeError) as exc_info:
-                load_mlflow_model(
-                    source_type="run",
-                    run_id="run_p",
-                    artifact_path="corrupt.cbm",
-                    task="regression",
-                )
+                load_mlflow_model(self._source("run_p", "corrupt.cbm"), task="regression")
 
+        # The loader itself refused both copies; nothing before it failed.
+        assert call_count == 2
+        assert str(exc_info.value.__cause__) == "persistent corruption"
         # The propagated error must clearly mention corruption / retry so
         # an on-call engineer doesn't need to spelunk debug logs.
         err_msg = str(exc_info.value).lower()

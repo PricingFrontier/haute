@@ -1026,20 +1026,27 @@ class TestServerOwnedArtifacts:
     @_ESCAPES
     def test_an_mlflow_artifact_cache_path(self, layout: tuple[Path, Path], escape: str) -> None:
         from haute._mlflow_io import _artifact_cache_path
+        from haute._mlflow_model import StoredArtifact
 
         project, outside = layout
         cache = project / "cache"
         digest = "0123456789abcdef"
-        path = _artifact_cache_path(cache, digest, "run1", "model/model.cbm")
-        assert path.parent.parent.parent == cache.resolve() / digest
+        token = StoredArtifact("model/model.cbm", "size:12").token
+        path = _artifact_cache_path(cache, digest, "run1", "model/model.cbm", token)
+        # <digest>/<run>/<sha256 of the artifact path>/<identity token>/artifact.cbm
+        assert path.relative_to(cache.resolve()).parts[:2] == (digest, "run1")
+        assert path.parent.name == token
         if escape == "symlink":
             _link(project, cache / digest, outside)
             with pytest.raises(ValueError, match="Invalid artifact cache identity"):
-                _artifact_cache_path(cache, digest, "run1", "model/model.cbm")
+                _artifact_cache_path(cache, digest, "run1", "model/model.cbm", token)
         else:
             # A run id is a single path component, so ``..`` is refused by name.
             with pytest.raises(ValueError, match="run"):
-                _artifact_cache_path(cache, digest, "..", "model/model.cbm")
+                _artifact_cache_path(cache, digest, "..", "model/model.cbm", token)
+            # The identity token is a folder name too, so it cannot name another folder.
+            with pytest.raises(ValueError, match="identity token"):
+                _artifact_cache_path(cache, digest, "run1", "model/model.cbm", "..")
 
 
 class TestAssistantStorage:

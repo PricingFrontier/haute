@@ -1653,12 +1653,24 @@ def _record_resolution(resolved: ResolvedModel) -> None:
 
 
 def _remove_older_copies(root: Path, resolved: ResolvedModel, stored: StoredArtifact) -> None:
-    """Remove the copies of *stored*'s path under identities other than its own."""
+    """Remove the copies of *stored*'s path under identities other than its own.
+
+    Housekeeping, like eviction: it never raises into a load that only asked for
+    a model. A copy that survives (held open by another process) or a folder that
+    cannot be listed is logged and left for a later pass or for eviction.
+    """
     from haute._file_ops import remove_tree
 
     folder = root / _artifact_cache_dir(resolved.backend.digest, resolved.run_id, stored.path)
-    for copy in folder.iterdir():
-        if copy.is_dir() and copy.name != stored.token and not remove_tree(copy):
+    try:
+        copies = [copy for copy in folder.iterdir() if copy.is_dir()]
+    except OSError as exc:
+        logger.warning(
+            "mlflow_disk_cache_stale_copy_kept", path=str(folder), error_type=type(exc).__name__
+        )
+        return
+    for copy in copies:
+        if copy.name != stored.token and not remove_tree(copy):
             logger.warning("mlflow_disk_cache_stale_copy_kept", path=str(copy))
 
 

@@ -1,6 +1,12 @@
 """Destination-aware model cache: identical run IDs/artifact paths on different
 backends never alias, and unresolved configuration fails before a cached
-artifact can be served (specs/roadmap/mlflow-destinations.md MLF-D03)."""
+artifact can be served (specs/roadmap/mlflow-destinations.md MLF-D03).
+
+Each backend's tracking store is a fake client holding the same run ID and
+artifact path, with the feature contract training logs beside the model; the
+model resolution lists it through the client pinned to the backend, and the
+download is served by the backend's tracking URI.
+"""
 
 from __future__ import annotations
 
@@ -25,14 +31,19 @@ from haute._mlflow_io import (
     clear_model_cache,
     load_mlflow_model,
 )
+from haute._mlflow_model import ResolvedModel, StoredArtifact
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute._model_flavors import model_family
+from haute._model_source import RunModelSource
 from haute._project_context import context_thread
 from haute.errors import MlflowConfigError
 from haute.modelling._mlflow_settings import TrackingConfig
+from tests._mlflow_fakes import FakeArtifactClient
 from tests._project import use_project
 
 RUN_ID = "run-1"
 ARTIFACT = "model.cbm"
+CONTRACT = "model.feature_contract.json"
 WAIT_MUST_HAPPEN_S = 10.0
 
 _BASE_TOML = '[project]\nname = "main"\npipeline = "rating/main.py"\n'
@@ -93,10 +104,13 @@ def _fake_backend(tracking_uri: str, identity: str, mode: str = "databricks") ->
 
 
 class _PayloadDownloader:
-    """``mlflow.artifacts.download_artifacts`` fake keyed on the tracking URI.
+    """The tracking stores of several backends, keyed on their tracking URIs.
 
-    The contract a run logs beside its model is served from the same backend
-    but recorded apart from ``calls``, which count model downloads.
+    Each store holds ``RUN_ID`` with ``ARTIFACT`` (its own payload) and the
+    contract beside it. :meth:`client` is the client pinned to a backend, which
+    lists that store; calling the downloader is ``mlflow.artifacts.download_artifacts``.
+    A listing or a download aimed at a backend that holds no store fails, and
+    the contract is recorded apart from ``calls``, which count model downloads.
     """
 
     def __init__(
@@ -108,7 +122,19 @@ class _PayloadDownloader:
         self.barrier = barrier
         self.calls: list[tuple[str, str]] = []
         self.contract_calls: list[tuple[str, str]] = []
+        self.clients: dict[str, FakeArtifactClient] = {}
         self._mutex = threading.Lock()
+
+    def client(self, backend: ResolvedBackend) -> FakeArtifactClient:
+        if backend.tracking_uri not in self.payloads:
+            raise AssertionError(f"listing aimed at an unexpected backend: {backend.identity!r}")
+        with self._mutex:
+            return self.clients.setdefault(
+                backend.tracking_uri,
+                FakeArtifactClient(
+                    {RUN_ID: {ARTIFACT: len(self.payloads[backend.tracking_uri]), CONTRACT: 2}}
+                ),
+            )
 
     def __call__(
         self,
@@ -142,7 +168,9 @@ class _PayloadDownloader:
         return [tracking_uri for _uri, tracking_uri in self.calls]
 
 
-def _fake_load_local(path: str, task: str = "regression") -> ScoringModel:
+def _fake_load_file(
+    path: str, task: str = "regression", *, contract_path: str | None, source: str | None
+) -> ScoringModel:
     """Loader stub whose model identity is the artifact file's bytes."""
     payload = Path(path).read_bytes().decode()
     return ScoringModel(model=f"model:{payload}", feature_names=["x"], flavor="catboost")
@@ -150,36 +178,39 @@ def _fake_load_local(path: str, task: str = "regression") -> ScoringModel:
 
 @contextmanager
 def _patched_loaders(downloader: _PayloadDownloader):
-    """Patch the download transport and both native-load entry points."""
+    """Patch the backends' clients, the download transport and the native loader."""
     with (
+        patch("haute._mlflow_utils.pinned_client", side_effect=downloader.client),
         patch("mlflow.artifacts.download_artifacts", new=downloader),
-        patch("haute._mlflow_io.load_local_model", side_effect=_fake_load_local),
-        patch(
-            "haute._mlflow_io._load_catboost_model",
-            side_effect=lambda path, task: f"model:{Path(path).read_bytes().decode()}",
-        ),
-        patch(
-            "haute._mlflow_io._wrap_catboost",
-            side_effect=lambda raw, *, source: ScoringModel(
-                model=raw, feature_names=["x"], flavor="catboost"
-            ),
-        ),
+        patch("haute._mlflow_io._load_catboost_file", side_effect=_fake_load_file),
     ):
         yield
 
 
 def _load(destination: str = "") -> ScoringModel:
     return load_mlflow_model(
-        source_type="run",
-        run_id=RUN_ID,
-        artifact_path=ARTIFACT,
+        RunModelSource(run_id=RUN_ID, artifact_path=ARTIFACT, mlflow_destination=destination),
         task="regression",
-        destination=destination,
     )
 
 
-def _cached_artifact(cache_root: Path, backend: ResolvedBackend) -> Path:
-    return _artifact_cache_path(cache_root, backend.digest, RUN_ID, ARTIFACT)
+def _cached_artifact(cache_root: Path, backend: ResolvedBackend, payload: bytes) -> Path:
+    """The disk copy of *payload*, the bytes the backend's store lists for the model."""
+    token = StoredArtifact(ARTIFACT, f"size:{len(payload)}").token
+    return _artifact_cache_path(cache_root, backend.digest, RUN_ID, ARTIFACT, token)
+
+
+def _resolved(backend_identity: str, *, version: str = "") -> ResolvedModel:
+    backend = _fake_backend("file:///runs", backend_identity, mode="local")
+    return ResolvedModel(
+        backend=backend,
+        run_id=RUN_ID,
+        artifact=StoredArtifact(ARTIFACT, "size:8"),
+        family=model_family("catboost"),
+        contract=StoredArtifact(CONTRACT, "size:2"),
+        version=version,
+        reference=f"MLflow run {RUN_ID!r}",
+    )
 
 
 class TestTwoLocalFolders:
@@ -222,13 +253,18 @@ class TestTwoLocalFolders:
             _configure_local(workspace.root, workspace.b)
             _load()
 
-        path_a = _cached_artifact(workspace.cache_root, backend_a)
-        path_b = _cached_artifact(workspace.cache_root, backend_b)
+        path_a = _cached_artifact(workspace.cache_root, backend_a, b"folder-a")
+        path_b = _cached_artifact(workspace.cache_root, backend_b, b"folder-b")
         assert path_a != path_b
         assert path_a.read_bytes() == b"folder-a"
         assert path_b.read_bytes() == b"folder-b"
-        assert path_a.parent.parent.parent.name == backend_a.digest
-        assert path_b.parent.parent.parent.name == backend_b.digest
+        cache_root = workspace.cache_root.resolve()
+        assert path_a.relative_to(cache_root).parts[:2] == (backend_a.digest, RUN_ID)
+        assert path_b.relative_to(cache_root).parts[:2] == (backend_b.digest, RUN_ID)
+        # Each backend's contract came from that backend, beside its own model.
+        assert sorted(uri for _artifact, uri in downloader.contract_calls) == sorted(
+            [backend_a.tracking_uri, backend_b.tracking_uri]
+        )
 
     def test_warm_cache_follows_folder_change_in_toml(self, workspace):
         _configure_local(workspace.root, workspace.a)
@@ -309,8 +345,12 @@ class TestUnresolvableDestination:
 
         with (
             patch(
-                "haute._mlflow_io.load_local_model",
+                "haute._mlflow_io._load_catboost_file",
                 side_effect=AssertionError("the cached artifact must not be served"),
+            ),
+            patch(
+                "haute._mlflow_utils.pinned_client",
+                side_effect=AssertionError("the store was asked for an unresolved destination"),
             ),
             patch("mlflow.artifacts.download_artifacts", new=downloader),
             pytest.raises(MlflowConfigError, match="MLflow server is not configured"),
@@ -325,13 +365,14 @@ class TestClearAndEviction:
 
     def test_clear_model_cache_by_run_id_clears_every_backend(self, workspace):
         digest_a, digest_b = "a" * 16, "b" * 16
+        token = StoredArtifact(ARTIFACT, "size:6").token
         for digest in (digest_a, digest_b):
             run_dir = workspace.cache_root / digest / RUN_ID
             assert (
                 run_dir
                 == _artifact_cache_path(
-                    workspace.cache_root, digest, RUN_ID, ARTIFACT
-                ).parent.parent
+                    workspace.cache_root, digest, RUN_ID, ARTIFACT, token
+                ).parents[2]
             )
             run_dir.mkdir(parents=True)
             (run_dir / "artifact.cbm").write_bytes(b"cached")
@@ -339,15 +380,7 @@ class TestClearAndEviction:
         other_run.mkdir(parents=True)
         (other_run / "artifact.cbm").write_bytes(b"other")
         keys = [
-            _model_cache_key(
-                source_type="run",
-                run_id=RUN_ID,
-                version="",
-                artifact_path=ARTIFACT,
-                task="regression",
-                artifact_fingerprint="fp",
-                backend_identity=identity,
-            )
+            _model_cache_key(_resolved(identity), "regression")
             for identity in ("local:/a|registry=file:///a", "local:/b|registry=file:///b")
         ]
         for key in keys:
@@ -368,13 +401,14 @@ class TestClearAndEviction:
             "run-mid": (digest_a, 1_700_000_100),
             "run-new": (digest_b, 1_700_000_200),
         }
+        token = StoredArtifact(ARTIFACT, "size:6").token
         for run_id, (digest, mtime) in layout.items():
             run_dir = workspace.cache_root / digest / run_id
             assert (
                 run_dir
                 == _artifact_cache_path(
-                    workspace.cache_root, digest, run_id, ARTIFACT
-                ).parent.parent
+                    workspace.cache_root, digest, run_id, ARTIFACT, token
+                ).parents[2]
             )
             run_dir.mkdir(parents=True)
             (run_dir / "artifact.cbm").write_bytes(b"cached")
@@ -395,24 +429,14 @@ class TestKeyAndLockIdentity:
 
     def test_model_cache_key_contains_backend_identity_last(self):
         identity = "local:/a|registry=file:///a"
-        base = dict(
-            source_type="run",
-            run_id=RUN_ID,
-            artifact_path=ARTIFACT,
-            task="regression",
-            artifact_fingerprint="fp",
-        )
-        key = _model_cache_key(version="", backend_identity=identity, **base)
-        versioned = _model_cache_key(version="7", backend_identity=identity, **base)
-        other_backend = _model_cache_key(
-            version="",
-            backend_identity="local:/b|registry=file:///b",
-            **base,
-        )
+        key = _model_cache_key(_resolved(identity), "regression")
+        versioned = _model_cache_key(_resolved(identity, version="7"), "regression")
+        other_backend = _model_cache_key(_resolved("local:/b|registry=file:///b"), "regression")
 
         assert key[-1] == identity
-        assert versioned[-1] == identity
-        assert key[1] == RUN_ID and versioned[1] == RUN_ID
+        assert key[1] == RUN_ID
+        # A version registered from the same file is the same entry, on its backend only.
+        assert versioned == key
         assert key != other_backend
 
     def test_artifact_io_lock_is_per_backend(self):
@@ -448,8 +472,14 @@ class TestTwoServerEndpoints:
         assert from_a.raw_model == "model:server-a"
         assert from_b.raw_model == "model:server-b"
         assert backend_a.digest != backend_b.digest
-        assert _cached_artifact(workspace.cache_root, backend_a).read_bytes() == b"server-a"
-        assert _cached_artifact(workspace.cache_root, backend_b).read_bytes() == b"server-b"
+        assert (
+            _cached_artifact(workspace.cache_root, backend_a, b"server-a").read_bytes()
+            == b"server-a"
+        )
+        assert (
+            _cached_artifact(workspace.cache_root, backend_b, b"server-b").read_bytes()
+            == b"server-b"
+        )
 
 
 class TestConcurrentBackends:
@@ -500,7 +530,7 @@ class TestConcurrentBackends:
 class TestOneResolutionPerLoad:
     """Exactly one backend resolution per load, and it is the one used."""
 
-    @pytest.mark.parametrize("path", ["fast", "full"])
+    @pytest.mark.parametrize("path", ["memory-hit", "download"])
     def test_load_resolves_backend_exactly_once(self, workspace, path: str):
         _configure_local(workspace.root, workspace.a)
         backend_a = resolve_backend("local")
@@ -515,9 +545,9 @@ class TestOneResolutionPerLoad:
         with _patched_loaders(downloader):
             warm = _load()
             assert warm.raw_model == "model:folder-a"
-            if path == "full":
+            if path == "download":
                 _model_cache.clear()
-                _cached_artifact(workspace.cache_root, backend_a).unlink()
+                _cached_artifact(workspace.cache_root, backend_a, b"folder-a").unlink()
             with patch(
                 "haute._mlflow_utils.resolve_backend",
                 side_effect=counting_resolve,
@@ -526,6 +556,7 @@ class TestOneResolutionPerLoad:
 
         assert again.raw_model == "model:folder-a"
         assert calls == [""], f"{path} path resolved the backend {len(calls)} time(s)"
+        assert len(downloader.calls) == (2 if path == "download" else 1)
 
     def test_settings_change_during_load_does_not_split_backends(self, workspace):
         _configure_local(workspace.root, workspace.a)
@@ -547,6 +578,12 @@ class TestOneResolutionPerLoad:
             loaded = _load()
 
         assert loaded.raw_model == "model:folder-a"
+        # The listing, the model and its contract all came from the one backend.
+        assert list(downloader.clients) == [backend_a.tracking_uri]
         assert downloader.tracking_uris() == [backend_a.tracking_uri]
-        assert _cached_artifact(workspace.cache_root, backend_a).read_bytes() == b"folder-a"
-        assert not _cached_artifact(workspace.cache_root, backend_b).exists()
+        assert [uri for _artifact, uri in downloader.contract_calls] == [backend_a.tracking_uri]
+        assert (
+            _cached_artifact(workspace.cache_root, backend_a, b"folder-a").read_bytes()
+            == b"folder-a"
+        )
+        assert not _cached_artifact(workspace.cache_root, backend_b, b"folder-b").exists()
