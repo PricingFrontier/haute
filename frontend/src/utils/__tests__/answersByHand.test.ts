@@ -43,6 +43,7 @@ const SHARED = new Set(["frontend/src/utils/answers.ts"])
 export const NOT_SERVER: Record<string, string> = {
   confirmed: "a question to the analyst, answered in the page",
   "useQuestionStore.getState().ask": "a question to the analyst, answered in the page",
+  navigate: "the page moving to another address, after the leave guard's question to the underwriter",
   "navigator.clipboard.writeText": "the browser's clipboard",
   "navigator.clipboard.write": "the browser's clipboard",
   import: "a lazy import of the editor's own code",

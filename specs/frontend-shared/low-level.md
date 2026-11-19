@@ -926,18 +926,23 @@ other way (high-level, "Late answers").
    source, but tests, generated code, the API client (`api/`, whose functions send the requests and keep the transport's own state) and `answers.ts` itself, and fails for a function that
    writes state after a wait. A wait is an `await`, or a callback given to `.then`, `.catch`
    or `.finally`; a loop that waits waits from its first statement, and a branch that waits
-   and then leaves the function leaves what follows it unwaited; a wait for no answer from the
-   server (a question to the analyst through `confirmed` or the question store, the clipboard,
-   a lazy import, the layout engine, a document or sync frame read with the page's own
-   validators) is listed by what it awaits, with its reason (`NOT_SERVER`). A write is an assignment to a ref's `current` or
+   and then leaves the function leaves what follows it unwaited, but a `catch` runs after any
+   wait its `try` began and a `finally` after any its `try` or `catch` began, a branch that
+   left included; a wait for no answer from the server (a question to the analyst through
+   `confirmed` or the question store, the page moving after the leave guard's question
+   (`navigate`), the clipboard, a lazy import, the layout engine, a document or sync frame read
+   with the page's own validators) is listed by what it awaits, with its reason (`NOT_SERVER`). A write is an assignment to a ref's `current` or
    to a variable of the module, or a call of: a state setter (`set`, `setState`, a `set…`
    name, `dispatch`); a store's action (through `getState()`, or a store's `get()`); a callback
    prop (`on…`); a function a hook gave; `ask` or `answer`, which capture what an answer
    belongs to when they are called; or a function that writes, followed through the source
-   whichever module declares it (an import, under its own name or another, or a re-export),
-   with a function's names in its lexical scope (a store's state or action held by a local of
-   an enclosing function is still one). A method of the function's own local value (a `Map` it
-   built) is not state. A handler given to `answer` or `asked.answer`, a callback given to
+   whichever module declares it (an import, under its own name or another, or a re-export).
+   Each name is what the nearest scope binding it binds it to, by JavaScript's lexical scopes:
+   a function, a block, a loop, a `catch` clause, or the module, with `var` bound in its
+   function; a same-named declaration elsewhere hides nothing, and a store's state or action,
+   or a hook's value, held by a local of an enclosing function is still one. A method of a
+   local value (a `Map` a function built) is not state, unless a hook gave the value or it is
+   a store's state. A handler given to `answer` or `asked.answer`, a callback given to
    `asked.apply`, a `pending` and an `inFlight` start unwaited, and what they write is not a
    write of the function they are written in, since the helper runs them while current. A
    function that calling after a wait does not make a write is listed by name with its reason

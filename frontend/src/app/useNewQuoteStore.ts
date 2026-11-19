@@ -37,7 +37,7 @@ import {
   type KeptCreation,
   type Values,
 } from "./quoteValues"
-import { navigate, quotePath, routePart } from "./route"
+import { navigate, quotePath } from "./route"
 import useAppStore from "./useAppStore"
 import useOpenQuoteStore, { openDraftKey } from "./useOpenQuoteStore"
 
@@ -205,7 +205,8 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     const letGo = () => {
       if (key !== null) forgetCreation(key)
     }
-    // The window closes nothing while it sends, so its answer is the window's.
+    // The window closes nothing while it sends (`shut`), and opens no other: its answer is always
+    // the window's.
     await answer([under(fills)], createAppQuote({ operation, form_revision, release, values }, source, reference), {
       ok: async (made) => {
         letGo()
@@ -221,22 +222,8 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         }
         // Answered once the page moved on, Back included, the quote is made and the page stays,
         // as it does when the leave guard keeps the quote behind the window: either says so.
-        const madeHere = () => {
-          if (!savedAsNew) useToastStore.getState().addToast("success", `Made ${made.quote.label}`)
-        }
-        if (here() !== sentFrom) {
-          madeHere()
-          return
-        }
-        await answer([routePart()], navigate(quotePath(made.quote.reference, made.quote.option), { force: savedAsNew }), {
-          ok: (moved) => {
-            if (moved !== "moved") madeHere()
-          },
-          // The page moved by another way while the guard asked: the quote is made, and says so.
-          stale: (settled) => {
-            if ("value" in settled && settled.value !== "moved") madeHere()
-          },
-        })
+        const opened = here() === sentFrom && (await navigate(quotePath(made.quote.reference, made.quote.option), { force: savedAsNew })) === "moved"
+        if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${made.quote.label}`)
       },
       failed: (error) => {
         if (apiErrorRefused(error)) {
@@ -255,10 +242,6 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           // No answer, or a server failure: it may have been made, so it stays kept.
           update({ status: "unknown", error: apiErrorMessage(error) })
         }
-      },
-      // An answer the window no longer waits for still settles what the tab keeps.
-      stale: (settled) => {
-        if ("value" in settled || apiErrorRefused(settled.error)) letGo()
       },
     })
   }

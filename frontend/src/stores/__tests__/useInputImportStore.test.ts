@@ -169,6 +169,36 @@ describe("startInputImport", () => {
     expect(cancelInputCacheJob).toHaveBeenCalledTimes(3)
   })
 
+  it("a Stop whose cancellation answers after its node was deleted ends the run once the build stopped", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running"))
+    let acceptStop: (value: typeof cancelled) => void = () => {}
+    let acceptRetired: (value: typeof cancelled) => void = () => {}
+    vi.mocked(cancelInputCacheJob)
+      .mockRejectedValueOnce(new Error("unreachable"))
+      .mockImplementationOnce(() => new Promise((resolve) => { acceptStop = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { acceptRetired = resolve }))
+    startInputImport("csv", input("csv"), vi.fn())
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    stopNodeWork("csv")
+    await waitFor(() => expect(toasted("Stopping the import failed")).toBe(true))
+    useToastStore.setState({ toasts: [] })
+    const epoch = useNodeDataStore.getState().epoch
+
+    // Stop again; the node is deleted while that cancellation is unanswered.
+    stopNodeWork("csv")
+    await waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalledTimes(2))
+    retireInputImport("csv")
+    expect(useInputImportStore.getState().runs.csv).toBeUndefined()
+    await waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalledTimes(3))
+
+    // The Stop's answer says the build stopped: the run's work is over, and it says nothing.
+    acceptStop(cancelled)
+    await waitFor(() => expect(useNodeDataStore.getState().epoch).toBeGreaterThan(epoch))
+    acceptRetired(cancelled)
+    await Promise.resolve()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("reports a retired import whose build never stops", async () => {
     vi.mocked(getInputCacheJob).mockResolvedValue(job("running"))
     vi.mocked(cancelInputCacheJob).mockRejectedValue(new Error("unreachable"))

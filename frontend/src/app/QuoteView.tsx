@@ -443,11 +443,9 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
     if (quote === null) return
     const { reference, option } = quote
     // Moved to the quote's address, its route opens it; there already, nothing else will.
-    await answer([routePart()], navigate(quotePath(reference, option), { force: true }), {
-      ok: (moved) => {
-        if (moved === "here") void useOpenQuoteStore.getState().openQuote(reference, option)
-      },
-    })
+    if ((await navigate(quotePath(reference, option), { force: true })) === "here") {
+      void useOpenQuoteStore.getState().openQuote(reference, option)
+    }
   }
 
   return (
