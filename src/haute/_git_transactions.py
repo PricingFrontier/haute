@@ -101,6 +101,13 @@ def commit_save(
 
     ledger = resolve_ledger(working, cwd=cwd)
 
+    # A path neither in the working tree nor known to git has nothing to record (a save's
+    # record names a file a save stopped before creating), and `git add` refuses it.
+    known = set(_run_git("ls-files", "-z", "--", *map(_literal, paths), cwd=cwd).split("\0"))
+    base = Path.cwd() if cwd is None else cwd
+    paths = [path for path in paths if path in known or os.path.lexists(base / path)]
+    if not paths:
+        return None
     # :(literal) so a filename holding glob characters names only itself.
     pathspecs = [_literal(path) for path in paths]
     if not _run_git("status", "--porcelain", "--", *pathspecs, cwd=cwd):

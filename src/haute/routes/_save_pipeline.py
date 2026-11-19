@@ -944,17 +944,20 @@ class SavePipelineService:
         # The save's record, before its first file is replaced: what it writes and deletes,
         # and what it removes once committed. A record a settle left (a save that never
         # committed, removals and staging files not yet removed) is carried: its files may
-        # hold either save until this one commits, the staging beside them is removed when it
-        # does, and its removals are made unless this save writes the file.
+        # hold either save until this one commits, which captures them, the staging beside
+        # them is removed when it does, and its removals are made unless this save writes
+        # the file.
         planned_folded = {self._project_file(path).casefold() for path in [*planned, *deletes]}
         removes = {removal.file.casefold(): removal for removal in self._stale_config_files()}
         if carried is not None:
             for removal in carried.removes:
                 if removal.file.casefold() not in planned_folded:
                     removes.setdefault(removal.file.casefold(), removal)
-        # A record left before: the files of a save that never committed, and those whose
-        # staging is still to remove. They are this save's leftover, never its capture.
-        leftover = () if carried is None else (*carried.writes, *carried.leftover)
+        # A record left before: the files of a save that never committed, which may hold
+        # either save until this one commits and are captured with it (a deletion it made is
+        # still to record), and those whose staging is still to remove, never captured.
+        carried_writes = () if carried is None else carried.writes
+        leftover = () if carried is None else carried.leftover
         record = SaveRecord(
             source_file=source_file,
             operation=body.operation,
@@ -963,6 +966,7 @@ class SavePipelineService:
             writes=tuple(
                 dict.fromkeys(
                     [
+                        *carried_writes,
                         *(self._project_file(path) for path in planned),
                         *(self._project_file(path) for path in deletes if path.exists()),
                     ]

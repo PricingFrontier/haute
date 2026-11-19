@@ -606,3 +606,88 @@ def test_a_record_is_read_by_any_spelling_of_its_file(project: Path) -> None:
 
     assert record is not None and record.readable
     assert record.source_file == "rating/main.py"
+
+
+def test_a_module_deletion_a_stopped_save_made_is_captured_by_the_next_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_submodel_persistence import _flat_graph, _managed_graph
+
+    def service(root: Path) -> SavePipelineService:
+        return SavePipelineService(project_root=root, pipeline_root=root, require_ready=True)
+
+    def saving(root: Path, graph: Any, operation: str) -> SavePipelineRequest:
+        return SavePipelineRequest(
+            name="main",
+            description="",
+            graph=graph,
+            preamble="",
+            source_file="main.py",
+            sources=["live"],
+            active_source="live",
+            preserved_blocks=[],
+            base_revision=load_pipeline_editor_document(
+                root / "main.py", project_root=root
+            ).source_revision
+            if (root / "main.py").exists()
+            else None,
+            operation=operation,
+        )
+
+    def ledger(root: Path) -> list[str]:
+        return _git(root, "ls-tree", "-r", "--name-only", f"{WORKING}-save").splitlines()
+
+    root = tmp_path / "flat"
+    root.mkdir()
+    use_project(root)
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.name", "Test User")
+    _git(root, "config", "user.email", "test@example.com")
+    (root / ".gitignore").write_text(".haute/\n", encoding="utf-8")
+    (root / "haute.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "Initial project")
+    _git(root, "checkout", "-q", "-b", WORKING)
+    set_working_branch(WORKING, root, cwd=root)
+    service(root).save(saving(root, _flat_graph(), "op-flat-0001"))
+    service(root).save(saving(root, _managed_graph(), "op-managed-0001"))
+    module = ["modules/child.py", "modules/child.haute.json"]
+    assert set(module) <= set(ledger(root))
+
+    steps = _Steps(root)
+    steps.snapshot_to = tmp_path / "killed"
+    with _watched(monkeypatch, steps):
+        service(root).save(saving(root, _flat_graph(), "op-dissolve-0001"))
+
+    # Killed once the module and its sidecar were deleted, before the save committed.
+    stopped = next(
+        snapshot
+        for snapshot in steps.snapshots
+        if not any((snapshot / path).exists() for path in module)
+        and (record := save_records.read_record(snapshot, "main.py")) is not None
+        and not record.committed
+    )
+    use_project(stopped)
+    settle_saves(stopped)
+    assert _interruption(load_pipeline_editor_document(stopped / "main.py", project_root=stopped))
+
+    service(stopped).save(saving(stopped, _flat_graph(), "op-after-stop-0001"))
+
+    assert not set(module) & set(ledger(stopped))
+
+
+def test_a_file_a_stopped_save_never_created_does_not_stop_the_next_capture(
+    project: Path,
+) -> None:
+    save_records.write_record(
+        project,
+        save_records.SaveRecord(
+            source_file="rating/main.py",
+            writes=("rating/main.py", "rating/config/banding/Never.json"),
+        ),
+    )
+
+    answer = _service(project).save(_request(project, {"Bands": "35"}, "op-never-0001"))
+
+    assert answer.git_sha is not None and answer.uncaptured == [], answer.warnings
+    assert _interruption(_document(project)) == []

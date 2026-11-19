@@ -72,14 +72,15 @@ class Removal:
 class SaveRecord:
     """A save of the pipeline file *source_file* (project-relative, ``/``-separated).
 
-    *writes* are the files it writes or deletes in its transaction, which its capture takes.
-    *leftover* are files a save before it left: the files of one that never committed, which
-    may hold either save until this one commits, and files whose staging could not yet be
-    removed. A settle removes the staging beside both; neither is captured for *leftover*,
-    which may name files that never came to be. *removes* are the stale files it removes once
-    committed. *answer* is the response as it stood when the save committed, a
-    ``SavePipelineResponse`` in JSON. A record that cannot be read is still a save that
-    stopped: *readable* is False and it names no files."""
+    *writes* are the files it writes or deletes in its transaction, and for a save made over
+    the record of one that never committed, that one's files too: each may hold either save
+    until this one commits, and its capture takes each that is on disk or known to git (a
+    deletion that save made is still to record; a file it never came to create is not).
+    *leftover* are files whose staging could not yet be removed: a settle removes the staging
+    beside them and the files the record writes, and they are never captured. *removes* are
+    the stale files it removes once committed. *answer* is the response as it stood when the
+    save committed, a ``SavePipelineResponse`` in JSON. A record that cannot be read is still
+    a save that stopped: *readable* is False and it names no files."""
 
     source_file: str
     operation: str | None = None
