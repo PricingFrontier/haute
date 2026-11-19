@@ -60,7 +60,7 @@ def run_smoke(wheel: Path, work_dir: Path) -> int:
     staging.mkdir(parents=True)
     served = ServedHaute(f"code/{wheel.name}", wheel)
 
-    with resolve_config(DeployConfig.from_toml(project / "haute.toml")) as resolved:
+    with resolve_config(DeployConfig.from_project(project)) as resolved:
         lock = served_lock(resolved, served)
         manifest = {**build_manifest(resolved), "dependency_lock": lock.provenance()}
         manifest_path = work_dir / "deploy_manifest.json"

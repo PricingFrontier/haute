@@ -177,7 +177,6 @@ item lacks.
 | One lead that needs macOS (L29) | macOS |
 | Explore's profile took 7 seconds at 50 and at 100 columns, after a first run of 45 to 110 seconds | A quiet machine: three other runs shared it |
 | The Solve pane read "Did not converge in 20 iterations" beside a preview reading "Converged, 37 iterations" | A second look: probably the two solving methods of `OPM-02` |
-| What the browser's client saves from the empty canvas of a mistyped `haute.toml` (`PCF-02`) | A browser run |
 | A page reloaded during a training run shows a refused memory estimate, nothing of the run, and never its result | A decision: no route lets a page find a node's running job |
 | `haute run` prints a traceback after its one-line error when a node's own code raises, as the CLI specification prescribes | A decision |
 

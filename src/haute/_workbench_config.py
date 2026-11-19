@@ -33,18 +33,20 @@ workbench route needs it, so an edit reaches the next request.
 from __future__ import annotations
 
 import re
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from haute._project import resolve_pipeline_file
+from haute._project_settings import read_project_settings
 from haute._sandbox import contained_path
 from haute.errors import ConfigError, HauteError, PathOutsideProjectError
 
-#: The keys the table may hold. ``haute deploy``'s whole-file check of ``haute.toml``
-#: (``haute.deploy._config``) accepts exactly these under ``[workbench]``.
+#: The keys the table may hold: the settings parse (``haute._project_settings``) checks them,
+#: and those of its sub-tables below, across the whole file.
 WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "app", "store"})
+#: ``[workbench.app]``'s own keys, beside a table for each hosted environment.
+APP_TOML_KEYS: frozenset[str] = frozenset({"host", "edit_role"})
 #: Where the underwriter app can run: the host whose sign-in fronts it.
 APP_HOSTS: frozenset[str] = frozenset({"azure-container-apps"})
 #: The databases an environment's quote store can be on.
@@ -101,11 +103,45 @@ SECRET_KEYS: Mapping[str, str] = {
     "connection_string": STORE_URL_ENV,
 }
 
-#: Where an earlier Haute named the form's one file; refused saying what replaced it.
-_REMOVED_FORM_KEY = (
-    "[workbench].form was removed: the form is the pipeline folder's workbench/ folder; "
-    "delete the key"
+#: Keys an earlier Haute read under ``[workbench]``, each refused by the settings parse saying
+#: what replaced it.
+_RETIRED_KEYS: Mapping[str, str] = {
+    "form": "was removed: the form is the pipeline folder's workbench/ folder; delete the key"
+}
+#: Every key an environment of the store can hold: which of them its provider and sign-in
+#: take is checked by :func:`store_environments`, the settings parse refusing any other.
+STORE_ENVIRONMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "provider",
+        "auth",
+        "username_env",
+        *(key for keys in STORE_SIGN_INS.values() for key in keys),
+        *(key for keys in _OPTIONAL_SIGN_IN_KEYS.values() for key in keys),
+    }
 )
+
+
+def refused_workbench_key(key: str) -> str | None:
+    """The words a ``[workbench]`` key is refused in, after its name; None for any other."""
+    words = _RETIRED_KEYS.get(key)
+    return None if words is None else f" {words}"
+
+
+def refused_store_key(key: str) -> str | None:
+    """The words an environment's key that would put where a database is, or a secret's
+    value, in the file is refused in, after its name, naming the variable it belongs in;
+    None for any other key. The settings parse and a release's store read both."""
+    if key in _LOCATION_KEYS:
+        return (
+            ": where an environment's database is comes from the host's environment "
+            f"({_LOCATION_KEYS[key]}), never from a file"
+        )
+    if key in SECRET_KEYS:
+        return (
+            f" would hold a secret's value: name the variable that holds it "
+            f"({SECRET_KEYS[key]}) instead"
+        )
+    return None
 
 
 class WorkbenchError(HauteError):
@@ -200,40 +236,15 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     not as the module docstring describes, or, while enabled, the project has no pipeline
     file or its form folder resolves outside the project.
     """
-    toml_path = project_root / "haute.toml"
     disabled = WorkbenchConfig(enabled=False, project_root=project_root)
-    if not toml_path.is_file():
+    settings = read_project_settings(project_root)
+    if settings is None:
         return disabled
-    try:
-        with toml_path.open("rb") as handle:
-            data = tomllib.load(handle)
-    except OSError as exc:
-        raise WorkbenchConfigError(
-            f"haute.toml could not be read: {exc}", path=str(toml_path)
-        ) from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise WorkbenchConfigError(
-            f"haute.toml is malformed and could not be parsed: {exc}", path=str(toml_path)
-        ) from exc
-    except UnicodeDecodeError as exc:
-        raise WorkbenchConfigError(
-            f"haute.toml is not UTF-8 text: {exc}", path=str(toml_path)
-        ) from exc
-
-    table = data.get(_TABLE)
+    toml_path = settings.path
+    # The parse has checked the table's keys (``WORKBENCH_TOML_KEYS``).
+    table = settings.table(_TABLE)
     if table is None:
         return disabled
-    if not isinstance(table, dict):
-        raise WorkbenchConfigError("[workbench] must be a TOML table", path=str(toml_path))
-    if "form" in table:
-        raise WorkbenchConfigError(_REMOVED_FORM_KEY, path=str(toml_path))
-    unknown = sorted(set(table) - WORKBENCH_TOML_KEYS)
-    if unknown:
-        raise WorkbenchConfigError(
-            f"[workbench] has unknown key(s): {', '.join(unknown)}; the keys are enabled, app "
-            "and store",
-            path=str(toml_path),
-        )
     enabled = table.get("enabled")
     if not isinstance(enabled, bool):
         raise WorkbenchConfigError("[workbench].enabled must be true or false", path=str(toml_path))
@@ -287,16 +298,9 @@ def store_environments(raw: object, where: str) -> tuple[StoreEnvironment, ...]:
 
 def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnvironment:
     for key in settings:
-        if key in _LOCATION_KEYS:
-            raise ValueError(
-                f"{at}.{key}: where an environment's database is comes from the host's "
-                f"environment ({_LOCATION_KEYS[key]}), never from a file"
-            )
-        if key in SECRET_KEYS:
-            raise ValueError(
-                f"{at}.{key} would hold a secret's value: name the variable that holds it "
-                f"({SECRET_KEYS[key]}) instead"
-            )
+        refusal = refused_store_key(key)
+        if refusal is not None:
+            raise ValueError(f"{at}.{key}{refusal}")
     provider = settings.get("provider")
     if not isinstance(provider, str) or provider not in STORE_PROVIDERS:
         raise ValueError(
@@ -344,25 +348,14 @@ def _app_settings(
     one of the store's environments, *declared*; none of them without the table."""
     if raw is None:
         return None, None, ()
-    if not isinstance(raw, dict):
-        raise WorkbenchConfigError("[workbench.app] must be a TOML table", path=str(toml_path))
-    settings_keys = {"host", "edit_role"}
+    # The settings parse has refused a table that is not one and any key but APP_TOML_KEYS
+    # beside a table for each hosted environment.
+    assert isinstance(raw, dict)
     environments = tuple(
         _app_environment(name, settings, toml_path, declared)
         for name, settings in raw.items()
-        if name not in settings_keys and isinstance(settings, dict)
+        if name not in APP_TOML_KEYS
     )
-    unknown = sorted(
-        key
-        for key, value in raw.items()
-        if key not in settings_keys and not isinstance(value, dict)
-    )
-    if unknown:
-        raise WorkbenchConfigError(
-            f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the keys are host and "
-            "edit_role, beside a table for each hosted environment",
-            path=str(toml_path),
-        )
     host = raw.get("host")
     if not isinstance(host, str) or host not in APP_HOSTS:
         raise WorkbenchConfigError(
@@ -391,13 +384,7 @@ def _app_environment(
             f"[workbench.store.{name}], whose database its app keeps its quotes in",
             path=str(toml_path),
         )
-    unknown = sorted(set(settings) - set(APP_ENVIRONMENT_KEYS))
-    if unknown:
-        raise WorkbenchConfigError(
-            f"{at} has unknown key(s): {', '.join(unknown)}; the keys are "
-            + " and ".join(APP_ENVIRONMENT_KEYS),
-            path=str(toml_path),
-        )
+    # The settings parse has refused any key but APP_ENVIRONMENT_KEYS.
     values: dict[str, str] = {}
     for key in APP_ENVIRONMENT_KEYS:
         value = settings.get(key, "")

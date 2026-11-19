@@ -22,7 +22,6 @@ import socket
 import subprocess
 import sys
 import time
-import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +36,15 @@ from haute._local_security import (
 )
 from haute._logging import get_logger
 from haute._project_context import current_project
-from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
+from haute._project_settings import ProjectSettings
+from haute.cli._helpers import (
+    HauteCommand,
+    _find_frontend_dir,
+    _node_env,
+    _npm,
+    _open_browser,
+    require_command_settings,
+)
 from haute.cli._polars_startup import POLARS_SETTINGS
 
 logger = get_logger(component="serve")
@@ -107,45 +114,15 @@ def _http_url(config: ServeConfig) -> str:
     return f"http://{authority_host}:{config.port}"
 
 
-def _load_toml_server_host(project_dir: Path) -> str | None:
-    """Return ``[server].host`` from ``haute.toml`` in *project_dir*, if set.
+def _settings_server_host(settings: ProjectSettings) -> str | None:
+    """Return ``[server].host`` from the parsed ``haute.toml``, if set.
 
-    Returns ``None`` when the file is absent, missing the ``[server]``
-    table, or when the ``host`` key is not a string.  An ``OSError``
-    (permission denied, transient FS issue) is logged as a warning and
-    treated as "no override" so ``haute serve`` can still start on the
-    loopback default.
-
-    A ``TOMLDecodeError``, by contrast, is raised as :class:`ConfigError`
-    — a typo in ``[server] host = "0.0.0.0"`` silently falling back to
-    127.0.0.1 would make the user believe they had exposed the server
-    when they had not (or vice-versa).  Failing loudly here surfaces the
-    typo immediately.
+    ``None`` when the file has no ``[server]`` table, or its ``host`` is not a non-empty
+    string. The settings parse has refused an unreadable or malformed file, so a typo never
+    falls back to the loopback default.
     """
-    toml_path = project_dir / "haute.toml"
-    if not toml_path.is_file():
-        return None
-    try:
-        with open(toml_path, "rb") as fh:
-            data = tomllib.load(fh)
-    except OSError as exc:
-        logger.warning(
-            "haute_toml_read_failed",
-            path=str(toml_path),
-            error_type=type(exc).__name__,
-            reason=str(exc),
-        )
-        return None
-    except tomllib.TOMLDecodeError as exc:
-        from haute.errors import ConfigError
-
-        raise ConfigError(
-            "haute.toml is malformed and could not be parsed",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-    server = data.get("server")
-    if not isinstance(server, dict):
+    server = settings.table("server")
+    if server is None:
         return None
     host = server.get("host")
     if not isinstance(host, str) or not host:
@@ -593,7 +570,7 @@ def handle_serve(config: ServeConfig) -> None:
         _run_prod_mode(config)
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="project")
 @click.option(
     "--host",
     default=None,
@@ -621,20 +598,19 @@ def serve(host: str | None, port: int, no_browser: bool) -> None:
 
     Whichever source wins, non-loopback values are rejected before startup.
     """
-    from haute._project_context import resolve_project
-    from haute.errors import ConfigError
+    from haute.discovery import discover_pipelines
 
-    # The server serves the project holding the working directory, and none outside one.
-    try:
-        project = resolve_project(current_project().root)
-    except ConfigError as exc:
-        click.echo(f"Error: {exc.message}. Run 'haute serve' inside a Haute project.", err=True)
-        raise SystemExit(1) from exc
+    # The command's need is a project: the one holding the working directory.
+    root = current_project().root
+    settings = require_command_settings()
+    # A configured pipeline file that is missing or holds no pipeline ends the command in
+    # one line here, before the server starts.
+    discover_pipelines(root)
     # Haute reads the project from its context; the user's pipeline code reads a relative
     # path from the working directory, so the server runs in the project's root and both
     # name the same file wherever the command was started.
-    os.chdir(project.root)
+    os.chdir(root)
     if host is None:
-        host = _load_toml_server_host(project.root) or "localhost"
-    config = ServeConfig(host=host, port=port, no_browser=no_browser, project_root=project.root)
+        host = _settings_server_host(settings) or "localhost"
+    config = ServeConfig(host=host, port=port, no_browser=no_browser, project_root=root)
     handle_serve(config)

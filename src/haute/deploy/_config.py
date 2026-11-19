@@ -14,14 +14,12 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from haute._artifact_paths import PATH_PROBLEMS, ordinary_path_problem
 from haute._graph_shape import validate_singleton_groups
-from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._sandbox import is_contained
-from haute._workbench_config import WORKBENCH_TOML_KEYS, read_workbench_config
+from haute._workbench_config import read_workbench_config
 from haute._workbench_form import FormDocument
 from haute._workbench_nodes import connection_errors, form_owner, read_project_form, with_tables
 from haute._workbench_tables import workbench_tables
-from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
@@ -30,10 +28,11 @@ from haute.deploy._pruner import (
     find_source_nodes,
     prune_for_deploy,
 )
-from haute.errors import ConfigError, DeployError
+from haute.errors import DeployError
 from haute.graph_utils import PipelineGraph
 
 if TYPE_CHECKING:
+    from haute._project_settings import ProjectSettings
     from haute.deploy._request_rows import RequestRows
 
 logger = get_logger(component="deploy.config")
@@ -175,56 +174,6 @@ class CIConfig:
     production_environment: str = ""
 
 
-# ---------------------------------------------------------------------------
-# TOML schema validation — reject unknown keys early
-# ---------------------------------------------------------------------------
-
-_VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
-    "project": {"name", "pipeline"},
-    "deploy": {
-        "_self": {"target", "model_name", "endpoint_name", "output_fields"},
-        "databricks": {
-            "experiment_name",
-            "catalog",
-            "schema",
-            "serving_workload_size",
-            "serving_scale_to_zero",
-        },
-        "container": {"registry", "port", "base_image"},
-        "azure-container-apps": {
-            "resource_group",
-            "container_app_name",
-            "environment_name",
-        },
-        "aws-ecs": {"region", "cluster", "service"},
-        "gcp-run": {"project", "region", "service"},
-    },
-    "test_quotes": {"dir"},
-    # Owned by the MLflow settings endpoint (routes/mlflow.py), not deploy;
-    # listed so whole-file validation accepts the file that endpoint writes.
-    # The table is a destination inventory: the retired single-mode ``mode``
-    # key is an unknown key like any other.
-    "mlflow": {"tracking_uri", "folder"},
-    "safety": {
-        "_self": {"impact_dataset"},
-        "approval": {"min_approvers"},
-    },
-    "ci": {
-        "_self": {"provider"},
-        "staging": {"endpoint_suffix", "endpoint_url"},
-        "production": {"endpoint_url", "environment"},
-    },
-    "server": {"host"},
-    "assistant": {
-        "_self": set(ASSISTANT_TOML_KEYS - {"egress"}),
-        "egress": set(ASSISTANT_EGRESS_TOML_KEYS),
-    },
-    # Owned by the workbench (haute._workbench_config); listed so whole-file
-    # validation accepts a project whose workbench is enabled.
-    "workbench": set(WORKBENCH_TOML_KEYS),
-}
-
-
 _T = TypeVar("_T", str, int, bool)
 
 _TOML_TYPE_NAMES: dict[type, str] = {str: "a string", int: "an integer", bool: "true or false"}
@@ -272,47 +221,6 @@ class _TomlTable:
         if value is not None and not isinstance(value, list):
             raise ValueError(f"[{self._section}] {key} must be an array; got {value!r}.")
         return value
-
-
-def _validate_toml_keys(data: dict[str, Any], path: Path) -> None:
-    """Raise ValueError if haute.toml contains unknown keys."""
-    errors: list[str] = []
-
-    def _check(
-        section_path: str,
-        actual: dict[str, Any],
-        schema: set[str] | dict[str, Any],
-    ) -> None:
-        if isinstance(schema, set):
-            unknown = set(actual) - schema
-            for k in sorted(unknown):
-                errors.append(f"  [{section_path}] unknown key '{k}'")
-        else:
-            # Dict schema: _self holds top-level keys, rest are sub-sections
-            top_keys = schema.get("_self", set())
-            sub_sections = {k for k in schema if k != "_self"}
-            allowed = top_keys | sub_sections if isinstance(top_keys, set) else sub_sections
-            unknown = set(actual) - allowed
-            for k in sorted(unknown):
-                errors.append(f"  [{section_path}] unknown key '{k}'")
-            for sub in sub_sections:
-                if sub in actual and isinstance(actual[sub], dict):
-                    _check(f"{section_path}.{sub}", actual[sub], schema[sub])
-
-    top_unknown = set(data) - set(_VALID_TOML_SCHEMA)
-    for k in sorted(top_unknown):
-        errors.append(f"  unknown top-level section [{k}]")
-
-    for section, schema in _VALID_TOML_SCHEMA.items():
-        if section in data and isinstance(data[section], dict):
-            _check(section, data[section], schema)
-
-    if errors:
-        raise ValueError(
-            f"Invalid haute.toml ({path}):\n"
-            + "\n".join(errors)
-            + "\n\nCheck for typos in your configuration keys."
-        )
 
 
 @dataclass
@@ -364,27 +272,33 @@ class DeployConfig:
         return base
 
     @classmethod
-    def from_toml(cls, path: Path) -> DeployConfig:
-        """Load from haute.toml, merging [project], [deploy], [safety], [ci].
+    def from_project(cls, project_dir: Path) -> DeployConfig:
+        """Load from *project_dir*'s ``haute.toml``, which must exist (:meth:`from_settings`)."""
+        from haute._project_settings import (
+            ProjectSettingsError,
+            read_project_settings,
+            settings_path,
+        )
 
-        Validates that all TOML keys are recognised — unknown keys raise
-        ``ValueError`` with a clear message listing the offending keys.
+        settings = read_project_settings(project_dir)
+        if settings is None:
+            raise ProjectSettingsError(
+                f"No haute.toml in {project_dir}: it holds no settings.",
+                path=settings_path(project_dir),
+            )
+        return cls.from_settings(settings)
+
+    @classmethod
+    def from_settings(cls, settings: ProjectSettings) -> DeployConfig:
+        """Load from the parsed ``haute.toml``, merging [project], [deploy], [safety], [ci].
+
+        The settings parse has checked every table and key; each value here is read as the
+        type its key takes, a value of another type raising ``ValueError`` naming the key.
         """
-        import tomllib
+        path = settings.path
+        _load_env(settings.folder.resolve())
 
-        _load_env(path.resolve().parent)
-
-        text = read_user_text(path)
-        try:
-            data = tomllib.loads(text)
-        except tomllib.TOMLDecodeError as exc:
-            # Named as every other reader of haute.toml names it.
-            raise ConfigError(
-                f"{path.name} is malformed and could not be parsed: {exc}", path=str(path)
-            ) from None
-
-        _validate_toml_keys(data, path)
-
+        data = settings.document()
         root = _TomlTable(data, "")
         project = root.table("project")
         deploy = root.table("deploy")
@@ -398,14 +312,14 @@ class DeployConfig:
         ci_staging = ci_raw.table("staging")
         ci_production = ci_raw.table("production")
 
-        pipeline_file = Path(project.get("pipeline", str, "main.py"))
+        pipeline_file = Path(settings.path_setting("project", "pipeline") or "main.py")
         model_name = deploy.get("model_name", str, project.get("name", str, pipeline_file.stem))
         output_fields_raw = deploy.array("output_fields")
         # Preserve an explicit empty array so resolution can reject it with the
         # output-schema context an operator needs to correct it.
         output_fields = list(output_fields_raw) if output_fields_raw is not None else None
 
-        tq_dir = _test_quotes_dir(path.parent, root.table("test_quotes").optional("dir", str))
+        tq_dir = _test_quotes_dir(path.parent, settings.path_setting("test_quotes", "dir"))
 
         db_config = DatabricksConfig(
             experiment_name=db_raw.get("experiment_name", str, "/Shared/haute/default"),
@@ -814,7 +728,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     if config.target in _CONTAINER_BASED_TARGETS:
         _validate_base_image_pinning(config.container.base_image)
 
-    # Ensure .env is loaded (idempotent — also called in from_toml, but
+    # Ensure .env is loaded (idempotent — also called in from_settings, but
     # needed here for programmatic DeployConfig construction).
     # The canonical pipeline is resolution's own: the caller's config keeps the path it
     # gave, so a second resolution of it (staging, then production) starts the same.

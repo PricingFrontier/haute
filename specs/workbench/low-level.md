@@ -268,8 +268,14 @@ response group and the app's eight as `workbench-app`, which
 the builder never loads, and the bodies the app sends as the `workbench-app-requests`
 request group, which only the tests load, so the form's models are generated types too;
 `frontend/src/api/types.ts` re-exports them.
-`haute._failure_answers` answers a `WorkbenchError` as 409. `src/haute/deploy/_config.py` lists the `[workbench]` table,
-with `WORKBENCH_TOML_KEYS`, in the `haute.toml` schema its whole-file check accepts.
+`haute._failure_answers` answers a `WorkbenchError` as 409. The settings parse
+(`src/haute/_project_settings.py`) checks the `[workbench]` table's keys for every reader of
+`haute.toml`: `enabled`; `[workbench.app]` with `APP_TOML_KEYS` beside a table for each hosted
+environment holding `APP_ENVIRONMENT_KEYS`; `[workbench.store]`, a table of environments each
+holding only `STORE_ENVIRONMENT_KEYS`; a retired key, a location key and a secret's value
+refused in the words `refused_workbench_key` and `refused_store_key` give, which a release's
+store read shares. Which of an environment's keys its provider and sign-in take is
+`store_environments`' to check; a refusal the parse makes is a `ConfigError` (422).
 `src/haute/_scaffold.py` renders a workbench project's `haute.toml`, `workbench_haute_toml`
 (`[project]`, `[deploy.container]` with the base image on the project's Python and no setting at
 its default, `[ci]` and the table, `workbench_table`, its `[workbench.app] host`, `HOSTED_ENVIRONMENTS`'
@@ -493,12 +499,11 @@ no longer has; and `InputSource` in
   `resolve_pipeline_file(project_root)`) and `form` (`form_folder` relative to the project
   root, posix, `rating/workbench` in a new project). `read_workbench_config(project_root)`
   returns a disabled config when `haute.toml` or its `[workbench]` table is absent, and raises
-  `WorkbenchConfigError` (a `WorkbenchError` and a `ConfigError`) when the file cannot be
-  read, is not UTF-8 text or cannot be parsed, the table is not a table, holds a key outside
-  `WORKBENCH_TOML_KEYS` (`form` with "[workbench].form was removed: the form is the
-  pipeline folder's workbench/ folder; delete the key"), lacks `enabled`, gives `enabled` a
-  non-boolean, or gives `app` anything but a table holding `host`, one of `APP_HOSTS`, and
-  `edit_role`, a name; and, while enabled, when the project has no pipeline file or the
+  `WorkbenchConfigError` (a `WorkbenchError` and a `ConfigError`) when the table lacks
+  `enabled`, gives `enabled` a non-boolean, or gives `app` a `host` that is not one of
+  `APP_HOSTS` or an `edit_role` that is not a name (the settings parse has refused a file it
+  cannot read and any key the table cannot hold, `form` with "[workbench] form was removed:
+  the form is the pipeline folder's workbench/ folder; delete the key"); and, while enabled, when the project has no pipeline file or the
   form folder resolves outside the project root (a `workbench` symlink or junction leading
   out of it).
 - **The form folder's files** (`_workbench_folder.py`, the folder module): strict pydantic
@@ -2482,8 +2487,10 @@ no longer has; and `InputSource` in
   Workbench Output config holding the removed `mapping` (its
   `src/haute/_config_validation.py::REMOVED_CONFIG_KEYS` row, carrying `removed_config_keys`), so `load_node_config` refuses it where the standalone
   runner reads the sidecar, which checks no undeclared key, as well as in parsing and save.
-- `DeployConfig.from_toml` raises `ValueError` for a key under `[workbench]` outside
-  `WORKBENCH_TOML_KEYS`, as for any unknown `haute.toml` key.
+- The settings parse (`haute._project_settings`) raises `ProjectSettingsError` for a key under
+  `[workbench]`, `[workbench.app]` or an environment's table that it cannot hold, as for any
+  unknown `haute.toml` key, and for a retired, location or secret key in the words
+  `refused_workbench_key` and `refused_store_key` give, for every reader of the file.
 - `ExportRefusedError` and `StaleExportError` (`src/haute/_workbench_export.py`) are
   `WorkbenchError`s the export route answers itself, 422 and 409, each with its message;
   openpyxl's `IllegalCharacterError` is caught where a cell's text is set and raised as an
@@ -2806,7 +2813,7 @@ no longer has; and `InputSource` in
   host` and `edit_role` read, the environments read in the file's order with their
   providers, a server provider naming the variables of its sign-in (a service principal's tenant,
   client and secret, a managed identity's client id only when user-assigned, the role an
-  Entra ID sign-in takes on PostgreSQL) and refused without them, and that `DeployConfig.from_toml`'s whole-file check accepts the table, with
+  Entra ID sign-in takes on PostgreSQL) and refused without them, and that the settings parse's whole-file check accepts the table, with
   `app` and `store`, and refuses an unknown key under it.
 - `tests/test_quote_store_environment.py` covers a SQLite environment at the file its
   database variable names and at a whole URL, its URL never in its `repr`; an environment the

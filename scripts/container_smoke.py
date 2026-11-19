@@ -69,7 +69,7 @@ base_image = "python:3.11.9-slim"
 """
     toml_path.write_text(original_toml + container_deploy_section, encoding="utf-8")
 
-    deploy_config = DeployConfig.from_toml(toml_path)
+    deploy_config = DeployConfig.from_project(toml_path.parent)
     resolved = resolve_config(deploy_config)
 
     # A bundle is written into an empty directory; this script owns the one it is given.

@@ -83,17 +83,21 @@ test.describe("panel values follow Undo", () => {
     const row = (name: string) => columns.getByRole("button", { name: new RegExp(`^${name} (complete|incomplete)$`) })
     const rows = columns.getByRole("button", { name: /_band (complete|incomplete)$/ })
 
-    // The categorical factor moves first and is switched to Numeric; two Undos put back its
-    // place and its type.
+    // The categorical factor moves first and the numeric one, now second, is switched to
+    // Categorical; two Undos put back its type and the order. (The categorical factor reads a
+    // String column, which takes no numeric bands, so it is the numeric one whose type
+    // changes.)
     await row("channel_band").click()
     await row("channel_band").press("Alt+ArrowUp")
     await expect(rows.first()).toHaveAccessibleName(/^channel_band /)
-    await panel.getByRole("radio", { name: "Numeric", exact: true }).click()
+    await row("proposer_age_band").click()
+    await panel.getByRole("radio", { name: "Categorical", exact: true }).click()
     await toolbarUndo(page)
     await toolbarUndo(page)
     await expect(rows.first()).toHaveAccessibleName(/^proposer_age_band /)
 
-    // The factor now first switched to Categorical starts with no rules of another's.
+    // Each factor keeps its own rules: the one moved back first starts its categorical rules
+    // with none of the other's, and the categorical factor keeps its own.
     await row("proposer_age_band").click()
     await panel.getByRole("radio", { name: "Categorical", exact: true }).click()
     await expect(panel.getByText("No rules yet")).toBeVisible()

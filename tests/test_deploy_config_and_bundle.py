@@ -168,7 +168,7 @@ base_image = "python:3.11-slim"
         toml_path.write_text(toml_content)
 
         with pytest.raises(DeployError, match="base_image"):
-            DeployConfig.from_toml(toml_path)
+            DeployConfig.from_project(toml_path.parent)
 
     def test_from_toml_accepts_patch_pinned(self, tmp_path: Path) -> None:
         """A patch-pinned ``base_image`` in haute.toml loads cleanly."""
@@ -187,7 +187,7 @@ base_image = "python:3.11.9-slim"
         toml_path = tmp_path / "haute.toml"
         toml_path.write_text(toml_content)
 
-        config = DeployConfig.from_toml(toml_path)
+        config = DeployConfig.from_project(toml_path.parent)
         assert config.container.base_image == "python:3.11.9-slim"
 
 

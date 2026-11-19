@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from haute.discovery import _configured_pipeline, discover_pipelines
+from haute._project_settings import read_project_settings
+from haute.discovery import discover_pipelines
 from haute.errors import ConfigError
 from tests._project import use_project
 
@@ -21,6 +22,12 @@ NO_PIPELINE_CONTENT = """\
 import os
 print("hello")
 """
+
+
+def _configured_pipeline(root: Path) -> Path | None:
+    """``[project].pipeline`` as the settings parse reads it."""
+    settings = read_project_settings(root)
+    return None if settings is None else settings.configured_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -40,8 +47,13 @@ class TestConfiguredPipeline:
 
     def test_returns_none_when_project_section_missing(self, tmp_path: Path) -> None:
         toml = tmp_path / "haute.toml"
-        toml.write_text('[other]\nkey = "value"\n')
+        toml.write_text('[server]\nhost = "localhost"\n')
         assert _configured_pipeline(tmp_path) is None
+
+    def test_an_unknown_table_hides_no_pipeline_silently(self, tmp_path: Path) -> None:
+        (tmp_path / "haute.toml").write_text('[projct]\npipeline = "main.py"\n')
+        with pytest.raises(ConfigError, match=r"unknown table \[projct\]"):
+            discover_pipelines(tmp_path)
 
     def test_returns_none_when_pipeline_key_missing(self, tmp_path: Path) -> None:
         toml = tmp_path / "haute.toml"
@@ -280,7 +292,7 @@ class TestSymlinksAndDedup:
 
 class TestTomlEdgeCases:
     def test_haute_toml_missing_project_section(self, tmp_path: Path) -> None:
-        (tmp_path / "haute.toml").write_text('[other]\nfoo = "bar"\n')
+        (tmp_path / "haute.toml").write_text('[server]\nhost = "localhost"\n')
         (tmp_path / "pipe.py").write_text(PIPELINE_CONTENT)
         result = discover_pipelines(tmp_path)
         assert len(result) == 1
@@ -323,3 +335,38 @@ class TestUnreadablePipeline:
 
         with pytest.raises(ConfigError, match="locked.py"):
             discover_pipelines(tmp_path)
+
+
+class TestPipelinesBesideTheConfiguredOne:
+    """The one list holds the pipelines beside the configured one (SRV-08)."""
+
+    def _project(self, root: Path) -> None:
+        (root / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+        rating = root / "rating"
+        rating.mkdir()
+        (rating / "main.py").write_text(PIPELINE_CONTENT)
+        (rating / "renewal.py").write_text(PIPELINE_CONTENT)
+        (rating / "helpers.py").write_text(NO_PIPELINE_CONTENT)
+        (root / "root_pipeline.py").write_text(PIPELINE_CONTENT)
+
+    def test_the_configured_one_first_then_its_neighbours_then_the_root(
+        self, tmp_path: Path
+    ) -> None:
+        self._project(tmp_path)
+
+        found = [path.resolve() for path in discover_pipelines(tmp_path)]
+
+        assert found == [
+            (tmp_path / "rating" / "main.py").resolve(),
+            (tmp_path / "rating" / "renewal.py").resolve(),
+            (tmp_path / "root_pipeline.py").resolve(),
+        ]
+
+    def test_each_file_is_listed_once(self, tmp_path: Path) -> None:
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "main.py"\n')
+        (tmp_path / "main.py").write_text(PIPELINE_CONTENT)
+        (tmp_path / "other.py").write_text(PIPELINE_CONTENT)
+
+        found = discover_pipelines(tmp_path)
+
+        assert [path.name for path in found] == ["main.py", "other.py"]

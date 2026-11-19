@@ -61,8 +61,9 @@ from haute._project_context import (
     current_project,
     resolve_project,
 )
+from haute._project_settings import ProjectSettingsError
 from haute._sandbox import contained_path
-from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+from haute._workbench_config import read_workbench_config
 from haute.errors import ConfigError, NotFoundError, PathOutsideProjectError
 from haute.routes._background_jobs import stop_background_jobs
 from haute.routes._error_handlers import install_failure_answers
@@ -689,7 +690,8 @@ def _workbench_form_file(project_root: Path) -> tuple[str, Path] | None:
     which the workbench's own routes report."""
     try:
         config = read_workbench_config(project_root)
-    except WorkbenchConfigError:
+    except ConfigError:
+        # The workbench's table refused, or the settings parse refused the whole file.
         return None
     return (config.form, config.form_folder.resolve()) if config.enabled else None
 
@@ -787,6 +789,18 @@ def _broadcast_tree_change(payload: dict[str, Any]) -> None:
 _unsubscribe_git_tree_changed = default_bus.subscribe("git.tree.changed", _broadcast_tree_change)
 
 
+def _watched_pipeline_dir(root: Path) -> Path:
+    """The pipeline folder the watcher routes changes by: the project's, read now, or the root
+    while the settings parse refuses ``haute.toml``. The editor's load shows that refusal as
+    the document's issue; the root, which is watched recursively, holds whatever pipeline
+    folder the file is fixed to name."""
+    try:
+        return current_project().pipeline_dir
+    except ProjectSettingsError as exc:
+        logger.warning("file_watcher_settings_refused", error=exc.message)
+        return root
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
 
@@ -804,7 +818,7 @@ async def _file_watcher() -> None:
         return
 
     root = current_project().root
-    pipe_dir = current_project().pipeline_dir
+    pipe_dir = _watched_pipeline_dir(root)
     watch_dirs = [root]
     if pipe_dir != root:
         watch_dirs.append(pipe_dir)
@@ -858,6 +872,11 @@ async def _file_watcher() -> None:
             recovery_artifact_changes: list[Path] = []
             self_write_keys: set[str] = set()
             form_file = _workbench_form_file(root)
+            # Read for each batch, as the form's folder is: an edit to haute.toml, a repair
+            # of one the settings parse refused included, moves the folders a change is
+            # routed by.
+            pipe_dir = _watched_pipeline_dir(root)
+            config_dir = pipe_dir / "config"
             form_changed = False
             for change_type, changed_path in to_process:
                 p = Path(changed_path)

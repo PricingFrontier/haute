@@ -29,6 +29,7 @@ from importlib.metadata import PackageNotFoundError, version
 import click
 
 from haute._host_memory import nvidia_gpu_name
+from haute.cli._helpers import HauteCommand
 
 CPU_DISTRIBUTION = "xgboost-cpu"
 GPU_DISTRIBUTION = "xgboost"
@@ -182,7 +183,7 @@ def handle_gpu_setup(config: GpuSetupConfig, runner: Runner = _run) -> None:
         click.echo("The default xgboost-cpu build is installed. Restart `haute serve`.")
 
 
-@click.command("gpu-setup")
+@click.command("gpu-setup", cls=HauteCommand, need="none")
 @click.option("--check", "check_only", is_flag=True, help="Report GPU readiness only.")
 @click.option("--cpu", "to_cpu", is_flag=True, help="Switch back to the default xgboost-cpu.")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="Do not ask for confirmation.")

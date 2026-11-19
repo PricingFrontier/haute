@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from haute._project import _toml_configured_pipeline
+from haute._project_settings import read_project_settings
 
 PIPELINE_FILES_FOLDER = "files"
 PIPELINE_FILES_SUBFOLDERS = ("data", "models", "params")
@@ -41,7 +41,8 @@ def pipeline_folder(project_root: Path) -> str | None:
     no folder to version as a whole. Malformed ``haute.toml``, or a pipeline it
     names outside the root, raises.
     """
-    configured = _toml_configured_pipeline(project_root)
+    settings = read_project_settings(project_root)
+    configured = None if settings is None else settings.configured_pipeline
     if configured is None:
         return None
     root = project_root.resolve()

@@ -4,7 +4,7 @@ Public API::
 
     from haute.deploy import deploy, DeployConfig, DeployResult
 
-    config = DeployConfig.from_toml(Path("haute.toml"))
+    config = DeployConfig.from_project(Path.cwd())
     result = deploy(config)
     print(result.model_uri)
 """

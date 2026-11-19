@@ -53,7 +53,8 @@ from haute._parser_submodels import (
 )
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
-from haute._project import get_project_root
+from haute._project import ProjectOutsideGitError, find_project_root
+from haute._project_context import installed_project
 from haute._sidecar import with_saved_unfinished_steps
 from haute._source_layout import python_lines
 from haute._submodel_paths import resolve_submodel_reference, submodel_source_key
@@ -76,11 +77,21 @@ __all__ = [
 
 
 def _infer_parse_base_dir(filepath: Path) -> Path:
-    """Resolve config/submodel references from the Haute project root when available."""
+    """The folder config and submodel references resolve from: the project root.
+
+    The project the finder finds above the file, or the file's own folder when no
+    ``haute.toml`` is above it. A ``haute.toml`` outside a git repository is refused as the
+    finder refuses it, unless an entry point installed the project the call runs in: a
+    release or deployed bundle carries its ``haute.toml`` without a repository, and is
+    parsed from the file's folder as before.
+    """
     try:
-        return get_project_root(filepath.parent)
-    except ConfigError:
+        root = find_project_root(filepath.parent)
+    except ProjectOutsideGitError:
+        if installed_project() is None:
+            raise
         return filepath.parent
+    return filepath.parent if root is None else root
 
 
 def load_declared_global_constants(

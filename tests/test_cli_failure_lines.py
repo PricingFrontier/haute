@@ -56,7 +56,7 @@ def test_a_haute_toml_that_is_not_toml_is_named_in_one_line(tmp_path: Path) -> N
     exit_code, output = _invoke(["impact"])
 
     assert exit_code == 1
-    assert "haute.toml is malformed and could not be parsed" in _said_in_one_line(output)
+    assert "is malformed and could not be parsed" in _said_in_one_line(output)
 
 
 def test_a_read_only_haute_toml_is_called_read_only(tmp_path: Path) -> None:

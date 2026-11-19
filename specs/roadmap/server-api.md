@@ -16,8 +16,7 @@ three points, and were reproduced on that day; the main session added the Data O
 main session's run of 11 November added the read-only file, and `SRV-06`
 comes from the main session's own runs of 10 November. `SRV-07`
 comes from the plan's sweep of damaged requests and the main session's
-runs behind it on 11 November. `SRV-08` comes from the main session's own
-run, that day, of a submodel's whole life through the routes.
+runs behind it on 11 November.
 
 ## Priorities
 
@@ -26,9 +25,8 @@ run, that day, of a submodel's whole life through the routes.
 | SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
 | SRV-04 | Planned | P2 | A node or submodel name that makes its file's path too long for Windows is refused when it is typed, naming the node and the limit, not by the save. |
 | SRV-05 | Planned | P3 | A Data Output's Write and a model save leave no staged copy beside their file, and no other writer's staging file outlives a restart. |
-| SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, and stops `haute serve` at start in one line, not a traceback. |
+| SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, not as "HTTP <status>". |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
-| SRV-08 | Planned | P2 | A save deletes a dissolved submodel's file only when no pipeline beside the saved one still uses it, as the submodel specification says. |
 
 ## Planned improvements
 
@@ -156,7 +154,7 @@ after the next start.
 `src/haute/executor.py::commit_prepared_data_output`;
 `src/haute/_file_ops.py::atomic_copy_files`.
 
-### SRV-06 — A missing pipeline file is shown on the page and stops `haute serve` in one line
+### SRV-06 — A missing pipeline file is shown on the page in the load's words
 **Why:** Reproduced on 10 and 11 November 2026, in two forms. The load route
 now answers a pipeline file renamed or deleted while the editor runs, a
 `haute.toml` left half-edited and a pipeline file emptied to nothing in one
@@ -171,32 +169,16 @@ explanation, and "HTTP 500", under the toast "Failed to load pipeline: HTTP
 calls, with the failure injected, and by the main session with a
 `haute.toml` left half-edited and with the pipeline file emptied).
 
-At start-up, with `haute.toml` naming a pipeline file that is not there (a
-mistyped path, or the file renamed while the editor was closed), the server
-does not start: it prints 123 lines, 115 of them a Python traceback through
-the application's start-up, then that sentence, then "Application startup
-failed. Exiting." A file that is there but holds no pipeline, such as an
-empty one, ends the same way with "does not look like a Haute pipeline".
-The server was started as the serve command's production mode starts it,
-since inside this checkout the command picks its development mode; the
-command makes no check of the pipeline file before it starts the server
-(read). Without a `haute.toml` the editor starts and the first save creates
-the file.
-
 **Plan:** Show the load's own words on the page with the file's name instead
-of an empty canvas and "HTTP <status>". Check the pipeline file in
-`haute serve` before the server starts, so a missing or empty one ends the
-command in one line.
+of an empty canvas and "HTTP <status>".
 
 **Acceptance:** With the pipeline file deleted while the editor runs, the
-page says the file's name and the remedy; `haute serve` with `haute.toml`
-naming a missing or empty pipeline file prints one line and exits 1, with no
-traceback.
+page says the file's name and the remedy.
 
 **Dependencies:** `DPL-03` covers the deploy dry run's same resolver error.
 
 **Evidence:** `frontend/src/api/client.ts`; the page's pipeline load in
-`frontend/src`; `src/haute/cli/_serve.py`; `src/haute/server.py::_lifespan`.
+`frontend/src`.
 
 ### SRV-07 — A file name Windows cannot hold is refused by name
 **Why:** Reproduced on 11 November 2026 on three paths an analyst types:
@@ -258,58 +240,3 @@ for a Commit that names the file it could not add.
 `src/haute/_git_transactions.py::_pipeline_folder_new_files`;
 `frontend/src/panels/optimiser/OptimiserPublishSection.tsx`.
 
-### SRV-08 — A save keeps a submodel's file that a pipeline beside it uses
-**Why:** Reproduced on 11 November 2026 through the editor's routes and
-`haute run`, twice each way. A project made by `haute init` keeps its
-pipeline in `rating/main.py`. Two of its nodes are grouped as the submodel
-`loading` and saved, which writes `rating/modules/loading.py`. A second
-pipeline beside the first, `rating/renewal.py`, uses the same definition by
-the import the submodel page shows, `from modules import loading`; a copy of
-`main.py` kept under another name does the same without a line being
-written. `haute run rating/renewal.py` prices with it. In the first pipeline
-the analyst then dissolves the box, or deletes it, and presses Save. The save
-answers "saved" and nothing more, deletes `rating/modules/loading.py` with
-its layout file, and records that as "Updated main, loading". The second
-pipeline no longer loads: "Error parsing pipeline: Referenced submodel
-file(s) do not exist. (missing_paths=['modules/loading.py'])". After a
-delete, as opposed to a dissolve, no file in the project holds the
-definition any more; it has to be found in version history.
-
-The submodel specification rules this out. A definition's file is deleted
-only when "no other parseable pipeline references the same resolved file",
-and "a child referenced by another healthy pipeline" is kept: "Uncertainty
-never authorises deletion." The submodel page offers the reuse under "Reuse
-across pipelines" and warns only that changes are shared.
-
-The check exists, and works in one layout. With both pipelines in the
-project folder itself, the same steps keep `modules/loading.py` and the
-second pipeline still prices (run the same day). The save asks
-`discover_pipelines` which other pipelines there are, and that looks at the
-configured pipeline and at the `.py` files of the project folder only. A
-definition is imported from the `modules` folder beside its pipeline. So in
-the layout `haute init` makes, the pipelines that can share a definition are
-exactly the ones the check never sees. Three more checks read the same list
-(read from the source, not run): the check that a utility module's edit
-breaks no other pipeline's names, the index of which pipelines import a
-module, and the notice a save sends to other open documents.
-
-**Plan:** Give the reference check the pipeline files that can import the
-definition: every pipeline file in the folder of the pipeline being saved,
-besides what discovery returns. One of them that cannot be parsed keeps
-every definition, as an unreadable pipeline does now. Decide in the same
-change whether the three other checks take that list too.
-
-**Acceptance:** With `rating/main.py` and `rating/renewal.py` both using
-`modules/loading.py`, dissolving the box in `main.py`, or deleting it, and
-saving keeps `rating/modules/loading.py`, and `haute run rating/renewal.py`
-prices as before. With no other pipeline using the definition, the same save
-deletes the file as it does today. A regression test covers both layouts:
-the pipelines in a folder of the project, and in the project folder.
-
-**Dependencies:** None.
-
-**Evidence:**
-`src/haute/routes/_save_pipeline.py::SavePipelineService._definition_files_declared_elsewhere`;
-`src/haute/discovery.py::discover_pipelines`;
-`src/haute/routes/utility.py`; `specs/submodels/high-level.md`;
-`docs/building-models/nodes/submodel.md`.

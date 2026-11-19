@@ -7,7 +7,7 @@
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
 | `src/haute/cli/__init__.py` | Builds the Click command group (`cli`, a `HauteGroup`, the command line's one edge for failures: whatever a command raises past Click's own errors, its aborts and a broken pipe ends in `answer_command_failure`'s one line and exit 1), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
-| `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, `EXPECTED_FAILURES`, the failures a command reports in their own words (Haute's own errors, value errors and OS errors), and `answer_command_failure`, which ends a command on a failure in one line and exit 1: a failure `haute._failure_answers.classify_failure` names in its words, an expected one in its own, anything else as an incident whose traceback `_write_incident` writes to `.haute/incidents/<id>.txt` (`INCIDENTS_FOLDER`), or `haute-incidents/` in the system's temporary folder outside a project, saying where, and printing it instead when the record cannot be written. |
+| `src/haute/cli/_helpers.py` | Cross-command utilities: `HauteCommand` (every command, built with its `need`, a `ProjectNeed`; `invoke` installs what `project_for` finds from the shell's folder and parses its settings once), `HauteCommandGroup` (the `ci` and `app` groups), `pipeline_file_project`, `command_settings` and `require_command_settings` (the command's project's settings, read now), `resolve_model_name` (from the parsed settings), `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, `EXPECTED_FAILURES`, the failures a command reports in their own words (Haute's own errors, value errors and OS errors), and `answer_command_failure`, which ends a command on a failure in one line and exit 1: a failure `haute._failure_answers.classify_failure` names in its words, an expected one in its own, anything else as an incident whose traceback `_write_incident` writes to `.haute/incidents/<id>.txt` (`INCIDENTS_FOLDER`), or `haute-incidents/` in the system's temporary folder outside a project, saying where, and printing it instead when the record cannot be written. |
 | `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig` (`pipeline_file`, `node`, `source`, `rows`), `handle_run`: parses a pipeline, walks it lazily to its output node or `--node` (`execution.execute_lazy_graph`, under the lazy-sink profile), prints each walked node's plan width and collects only the target's output; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
@@ -101,12 +101,21 @@ reported. The CLI does not print schema warnings.
 
 ## Control flow
 
-**The command's directory.** The `cli` group callback reads the shell's working directory
-once and installs it as the project for the command (`project_scope(ProjectContext.at(cwd))`),
-unless its caller installed one already, as a test does; every command reads its directory
-from `current_project().root`, never from the working directory again. `run` and `lint`
-then run in the project holding their pipeline file (`project_holding`), and `serve`
-resolves the project holding the command's directory (`resolve_project`).
+**The command's directory.** Every command is a `HauteCommand`
+(`src/haute/cli/_helpers.py`), built with its `need` (`ProjectNeed`: `"none"`,
+`"pipeline_file"`, `"project_if_any"` or `"project"`; the table in the high-level
+specification). `HauteCommand.invoke` reads the shell's working directory once and installs
+what the need finds there (`install_project_for`): the folder itself for `none` and
+`pipeline_file`; for `project_if_any` the project the finder finds from it
+(`haute._project_context.find_project`), or the folder when no `haute.toml` is above it; for
+`project` the project `resolve_project` finds, or the `NoProjectError` it raises. Before the
+command runs, the found project's settings are parsed once
+(`haute._project_settings.read_project_settings`), so a file the parse refuses ends every
+command that finds it in the parse's words. A caller that installed a project already, as a
+test does, keeps it. Every command reads its directory from `current_project().root`, never
+from the working directory again. `run` and `lint` then run in the project holding their
+pipeline file (`project_holding`), whose settings are parsed the same way. The `ci` and
+`app` groups are `HauteCommandGroup`s, whose commands are `HauteCommand`s.
 
 **`init`**: `handle_init` takes each question's default (`_Defaults`): on a re-run, a project
 with a `haute.toml`, the project's current answers (`_current_answers`; a file that does not
@@ -246,13 +255,16 @@ mode rather than serving source through an unrelated generated bundle.
     (`_open_browser_after_backend_ready` → `_wait_for_backend_then_open_browser` →
     `_wait_for_tcp_ready`, which on a timeout prints the URL to open instead), and runs plain
     `uvicorn.run(...)` with no autoreload.
-  - The Click wrapper first resolves the project holding the command's directory
-    (`resolve_project`); outside a Haute project (no `haute.toml`, or no git repository above
-    it) it prints the resolver's message and exits 1 before anything starts. It then changes
+  - The command's need is `project`, so outside a Haute project (no `haute.toml`, or one
+    outside a git repository) it ends in the finder's sentence and exits 1 before anything
+    starts. The Click wrapper checks the configured pipeline file first
+    (`discover_pipelines`, which raises `PipelineFileError` for a file that is missing or
+    holds no pipeline), so either ends the command in one line. It then changes
     into the project's root once, so the user's pipeline code, which reads a relative path from
     the working directory, names the files the project's configuration does.
   - Host resolution precedence (in the Click wrapper, before `ServeConfig` is built): `--host` flag
-    → `[server] host` in the project's `haute.toml` (`_load_toml_server_host`) → `"localhost"`.
+    → `[server] host` in the project's `haute.toml` (`_settings_server_host`, from the settings
+    parse) → `"localhost"`.
     Therefore plain `haute serve` binds and opens `http://localhost:8000` without a `[server]`
     table.
   - uvicorn runs the factory `haute.server:create_app_from_environment` (`factory=True`), in dev
@@ -302,8 +314,9 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
   the end.
 
 **`status`**: resolves the model name with CLI > `HAUTE_MODEL_NAME` > TOML precedence
-(`resolve_model_name`), loads catalog/schema from
-`haute.toml` if present else `DatabricksConfig()` defaults, calls
+(`resolve_model_name`, which takes `[deploy].model_name` from the parsed settings), loads
+catalog/schema from `haute.toml` if the finder found one (`DeployConfig.from_settings`) else
+`DatabricksConfig()` defaults, calls
 `haute.deploy._mlflow.get_deploy_status`. `--version-only` mode prints only the version number (for
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no
 version is registered.
@@ -337,7 +350,7 @@ shape is not GitHub. Then the project's `haute.toml` must set `[ci] provider = "
 its CI credentials (`ci_credentials`: a workbench project's `[workbench.app] host`, else the
 deploy target) have secret names. Where they do not apply, the response carries no `ci_secrets`
 and `gh` is never run. Settings that cannot be used (an unreadable or malformed `haute.toml`
-or `.env`, or a value `DeployConfig.from_toml`, the workbench's table or the target lookup
+or `.env`, or a value `DeployConfig.from_settings`, the workbench's table or the target lookup
 refuses, an unknown target, an unpinned container image or a workbench naming no host, say)
 are the response's `unknown` with that
 `problem`, and the push goes ahead. Where
@@ -493,10 +506,9 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   one line and exit 1, an unnamed one as an incident whose traceback is written beside the
   project. `train` prints that training succeeded
   before a result-reporting failure's line.
-- `_serve._load_toml_server_host` distinguishes `OSError` (logged as a warning, treated as "no
-  override so fall back to default") from `tomllib.TOMLDecodeError` (raised as `haute.errors.ConfigError`
-  — a malformed `haute.toml` must not silently resolve to the loopback default, since that could mask
-  a typo like a botched `0.0.0.0`).
+- `_serve._settings_server_host` reads `[server] host` from the settings parse, which
+  refuses an unreadable or malformed `haute.toml` like every command: it never falls back to
+  the loopback default, since that could mask a typo like a botched `0.0.0.0`.
 - `_impact._is_databricks_not_found` is the only point where an exception is reclassified as
   "expected" (first deploy) rather than propagated, matching the SDK's class names across the MRO;
   an HTTP target's first deploy is read from origin's release tags, never from an error.
@@ -539,6 +551,9 @@ Key files and what they cover:
   `PYTHONIOENCODING` chose kept with a mark it lacks shown as `?`, and a stream a caller put
   in the process's place left alone; uses a shared `project_dir` fixture that builds a real
   minimal pipeline.
+- `test_project_finding.py` — every command's need (`HauteCommand.need`) against the
+  specification's table, and every command on the table of projects: one reading or one
+  refusal in the same words per need; a command without a row fails it.
 - `test_cli_architecture.py` — structural/contract tests: `resolve_model_name` precedence,
   `model_name` optionality across `deploy`/`status`, single shared `resolve_pipeline_file`, that no
   CLI module reimplements ad-hoc pipeline resolution (AST/source scan), that every command has a

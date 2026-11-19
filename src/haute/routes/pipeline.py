@@ -6,7 +6,6 @@ import asyncio
 import dataclasses
 import json
 import time
-import tomllib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -84,6 +83,7 @@ from haute._pipeline_recovery import (
     empty_pipeline_editor_document,
     name_violations_payload,
     pipeline_document_fingerprint,
+    project_settings_editor_document,
 )
 from haute._pipeline_repair import (
     PipelineRepairError,
@@ -114,6 +114,7 @@ from haute._polars_steps import (
     resolve_free_code_columns,
 )
 from haute._project_context import current_project
+from haute._project_settings import ProjectSettingsError, read_project_settings
 from haute._sandbox import contained_path
 from haute._save_records import SaveOperationReusedError
 from haute._seed_plans import (
@@ -983,16 +984,10 @@ def _ensure_source_file(graph: PipelineGraph) -> None:
     fail because the pipeline's parent dir isn't on ``sys.path``."""
     if graph.source_file:
         return
-    toml_path = current_project().root / "haute.toml"
-    if not toml_path.exists():
-        return
-    try:
-        with open(toml_path, "rb") as f:
-            configured = tomllib.load(f).get("project", {}).get("pipeline")
-        if configured:
-            graph.source_file = configured
-    except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
-        logger.warning("source_file_fallback_failed", error=str(exc))
+    settings = read_project_settings(current_project().root)
+    configured = None if settings is None else settings.path_setting("project", "pipeline")
+    if configured:
+        graph.source_file = configured
 
 
 def _prepare_runtime_graph(graph: PipelineGraph) -> PipelineGraph:
@@ -1077,6 +1072,16 @@ def _name_document_fingerprint(
 async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
     """Return the editor document for a specific readable pipeline."""
 
+    def _load() -> PipelineEditorDocument | None:
+        try:
+            # Read before the cached name index: a settings edit reaches the next load,
+            # which the index (rebuilt only for pipeline files) would not see.
+            read_project_settings(current_project().root)
+            return _find()
+        except ProjectSettingsError as exc:
+            # The settings can hide every pipeline: the document says why.
+            return project_settings_editor_document(current_project().root, exc)
+
     def _find() -> PipelineEditorDocument | None:
         first_error: Exception | None = None
         attempted: set[Path] = set()
@@ -1107,7 +1112,7 @@ async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
             raise first_error
         return None
 
-    document = await asyncio.to_thread(_find)
+    document = await asyncio.to_thread(_load)
     if document is None:
         raise_pipeline_not_found(name)
     return _name_document_fingerprint(response, document)
@@ -1122,7 +1127,12 @@ async def get_first_pipeline(response: Response) -> PipelineEditorDocument:
     cwd = current_project().root
 
     def _find_first() -> PipelineEditorDocument:
-        files = discover_pipelines()
+        try:
+            files = discover_pipelines()
+        except ProjectSettingsError as exc:
+            # A misspelt key can hide every pipeline: the document names it, never an empty
+            # canvas.
+            return project_settings_editor_document(cwd, exc)
         first_error: Exception | None = None
         for f in files:
             try:

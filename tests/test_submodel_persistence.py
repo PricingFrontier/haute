@@ -616,3 +616,61 @@ pipeline.submodel(
 
     assert child.is_file()
     assert sidecar.is_file()
+
+
+_RENEWAL_USING_CHILD = """import haute
+
+from modules import child
+
+pipeline = haute.Pipeline("renewal")
+pipeline.submodel(
+    child.submodel,
+    "renewal_child",
+)
+"""
+
+
+@pytest.mark.parametrize("layout", ["pipeline_folder", "project_folder"])
+def test_a_removed_definition_a_pipeline_beside_it_uses_is_kept(
+    tmp_path: Path, layout: str
+) -> None:
+    # SRV-08: the pipeline beside the saved one imports the same modules/ folder, in the
+    # layout haute init makes (rating/) as in the project folder itself.
+    folder = tmp_path / "rating" if layout == "pipeline_folder" else tmp_path
+    folder.mkdir(exist_ok=True)
+    source_file = "rating/main.py" if layout == "pipeline_folder" else "main.py"
+    (tmp_path / "haute.toml").write_text(f'[project]\npipeline = "{source_file}"\n')
+    (tmp_path / ".git").mkdir()
+    use_project(tmp_path)
+    service = SavePipelineService(project_root=tmp_path, pipeline_root=folder)
+    request = {"project_root": tmp_path, "source_file": source_file}
+    service.save(_save_request(_flat_graph(), **request))
+    service.save(_save_request(_managed_graph(), **request))
+    child = folder / "modules" / "child.py"
+    assert child.is_file()
+    (folder / "renewal.py").write_text(_RENEWAL_USING_CHILD, encoding="utf-8")
+
+    service.save(_save_request(_flat_graph(), **request))
+
+    assert child.is_file()
+    assert child.with_suffix(".haute.json").is_file()
+
+
+def test_a_removed_definition_no_neighbour_uses_is_deleted_in_the_pipeline_folder(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "rating"
+    folder.mkdir()
+    (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+    (tmp_path / ".git").mkdir()
+    use_project(tmp_path)
+    service = SavePipelineService(project_root=tmp_path, pipeline_root=folder)
+    request = {"project_root": tmp_path, "source_file": "rating/main.py"}
+    service.save(_save_request(_flat_graph(), **request))
+    service.save(_save_request(_managed_graph(), **request))
+    child = folder / "modules" / "child.py"
+    (folder / "helpers.py").write_text("RATE = 1\n", encoding="utf-8")
+
+    service.save(_save_request(_flat_graph(), **request))
+
+    assert not child.exists()
