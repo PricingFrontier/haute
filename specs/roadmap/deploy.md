@@ -14,7 +14,7 @@ comparison a deploy's validation uses. `DPL-05` comes from the review
 plan's sweep of the commands on 11 November 2026 and was reproduced on
 fresh copies of the shipped examples.
 
-`DPL-06` to `DPL-10` come from the review plan's phase 5, a reader from a second
+`DPL-06`, `DPL-07` and `DPL-10` come from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
@@ -30,11 +30,9 @@ and the main session ran each again on 16 November 2026.
 | DPL-02 | Planned | P3 | An output value that is not a finite number is refused naming the output column and the quote. |
 | DPL-03 | Planned | P3 | A dry run refuses a deploy target, a model name and a target setting that no deploy can use, and a missing pipeline file is reported without a traceback. |
 | DPL-04 | Planned | P3 | A test quote can expect a date or a date-time output, written as the response writes it. |
-| DPL-05 | Planned | P2 | `haute deploy --dry-run` passes on a clean checkout of a pipeline whose input is a CSV Data Input, as a CI job runs it, without `haute run` first. |
+| DPL-05 | Planned | P2 | `haute deploy --dry-run`, and the pipeline file run as Python, pass on a clean checkout of a pipeline whose input is a CSV Data Input, as a CI job runs them, without `haute run` first. |
 | DPL-06 | Planned | P2 | `haute impact` fails, naming the output, when staging answers no premium where production answers one. |
 | DPL-07 | Planned | P3 | `haute impact` sends a Date column as ISO text instead of ending in a traceback. |
-| DPL-08 | Planned | P3 | The dry run refuses a test quote with a fraction for an integer input, as the service does. |
-| DPL-09 | Planned | P2 | The dry run passes a test quote that leaves out an exposure the service prices for a full term. |
 | DPL-10 | Planned | P2 | A container for a Model Scoring node that names a run carries MLflow and the model's engine, or the node is refused in words. |
 | DPL-11 | Planned | P2 | A deployed container with less than 8 GiB of memory answers a request of several quotes, or refuses it in words that name the limit and the setting. |
 | DPL-12 | Planned | P2 | A deployed container with one CPU answers a request of several quotes in seconds, not with a timeout after five minutes. |
@@ -168,14 +166,22 @@ The engine already has the way round this: a caller that wants only the
 schema can ask for it to be inferred from the file when no snapshot exists.
 The deploy's schema read does not ask.
 
+The same cause reaches the pipeline file run as Python (found on 18 November
+2026 by `tests/test_run_parity.py`): on a fresh copy of `minimal_batch`,
+`pipeline.run(source="live")` raises the same `input_snapshot_missing` until a
+preview or `haute run` has built the snapshot, since a standalone run reads a
+snapshot-backed Data Input only from a published snapshot.
+
 **Plan:** Have the deploy's schema read use the inferred schema when the
 input's snapshot is missing, as the engine's other schema-only callers do;
 or build the snapshot first, as `haute run` does. Where neither is possible,
 say what a CI job can run.
 
 **Acceptance:** On a fresh copy of each shipped example with a Data Input,
-`haute deploy --dry-run` passes without any command run before it. A test
-runs the dry run on clean copies of the examples (`EQ-04`).
+`haute deploy --dry-run` and `pipeline.run()` pass without any command run
+before them. A test runs the dry run on clean copies of the examples
+(`EQ-04`), and `tests/test_run_parity.py::test_a_clean_checkout_runs_every_way`
+passes with its expected-failure mark removed.
 
 **Dependencies:** None. `EQ-04` plans the test that would have caught it.
 
@@ -221,46 +227,6 @@ its report.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/deploy/_impact.py`; `src/haute/cli/_impact.py`;
-`specs/deploy/high-level.md`.
-
-### DPL-08 — The dry run types a test quote as the service types a request
-**Why:** Reproduced on 14 November 2026. A test quote gives `age` as 30.9
-for an input the deploy records as Int64. `haute deploy --dry-run` passes
-it: "fractional.json 1 rows ok". The served app, built from the same
-bundle, refuses the same quote with 422: "Quote 0's 'age' is 30.9, which
-its Int64 column does not hold." The specification types requests and
-test quotes by the same declared types. The dry run builds its frame from
-the quote with no schema.
-
-**Plan:** Build the dry run's frame through the function the served app
-uses for a request.
-
-**Acceptance:** The dry run fails on the quote above with the service's
-sentence.
-
-**Dependencies:** `DPL-09` is the same difference the other way round.
-
-**Evidence:** `src/haute/deploy/_validators.py`;
-`src/haute/deploy/_container.py`; `specs/deploy/high-level.md`.
-
-### DPL-09 — The dry run accepts a test quote that leaves out its exposure
-**Why:** Reproduced on 14 November 2026. A Model Scoring node scores a
-model whose contract declares an exposure offset, and the deploy records
-`exposure` as an input a quote may leave out. A test quote without it
-fails the dry run: "missing required input column(s) ['exposure']", exit
-1. The served app prices the same quote, 0.5578, the answer it gives for
-an exposure of 1. So the check a project's CI runs before a deploy
-refuses a quote the service is specified to price for a full term.
-
-**Plan:** Have the dry run's check of required columns leave out the
-inputs the deploy records as omittable.
-
-**Acceptance:** The dry run passes the quote above and reports the
-service's answer.
-
-**Dependencies:** `DPL-08`.
-
-**Evidence:** `src/haute/deploy/_validators.py`;
 `specs/deploy/high-level.md`.
 
 ### DPL-10 — A container for a model chosen by run carries MLflow and the model's engine

@@ -17,6 +17,7 @@ import pytest
 
 from haute._project_context import current_project
 from haute._types import PipelineGraph
+from haute.deploy._request_frame import RequestReader
 from haute.deploy._request_rows import RequestRows
 from tests._deploy_internals_helpers import (
     PIPELINE_FILE,
@@ -221,8 +222,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"x": pl.Float64(), "y": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"x": pl.Float64(), "y": pl.Float64()})
 
         input_pd = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
         expected_result = pl.DataFrame({"x": [1.0, 2.0], "result": [10.0, 20.0]})
@@ -260,8 +260,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"x": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"x": pl.Float64()})
         admission_error = ExecutionAdmissionError(
             "deploy_pyfunc_predict",
             profile=ExecutionProfile.DEPLOY_BATCH,
@@ -310,8 +309,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"x": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"x": pl.Float64()})
 
         monkeypatch.setattr(
             "haute.deploy._scorer.admit_deploy_execution",
@@ -348,8 +346,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"x": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"x": pl.Float64()})
 
         class Result:
             def to_pandas(self):
@@ -383,8 +380,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {}
         model._output_fields = ["premium"]
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"x": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"x": pl.Float64()})
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"premium": [100.0]})
@@ -412,8 +408,7 @@ class TestHauteModelPredict:
         model._artifact_paths = {"model.pkl": "/served/model.pkl"}
         model._output_fields = None
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {"x": pl.Float64()}
+        model._reader = RequestReader(records=False, schema={"x": pl.Float64()})
 
         input_pd = pd.DataFrame({"x": [1.0]})
         mock_result = pl.DataFrame({"x": [1.0]})
@@ -444,15 +439,17 @@ class TestHauteModelPredict:
         model._output_node_id = "quote_response"
         model._output_fields = output_fields
         model._request_rows = RequestRows("in_request_order")
-        model._omittable = frozenset()
-        model._input_schema = {
-            "IDpol": pl.Int64(),
-            "VehPower": pl.Int64(),
-            "Area": pl.String(),
-            "VehAge": pl.Int64(),
-            "BonusMalus": pl.Int64(),
-            "Exposure": pl.Float64(),
-        }
+        model._reader = RequestReader(
+            records=False,
+            schema={
+                "IDpol": pl.Int64(),
+                "VehPower": pl.Int64(),
+                "Area": pl.String(),
+                "VehAge": pl.Int64(),
+                "BonusMalus": pl.Int64(),
+                "Exposure": pl.Float64(),
+            },
+        )
         model._artifact_paths = {}
         return model
 

@@ -44,8 +44,6 @@ from haute._execute_lazy import (
     NodeBoundaryRunner,
     PreparedExecution,
     PreparedExecutionRequest,
-    _apply_column_renames,
-    _apply_selected_columns,
     _build_funcs,
     _check_snapshot_plan,
     _conservative_strategy_passthrough,
@@ -63,6 +61,7 @@ from haute._execute_lazy import (
     _schema_pairs,
     _shapes_output,
     _write_recipe,
+    missing_input_columns,
     node_failure_message,
 )
 from haute._execution_context import (
@@ -77,6 +76,7 @@ from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._node_addresses import node_display_name
+from haute._node_apply import shape_node_output
 from haute._node_specs import node_spec, node_type_table
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
@@ -1409,13 +1409,13 @@ class _Walk:
             projection_planner.ProjectionEdgeKey.from_edge(edge), frozenset()
         )
         if missing & required:
-            raise ContractMismatchError(
-                "Columns required by a projection contract are missing from the parent frame.",
-                node_id=edge.target,
+            raise missing_input_columns(
+                self.node_map[edge.target],
+                sorted(missing & required),
+                frozenset(schema_columns),
+                self._name(edge.target),
                 parent_id=edge.source,
-                missing=sorted(missing & required),
                 required_columns=sorted(demand),
-                parent_columns=sorted(schema_columns),
             )
         if missing:
             # A seed plan's negotiated demand may be broader than this run's
@@ -1514,9 +1514,7 @@ class _Walk:
             # Its columns before its own selection and renames, which a
             # snapshot records so a seeded preview can still report them.
             self.unshaped_frames[node_id] = frame
-        config = boundary.node.data.config
-        selected = _apply_selected_columns(frame, config, node_label=self._name(node_id))
-        shaped = _lazy(_apply_column_renames(_lazy(selected), config))
+        shaped = shape_node_output(frame, boundary.node.data.config, node_label=self._name(node_id))
         names = self._describe(node_id, boundary.node, frame, shaped) if self.display else None
         self._check_output(boundary, shaped, names, created=frame if shapes else None)
         return _NodeFrame(frame=shaped, boundary=boundary, output_names=names)
@@ -1617,8 +1615,7 @@ class _Walk:
             return _lazy(self._project_edge(edge, lf)[0])
 
         def column_step(lf: pl.LazyFrame) -> pl.LazyFrame:
-            selected = _apply_selected_columns(lf, config, node_label=name)
-            return _lazy(_apply_column_renames(selected, config))
+            return shape_node_output(lf, config, node_label=name)
 
         self.write_recipes[node_id] = parent_recipe.then(project).then(column_step)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from haute._execute_lazy import _apply_column_renames, _apply_selected_columns
+from haute._node_apply import _apply_column_renames, _apply_selected_columns
 
 
 class TestApplyColumnRenames:

@@ -157,11 +157,18 @@ declares, as its schema, on every execution profile. Where a column has no
 declared type, refuse naming the node and the column and saying to confirm
 its type in the node's table.
 
+The execution-engine specification's **Ways of running a pipeline** (18
+November 2026) states which differences between the ways are meant; this is
+not one of them, and `tests/test_run_parity.py` holds it as an expected
+failure naming this package.
+
 **Acceptance:** A Quote Input on a CSV file with declared types gives the
 same rows in the editor's preview and from `haute run`, and deploys. With a
 column left untyped, both refuse naming the node and the column, and the
 message names no key the node's settings cannot hold. A test runs one Quote
-Input through both for CSV, JSON, JSON Lines and Parquet samples.
+Input through both for CSV, JSON, JSON Lines and Parquet samples, and
+`tests/test_run_parity.py::test_a_quote_input_on_a_csv_answers_every_way`
+passes with its expected-failure mark removed.
 
 **Dependencies:** None.
 

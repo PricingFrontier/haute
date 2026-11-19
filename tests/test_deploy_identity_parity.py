@@ -416,7 +416,7 @@ class TestModelScorePassthroughRejectedAtDeploy:
 # ---------------------------------------------------------------------------
 
 
-def _resolved_with(graph, quotes_dir, artifacts):
+def _resolved_with(graph, quotes_dir, artifacts, input_schema=None):
     config = DeployConfig(
         pipeline_file=PIPELINE_FILE,
         model_name="test-model",
@@ -428,6 +428,8 @@ def _resolved_with(graph, quotes_dir, artifacts):
         input_node_ids=["src"],
         output_node_id="out",
         artifacts=artifacts,
+        # The test quotes' one column, as the sample recorded it.
+        input_schema=input_schema or {"x": "Float64"},
     )
 
 
@@ -515,9 +517,10 @@ class TestScoreTestQuotesThreadsArtifacts:
     def test_validate_gate_enforces_bundled_contract_drift(self, tmp_path):
         """F055/F564: a drifting quote is blocked at validate, as at serve.
 
-        The bundled contract declares ``x: Float64``; the quote supplies an
-        Int64 ``x``.  With the pinned contract threaded in, the gate raises
-        FeatureMismatch — the same error the container would raise on drift.
+        The bundled contract declares ``x: Float64``; the sample recorded an Int64 ``x``,
+        which the quote is read as, as the container reads a request.  With the pinned
+        contract threaded in, the gate raises FeatureMismatch — the same error the
+        container would raise on drift.
         """
         from haute.deploy._validators import score_test_quotes
 
@@ -542,6 +545,7 @@ class TestScoreTestQuotesThreadsArtifacts:
             graph,
             quotes,
             {f"ms__{CONTRACT_FILENAME}": tmp_path / CONTRACT_FILENAME},
+            input_schema={"x": "Int64"},
         )
 
         results = score_test_quotes(resolved)

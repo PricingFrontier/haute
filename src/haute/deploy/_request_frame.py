@@ -1,4 +1,12 @@
-"""A flat Quote Input's served request, framed by the manifest's input schema (specs/deploy).
+"""A deployment's request, read as its request input reads it (specs/deploy).
+
+:class:`RequestReader` is the one reading of a request's quotes: the served app's, its
+batch worker's, the Databricks model's and the dry run's, so a test quote is refused or
+priced as the service refuses or prices it. A Workbench Input, and a Quote Input with
+tables, read the quotes as their records; a flat Quote Input's are framed by
+:func:`frame_rows`.
+
+A flat Quote Input's served request is framed by the manifest's input schema.
 
 The request is typed by the columns and types the deploy recorded from the sample, never by
 inference from the JSON values, so it types its columns as the dry run and the test quotes
@@ -11,14 +19,67 @@ quote (:func:`haute._json_values.json_value` has the rules).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from haute._json_values import REQUEST_DTYPES, JsonValueError, json_value
 from haute._polars_dtypes import parse_rendered_dtype
 from haute.errors import DeployError, QuoteInputError
+
+if TYPE_CHECKING:
+    from haute._types import PipelineGraph
+    from haute.deploy._scorer import DeployInput
+
+
+@dataclass(frozen=True)
+class RequestReader:
+    """How a deployment's request input reads a request's quotes.
+
+    *records* is whether it reads them as sent (a Workbench Input, a Quote Input with
+    tables), each value typed by its reader; otherwise they are framed by *schema*, a
+    quote leaving out only the *omittable* columns (:func:`frame_rows`).
+    """
+
+    records: bool
+    schema: Mapping[str, pl.DataType]
+    omittable: frozenset[str] = frozenset()
+
+    @classmethod
+    def of(
+        cls,
+        graph: PipelineGraph,
+        input_node_ids: Sequence[str],
+        recorded: Mapping[str, Any],
+    ) -> RequestReader:
+        """The reader of the deployment of *graph*. A flat Quote Input's frame is typed by
+        *recorded*'s ``input_schema`` and may leave out its ``omittable_inputs``, as the
+        manifest records them; a reader of records reads neither."""
+        from haute.deploy._scorer import reads_records
+
+        if reads_records(graph, list(input_node_ids)):
+            return cls(records=True, schema={})
+        omittable: Iterable[str] = recorded["omittable_inputs"]
+        return cls(
+            records=False,
+            schema=request_frame_schema(recorded["input_schema"]),
+            omittable=frozenset(omittable),
+        )
+
+    def read(self, rows: Sequence[Mapping[str, Any]], *, first: int = 0) -> DeployInput:
+        """*rows*, a request's quotes, as the scorer takes them; a refusal numbers them
+        from *first*, the first one's place among the quotes its caller counts.
+
+        Raises:
+            QuoteInputError: a flat Quote Input's quote that does not fit its schema.
+        """
+        from haute.deploy._scorer import QuoteRequest
+
+        if self.records:
+            return QuoteRequest(tuple(rows))
+        return frame_rows(rows, self.schema, omittable=self.omittable, first=first)
 
 
 def request_frame_schema(input_schema: Mapping[str, str]) -> dict[str, pl.DataType]:
@@ -47,17 +108,19 @@ def frame_rows(
     schema: Mapping[str, pl.DataType],
     *,
     omittable: frozenset[str],
+    first: int = 0,
 ) -> pl.DataFrame:
     """*rows*, a request's quotes, as one frame of *schema*'s columns and types.
 
-    A quote may leave out only the *omittable* columns (exposures).
+    A quote may leave out only the *omittable* columns (exposures). A refusal names a
+    quote by its place, counted from *first*.
 
     Raises:
         QuoteInputError: a quote is not an object, leaves out a column it must give, or
             holds a value that does not fit its column.
     """
     columns: dict[str, list[Any]] = {name: [] for name in schema}
-    for index, row in enumerate(rows):
+    for index, row in enumerate(rows, start=first):
         if not isinstance(row, Mapping):
             raise QuoteInputError(f"Quote {index} is not an object.", column=None, quote=index)
         for name, dtype in schema.items():

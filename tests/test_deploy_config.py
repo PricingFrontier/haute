@@ -517,7 +517,7 @@ def _make_resolved(
         input_node_ids=input_node_ids,
         output_node_id=output_node_id,
         artifacts=artifacts or {},
-        input_schema=input_schema or {"col": "float"},
+        input_schema=input_schema or {"col": "Float64"},
         output_schema=output_schema or {"result": "float"},
         project_modules=ProjectModules(utility=None, unbundled_imports=()),
         request_rows=RequestRows(multi_quote="in_request_order"),
