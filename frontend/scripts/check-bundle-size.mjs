@@ -286,8 +286,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // restores about 2.2 KiB headroom. The other limits are unchanged.
 // Late answers (FES-04, 18 November 2026): the one helper every answer from the server is
 // written through and the call sites moved onto it bring the total to 1,815.5 KiB (initial
-// 302.6 KiB); 1,817 KiB (approved) restores about 1.5 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1817
+// 302.6 KiB); 1,817 KiB (approved) restores about 1.5 KiB headroom. Merged with typed numbers
+// (FES-06, 19 November 2026), the two bring the total to 1,817.1 KiB (initial 303.0 KiB);
+// 1,819 KiB (approved) restores about 1.9 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1819
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
