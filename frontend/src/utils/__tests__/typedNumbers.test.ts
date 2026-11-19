@@ -29,6 +29,13 @@ describe("typed numbers", () => {
     expect(trimTyped("\u001c5\u0085")).toBe("\u001c5\u0085")
   })
 
+  it("trims every typed space and no other character", () => {
+    for (let code = 0; code <= 0xffff; code += 1) {
+      const character = String.fromCharCode(code)
+      expect(trimTyped(`${character}5${character}`) === "5", `U+${code.toString(16)}`).toBe(TYPED_SPACES.includes(character))
+    }
+  })
+
   it.each(cases.numbers)("a numeric field reads $name by the grammar", ({ text, field }) => {
     if (field === null) {
       expect([readTypedNumber(text), readTypedWhole(text)]).toEqual([null, null])

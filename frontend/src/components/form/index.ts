@@ -1,7 +1,6 @@
 export { default as CommittedTextField, CommittedTextArea, DraftTextArea, DraftTextField, ValidatedTextField } from "./CommittedTextField"
 export { commitOpenDrafts, isDraftOpen, useCommittedDraft, type CommittedDraft } from "./useCommittedDraft"
 export { NumberField } from "./NumberField"
-export { numberShown, useNumberDraft } from "./useNumberDraft"
 export type { NumberRule } from "../../utils/numberRule"
 export { default as ColourSwatches } from "./ColourSwatches"
 export { default as ConfigCheckbox } from "./ConfigCheckbox"

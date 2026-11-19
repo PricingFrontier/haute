@@ -88,3 +88,15 @@ def test_a_floats_canonical_text_reads_back_as_the_same_float(number: float) -> 
 def test_typed_text_is_trimmed_of_the_typed_spaces_alone() -> None:
     assert trim_typed(f"{TYPED_SPACES}5{TYPED_SPACES}") == "5"
     assert trim_typed("\x1c5\x85") == "\x1c5\x85"
+
+
+def test_a_float_that_is_not_finite_has_no_canonical_text() -> None:
+    for value in (float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="not finite"):
+            number_text(value)
+
+
+@pytest.mark.parametrize("value", [[1], {"a": 1}, b"5"])
+def test_a_constant_value_of_another_shape_is_refused(value: object) -> None:
+    with pytest.raises(ConstantValueError, match="neither a number, a boolean nor text"):
+        constant_value(value)

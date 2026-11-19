@@ -23,45 +23,37 @@
 export const TYPED_SPACES =
   "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 
-/** The spaces that group digits in threes, as a comma does. */
-const GROUP_SPACES = " \u00a0\u2009\u202f"
-
-const NUMBER = new RegExp(
-  `^([+-]?)(?:[$£€][${GROUP_SPACES}]*)?([+-]?)` +
-    `([0-9]+|[1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{0,2}(?:[${GROUP_SPACES}][0-9]{3})+)?` +
-    `(\\.[0-9]*)?([eE][+-]?[0-9]+)?$`,
-)
-const GROUPING = new RegExp(`[,${GROUP_SPACES}]`, "g")
-
-
-
-const isTypedSpace = (character: string): boolean => TYPED_SPACES.includes(character)
+/**
+ * A number by the grammar: a sign either side of a currency sign, spaces after it; digits
+ * ungrouped, or grouped in threes by commas or by the spaces that group digits (a space, a
+ * no-break space, a thin space, a narrow no-break space); a point and a fraction; an exponent.
+ */
+const NUMBER =
+  /^([+-]?)(?:[$£€][ \u00a0\u2009\u202f]*)?([+-]?)([0-9]+|[1-9][0-9]{0,2}(?:,[0-9]{3})+|[1-9][0-9]{0,2}(?:[ \u00a0\u2009\u202f][0-9]{3})+)?(\.[0-9]*)?([eE][+-]?[0-9]+)?$/
+const GROUPING = /[, \u00a0\u2009\u202f]/g
+/** `TYPED_SPACES` at either end, as character ranges (held to the list by the tests). */
+const TRIMMED = /^[\t-\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\t-\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$/g
 
 /** *text* without the typed spaces at either end. */
-export function trimTyped(text: string): string {
-  let start = 0
-  let end = text.length
-  while (start < end && isTypedSpace(text[start])) start += 1
-  while (end > start && isTypedSpace(text[end - 1])) end -= 1
-  return text.slice(start, end)
-}
+export const trimTyped = (text: string): string => text.replace(TRIMMED, "")
 
-/** The number *text* is as plain digits for the language to read (no currency sign, no grouping), or null. */
-function plainDigits(text: string): string | null {
+/** A number's parts as typed: its sign, its digits (ungrouped), its fraction's and its exponent. */
+type Parts = { sign: string; whole: string; fraction: string; exponent: string }
+
+/** The parts of the number *text* is, or null when it is not one by the grammar. */
+function numberParts(text: string): Parts | null {
   const match = NUMBER.exec(trimTyped(text))
   if (match === null) return null
-  const [, sign1, sign2, whole, fraction, exponent] = match
-  if (sign1 && sign2) return null
-  if (whole === undefined && (fraction === undefined || fraction === ".")) return null
-  const digits = (whole ?? "").replace(GROUPING, "")
-  return `${sign1 || sign2}${digits}${fraction ?? ""}${exponent ?? ""}`
+  const [, sign1, sign2, whole = "", point = "", exponent = ""] = match
+  if ((sign1 && sign2) || (whole === "" && point.length < 2)) return null
+  return { sign: sign1 || sign2, whole: whole.replace(GROUPING, ""), fraction: point.slice(1), exponent: exponent.slice(1) }
 }
 
 /** The number *text* is, read by the grammar, or null when it is not one (finite). */
 export function readTypedNumber(text: string): number | null {
-  const plain = plainDigits(text)
-  if (plain === null) return null
-  const number = Number(plain)
+  const parts = numberParts(text)
+  if (parts === null) return null
+  const number = Number(`${parts.sign}${parts.whole || "0"}.${parts.fraction}e${parts.exponent || "0"}`)
   return Number.isFinite(number) ? number : null
 }
 
@@ -72,21 +64,13 @@ export function readTypedNumber(text: string): number | null {
  * written with an exponent is one only when it is finite.
  */
 export function readTypedWhole(text: string): bigint | null {
-  const plain = plainDigits(text)
-  // Digits written out are exact however large; a number written with an exponent is finite
-  // or not a number (`1e999`), as the numeric field reads it.
-  if (plain === null || (/e/i.test(plain) && readTypedNumber(text) === null)) return null
-  const match = /^([+-]?)([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$/.exec(plain)
-  if (match === null) return null
-  const [, sign, whole, fraction = "", exponentText] = match
-  // The value is the digits times ten to the power `shift`.
-  const shift = (exponentText === undefined ? 0 : Number(exponentText)) - fraction.length
-  const digits = `${whole}${fraction}`.replace(/^0+(?=[0-9])/, "") || "0"
-  if (shift >= 0) return BigInt(`${sign}${digits}${"0".repeat(shift)}`)
-  const dropped = digits.slice(Math.max(0, digits.length + shift))
-  if (/[1-9]/.test(dropped) || (digits.length + shift < 0 && /[1-9]/.test(digits))) return null
-  const kept = digits.slice(0, Math.max(0, digits.length + shift)) || "0"
-  return BigInt(`${sign}${kept}`)
+  const parts = numberParts(text)
+  if (parts === null || (parts.exponent !== "" && readTypedNumber(text) === null)) return null
+  // The value is the digits times ten to the power `shift`; those it drops must be zeros.
+  const digits = parts.whole + parts.fraction
+  const shift = Number(parts.exponent || "0") - parts.fraction.length
+  const kept = shift >= 0 ? digits + "0".repeat(shift) : digits.slice(0, Math.max(0, digits.length + shift))
+  return /[1-9]/.test(digits.slice(kept.length)) && shift < 0 ? null : BigInt(`${parts.sign}${kept || "0"}`)
 }
 
 /** A decimal comma, said as what to do: the grammar never guesses which a comma is. */

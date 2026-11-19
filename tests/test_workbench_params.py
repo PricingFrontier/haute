@@ -294,3 +294,25 @@ def test_a_params_value_its_column_does_not_hold_is_refused_naming_the_type(
         f"limits.csv gives policy.limit the value {value!r}, "
         f"which {type_name} column does not hold."
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "fits"),
+    [
+        ("date", "2026-11-19", True),
+        ("date", "19/11/2026", False),
+        ("bool", "True", True),
+        ("bool", "yes", False),
+        ("str", "1,5", True),
+    ],
+)
+def test_a_params_value_of_another_type_is_held_to_that_type(
+    kind: str, value: str, fits: bool
+) -> None:
+    tables = _sourced(kind)
+    if fits:
+        _workbench_params.fill_sourced_options(tables, lambda _file, _column: [value])
+        assert tables[0]["inputs"][0]["options"] == [value]
+        return
+    with pytest.raises(ParamFileError, match="does not hold"):
+        _workbench_params.fill_sourced_options(tables, lambda _file, _column: [value])

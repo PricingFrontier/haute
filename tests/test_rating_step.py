@@ -1821,3 +1821,16 @@ def test_a_rate_held_as_grouped_text_prices_as_the_number_it_is(rate: str, price
     out = apply_rating_step_from_config(pl.LazyFrame({"region": ["north"]}), config).collect()
 
     assert out["region_factor"].to_list() == [priced]
+
+
+def test_a_rate_held_as_text_that_is_not_a_number_is_refused_naming_the_table() -> None:
+    # A raw table the codec has not validated is refused at the lookup, in the grammar's terms.
+    from haute._rating import rating_table_lookup
+
+    table = {
+        "factors": ["region"],
+        "output_column": "region_factor",
+        "entries": [{"region": "north", "value": "1,5"}],
+    }
+    with pytest.raises(ValueError, match="has the rate '1,5', which is not a number"):
+        rating_table_lookup(table, pl.Schema({"region": pl.String}))
