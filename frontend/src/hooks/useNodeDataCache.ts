@@ -419,14 +419,13 @@ export default function useNodeDataCache({
     async (target: NodeDataPointResponse, force: boolean, fence: DocumentExecutionFence, key: string) => {
       const producer = producerNode(requestTarget(), target)
       if (!producer) throw new Error("The delegated data point has no producer node")
-      const { cancelInputSnapshotBuild, ensureInputSnapshots } = await import(
+      const { cancelInputSnapshotBuilds, ensureInputSnapshots } = await import(
         "./ensureInputSnapshots"
       )
       const controller = new AbortController()
       ownDelegatedAbort.current.set(key, controller)
       if (stopRequested.current.has(key)) controller.abort()
       const token = nextOperationToken()
-      let buildJobId: string | null = null
       startDelegatedBuild(target.slot_key, {
         token,
         message: "Preparing this input",
@@ -452,9 +451,6 @@ export default function useNodeDataCache({
           force,
           signal: controller.signal,
           onProgress: (message) => reportDelegatedProgress(target.slot_key, token, message),
-          onJobStarted: (jobId) => {
-            buildJobId = jobId
-          },
         }), {
           ok: async () => {
             forgetOwnAbort()
@@ -463,16 +459,21 @@ export default function useNodeDataCache({
           },
           failed: (err) => {
             forgetOwnAbort()
-            if ((err as { name?: unknown } | null)?.name === "CancellationFailed" && buildJobId) {
+            const notStopped = err as { name?: unknown; jobIds?: unknown } | null
+            if (notStopped?.name === "CancellationFailed" && Array.isArray(notStopped.jobIds) && notStopped.jobIds.length > 0) {
               // The build may still be running, so the control stays live: it
               // cancels that build again instead of disappearing and leaving the
-              // point building with nothing watching it.
-              const jobId: string = buildJobId
+              // point building with nothing watching it. The failure names the
+              // build even when Stop came before its start answered.
+              const jobIds = notStopped.jobIds as string[]
               retainDelegatedBuild(target.slot_key, token, {
                 message: "This build has not stopped yet; cancel it again",
                 cancel: () => {
                   const retryFence = captureDocumentExecutionFence()
-                  void answer([executionPart(retryFence)], cancelInputSnapshotBuild(jobId), {
+                  const cancelled = cancelInputSnapshotBuilds(jobIds).then((stillRunning) => {
+                    if (stillRunning) throw stillRunning
+                  })
+                  void answer([executionPart(retryFence)], cancelled, {
                     ok: async (_cancelled, asked) => {
                       finishDelegatedBuild(target.slot_key, token)
                       await asked.answer(readPoint(retryFence), { failed: cancelFailed })

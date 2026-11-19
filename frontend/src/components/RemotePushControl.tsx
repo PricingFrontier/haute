@@ -266,10 +266,15 @@ export default function RemotePushControl({
     addToast("error", `Couldn't ${what}: ${apiErrorMessage(err, "unknown error")}`)
     void useGitStore.getState().loadStatus({ refresh: true })
   }, [addToast])
-  /** The files are the remote's now: the edits chosen over them go, as after a switch. */
+  /**
+   * The files are the remote's now: the edits chosen over them go, as after a switch. Git has
+   * moved them whatever an edit made during the form's reload does to *asked*, so what it did
+   * is said either way.
+   */
   const dropChosenOver = useCallback(async (asked: Asked, said: string) => {
     discardCanvasEdits()
-    await asked.answer(discardFormEdits(), { ok: () => treeMoved(said) })
+    const moved = () => treeMoved(said)
+    await asked.answer(discardFormEdits(), { ok: moved, stale: moved })
   }, [treeMoved])
 
   // D1/D2: a conflict-free catch-up (fast-forward only). Used by the standalone

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { useState } from "react"
+import { StrictMode, useState } from "react"
 import { render, screen, fireEvent, cleanup, act, waitFor, within } from "@testing-library/react"
 import { WarehousePicker, CatalogTablePicker, TargetTablePicker } from "../_DatabricksSelector"
 
@@ -87,6 +87,15 @@ describe("WarehousePicker", () => {
       expect.stringContaining("Dev Warehouse"),
     ])
     expect(mockGetWarehouses).toHaveBeenCalledTimes(1)
+  })
+
+  it("reads again when StrictMode mounts it a second time, and selects a sole warehouse", async () => {
+    mockGetWarehouses.mockResolvedValue({ warehouses: [warehouses[0]] })
+    const onSelect = vi.fn()
+    render(<StrictMode><WarehousePicker httpPath="" onSelect={onSelect} /></StrictMode>)
+
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("/sql/1.0/warehouses/abc"))
+    expect(onSelect).toHaveBeenCalledTimes(1)
   })
 
   it("tags serverless warehouses", async () => {

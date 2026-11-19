@@ -760,6 +760,28 @@ describe("RemotePushControl", () => {
         expect(reload).not.toHaveBeenCalled()
       })
 
+      it("says what it did, and reads the branch again, when an edit is made while the form reads again", async () => {
+        let reread: () => void = () => {}
+        const reload = vi.fn(() => new Promise<void>((resolve) => (reread = resolve)))
+        useWorkbenchFormStore.setState({ reload })
+        useWorkbenchStore.setState({ formDirty: true })
+        useGraphStore.getState().loadGraphSnapshot({ nodes: [makeNode("step", "ratingStep")], edges: [], preamble: "", submodels: {} })
+        useGraphStore.setState({ dirty: true })
+        const historyNonce = useGitStore.getState().historyNonce
+        render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)
+        await click()
+        fireEvent.click(await screen.findByTestId("git-navigation-discard"))
+        await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+
+        // Git has moved the files; the canvas, as the remote's, is edited before the form is read.
+        useGraphStore.getState().setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, label: "Default 1.5" } })))
+        await act(async () => reread())
+
+        await waitFor(() => expect(useGitStore.getState().historyNonce).toBe(historyNonce + 1))
+        expect(mockAddToast).toHaveBeenCalledWith("success", expect.any(String))
+        expect(useGraphStore.getState().nodes[0].data.label).toBe("Default 1.5")
+      })
+
       it("keeps the edits when it fails", async () => {
         request.mockRejectedValueOnce(new Error("ref locked on remote"))
         render(<RemotePushControl pendingSaveCount={0} onSave={vi.fn()} />)

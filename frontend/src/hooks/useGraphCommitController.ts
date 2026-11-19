@@ -291,36 +291,33 @@ export default function useGraphCommitController({
       // The reply belongs to the draft as the node's newest, unmoved, in the context it was asked in.
       const wanted: Part = { holds: () => supersededBy(request) === null, subscribe: graphOrDocument }
       await answer([wanted], resolveNodeIdentities([{ ...liveNode, data: draft.data }]), {
+        // What using the answer throws is the update's failure (`failed`).
         ok: async (resolved) => {
-          try {
-            if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
-              throw new Error("identity resolver returned an invalid node")
-            }
-            // New definitions it is resolved against resolve it again; a move of the node
-            // itself has retired the draft already.
-            if (requestIsStale(request)) {
-              if (n < MAX_IDENTITY_ATTEMPTS) {
-                result = await attempt(n + 1, beginRequest(nodeId))
-                return
-              }
-              retireDraft(nodeId, draft)
-              result = {
-                ok: false,
-                error: "Node update was not applied because the graph kept changing while identity resolution was running.",
-              }
-              return
-            }
-            const finalPlan = prepare(nodeId, resolved[0].data, true)
-            // Retired first, so its own commit is not taken for the node moving under it.
-            retireDraft(nodeId, draft)
-            if (!finalPlan.ok) {
-              result = finalPlan
-              return
-            }
-            commit(finalPlan)
-          } catch (error: unknown) {
-            result = failedUpdate(error)
+          if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
+            throw new Error("identity resolver returned an invalid node")
           }
+          // New definitions it is resolved against resolve it again; a move of the node
+          // itself has retired the draft already.
+          if (requestIsStale(request)) {
+            if (n < MAX_IDENTITY_ATTEMPTS) {
+              result = await attempt(n + 1, beginRequest(nodeId))
+              return
+            }
+            retireDraft(nodeId, draft)
+            result = {
+              ok: false,
+              error: "Node update was not applied because the graph kept changing while identity resolution was running.",
+            }
+            return
+          }
+          const finalPlan = prepare(nodeId, resolved[0].data, true)
+          // Retired first, so its own commit is not taken for the node moving under it.
+          retireDraft(nodeId, draft)
+          if (!finalPlan.ok) {
+            result = finalPlan
+            return
+          }
+          commit(finalPlan)
         },
         failed: (error) => {
           result = failedUpdate(error)

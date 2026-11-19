@@ -73,12 +73,6 @@ export interface EnsureInputSnapshotsOptions {
    */
   force?: boolean
   /**
-   * The id of each input-snapshot build this pass started, so a caller can
-   * cancel that build again itself if a cancellation fails. A build joined
-   * from elsewhere is not reported: aborting only stops waiting for it.
-   */
-  onJobStarted?: (jobId: string) => void
-  /**
    * Each running status of a build this pass waits for. Only a `bounded` build
    * streams its row count; an admitted-eager one reports none until it ends.
    */
@@ -268,8 +262,9 @@ async function ensureSnapshot(
     // Only a build this pass started is its to cancel. A `blocked` answer names
     // a build this request may not join (one being cancelled, or an ordinary
     // build for a forced request): it is waited for, never cancelled.
+    // A cancellation of it that fails names it (`CancellationFailedError.jobIds`), however late
+    // its start answered, so the caller can cancel it again.
     const owned = started.status === "running" && !started.joined
-    if (owned) pass.apply(() => options.onJobStarted?.(started.job_id))
     const job = await waitForBuild(started.job_id, pass, options, owned)
     if (started.status === "running" && job.status === "completed") return
     // The build waited for did not build this request's snapshot: it was one

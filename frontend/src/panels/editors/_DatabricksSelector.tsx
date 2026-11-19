@@ -99,7 +99,13 @@ export function WarehousePicker({
 
   const firstRead = useRef(reload)
   useEffect(() => {
-    if (!startedManual && !requested.current) firstRead.current()
+    if (startedManual) return
+    firstRead.current()
+    // Leaving drops the read (the picker's requests end with it), so a picker mounted again,
+    // as StrictMode does, reads again.
+    return () => {
+      requested.current = false
+    }
   }, [startedManual])
 
   useEffect(() => {

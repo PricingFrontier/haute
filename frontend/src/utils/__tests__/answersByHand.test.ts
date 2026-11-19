@@ -233,8 +233,8 @@ interface Module {
   /** A local name bound by an import: the module it is from (null for a package) and its name there. */
   readonly imports: Map<string, { readonly from: string | null; readonly name: string }>
   readonly moduleVariables: Set<string>
-  /** A function the module declares, by name. */
-  readonly declared: Map<string, ts.Node>
+  /** Every function a scope of the module binds to a name, and whether that scope is the file. */
+  readonly functions: { readonly name: string; readonly fn: ts.Node; readonly topLevel: boolean }[]
   /** An exported name: a local name, or a name of another module re-exported. */
   readonly exports: Map<string, { readonly local: string } | { readonly from: string; readonly name: string }>
   readonly exportsAll: string[]
@@ -253,7 +253,7 @@ function resolveModule(from: string, specifier: string, known: ReadonlySet<strin
 function readModule(path: string, source: string, known: ReadonlySet<string>): Module {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, path.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.TSX)
   const module: Module = {
-    path, file, hookBound: new Set(), imports: new Map(), moduleVariables: new Set(), declared: new Map(), exports: new Map(), exportsAll: [],
+    path, file, hookBound: new Set(), imports: new Map(), moduleVariables: new Set(), functions: [], exports: new Map(), exportsAll: [],
   }
   for (const statement of file.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && !statement.importClause?.isTypeOnly) {
@@ -316,22 +316,88 @@ function readModule(path: string, source: string, known: ReadonlySet<string>): M
             if (ts.isArrayBindingPattern(node.name) && node.name.elements[1] && ts.isBindingElement(node.name.elements[1])) {
               bindingNames(node.name.elements[1].name, module.hookBound)
             }
-          } else if (hook === "useCallback") {
-            if (ts.isIdentifier(node.name) && init.arguments[0]) module.declared.set(node.name.text, init.arguments[0])
-          } else {
+          } else if (hook !== "useCallback") {
             bindingNames(node.name, module.hookBound)
           }
         }
       }
-      if (ts.isIdentifier(node.name) && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
-        module.declared.set(node.name.text, node.initializer)
+    }
+    if (ts.isSourceFile(node) || isFunction(node)) {
+      for (const [name, fns] of declarationsIn(node)) {
+        for (const fn of fns) module.functions.push({ name, fn, topLevel: ts.isSourceFile(node) })
       }
     }
-    if (ts.isFunctionDeclaration(node) && node.name) module.declared.set(node.name.text, node)
     ts.forEachChild(node, visitDeclarations)
   }
   visitDeclarations(file)
   return module
+}
+
+/** The function a declaration's value is: written in place, or given to `useCallback`. */
+function boundFunction(initializer: ts.Expression): ts.Node | null {
+  let init = initializer
+  while (ts.isAwaitExpression(init) || ts.isNonNullExpression(init) || ts.isParenthesizedExpression(init) || ts.isAsExpression(init)) init = init.expression
+  if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return init
+  if (ts.isCallExpression(init) && (dotted(init.expression) ?? "").split(".").pop() === "useCallback") {
+    const fn = init.arguments[0]
+    if (fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) return fn
+  }
+  return null
+}
+
+const declarations = new WeakMap<ts.Node, Map<string, ts.Node[]>>()
+
+/**
+ * The names *scope* (a function, or the file) binds itself, each to the functions bound to it
+ * there: none for a parameter or another value, more than one when blocks of the scope bind
+ * the name apart.
+ */
+function declarationsIn(scope: ts.Node): Map<string, ts.Node[]> {
+  const known = declarations.get(scope)
+  if (known) return known
+  const found = new Map<string, ts.Node[]>()
+  const bind = (name: string, fn: ts.Node | null) => {
+    const fns = found.get(name) ?? []
+    if (fn) fns.push(fn)
+    found.set(name, fns)
+  }
+  const values = (name: ts.BindingName) => {
+    const names = new Set<string>()
+    bindingNames(name, names)
+    for (const each of names) bind(each, null)
+  }
+  const visit = (node: ts.Node) => {
+    if (isFunction(node)) {
+      if (ts.isFunctionDeclaration(node) && node.name) bind(node.name.text, node)
+      return
+    }
+    if (ts.isVariableDeclaration(node)) {
+      const fn = node.initializer && ts.isIdentifier(node.name) ? boundFunction(node.initializer) : null
+      if (fn) bind((node.name as ts.Identifier).text, fn)
+      else values(node.name)
+    }
+    ts.forEachChild(node, visit)
+  }
+  if (isFunction(scope)) {
+    for (const parameter of scope.parameters) values(parameter.name)
+    if (scope.body) visit(scope.body)
+  } else ts.forEachChild(scope, visit)
+  declarations.set(scope, found)
+  return found
+}
+
+/**
+ * What the name *name*, read at *node*, is bound to: the functions of the nearest scope that
+ * binds it (none for another value), or undefined for an import or a global.
+ */
+function bindingOf(node: ts.Node, name: string): readonly ts.Node[] | undefined {
+  for (let scope = node.parent; scope; scope = scope.parent) {
+    if (isFunction(scope) || ts.isSourceFile(scope)) {
+      const found = declarationsIn(scope).get(name)
+      if (found) return found
+    }
+  }
+  return undefined
 }
 
 function unwrapped(expression: ts.Expression): ts.Expression {
@@ -417,7 +483,9 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
   const modules = new Map<string, Module>()
   for (const [path, source] of sources) modules.set(path, readModule(path, source, known))
 
-  // A module's functions that write, `path#name`, found until no more are.
+  // The functions that write, found until no more are; and those a module binds at its top,
+  // `path#name`, which other modules import.
+  const writerFns = new Set<ts.Node>()
   const writers = new Set<string>()
   const exportTarget = (path: string, name: string, seen = new Set<string>()): string | null => {
     const key = `${path}#${name}`
@@ -453,8 +521,10 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
     if (ts.isIdentifier(callee)) {
       const name = callee.text
       if (locals.stateActions.has(name) || module.hookBound.has(name)) return true
-      // A value of the function's own is not state; a writer it is given (`onDone`) is.
-      if (locals.has(name) && !module.declared.has(name)) return WRITE_NAME.test(name)
+      // A function in scope writes when it does; another value in scope is not state, but a
+      // writer it is given (`onDone`) is.
+      const bound = bindingOf(callee, name)
+      if (bound) return WRITE_NAME.test(name) || bound.some((fn) => writerFns.has(fn))
       return namedWriter(module, name)
     }
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
@@ -525,10 +595,11 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
   for (let grew = true; grew;) {
     grew = false
     for (const module of modules.values()) {
-      for (const [name, fn] of module.declared) {
+      for (const { name, fn, topLevel } of module.functions) {
         const key = `${module.path}#${name}`
-        if (writers.has(key) || notState.has(key) || !writesAnywhere(module, fn)) continue
-        writers.add(key)
+        if (writerFns.has(fn) || notState.has(key) || !writesAnywhere(module, fn)) continue
+        writerFns.add(fn)
+        if (topLevel) writers.add(key)
         grew = true
       }
     }
@@ -579,6 +650,24 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
           if (node.elseStatement) walk(node.elseStatement)
           const elseWaited = node.elseStatement && leaves(node.elseStatement) ? afterCondition : waited
           waited = before || thenWaited || elseWaited
+          return
+        }
+        // A catch runs after any wait its try began, and a finally after any its try or catch
+        // began: one in a branch that left the function too, since leaving runs the finally.
+        if (ts.isTryStatement(node)) {
+          walk(node.tryBlock)
+          let completed = waited
+          if (node.catchClause) {
+            waited = completed || waitsIn(node.tryBlock)
+            walk(node.catchClause)
+            completed = completed || waited
+          }
+          if (node.finallyBlock) {
+            waited = completed || waitsIn(node.tryBlock) || (node.catchClause !== undefined && waitsIn(node.catchClause))
+            walk(node.finallyBlock)
+            completed = completed || waitsIn(node.finallyBlock)
+          }
+          waited = completed
           return
         }
         if (isLoop(node) && waitsIn(node)) waited = true
@@ -718,6 +807,53 @@ describe("the scan finds a write after a wait", () => {
       'addToast("success", "done")',
       "reload()",
     ])
+  })
+
+  it("follows each name to the function bound to it where it is called, not another of the same name", () => {
+    expect(scopesOf(`
+      export function Rows() {
+        const [rows, setRows] = useState([])
+        const apply = (data) => setRows(data)
+        const load = async () => {
+          const data = await fetchRows()
+          apply(data)
+        }
+        return null
+      }
+      export function Totals() {
+        const apply = (data) => data.length
+        const count = async () => apply(await fetchRows())
+        return null
+      }`)).toEqual(["Rows.load"])
+  })
+
+  it("finds a finally, and a catch, run after a branch that waits and leaves", () => {
+    expect(scopesOf(`
+      export function Rows({ needed }) {
+        const [loading, setLoading] = useState(false)
+        const [error, setError] = useState(null)
+        const load = async () => {
+          try {
+            if (needed) {
+              await fetchRows()
+              return
+            }
+          } finally {
+            setLoading(false)
+          }
+        }
+        const check = async () => {
+          try {
+            if (needed) {
+              await fetchRows()
+              return
+            }
+          } catch (failure) {
+            setError(failure)
+          }
+        }
+        return null
+      }`)).toEqual(["Rows.load", "Rows.check"])
   })
 
   it("finds a writer given to .then by name, and a write in a loop that waits", () => {
