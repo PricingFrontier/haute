@@ -328,7 +328,9 @@ class WorkbenchCatalogueTable(BaseModel):
     name: BoundedName
     columns: list[WorkbenchCatalogueColumn] = Field(max_length=MAX_REQUEST_ITEMS)
     primary_key: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
-    unique: list[list[BoundedName]] = Field(max_length=MAX_REQUEST_ITEMS)
+    unique: list[Annotated[list[BoundedName], Field(max_length=MAX_REQUEST_ITEMS)]] = Field(
+        max_length=MAX_REQUEST_ITEMS
+    )
     references: list[WorkbenchCatalogueReference] = Field(max_length=MAX_REQUEST_ITEMS)
     quotes: int | None
 
