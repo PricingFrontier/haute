@@ -532,6 +532,29 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
                     f"{path.relative_to(ROOT)} package {package_id} is missing {field}"
                 )
 
+    for name in _ROADMAP_ROOT_CAUSES:
+        path = ROADMAP_ROOT / name
+        text = path.read_text(encoding="utf-8")
+        package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
+        assert len(package_ids) == 1, f"{name} holds one package, got {package_ids}"
+        (package_id,) = package_ids
+        assert package_id not in package_owners, (
+            f"{package_id} is owned by both {package_owners[package_id]} and {name}"
+        )
+        package_owners[package_id] = name
+        for field in _REQUIRED_PACKAGE_FIELDS:
+            assert field in text.split(f"### {package_id}", maxsplit=1)[1], (
+                f"{name} package {package_id} is missing {field}"
+            )
+        history = _roadmap_history_markers(text)
+        assert not history, f"{name} retains delivered/superseded package history: {history}"
+        resolved = re.findall(r"^\| `([A-Z0-9-]+)` \| \[([a-z0-9-]+)\]\(", text, flags=re.MULTILINE)
+        assert resolved, f"{name} lists no package it resolves"
+        for listed, component in resolved:
+            assert package_owners.get(listed) == component, (
+                f"{name} lists {listed} under {component}, which does not hold it"
+            )
+
     for retired_root in (
         ROOT / "docs" / "fable-Review",
         ROOT / "docs" / "review",
