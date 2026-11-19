@@ -691,3 +691,33 @@ def test_a_file_a_stopped_save_never_created_does_not_stop_the_next_capture(
 
     assert answer.git_sha is not None and answer.uncaptured == [], answer.warnings
     assert _interruption(_document(project)) == []
+
+
+class _Stopped(BaseException):
+    """A stop that is not an error, as a killed process makes: nothing catches it."""
+
+
+def test_a_deletion_staged_before_the_capture_stopped_is_committed_by_the_settle(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute._git_transactions as git_transactions
+
+    real_run_git = git_transactions._run_git
+
+    def stopped_before_commit(*args: Any, **kwargs: Any) -> Any:
+        if "commit" in args:
+            raise _Stopped
+        return real_run_git(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(git_transactions, "_run_git", stopped_before_commit)
+        with pytest.raises(_Stopped):
+            _service(project).save(_the_save(project))
+    # The capture's `git add` staged the stale file's deletion; nothing was committed.
+    assert not (project / OLD).exists()
+    assert OLD in _git(project, "ls-tree", "-r", "--name-only", f"{WORKING}-save").splitlines()
+
+    settle_saves(project)  # the server's start
+
+    assert OLD not in _git(project, "ls-tree", "-r", "--name-only", f"{WORKING}-save").splitlines()
+    assert save_records.read_record(project, "rating/main.py") is None

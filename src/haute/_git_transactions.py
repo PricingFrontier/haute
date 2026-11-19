@@ -101,21 +101,31 @@ def commit_save(
 
     ledger = resolve_ledger(working, cwd=cwd)
 
-    # A path neither in the working tree nor known to git has nothing to record (a save's
-    # record names a file a save stopped before creating), and `git add` refuses it.
-    known = set(_run_git("ls-files", "-z", "--", *map(_literal, paths), cwd=cwd).split("\0"))
+    # :(literal) so a filename holding glob characters names only itself.
+    literal = [_literal(path) for path in paths]
+    # `git add` takes a path in the working tree or the index. One in neither is either a
+    # deletion an earlier `git add` staged before the process stopped, still to commit, or
+    # has nothing to record (a file a save's record names that a stopped save never created),
+    # which `git add` and the commit would refuse.
     base = Path.cwd() if cwd is None else cwd
-    paths = [path for path in paths if path in known or os.path.lexists(base / path)]
+    indexed = set(_run_git("ls-files", "-z", "--", *literal, cwd=cwd).split("\0"))
+    addable = [path for path in paths if path in indexed or os.path.lexists(base / path)]
+    staged_since_head = set(
+        _run_git(
+            "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *literal, cwd=cwd
+        ).split("\0")
+    )
+    paths = [path for path in paths if path in addable or path in staged_since_head]
     if not paths:
         return None
-    # :(literal) so a filename holding glob characters names only itself.
     pathspecs = [_literal(path) for path in paths]
     if not _run_git("status", "--porcelain", "--", *pathspecs, cwd=cwd):
         return None
 
     # New files must be known to git before a pathspec'd commit can include
     # them; the explicit-path add also stages deletions of tracked paths.
-    _run_git("add", "--", *pathspecs, cwd=cwd)
+    if addable:
+        _run_git("add", "--", *map(_literal, addable), cwd=cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
     # working-tree content already matches HEAD. The add above reconciles that
     # entry; if no net path change remains, there is nothing to commit. The
