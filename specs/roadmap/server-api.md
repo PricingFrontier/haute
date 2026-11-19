@@ -5,15 +5,13 @@
 The local server's routes and live sync, as [the server API
 specification](../server-api/high-level.md) describes them: what a route
 answers when a node of the analyst's own fails, what the file watcher does on
-the event loop, what a save answers once its files are written or when it
-cannot write them, and what it leaves when the server dies in the middle.
-`SRV-02` and `SRV-03` come from the 9 November 2026 codebase review:
-`SRV-02` carries a measurement taken on that day. `SRV-03` was read from the
-source then and reproduced on 10
-November by the review plan's sweep of failed writes, which failed every
-step of 17 writing operations in turn, held their files open and killed the
-server at three points. `SRV-04` and `SRV-05` come from that sweep and were
-reproduced on that day; the main session added the Data Output's case to
+the event loop, what a save answers when it cannot write its files, and what
+a Data Output's Write and a model save leave when they are cut short.
+`SRV-02` comes from the 9 November 2026 codebase review and carries a
+measurement taken on that day. `SRV-04` and `SRV-05` come from the review
+plan's sweep of failed writes on 10 November, which failed every step of 17
+writing operations in turn, held their files open and killed the server at
+three points, and were reproduced on that day; the main session added the Data Output's case to
 `SRV-04`, the sweep of the frontend's logic added the too-long path, the
 main session's run of 11 November added the read-only file, and `SRV-06`
 comes from the main session's own runs of 10 November. `SRV-07`
@@ -26,9 +24,8 @@ run, that day, of a submodel's whole life through the routes.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
-| SRV-03 | Planned | P2 | A save whose files are written answers as saved even when clearing a stale settings file fails, and the next save clears it. |
 | SRV-04 | Planned | P2 | A node or submodel name that makes its file's path too long for Windows is refused when it is typed, naming the node and the limit, not by the save. |
-| SRV-05 | Planned | P3 | A save the server died in is reported at the next load, and no staging file is left to reach version history. |
+| SRV-05 | Planned | P3 | A Data Output's Write and a model save leave no staged copy beside their file, and no other writer's staging file outlives a restart. |
 | SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, and stops `haute serve` at start in one line, not a traceback. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 | SRV-08 | Planned | P2 | A save deletes a dissolved submodel's file only when no pipeline beside the saved one still uses it, as the submodel specification says. |
@@ -73,51 +70,6 @@ still broadcast.
 `run_in_threadpool`; `src/haute/routes/pipeline.py::_preview_canonical_graph`
 and `src/haute/routes/pipeline.py::_preview_supersession_key`.
 
-### SRV-03 — A save that landed answers as saved
-**Why:** Reproduced on 10 November 2026; first read from the source on 9
-November. After a save's files are written transactionally and the result is
-parsed back to verify it, the service removes settings files the graph no
-longer uses, with no error handling: an unlink of each stale file, then a
-remove of each emptied folder. An `OSError` there leaves the function after
-every file was written. Run with a node removed while another program held
-its settings file open, the save answered 500 "Operation failed. Check the
-server logs for details." with the new pipeline file, the new sidecar and
-the other node's new settings on disk, and no save on the ledger. The route
-records a save as committed only after the service returns, so this one is
-not broadcast, and the editor keeps its old base revision: its next save is
-refused as stale and tells the analyst to reload, over work that is in fact
-on disk. That last step was read from the source here. Reached through a
-lost answer instead, it was run in a browser on 11 November (`FEG-04`): the
-editor turns read-only, and the reload drops the work done since the save.
-
-The removal is never tried again. A later save answered 200 and the removed
-node's settings file was still on disk, still in the ledger's tree, and
-still in the milestone after a Commit. Stale files are found by comparing
-the graph on disk before the save with the graph being saved, and after the
-failed save the graph on disk no longer names the file. The service
-deliberately does not scan the settings folders for files it does not
-recognise, so nothing else finds it.
-
-**Plan:** Treat the removal as housekeeping after the commit: catch the
-failure, leave the stale file, and return the committed revision with a
-warning naming the file that could not be removed. Record the files a save
-could not remove, in the clone's state under `.haute`, and have the next
-save remove them and capture the removal. Do not bring back the folder scan.
-
-**Acceptance:** With the unlink of a stale sidecar made to raise
-`PermissionError`, the save answers success with the new revision and a
-warning naming the file; the commit is recorded and broadcast; a second save
-from the same editor is accepted, removes the file once it is free, and the
-ledger records the removal.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/_save_pipeline.py::SavePipelineService._save`;
-`src/haute/routes/_save_pipeline.py::_remove_stale_config_files`;
-`src/haute/routes/_save_pipeline.py::_compute_disk_prev_config_files`;
-`src/haute/routes/pipeline.py::save_pipeline` records the commit only after
-the service returns.
-
 ### SRV-04 — A name that makes its file's path too long is refused when it is typed
 **Why:** Reproduced on 10 and 11 November 2026. A node's settings file is
 named from the node's name, with every character outside ASCII written as
@@ -151,46 +103,22 @@ submodel is made.
 `src/haute/_file_ops.py::PathTooLongError`;
 `src/haute/routes/submodel.py::create_submodel`.
 
-### SRV-05 — A save the server died in is noticed and its leftovers collected
-**Why:** Reproduced on 10 November 2026. A save replaces its files one after
-another: the pipeline file, each node's settings file, then the layout
-sidecar. Every file is rewritten on every save, and what a rollback needs
-is held in memory. Measured on this machine, the replaces of one save span
-24 ms for a pipeline of 3 nodes and 221 ms for one of 31, about 7 ms a file.
-A server process that dies inside that span (killed here as the third file
-was about to be replaced) leaves three things. The pipeline file is the new
-one while a node whose settings changed in the same save keeps its old
-settings. The settings file of a node the save removed stays. And the
-staged copy of the file being replaced, `band_x.0aa46832.tmp`, stays beside
-the settings. After a restart the pipeline loads `ready` with no
-diagnostic, so nothing says it is a mix of two saves.
+### SRV-05 — A cut-short write and a model save leave no staged copy behind
+**Why:** Reproduced on 10 November 2026. The pipeline save's own leftovers
+are settled by its record (`src/haute/_save_records.py`): a save the server
+died in is reported on its document, its staging files are removed when the
+server starts and before the next save, and its removals are made by the
+next save. Three other writers still leave theirs.
 
-The next save brings the settings up to date, and leaves the other two.
-The removed node's settings file is never looked for again (`SRV-03`). The
-milestone's sweep takes every new file in the pipeline folder, so the next
-Commit put both into version history: the milestone's tree held
-`rating/config/banding/band_x.0aa46832.tmp` and
-`rating/config/constant/rates.json`. A settings write killed at its rename
-leaves `.haute/pipeline-settings.3b78e6a0.tmp` in the same way, though the
-settings themselves read back whole. Two writers already collect their own
-leftovers: the upload route removes staging files older than the server's
-start, noting that "a server stopped mid-upload leaves its file, and nothing
-else would ever remove it", and the assistant's session store prunes its
-own. The shared atomic writer, which the save and the settings writes use,
-has no collector.
+A Data Output's Write, run for CSV and for Parquet with the server killed as
+the Write publishes its file, leaves its staged copy. The output itself stays
+the old, whole file. Its staged copy, a full copy of the new output named
+`.result.haute-stage-` and 32 hex digits, stays in the analyst's output
+folder after a restart and after a later Write that succeeds. Nothing removes
+it, the Files panel hides it as a dot-name, and each Write that is cut short
+adds another.
 
-A Data Output's Write leaves a second kind of leftover, run for CSV and for
-Parquet with the server killed as the Write publishes its file. The output
-itself stays the old, whole file. Its staged copy, a full copy of the new
-output named `.result.haute-stage-` and 32 hex digits, stays in the
-analyst's output folder after a restart and after a later Write that
-succeeds. Nothing removes it, the Files panel hides it as a dot-name, and
-each Write that is cut short adds another. The sweep's second run saw the
-atomic writer's leftovers from two more operations killed at their rename,
-an undelete and a branch-away (`.haute/trash.<hex>.tmp`,
-`.haute/state.<hex>.tmp`).
-
-A model save leaves a third kind, with no crash at all. Saved over a model
+A model save leaves a second kind, with no crash at all. Saved over a model
 file that is marked read-only, the save succeeds and leaves the old model
 beside the new one, named `.motor.cbm.`, 32 hex digits and `.backup`: one
 more full copy at every save (run three times: three copies). The copy
@@ -198,34 +126,32 @@ step's own note says that "a backup that cannot be deleted then is logged
 and left as a hidden sibling, because the copy has already committed". For
 a read-only file that is every time, and nothing removes them later.
 
-**Plan:** Collect first: when the server starts and before a save, remove
-the atomic writer's staging files older than the server's start in the
-folders Haute owns (beside the pipeline file, its `config` and `modules`
-folders, and `.haute`), as the upload route does, and keep the pattern out
-of the milestone's sweep. Before a Data Output's Write, remove the staged
-copies of the same destination that an earlier Write left. Make a backup
-writable before deleting it, so that a model save leaves none. Then make a
-cut-short save visible: write a small mark under `.haute` naming the save's
-files before the first replace and remove it after the last; a mark found
-when the pipeline is loaded becomes a diagnostic naming the files, and its
-list feeds the removal `SRV-03` records.
+The shared atomic writer leaves a third kind when the server is killed at
+its rename in any writer but the save: the sweep saw
+`.haute/pipeline-settings.3b78e6a0.tmp` from a settings write, and
+`.haute/trash.<hex>.tmp` and `.haute/state.<hex>.tmp` from an undelete and a
+branch-away. Two writers already collect their own leftovers: the upload
+route removes staging files older than the server's start, and the
+assistant's session store prunes its own.
 
-**Acceptance:** After a save killed between two replaces, the next load
-says the save was cut short and names the files; after the next start no
-staging file remains; a Commit records no staging file; and the removed
-node's settings file is gone after the next save. After a Write cut short,
-the next Write to that destination leaves the output file alone in its
-folder. A model saved three times over a read-only model file leaves the
-model and its contract alone in theirs.
+**Plan:** Before a Data Output's Write, remove the staged copies of the same
+destination that an earlier Write left. Make a backup writable before
+deleting it, so that a model save leaves none. When the server starts,
+remove the atomic writer's staging files under `.haute` older than the
+server's start, as the upload route does (`staging_files_of` in
+`src/haute/_file_ops.py` names them for a target).
 
-**Dependencies:** `SRV-03` for the record of files a save could not remove.
+**Acceptance:** After a Write cut short, the next Write to that destination
+leaves the output file alone in its folder. A model saved three times over a
+read-only model file leaves the model and its contract alone in theirs. A
+settings write killed at its rename leaves no staging file under `.haute`
+after the next start.
 
-**Evidence:** `src/haute/routes/_save_pipeline.py::_stage_artifact_write_bytes`;
-`src/haute/routes/_save_pipeline.py::_rollback_artifacts`;
-`src/haute/_file_ops.py::atomic_path`;
-`src/haute/_file_ops.py::_temp_path_for`;
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_file_ops.py::atomic_path`;
+`src/haute/_file_ops.py::staging_files_of`;
 `src/haute/routes/project_files.py::_remove_stale_staging`;
-`src/haute/_git_transactions.py::_pipeline_folder_new_files`;
 `src/haute/executor.py::new_data_output_staging_path`;
 `src/haute/executor.py::commit_prepared_data_output`;
 `src/haute/_file_ops.py::atomic_copy_files`.

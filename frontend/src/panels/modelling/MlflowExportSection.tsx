@@ -14,10 +14,10 @@
  * run, and retries a failed attempt with the same operation ID — a log whose
  * response was lost then returns the run it created instead of a duplicate.
  */
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { Loader2, FlaskConical } from "lucide-react"
 import { logToMlflow } from "../../api/client"
-import { ApiError } from "../../api/client"
+import { keyedWriteSettled, memoryHold, sendHeld } from "../../api/keyedWrites"
 import { apiErrorCode, apiErrorMessage } from "../../api/errors"
 import { newOperationId } from "./exportReceipts"
 import { configField } from "../../utils/configField"
@@ -90,19 +90,21 @@ export function MlflowExportSection({
   const confirmingLogAgain = confirmedFor === confirmationKey
   // A log answers while the section shows.
   const section = useRequestKind()
+  // A log whose answer never came, held with its operation: the next log sends it again.
+  const heldLog = useRef(memoryHold<string>((operationId) => operationId))
 
   const logOperation = useCallback(async (operationId: string) => {
     if (!trainJobId) return
     setConfirmedFor(null)
     setMlflowResult(null)
     onMlflowResult?.(null)
-    await answer([under(section)], () => logToMlflow({
+    await answer([under(section)], () => sendHeld(heldLog.current, operationId, (heldId, ticket) => logToMlflow({
       job_id: trainJobId,
       experiment_name: configField(config, "mlflow_experiment", "") || null,
       // Read at click time, so choosing Local folder after training sends "".
       destination: configField(config, "mlflow_destination", "") as "" | MlflowDestinationKey,
-      operation_id: operationId,
-    }), {
+      operation_id: heldId,
+    }, ticket)), {
       ok: (result) => {
         setMlflowResult(result)
         onMlflowResult?.(result)
@@ -113,9 +115,9 @@ export function MlflowExportSection({
           status: "error",
           error: apiErrorMessage(e, "Logging to MLflow failed."),
           error_code: apiErrorCode(e),
-          // A response that never arrived may still have logged the run, so Retry
-          // resends this operation; a refused request can start a new one.
-          operation_id: e instanceof ApiError ? null : operationId,
+          // A response that never arrived, or a server failure, may still have logged the
+          // run, so Retry resends this operation; a refused request can start a new one.
+          operation_id: keyedWriteSettled(e) ? null : operationId,
         }
         setMlflowResult(errResult)
         onMlflowResult?.(errResult)
@@ -133,7 +135,7 @@ export function MlflowExportSection({
       setConfirmedFor(confirmationKey)
       return
     }
-    void logOperation(newOperationId())
+    void logOperation(heldLog.current.held() ?? newOperationId())
   }, [canLog, lastReceipt, confirmingLogAgain, confirmationKey, logOperation])
 
   return (

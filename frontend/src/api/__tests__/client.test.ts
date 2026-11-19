@@ -82,6 +82,7 @@ import {
   putMlflowSettings,
   testMlflowConnection,
 } from "../client"
+import { sentHeld } from "../../testSupport/keyedWrites"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import { makeGitWorkingBranch, makeInputCacheSnapshot, makeWriteOutput } from "../../test-utils/factories"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
@@ -851,7 +852,7 @@ describe("endpoint contracts", () => {
       operation: "save-test-operation",
       edited_steps: [{ submodel: null, node_id: "t" }],
     }
-    await savePipeline(payload)
+    await sentHeld((ticket) => savePipeline(payload, ticket))
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/save")
     expect(opts.method).toBe("POST")
@@ -865,13 +866,13 @@ describe("endpoint contracts", () => {
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
-    await savePipeline({
+    await sentHeld((ticket) => savePipeline({
       name: "test", description: "desc", graph: dummyGraph, preamble: "",
       source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
       connection_id: null,
       operation: "save-test-operation",
       edited_steps: [],
-    })
+    }, ticket))
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
       source_file: "pipe.py", pipeline_name: "test", base_revision: "rev-1",

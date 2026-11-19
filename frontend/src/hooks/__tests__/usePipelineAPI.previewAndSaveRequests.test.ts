@@ -1,7 +1,7 @@
 /**
  * usePipelineAPI preview and save requests: a failed preview shows an error unless it was
- * aborted or superseded, concurrent saves complete independently and a save whose answer was
- * lost is sent again under the same operation, a fresh cached preview is shown without a request
+ * aborted or superseded, concurrent saves take turns and a save whose answer was lost is
+ * held and sent again first by the next Save, under the same operation, a fresh cached preview is shown without a request
  * while a stale, re-sourced or re-limited one is refetched, and a new preview aborts the one in
  * flight.
  */
@@ -20,29 +20,19 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { pendingSavesSettled } from "../../stores/pendingSaves"
 
-vi.mock("../../api/client", () => ({
-  loadPipeline: vi.fn(),
-  loadPipelineDocument: vi.fn(),
-  previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
-  previewNode: vi.fn(),
-  previewRecoveryNode: vi.fn(),
-  savePipeline: vi.fn(),
-  ApiError: class ApiError extends Error {
-    status: number
-    detail?: string
-    body?: unknown
-    rawDetail?: unknown
-
-    constructor(msg: string, status = 0, detail?: string, body?: unknown, rawDetail?: unknown) {
-      super(msg)
-      this.name = "ApiError"
-      this.status = status
-      this.detail = detail
-      this.body = body
-      this.rawDetail = rawDetail
-    }
-  },
-}))
+vi.mock("../../api/client", async (importOriginal) => {
+  const client = await importOriginal<typeof import("../../api/client")>()
+  return {
+    loadPipeline: vi.fn(),
+    loadPipelineDocument: vi.fn(),
+    previewInputs: vi.fn(async () => ({ input_node_ids: [], node_addresses: {} })),
+    previewNode: vi.fn(),
+    previewRecoveryNode: vi.fn(),
+    savePipeline: vi.fn(),
+    // The client's own ApiError, by which the keyed path decides what an answer settles.
+    ApiError: client.ApiError,
+  }
+})
 
 vi.mock("../../utils/buildGraph", () => ({
   documentGraphPayload: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
@@ -304,48 +294,86 @@ describe("usePipelineAPI - preview and save requests", () => {
         nodes: [makeNode("n1")],
         preserved_blocks: ["# kept"],
       })
+      const written = (revision: string) => ({
+        file: "rating/main.py",
+        pipeline_name: "test",
+        source_revision: revision,
+        document_fingerprint: `fingerprint-${revision}`,
+      } as Awaited<ReturnType<typeof savePipeline>>)
+      const sent = (call: number) => mockSave.mock.calls[call][0]
 
-      /** A save whose first answer is lost, and whose repeat `repeat` answers. */
-      async function saveWithLostAnswer(repeat: () => ReturnType<typeof savePipeline>) {
+      /** The editor loaded, and a save whose answer `first` loses: it resolves the hook. */
+      async function afterALostSave(first: unknown = new TypeError("Failed to fetch")) {
         mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
-        mockSave.mockRejectedValueOnce(new TypeError("Failed to fetch"))
-        mockSave.mockImplementationOnce(repeat)
-        const params = makeParams()
-        const { result } = renderHook(() => usePipelineAPI(params))
+        mockSave.mockRejectedValueOnce(first)
+        const { result } = renderHook(() => usePipelineAPI(makeParams()))
         await waitFor(() => expect(result.current.loading).toBe(false))
+        let saved!: boolean
+        await act(async () => { saved = await result.current.handleSave() })
+        expect(saved).toBe(false)
+        expect(mockSave).toHaveBeenCalledTimes(1)
+        return result
+      }
+      const save = async (result: { current: ReturnType<typeof usePipelineAPI> }) => {
         let saved!: boolean
         await act(async () => { saved = await result.current.handleSave() })
         return saved
       }
+      const typeSince = () => act(() => {
+        useGraphStore.getState().setNodes((nodes) => [...nodes, makeNode("n2")])
+      })
 
-      it("is sent again exactly, under the same operation, and acknowledged from the repeat's answer", async () => {
-        const saved = await saveWithLostAnswer(() => Promise.resolve({
-          file: "rating/main.py",
-          pipeline_name: "test",
-          source_revision: "revision-written",
-          document_fingerprint: "fingerprint-written",
-        } as Awaited<ReturnType<typeof savePipeline>>))
+      it("is reported failed and held: the next Save sends it again exactly, under its operation", async () => {
+        const result = await afterALostSave()
+        expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "error", text: "Failed to save pipeline: Failed to fetch" })
 
-        expect(saved).toBe(true)
+        mockSave.mockResolvedValueOnce(written("revision-written"))
+        expect(await save(result)).toBe(true)
+
         expect(mockSave).toHaveBeenCalledTimes(2)
-        const [first, repeat] = mockSave.mock.calls.map(([payload]) => payload)
-        expect(first.operation).toMatch(/^save-/)
-        expect(repeat).toEqual(first)
+        expect(sent(0).operation).toMatch(/^save-/)
+        expect(sent(1)).toEqual(sent(0))
         expect(loadPipelineDocument).not.toHaveBeenCalled()
         expect(useDocumentStatusStore.getState()).toMatchObject({
           sourceRevision: "revision-written",
-          documentFingerprint: "fingerprint-written",
+          documentFingerprint: "fingerprint-revision-written",
         })
         expect(useGraphStore.getState().dirty).toBe(false)
         expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "success", text: "Saved → rating/main.py" })
       })
 
-      it("sets the reload banner when the repeat is refused as stale", async () => {
-        const saved = await saveWithLostAnswer(() => Promise.reject(
-          new ApiError("Conflict", 409, "stale_document_revision: disk moved"),
-        ))
+      it.each([
+        ["no answer", new TypeError("Failed to fetch")],
+        ["a server failure", new ApiError("HTTP 500", 500, "Operation failed. Check the server logs for details.")],
+        ["a gateway's page", new ApiError("HTTP 504", 504, "Gateway Timeout")],
+      ])("after %s, the next Save lands it and saves what was typed since on the revision it answered", async (_case, lost) => {
+        const result = await afterALostSave(lost)
+        typeSince()
 
-        expect(saved).toBe(false)
+        mockSave.mockResolvedValueOnce(written("revision-written"))
+        mockSave.mockResolvedValueOnce(written("revision-since"))
+        expect(await save(result)).toBe(true)
+
+        expect(mockSave).toHaveBeenCalledTimes(3)
+        expect(sent(1)).toEqual(sent(0))
+        expect(sent(2).base_revision).toBe("revision-written")
+        expect(sent(2).operation).not.toBe(sent(0).operation)
+        expect(sent(2).graph.nodes.map((node) => node.id)).toContain("n2")
+        expect(useDocumentStatusStore.getState()).toMatchObject({
+          sourceRevision: "revision-since",
+          graphSynchronized: true,
+        })
+        expect(useGraphStore.getState().dirty).toBe(false)
+      })
+
+      it("sets the reload banner when it is refused as stale, and sends nothing newer", async () => {
+        const result = await afterALostSave()
+        typeSince()
+
+        mockSave.mockRejectedValueOnce(new ApiError("Conflict", 409, "stale_document_revision: disk moved"))
+        expect(await save(result)).toBe(false)
+
+        expect(mockSave).toHaveBeenCalledTimes(2)
         expect(useDocumentStatusStore.getState()).toMatchObject({
           sourceRevision: "revision-test",
           graphSynchronized: false,
@@ -353,27 +381,41 @@ describe("usePipelineAPI - preview and save requests", () => {
         expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/^Save rejected: the pipeline changed on disk/)
       })
 
-      it("is reported failed when the repeat's answer is lost too", async () => {
-        const saved = await saveWithLostAnswer(() => Promise.reject(new TypeError("Failed to fetch")))
+      it("stays held when its answer is lost again, and nothing newer is sent before it", async () => {
+        const result = await afterALostSave()
+        typeSince()
 
-        expect(saved).toBe(false)
-        expect(mockSave).toHaveBeenCalledTimes(2)
-        expect(useDocumentStatusStore.getState()).toMatchObject({
-          sourceRevision: "revision-test",
-          documentFingerprint: "fingerprint-loaded",
-        })
-        expect(useToastStore.getState().toasts.at(-1)).toMatchObject({ type: "error", text: "Failed to save pipeline: Failed to fetch" })
+        mockSave.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+        expect(await save(result)).toBe(false)
+        mockSave.mockResolvedValueOnce(written("revision-written"))
+        mockSave.mockResolvedValueOnce(written("revision-since"))
+        expect(await save(result)).toBe(true)
+
+        expect(mockSave).toHaveBeenCalledTimes(4)
+        expect([sent(1), sent(2)]).toEqual([sent(0), sent(0)])
+        expect(sent(3).base_revision).toBe("revision-written")
       })
 
-      it("is not sent again after an answer", async () => {
-        mockLoad.mockResolvedValue({ document: onDisk(), documentFingerprint: "fingerprint-loaded" })
-        mockSave.mockRejectedValueOnce(new ApiError("HTTP 400", 400, "bad graph"))
-        const params = makeParams()
-        const { result } = renderHook(() => usePipelineAPI(params))
-        await waitFor(() => expect(result.current.loading).toBe(false))
-        await act(async () => { await result.current.handleSave() })
+      it("is let go by an answer: the next Save is a new one", async () => {
+        const result = await afterALostSave(new ApiError("HTTP 400", 400, "bad graph"))
 
-        expect(mockSave).toHaveBeenCalledTimes(1)
+        mockSave.mockResolvedValueOnce(written("revision-written"))
+        expect(await save(result)).toBe(true)
+
+        expect(mockSave).toHaveBeenCalledTimes(2)
+        expect(sent(1).operation).not.toBe(sent(0).operation)
+      })
+
+      it("is dropped when the tab takes the document from disk", async () => {
+        const result = await afterALostSave()
+        act(() => result.current.adoptPipelineDocument(onDisk(), "fingerprint-reloaded"))
+        typeSince()
+
+        mockSave.mockResolvedValueOnce(written("revision-written"))
+        expect(await save(result)).toBe(true)
+
+        expect(mockSave).toHaveBeenCalledTimes(2)
+        expect(sent(1).operation).not.toBe(sent(0).operation)
       })
     })
 

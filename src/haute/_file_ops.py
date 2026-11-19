@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import shutil
 import sys
 import time
@@ -177,6 +178,17 @@ def _temp_path_for(target: Path) -> Path:
     260-character path limit applies to it too.
     """
     return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
+
+
+def staging_files_of(target: Path) -> list[Path]:
+    """The staging files atomic writes of *target* left beside it (:func:`_temp_path_for`):
+    a writer killed before its rename leaves one, which nothing else would remove."""
+    pattern = re.compile(rf"{re.escape(target.stem)}\.[0-9a-f]{{8}}\.tmp")
+    try:
+        entries = list(target.parent.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return [entry for entry in entries if pattern.fullmatch(entry.name) and entry.is_file()]
 
 
 def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:

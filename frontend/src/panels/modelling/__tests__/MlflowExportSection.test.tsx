@@ -166,6 +166,7 @@ describe("MlflowExportSection", () => {
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenCalledWith(
         expect.objectContaining({ job_id: "job_123", destination: "databricks" }),
+        expect.anything(),
       ),
     )
   })
@@ -187,6 +188,7 @@ describe("MlflowExportSection", () => {
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenCalledWith(
         expect.objectContaining({ destination: "" }),
+        expect.anything(),
       ),
     )
   })
@@ -200,6 +202,7 @@ describe("MlflowExportSection", () => {
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenLastCalledWith(
         expect.objectContaining({ destination: "databricks" }),
+        expect.anything(),
       ),
     )
 
@@ -208,6 +211,7 @@ describe("MlflowExportSection", () => {
     await waitFor(() =>
       expect(mockLogToMlflow).toHaveBeenLastCalledWith(
         expect.objectContaining({ destination: "" }),
+        expect.anything(),
       ),
     )
   })

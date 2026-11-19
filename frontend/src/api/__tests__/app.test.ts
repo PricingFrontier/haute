@@ -15,6 +15,7 @@ import {
   validateWorkbenchAppQuoteSaveRequest,
 } from "../../generated/api-contracts.workbench-app-requests.validators.mjs"
 import { changeAppQuote, createAppQuote, fetchAppQuoteActivity, openAppQuote, priceAppQuote, saveAppQuote, type QuoteCreation, type QuoteSave } from "../app"
+import { sentHeld } from "../../testSupport/keyedWrites"
 
 const CREATION: QuoteCreation = {
   operation: "save-0123456789",
@@ -58,7 +59,7 @@ describe("the app's quote routes on the wire", () => {
   it("creates a quote, unpriced, with its operation key, values, source and the reference keyed", async () => {
     answering(answer())
 
-    await createAppQuote(CREATION, { reference: "Q 0", option: 2, relation: "renewal" }, "ABC-1")
+    await sentHeld((ticket) => createAppQuote(CREATION, { reference: "Q 0", option: 2, relation: "renewal" }, "ABC-1", ticket))
 
     const { method, url, body } = sent()
     expect([method, url]).toEqual(["POST", "/api/app/quotes"])
@@ -80,7 +81,7 @@ describe("the app's quote routes on the wire", () => {
   it("saves a quote over the version it names", async () => {
     answering(answer({ version: 3 }))
 
-    await saveAppQuote("Q 1", 2, { ...SAVE, shown: null }, 2)
+    await sentHeld((ticket) => saveAppQuote("Q 1", 2, { ...SAVE, shown: null }, 2, ticket))
 
     const { method, url, body } = sent()
     expect([method, url]).toEqual(["POST", "/api/app/quotes/Q%201/2/save"])

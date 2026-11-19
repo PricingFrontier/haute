@@ -10,6 +10,7 @@ import {
   previewRecoveryNode,
   savePipeline,
 } from "../api/client"
+import { sendHeld, type KeyedHold } from "../api/keyedWrites"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { syncConnectionId } from "../api/syncConnection"
 import {
@@ -29,7 +30,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useGraphStore, { captureGraphSnapshot, canvasGraph, documentGraph } from "../stores/useGraphStore"
+import useGraphStore, { captureGraphSnapshot, canvasGraph, documentGraph, type GraphSnapshot } from "../stores/useGraphStore"
 import { reportSaveCapture } from "../stores/saveCapture"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
@@ -616,9 +617,41 @@ function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
     (err as { name?: unknown }).name === "ApiTimeoutError"
 }
 
-/** A request that failed with no HTTP answer: the server may still have acted on it. */
-function isLostAnswer(err: unknown): boolean {
-  return err instanceof TypeError || isApiTimeoutError(err)
+/** What a save sent: its request, the snapshot it saves and the revision it was built on. */
+interface SentSave {
+  request: Parameters<typeof savePipeline>[0]
+  snapshot: GraphSnapshot
+  baseRevision: string
+}
+
+/**
+ * Each pipeline file's save whose fate is unknown, held in this page's memory from the moment
+ * it is sent until an answer settles it (`sendHeld`): the next Save of the file sends it
+ * again first.
+ */
+const heldSaves = new Map<string, SentSave>()
+/**
+ * Each pipeline file's save under way: a Save made meanwhile waits for it to settle, so it
+ * is built on the revision that one answered, and a held save is sent once at a time.
+ */
+const savesUnderWay = new Map<string, Promise<boolean>>()
+
+function saveHold(sourceFile: string): KeyedHold<SentSave> {
+  return {
+    held: () => heldSaves.get(sourceFile) ?? null,
+    hold: (save) => {
+      if (save === null) heldSaves.delete(sourceFile)
+      else heldSaves.set(sourceFile, save)
+    },
+    key: (save) => save.request.operation,
+  }
+}
+
+/** Whether two saves save the same, their operation keys aside. */
+function sameSave(a: SentSave["request"], b: SentSave["request"]): boolean {
+  const { operation: _a, ...one } = a
+  const { operation: _b, ...other } = b
+  return JSON.stringify(one) === JSON.stringify(other)
 }
 
 export default function usePipelineAPI({
@@ -801,6 +834,10 @@ export default function usePipelineAPI({
     const loadedSubmodels = adapted.submodels
     sourceRevisionRef.current = data.source_revision ?? ""
     preservedBlocksRef.current = data.preserved_blocks
+    // The document is taken from disk: a save of it held after a lost answer is not repeated,
+    // and the next save waits for none made before.
+    heldSaves.delete(data.source_file)
+    savesUnderWay.delete(data.source_file)
     useDocumentStatusStore.getState().loadDocumentStatus(data, false, documentFingerprint)
     // Rules set aside by a Banding type switch last until the pipeline reloads.
     useUIStore.getState().clearBandingRuleStash()
@@ -1757,6 +1794,157 @@ export default function usePipelineAPI({
     })
   }, [previewDebounce, fetchPreviewImmediate, activeSubmodelIdentity, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped, portLabelFor, previewTurn])
 
+  /**
+   * One Save of `saveSourceFile`, once any save under way has settled: a save held after its
+   * answer was lost is sent again first, exactly, and what was typed since is then saved on
+   * the revision it answered. Resolves whether the save was made; never rejects.
+   */
+  const saveHeldFirst = useCallback(async (
+    saveSourceFile: string,
+    sc: string[],
+    as_: string,
+    globalConstantsError: string | null,
+  ): Promise<boolean> => {
+    const hold = saveHold(saveSourceFile)
+    /** The graph as it is now, saved on the revision the tab holds now, under `operation`. */
+    const build = (operation: string): SentSave => {
+      const { nodes: n, edges: e } = documentGraph()
+      const { globalConstants: saveConstants, preamble: savePreamble } = useGraphStore.getState()
+      // Only the stepped nodes whose steps were edited since the last save are rendered from
+      // them; every other one is sent with the code that save wrote (CGEN-11).
+      const authored = withEditedSteps(
+        { nodes: n, submodels: structuredClone(useGraphStore.getState().submodels) },
+        useGraphStore.getState().lastSavedSnapshot,
+      )
+      const snapshot = captureGraphSnapshot({
+        nodes: authored.document.nodes,
+        edges: e,
+        preamble: savePreamble,
+        submodels: authored.document.submodels,
+        globalConstants: saveConstants,
+      })
+      const requestGraph = toCanonicalGraphPayload(snapshot)
+      const baseRevision = sourceRevisionRef.current
+      return {
+        snapshot,
+        baseRevision,
+        request: {
+          name: pipelineNameRef.current,
+          description: descriptionRef.current,
+          graph: {
+            nodes: requestGraph.nodes,
+            edges: requestGraph.edges,
+            submodels: requestGraph.submodels,
+            ...(globalConstantsError === null
+              ? { global_constants: constantsPayload(saveConstants) }
+              : {}),
+          },
+          preamble: savePreamble,
+          // The pipeline's file, also while a submodel's own file is the one shown.
+          source_file: saveSourceFile,
+          // A never-persisted document keeps an empty revision ref; the server wants null.
+          base_revision: baseRevision || null,
+          sources: sc,
+          active_source: as_,
+          preserved_blocks: preservedBlocksRef.current,
+          connection_id: syncConnectionId(),
+          // A repeat under the same operation writes once: the server answers it with
+          // what the first request did when that one committed.
+          operation,
+          edited_steps: authored.edited,
+        },
+      }
+    }
+    const failedSave = (err: unknown) => {
+      const detail = apiErrorMessage(err, "unknown error")
+      addToast("error", `Failed to save pipeline: ${detail}`)
+    }
+    const wrote = (data: Awaited<ReturnType<typeof savePipeline>>) => {
+      addToast("success", `Saved → ${data.file}`)
+      // The ledger commit, the warnings and the identity prompt, as every save reports them.
+      reportSaveCapture(data)
+    }
+    /**
+     * Send `save` and handle its answer as its own: it marks the snapshot it sent saved only
+     * while no newer save has been applied and the document is still this file, and only
+     * over the revision it was built on or the one it answered; what it wrote is reported
+     * either way.
+     */
+    const send = async (save: SentSave): Promise<"saved" | "stale" | "failed"> => {
+      const saveRequestId = ++saveRequestSeq.current
+      const thisSave: Part = {
+        holds: () => saveRequestId > appliedSaveSeq.current && useDocumentStatusStore.getState().sourceFile === saveSourceFile,
+        subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+      }
+      const acknowledge = (sourceRevision: string, documentFingerprint: string, stepCode: readonly SavedStepCode[]) => {
+        const observedRevision = sourceRevisionRef.current
+        if (observedRevision !== save.baseRevision && observedRevision !== sourceRevision) return
+        // The baseline holds the code the server wrote for each edited node: the browser's own
+        // rendering may not have arrived, and the next save sends this code for those steps.
+        useGraphStore.getState().markSaved(withSavedStepCode(save.snapshot, stepCode))
+        appliedSaveSeq.current = saveRequestId
+        sourceRevisionRef.current = sourceRevision
+        const status = useDocumentStatusStore.getState()
+        status.acknowledgeSave(sourceRevision, documentFingerprint)
+        status.setGraphSynchronized(true)
+        useUIStore.getState().setSyncBanner(null)
+      }
+      let outcome: "saved" | "stale" | "failed" = "failed"
+      await answer([thisSave], sendHeld(hold, save, (held, ticket) => savePipeline(held.request, ticket)), {
+        ok: (data) => {
+          try {
+            acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
+            wrote(data)
+            outcome = "saved"
+          } catch (err: unknown) {
+            failedSave(err)
+          }
+        },
+        failed: (err) => {
+          if (isStaleRevision(err)) {
+            outcome = "stale"
+            if (sourceRevisionRef.current !== save.baseRevision) return
+            // The conflict is final until the user reloads (no implicit overwrite retry).
+            useDocumentStatusStore.getState().setGraphSynchronized(false)
+            useUIStore
+              .getState()
+              .setSyncBanner(
+                "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first.",
+              )
+            addToast(
+              "error",
+              "Save rejected: the pipeline changed on disk. Reload the file or discard local edits first.",
+            )
+            return
+          }
+          failedSave(err)
+        },
+        stale: (settled) => {
+          if ("value" in settled) {
+            wrote(settled.value)
+            outcome = "saved"
+          } else if (!isStaleRevision(settled.error)) {
+            failedSave(settled.error)
+          }
+        },
+      })
+      return outcome
+    }
+
+    const held = hold.held()
+    const now = build(held?.request.operation ?? operationKey())
+    if (held === null) return (await send(now)) === "saved"
+    if (sameSave(held.request, now.request)) return (await send(held)) === "saved"
+    // A save whose answer was lost goes first, exactly as it was sent.
+    const repeated = await send(held)
+    // Refused as stale it never landed, and nothing newer is sent over it; still held, its
+    // fate is unknown, and nothing newer is sent before it.
+    if (repeated === "stale" || hold.held() !== null) return false
+    // Landed, what was typed since is saved on the revision it answered, if anything was.
+    if (repeated === "saved" && !useGraphStore.getState().dirty) return true
+    return (await send(build(operationKey()))) === "saved"
+  }, [descriptionRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
+
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
   // once the ledger actually holds the latest editor state. Never rejects.
@@ -1797,146 +1985,24 @@ export default function usePipelineAPI({
         return false
       }
     }
-    // Snapshot the exact graph/preamble/submodels that will reach the
-    // backend, and stamp this attempt with a monotonic request id. The user
-    // may keep editing — or start a newer save — while this request is in
-    // flight, so we mark *this* snapshot saved (not the live store) and only
-    // if a newer save hasn't already landed (concurrency guard via
-    // saveRequestSeq / appliedSaveSeq).
-    const savePreamble = useGraphStore.getState().preamble
-    const saveSourceRevision = sourceRevisionRef.current
     const saveSourceFile = documentStatus.sourceFile
-    // Only the stepped nodes whose steps were edited since the last save are rendered from
-    // them; every other one is sent with the code that save wrote (CGEN-11).
-    const authored = withEditedSteps(
-      { nodes: n, submodels: structuredClone(useGraphStore.getState().submodels) },
-      useGraphStore.getState().lastSavedSnapshot,
-    )
-    const savedSnapshot = captureGraphSnapshot({
-      nodes: authored.document.nodes,
-      edges: e,
-      preamble: savePreamble,
-      submodels: authored.document.submodels,
-      globalConstants: saveConstants,
-    })
-    const requestGraph = toCanonicalGraphPayload(savedSnapshot)
-    const saveRequestId = ++saveRequestSeq.current
-    const savePipelineName = pipelineNameRef.current
-    const saveDescription = descriptionRef.current
-    const savePreservedBlocks = preservedBlocksRef.current
-    // Mark the exact graph snapshot that reached the backend, unless a newer
-    // save has already been applied or another revision arrived meanwhile.
-    const acknowledge = (sourceRevision: string, documentFingerprint: string, stepCode: readonly SavedStepCode[]) => {
-      const observedRevision = sourceRevisionRef.current
-      if (observedRevision !== saveSourceRevision && observedRevision !== sourceRevision) return
-      // The baseline holds the code the server wrote for each edited node: the browser's own
-      // rendering may not have arrived, and the next save sends this code for those steps.
-      useGraphStore.getState().markSaved(withSavedStepCode(savedSnapshot, stepCode))
-      appliedSaveSeq.current = saveRequestId
-      sourceRevisionRef.current = sourceRevision
-      const status = useDocumentStatusStore.getState()
-      status.acknowledgeSave(sourceRevision, documentFingerprint)
-      status.setGraphSynchronized(true)
-      useUIStore.getState().setSyncBanner(null)
-    }
-    const request = {
-      name: savePipelineName,
-      description: saveDescription,
-      graph: {
-        nodes: requestGraph.nodes,
-        edges: requestGraph.edges,
-        submodels: requestGraph.submodels,
-        ...(globalConstantsError === null
-          ? { global_constants: constantsPayload(saveConstants) }
-          : {}),
-      },
-      preamble: savePreamble,
-      // The pipeline's file, also while a submodel's own file is the one shown.
-      source_file: saveSourceFile,
-      // A never-persisted document keeps an empty revision ref; the server wants null.
-      base_revision: saveSourceRevision || null,
-      sources: sc,
-      active_source: as_,
-      preserved_blocks: savePreservedBlocks,
-      connection_id: syncConnectionId(),
-      // A repeat under the same operation writes once: the server answers it with
-      // what the first request did when that one committed.
-      operation: operationKey(),
-      edited_steps: authored.edited,
-    }
-    // Live sync holds a frame of this file until the save, its repeat included,
+    // Live sync holds a frame of this file until the save, a held save's repeat included,
     // has settled.
     let settleSave!: () => void
     trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
-    const sending = (async () => {
-      try {
-        return await savePipeline(request)
-      } catch (err: unknown) {
-        // No answer: the save may have been written. Sent once more, exactly, its
-        // answer is the first request's if that committed, else the save made now.
-        if (!isLostAnswer(err)) throw err
-        return savePipeline(request)
-      }
+    const underWay = savesUnderWay.get(saveSourceFile)
+    const saving = (async () => {
+      if (underWay !== undefined) await underWay
+      return saveHeldFirst(saveSourceFile, sc, as_, globalConstantsError)
     })()
-    // The save's answer marks its snapshot saved only while no newer save has been applied
-    // and the document is still this file; what it wrote is reported either way.
-    const thisSave: Part = {
-      holds: () => saveRequestId > appliedSaveSeq.current && useDocumentStatusStore.getState().sourceFile === saveSourceFile,
-      subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
-    }
-    const failedSave = (err: unknown) => {
-      const detail = apiErrorMessage(err, "unknown error")
-      addToast("error", `Failed to save pipeline: ${detail}`)
-    }
-    const wrote = (data: Awaited<ReturnType<typeof savePipeline>>) => {
-      addToast("success", `Saved → ${data.file}`)
-      // The ledger commit, the warnings and the identity prompt, as every save reports them.
-      reportSaveCapture(data)
-    }
-    let saved = false
+    savesUnderWay.set(saveSourceFile, saving)
     try {
-      await answer([thisSave], sending, {
-        ok: (data) => {
-          try {
-            acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
-            wrote(data)
-            saved = true
-          } catch (err: unknown) {
-            failedSave(err)
-          }
-        },
-        failed: (err) => {
-          if (isStaleRevision(err)) {
-            if (sourceRevisionRef.current !== saveSourceRevision) return
-            // The conflict is final until the user reloads (no implicit overwrite retry).
-            useDocumentStatusStore.getState().setGraphSynchronized(false)
-            useUIStore
-              .getState()
-              .setSyncBanner(
-                "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first.",
-              )
-            addToast(
-              "error",
-              "Save rejected: the pipeline changed on disk. Reload the file or discard local edits first.",
-            )
-            return
-          }
-          failedSave(err)
-        },
-        stale: (settled) => {
-          if ("value" in settled) {
-            wrote(settled.value)
-            saved = true
-          } else if (!isStaleRevision(settled.error)) {
-            failedSave(settled.error)
-          }
-        },
-      })
+      return await saving
     } finally {
+      if (savesUnderWay.get(saveSourceFile) === saving) savesUnderWay.delete(saveSourceFile)
       settleSave()
     }
-    return saved
-  }, [descriptionRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
+  }, [addToast, saveHeldFirst])
 
   // In automatic calculation, the displayed preview is fetched again once a
   // snapshot is published, refreshed, or cleared after its request was sent: its rows may have been

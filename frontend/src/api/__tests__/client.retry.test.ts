@@ -2,10 +2,11 @@
  * Tests for API client retry behavior (Phase 5 Wave 10B, Item #115).
  *
  * Contract being pinned:
- *   - Idempotent verbs (GET, DELETE) retry transient failures (network errors,
+ *   - Reads (GET, HEAD, OPTIONS) retry transient failures (network errors,
  *     5xx) with exponential backoff + jitter, capped at 3 retries by default.
- *   - Non-idempotent POST does NOT retry by default (callers opt in via an
- *     explicit idempotency key if the implementation chooses to support one).
+ *   - Every write (POST, PUT, PATCH, DELETE) is sent once, and one given a retry
+ *     policy is refused; a keyed write is repeated only by `sendHeld`
+ *     (`writesByKind.test.ts`).
  *   - 4xx responses are NOT retried — they indicate client-side bugs.
  *   - Total backoff budget stays under ~1s so user-perceived latency is bounded.
  *   - A user-supplied AbortSignal cancels the retry loop immediately, including
@@ -31,7 +32,9 @@ import {
   savePipeline,
   commitMilestone,
   cancelInputCacheJob,
+  request,
 } from "../client"
+import { sentHeld } from "../../testSupport/keyedWrites"
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -444,36 +447,15 @@ describe("retry: caller supplied policy", () => {
     }
   })
 
-  it("does not retry non-idempotent POSTs even when a retry policy is provided", async () => {
-    const stub = stubBackoffTimers()
-    try {
-      mockFetch.mockRejectedValueOnce(new TypeError("connection dropped"))
-
-      await expect(
-        savePipeline(
-          {
-            name: "test",
-            description: "",
-            graph: dummyGraph,
-            preamble: "",
-            source_file: "pipe.py",
-            base_revision: null,
-            preserved_blocks: [],
-            connection_id: null,
-            operation: "save-test-operation",
-            edited_steps: [],
-          },
-          // @ts-expect-error retry policies are deliberately not exposed on
-          // mutation helpers until a real idempotency-key contract exists.
-          { retry: { maxRetries: 5, baseDelayMs: 25 } },
-        ),
-      ).rejects.toBeInstanceOf(TypeError)
-
-      expect(mockFetch).toHaveBeenCalledTimes(1)
-      expect(stub.capturedDelays).toHaveLength(0)
-    } finally {
-      stub.restore()
-    }
+  it("refuses a write given a retry policy before it is sent", async () => {
+    await expect(
+      request("/api/utility/helpers", {
+        method: "PUT",
+        body: JSON.stringify({ content: "", revision: "r1" }),
+        retry: { maxRetries: 5, baseDelayMs: 25 },
+      }),
+    ).rejects.toThrow("A write is sent once: PUT /api/utility/helpers takes no retry policy.")
+    expect(mockFetch).not.toHaveBeenCalled()
   })
 
   it("fails loudly when a retry policy has an invalid retry count", async () => {
@@ -644,7 +626,7 @@ describe("no retry: non-idempotent POST (default)", () => {
       mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"))
 
       await expect(
-        savePipeline({
+        sentHeld((ticket) => savePipeline({
           name: "test",
           description: "",
           graph: dummyGraph,
@@ -655,7 +637,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           connection_id: null,
           operation: "save-test-operation",
           edited_steps: [],
-        }),
+        }, ticket)),
       ).rejects.toBeInstanceOf(TypeError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
@@ -714,27 +696,16 @@ describe("retry: POST idempotency-key opt-in (optional feature)", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("retry: preserves request headers and body", () => {
-  it("retries a DELETE with the same URL and method on each attempt", async () => {
+  it("sends a DELETE once, even after a network error", async () => {
     const stub = stubBackoffTimers()
     try {
-      mockFetch
-        .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({
-          schema_version: 1,
-          job_id: "job-1",
-          cancellation_requested: true,
-          status: "running",
-        }))
+      mockFetch.mockRejectedValueOnce(new TypeError("boom"))
 
-      await cancelInputCacheJob("job-1")
+      await expect(cancelInputCacheJob("job-1")).rejects.toBeInstanceOf(TypeError)
 
-      expect(mockFetch).toHaveBeenCalledTimes(2)
-      const [url1, opts1] = mockFetch.mock.calls[0]
-      const [url2, opts2] = mockFetch.mock.calls[1]
-      expect(url1).toBe(url2)
-      expect(url1).toBe("/api/input-cache/jobs/job-1")
-      expect(opts1.method).toBe("DELETE")
-      expect(opts2.method).toBe("DELETE")
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockFetch.mock.calls[0][1].method).toBe("DELETE")
+      expect(stub.capturedDelays).toHaveLength(0)
     } finally {
       stub.restore()
     }

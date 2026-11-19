@@ -3,8 +3,8 @@
 Covers:
   - SavePipelineService.save() with simple single-file graph
   - _validate_singletons() with valid, duplicate, and missing singletons
-  - _write_code() with submodel multi-file
-  - _remove_stale_config_files() with stale, fresh, and empty config dirs
+  - _generate_code() and _write_code() with submodel multi-file
+  - _stale_config_files() and their removal with stale, fresh, and empty config dirs
   - _resolve_source_file() validation
 """
 
@@ -22,11 +22,22 @@ from fastapi.testclient import TestClient
 from haute._pipeline_recovery import empty_pipeline_editor_document
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.errors import RequestRefusedError
-from haute.routes._save_pipeline import SavePipelineService, _OnDisk
+from haute.routes._save_pipeline import SavePipelineService, _OnDisk, _remove_saved_away
 from haute.schemas import SavePipelineRequest
 from tests._project import project_app, use_project
 from tests.conftest import current_source_revision, make_output_config
 from tests.conftest import make_edge as _make_edge
+
+
+def _write_configs(svc: SavePipelineService, graph: PipelineGraph) -> None:
+    """Write *graph*'s config files as a save does."""
+    svc._write_config_files(svc._config_files(graph), [])
+
+
+def _remove_stale(svc: SavePipelineService) -> list[Path]:
+    """Remove the stale config files a save names, as it does once it has committed."""
+    return _remove_saved_away(svc._root, svc._stale_config_files(), [])[0]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1161,7 +1172,7 @@ class TestWriteCodeMultiFile:
         )
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
-            svc._write_code(body, graph, tmp_path / "main.py")
+            svc._write_code(svc._generate_code(body, graph, tmp_path / "main.py"), [])
 
         assert (tmp_path / "main.py").exists()
         assert (tmp_path / "modules" / "scoring.py").exists()
@@ -1182,7 +1193,7 @@ class TestWriteCodeMultiFile:
         )
         py_path = tmp_path / "pipe.py"
 
-        svc._write_code(body, graph, py_path)
+        svc._write_code(svc._generate_code(body, graph, py_path), [])
 
         assert py_path.exists()
         code = py_path.read_text()
@@ -1218,14 +1229,14 @@ class TestWriteCodeMultiFile:
 
         with patch("haute.codegen.graph_to_code_multi", return_value=fake_files):
             with pytest.raises(RequestRefusedError) as exc_info:
-                svc._write_code(body, graph, tmp_path / "main.py")
+                svc._write_code(svc._generate_code(body, graph, tmp_path / "main.py"), [])
         assert exc_info.value.status_code == 400
         # The traversal path must not have been written anywhere.
         assert not Path("/etc/evil.py").exists()
 
 
 # ---------------------------------------------------------------------------
-# _remove_stale_config_files
+# _stale_config_files and their removal
 # ---------------------------------------------------------------------------
 
 
@@ -1239,7 +1250,7 @@ class TestWriteConfigFiles:
         child = _make_node("banding", "child_banding", "banding", {"factors": []})
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
         assert (tmp_path / "config" / "data_input" / "source.json").exists()
         assert (tmp_path / "config" / "banding" / "child_banding.json").exists()
@@ -1251,7 +1262,7 @@ class TestWriteConfigFiles:
         graph = _make_graph()
         graph.submodels = {"inner": _submodel_definition("inner", deep_child)}
 
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
         assert (tmp_path / "config" / "banding" / "deep_banding.json").exists()
 
@@ -1265,7 +1276,7 @@ class TestWriteConfigFiles:
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with pytest.raises(RequestRefusedError) as exc_info:
-            svc._write_config_files(graph)
+            _write_configs(svc, graph)
 
         assert exc_info.value.status_code == 400
         assert "Duplicate config sidecar path" in exc_info.value.detail
@@ -1282,7 +1293,7 @@ class TestWriteConfigFiles:
         graph.submodels = {"pricing": _submodel_definition("pricing", child_a, child_b)}
 
         with pytest.raises(RequestRefusedError) as exc_info:
-            svc._write_config_files(graph)
+            _write_configs(svc, graph)
 
         assert exc_info.value.status_code == 400
         assert "Duplicate config sidecar path" in exc_info.value.detail
@@ -1303,7 +1314,7 @@ class TestWriteConfigFiles:
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with pytest.raises(RequestRefusedError) as exc_info:
-            svc._write_config_files(graph)
+            _write_configs(svc, graph)
 
         assert exc_info.value.status_code == 400
         assert "Duplicate config sidecar path" in exc_info.value.detail
@@ -1318,13 +1329,13 @@ class TestWriteConfigFiles:
         graph_without_child = _make_graph()
         graph_without_child.submodels = {"pricing": _submodel_definition("pricing")}
 
-        svc._write_config_files(graph_with_child)
+        _write_configs(svc, graph_with_child)
         child_config = tmp_path / "config" / "banding" / "child_banding.json"
         assert child_config.exists()
 
         svc._prev_config_files = svc._collect_node_configs_recursive(graph_with_child)
-        svc._write_config_files(graph_without_child)
-        svc._remove_stale_config_files(graph_without_child)
+        _write_configs(svc, graph_without_child)
+        _remove_stale(svc)
 
         assert not child_config.exists()
 
@@ -1361,13 +1372,13 @@ class TestRemoveStaleConfigFiles:
 
     Bundle 6 sub-task C reworked this code path: `_prev_config_files`
     is computed by `save()` from the on-disk graph BEFORE any writes,
-    and `_remove_stale_config_files` consumes that pre-computed prev
+    and `_stale_config_files` consumes that pre-computed prev
     via plain diff (`stale = prev - current`).  The
     previous full-scan fallback that deleted unknown files when prev
     was empty has been removed because it actively violated the trust
     model (`notes-haute/security/SECURITY.md` §3).
 
-    These unit tests exercise `_remove_stale_config_files` in
+    These unit tests exercise `_stale_config_files` and the removal in
     isolation by setting `_prev_config_files` directly.  End-to-end
     coverage of the "compute prev from disk" path lives in
     `tests/test_bundle6_trust_model_cleanup.py`.
@@ -1388,7 +1399,7 @@ class TestRemoveStaleConfigFiles:
         svc._prev_config_files = {"config/banding/old_banding.json": "{}"}
         svc._last_config_files = {}
 
-        svc._remove_stale_config_files(_make_graph())
+        _remove_stale(svc)
 
         assert not stale_file.exists()
 
@@ -1399,12 +1410,12 @@ class TestRemoveStaleConfigFiles:
         graph = _make_graph(
             _make_node("b1", "my_banding", "banding", {"factors": []}),
         )
-        svc._write_config_files(graph)  # Writes config/banding/my_banding.json
+        _write_configs(svc, graph)  # Writes config/banding/my_banding.json
 
         fresh_file = tmp_path / "config" / "banding" / "my_banding.json"
         assert fresh_file.exists(), "Config file should be written by _write_config_files"
 
-        svc._remove_stale_config_files(graph)
+        _remove_stale(svc)
 
         assert fresh_file.exists()
 
@@ -1423,7 +1434,7 @@ class TestRemoveStaleConfigFiles:
         svc._prev_config_files = {"config/banding/old.json": "{}"}
         svc._last_config_files = {}
 
-        svc._remove_stale_config_files(_make_graph())
+        _remove_stale(svc)
 
         assert not config_dir.exists()
         # Config dir itself should be cleaned up too
@@ -1433,9 +1444,9 @@ class TestRemoveStaleConfigFiles:
         """If config/ doesn't exist and prev is empty, the method is a no-op."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
         # _prev_config_files unset → treated as empty → diff is empty → no-op.
-        svc._remove_stale_config_files(graph)
+        _remove_stale(svc)
 
     def test_mixed_stale_and_fresh(self, tmp_path: Path) -> None:
         """Diff cleanup is selective: stale (prev∖current) removed,
@@ -1451,7 +1462,7 @@ class TestRemoveStaleConfigFiles:
         graph = _make_graph(
             _make_node("b1", "current_banding", "banding", {"factors": []}),
         )
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
         config_dir = tmp_path / "config" / "banding"
         fresh = config_dir / "current_banding.json"
@@ -1471,7 +1482,7 @@ class TestRemoveStaleConfigFiles:
             # NOTE: manual_orphan deliberately absent from prev.
         }
 
-        svc._remove_stale_config_files(graph)
+        _remove_stale(svc)
 
         assert fresh.exists(), "Active node's config was wrongly deleted"
         assert not stale_known.exists(), (
@@ -2084,7 +2095,7 @@ class TestValidateApiInputsHaveSchemas:
 
 
 # ---------------------------------------------------------------------------
-# _remove_stale_config_files — second-save diff path
+# _stale_config_files — second-save diff path
 # ---------------------------------------------------------------------------
 
 
@@ -2108,7 +2119,7 @@ class TestRemoveStaleConfigDiffPath:
         graph1 = _make_graph(
             _make_node("b1", "first_banding", "banding", {"factors": []}),
         )
-        svc._write_config_files(graph1)
+        _write_configs(svc, graph1)
         first_config = tmp_path / "config" / "banding" / "first_banding.json"
         assert first_config.exists()
 
@@ -2118,8 +2129,8 @@ class TestRemoveStaleConfigDiffPath:
             _make_node("b2", "second_banding", "banding", {"factors": []}),
         )
         svc._prev_config_files = {"config/banding/first_banding.json": "{}"}
-        svc._write_config_files(graph2)
-        svc._remove_stale_config_files(graph2)
+        _write_configs(svc, graph2)
+        _remove_stale(svc)
 
         second_config = tmp_path / "config" / "banding" / "second_banding.json"
         assert second_config.exists()
@@ -2132,15 +2143,15 @@ class TestRemoveStaleConfigDiffPath:
         graph = _make_graph(
             _make_node("b1", "stable_banding", "banding", {"factors": []}),
         )
-        svc._write_config_files(graph)
-        svc._remove_stale_config_files(graph)
+        _write_configs(svc, graph)
+        _remove_stale(svc)
 
         config_file = tmp_path / "config" / "banding" / "stable_banding.json"
         assert config_file.exists()
 
         # Second save with same graph
-        svc._write_config_files(graph)
-        svc._remove_stale_config_files(graph)
+        _write_configs(svc, graph)
+        _remove_stale(svc)
 
         assert config_file.exists()
 
@@ -2152,8 +2163,7 @@ class TestRemoveStaleConfigDiffPath:
         svc._prev_config_files = {"../../etc/evil.json": "{}"}
         svc._last_config_files = {}
 
-        graph = _make_graph()
-        svc._remove_stale_config_files(graph)
+        _remove_stale(svc)
         # Should not raise or delete anything outside project root
 
 
@@ -2216,7 +2226,7 @@ class TestWriteCodeOptions:
         )
         py_path = tmp_path / "pipe.py"
 
-        svc._write_code(body, graph, py_path)
+        svc._write_code(svc._generate_code(body, graph, py_path), [])
 
         assert py_path.exists()
         content = py_path.read_text()
@@ -2238,7 +2248,7 @@ class TestWriteCodeOptions:
         )
         py_path = tmp_path / "pipe.py"
 
-        svc._write_code(body, graph, py_path)
+        svc._write_code(svc._generate_code(body, graph, py_path), [])
         assert py_path.exists()
 
 
@@ -2289,7 +2299,7 @@ class TestSaveWithPipelineRoot:
                 "modules/pricing.py": "# submodel\n",
             },
         ):
-            svc._write_code(body, graph, rating_root / "main.py")
+            svc._write_code(svc._generate_code(body, graph, rating_root / "main.py"), [])
 
         assert (rating_root / "modules" / "pricing.py").read_text() == "# submodel\n"
         assert not (tmp_path / "modules" / "pricing.py").exists()
@@ -2340,7 +2350,7 @@ class TestSaveWithPipelineRoot:
             },
         ):
             with pytest.raises(RequestRefusedError) as exc_info:
-                svc._write_code(body, graph, other_root / "main.py")
+                svc._write_code(svc._generate_code(body, graph, other_root / "main.py"), [])
 
         assert exc_info.value.status_code == 400
         assert "source_file" in exc_info.value.detail

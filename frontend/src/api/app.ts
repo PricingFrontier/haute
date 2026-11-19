@@ -11,7 +11,8 @@
 
 import type { SampleRow } from "../utils/workbenchForm"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
-import { post, request } from "./client"
+import { post, request, sendKeyed } from "./client"
+import type { KeyedTicket } from "./keyedWrites"
 import type {
   WorkbenchAppFormResponse,
   WorkbenchAppPeopleResponse,
@@ -143,9 +144,9 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
  * A new quote, made unpriced, under `reference`, the reference the underwriter keyed, made
  * from `source` when given; an alternative names none, taking its source's.
  */
-export async function createAppQuote(creation: QuoteCreation, source: QuoteSource | null, reference: string | null): Promise<WorkbenchAppQuoteResponse> {
+export async function createAppQuote(creation: QuoteCreation, source: QuoteSource | null, reference: string | null, ticket: KeyedTicket): Promise<WorkbenchAppQuoteResponse> {
   const body: WorkbenchAppQuoteCreateRequest = { ...creation, source, reference }
-  return quoteResponse(await heard(post<unknown>("/api/app/quotes", body, { timeout: PRICE_TIMEOUT_MS })))
+  return quoteResponse(await heard(sendKeyed<unknown>("/api/app/quotes", body, ticket, { timeout: PRICE_TIMEOUT_MS })))
 }
 
 /** The quote `reference`/`option`, with what it holds. */
@@ -154,9 +155,9 @@ export async function openAppQuote(reference: string, option: number): Promise<W
 }
 
 /** The quote saved over `version` of it: unpriced while `save.shown` is null, else priced again by the server. */
-export async function saveAppQuote(reference: string, option: number, save: QuoteSave, version: number): Promise<WorkbenchAppQuoteResponse> {
+export async function saveAppQuote(reference: string, option: number, save: QuoteSave, version: number, ticket: KeyedTicket): Promise<WorkbenchAppQuoteResponse> {
   const body: WorkbenchAppQuoteSaveRequest = { ...save, version }
-  return quoteResponse(await heard(post<unknown>(`${quoteRoute(reference, option)}/save`, body, { timeout: PRICE_TIMEOUT_MS })))
+  return quoteResponse(await heard(sendKeyed<unknown>(`${quoteRoute(reference, option)}/save`, body, ticket, { timeout: PRICE_TIMEOUT_MS })))
 }
 
 /**

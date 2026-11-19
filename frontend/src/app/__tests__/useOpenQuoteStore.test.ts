@@ -211,7 +211,7 @@ describe("useOpenQuoteStore", () => {
     preview().setCell("policy", 0, "state", "CA")
     await store().save()
 
-    expect(saveAppQuote).toHaveBeenCalledWith("Q-000001", 1, expect.objectContaining({ values: typed("CA"), shown: tables }), 1)
+    expect(saveAppQuote).toHaveBeenCalledWith("Q-000001", 1, expect.objectContaining({ values: typed("CA"), shown: tables }), 1, expect.anything())
   })
 
   it("opens a quote that may change, priced on another release, to be priced again on this one", async () => {
@@ -395,7 +395,7 @@ describe("useOpenQuoteStore", () => {
     await store().save()
 
     const calls = vi.mocked(saveAppQuote).mock.calls
-    expect(calls[0]).toEqual(["Q-000001", 1, held.write.body, 1])
+    expect(calls[0].slice(0, 4)).toEqual(["Q-000001", 1, held.write.body, 1])
     expect([calls[1][2].values, calls[1][3]]).toEqual([typed("TX"), 3])
     expect(calls[1][2].operation).not.toBe("save-held-0001")
     expect(store()).toMatchObject({ pending: null, conflict: null, base: 4 })

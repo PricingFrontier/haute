@@ -36,12 +36,6 @@ export function apiErrorStatus(error: unknown): number | null {
   return typeof status === "number" ? status : null
 }
 
-/** The server refused what was sent, a status below 500, so nothing of it was written. */
-export function apiErrorRefused(error: unknown): boolean {
-  const status = apiErrorStatus(error)
-  return status !== null && status < 500
-}
-
 /**
  * A 422's list of what the request's models refused, as its first error's place and
  * message: `form.pages.0.width: Input should be ...`. A check of the server's own raises

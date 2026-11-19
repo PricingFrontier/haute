@@ -182,9 +182,6 @@ export async function saveWorkbenchForm(form: FormSpec, baseRevision: string): P
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ form, base_revision: baseRevision }),
-    // One attempt, as the pipeline's save makes: a retry of a save that landed but
-    // whose answer was lost would be refused as stale.
-    retry: { maxRetries: 0 },
   })
   return expectGeneratedContract(
     "WorkbenchFormSaveResponse",
@@ -209,9 +206,9 @@ export async function fetchParamFile(file: string, column?: string): Promise<Wor
 }
 
 
-/** The test quotes' calls wait on the server and are never retried: a write that landed
- * but whose answer was slow is not reported failed, nor made twice. */
-const TEST_QUOTE_CALL = { timeout: null, retry: { maxRetries: 0 } } as const
+/** The test quotes' calls wait on the server: a write that landed but whose answer was slow
+ * is not reported failed, and, as every write, it is sent once. */
+const TEST_QUOTE_CALL = { timeout: null } as const
 
 function testQuotePath(file: string, action = ""): string {
   return `/api/workbench/test-quotes/${encodeURIComponent(file)}${action}`

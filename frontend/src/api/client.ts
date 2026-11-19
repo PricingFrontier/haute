@@ -8,6 +8,7 @@
  * - Consistent error handling via ApiError
  */
 
+import { ticketIsLive, type KeyedTicket } from "./keyedWrites"
 import { workbenchSampleField } from "./workbenchSample"
 import type { NodeAddressPayload } from "../generated/api-contracts.generated"
 import type { FrameTargetPayload } from "../utils/requestGateway"
@@ -277,17 +278,23 @@ export function notifyHauteSessionExpired(reason = HAUTE_SESSION_EXPIRED_REASON)
 }
 
 // ---------------------------------------------------------------------------
-// Retry policy
+// Retry policy, and writes by their kind
 // ---------------------------------------------------------------------------
 //
-// Idempotent verbs (GET, HEAD, PUT, DELETE, OPTIONS) retry transient failures
-// - network errors (TypeError from fetch) and 5xx responses - with exponential
-// backoff + equal jitter, capped at the default retry policy (so up to
-// maxRetries + 1 attempts total).
+// Reads (GET, HEAD, OPTIONS) retry transient failures - network errors
+// (TypeError from fetch) and 5xx responses - with exponential backoff + equal
+// jitter, capped at the default retry policy (so up to maxRetries + 1 attempts
+// total). 4xx responses are NOT retried because they indicate client bugs, not
+// transient server issues.
 //
-// POST is NOT retried by default: retrying a non-idempotent request without
-// server-side deduplication risks duplicate side-effects. 4xx responses are
-// NOT retried because they indicate client bugs, not transient server issues.
+// A write is sent by its kind, and no caller chooses. Every write (POST, PUT,
+// PATCH, DELETE) is sent once: its answer can be lost after it landed, and a
+// repeat of one that names the revision it replaces would name a revision that
+// is gone, while one with no server-side deduplication would be made twice. A
+// write given a retry policy is refused before it is sent. A keyed write, whose
+// body names an operation key the server keeps an answer for, leaves only
+// through `sendHeld`, which holds it while its fate is unknown and has it sent
+// first, exactly, before anything newer on that hold.
 //
 // Backoff uses equal jitter: delay in [base*2^n / 2, base*2^n], giving growth
 // without the pathological case of every client retrying in lockstep. With
@@ -429,10 +436,33 @@ export function bootstrapHauteSession(force = false): Promise<void> {
   return trackSessionBootstrap(performSessionBootstrap(), force)
 }
 
-const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"])
 
-function isIdempotent(method: string | undefined): boolean {
-  return IDEMPOTENT_METHODS.has((method ?? "GET").toUpperCase())
+function isRead(method: string | undefined): boolean {
+  return READ_METHODS.has((method ?? "GET").toUpperCase())
+}
+
+/** The body fields that name an operation key the server keeps an answer for. */
+const OPERATION_KEY_FIELDS = ["operation", "operation_id"] as const
+
+function namesOperationKey(body: unknown): boolean {
+  return typeof body === "object" &&
+    body !== null &&
+    !Array.isArray(body) &&
+    OPERATION_KEY_FIELDS.some((field) => typeof (body as Record<string, unknown>)[field] === "string")
+}
+
+/** How a request's body was checked for an operation key before it reached the transport. */
+type BodyCheck = "unchecked" | "checked" | "keyed"
+
+/** A write's JSON text that names an operation key: it leaves only through `sendHeld`. */
+function stringNamesOperationKey(body: BodyInit | null | undefined): boolean {
+  if (typeof body !== "string") return false
+  try {
+    return namesOperationKey(JSON.parse(body))
+  } catch {
+    return false
+  }
 }
 
 function isAbortError(err: unknown): boolean {
@@ -442,7 +472,7 @@ function isAbortError(err: unknown): boolean {
 }
 
 function shouldRetry(method: string | undefined, err: unknown): boolean {
-  if (!isIdempotent(method)) return false
+  if (!isRead(method)) return false
   // User-initiated cancel: propagate immediately.
   if (isAbortError(err)) return false
   // Network-layer failure (fetch throws TypeError on connection issues).
@@ -573,7 +603,11 @@ async function attemptFetch<T>(
 // consumed only by lazy-loaded panels live outside this module so their code
 // stays out of the initial bundle, but they share the same fetch machinery.
 export function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  return requestWith(url, options, (response) => response.json() as Promise<T>)
+  return requestWith(url, options, jsonOf<T>)
+}
+
+function jsonOf<T>(response: Response): Promise<T> {
+  return response.json() as Promise<T>
 }
 
 /** `request` with a caller-supplied reader for a successful response (e.g. to read its headers). */
@@ -581,13 +615,22 @@ async function requestWith<T>(
   url: string,
   options: RequestOptions,
   read: (response: Response) => Promise<T>,
+  bodyCheck: BodyCheck = "unchecked",
 ): Promise<T> {
   const { timeout = 30_000, signal: rawSignal, retry, ...fetchOptions } = options
   // Normalise RequestInit's `AbortSignal | null` to `AbortSignal | undefined`
   // so internal helpers can use a single optional shape.
   const externalSignal: AbortSignal | undefined = rawSignal ?? undefined
   const method = fetchOptions.method
-  const retryPolicy = resolveRetryPolicy(retry)
+  if (!isRead(method)) {
+    if (retry !== undefined) {
+      throw new Error(`A write is sent once: ${method} ${url} takes no retry policy.`)
+    }
+    if (bodyCheck === "unchecked" && stringNamesOperationKey(fetchOptions.body)) {
+      throw new Error(`${url} names an operation key: a keyed write is sent through sendHeld.`)
+    }
+  }
+  const retryPolicy = resolveRetryPolicy(isRead(method) ? retry : { maxRetries: 0 })
 
   let lastError: unknown
   for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
@@ -614,12 +657,33 @@ async function requestWith<T>(
 }
 
 export function post<T>(url: string, body: unknown, options: MutationOptions = {}): Promise<T> {
-  return request<T>(url, {
+  if (namesOperationKey(body)) {
+    throw new Error(`${url} names an operation key: a keyed write is sent through sendHeld.`)
+  }
+  return requestWith<T>(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     ...options,
-  })
+  }, jsonOf<T>, "checked")
+}
+
+/** POST a keyed write's JSON `body`, once: only `sendHeld`'s `send` holds a live `ticket`. */
+export function sendKeyed<T>(
+  url: string,
+  body: object,
+  ticket: KeyedTicket,
+  options: MutationOptions = {},
+): Promise<T> {
+  if (!ticketIsLive(ticket)) {
+    throw new Error(`${url} is a keyed write: it is sent through sendHeld.`)
+  }
+  return requestWith<T>(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    ...options,
+  }, jsonOf<T>, "keyed")
 }
 
 /**
@@ -1105,9 +1169,10 @@ export function savePipeline(
     /** The stepped nodes whose steps were edited: only theirs are written from steps. */
     edited_steps: SteppedNodeRef[]
   },
+  ticket: KeyedTicket,
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
-  return post<unknown>("/api/pipeline/save", payload, options).then(async (data) =>
+  return sendKeyed<unknown>("/api/pipeline/save", payload, ticket, options).then(async (data) =>
     expectGeneratedContract("SavePipelineResponse", (await pipelineValidators()).validateSavePipelineResponse, data))
 }
 
@@ -1743,11 +1808,12 @@ export function logToMlflow(
     /** `""` logs to the local folder. */
     destination: "" | MlflowDestinationKey
     /** One user action; a retry with the same ID returns the recorded run. */
-    operation_id?: string
+    operation_id: string
   },
+  ticket: KeyedTicket,
   options?: { signal?: AbortSignal },
 ): Promise<LogExperimentResponse> {
-  return post<unknown>("/api/modelling/mlflow/log", payload, { timeout: 600_000, ...options })
+  return sendKeyed<unknown>("/api/modelling/mlflow/log", payload, ticket, { timeout: 600_000, ...options })
     .then(async (data) => expectGeneratedContract("LogExperimentResponse", (await modellingValidators()).validateLogExperimentResponse, data))
 }
 

@@ -41,7 +41,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/stores/useDocumentStatusStore.ts` | Authoritative editor-document status, diagnostics, capabilities, raw revision, source-only text, and last accepted document identity, including its `documentFingerprint` (null when the accepting response named none) that every `/ws/sync` resync sends. `acknowledgeSave(sourceRevision, documentFingerprint)` records the saved document's revision and fingerprint, so a resync after the save is answered with nothing while the file is still the saved version; the scoped node save and the repairs adopt their document with the fingerprint their response header names. `requestResync()` bumps `resyncRequests`, asking the socket for the document whatever its fingerprint (the git UI, after dropping the canvas's edits for a git action). A ready document loaded with name violations keeps them as `nameViolations` with a `nameFence` (the fenced and the lifted capabilities); `setNameViolations` adopts a revalidated list and switches the capabilities between the two, and is a no-op for a document loaded without violations. `inputBindingViolations` holds the violations with a `binding` — the loaded document's, then those of each revalidation answer (`setInputBindingViolations`) — for the editors that set those names, fenced or not. Graph state/history remain in `useGraphStore`. `documentPart()` (the document on show: its file and execution generation) and `executionPart()` (the execution fence) are its parts for a late answer (frontend-shared, "Late answers"). |
 | `frontend/src/stores/pendingSaves.ts` | This tab's pipeline saves still waiting for their answer, by source file: `trackPendingSave` registers one until it settles, and `pendingSavesSettled` resolves once every registered save of a file has settled and its caller has handled the answer. Live sync holds every document update frame for the file until then and never adopts it: a frame that arrives while a save is in flight was read at an unknown point of it (before it, from what it wrote, or from what a formatter rewrote on disk), or is another tab's change, perhaps back to the document shown before the save, so it is not judged against the document the save is about to replace. Once the saves settle it is dropped if it is the document shown, and otherwise live sync asks for the document on disk again (a resync with the fingerprint the saves left accepted, which the server answers with nothing while the file is that one, and with the file otherwise, adopted as any frame with no save in flight). A reconnect's resync answered during a save is so judged against the save's acknowledged revision and fingerprint, not taken for another writer's change. |
 | `frontend/src/types/pipelineDocument.ts` | Version-1 editor-document types (the generated `PipelineEditorDocument` with the canvas's integrity rules, `parsePipelineEditorDocument`) and the single adapter from recovery nodes/edges/submodels into render-only React Flow snapshots, including required node identities, edge input identities, submodel input-port identities, and reserved API-frame labels. Recovery wire values are never accepted as canonical graph values. |
-| `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
+| `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point; on a ready document, its warnings (a save that stopped part-way) as a notice that blocks nothing. |
 | `frontend/src/components/NameViolationsBanner.tsx` | The ready document's remaining name violations from the document status store, each row selecting its nodes through App's violation handler. |
 | `frontend/src/hooks/useNameViolationRevalidation.ts` | While the document is fenced by its names, posts the canonical graph with no candidate nodes to the editor identity request on each name-relevant change and adopts the answer; otherwise posts it when a request input already in the graph changes its frame labels or a definition already in the graph changes its public input ports, and on any such change or preamble edit while input-binding violations show or a request is unanswered, so a later edit supersedes it. Each answer goes to `setNameViolations` and `setInputBindingViolations`; a request serial discards superseded answers, and a failure keeps the last lists and toasts. |
 | `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
@@ -964,21 +964,28 @@ reconciliation rather than dropping them or committing a second mutation.
     each backend save warning, including incomplete transforms found in either
     the root graph or an embedded submodel definition. Never throws; resolves
     `false` on any failure after toasting the detail.
-    Every save names a fresh `operation` (`crypto.randomUUID()`), which makes a
-    repeated save write once (`POST /api/pipeline/save` answers a repeat of a
-    save that committed with that save's response). A save whose answer was
-    lost — the request failed with no HTTP answer (a network failure or
-    `ApiTimeoutError`) — may still have been written, so it is sent once more,
-    exactly as it was, under the same operation: its answer is the first
-    request's when that one committed (even if another writer saved since), and
-    otherwise the save made now against the same base revision. That answer is
-    handled as the first one's would have been: acknowledged under the same
-    `saveRequestSeq`/`appliedSaveSeq` and observed-revision fences, marking only
-    the submitted snapshot saved, so edits made meanwhile stay dirty; a stale
-    refusal (another writer saved before a first request that never arrived)
-    sets the reload banner; a second lost answer, or any other failure, is
-    reported as a failed save. The browser never compares a document read back
-    with what it sent.
+    Every save is a keyed write (frontend-shared, "Keyed writes"): it names an
+    `operation` (`operationKey`), which makes a repeated save write once
+    (`POST /api/pipeline/save` answers a repeat of a save that committed with that
+    save's response, after a server restart too), and it is held in memory per
+    pipeline file (`sendHeld` on `memoryHold`, by `sourceFile`) with the snapshot it
+    sent and the revision it was based on. A Save made while another of the same file
+    is under way waits for it to settle, so it is built on the revision that one
+    answered and never sends a held save twice at once. A save whose fate is unknown — no answer, `ApiTimeoutError`, an
+    answer of 500 or more, or one that does not parse — is reported as a failed save
+    and stays held. The next Save first sends the held save again, exactly, under its
+    operation, unless what it would send is the held save's request (then that is the
+    save sent). The held save's answer is handled as its own: acknowledged under the
+    same `saveRequestSeq`/`appliedSaveSeq` and observed-revision fences, marking its
+    snapshot saved, so edits made since stay dirty; then, while the graph is still
+    dirty, the save is built again on the revision it answered and sent under a new
+    operation. A held save refused as stale (another writer saved before it, and it
+    never landed) sets the reload banner and sends nothing newer; any other refusal
+    lets it go and the new save is sent; a held save whose fate is unknown again
+    stays held, is reported, and sends nothing newer. A held save is dropped when the
+    tab takes a document of its file from disk (a load, a reload, a document adopted
+    from live sync). The browser never compares a document read back with what it
+    sent.
 19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
     the handshake. On open, sends a `resync` message carrying
@@ -1193,7 +1200,9 @@ reconciliation rather than dropping them or committing a second mutation.
     accessible navigator; a diagnostic of a declared connection (every connection code
     but `implicit_binding_ambiguous`, which a parameter name makes) carries a
     `Remove connection` button that opens `PipelineRepairDialog` with the
-    `remove_connection` action for its `source_file` and `element_id`, while `NodePanel` resolves unavailable/blocked node diagnostic
+    `remove_connection` action for its `source_file` and `element_id`. A ready document's
+    diagnostics are warnings, shown by the same banner as a notice with each one's message
+    and remediation, editing and saving left open, while `NodePanel` resolves unavailable/blocked node diagnostic
     ids through `useDocumentStatusStore`. `usePipelineAPI` exposes the same validated
     document-adoption transition used by initial load for a successful repair response.
     `PipelineRepairDialog` performs no local node deletion: App adopts the returned
@@ -1833,9 +1842,16 @@ again through the editor and save paths.
     fence for Duplicate and the drops (a drag or selection change applies, a new
     node refuses), `frontend/src/utils/__tests__/edgeJoinGraph.test.ts` the Edge Join rebase onto a live graph
     whose positions, selection and other nodes changed, and
-    `frontend/src/hooks/__tests__/usePipelineAPI.previewAndSaveRequests.test.ts` a lost save sent
-    again under its operation, acknowledged from the repeat's answer, refused as
-    stale with the banner, and reported failed when the repeat's answer is lost too. On the real graph store, a copied, deleted and
+    `frontend/src/hooks/__tests__/usePipelineAPI.previewAndSaveRequests.test.ts` a save whose
+    answer was lost, or answered 500, held and sent again first by the next Save
+    under its operation, acknowledged from the repeat's answer with the edits made
+    since then saved on its revision, refused as stale with the banner, and still held
+    and nothing newer sent when the repeat's answer is lost too, and a Save made during
+    another sent once that one settles, on the revision it answered; `frontend/e2e/save-conflict.spec.ts`
+    a save written whose answer is dropped twice, and one answered by a gateway's 504
+    page, each followed by an edit and a Save that answers "Saved", with both edits in
+    the file, no conflict banner and the editor editable, while a save another writer
+    got in before still shows the banner. On the real graph store, a copied, deleted and
     pasted two-frame Quote Input keeps its two parallel connections under
     distinct ids; removing one through the canvas's edge changes leaves the
     other, and one undo restores exactly the removed one.

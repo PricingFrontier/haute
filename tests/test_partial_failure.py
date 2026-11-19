@@ -129,7 +129,6 @@ class TestDiskFullDuringSave:
                 "haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"
             ),
             patch("haute.routes._save_pipeline.SavePipelineService._write_config_files"),
-            patch("haute.routes._save_pipeline.SavePipelineService._remove_stale_config_files"),
             patch("haute.routes._save_pipeline.save_sidecar") as mock_sidecar,
         ):
             mock_sidecar.side_effect = OSError(28, "No space left on device")
@@ -200,7 +199,6 @@ class TestFileLocked:
                 "haute.routes._save_pipeline.SavePipelineService._validate_api_inputs_have_schemas"
             ),
             patch("haute.routes._save_pipeline.SavePipelineService._write_config_files"),
-            patch("haute.routes._save_pipeline.SavePipelineService._remove_stale_config_files"),
             patch("haute.routes._save_pipeline.save_sidecar") as mock_sc,
         ):
             mock_sc.side_effect = PermissionError(13, "Access is denied")
@@ -857,16 +855,14 @@ class TestSavePipelinePartialFailureIntegration:
         req = _make_save_request("pipeline.py", project_root=tmp_path)
         py_path = tmp_path / "pipeline.py"
 
-        def fake_write_code(body, graph, path, touched=None):
-            path.write_text("# generated code")
-            if touched is not None:
-                touched.append(_TouchedFile(target=path, previous_bytes=None))
+        def fake_write_code(code_files, touched):
+            py_path.write_text("# generated code")
+            touched.append(_TouchedFile(target=py_path, previous_bytes=None))
 
         with (
             patch.object(svc, "_write_code", side_effect=fake_write_code),
             patch.object(svc, "_validate_api_inputs_have_schemas"),
             patch.object(svc, "_write_config_files"),
-            patch.object(svc, "_remove_stale_config_files"),
             patch(
                 "haute.routes._save_pipeline.save_sidecar",
                 side_effect=OSError("disk full"),
@@ -891,10 +887,9 @@ class TestSavePipelinePartialFailureIntegration:
         py_path.write_text("# ORIGINAL")
         req = _make_save_request("pipeline.py", project_root=tmp_path)
 
-        def fake_write_code(body, graph, path, touched=None):
-            if touched is not None:
-                touched.append(_TouchedFile(target=path, previous_bytes=path.read_bytes()))
-            path.write_text("# good code")
+        def fake_write_code(code_files, touched):
+            touched.append(_TouchedFile(target=py_path, previous_bytes=py_path.read_bytes()))
+            py_path.write_text("# good code")
 
         with (
             patch.object(svc, "_write_code", side_effect=fake_write_code),
