@@ -1172,3 +1172,53 @@ def test_the_watcher_starts_on_a_haute_toml_the_settings_parse_refuses(
     asyncio.run(server._file_watcher())
 
     assert watched == [(tmp_path.resolve(),)]
+
+
+def test_a_config_edit_after_haute_toml_is_repaired_reaches_the_canvas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watcher started on a refused haute.toml routes changes by the folders the file
+    names once it is repaired: a nested pipeline's config edit is published."""
+    import asyncio
+
+    from watchfiles import Change
+
+    from haute import server
+    from haute.routes._helpers import invalidate_pipeline_index
+
+    use_project(tmp_path)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "haute.toml").write_text('[project]\npipline = "rating/main.py"\n')
+    rating = tmp_path / "rating"
+    (rating / "config").mkdir(parents=True)
+    (rating / "main.py").write_text('import haute\n\npipeline = haute.Pipeline("main")\n')
+    edited = rating / "config" / "x.json"
+    edited.write_text("{}")
+    published: list[Path] = []
+
+    async def fake_awatch(*_dirs: object, **_kw: object):  # type: ignore[no-untyped-def]
+        # The analyst fixes the key, then edits a node's settings file.
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
+        invalidate_pipeline_index()
+        yield {(Change.modified, str(edited))}
+
+    monkeypatch.setattr("watchfiles.awatch", fake_awatch)
+    monkeypatch.setattr(server, "_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr(server, "_workbench_form_file", lambda _root: None)
+    monkeypatch.setattr(server, "is_self_write", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        server,
+        "_publish_pipeline_document",
+        lambda path, *, skip_unchanged: published.append(Path(path).resolve()),
+    )
+
+    async def run() -> None:
+        await server._file_watcher()
+        await asyncio.sleep(0.05)
+
+    try:
+        asyncio.run(run())
+    finally:
+        invalidate_pipeline_index()
+
+    assert (rating / "main.py").resolve() in published

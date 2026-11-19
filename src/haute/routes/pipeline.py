@@ -1072,17 +1072,17 @@ def _name_document_fingerprint(
 async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
     """Return the editor document for a specific readable pipeline."""
 
-    def _find() -> PipelineEditorDocument | None:
+    def _load() -> PipelineEditorDocument | None:
         try:
             # Read before the cached name index: a settings edit reaches the next load,
             # which the index (rebuilt only for pipeline files) would not see.
             read_project_settings(current_project().root)
-            return _find_named()
+            return _find()
         except ProjectSettingsError as exc:
             # The settings can hide every pipeline: the document says why.
             return project_settings_editor_document(current_project().root, exc)
 
-    def _find_named() -> PipelineEditorDocument | None:
+    def _find() -> PipelineEditorDocument | None:
         first_error: Exception | None = None
         attempted: set[Path] = set()
         # O(1) lookup via cached index
@@ -1112,7 +1112,7 @@ async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
             raise first_error
         return None
 
-    document = await asyncio.to_thread(_find)
+    document = await asyncio.to_thread(_load)
     if document is None:
         raise_pipeline_not_found(name)
     return _name_document_fingerprint(response, document)
