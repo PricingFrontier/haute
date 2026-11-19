@@ -1521,6 +1521,17 @@ def _resolve_artifact_local_in_use(
         if local_path.is_file():
             logger.info("mlflow_artifact_disk_cache_hit", path=str(local_path))
             return str(local_path)
+        if _DISK_CACHE_ONLY.get():
+            # A copy that went after the record was read is the load's failure,
+            # never a download.
+            from haute.errors import ModelNotInDiskCacheError
+
+            raise ModelNotInDiskCacheError(
+                f"The local model cache no longer holds {stored.path!r} of run {run_id!r}, "
+                "and this execution loads models only from that cache. Preview the Model "
+                "Scoring node in the editor, which fills it.",
+                source_type="run",
+            )
 
         # Cache miss — download to a temp directory first, then move into
         # place atomically.  If the download is interrupted the temp dir

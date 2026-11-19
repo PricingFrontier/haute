@@ -430,6 +430,50 @@ class TestALoggedAgainFileScores:
         np.testing.assert_allclose(preview(), second, rtol=1e-6)
         assert trace() == pytest.approx(second[0], rel=1e-6)
 
+    def test_a_disk_cache_only_load_reads_the_record_and_never_the_store(
+        self, store: _Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._mlflow_io import (
+            _model_cache,
+            disk_cache_only_model_loads,
+            disk_cached_run_model,
+        )
+        from haute.errors import ModelNotInDiskCacheError
+
+        source = _run_source(store.runs["contracted"], "glm.cbm")
+        head = store.frame.head(3)
+        expected = store.models["contracted"].predict(head)
+        np.testing.assert_allclose(_scores(source, head), expected, rtol=1e-6)
+        cached = disk_cached_run_model(
+            run_id=store.runs["contracted"], artifact_path="glm.cbm", destination=""
+        )
+        assert cached is not None and cached.present() and cached.contract_path is not None
+
+        def no_store(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("a disk-cache-only load asked the store")
+
+        monkeypatch.setattr("haute._mlflow_utils.pinned_client", no_store)
+        monkeypatch.setattr("mlflow.artifacts.download_artifacts", no_store)
+        _model_cache.clear()
+        with disk_cache_only_model_loads():
+            np.testing.assert_allclose(_scores(source, head), expected, rtol=1e-6)
+            _model_cache.clear()
+            cached.model_path.unlink()
+            with pytest.raises(ModelNotInDiskCacheError):
+                _scores(source, head)
+            # A copy gone between the record's check and the read is refused, not fetched.
+            import mlflow
+
+            from haute._mlflow_io import _resolve_artifact_local
+            from haute._mlflow_model import StoredArtifact
+            from haute._mlflow_utils import resolve_backend
+
+            stored = StoredArtifact("glm.cbm", "size:1")  # an identity no copy is kept under
+            with pytest.raises(ModelNotInDiskCacheError, match="no longer holds 'glm.cbm'"):
+                _resolve_artifact_local(
+                    mlflow, resolve_backend(""), store.runs["contracted"], stored
+                )
+
     def test_a_load_downloads_only_when_the_file_changed(
         self, store: _Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -116,8 +116,7 @@ guard; `src/haute/_mlflow_io.py::_delete_tombstone` states the rule.
 each run's artifacts. A run whose listing raises is skipped; the number
 skipped goes to a log line and nowhere else. When the artifact store refuses
 or flaps while the tracking store answers, every run is skipped and the picker
-shows its "no runs" text, not an error. Which runs it lists, exactly the runs
-the loader can load, was delivered by `MLR-11` on 19 November 2026.
+shows its "no runs" text, not an error.
 
 **Plan:** Return the number of runs that could not be checked, show it in the
 picker, and answer an error when every listing failed.
@@ -216,21 +215,19 @@ second wait where its retry stops treating every failure as a damaged file.
 to follow.
 
 ### MLR-06 — A version registered from a logged model is read from it, or refused in words
-**Why:** Reproduced on 13 November 2026 with a local MLflow store. The rest
-of this package was delivered by `MLR-11` on 19 November 2026: a registered
-version resolves through its source, so a version registered from a file
-scores that file everywhere, and one whose run cannot say which file is
-refused by name. A version registered from a logged model is left. MLflow 3
-registers `runs:/<run>/model` that way, and Haute's candidate runs are
-promoted that way. Its source names the logged model (`models:/m-...`), whose
-files are not among its run's artifacts, so Haute scores the model file its
-run holds, found by the discovery rule. Every Haute training run logs the
-native file at its root beside the logged model, so those versions score.
-An analyst's run made with `mlflow.catboost.log_model` holds no file of its
-own, and is refused in the same words by the preview, `haute run` and the
-deploy: the run "holds no model Haute can score". Nothing reads the logged
-model's own files, and a run whose own files hold another model than the
-logged one would score that file.
+**Why:** Reproduced on 13 November 2026 with a local MLflow store. A
+registered version resolves through its source, so a version registered from
+a file scores that file everywhere. A version registered from a logged model
+does not. MLflow 3 registers `runs:/<run>/model` that way, and Haute's
+candidate runs are promoted that way. Its source names the logged model
+(`models:/m-...`), whose files are not among its run's artifacts, so Haute
+scores the model file its run holds, found by the discovery rule. Every Haute
+training run logs the native file at its root beside the logged model, so
+those versions score. An analyst's run made with `mlflow.catboost.log_model`
+holds no file of its own, and is refused in the same words by the preview,
+`haute run` and the deploy: the run "holds no model Haute can score". Nothing
+reads the logged model's own files, and a run whose own files hold another
+model than the logged one would score that file.
 
 **Plan:** Decide whether a version registered from a logged model is
 supported. If so, read it from the logged model's own location, its native
