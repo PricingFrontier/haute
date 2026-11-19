@@ -1875,9 +1875,10 @@ export default function usePipelineAPI({
      * Send `save` and handle its answer as its own: it marks the snapshot it sent saved only
      * while no newer save has been applied and the document is still this file, and only
      * over the revision it was built on or the one it answered; what it wrote is reported
-     * either way.
+     * either way. `then`, given for a held save sent again, saves what changed since, once it
+     * landed or was refused (it never landed), while its answer is current.
      */
-    const send = async (save: SentSave): Promise<"saved" | "stale" | "failed"> => {
+    const send = async (save: SentSave, then?: () => Promise<boolean>): Promise<boolean> => {
       const saveRequestId = ++saveRequestSeq.current
       const thisSave: Part = {
         holds: () => saveRequestId > appliedSaveSeq.current && useDocumentStatusStore.getState().sourceFile === saveSourceFile,
@@ -1896,20 +1897,22 @@ export default function usePipelineAPI({
         status.setGraphSynchronized(true)
         useUIStore.getState().setSyncBanner(null)
       }
-      let outcome: "saved" | "stale" | "failed" = "failed"
+      let saved = false
       await answer([thisSave], sendHeld(hold, save, (held, ticket) => savePipeline(held.request, ticket)), {
-        ok: (data) => {
+        ok: async (data) => {
           try {
             acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
             wrote(data)
-            outcome = "saved"
+            saved = true
           } catch (err: unknown) {
             failedSave(err)
+            return
           }
+          if (then !== undefined) saved = await then()
         },
-        failed: (err) => {
+        failed: async (err) => {
           if (isStaleRevision(err)) {
-            outcome = "stale"
+            // Refused as stale it never landed, and nothing newer is sent over it.
             if (sourceRevisionRef.current !== save.baseRevision) return
             // The conflict is final until the user reloads (no implicit overwrite retry).
             useDocumentStatusStore.getState().setGraphSynchronized(false)
@@ -1925,35 +1928,35 @@ export default function usePipelineAPI({
             return
           }
           failedSave(err)
+          // Refused, it never landed: what is typed now is saved. Still held, its fate is
+          // unknown, and nothing newer is sent before it.
+          if (then !== undefined && hold.held() === null) saved = await then()
         },
         stale: (settled) => {
           if ("value" in settled) {
             wrote(settled.value)
-            outcome = "saved"
+            saved = true
           } else if (!isStaleRevision(settled.error)) {
             failedSave(settled.error)
           }
         },
       })
-      return outcome
+      return saved
     }
 
     const held = hold.held()
     const now = build(held?.request.operation ?? operationKey())
-    if (held === null) return (await send(now)) === "saved"
-    if (hold.content(held) === hold.content(now)) return (await send(held)) === "saved"
-    // A save whose answer was lost goes first, exactly as it was sent.
-    const repeated = await send(held)
-    // Refused as stale it never landed, and nothing newer is sent over it; still held, its
-    // fate is unknown, and nothing newer is sent before it.
-    if (repeated === "stale" || hold.held() !== null) return false
-    // Landed, what was changed since (the graph, the sources) is saved on the revision it
-    // answered, if anything was.
-    const next = build(operationKey())
-    if (repeated === "saved" && savesWhatHeldSaved(held.request, next.request) && !useGraphStore.getState().dirty) {
-      return true
-    }
-    return (await send(next)) === "saved"
+    if (held === null) return send(now)
+    if (hold.content(held) === hold.content(now)) return send(held)
+    // A save whose answer was lost goes first, exactly as it was sent; what changed since
+    // (the graph, the sources) is then saved on the revision it answered, if anything did.
+    return send(held, () => {
+      const next = build(operationKey())
+      if (savesWhatHeldSaved(held.request, next.request) && !useGraphStore.getState().dirty) {
+        return Promise.resolve(true)
+      }
+      return send(next)
+    })
   }, [descriptionRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   // Returns true when the save succeeded, false on failure — callers that
@@ -2002,9 +2005,21 @@ export default function usePipelineAPI({
     let settleSave!: () => void
     trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
     const underWay = savesUnderWay.get(saveSourceFile)
-    const saving = (async () => {
-      if (underWay !== undefined) await underWay
-      return saveHeldFirst(saveSourceFile, sc, as_, globalConstantsError)
+    const saveNow = () => saveHeldFirst(saveSourceFile, sc, as_, globalConstantsError)
+    // Made while another save of the file is under way, it waits for that one to settle,
+    // while the file is still the document.
+    const thisDocument: Part = {
+      holds: () => useDocumentStatusStore.getState().sourceFile === saveSourceFile,
+      subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
+    }
+    const saving = underWay === undefined ? saveNow() : (async () => {
+      let saved = false
+      await answer([thisDocument], underWay, {
+        ok: async () => {
+          saved = await saveNow()
+        },
+      })
+      return saved
     })()
     savesUnderWay.set(saveSourceFile, saving)
     try {

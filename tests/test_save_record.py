@@ -445,7 +445,8 @@ def test_a_rollback_that_fails_leaves_the_save_reported(
 
 
 def test_an_unreadable_record_is_reported_and_the_next_save_replaces_it(project: Path) -> None:
-    path = save_records._record_path(project, "rating/main.py")
+    name = save_records._record_path(project, "rating/main.py").name
+    path = project / ".haute" / "saves" / "records" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{ not json", encoding="utf-8")
     settle_saves(project)
@@ -465,7 +466,8 @@ def test_an_unreadable_receipt_answers_nothing_and_the_repeat_is_saved_against_i
 ) -> None:
     request = _the_save(project)
     _service(project).save(request)
-    receipt = save_records._receipt_path(project, "op-under-test-0001")
+    name = save_records._receipt_path(project, "op-under-test-0001").name
+    receipt = project / ".haute" / "saves" / "receipts" / name
     receipt.write_text("{ not json", encoding="utf-8")
 
     from haute.routes._save_pipeline import StaleDocumentRevisionError

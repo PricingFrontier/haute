@@ -104,18 +104,22 @@ export function MlflowExportSection({
     (log) => contentWithout(log, "operation_id"),
   ))
 
-  /** Send `log`; resolves once it is answered or has failed. */
-  const logOperation = useCallback(async (log: MlflowLog) => {
+  /**
+   * Send `log`; resolves once it is answered or has failed. `then`, given for a held log sent
+   * again, sends the log asked for since, once it was answered or refused, while current.
+   */
+  const logOperation = useCallback(async (log: MlflowLog, then?: () => Promise<void>): Promise<void> => {
     setConfirmedFor(null)
     setMlflowResult(null)
     onMlflowResult?.(null)
     await answer([under(section)], () => sendHeld(heldLog.current, log, (held, ticket) => logToMlflow(held, ticket)), {
-      ok: (result) => {
+      ok: async (result) => {
         setMlflowResult(result)
         onMlflowResult?.(result)
         onLogAttempted?.()
+        if (then !== undefined) await then()
       },
-      failed: (e) => {
+      failed: async (e) => {
         const errResult = {
           status: "error",
           error: apiErrorMessage(e, "Logging to MLflow failed."),
@@ -127,6 +131,7 @@ export function MlflowExportSection({
         setMlflowResult(errResult)
         onMlflowResult?.(errResult)
         onLogAttempted?.()
+        if (then !== undefined && keyedWriteSettled(e)) await then()
       },
       // An attempt answered once the section is gone still has the job's receipts read again.
       stale: () => onLogAttempted?.(),
@@ -154,13 +159,11 @@ export function MlflowExportSection({
       operation_id: newOperationId(),
     }
     const held = heldLog.current.held()
-    if (held !== null) {
-      // A log whose answer was lost goes first, exactly as it was sent; it is the log asked
-      // for when it asks for the same, and otherwise the new log follows once it is answered.
-      await logOperation(held)
-      if (heldLog.current.held() !== null || contentWithout(held, "operation_id") === contentWithout(next, "operation_id")) return
-    }
-    await logOperation(next)
+    if (held === null) return logOperation(next)
+    // A log whose answer was lost goes first, exactly as it was sent; it is the log asked for
+    // when it asks for the same, and otherwise the new log follows once it is answered.
+    if (contentWithout(held, "operation_id") === contentWithout(next, "operation_id")) return logOperation(held)
+    return logOperation(held, () => logOperation(next))
   }, [canLog, trainJobId, lastReceipt, confirmingLogAgain, confirmationKey, config, logOperation])
 
   return (

@@ -103,13 +103,14 @@ def commit_save(
 
     # :(literal) so a filename holding glob characters names only itself.
     literal = [_literal(path) for path in paths]
-    # `git add` takes a path in the working tree or the index. One in neither is either a
-    # deletion an earlier `git add` staged before the process stopped, still to commit, or
-    # has nothing to record (a file a save's record names that a stopped save never created),
-    # which `git add` and the commit would refuse.
-    base = Path.cwd() if cwd is None else cwd
-    indexed = set(_run_git("ls-files", "-z", "--", *literal, cwd=cwd).split("\0"))
-    addable = [path for path in paths if path in indexed or os.path.lexists(base / path)]
+    # `git add` takes a path in the index or in the working tree (`--others`, untracked). One
+    # in neither is either a deletion an earlier `git add` staged before the process stopped,
+    # still to commit, or has nothing to record (a file a save's record names that a stopped
+    # save never created), which `git add` and the commit would refuse.
+    present = set(
+        _run_git("ls-files", "-z", "--cached", "--others", "--", *literal, cwd=cwd).split("\0")
+    )
+    addable = [path for path in paths if path in present]
     staged_since_head = set(
         _run_git(
             "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *literal, cwd=cwd
