@@ -344,7 +344,40 @@ def test_a_count_the_catalogue_moved_under_is_read_again(
     assert len(counted) == 2
 
 
-def test_a_count_that_fails_on_the_tables_as_read_is_not_read_again(
+def test_a_count_a_column_dropped_and_added_back_under_is_read_again(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._quote_store import _catalogue as catalogue_module
+    from haute._quote_store._compare import read_store_catalogue
+    from haute._quote_store._environment import StoreLocation
+
+    _hosted(url, form(POLICY, VEHICLES))
+    monkeypatch.setattr(store_module.time, "sleep", lambda _: None)
+    real = catalogue_module._counted
+    counted: list[int] = []
+
+    def dropped_and_back(*args: Any) -> Any:
+        counted.append(len(counted))
+        if len(counted) > 1:
+            return real(*args)
+        # The table's last column, gone as the count runs and back in its place by the time
+        # anything looks again.
+        _raw(url, "ALTER TABLE vehicles DROP COLUMN value")
+        try:
+            return real(*args)
+        finally:
+            _raw(url, "ALTER TABLE vehicles ADD COLUMN value FLOAT")
+
+    monkeypatch.setattr(catalogue_module, "_counted", dropped_and_back)
+
+    read = read_store_catalogue(StoreLocation("test", url))
+
+    vehicles = read.table("vehicles")
+    assert vehicles is not None and vehicles.columns[-1].name == "value"
+    assert len(counted) == 2
+
+
+def test_a_count_refused_otherwise_is_not_read_again_whatever_moved_beside_it(
     url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from haute._quote_store import _catalogue as catalogue_module
@@ -356,6 +389,8 @@ def test_a_count_that_fails_on_the_tables_as_read_is_not_read_again(
 
     def refused(*args: Any) -> Any:
         counted.append(1)
+        # An owner adds an unrelated column as the count is refused a permission.
+        _raw(url, "ALTER TABLE vehicles ADD COLUMN unrelated TEXT")
         raise _ended(ValueError("permission denied"))
 
     monkeypatch.setattr(catalogue_module, "_counted", refused)
@@ -363,3 +398,33 @@ def test_a_count_that_fails_on_the_tables_as_read_is_not_read_again(
     with pytest.raises(QuoteStoreEnvironmentError, match="tables could not be read"):
         read_store_catalogue(StoreLocation("test", url))
     assert counted == [1]
+
+
+def test_a_name_the_database_no_longer_holds_is_told_from_other_refusals() -> None:
+    import psycopg.errors
+    from mssql_python.exceptions import ProgrammingError as DriverProgrammingError
+
+    from haute._quote_store._catalogue import names_missing
+
+    def sqlite_refusal(query: str) -> OperationalError:
+        with sqlite3.connect(":memory:") as raw:
+            raw.execute("CREATE TABLE t (a)")
+            try:
+                raw.execute(query)
+            except sqlite3.OperationalError as exc:
+                return _ended(exc)
+        raise AssertionError(query)
+
+    assert names_missing(_ended(psycopg.errors.UndefinedColumn("column x does not exist")))
+    assert names_missing(_ended(psycopg.errors.UndefinedTable("relation x does not exist")))
+    for missing in ("Column not found", "Base table or view not found"):
+        assert names_missing(_ended(DriverProgrammingError(driver_error=missing, ddbc_error="")))
+    assert names_missing(sqlite_refusal("SELECT b FROM t"))
+    assert names_missing(sqlite_refusal("SELECT a FROM u"))
+    assert not names_missing(_ended(psycopg.errors.InsufficientPrivilege("permission denied")))
+    assert not names_missing(
+        _ended(
+            DriverProgrammingError(driver_error="Syntax error or access violation", ddbc_error="")
+        )
+    )
+    assert not names_missing(sqlite_refusal("SELEC a FROM t"))

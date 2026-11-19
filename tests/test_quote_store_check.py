@@ -58,6 +58,7 @@ from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._quote_store import QuoteStoreMismatchError, store_url
 from haute._quote_store._catalogue import (
+    CatalogueMovedError,
     CatalogueTable,
     capacity_of,
     capacity_problems,
@@ -1231,6 +1232,10 @@ def test_the_check_and_the_pane_read_the_store_beside_ddl_its_owners_run(
 ) -> None:
     # The owners add and drop a column of the store's and make and drop a table elsewhere in
     # the database, again and again, while the app checks the store and the pane reads it.
+    # The check reads no column it then names, so it opens every time. The pane counts the
+    # quotes in each column it has read, which DDL that never stops can change under every
+    # run of it: it reads the tables or says they changed while it read them, and never says
+    # its sign-in cannot read them.
     with database(server, tmp_path) as target:
         target.script(target.sql(FORM))
         target.script("CREATE SCHEMA other")
@@ -1252,15 +1257,22 @@ def test_the_check_and_the_pane_read_the_store_beside_ddl_its_owners_run(
         owners = threading.Thread(target=churn)
         owners.start()
         location = StoreLocation(HOSTED, target.url, sign_in=target.sign_in)
+        pane_read = 0
         try:
             for _ in range(_BESIDE_DDL):
                 engine, _ = open_engine(
                     target.url, FORM, environment=HOSTED, sign_in=target.sign_in
                 )
                 engine.dispose()
-                assert read_store_catalogue(location).table("policy") is not None
+                try:
+                    read = read_store_catalogue(location)
+                except CatalogueMovedError:
+                    continue
+                assert read.table("policy") is not None
+                pane_read += 1
         finally:
             stop.set()
             owners.join()
 
     assert not churned, churned
+    assert pane_read > 0

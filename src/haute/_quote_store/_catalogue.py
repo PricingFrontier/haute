@@ -15,7 +15,8 @@ constrains.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+import sqlite3
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -291,10 +292,11 @@ def read_catalogue(
         found.append((table, reflected, numbered))
     try:
         counts = _counted(connection, list(countable.items()), sql_schema)
-    except DBAPIError:
-        # The names counted were the catalogue's a moment before: a count that fails where
-        # they are no longer its read a catalogue DDL beside the read has since changed.
-        if _columns_held(connection, sql_schema, countable):
+    except DBAPIError as exc:
+        # Every name counted was the catalogue's a moment before, so a count that finds one
+        # missing as it runs read a catalogue DDL beside it changed; any other failure is
+        # the database's refusal, raised as it is.
+        if not names_missing(exc):
             raise
         raise CatalogueMovedError(
             "The database's tables changed while they were read, as SQL run beside the read "
@@ -325,16 +327,25 @@ def read_catalogue(
     return Catalogue(tables=tuple(tables))
 
 
-def _columns_held(
-    connection: Connection, sql_schema: str | None, counted: Mapping[str, list[str]]
-) -> bool:
-    """Whether the catalogue holds each of *counted*'s tables with the columns counted in it,
-    read afresh after the failed count's transaction is rolled back."""
-    connection.rollback()
-    held = inspect(connection).get_multi_columns(schema=sql_schema, filter_names=list(counted))
-    return all(
-        [column["name"] for column in held.get((sql_schema, name), [])] == columns
-        for name, columns in counted.items()
+#: What a missing table or column is called by the drivers that keep no SQLSTATE: SQL
+#: Server's 42S02 and 42S22 as mssql-python names them, and SQLite's own words.
+_MISSING_NAMED = frozenset({"Base table or view not found", "Column not found"})
+_SQLITE_MISSING = ("no such table:", "no such column:")
+
+
+def names_missing(exc: DBAPIError) -> bool:
+    """Whether *exc* is a statement refused for naming a table or column the database does
+    not hold: SQLSTATE 42P01 or 42703 on PostgreSQL (psycopg keeps it), SQL Server's 42S02 or
+    42S22 (mssql-python keeps its name for it alone) and SQLite's ``no such table`` or ``no
+    such column``. A refusal of any other kind, a permission among them, is not one, whatever
+    the catalogue holds by the time it is looked at."""
+    original = exc.orig
+    if getattr(original, "sqlstate", None) in ("42P01", "42703"):
+        return True
+    if getattr(original, "driver_error", None) in _MISSING_NAMED:
+        return True
+    return isinstance(original, sqlite3.OperationalError) and str(original).startswith(
+        _SQLITE_MISSING
     )
 
 

@@ -2993,8 +2993,9 @@ Out of scope:
   deadlock's victim or a serialization failure, as SQL Server's catalogue reads can be
   beside DDL its owners run, is run again on a fresh connection, at most three times more,
   and so is the schema pane's read when a table or column it counts quotes in is gone by the
-  time it counts them; so DDL run beside a running app neither fails a request nor reads as a
-  sign-in that cannot read the tables. MySQL, MariaDB and Oracle,
+  time it counts them, saying the tables changed while it read them should they change under
+  every run; so DDL run beside a running app neither fails a request nor reads as a sign-in
+  that cannot read the tables. MySQL, MariaDB and Oracle,
   whose DDL commits as it runs, and Databricks SQL and Snowflake, whose keys are not
   enforced, are not store engines, though any of them can read the store's tables.
 
