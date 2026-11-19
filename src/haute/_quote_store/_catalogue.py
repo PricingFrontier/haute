@@ -48,6 +48,7 @@ from sqlalchemy import (
     inspect,
     literal_column,
     select,
+    text,
     true,
 )
 from sqlalchemy.dialects.mssql import TINYINT
@@ -239,7 +240,7 @@ def read_catalogue(
         if dialect.name == "mssql"
         else inspector.get_multi_unique_constraints(schema=sql_schema, filter_names=reading)
     )
-    own = _own_schemas(inspector, sql_schema)
+    referred_schema = _ReferredSchema(connection, inspector, sql_schema)
     found: list[tuple[CatalogueTable, list[Any], set[str]]] = []
     countable: dict[str, list[str]] = {}
     for name in reading:
@@ -271,11 +272,7 @@ def read_catalogue(
                     columns=tuple(foreign["constrained_columns"]),
                     table=foreign["referred_table"],
                     referred=tuple(foreign["referred_columns"]),
-                    sql_schema=(
-                        None
-                        if foreign.get("referred_schema") in own
-                        else foreign.get("referred_schema")
-                    ),
+                    sql_schema=referred_schema.of(name, foreign),
                 )
                 for foreign in references[key]
             ),
@@ -317,11 +314,49 @@ def _distinct(sets: Iterable[tuple[str, ...]]) -> tuple[tuple[str, ...], ...]:
     return tuple(kept)
 
 
-def _own_schemas(inspector: Inspector, sql_schema: str | None) -> set[str | None]:
-    """What a foreign key's referred schema reads as when it refers within *sql_schema*: None,
-    as a dialect gives it for the schema read, or that schema's name, the connection's
-    default's when *sql_schema* is None."""
-    return {None, inspector.default_schema_name if sql_schema is None else sql_schema}
+class _ReferredSchema:
+    """The SQL schema each foreign key read from *sql_schema* refers to, None for that schema
+    itself (the connection's default when *sql_schema* is None).
+
+    A dialect leaves the referred schema unsaid in some cases. PostgreSQL's leaves it unsaid
+    for a table its search path finds by the bare name, the schema read or another, so the
+    schema is the one ``to_regclass`` finds the bare name in. Any other dialect leaves only
+    the connection's default unsaid, so reading the default it means the schema read; reading
+    a named schema it says nothing that can be placed, a fault.
+    """
+
+    def __init__(self, connection: Connection, inspector: Inspector, sql_schema: str | None):
+        self._connection = connection
+        self._sql_schema = sql_schema
+        self._read = inspector.default_schema_name if sql_schema is None else sql_schema
+        self._on_path: dict[str, str | None] = {}
+
+    def of(self, table: str, foreign: Any) -> str | None:
+        """The schema *table*'s foreign key *foreign*, as the Inspector reflects it, refers to."""
+        referred: str | None = foreign.get("referred_schema")
+        if referred is None and self._connection.dialect.name == "postgresql":
+            referred = self._found_by_path(foreign["referred_table"])
+        elif referred is None and self._sql_schema is None:
+            referred = self._read
+        if referred is None:
+            raise ValueError(
+                f"The catalogue does not say which SQL schema {table}'s foreign key refers to "
+                f"{foreign['referred_table']} in."
+            )
+        return None if referred == self._read else referred
+
+    def _found_by_path(self, name: str) -> str | None:
+        """The schema PostgreSQL's search path finds the table *name* in by its bare name."""
+        if name not in self._on_path:
+            self._on_path[name] = self._connection.execute(
+                text(
+                    "SELECT n.nspname FROM pg_catalog.pg_class AS k "
+                    "JOIN pg_catalog.pg_namespace AS n ON n.oid = k.relnamespace "
+                    "WHERE k.oid = to_regclass(quote_ident(:name))"
+                ),
+                {"name": name},
+            ).scalar()
+        return self._on_path[name]
 
 
 def _sqlite_numbered(

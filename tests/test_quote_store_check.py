@@ -55,11 +55,25 @@ from sqlalchemy.engine import Dialect, make_url
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from haute._quote_store import QuoteStoreMismatchError, store_url
-from haute._quote_store._catalogue import CatalogueTable, kind_of, read_catalogue, table_problems
+from haute._quote_store._catalogue import (
+    CatalogueTable,
+    capacity_of,
+    capacity_problems,
+    kind_of,
+    on_engine,
+    read_catalogue,
+    table_problems,
+)
 from haute._quote_store._compare import Difference, compare
 from haute._quote_store._migrate import _SCRIPT_TRANSACTIONS, PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
-from haute._quote_store._schema import ACTIVITY_TABLE, STORE_COLUMN_NAMES, store_schema
+from haute._quote_store._schema import (
+    ACTIVITY_TABLE,
+    STORE_COLUMN_NAMES,
+    UtcDateTime,
+    column_type,
+    store_schema,
+)
 from haute._quote_store._store import make_engine, open_engine
 from haute._workbench_catalogue import api_tables, catalogue_of
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec, with_quote_details
@@ -168,16 +182,21 @@ class KeyLine:
     columns: tuple[str, ...]
 
 
+#: Where a table outside the store's SQL schema is: False for none, True for the case's own
+#: schema set aside (:data:`_ASIDE`), or a schema by name.
+Aside = bool | str
+
+
 @dataclass(frozen=True)
 class ReferenceLine:
     """A foreign key: its name, the columns it constrains, the table it refers to, that
-    table's columns, and whether that table is in the schema set aside."""
+    table's columns, and whether that table is set aside (:data:`Aside`)."""
 
     name: str | None
     columns: tuple[str, ...]
     table: str
     referred: tuple[str, ...]
-    aside: bool = False
+    aside: Aside = False
 
 
 @dataclass(frozen=True)
@@ -192,15 +211,15 @@ class IndexLine:
 @dataclass(frozen=True)
 class TableLines:
     """A table as its SQL makes it: its columns, keys, references (in the order the table
-    declares them, keys and references together) and indexes, and whether it is made in the
-    schema set aside."""
+    declares them, keys and references together) and indexes, and whether it is set aside
+    (:data:`Aside`)."""
 
     name: str
     columns: tuple[ColumnLine, ...]
     primary_key: KeyLine | None
     constraints: tuple[KeyLine | ReferenceLine, ...] = ()
     indexes: tuple[IndexLine, ...] = ()
-    aside: bool = False
+    aside: Aside = False
 
     def column(self, name: str) -> ColumnLine:
         return next(column for column in self.columns if column.name == name)
@@ -294,9 +313,14 @@ _ASIDE = "{}_aside"
 
 
 def _tables(lines: tuple[TableLines, ...], sql_schema: str | None) -> list[Table]:
-    """*lines* as SQLAlchemy tables in *sql_schema*, those set aside in its aside schema."""
+    """*lines* as SQLAlchemy tables in *sql_schema*, those set aside where they say."""
     metadata = MetaData(schema=sql_schema)
-    aside = _ASIDE.format(sql_schema or "dbo")
+
+    def placed(aside: Aside) -> str | None:
+        if isinstance(aside, str):
+            return aside
+        return _ASIDE.format(sql_schema or "dbo") if aside else None
+
     tables: list[Table] = []
     for each in lines:
         items: list[Any] = [
@@ -317,7 +341,7 @@ def _tables(lines: tuple[TableLines, ...], sql_schema: str | None) -> list[Table
             if isinstance(constraint, KeyLine):
                 items.append(UniqueConstraint(*constraint.columns, name=constraint.name))
                 continue
-            where = f"{aside}." if constraint.aside else ""
+            where = "" if not constraint.aside else f"{placed(constraint.aside)}."
             items.append(
                 ForeignKeyConstraint(
                     list(constraint.columns),
@@ -328,7 +352,7 @@ def _tables(lines: tuple[TableLines, ...], sql_schema: str | None) -> list[Table
         items.extend(
             Index(index.name, *index.columns, unique=index.unique) for index in each.indexes
         )
-        tables.append(Table(each.name, metadata, *items, schema=aside if each.aside else None))
+        tables.append(Table(each.name, metadata, *items, schema=placed(each.aside)))
     return tables
 
 
@@ -947,6 +971,39 @@ def test_a_constraint_the_check_does_not_compare_is_a_fault() -> None:
         table_problems(checked, CatalogueTable(name="policy", columns=(), primary_key=()))
 
 
+@pytest.mark.parametrize(
+    ("backend", "found", "kind", "short"),
+    [
+        ("postgresql", REAL(), "float", ["bits"]),
+        ("postgresql", postgresql.DOUBLE_PRECISION(precision=53), "float", []),
+        ("postgresql", Integer(), "int", ["bits"]),
+        ("postgresql", String(100), "str", ["length"]),
+        ("postgresql", postgresql.CHAR(10), "str", ["length", "unpadded"]),
+        ("postgresql", postgresql.TIMESTAMP(timezone=True), "datetime", ["zoneless"]),
+        ("postgresql", postgresql.TIMESTAMP(precision=0), "datetime", []),
+        ("sqlserver", mssql.REAL(), "float", ["bits"]),
+        ("sqlserver", mssql.FLOAT(precision=53), "float", []),
+        ("sqlserver", mssql.TINYINT(), "int", ["bits"]),
+        ("sqlserver", mssql.VARCHAR(None), "str", ["every_character"]),
+        ("sqlserver", mssql.NCHAR(10), "str", ["length", "unpadded"]),
+        ("sqlserver", mssql.DATETIMEOFFSET(), "datetime", []),
+        ("sqlite", REAL(), "float", []),
+        ("sqlite", Integer(), "int", []),
+        ("sqlite", String(10), "str", []),
+    ],
+)
+def test_a_type_holding_less_than_the_store_s_is_told_on_each_engine(
+    backend: str, found: TypeEngine[Any], kind: str, short: list[str]
+) -> None:
+    # As the engine's catalogue reflects each, against the store's own type for the kind.
+    dialect = _engine_dialect(backend)
+    store = UtcDateTime() if kind == "datetime" else column_type(kind)
+
+    held = capacity_of(on_engine(store, dialect), dialect)
+
+    assert capacity_problems(capacity_of(found, dialect), held) == short
+
+
 def test_a_store_made_from_the_description_is_accepted(target: Target) -> None:
     # In the connection's default SQL schema and, on a server, in a named one beside it.
     for backend, sql_schema in _PLACES:
@@ -1012,36 +1069,49 @@ def test_every_line_of_the_sql_haute_writes_is_checked(
     assert not [each for each in failures if each], "\n".join(each for each in failures if each)
 
 
+#: Each server's default SQL schema, where a store names none.
+_DEFAULT_SCHEMA = {"postgresql": "public", "sqlserver": "dbo"}
+
+
 @pytest.mark.parametrize(
-    "server", [pytest.param(name, marks=pytest.mark.store_servers) for name in configured()]
+    ("server", "sql_schema"),
+    [
+        pytest.param(name, sql_schema, marks=pytest.mark.store_servers)
+        for name in configured()
+        for sql_schema in (None, "store")
+    ],
 )
-def test_a_reference_to_another_schema_is_named_from_the_default_schema(
-    server: str, tmp_path: Path
+def test_a_reference_to_quote_details_in_another_schema_is_named_from_any_schema(
+    server: str, sql_schema: str | None, tmp_path: Path
 ) -> None:
-    # A store in the connection's default SQL schema, its activity referring to a copy of
-    # quote_details moved aside, as a table moved and made again leaves it.
+    # The activity refers to a copy of quote_details in another SQL schema, as a table moved
+    # and made again leaves it: from a store in the default schema, to a schema set aside;
+    # from one in a named schema, to the default, which PostgreSQL's catalogue leaves unsaid
+    # as it does the schema read.
+    elsewhere = _DEFAULT_SCHEMA[server] if sql_schema else "elsewhere"
     lines = describe(FORM)
-    details = next(each for each in lines if each.name == QUOTE_DETAILS_NAME)
-    activity = next(each for each in lines if each.name == ACTIVITY_TABLE)
+    details = _table_in(lines, QUOTE_DETAILS_NAME)
+    activity = _table_in(lines, ACTIVITY_TABLE)
     reference = activity.references[0]
     others = tuple(each for each in activity.constraints if each is not reference)
     moved = (
-        _copy_of(details, reference.referred, aside=True),
+        _copy_of(details, reference.referred, aside=elsewhere),
         *_swap(
             lines,
             ACTIVITY_TABLE,
-            replace(activity, constraints=(*others, replace(reference, aside=True))),
+            replace(activity, constraints=(*others, replace(reference, aside=elsewhere))),
         ),
     )
     with database(server, tmp_path) as target:
-        target.script(f"CREATE SCHEMA {_ASIDE.format('dbo')}")
-        target.script(render(moved, server))
+        for schema in {sql_schema or elsewhere, elsewhere} - set(_DEFAULT_SCHEMA.values()):
+            target.script(f"CREATE SCHEMA {schema}")
+        target.script(render(moved, server, sql_schema))
 
-        refusal, marks = _judged(target, None)
+        refusal, marks = _judged(target, sql_schema)
 
     assert any(
         f"{ACTIVITY_TABLE} does not refer by quote_reference, quote_option to quote_details" in each
-        and "dbo_aside.quote_details" in each
+        and f"{elsewhere}.quote_details" in each
         for each in refusal
     ), refusal
     assert any(_table_mark(ACTIVITY_TABLE, "refers")(mark) for mark in marks), marks
