@@ -583,6 +583,36 @@ class TestALoggedAgainFileScores:
         np.testing.assert_allclose(_scores(source, head), retrained.predict(head), rtol=1e-6)
         assert len(downloads) == 2
 
+        # The copy of the bytes the run no longer holds is removed; only the current one stays.
+        from haute._mlflow_io import disk_cached_run_model
+
+        cached = disk_cached_run_model(
+            run_id=store.runs["relogged"], artifact_path="model.cbm", destination=""
+        )
+        assert cached is not None
+        copies = [path for path in cached.model_path.parent.parent.iterdir() if path.is_dir()]
+        assert copies == [cached.model_path.parent]
+
+    def test_removing_older_copies_never_fails_a_load(self, tmp_path: Path) -> None:
+        from haute._mlflow_io import _remove_older_copies
+        from haute._mlflow_model import ResolvedModel, StoredArtifact
+        from haute._mlflow_utils import resolve_backend
+        from haute._model_flavors import family_for_artifact
+
+        use_project(tmp_path)
+        stored = StoredArtifact("model.cbm", "size:1")
+        resolved = ResolvedModel(
+            backend=resolve_backend(""),
+            run_id="run",
+            artifact=stored,
+            family=family_for_artifact("model.cbm"),
+            contract=None,
+            version="",
+            reference="MLflow run 'run'",
+        )
+        # No folder of copies at all: nothing to remove, and nothing raised.
+        _remove_older_copies(tmp_path / ".cache" / "models", resolved, stored)
+
 
 # ---------------------------------------------------------------------------
 # The discovery rule, a version's source and the refusals, against a fake store
