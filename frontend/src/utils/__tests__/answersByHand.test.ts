@@ -228,8 +228,6 @@ function isNotServer(expression: ts.Expression): boolean {
 interface Module {
   readonly path: string
   readonly file: ts.SourceFile
-  /** A local name a hook gave, called as a function. */
-  readonly hookBound: Set<string>
   /** A local name bound by an import: the module it is from (null for a package) and its name there. */
   readonly imports: Map<string, { readonly from: string | null; readonly name: string }>
   readonly moduleVariables: Set<string>
@@ -253,7 +251,7 @@ function resolveModule(from: string, specifier: string, known: ReadonlySet<strin
 function readModule(path: string, source: string, known: ReadonlySet<string>): Module {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, path.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.TSX)
   const module: Module = {
-    path, file, hookBound: new Set(), imports: new Map(), moduleVariables: new Set(), functions: [], exports: new Map(), exportsAll: [],
+    path, file, imports: new Map(), moduleVariables: new Set(), functions: [], exports: new Map(), exportsAll: [],
   }
   for (const statement of file.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && !statement.importClause?.isTypeOnly) {
@@ -304,39 +302,15 @@ function readModule(path: string, source: string, known: ReadonlySet<string>): M
       }
     }
   }
-  const visitDeclarations = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) && node.initializer) {
-      let init: ts.Expression = node.initializer
-      while (ts.isAwaitExpression(init) || ts.isNonNullExpression(init) || ts.isParenthesizedExpression(init) || ts.isAsExpression(init)) init = init.expression
-      if (ts.isCallExpression(init)) {
-        const callee = dotted(init.expression) ?? ""
-        const hook = callee.split(".").pop() ?? ""
-        if (/^use[A-Z]/.test(hook) && !STATE_HOOKS_VALUE_ONLY.has(hook)) {
-          if (hook === "useState" || hook === "useReducer") {
-            if (ts.isArrayBindingPattern(node.name) && node.name.elements[1] && ts.isBindingElement(node.name.elements[1])) {
-              bindingNames(node.name.elements[1].name, module.hookBound)
-            }
-          } else if (hook !== "useCallback") {
-            bindingNames(node.name, module.hookBound)
-          }
-        }
-      }
-    }
-    if (ts.isSourceFile(node) || isFunction(node)) {
-      for (const [name, fns] of declarationsIn(node)) {
-        for (const fn of fns) module.functions.push({ name, fn, topLevel: ts.isSourceFile(node) })
-      }
-    }
-    ts.forEachChild(node, visitDeclarations)
+  for (const [name, binding] of bindingsIn(file)) {
+    for (const fn of binding.fns) module.functions.push({ name, fn, topLevel: ts.isSourceFile(binding.scope) })
   }
-  visitDeclarations(file)
   return module
 }
 
 /** The function a declaration's value is: written in place, or given to `useCallback`. */
 function boundFunction(initializer: ts.Expression): ts.Node | null {
-  let init = initializer
-  while (ts.isAwaitExpression(init) || ts.isNonNullExpression(init) || ts.isParenthesizedExpression(init) || ts.isAsExpression(init)) init = init.expression
+  const init = unwaited(initializer)
   if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return init
   if (ts.isCallExpression(init) && (dotted(init.expression) ?? "").split(".").pop() === "useCallback") {
     const fn = init.arguments[0]
@@ -345,59 +319,125 @@ function boundFunction(initializer: ts.Expression): ts.Node | null {
   return null
 }
 
-const declarations = new WeakMap<ts.Node, Map<string, ts.Node[]>>()
-
-/**
- * The names *scope* (a function, or the file) binds itself, each to the functions bound to it
- * there: none for a parameter or another value, more than one when blocks of the scope bind
- * the name apart.
- */
-function declarationsIn(scope: ts.Node): Map<string, ts.Node[]> {
-  const known = declarations.get(scope)
-  if (known) return known
-  const found = new Map<string, ts.Node[]>()
-  const bind = (name: string, fn: ts.Node | null) => {
-    const fns = found.get(name) ?? []
-    if (fn) fns.push(fn)
-    found.set(name, fns)
+function unwaited(expression: ts.Expression): ts.Expression {
+  let current = expression
+  while (ts.isAwaitExpression(current) || ts.isNonNullExpression(current) || ts.isParenthesizedExpression(current) || ts.isAsExpression(current)) {
+    current = current.expression
   }
-  const values = (name: ts.BindingName) => {
+  return current
+}
+
+/** What a name is bound to in the scope that binds it. */
+interface Binding {
+  /** The scope that binds it: a function, a block, a loop, a catch clause, or the file. */
+  readonly scope: ts.Node
+  /** The functions bound to it there: none for another value, more than one for a `var` bound twice. */
+  readonly fns: ts.Node[]
+  /** A function a hook gave (`setRows`, `addToast`) or a value whose methods it gave: calling it writes. */
+  hook: boolean
+  /** A store's state (`const ui = useUIStore.getState()`): its methods write. */
+  handle: boolean
+  /** A store's action (`const { save } = get()`): calling it writes. */
+  action: boolean
+}
+
+/** Whether *node* binds its own `let`, `const`, functions and classes: JavaScript's lexical scopes. */
+function isScope(node: ts.Node): boolean {
+  if (ts.isSourceFile(node) || isFunction(node)) return true
+  // A function's body is the function's scope, with its parameters.
+  if (ts.isBlock(node)) return !isFunction(node.parent)
+  return ts.isCaseBlock(node) || ts.isCatchClause(node) || ts.isForStatement(node) || ts.isForOfStatement(node)
+    || ts.isForInStatement(node)
+}
+
+/** The scope a declaration at *node* is bound in: the nearest, or for a `var` the nearest function's. */
+function scopeHolding(node: ts.Node, functionScoped: boolean): ts.Node {
+  let current = node.parent
+  while (!(functionScoped ? isFunction(current) || ts.isSourceFile(current) : isScope(current))) current = current.parent
+  return current
+}
+
+const bindingTables = new WeakMap<ts.SourceFile, { readonly byScope: WeakMap<ts.Node, Map<string, Binding>>; readonly all: [string, Binding][] }>()
+
+/** Every binding of *file*, by the scope that binds it. */
+function bindingTable(file: ts.SourceFile) {
+  const known = bindingTables.get(file)
+  if (known) return known
+  const table = { byScope: new WeakMap<ts.Node, Map<string, Binding>>(), all: [] as [string, Binding][] }
+  const entry = (scope: ts.Node, name: string): Binding => {
+    let bound = table.byScope.get(scope)
+    if (!bound) {
+      bound = new Map()
+      table.byScope.set(scope, bound)
+    }
+    let binding = bound.get(name)
+    if (!binding) {
+      binding = { scope, fns: [], hook: false, handle: false, action: false }
+      bound.set(name, binding)
+      table.all.push([name, binding])
+    }
+    return binding
+  }
+  const each = (name: ts.BindingName, scope: ts.Node, mark: (binding: Binding) => void = () => {}) => {
     const names = new Set<string>()
     bindingNames(name, names)
-    for (const each of names) bind(each, null)
+    for (const one of names) mark(entry(scope, one))
+  }
+  const declare = (node: ts.VariableDeclaration) => {
+    const list = node.parent
+    const functionScoped = ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) === 0
+    const scope = scopeHolding(node, functionScoped)
+    each(node.name, scope)
+    if (!node.initializer) return
+    const fn = ts.isIdentifier(node.name) ? boundFunction(node.initializer) : null
+    if (fn) entry(scope, (node.name as ts.Identifier).text).fns.push(fn)
+    const init = unwaited(node.initializer)
+    if (ts.isCallExpression(init)) {
+      const hook = (dotted(init.expression) ?? "").split(".").pop() ?? ""
+      if (/^use[A-Z]/.test(hook) && !STATE_HOOKS_VALUE_ONLY.has(hook) && hook !== "useCallback") {
+        if (hook === "useState" || hook === "useReducer") {
+          const setter = ts.isArrayBindingPattern(node.name) ? node.name.elements[1] : undefined
+          if (setter && ts.isBindingElement(setter)) each(setter.name, scope, (binding) => (binding.hook = true))
+        } else each(node.name, scope, (binding) => (binding.hook = true))
+      }
+    }
+    if (readsStore(node.initializer)) {
+      if (ts.isIdentifier(node.name)) entry(scope, node.name.text).handle = true
+      else each(node.name, scope, (binding) => (binding.action = true))
+    } else if (readsStoreMember(node.initializer)) each(node.name, scope, (binding) => (binding.action = true))
   }
   const visit = (node: ts.Node) => {
     if (isFunction(node)) {
-      if (ts.isFunctionDeclaration(node) && node.name) bind(node.name.text, node)
-      return
+      for (const parameter of node.parameters) each(parameter.name, node)
+      if (ts.isFunctionDeclaration(node) && node.name) entry(scopeHolding(node, false), node.name.text).fns.push(node)
     }
-    if (ts.isVariableDeclaration(node)) {
-      const fn = node.initializer && ts.isIdentifier(node.name) ? boundFunction(node.initializer) : null
-      if (fn) bind((node.name as ts.Identifier).text, fn)
-      else values(node.name)
-    }
+    if (ts.isVariableDeclaration(node)) declare(node)
     ts.forEachChild(node, visit)
   }
-  if (isFunction(scope)) {
-    for (const parameter of scope.parameters) values(parameter.name)
-    if (scope.body) visit(scope.body)
-  } else ts.forEachChild(scope, visit)
-  declarations.set(scope, found)
-  return found
+  visit(file)
+  bindingTables.set(file, table)
+  return table
 }
 
-/**
- * What the name *name*, read at *node*, is bound to: the functions of the nearest scope that
- * binds it (none for another value), or undefined for an import or a global.
- */
-function bindingOf(node: ts.Node, name: string): readonly ts.Node[] | undefined {
+/** Every name *file* binds, in any scope, with its binding. */
+function bindingsIn(file: ts.SourceFile): readonly [string, Binding][] {
+  return bindingTable(file).all
+}
+
+/** What the name *name*, read at *node*, is bound to: by the nearest scope that binds it, or undefined for an import or a global. */
+function bindingOf(node: ts.Node, name: string): Binding | undefined {
+  const { byScope } = bindingTable(node.getSourceFile())
   for (let scope = node.parent; scope; scope = scope.parent) {
-    if (isFunction(scope) || ts.isSourceFile(scope)) {
-      const found = declarationsIn(scope).get(name)
-      if (found) return found
-    }
+    if (!isScope(scope)) continue
+    const found = byScope.get(scope)?.get(name)
+    if (found) return found
   }
   return undefined
+}
+
+/** Whether *binding* is a value of a function's own, or of a block in one: not the module's. */
+function isLocal(binding: Binding | undefined): boolean {
+  return binding !== undefined && !ts.isSourceFile(binding.scope)
 }
 
 function unwrapped(expression: ts.Expression): ts.Expression {
@@ -416,65 +456,6 @@ function readsStore(expression: ts.Expression): boolean {
 function readsStoreMember(expression: ts.Expression): boolean {
   const current = unwrapped(expression)
   return (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) && throughStore(current.expression)
-}
-
-interface Locals extends Set<string> {
-  /** A local bound to a store's state (`const ui = useUIStore.getState()`): its methods write. */
-  readonly stateHandles: Set<string>
-  /** A local destructured from a store's state (`const { save } = get()`): calling it writes. */
-  readonly stateActions: Set<string>
-}
-
-const scopes = new WeakMap<ts.Node, Locals>()
-const ownLocals = new WeakMap<ts.Node, Locals>()
-
-/** Names in scope in *fn*: its own, and those of the functions it is written in (a closure's). */
-function scopeLocals(fn: FunctionNode): Locals {
-  const known = scopes.get(fn)
-  if (known) return known
-  let outer: ts.Node | undefined = fn.parent
-  while (outer && !isFunction(outer)) outer = outer.parent
-  const scope = outer ? merged(scopeLocals(outer as FunctionNode), localsOf(fn)) : localsOf(fn)
-  scopes.set(fn, scope)
-  return scope
-}
-
-/** Names local to *fn*: its parameters and what its body declares. */
-function localsOf(fn: FunctionNode): Locals {
-  const known = ownLocals.get(fn)
-  if (known) return known
-  const found = readLocals(fn)
-  ownLocals.set(fn, found)
-  return found
-}
-
-function readLocals(fn: FunctionNode): Locals {
-  const locals = Object.assign(new Set<string>(), { stateHandles: new Set<string>(), stateActions: new Set<string>() })
-  for (const parameter of fn.parameters) bindingNames(parameter.name, locals)
-  const visit = (node: ts.Node) => {
-    if (node !== fn && isFunction(node)) return
-    if (ts.isVariableDeclaration(node)) {
-      bindingNames(node.name, locals)
-      if (node.initializer && readsStore(node.initializer)) {
-        if (ts.isIdentifier(node.name)) locals.stateHandles.add(node.name.text)
-        else bindingNames(node.name, locals.stateActions)
-      } else if (node.initializer && readsStoreMember(node.initializer)) {
-        bindingNames(node.name, locals.stateActions)
-      }
-    }
-    ts.forEachChild(node, visit)
-  }
-  if (fn.body) visit(fn.body)
-  return locals
-}
-
-const NO_LOCALS: Locals = Object.assign(new Set<string>(), { stateHandles: new Set<string>(), stateActions: new Set<string>() })
-
-function merged(outer: Locals, inner: Locals): Locals {
-  return Object.assign(new Set([...outer, ...inner]), {
-    stateHandles: new Set([...outer.stateHandles, ...inner.stateHandles]),
-    stateActions: new Set([...outer.stateActions, ...inner.stateActions]),
-  })
 }
 
 /** Every function in the modules that writes state after a wait outside the helper, by module. */
@@ -506,9 +487,9 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
     }
     return null
   }
-  /** Whether calling the local name *name* of *module* writes. */
+  /** Whether calling *name*, which no scope of *module* binds (an import, or a global), writes. */
   const namedWriter = (module: Module, name: string): boolean => {
-    if (WRITE_NAME.test(name) || module.hookBound.has(name) || writers.has(`${module.path}#${name}`)) return true
+    if (WRITE_NAME.test(name) || writers.has(`${module.path}#${name}`)) return true
     const imported = module.imports.get(name)
     if (!imported) return false
     if (imported.from === "<helper>") return true
@@ -517,14 +498,14 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
     return target !== null && writers.has(target)
   }
   /** Whether *callee*, called, writes: a name, or a property reached from a name. */
-  const writesWhenCalled = (module: Module, callee: ts.Expression, locals: Locals): boolean => {
+  const writesWhenCalled = (module: Module, callee: ts.Expression): boolean => {
     if (ts.isIdentifier(callee)) {
       const name = callee.text
-      if (locals.stateActions.has(name) || module.hookBound.has(name)) return true
-      // A function in scope writes when it does; another value in scope is not state, but a
-      // writer it is given (`onDone`) is.
+      // What the nearest scope binding the name binds it to: a function writes when it does, a
+      // hook's function or a store's action always; another value is not state, but a writer it
+      // is given (`onDone`) is.
       const bound = bindingOf(callee, name)
-      if (bound) return WRITE_NAME.test(name) || bound.some((fn) => writerFns.has(fn))
+      if (bound) return bound.hook || bound.action || WRITE_NAME.test(name) || bound.fns.some((fn) => writerFns.has(fn))
       return namedWriter(module, name)
     }
     if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
@@ -533,23 +514,23 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
       if (method === "getState" || method === "subscribe") return false
       if (throughStore(callee)) return true
       const root = rootOf(callee)
-      const rootName = ts.isIdentifier(root) ? root.text : null
-      if (rootName !== null && locals.stateHandles.has(rootName)) return true
-      if (rootName !== null && !locals.has(rootName)) {
-        if (module.hookBound.has(rootName)) return true
-        const imported = module.imports.get(rootName)
+      const bound = ts.isIdentifier(root) ? bindingOf(root, root.text) : undefined
+      // A store's state, or what a hook gave, writes through its methods.
+      if (bound?.handle || bound?.hook) return true
+      if (ts.isIdentifier(root) && bound === undefined) {
+        const imported = module.imports.get(root.text)
         // A function of a module imported whole: `history.recordSwitch(…)`.
         if (imported?.name === "*" && imported.from && ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
           const target = exportTarget(imported.from, method)
           if (target !== null && writers.has(target)) return true
         }
       }
-      if (WRITE_NAME.test(method)) return rootName === null || !locals.has(rootName) || /^on[A-Z]/.test(method)
+      if (WRITE_NAME.test(method)) return !ts.isIdentifier(root) || !isLocal(bound) || /^on[A-Z]/.test(method)
     }
     return false
   }
-  const isWrite = (module: Module, node: ts.Node, locals: Locals): boolean => {
-    if (ts.isCallExpression(node)) return writesWhenCalled(module, node.expression, locals)
+  const isWrite = (module: Module, node: ts.Node): boolean => {
+    if (ts.isCallExpression(node)) return writesWhenCalled(module, node.expression)
     const target = ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
       && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
       ? node.left
@@ -559,7 +540,7 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
         : null
     if (target === null) return false
     if (ts.isPropertyAccessExpression(target) && target.name.text === "current") return true
-    return ts.isIdentifier(target) && module.moduleVariables.has(target.text) && !locals.has(target.text)
+    return ts.isIdentifier(target) && module.moduleVariables.has(target.text) && !isLocal(bindingOf(target, target.text))
   }
   /**
    * Whether *fn* is a callback given to a wait primitive on `NOT_STATE` (`waitForJob`'s
@@ -578,18 +559,17 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
   const guarded = (module: Module, fn: ts.Node): boolean => isHelperCallback(fn) || isPrimitiveCallback(module, fn)
   const writesAnywhere = (module: Module, node: ts.Node): boolean => {
     let found = false
-    const visit = (current: ts.Node, locals: Locals) => {
+    const visit = (current: ts.Node) => {
       // What the helper, or a wait primitive, runs while its request is current is no write
       // of the function's.
       if (found || (current !== node && isFunction(current) && guarded(module, current))) return
-      const inner = current !== node && isFunction(current) ? merged(locals, localsOf(current)) : locals
-      if (isWrite(module, current, inner)) {
+      if (isWrite(module, current)) {
         found = true
         return
       }
-      ts.forEachChild(current, (child) => visit(child, inner))
+      ts.forEachChild(current, visit)
     }
-    visit(node, isFunction(node) ? localsOf(node as FunctionNode) : NO_LOCALS)
+    visit(node)
     return found
   }
   for (let grew = true; grew;) {
@@ -630,7 +610,6 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
     const madeAfterWait = new Set<ts.Node>()
     const inspect = (fn: FunctionNode) => {
       if (!fn.body) return
-      const locals = scopeLocals(fn)
       const promiseCall = isPromiseCallback(fn)
       let waited = !guarded(module, fn) && (madeAfterWait.has(fn) || (promiseCall !== null && !isNotServer(awaited(promiseCall))))
       const walk = (node: ts.Node) => {
@@ -679,7 +658,7 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
         // What a call or an assignment evaluates first, its callee and arguments or its value,
         // may wait: `setRows(await fetchRows())` writes after the wait.
         ts.forEachChild(node, walk)
-        if (waited && isWrite(module, node, locals)) report(node)
+        if (waited && isWrite(module, node)) report(node)
         // A writer passed: to `.then` (`promise.then(setRows)`), or to anything after a wait.
         if (ts.isCallExpression(node)) {
           const thenCall = ts.isPropertyAccessExpression(node.expression)
@@ -687,9 +666,9 @@ export function answersByHandIn(sources: ReadonlyMap<string, string>, notState: 
           if (thenCall || waited) {
             for (const argument of node.arguments) {
               // A value a hook gave is a writer when it is called; passed on, `.then` calls it.
-              const given = ts.isIdentifier(argument) && module.hookBound.has(argument.text) && !WRITE_NAME.test(argument.text)
+              const given = ts.isIdentifier(argument) && bindingOf(argument, argument.text)?.hook === true && !WRITE_NAME.test(argument.text)
               if ((ts.isIdentifier(argument) || ts.isPropertyAccessExpression(argument))
-                && (thenCall || !given) && writesWhenCalled(module, argument, locals)) report(argument)
+                && (thenCall || !given) && writesWhenCalled(module, argument)) report(argument)
             }
           }
         }
@@ -825,6 +804,29 @@ describe("the scan finds a write after a wait", () => {
         const count = async () => apply(await fetchRows())
         return null
       }`)).toEqual(["Rows.load"])
+  })
+
+  it("binds a block's own declarations only in that block", () => {
+    expect(scopesOf(`
+      export function Panel() {
+        const [rows, setRows] = useState([])
+        const apply = (data) => setRows(data)
+        async function load(flag) {
+          if (flag) {
+            const apply = (data) => data.length
+            apply([])
+          }
+          const data = await fetchRows()
+          apply(data)
+        }
+        const store = useSettingsStore.getState()
+        const save = async () => {
+          for (const store of [{ save: () => 1 }]) store.save()
+          await fetchRows()
+          store.saveAll()
+        }
+        return null
+      }`)).toEqual(["Panel.load", "Panel.save"])
   })
 
   it("finds a finally, and a catch, run after a branch that waits and leaves", () => {
