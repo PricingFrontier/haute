@@ -3669,7 +3669,8 @@ export interface ModelScoreConfig {
    */
   alias?: string;
   /**
-   * For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`.
+   * For a run source, the model's path inside the run's artifacts, such as `model.cbm`; empty for
+   * the run's one model. A registered version's source names its file.
    */
   artifact_path?: string;
   code?: string;

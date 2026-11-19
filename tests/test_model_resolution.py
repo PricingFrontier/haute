@@ -430,6 +430,81 @@ class TestALoggedAgainFileScores:
         np.testing.assert_allclose(preview(), second, rtol=1e-6)
         assert trace() == pytest.approx(second[0], rel=1e-6)
 
+    def test_the_preview_shows_a_refusal_in_its_words(self, store: _Store) -> None:
+        """The refusal reaches the editor as the node's setting error (HTTP 422)."""
+        from haute.errors import NodeConfigError
+        from haute.executor import _preview_cache, execute_graph
+
+        data = store.root / "data.parquet"
+        pl.from_pandas(store.frame.head(3)).write_parquet(data)
+        _preview_cache.clear()
+        graph = _graph(_config(_run_source(store.runs["pair"])), data)
+
+        with pytest.raises(NodeConfigError) as refused:
+            execute_graph(graph, target_node_id="ms")
+
+        assert refused.value.setting == "model"
+        assert "Model Score 'ms' cannot load its model" in str(refused.value)
+        assert "holds several models: frequency.cbm, severity.lgbm" in str(refused.value)
+
+    def test_one_preview_and_one_trace_each_resolve_a_reference_once(
+        self, store: _Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _mlflow_model
+        from haute.executor import _preview_cache, execute_graph
+        from haute.trace import _cache as trace_cache
+        from haute.trace import execute_trace
+
+        data = store.root / "data.parquet"
+        pl.from_pandas(store.frame.head(3)).write_parquet(data)
+        graph = _graph(_config(_run_source(store.runs["relogged"], "model.cbm")), data)
+        _preview_cache.clear()
+        trace_cache.clear()
+        resolutions: list[Any] = []
+        resolve = _mlflow_model._resolve
+
+        def counting(source: Any, backend: Any) -> Any:
+            resolutions.append(source)
+            return resolve(source, backend)
+
+        monkeypatch.setattr(_mlflow_model, "_resolve", counting)
+
+        execute_graph(graph, target_node_id="ms")
+        assert len(resolutions) == 1
+        execute_trace(graph, row_index=0, target_node_id="ms", column="prediction")
+        assert len(resolutions) == 2
+
+    def test_a_store_that_fails_once_fails_the_whole_preview(
+        self, store: _Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure stands for the operation: no load in it reads the model."""
+        from haute import _mlflow_model
+        from haute.executor import _preview_cache, execute_graph
+
+        data = store.root / "data.parquet"
+        pl.from_pandas(store.frame.head(3)).write_parquet(data)
+        graph = _graph(_config(_run_source(store.runs["relogged"], "model.cbm")), data)
+        _preview_cache.clear()
+        resolve = _mlflow_model._resolve
+        failures = [OSError("the tracking server is unreachable")]
+
+        def flaky(source: Any, backend: Any) -> Any:
+            if failures:
+                raise failures.pop()
+            return resolve(source, backend)
+
+        monkeypatch.setattr(_mlflow_model, "_resolve", flaky)
+
+        # The identity read failed, so the preview's load raises that failure
+        # rather than asking again and scoring under an identity it never read.
+        with pytest.raises(OSError, match="unreachable"):
+            execute_graph(graph, target_node_id="ms")
+        assert failures == []
+        recovered = execute_graph(graph, target_node_id="ms")["ms"]
+        assert recovered.status == "ok"
+        expected = store.models["relogged"].predict(store.frame.head(3))
+        np.testing.assert_allclose([row["prediction"] for row in recovered.preview], expected)
+
     def test_a_disk_cache_only_load_reads_the_record_and_never_the_store(
         self, store: _Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
