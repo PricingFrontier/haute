@@ -17,19 +17,22 @@ cannot rename or drop a column, is refused.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from sqlalchemy import Connection, Dialect, Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
+from haute._logging import get_logger
 from haute._quote_store._catalogue import (
     Catalogue,
+    CatalogueMovedError,
     column_problems,
     read_catalogue,
     table_problems,
@@ -53,6 +56,12 @@ HOST_VARIABLES = (
 SQLITE_MINIMUM = (3, 35, 0)
 #: The execution option that begins a transaction as a write: ``BEGIN IMMEDIATE`` on SQLite.
 _WRITE = "haute_write"
+#: How long a read the database ends as one to run again waits before each run again, in
+#: seconds: three more at most, half a second the longest.
+RERUN_WAITS = (0.05, 0.2, 0.5)
+
+logger = get_logger(component="quote_store")
+_Read = TypeVar("_Read")
 
 
 class QuoteStoreError(WorkbenchError):
@@ -241,6 +250,37 @@ def unreached(exc: BaseException) -> bool:
     return (isinstance(exc, DBAPIError) and exc.statement is None) or _entra_refused(exc)
 
 
+def rerun_asked(exc: BaseException) -> bool:
+    """Whether *exc* is the database ending a statement's transaction as one it asks to be run
+    again: a deadlock's victim or a serialization failure, SQLSTATE 40001, or PostgreSQL's
+    deadlock, 40P01. SQL Server makes a read of its catalogue a deadlock's victim beside DDL
+    its owners run. psycopg keeps the SQLSTATE; mssql-python keeps its name for it alone."""
+    if not isinstance(exc, DBAPIError) or exc.statement is None:
+        return False
+    original = exc.orig
+    return getattr(original, "sqlstate", None) in ("40001", "40P01") or (
+        getattr(original, "driver_error", None) == "Serialization failure"
+    )
+
+
+def read_store(engine: Engine, read: Callable[[Connection], _Read]) -> _Read:
+    """*read*, which writes nothing, on a connection of *engine*: run again on a fresh one
+    after each of :data:`RERUN_WAITS` while the database ends it as one to run again
+    (:func:`rerun_asked`) or the catalogue moves under it (:class:`CatalogueMovedError`), the
+    last run's error raised, so DDL run beside a reading app is neither a failed request nor
+    a refusal; any other error raised at once."""
+    waits = list(RERUN_WAITS)
+    while True:
+        try:
+            with engine.connect() as connection:
+                return read(connection)
+        except Exception as exc:
+            if not waits or not (isinstance(exc, CatalogueMovedError) or rerun_asked(exc)):
+                raise
+            logger.info("quote_store_read_rerun", runs_left=len(waits))
+        time.sleep(waits.pop(0))
+
+
 @contextmanager
 def reaching(url: str, environment: str, named_by: str = HOST_VARIABLES) -> Iterator[None]:
     """A block that connects to the server database at *url*: a connection refused or never
@@ -317,36 +357,39 @@ def open_engine(
     database not reached naming *named_by*. A database is judged by its catalogue alone:
     nothing in it says which environment it is or what made its tables."""
     schema = store_schema(form, sql_schema=sql_schema)
+    names = [*(stored.table.name for stored in schema.tables), schema.activity.name]
+
+    def checked(connection: Connection) -> Catalogue:
+        catalogue = read_catalogue(connection, sql_schema, names)
+        differences = _catalogue_differences(catalogue, schema, connection.dialect)
+        if differences:
+            raise QuoteStoreMismatchError(
+                "This database's tables do not fit the form: "
+                + "; ".join(differences)
+                + f". {_resolve(environment)}",
+                differences=differences,
+            )
+        lacking = missing_privileges(connection, schema)
+        if lacking:
+            raise QuoteStoreMismatchError(
+                "The identity the app signs in as lacks what the quote store needs: "
+                + "; ".join(lacking)
+                + ". Grant them to it.",
+                differences=lacking,
+            )
+        return catalogue
+
     engine = make_engine(url, sign_in=sign_in)
     try:
         with reaching(url, environment, named_by):
-            with engine.connect() as connection:
-                names = [stored.table.name for stored in schema.tables]
-                catalogue = read_catalogue(connection, sql_schema, [*names, schema.activity.name])
-                differences = _catalogue_differences(catalogue, schema, connection.dialect)
-                if differences:
-                    raise QuoteStoreMismatchError(
-                        "This database's tables do not fit the form: "
-                        + "; ".join(differences)
-                        + f". {_resolve(environment)}",
-                        differences=differences,
-                    )
-                lacking = missing_privileges(connection, schema)
-                if lacking:
-                    raise QuoteStoreMismatchError(
-                        "The identity the app signs in as lacks what the quote store needs: "
-                        + "; ".join(lacking)
-                        + ". Grant them to it.",
-                        differences=lacking,
-                    )
-                schema = with_kept_columns(
-                    schema,
-                    {
-                        found.name: [(column.name, column.kind) for column in found.columns]
-                        for found in catalogue.tables
-                    },
-                )
+            catalogue = read_store(engine, checked)
     except Exception:
         engine.dispose()
         raise
-    return engine, schema
+    return engine, with_kept_columns(
+        schema,
+        {
+            found.name: [(column.name, column.kind) for column in found.columns]
+            for found in catalogue.tables
+        },
+    )

@@ -29,6 +29,7 @@ from alembic.ddl.impl import DefaultImpl
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import Column, MetaData, Table
+from sqlalchemy.schema import CreateIndex
 from sqlalchemy.types import TypeEngine
 
 from haute._quote_store._providers import PROVIDERS, Provider, name_problems
@@ -486,12 +487,12 @@ def _emit(
                     "update them manually if needed.",
                 )
                 if step.kind == "rename table":
-                    operations.impl.create_table(schema.by_name(step.table_key).table)
+                    create_table(operations, schema.by_name(step.table_key).table)
                 else:
                     operations.add_column(step.table, _column(schema, step), schema=owner)
                 continue
         if step.kind == "create table":
-            operations.impl.create_table(schema.by_name(step.table_key).table)
+            create_table(operations, schema.by_name(step.table_key).table)
         elif step.kind == "add column":
             operations.add_column(step.table, _column(schema, step), schema=owner)
         elif step.kind == "retype column":
@@ -502,7 +503,21 @@ def _emit(
             _removed_note(operations, step, owner, additions_only=additions_only)
     if plan.activity:
         # A database holding none of the store takes Haute's activity with the form's tables.
-        operations.impl.create_table(schema.activity)
+        create_table(operations, schema.activity)
+
+
+def create_table(operations: Operations, table: Table) -> None:
+    """*table* made through *operations* as Alembic makes it, then each of its indexes in
+    its name's order: Alembic writes a table's indexes in the order of its set of them, which
+    differs from run to run, so the same plan would not write the same SQL."""
+    indexes = sorted(table.indexes, key=lambda index: str(index.name))
+    table.indexes.clear()
+    try:
+        operations.impl.create_table(table)
+    finally:
+        table.indexes.update(indexes)
+    for index in indexes:
+        operations.execute(CreateIndex(index))
 
 
 #: What a step's or note's ``quotes`` holds when a table was read for a counted comparison

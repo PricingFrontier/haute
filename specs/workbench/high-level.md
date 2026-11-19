@@ -2943,7 +2943,8 @@ Out of scope:
   note that the SQL does not change it, and each note on a table or column that holds
   values with the quotes holding them; and a name its engine does not keep whole
   (PostgreSQL's 63 bytes), or a table or column taking the name of one the form removes, as
-  a note. The SQL is one transaction, so a statement that fails leaves the tables as they
+  a note. The same plan writes the same SQL, line for line, each table's indexes in their
+  names' order. The SQL is one transaction, so a statement that fails leaves the tables as they
   were, and holds nothing of Haute's beyond the tables: nothing reads it back or records
   that it ran, and the check alone judges the tables. No location, credential or value read
   from a database is shown, logged or written to the project. A Haute release that changes
@@ -2987,7 +2988,14 @@ Out of scope:
   length is `NVARCHAR(max)`, a Decimal `FLOAT(53)`, a moment `DATETIME2(6)` and True/false
   `BIT`. On PostgreSQL text is `TEXT`, a Decimal `DOUBLE PRECISION` and a moment `TIMESTAMP`.
   A non-finite number is kept empty on every engine. Each connection to a server is checked
-  before it is used, since a hosted database closes idle ones. MySQL, MariaDB and Oracle,
+  before it is used, since a hosted database closes idle ones. A read of the database's
+  catalogue, the app's check's and the schema pane's, that the database ends as a
+  deadlock's victim or a serialization failure, as SQL Server's catalogue reads can be
+  beside DDL its owners run, is run again on a fresh connection, at most three times more,
+  and so is the schema pane's read when a table or column it counts quotes in is gone by the
+  time it counts them, saying the tables changed while it read them should they change under
+  every run; so DDL run beside a running app neither fails a request nor reads as a sign-in
+  that cannot read the tables. MySQL, MariaDB and Oracle,
   whose DDL commits as it runs, and Databricks SQL and Snowflake, whose keys are not
   enforced, are not store engines, though any of them can read the store's tables.
 

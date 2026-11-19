@@ -15,6 +15,7 @@ constrains.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -53,9 +54,20 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.mssql import TINYINT
 from sqlalchemy.engine import Inspector
-from sqlalchemy.exc import CompileError
+from sqlalchemy.exc import CompileError, DBAPIError
 from sqlalchemy.sql.elements import ColumnClause
 from sqlalchemy.types import TypeDecorator, TypeEngine
+
+from haute._workbench_config import WorkbenchError
+
+
+class CatalogueMovedError(WorkbenchError):
+    """The database's tables changed while they were read: a table or column the read took
+    from the catalogue was gone, or another, by the time its quotes were counted, as DDL run
+    beside the read changes them. Read again (:func:`._store.read_store` does)."""
+
+    error_code = "quote_store_moved"
+
 
 #: The columns every table of the store leads with: the quote's identity.
 IDENTITY = ("quote_reference", "quote_option")
@@ -278,7 +290,18 @@ def read_catalogue(
             ),
         )
         found.append((table, reflected, numbered))
-    counts = _counted(connection, list(countable.items()), sql_schema)
+    try:
+        counts = _counted(connection, list(countable.items()), sql_schema)
+    except DBAPIError as exc:
+        # Every name counted was the catalogue's a moment before, so a count that finds one
+        # missing as it runs read a catalogue DDL beside it changed; any other failure is
+        # the database's refusal, raised as it is.
+        if not names_missing(exc):
+            raise
+        raise CatalogueMovedError(
+            "The database's tables changed while they were read, as SQL run beside the read "
+            "changes them: read them again once it has run."
+        ) from None
     tables: list[CatalogueTable] = []
     for table, reflected, numbered in found:
         quotes, counted = counts[table.name] if table.name in countable else (None, {})
@@ -302,6 +325,28 @@ def read_catalogue(
             )
         )
     return Catalogue(tables=tuple(tables))
+
+
+#: What a missing table or column is called by the drivers that keep no SQLSTATE: SQL
+#: Server's 42S02 and 42S22 as mssql-python names them, and SQLite's own words.
+_MISSING_NAMED = frozenset({"Base table or view not found", "Column not found"})
+_SQLITE_MISSING = ("no such table:", "no such column:")
+
+
+def names_missing(exc: DBAPIError) -> bool:
+    """Whether *exc* is a statement refused for naming a table or column the database does
+    not hold: SQLSTATE 42P01 or 42703 on PostgreSQL (psycopg keeps it), SQL Server's 42S02 or
+    42S22 (mssql-python keeps its name for it alone) and SQLite's ``no such table`` or ``no
+    such column``. A refusal of any other kind, a permission among them, is not one, whatever
+    the catalogue holds by the time it is looked at."""
+    original = exc.orig
+    if getattr(original, "sqlstate", None) in ("42P01", "42703"):
+        return True
+    if getattr(original, "driver_error", None) in _MISSING_NAMED:
+        return True
+    return isinstance(original, sqlite3.OperationalError) and str(original).startswith(
+        _SQLITE_MISSING
+    )
 
 
 def _distinct(sets: Iterable[tuple[str, ...]]) -> tuple[tuple[str, ...], ...]:

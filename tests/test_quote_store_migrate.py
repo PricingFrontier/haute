@@ -480,3 +480,20 @@ def test_a_form_the_tables_already_fit_has_nothing_to_change() -> None:
     assert script(form(POLICY), form(POLICY)) == (
         "-- The tables already fit the form: nothing to change.\n"
     )
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql", "mssql"])
+def test_the_same_plan_writes_the_same_sql(dialect: str) -> None:
+    # quote_details holds two indexes and haute_activity one: each rendering makes them
+    # afresh, so a set's order would give either order of quote_details' two.
+    release = form(POLICY)
+    written = {render_sql(offline_plan(None, release), release, dialect) for _ in range(20)}
+
+    assert len(written) == 1
+    # Each table's indexes in their names' order.
+    details = [
+        line.split(" ON ")[0]
+        for line in next(iter(written)).splitlines()
+        if line.startswith("CREATE INDEX") and " quote_details " in line
+    ]
+    assert len(details) == 2 and details == sorted(details)
