@@ -1181,6 +1181,8 @@ to a live MLflow tracking server.
   registry: an alias resolving to the version it targets and following a move,
   a missing alias naming the model and alias, a concrete version beside an alias
   rejected, a scoring load following the alias to the newly targeted model,
+  the stored-result identity moving with the alias and with a newer `latest` of
+  another file, and staying for a newer version of the same file,
   alias/version exclusivity and malformed aliases in node config validation,
   `/model-versions` listing each version's aliases, the optimiser loader
   forwarding the alias, and the deploy bundle recording the alias's resolved
