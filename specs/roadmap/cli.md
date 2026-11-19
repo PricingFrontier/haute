@@ -154,7 +154,7 @@ nodes inside it. A name held by two occurrences is refused naming both.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/cli/_run.py::_handle_run_in_project`;
+**Evidence:** `src/haute/cli/_run.py::_run_in_project`;
 `specs/cli/high-level.md`; `docs/building-models/nodes/submodel.md`.
 
 ### CLI-06 — `haute ci update` removes only the CI files Haute wrote

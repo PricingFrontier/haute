@@ -41,6 +41,7 @@ __all__ = [
     "function_kind",
     "has_empty_body",
     "is_configured",
+    "output_settings",
     "pipeline_directory",
     "run_configured_node",
 ]
@@ -463,12 +464,9 @@ def _run_configured_work(
 
 def live_switch_routes(
     *, name: str, config: Mapping[str, Any], fn: Callable[..., Any], pipeline_dir: str = "."
-) -> tuple[list[str], dict[str, str]]:
-    """A Source Switch's input names, in connection order, and its input-to-source map.
-
-    The names are its function's positional parameters, which its run binds to its
-    frames in that order; the map is its sidecar's ``input_scenario_map``.
-    """
+) -> dict[str, str]:
+    """A Source Switch's input-to-source map, its sidecar's ``input_scenario_map``: each
+    input by the name the parser gives it (``données`` is ``donn_xe9_es``)."""
     from haute._config_io import load_node_config
 
     settings = load_node_config(
@@ -476,8 +474,31 @@ def live_switch_routes(
         base_dir=pipeline_directory(fn, name, pipeline_dir),
         node_type=NodeType.LIVE_SWITCH,
     )
-    positional, _keyword_only = _parameters(fn)
-    return positional, dict(settings.get("input_scenario_map") or {})
+    return dict(settings.get("input_scenario_map") or {})
+
+
+def output_settings(
+    node_type: NodeType,
+    kind: FunctionKind,
+    *,
+    name: str,
+    config: Mapping[str, Any],
+    fn: Callable[..., Any],
+    pipeline_dir: str = ".",
+) -> Mapping[str, Any]:
+    """The settings holding a registered node's Columns settings, which shape its output
+    (:func:`haute._node_apply.shape_node_output`): its sidecar, when it names one, or its
+    decorator's keywords (a Transform's, an Edge Join's)."""
+    path = config.get("config")
+    if kind == "transform" or not isinstance(path, str) or not path:
+        return config
+    from haute._config_io import load_node_config
+
+    return load_node_config(
+        path,
+        base_dir=pipeline_directory(fn, name, pipeline_dir),
+        node_type=node_type,
+    )
 
 
 def run_configured_node(
@@ -490,12 +511,16 @@ def run_configured_node(
     frames: Sequence[Any],
     pipeline_dir: str = ".",
     target_ports: Sequence[str | None] | None = None,
+    input_names: Sequence[str] | None = None,
 ) -> Any:
     """Run a configured node: its declaration's work, or that work handed to its hook.
 
     *pipeline_dir* leads from the file defining *fn* to its pipeline's directory,
     where ``config=`` paths resolve (``.`` except in a submodel definition file).
     *target_ports* are the ports *frames* arrive on, when the caller knows them.
+    *input_names* are the names the parser gives *frames*, aligned with them, which a
+    pipeline's run knows from its bound edges, as the graph walker gives a node its
+    inputs' names; a node called on its own names its frames by its parameters.
     """
     positional, _keyword_only = _parameters(fn)
 
@@ -506,7 +531,7 @@ def run_configured_node(
             config=config,
             fn=fn,
             frames=frames,
-            input_names=positional,
+            input_names=positional if input_names is None else input_names,
             pipeline_dir=pipeline_dir,
             target_ports=target_ports,
         )

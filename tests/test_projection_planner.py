@@ -3509,15 +3509,17 @@ def test_source_scan_projection_reads_full_width_when_a_rename_would_collide(cod
     assert projection.columns is None
 
 
-def test_source_scan_projection_rejects_demand_excluded_by_selected_columns():
-    with pytest.raises(ValueError, match="excluded by selected_columns"):
-        source_scan_projection(
-            {
-                "selected_columns": ["quote_id"],
-                "column_renames": {"raw_premium": "premium"},
-            },
-            {"premium"},
-        )
+def test_source_scan_projection_reads_full_width_for_demand_its_selection_drops():
+    """The selection is applied after the read, so the node asking refuses the column."""
+    projection = source_scan_projection(
+        {
+            "selected_columns": ["quote_id"],
+            "column_renames": {"raw_premium": "premium"},
+        },
+        {"premium"},
+    )
+
+    assert projection.columns is None
 
 
 def test_source_scan_projection_rejects_malformed_projection_config():

@@ -13,8 +13,8 @@ import polars as pl
 import pytest
 
 from haute._builders import NodeBuildContext, _build_node_fn
-from haute._execute_lazy import _apply_selected_columns
 from haute._execution_context import ExecutionProfile
+from haute._node_apply import _apply_selected_columns
 from haute._output_assembler import OutputMappingSchemaError
 from haute._types import NodeType
 from haute.errors import (
@@ -828,7 +828,7 @@ class TestBuildApiInput:
         self,
         tmp_path: Path,
     ) -> None:
-        from haute._execute_lazy import _apply_selected_columns
+        from haute._node_apply import _apply_selected_columns
 
         data_file = tmp_path / "input.parquet"
         pl.DataFrame({"quote_id": [1], "premium": [10.5]}).write_parquet(data_file)
@@ -859,7 +859,7 @@ class TestBuildApiInput:
         assert columns_by_profile[ExecutionProfile.OPTIMISER_SOLVE.value] == ["quote_id"]
         assert columns_by_profile[ExecutionProfile.PREVIEW_EAGER.value] == ["quote_id"]
 
-    def test_source_projection_rejects_demand_excluded_by_selected_columns(
+    def test_source_projection_leaves_demand_its_selection_drops_to_the_selection(
         self,
         tmp_path: Path,
     ) -> None:
@@ -885,8 +885,10 @@ class TestBuildApiInput:
             execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
-        with pytest.raises(ValueError, match="excluded by selected_columns"):
-            fn()
+        # The read is full width; the walker's shaping then drops ``premium``, and the node
+        # asking for it refuses it, as wherever the selection applies.
+        frame = fn()
+        assert frame.collect_schema().names() == ["quote_id", "raw_premium"]
 
 
 # ---------------------------------------------------------------------------

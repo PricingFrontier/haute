@@ -44,6 +44,7 @@ from haute._standalone_nodes import (
     function_kind,
     is_configured,
     live_switch_routes,
+    output_settings,
     run_configured_node,
     seeded_workbench_input_tables,
 )
@@ -90,6 +91,8 @@ class Node:
     #: From the defining file to its pipeline's directory, where ``config=``
     #: paths resolve: ``.`` except in a submodel definition file.
     pipeline_dir: str = "."
+    #: The submodel occurrence a run expanded this node from, whose name prefixes its own.
+    occurrence: str | None = None
     kind: FunctionKind = field(init=False, repr=False)
     _input_arity: _InputArity = field(init=False, repr=False)
 
@@ -100,6 +103,17 @@ class Node:
             is_source=self.is_source,
             node_name=self.name,
         )
+
+    @property
+    def message_name(self) -> str:
+        """How a message names this node, as the graph walker names it
+        (``haute._node_addresses.node_display_name``): its name, a submodel child's with its
+        occurrence's ("enriched in enrichment")."""
+        from haute._node_addresses import display_name
+
+        if self.occurrence is None:
+            return self.name
+        return display_name(self.name.removeprefix(f"{self.occurrence}."), self.occurrence)
 
     @property
     def node_type(self) -> NodeType:
@@ -153,6 +167,7 @@ class Node:
         fn: Callable,
         frames: tuple[pl.DataFrame, ...],
         target_ports: Sequence[str | None] | None = None,
+        input_names: Sequence[str] | None = None,
     ) -> pl.DataFrame:
         # Called from a run, this is the run's project; called directly, the
         # project holding the node's file.
@@ -166,8 +181,30 @@ class Node:
                 frames=frames,
                 pipeline_dir=self.pipeline_dir,
                 target_ports=target_ports,
+                input_names=input_names,
             )
         return result
+
+    def output(self, result: Any) -> Any:
+        """*result*, this node's work, as a pipeline's run passes it on: a lazy frame, as
+        the graph walker holds every node's output, shaped by the node's own Columns
+        settings (:func:`haute._node_apply.shape_node_output`); a multi-frame source's
+        bundle, or a Workbench Output's tables, as they are."""
+        from haute._node_apply import shape_node_output
+
+        if isinstance(result, pl.DataFrame):
+            result = result.lazy()
+        if not isinstance(result, pl.LazyFrame):
+            return result
+        settings = output_settings(
+            self.node_type,
+            self.kind,
+            name=self.name,
+            config=self.config,
+            fn=self.fn,
+            pipeline_dir=self.pipeline_dir,
+        )
+        return shape_node_output(result, settings, node_label=self.message_name)
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
         return self._invoke(dfs, None)
@@ -177,11 +214,13 @@ class Node:
         dfs: tuple[pl.DataFrame, ...],
         constants: GlobalConstantsNamespace | None,
         target_ports: Sequence[str | None] | None = None,
+        input_names: Sequence[str] | None = None,
     ) -> pl.DataFrame:
         """Run the node on *dfs*, its function reading *constants* when a run gives them.
 
         *target_ports* are the input ports *dfs* arrive on, aligned, when a run knows
-        them: a Workbench Output fills the table each port names.
+        them: a Workbench Output fills the table each port names. *input_names* are the
+        names the parser gives *dfs*, which a configured node reads its inputs by.
         """
         fn = self.fn if constants is None else bind_function_view(self.fn, constants)
         if self.is_source:
@@ -198,7 +237,7 @@ class Node:
             return result
         arity = self.input_arity
         if len(dfs) == 0 and self.runs_unconnected:
-            return self._run_configured(fn, (), target_ports)
+            return self._run_configured(fn, (), target_ports, input_names)
         if len(dfs) == 0:
             raise ValueError(
                 f"Node '{self.name}' expects {arity.describe()} input(s) but received none"
@@ -217,7 +256,7 @@ class Node:
                 received=len(dfs),
             )
         if self.kind != "transform":
-            return self._run_configured(fn, dfs, target_ports)
+            return self._run_configured(fn, dfs, target_ports, input_names)
         result = fn(*dfs)
         return result
 
@@ -294,6 +333,10 @@ class RegisteredEdge:
     target: str
     source_port: str | None = None
     target_port: str | None = None
+    #: The name its target's parameter gives its frame, as the parser names it (an
+    #: ordinary source by its sanitised name, a Quote Input by its table): set when a run
+    #: binds the pipeline's edges, and given to a configured node as its input's name.
+    input_name: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -638,8 +681,10 @@ def _collect_standalone_output(result: Any) -> pl.DataFrame:
 class Pipeline(NodeRegistry):
     """A haute pricing pipeline - a DAG of decorated nodes.
 
-    Nodes are functions. Edges define data flow: the output DataFrame
-    of the source node is passed as the input to the target node.
+    Nodes are functions. Edges define data flow: the output frame of the
+    source node is passed, as a lazy frame, as the input to the target node,
+    as every way of running a pipeline passes it (specs/execution-engine,
+    "Ways of running a pipeline").
 
     Usage:
         pipeline = Pipeline("main")
@@ -723,28 +768,34 @@ class Pipeline(NodeRegistry):
                 node.node_type, node.config
             ):
                 continue
-            names, routes = live_switch_routes(
+            routes = live_switch_routes(
                 name=node.name, config=node.config, fn=node.fn, pipeline_dir=node.pipeline_dir
             )
             if source not in routes.values():
                 continue
-            for name, edge in zip(names, self._get_input_edges(node.name), strict=False):
-                if routes.get(name, source) != source:
+            for edge in self._get_input_edges(node.name):
+                if routes.get(edge.input_name or "", source) != source:
                     inactive.add(edge)
         return frozenset(inactive)
 
-    def _unreached(self, order: list[Node], inactive: frozenset[RegisteredEdge]) -> frozenset[str]:
-        """The nodes whose every outgoing edge is inactive or leads to such a node.
-
-        They feed only a switch's inactive branch, so the run never resolves them. A
-        node with no outgoing edge at all is a leaf the run keeps.
-        """
-        unreached: set[str] = set()
+    def _read_by(
+        self, order: list[Node], response: Node, inactive: frozenset[RegisteredEdge]
+    ) -> list[Node]:
+        """*order*'s nodes that *response* reads through its active edges, itself included:
+        the one subgraph a run runs and seeds, as the graph walker prunes a Source Switch's
+        inactive inputs and then runs a target's ancestors. A branch beside the response
+        (an Explore, a Model Training, an Optimisation) and a node only an *inactive* edge
+        leads from are neither run nor seeded. A Workbench Input is always read: the
+        response gives every table its quote's identity."""
+        read = {response.name} | {n.name for n in order if _is_workbench_input(n.node_type)}
         for node in reversed(order):
-            outgoing = [edge for edge in self._edges if edge.source == node.name]
-            if outgoing and all(edge in inactive or edge.target in unreached for edge in outgoing):
-                unreached.add(node.name)
-        return frozenset(unreached)
+            if node.name in read:
+                read.update(
+                    edge.source
+                    for edge in self._edges
+                    if edge.target == node.name and edge not in inactive
+                )
+        return [node for node in order if node.name in read]
 
     @staticmethod
     def _workbench_quote(order: list[Node], outputs: Mapping[str, Any]) -> Any:
@@ -812,7 +863,7 @@ class Pipeline(NodeRegistry):
         wired: list[_WiredEdge] = []
         for occurrence, definition in occurrences.items():
             nodes.extend(
-                dataclasses.replace(node, name=f"{occurrence}.{node.name}")
+                dataclasses.replace(node, name=f"{occurrence}.{node.name}", occurrence=occurrence)
                 for node in definition._nodes
             )
             wired.extend(
@@ -956,31 +1007,18 @@ class Pipeline(NodeRegistry):
                 f"Node '{n.name}' is missing input(s) from: {missing}. "
                 "Upstream node(s) may have failed or not been registered."
             )
-        from haute._execute_lazy import _pick_source_frame
-
         input_dfs: list[pl.DataFrame] = [
-            cast(pl.DataFrame, None)
-            if edge in inactive
-            else cast(
-                pl.DataFrame,
-                _pick_source_frame(
-                    outputs[edge.source],
-                    GraphEdge(
-                        id=_edge_id(edge.source, edge.target, edge.source_port, edge.target_port),
-                        source=edge.source,
-                        target=edge.target,
-                        sourceHandle=edge.source_port,
-                        targetHandle=edge.target_port,
-                    ),
-                ),
-            )
+            cast(pl.DataFrame, None) if edge in inactive else _picked(outputs[edge.source], edge)
             for edge in input_edges
         ]
         target_ports = [edge.target_port for edge in input_edges]
-        outputs[n.name] = n._invoke(tuple(input_dfs), constants, target_ports)
+        input_names = [edge.input_name or _input_name(None, edge) for edge in input_edges]
+        outputs[n.name] = n.output(
+            n._invoke(tuple(input_dfs), constants, target_ports, input_names)
+        )
 
     def run(self, *, source: str | None = None) -> pl.DataFrame:
-        """Execute the full pipeline under *source*, following edges for data flow.
+        """Run the nodes the pipeline's response reads under *source*, following edges.
 
         *source* is required: it is what Source Switches route on, which value
         each global constant takes, and (anything but ``"live"``) selects
@@ -1001,25 +1039,21 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set(source)
         try:
             with standalone_project_scope(self._pipeline_file()):
-                order = self._topo_order()
+                everything = self._topo_order()
+                response = self._resolve_output_node(everything)
+                inactive = self._inactive_switch_edges(source)
+                order = self._read_by(everything, response, inactive)
                 constants = self._run_constants(source)
                 outputs: dict[str, Any] = {}
-                inactive = self._inactive_switch_edges(source)
-                unreached = self._unreached(order, inactive)
 
                 for n in order:
-                    if n.name in unreached:
-                        continue
                     if n.is_source:
-                        outputs[n.name] = n._invoke((), constants)
+                        outputs[n.name] = n.output(n._invoke((), constants))
                     else:
                         self._execute_transform(n, outputs, constants, inactive)
 
-                response = as_response(
-                    outputs[self._resolve_output_node(order).name],
-                    self._workbench_quote(order, outputs),
-                )
-                return _collect_standalone_output(response)
+                answer = as_response(outputs[response.name], self._workbench_quote(order, outputs))
+                return _collect_standalone_output(answer)
         finally:
             _scenario_ctx.reset(_token)
 
@@ -1073,14 +1107,15 @@ class Pipeline(NodeRegistry):
         _token = _scenario_ctx.set("live")
         try:
             with standalone_project_scope(self._pipeline_file()):
-                order = self._topo_order()
+                everything = self._topo_order()
+                response = self._resolve_output_node(everything)
+                inactive = self._inactive_switch_edges("live")
+                order = self._read_by(everything, response, inactive)
                 constants = self._run_constants("live")
                 outputs: dict[str, Any] = {}
-                inactive = self._inactive_switch_edges("live")
-                unreached = self._unreached(order, inactive)
 
                 # A source only a switch's inactive branch reads is neither seeded nor run.
-                sources = [n for n in order if n.is_source and n.name not in unreached]
+                sources = [n for n in order if n.is_source]
                 deploy_inputs = [n for n in sources if n.is_deploy_input]
                 if len(deploy_inputs) > 1:
                     raise ExecutionError(
@@ -1150,20 +1185,20 @@ class Pipeline(NodeRegistry):
                         check_request_keys(table, given[table.port])
                 for n in sources:
                     if n.name in seed_names:
-                        outputs[n.name] = seed_value
+                        outputs[n.name] = n.output(seed_value)
                     else:
                         # Not a deploy input - run its own load logic.
-                        outputs[n.name] = n._invoke((), constants)
+                        outputs[n.name] = n.output(n._invoke((), constants))
 
                 for n in order:
-                    if n.is_source or n.name in unreached:
+                    if n.is_source:
                         continue
                     self._execute_transform(n, outputs, constants, inactive)
 
                 # The quote is the frames given, by port, a bare frame under the one port
                 # connected: its identity and its keyed tables' rows the response holds to.
-                response = as_response(outputs[self._resolve_output_node(order).name], given)
-                return _collect_standalone_output(response)
+                answer = as_response(outputs[response.name], given)
+                return _collect_standalone_output(answer)
         finally:
             _scenario_ctx.reset(_token)
 
@@ -1447,6 +1482,24 @@ def _input_name(source: Node | None, edge: RegisteredEdge) -> str:
     return _sanitize_func_name(edge.source)
 
 
+def _picked(source_output: Any, edge: RegisteredEdge) -> pl.DataFrame:
+    """The frame *edge* takes from its source's output, lazy, as the graph walker gives
+    every node its inputs (``_pick_source_frame``)."""
+    from haute._execute_lazy import _pick_source_frame
+
+    picked = _pick_source_frame(
+        source_output,
+        GraphEdge(
+            id=_edge_id(edge.source, edge.target, edge.source_port, edge.target_port),
+            source=edge.source,
+            target=edge.target,
+            sourceHandle=edge.source_port,
+            targetHandle=edge.target_port,
+        ),
+    )
+    return cast(pl.DataFrame, picked.lazy() if isinstance(picked, pl.DataFrame) else picked)
+
+
 def _input_mapping(node: Node) -> Mapping[str, str] | None:
     """*node*'s declared ``input_mapping``: on its decorator, or, for an External File (the
     object hook), in its ``config=`` sidecar, read as its run reads it."""
@@ -1473,7 +1526,8 @@ def _bind_edges(wired: Sequence[_WiredEdge], nodes: Sequence[Node]) -> list[Regi
     from haute._node_bindings import NodeInput, bind_node_inputs
     from haute._standalone_nodes import _parameters
 
-    edges = [item.edge for item in wired]
+    named = [dataclasses.replace(item.edge, input_name=item.name) for item in wired]
+    edges = list(named)
     places: dict[str, list[int]] = {}
     for place, item in enumerate(wired):
         places.setdefault(item.edge.target, []).append(place)
@@ -1495,5 +1549,5 @@ def _bind_edges(wired: Sequence[_WiredEdge], nodes: Sequence[Node]) -> list[Regi
             error=ExecutionError,
         )
         for place, index in zip(targeted, order, strict=True):
-            edges[place] = wired[ordered[index]].edge
+            edges[place] = named[ordered[index]]
     return edges

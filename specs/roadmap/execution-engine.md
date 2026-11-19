@@ -9,23 +9,17 @@ failure before any node runs is reported. The packages below come from the
 9 November 2026 codebase review. `EXE-01` was reproduced against `HEAD` on
 that day by calling the named functions; `EXE-03` is read from the
 source and was not run. `EXE-04` and `EXE-05` were reproduced on 10 November
-2026 through the editor's preview route, `haute run` and the deploy. `EXE-06`
-comes from the review plan's phase 5, a reader from a second model family
-(Codex) over the code changed since the 31 October audit, and was reproduced
-on 13 November by running one pipeline file three ways. `EXE-07` and
-`EXE-08` come from the same reader; a worker built each run and the main
-session ran it again on 13 November.
+2026 through the editor's preview route, `haute run` and the deploy. `EXE-07`
+and `EXE-08` come from the review plan's phase 5, a reader from a second model
+family (Codex) over the code changed since the 31 October audit; a worker
+built each run and the main session ran it again on 13 November.
 
 `EXE-01` also changes what the optimiser runs on, so it is read together with
 [the optimiser specification](../optimiser/high-level.md).
 
-`EXE-09` comes from the review plan's phase 5, a reader from a second
-model family (Codex) over the code changed since the 31 October audit. A
-worker built each run and the main session ran each again on 14 November
-2026.
-
-A cause several packages here share has its own file and is taken first:
-[ways of running a pipeline](root-cause-run-parity.md).
+`tests/test_run_parity.py` runs every pipeline each way the specification's
+**Ways of running a pipeline** names and holds `EXE-05`'s difference as an
+expected failure naming it, so its delivery turns the case green.
 
 ## Priorities
 
@@ -35,10 +29,8 @@ A cause several packages here share has its own file and is taken first:
 | EXE-03 | Planned | P3 | A preamble failure is reported at the preamble's own line, wherever the project folder is. |
 | EXE-04 | Planned | P2 | A join that previews in the editor runs from the command line and in a deployment, whatever Polars options it carries. |
 | EXE-05 | Planned | P2 | The Constant page's own example, a Transform that cross-joins a Constant, runs from the command line and deploys. |
-| EXE-06 | Planned | P2 | A pipeline run as Python, by `pipeline.run()` or `pipeline.score()`, applies each node's column selection and renames, as `haute run`, the preview and a deployment do. |
 | EXE-07 | Planned | P2 | A preview worker that died while idle is replaced whatever the size of the next request; previews and the server's shutdown no longer hang until a restart. |
 | EXE-08 | Planned | P3 | A column replaced under its own name is estimated at its new width, so work that cannot fit is refused before it runs. |
-| EXE-09 | Planned | P3 | A Source Switch input with a non-ASCII name is chosen by `pipeline.run()` as it is by the preview and `haute run`. |
 
 ## Planned improvements
 
@@ -180,6 +172,12 @@ host without a cap; the Transform has no such exemption. The refusal's
 remedy, "Provide readable source/schema metadata", cannot help, and the
 deploy text calls the join a group-by, both as in `EXE-04`.
 
+Since 18 November 2026 the execution-engine specification's **Ways of running
+a pipeline** states the difference that is meant: work whose memory nobody has
+measured is admitted with a warning under a worker's memory cap and refused
+without one. What is left here is reading a cross join whose other side holds
+one row as no such work, and the refusal's words.
+
 **Plan:** Read a cross join whose other side is proved to hold one row, as a
 Constant is, as what it is: the dominant side's rows with the constant's
 columns added. Admit it on every surface without the unmeasured-cross-join
@@ -194,8 +192,9 @@ with a cross "Join another input" step and a formula that uses the constant)
 gives the same rows in the editor's preview, from `haute run` and from the
 deploy scorer, and its deploy dry run passes. A Transform that cross-joins
 two many-row inputs is still refused where there is no memory cap, in one
-message naming the node, the join and the remedies. A test runs the page's
-example through all three.
+message naming the node, the join and the remedies.
+`tests/test_run_parity.py::test_a_transform_crossing_a_constant_answers_every_way`
+passes with its expected-failure mark removed.
 
 **Dependencies:** None. `EXE-04` rewords the same refusal.
 
@@ -206,41 +205,6 @@ and `tests/test_polars_backend_strategy_contract.py` hold that answer;
 `docs/building-models/nodes/constant.md` (Connecting to other nodes, and its
 example); `docs/deployment/index.md`; `specs/deploy/high-level.md`;
 `specs/execution-engine/low-level.md`.
-
-### EXE-06 — `pipeline.run()` applies a node's column selection and renames
-**Why:** Reproduced on 13 November 2026 on two small pipelines, each run
-three ways. A Banding's settings keep two columns and rename one, as its
-Columns tab writes them: `selected_columns` of `quote_id` and `ncd_band`,
-and `column_renames` of `ncd_band` to `band`. `haute run` and the editor's
-preview return `quote_id` and `band`. The same file run as Python,
-`pipeline.run(source="batch")`, returns `quote_id`, `ncd`,
-`internal_margin` and `ncd_band`: nothing selected and nothing renamed. A
-Data Input with `selected_columns` in its settings and a Transform with
-`selected_columns` on its decorator do the same: two columns from
-`haute run`, all four from `pipeline.run()`.
-
-`pipeline.run()` and `pipeline.score()` walk the nodes with a loop of their
-own. The graph walker shapes each node's output after its work; the loop
-does not, and neither it nor the code that runs a configured node reads
-either setting. A column the analyst removed therefore comes back in the
-standalone result, and a later node that reads a renamed column does not
-find it, in the one way of running a pipeline that needs no editor.
-
-**Plan:** Shape a node's output in the standalone loop by the functions the
-walker uses, so the two cannot differ, for every node type.
-
-**Acceptance:** For each node type that can carry a column selection or a
-rename, a pipeline gives the same columns and rows from `pipeline.run()`,
-`pipeline.score()`, `haute run` and the preview. A test runs the shipped
-examples the standalone way beside the others.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/pipeline.py`;
-`src/haute/_standalone_nodes.py::run_configured_node`;
-`src/haute/_graph_walker.py`;
-`src/haute/_execute_lazy.py::_apply_selected_columns`;
-`src/haute/_execute_lazy.py::_apply_column_renames`.
 
 ### EXE-07 — A preview worker that died is replaced, whatever the next request's size
 **Why:** Reproduced on 13 November 2026 with the real worker pool and
@@ -309,24 +273,3 @@ reads, as for a column with a new name.
 
 **Evidence:** `src/haute/_ram_estimate.py`;
 `specs/execution-engine/low-level.md`.
-
-### EXE-09 — A Source Switch input with a non-ASCII name is chosen in plain Python too
-**Why:** Reproduced on 14 November 2026. A pipeline has the Data Inputs
-`live_rows` and `données` behind a Source Switch, with `données` mapped
-to the source `batch`. The editor's preview under `batch` and
-`haute run --source batch` both read `données`. Imported and run as plain
-Python, `pipeline.run(source='batch')` raises "Live switch 'choose' has no
-input for scenario 'batch'", in a message that lists `batch` among the
-available mappings. That path gives the switch its inputs by the names
-written in the code, where the mapping holds the sanitised names the
-specification gives a non-ASCII parameter.
-
-**Plan:** Give the switch the sanitised input names on the plain-Python
-path, as the other two paths do.
-
-**Acceptance:** The three paths above return the same two rows.
-
-**Dependencies:** `EXE-06` is another difference of the same path.
-
-**Evidence:** `src/haute/_standalone_nodes.py`;
-`specs/pipeline-config/low-level.md`.

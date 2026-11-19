@@ -20,7 +20,6 @@ import haute.projection as projection_planner
 from haute._execute_lazy import (
     NodeBoundaryRunner,
     PreparedExecutionRequest,
-    _apply_selected_columns,
     _build_funcs,
     _extract_error_line,
     _prepare_execution,
@@ -28,6 +27,7 @@ from haute._execute_lazy import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
+from haute._node_apply import _apply_selected_columns
 from haute._types import (
     GraphEdge,
     GraphNode,

@@ -304,6 +304,97 @@ def load_external_file_at(path: str, config: Mapping[str, Any]) -> object:
 
 
 # ---------------------------------------------------------------------------
+# A node's output columns
+# ---------------------------------------------------------------------------
+
+
+def shape_node_output(
+    frame: pl.LazyFrame | pl.DataFrame, config: Mapping[str, Any], *, node_label: str
+) -> pl.LazyFrame:
+    """*frame*, a node's output, as its own Columns settings leave it: the columns its
+    ``selected_columns`` keep, in their order, then its ``column_renames``.
+
+    The one implementation every way of running a pipeline calls: the graph walker after
+    each node's builder, and the write recipes it composes, and a standalone
+    ``pipeline.run()`` or ``pipeline.score()`` after each node's work
+    (specs/execution-engine, "Ways of running a pipeline").
+    """
+    selected = _apply_selected_columns(frame, config, node_label=node_label)
+    renamed = _apply_column_renames(selected, config)
+    return renamed.lazy() if isinstance(renamed, pl.DataFrame) else renamed
+
+
+def _apply_column_renames(
+    frame: pl.LazyFrame | pl.DataFrame,
+    config: Mapping[str, Any],
+) -> pl.LazyFrame | pl.DataFrame:
+    """Apply column renames from *config*'s ``column_renames``.
+
+    ``column_renames`` is a ``dict[str, str]`` mapping original column names
+    to new names.  Only renames for columns that actually exist in the frame
+    are applied.  A no-op when the dict is absent or empty.
+    """
+    renames: dict[str, str] | None = config.get("column_renames")
+    if not renames:
+        return frame
+
+    if isinstance(frame, pl.LazyFrame):
+        all_cols = set(frame.collect_schema().names())
+    else:
+        all_cols = set(frame.columns)
+
+    valid = {old: new for old, new in renames.items() if old in all_cols and old != new}
+    if valid:
+        return frame.rename(valid)
+    return frame
+
+
+def _apply_selected_columns(
+    frame: pl.LazyFrame | pl.DataFrame,
+    config: Mapping[str, Any],
+    *,
+    node_label: str,
+) -> pl.LazyFrame | pl.DataFrame:
+    """Filter *frame* to only the columns listed in *config*'s ``selected_columns``.
+
+    If ``selected_columns`` is absent or empty the frame is returned unchanged.
+    Only columns that actually exist in the frame are kept (a column an upstream
+    edit renamed or removed is left out), in the selection's order, and the filter is
+    a no-op only when the frame already holds those columns in that order: a frame the
+    planner narrowed to the selected columns is still put in the selection's order. A
+    selection none of whose columns exist any more is refused, naming the node and the
+    columns: keeping every column instead would silently widen the node's output.
+    """
+    sel_cols: list[str] | None = config.get("selected_columns")
+    if not sel_cols:
+        return frame
+
+    if isinstance(frame, pl.LazyFrame):
+        all_cols = frame.collect_schema().names()
+    else:
+        all_cols = frame.columns
+
+    seen: set[str] = set()
+    valid = []
+    for c in sel_cols:
+        if c in all_cols and c not in seen:
+            valid.append(c)
+            seen.add(c)
+    if not valid:
+        from haute.errors import NodeConfigError
+
+        stale = ", ".join(repr(column) for column in dict.fromkeys(sel_cols))
+        raise NodeConfigError(
+            f"Node {node_label!r} keeps columns its input no longer has any of: {stale}. "
+            "Choose its columns again.",
+            setting="selected_columns",
+        )
+    if valid != list(all_cols):
+        return frame.select(valid)
+    return frame
+
+
+# ---------------------------------------------------------------------------
 # liveSwitch
 # ---------------------------------------------------------------------------
 

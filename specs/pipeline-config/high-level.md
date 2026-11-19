@@ -186,13 +186,17 @@ executor over the live decorator graph (each refusing a pipeline with no nodes, 
 no nodes") (distinct from the full graph executor used for
 deployment/preview, which operates on the parsed `GraphNode`/`GraphEdge` representation
 instead). They bind every node's parameters to its inputs (see Binding parameters to
-inputs), topologically sort the registered nodes and edges, run each node with its
-wired-in DataFrame(s) — a transform's function directly, a configured node's work through its
-decorator and then its hook, if it has one — and resolve which node's output to return.
-Like the graph walker, they never resolve a Source Switch's inactive branch: an edge into a
+inputs), topologically sort the registered nodes and edges, resolve which node's output to
+return, and run that node and the nodes it reads (a Workbench Input always), as the graph
+walker runs a target's ancestors: each with its wired-in lazy frame(s) — a transform's
+function directly, a configured node's work through its decorator and then its hook, if it
+has one — given its inputs by the names the parser gives them and its output shaped by its
+own Columns settings, as the walker runs it (the execution engine's **Ways of running a
+pipeline**). Like the graph walker, they never resolve a Source Switch's inactive branch: an edge into a
 switch from an input its sidecar maps to another source (`score()` runs as `live`) is
-inactive, a node whose every outgoing edge is inactive or leads to such a node is not run
-(nor seeded), and the switch receives `None` for that input. A switch whose map does not name
+inactive, the nodes the response reads are found through active edges alone, so a node only
+an inactive edge leads from is not run (nor seeded) even when it also feeds a branch beside
+the response, and the switch receives `None` for that input. A switch whose map does not name
 the run's source keeps every edge and refuses the run itself. Of the output node, an explicit
 response node (`@pipeline.output` or `@pipeline.workbench_output`) wins if there is exactly one;
 two raise, naming both; otherwise the single node with no
