@@ -301,18 +301,28 @@ class TestPyfuncAutoDetect:
 
 class TestModelCache:
     def test_cache_hit(self, serve_runs):
-        """A load whose resolution is cached returns the cached model without a download."""
+        """A hit whose copies are on disk returns the cached model without a download.
+
+        A hit whose copies are gone fetches them once (the cached model names its
+        contract's copy, and a disk-cache-only load reads the record), and loads nothing.
+        """
+        import mlflow
+
+        from haute._mlflow_io import fetch_resolved_files
+
         store = serve_runs({"abc123": {"model.cbm": b"model bytes"}})
         source = _run_source("abc123", "model.cbm")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        cache_key = _model_cache_key(resolve_model(source, backend=_FAKE_BACKEND), "regression")
-        _model_cache.put(cache_key, fake_sm)
+        resolved = resolve_model(source, backend=_FAKE_BACKEND)
+        _model_cache.put(_model_cache_key(resolved, "regression"), fake_sm)
 
-        result = load_mlflow_model(source, task="regression")
-
-        assert result is fake_sm
-        # download_artifacts should NOT be called (cache hit)
-        assert store.downloads == []
+        with patch("haute._mlflow_io._load_catboost_file") as load:
+            assert load_mlflow_model(source, task="regression") is fake_sm
+            assert store.downloads == ["runs:/abc123/model.cbm"]
+            fetch_resolved_files(mlflow, resolved)
+            assert load_mlflow_model(source, task="regression") is fake_sm
+        assert store.downloads == ["runs:/abc123/model.cbm"]
+        load.assert_not_called()
 
     def test_cache_lru_eviction(self, serve_runs):
         """Exceeding max cache size evicts oldest entry."""

@@ -1912,6 +1912,21 @@ def load_mlflow_model(
     return load_resolved_model(model_resolution(source, backend=backend), task)
 
 
+def _keep_copies_current(resolved: ResolvedModel) -> None:
+    """Leave a memory hit's copies and record as a load of the same answer would.
+
+    The cached model names the copy of its contract (``run_contract_path``) and a
+    disk-cache-only load reads the record, so a hit for bytes another load has since
+    replaced (A, then B, then A again) restores A's copies and record. Unchanged
+    copies cost a stat and a record compare; a pyfunc folder has none.
+    """
+    if not resolved.loads_from_file:
+        return
+    import mlflow
+
+    fetch_resolved_files(mlflow, resolved)
+
+
 def load_resolved_model(resolved: ResolvedModel, task: str) -> ScoringModel:
     """Load the model a resolution answered, cached in memory under its identities."""
     if task not in _VALID_TASKS:
@@ -1921,6 +1936,7 @@ def load_resolved_model(resolved: ResolvedModel, task: str) -> ScoringModel:
     cache_key = _model_cache_key(resolved, task)
     cached = _model_cache.get(cache_key)
     if cached is not None:
+        _keep_copies_current(resolved)
         _record_cache_hit(run_id=run_id, artifact_path=artifact, flavor=flavor)
         return cached
 
@@ -1932,6 +1948,7 @@ def load_resolved_model(resolved: ResolvedModel, task: str) -> ScoringModel:
     with _artifact_io_lock(backend.digest, run_id, artifact):
         cached = _model_cache.get(cache_key)
         if cached is not None:
+            _keep_copies_current(resolved)
             _record_cache_hit(run_id=run_id, artifact_path=artifact, flavor=flavor)
             return cached
 

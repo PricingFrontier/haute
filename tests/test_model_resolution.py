@@ -593,6 +593,51 @@ class TestALoggedAgainFileScores:
         copies = [path for path in cached.model_path.parent.parent.iterdir() if path.is_dir()]
         assert copies == [cached.model_path.parent]
 
+    def test_bytes_that_come_back_are_scored_with_their_own_copies(
+        self, store: _Store, tmp_path: Path
+    ) -> None:
+        """A, then B, then A again, memory never cleared: A's copies and record return."""
+        from haute._mlflow_io import disk_cache_only_model_loads, disk_cached_run_model
+        from haute._model_source import load_bound_model
+        from haute.modelling._feature_contract import build_contract, save_contract
+
+        run_id = store.client.create_run(store.experiment_id).info.run_id
+        head = store.frame.head(3)
+        models = {}
+        for name, scale, target in (("a", 6.0, "y"), ("b", 60.0, "z")):
+            folder = tmp_path / name
+            folder.mkdir()
+            models[name] = _catboost(store.frame, scale)
+            models[name].save_model(str(folder / "model.cbm"))
+            save_contract(
+                build_contract(
+                    features=_FEATURES,
+                    feature_types={"x0": "Float64", "x1": "Float64"},
+                    categorical_features=[],
+                    target_name=target,
+                    target_type="Float64",
+                    task="regression",
+                ),
+                folder / "model.feature_contract.json",
+            )
+
+        def log(name: str) -> None:
+            for file in ("model.cbm", "model.feature_contract.json"):
+                store.client.log_artifact(run_id, str(tmp_path / name / file))
+
+        source = _run_source(run_id, "model.cbm")
+        for name in ("a", "b", "a"):
+            log(name)
+            bound = load_bound_model(source, "regression")
+            assert bound.contract_path is not None and Path(bound.contract_path).is_file()
+            np.testing.assert_allclose(_scores(source, head), models[name].predict(head))
+
+        cached = disk_cached_run_model(run_id=run_id, artifact_path="model.cbm", destination="")
+        assert cached is not None and cached.present()
+        assert cached.model_path.read_bytes() == (tmp_path / "a" / "model.cbm").read_bytes()
+        with disk_cache_only_model_loads():
+            np.testing.assert_allclose(_scores(source, head), models["a"].predict(head))
+
     def test_removing_older_copies_never_fails_a_load(self, tmp_path: Path) -> None:
         from haute._mlflow_io import _remove_older_copies
         from haute._mlflow_model import ResolvedModel, StoredArtifact
@@ -789,6 +834,32 @@ class TestARunReferenceIsRefusedByName:
         client = FakeArtifactClient({"r": {"model.cbm": None}})
         with pytest.raises(ModelResolutionError, match="reports no size"):
             _resolve(monkeypatch, client, _run_source("r", "model.cbm"))
+
+    @pytest.mark.parametrize("folder", ["model.v1", "model.cbm"])
+    def test_a_pyfunc_folder_whatever_its_name_is_discovered_and_resolved(
+        self, monkeypatch: pytest.MonkeyPatch, folder: str
+    ) -> None:
+        """What the path holds decides its family, never its name's suffix."""
+        from haute._mlflow_model import run_model_candidates
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {f"{folder}/MLmodel": 1, f"{folder}/model.pkl": 2}})
+        assert run_model_candidates(client, "r") == (folder,)
+        for path in ("", folder):
+            resolved = _resolve(monkeypatch, client, _run_source("r", path))
+            assert (resolved.artifact.path, resolved.family.flavor) == (folder, "pyfunc")
+            assert resolved.contract is None
+
+    def test_a_file_with_a_suffix_no_family_loads_is_refused_naming_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.errors import ConfigError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"model.v1": 1}})
+        with pytest.raises(ConfigError, match="is not a model file Haute can score") as refused:
+            _resolve(monkeypatch, client, _run_source("r", "model.v1"))
+        assert ".cbm" in refused.value.context["supported_suffixes"]
 
     def test_a_pyfunc_folders_identity_is_its_listing(
         self, monkeypatch: pytest.MonkeyPatch

@@ -991,10 +991,11 @@ class TestLockAcquisitionRaces:
     ):
         """Cache empty at entry; the 'winner' populates it while this caller
         waits for the load lock — the waiter returns that instance without
-        loading or downloading, with or without a copy on disk.
+        loading, with or without a copy on disk.
 
         The key is the store's answer, read before the lock, so the waiter
-        needs no download to know the winner loaded the same bytes.
+        needs no download to know the winner loaded the same bytes; it fetches
+        only the copy a load of that answer leaves, when none is on disk.
         """
         use_project(tmp_path)
         store.runs["run-h"] = {"model.cbm": len(b"bytes")}
@@ -1022,7 +1023,7 @@ class TestLockAcquisitionRaces:
             result = load_mlflow_model(_run("run-h", "model.cbm"), task="regression")
 
         assert result is winner_model
-        assert transport.calls == 0
+        assert transport.calls == (0 if copy_on_disk else 1)
         load_catboost.assert_not_called()
 
     def test_a_copy_that_vanishes_while_waiting_is_downloaded_again(

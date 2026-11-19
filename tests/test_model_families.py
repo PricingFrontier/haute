@@ -175,13 +175,20 @@ def test_a_registered_family_is_in_the_suffix_list_and_maps_to_its_distributions
     assert _extra_deps_by_artifact(resolved) == {"stub-runtime": ["ms__model.stub"]}  # type: ignore[arg-type]
 
 
-def test_an_unrecognised_suffix_is_refused_naming_the_supported_suffixes() -> None:
+def test_an_unrecognised_suffix_is_refused_naming_the_supported_suffixes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     suffixes = r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm, \.tboost"
     with pytest.raises(ConfigError, match=suffixes) as local:
         load_local_model("model.pkl")
+    # A run's path is refused by its suffix once the store says it is a file: a
+    # folder of that name would be a pyfunc model.
+    pickled = tmp_path / "model.pkl"
+    pickled.write_bytes(b"not loaded")
+    run_id = _log_to_local_run(pickled, tmp_path, monkeypatch)
     with pytest.raises(ConfigError, match=suffixes) as run:
         load_mlflow_model(
-            RunModelSource(run_id="abc123", artifact_path="model.pkl", mlflow_destination="")
+            RunModelSource(run_id=run_id, artifact_path="model.pkl", mlflow_destination="")
         )
 
     assert local.value.context["supported_suffixes"] == BUILT_IN_SUFFIXES

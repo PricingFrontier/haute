@@ -398,7 +398,11 @@ the scoring errors and the route returns them as `400`.
    `model_resolution_scope` a reference already answered is not asked again).
 4. **Load the answer** (`load_resolved_model(resolved, task)`): build the key
    from the `ResolvedModel` (`_model_cache_key`) and check the in-memory
-   cache; on a hit, record a hit and return. Otherwise take the
+   cache; on a hit, keep its copies current (`_keep_copies_current`: the
+   model's and contract's copies and the record, as a load of that answer
+   would leave them, so bytes that come back after another load replaced them
+   find their own copies and record again; a stat and a record compare when
+   nothing changed), record a hit and return. Otherwise take the
    per-`(backend digest, run_id, artifact path)` lock, re-check (a concurrent
    caller may have loaded it while this one waited), and record a miss. A
    file-loaded family goes through `_load_with_bounded_retry`, which fetches
@@ -515,9 +519,11 @@ client pinned to the backend (`pinned_client`) and:
    then resolves as a run source at that path, or with none.
 2. **Run with a path.** Lists the path's folder (`list_artifacts(run_id,
    parent)`, the top level for a top-level path), which must hold the path:
-   a file is the model, and its family is `family_for_artifact(path)` (an
+   what the store holds there decides the family, never the path's name: a
+   file is the model, and its family is `family_for_artifact(path)` (an
    unregistered suffix raises its `ConfigError`); a folder must hold an
-   `MLmodel` file (one listing of the folder) and is a pyfunc model. The
+   `MLmodel` file (one listing of the folder) and is a pyfunc model whatever
+   its name (`model.v1`), as the discovery rule found it. The
    same listing of the parent gives the contract beside a native model
    (`<stem>.feature_contract.json`), when it is there.
 3. **Run with no path.** `run_model_candidates(client, run_id)` is the one

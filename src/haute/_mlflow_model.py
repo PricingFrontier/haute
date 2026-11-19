@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 from haute._model_flavors import (
     ModelFamily,
+    directory_family,
     family_for_artifact,
     family_for_suffix,
     supported_model_files_description,
@@ -371,18 +372,19 @@ def _resolve_in_run(
                 candidates,
             )
         path = candidates[0]
-    # A path that leaves the run, or names a suffix no family loads, is refused
-    # before the store is asked.
+    # A path that leaves the run is refused before the store is asked. What the
+    # path holds decides its family: a folder is a pyfunc model whatever its name
+    # (``model.v1``), and only a file is dispatched by its suffix.
     validate_artifact_path(path)
-    family = family_for_artifact(path)
     entry = artifacts.entry(path)
     if entry is None:
         held = _candidates(artifacts)
         holds = f" It holds {', '.join(held)}." if held else " It holds no model Haute can score."
         raise _refused(f"{reference} holds no artifact {path!r}.{holds}", reference, held)
     if entry.is_dir:
+        family = directory_family()
         inside = artifacts.listing(path)
-        if family.load_file is not None or not _is_pyfunc_folder(inside):
+        if not _is_pyfunc_folder(inside):
             raise _refused(
                 f"{path!r} in {reference} is a folder without an {MLMODEL_FILE} file, not a "
                 "model Haute can score.",
@@ -392,6 +394,7 @@ def _resolve_in_run(
         stored = StoredArtifact(path, _listing_identity(inside))
         contract = None
     else:
+        family = family_for_artifact(path)
         if family.load_file is None:
             raise _refused(
                 f"{path!r} in {reference} is not a model Haute can score. Expected "
