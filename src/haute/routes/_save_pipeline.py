@@ -564,7 +564,7 @@ def _finish_committed(
     answer = None if record.answer is None else SavePipelineResponse.model_validate(record.answer)
     warnings = [] if answer is None else list(answer.warnings)
     removals = _remove_saved_away(root, record.removes, warnings)
-    staging_left = _remove_staging(root, record.writes)
+    staging_left = _remove_staging(root, [*record.writes, *record.leftover])
     written = {
         path: _artifact_digest(path)
         for rel in record.writes
@@ -596,7 +596,7 @@ def _finish_committed(
             root,
             SaveRecord(
                 source_file=record.source_file,
-                writes=tuple(staging_left),
+                leftover=tuple(staging_left),
                 removes=tuple(removals.remaining),
                 committed=True,
             ),
@@ -606,24 +606,31 @@ def _finish_committed(
     return FinishedSave(response, removals.removed, payload)
 
 
-def _settle_record(root: Path, record: SaveRecord | None) -> SaveRecord | None:
+class _Settled(NamedTuple):
+    """What settling a record left for the next save to carry (the files of a save that never
+    committed, which it goes on reporting, and what is still to remove), and the save a settle
+    finished, when the record was one committed with its answer."""
+
+    remaining: SaveRecord | None
+    finished: FinishedSave | None
+
+
+def _settle_record(root: Path, record: SaveRecord | None) -> _Settled:
     """Settle *record*, left by a save before this one: finish a committed one, and remove
-    the staging files of one that never committed, so no Commit takes them. Returns what the
-    record still holds afterwards, for the next save to carry: the files of a save that never
-    committed, which it goes on reporting, and the removals not yet made."""
+    the staging files of one that never committed, so no Commit takes them."""
     if record is None or is_running(root, record.source_file):
-        return None
+        return _Settled(None, None)
     if record.committed:
-        _finish_committed(root, record)
-        return read_record(root, record.source_file)
-    _remove_staging(root, record.writes)
-    return record
+        finished = _finish_committed(root, record)
+        return _Settled(read_record(root, record.source_file), finished)
+    _remove_staging(root, [*record.writes, *record.leftover])
+    return _Settled(record, None)
 
 
 def settle_saves(project_root: Path) -> None:
     """Settle every record a save left in the project: the server runs it as it starts, so
     a save it died in is finished, or its staging files are gone and it is reported, before
-    any request or Commit meets it."""
+    any request or Commit meets it. No canvas is open yet to be sent what it finishes."""
     root = project_root.resolve()
     with repository_mutation(root):
         for record in saved_records(root):
@@ -666,6 +673,9 @@ class SavePipelineService:
         self.committed: CommittedDocument | None = None
         # True when the last save was a repeat answered from its receipt: nothing written.
         self.replayed = False
+        # A save a server stopped in, or that raised, after it committed, which this save's
+        # settle finished: its document is one no canvas has been sent.
+        self.recovered: CommittedDocument | None = None
 
     def _read_on_disk(self, py_path: Path, base_revision: str | None) -> _OnDisk:
         """Load the pipeline file's editor document and strict graph, once each, for
@@ -805,10 +815,15 @@ class SavePipelineService:
         """
         self.committed = None
         self.replayed = False
+        self.recovered = None
         with repository_mutation(self._root):
             py_path = self._resolve_source_file(body.source_file)
             source_file = py_path.relative_to(self._root).as_posix()
-            carried = _settle_record(self._root, read_record(self._root, source_file))
+            left = read_record(self._root, source_file)
+            settled = _settle_record(self._root, left)
+            if left is not None and settled.finished is not None and left.answer is not None:
+                self.recovered = self._recovered_document(py_path, left, settled.finished)
+            carried = settled.remaining
             # The digest serializes the whole request: made only for one a repeat can name.
             digest = None if body.operation is None else save_request_digest(body)
             if body.operation is not None and digest is not None:
@@ -824,6 +839,24 @@ class SavePipelineService:
                     digest=digest,
                     carried=carried,
                 )
+
+    def _recovered_document(
+        self, py_path: Path, record: SaveRecord, finished: FinishedSave
+    ) -> CommittedDocument:
+        """The document of the save *record* names, which a settle finished, as live sync
+        sends it, with the files it wrote and removed."""
+        payload = finished.payload
+        if payload is None:
+            payload = load_pipeline_editor_document(py_path, project_root=self._root).model_dump(
+                mode="json", by_alias=True
+            )
+        written = (path for rel in record.writes if (path := _recorded_path(self._root, rel)))
+        return CommittedDocument(
+            py_path,
+            payload,
+            pipeline_document_fingerprint(payload),
+            (*written, *finished.removed),
+        )
 
     def _save(
         self,
@@ -919,8 +952,9 @@ class SavePipelineService:
             for removal in carried.removes:
                 if removal.file.casefold() not in planned_folded:
                     removes.setdefault(removal.file.casefold(), removal)
-        # A committed record carries only the files whose staging is still to remove.
-        carried_writes = carried.writes if carried is not None else ()
+        # A record left before: the files of a save that never committed, and those whose
+        # staging is still to remove. They are this save's leftover, never its capture.
+        leftover = () if carried is None else (*carried.writes, *carried.leftover)
         record = SaveRecord(
             source_file=source_file,
             operation=body.operation,
@@ -929,12 +963,12 @@ class SavePipelineService:
             writes=tuple(
                 dict.fromkeys(
                     [
-                        *carried_writes,
                         *(self._project_file(path) for path in planned),
                         *(self._project_file(path) for path in deletes if path.exists()),
                     ]
                 )
             ),
+            leftover=tuple(dict.fromkeys(leftover)),
             removes=tuple(removes.values()),
         )
         write_record(self._root, record)

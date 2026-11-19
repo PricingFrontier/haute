@@ -72,17 +72,21 @@ class Removal:
 class SaveRecord:
     """A save of the pipeline file *source_file* (project-relative, ``/``-separated).
 
-    *writes* are the files it writes or deletes in its transaction, and for a save made over
-    the record of one that never committed, that one's files too: each may hold either save.
-    *removes* are the stale files it removes once committed. *answer* is the response as it
-    stood when the save committed, a ``SavePipelineResponse`` in JSON. A record that cannot
-    be read is still a save that stopped: *readable* is False and it names no files."""
+    *writes* are the files it writes or deletes in its transaction, which its capture takes.
+    *leftover* are files a save before it left: the files of one that never committed, which
+    may hold either save until this one commits, and files whose staging could not yet be
+    removed. A settle removes the staging beside both; neither is captured for *leftover*,
+    which may name files that never came to be. *removes* are the stale files it removes once
+    committed. *answer* is the response as it stood when the save committed, a
+    ``SavePipelineResponse`` in JSON. A record that cannot be read is still a save that
+    stopped: *readable* is False and it names no files."""
 
     source_file: str
     operation: str | None = None
     digest: str | None = None
     base_revision: str | None = None
     writes: tuple[str, ...] = ()
+    leftover: tuple[str, ...] = ()
     removes: tuple[Removal, ...] = ()
     committed: bool = False
     answer: dict[str, object] | None = field(default=None, compare=False)
@@ -95,6 +99,7 @@ class SaveRecord:
             "digest": self.digest,
             "base_revision": self.base_revision,
             "writes": list(self.writes),
+            "leftover": list(self.leftover),
             "removes": [{"file": r.file, "digest": r.digest} for r in self.removes],
             "committed": self.committed,
             "answer": self.answer,
@@ -117,7 +122,8 @@ def _project_file(value: object) -> bool:
 def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
     if not isinstance(raw, dict):
         return None
-    writes, removes, answer = raw.get("writes"), raw.get("removes"), raw.get("answer")
+    writes, leftover = raw.get("writes"), raw.get("leftover")
+    removes, answer = raw.get("removes"), raw.get("answer")
     recorded = raw.get("source_file")
     if not (
         _project_file(recorded)
@@ -129,6 +135,8 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
         and _optional_str(raw.get("base_revision"))
         and isinstance(writes, list)
         and all(_project_file(path) for path in writes)
+        and isinstance(leftover, list)
+        and all(_project_file(path) for path in leftover)
         and isinstance(removes, list)
         and all(
             isinstance(r, dict) and _project_file(r.get("file")) and _optional_str(r.get("digest"))
@@ -144,6 +152,7 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
         digest=raw["digest"],
         base_revision=raw["base_revision"],
         writes=tuple(writes),
+        leftover=tuple(leftover),
         removes=tuple(Removal(r["file"], r["digest"]) for r in removes),
         committed=raw["committed"],
         answer=answer,
@@ -279,10 +288,11 @@ def interruption_words(record: SaveRecord) -> tuple[str, str]:
     message, naming its files, and the remedy."""
     if not record.readable:
         message = "A save stopped part-way, and its record cannot be read."
-    elif record.writes:
+    elif record.writes or record.leftover:
+        files = list(dict.fromkeys([*record.writes, *record.leftover]))
         message = (
             "A save stopped part-way, so these files may each hold a different save: "
-            f"{name_files(list(record.writes))}."
+            f"{name_files(files)}."
         )
     else:
         message = "A save stopped part-way."

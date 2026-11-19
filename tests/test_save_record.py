@@ -349,15 +349,25 @@ def test_a_save_that_raised_after_it_committed_is_answered_from_its_receipt(
 
     monkeypatch.setattr(save_pipeline, "capture_save_in_ledger", capture)
     request = _the_save(project).model_dump(mode="json")
+    published: list[dict[str, Any]] = []
+    unsubscribe = default_bus.subscribe("pipeline.document.update", published.append)
+    try:
+        failed = client.post("/api/pipeline/save", json=request)
+        assert failed.status_code == 500
+        assert published == []
 
-    failed = client.post("/api/pipeline/save", json=request)
-    repeat = client.post("/api/pipeline/save", json=request)
+        repeat = client.post("/api/pipeline/save", json=request)
+    finally:
+        unsubscribe()
 
-    assert failed.status_code == 500
     assert repeat.status_code == 200, repeat.text
     assert repeat.json()["source_revision"] == _revision(project)
     assert repeat.json()["git_sha"] is not None
     assert not (project / OLD).exists()
+    # The save the repeat's settle finished is sent to every other canvas, once.
+    assert [update["document_fingerprint"] for update in published] == [
+        repeat.json()["document_fingerprint"]
+    ]
 
 
 def test_a_ready_document_reporting_an_interrupted_save_can_be_saved_and_the_report_goes(
@@ -467,8 +477,8 @@ def test_an_unreadable_receipt_answers_nothing_and_the_repeat_is_saved_against_i
 def _link(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target, target_is_directory=True)
-    except OSError as exc:  # Windows withholds the symlink privilege by default
-        pytest.skip(f"symbolic links are unavailable: {exc}")
+    except OSError:  # Windows withholds the symlink privilege by default (WinError 1314)
+        pytest.skip("symlink creation is unavailable on this platform")
 
 
 def test_a_record_naming_a_path_outside_the_project_removes_nothing_there(
@@ -569,6 +579,15 @@ def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
     assert "rating/config/banding/Bands.0123abcd.tmp" not in _pipeline_folder_new_files(
         "rating", cwd=project
     )
+
+    # A save that removes the file beside it, and one after while the staging is still held:
+    # each is captured, the file it no longer has among them.
+    removed = _service(project).save(_request(project, {"Old": "55"}, "op-held-0002"))
+    later = _service(project).save(_request(project, {"Old": "65"}, "op-held-0003"))
+    assert not (project / "rating" / "config" / "banding" / "Bands.json").exists()
+    for answer in (removed, later):
+        assert answer.git_sha is not None and answer.uncaptured == [], answer.warnings
+    assert staged.is_file()
 
     held[0] = False
     settle_saves(project)
