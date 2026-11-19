@@ -143,7 +143,8 @@ def test_a_table_gone_retyped_or_keyed_otherwise_is_named(url: str) -> None:
         "vehicles.value holds string, not float",
         "vehicles is keyed by quote_reference, quote_option, not quote_reference, quote_option, "
         "vehicle",
-        "vehicles does not refer to its quote's quote_details row",
+        "vehicles does not refer by quote_reference, quote_option to quote_details "
+        "(quote_reference, quote_option)",
     ]
 
 

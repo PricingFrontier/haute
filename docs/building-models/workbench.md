@@ -1004,8 +1004,12 @@ builder on screen. With a quote store it is where they manage their quotes too.
   compatibility.
 - The app starts whatever its database holds. Until the tables fit its release it opens no
   quote, new or saved, and prices none, and the page says quotes are unavailable and why: a
-  table or column missing or of another type, a permission the app's identity lacks, a
-  database it cannot reach, or no environment named. It checks again at most every 10
+  table or column missing, of another type or holding less than the app keeps in it (a
+  `REAL` for a Decimal field, shorter text, `VARCHAR` for `NVARCHAR` on SQL Server), a
+  primary key, unique key or foreign key other than the one the schema's SQL makes, a
+  permission the app's identity lacks, a database it cannot reach, or no environment named.
+  A column holding more than the schema's SQL makes, a key or index named otherwise and a
+  missing index that is not unique are fine. It checks again at most every 10
   seconds, so once the tables are put right the quotes open with no restart. The app's
   identity needs to read, insert, update and delete in the form's tables and to read and
   insert in haute_activity.

@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -16,10 +17,15 @@ from haute._quote_store._environment import StoreLocation
 from haute._sandbox import contained_path
 from haute._workbench_config import WorkbenchError
 from haute.schemas import (
+    WorkbenchCatalogueCapacity,
     WorkbenchCatalogueColumn,
+    WorkbenchCatalogueReference,
     WorkbenchCatalogueTable,
     WorkbenchStoreCatalogueResponse,
 )
+
+if TYPE_CHECKING:
+    from haute._quote_store._catalogue import Catalogue
 
 _locks_guard = threading.Lock()
 _locks: dict[Path, threading.Lock] = {}
@@ -28,9 +34,97 @@ _locks: dict[Path, threading.Lock] = {}
 class _Snapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[1] = 1
+    # 2: each column's capacity and numbering, each table's unique sets and foreign keys.
+    version: Literal[2] = 2
     target: str
     snapshot: WorkbenchStoreCatalogueResponse
+
+
+def api_tables(catalogue: Catalogue) -> list[WorkbenchCatalogueTable]:
+    """*catalogue*'s tables as the editor's routes send them to the browser, every fact the
+    store's check reads kept."""
+    return [
+        WorkbenchCatalogueTable(
+            name=table.name,
+            columns=[
+                WorkbenchCatalogueColumn(
+                    name=column.name,
+                    kind=column.kind,
+                    type=column.type,
+                    nullable=column.nullable,
+                    capacity=WorkbenchCatalogueCapacity(
+                        bits=column.capacity.bits,
+                        length=column.capacity.length,
+                        every_character=column.capacity.every_character,
+                        unpadded=column.capacity.unpadded,
+                        zoneless=column.capacity.zoneless,
+                    ),
+                    numbered=column.numbered,
+                    collation=column.collation,
+                    quotes=column.quotes,
+                )
+                for column in table.columns
+            ],
+            primary_key=list(table.primary_key),
+            unique=[list(columns) for columns in table.unique],
+            references=[
+                WorkbenchCatalogueReference(
+                    columns=list(reference.columns),
+                    table=reference.table,
+                    referred=list(reference.referred),
+                    sql_schema=reference.sql_schema,
+                )
+                for reference in table.references
+            ],
+            quotes=table.quotes,
+        )
+        for table in catalogue.tables
+    ]
+
+
+def catalogue_of(tables: Sequence[WorkbenchCatalogueTable]) -> Catalogue:
+    """The catalogue *tables*, as :func:`api_tables` sent them, were read from."""
+    from haute._quote_store._catalogue import (
+        Capacity,
+        Catalogue,
+        CatalogueColumn,
+        CatalogueReference,
+        CatalogueTable,
+    )
+
+    return Catalogue(
+        tables=tuple(
+            CatalogueTable(
+                name=table.name,
+                columns=tuple(
+                    CatalogueColumn(
+                        name=column.name,
+                        kind=column.kind,
+                        type=column.type,
+                        nullable=column.nullable,
+                        capacity=Capacity(**column.capacity.model_dump()),
+                        numbered=column.numbered,
+                        collation=column.collation,
+                        quotes=column.quotes,
+                    )
+                    for column in table.columns
+                ),
+                primary_key=tuple(table.primary_key),
+                unique=tuple(tuple(columns) for columns in table.unique),
+                references=tuple(
+                    CatalogueReference(
+                        columns=tuple(reference.columns),
+                        table=reference.table,
+                        referred=tuple(reference.referred),
+                        sql_schema=reference.sql_schema,
+                    )
+                    for reference in table.references
+                ),
+                quotes=table.quotes,
+            )
+            for table in tables
+        )
+    )
 
 
 def catalogue_target(location: StoreLocation) -> str:
@@ -61,31 +155,11 @@ def catalogue_target(location: StoreLocation) -> str:
 def _read(location: StoreLocation) -> WorkbenchStoreCatalogueResponse:
     from haute._quote_store._compare import read_store_catalogue
 
-    catalogue = read_store_catalogue(location)
     return WorkbenchStoreCatalogueResponse(
         environment=location.environment,
         checked_at=time.time_ns() // 1_000_000,
         target=catalogue_target(location),
-        tables=[
-            WorkbenchCatalogueTable(
-                name=table.name,
-                columns=[
-                    WorkbenchCatalogueColumn(
-                        name=column.name,
-                        kind=column.kind,
-                        type=column.type,
-                        nullable=column.nullable,
-                        collation=column.collation,
-                        quotes=column.quotes,
-                    )
-                    for column in table.columns
-                ],
-                primary_key=list(table.primary_key),
-                refers=table.refers,
-                quotes=table.quotes,
-            )
-            for table in catalogue.tables
-        ],
+        tables=api_tables(read_store_catalogue(location)),
     )
 
 

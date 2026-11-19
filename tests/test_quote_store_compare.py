@@ -17,7 +17,13 @@ from sqlalchemy import event
 from sqlalchemy.dialects import mssql
 
 import haute._quote_store._catalogue as catalogue_module
-from haute._quote_store import QuoteStoreEnvironmentError, StoreLocation, open_book, render_sql
+from haute._quote_store import (
+    QuoteStoreEnvironmentError,
+    QuoteStoreMismatchError,
+    StoreLocation,
+    open_book,
+    render_sql,
+)
 from haute._quote_store._catalogue import IDENTITY, Catalogue, counting_statement, read_catalogue
 from haute._quote_store._compare import Comparison, Rename, compare, read_store_catalogue
 from haute._quote_store._migrate import PROVIDER_DIALECTS
@@ -339,6 +345,36 @@ def test_the_sql_from_the_tables_as_they_are_brings_them_to_the_form_keeping_val
     target.script(written)
     opens(target, changed)
     assert target.read("SELECT region, area, drivers FROM policy") == [("north", None, 2)]
+
+
+#: A Decimal column made single precision by hand, on each engine.
+_MADE_SINGLE = {
+    "sqlite": (
+        "ALTER TABLE policy DROP COLUMN value",
+        "ALTER TABLE policy ADD COLUMN value REAL",
+    ),
+    "postgresql": ("ALTER TABLE policy ALTER COLUMN value TYPE REAL",),
+    "sqlserver": ("ALTER TABLE policy ALTER COLUMN value REAL NULL",),
+}
+
+
+def test_a_single_precision_decimal_is_named_and_the_sql_widens_it(target: Target) -> None:
+    made_from_sql(target, RELEASED)
+    target.run(*_MADE_SINGLE[target.backend])
+
+    comparison = compared(target, RELEASED)
+
+    if target.backend == "sqlite":
+        # SQLite keeps every REAL as a double: nothing is lost, and nothing differs.
+        assert comparison.matches
+    else:
+        assert ("policy", "value", "type") in kinds(comparison)
+        with pytest.raises(QuoteStoreMismatchError, match="policy.value is REAL, which keeps"):
+            opens(target, RELEASED)
+        target.script(sql(target, RELEASED, comparison))
+    opens(target, RELEASED)
+    quote(target, RELEASED, "A-1", value="16777217")
+    assert target.read("SELECT value FROM policy") == [(16777217.0,)]
 
 
 def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target) -> None:

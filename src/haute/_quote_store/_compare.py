@@ -46,7 +46,7 @@ from haute._quote_store._store import (
     make_engine,
     reaching,
 )
-from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
+from haute._workbench_form import FormSpec
 
 #: Each catalogue kind a form's column type is held as.
 _FORM_TYPES: Mapping[str, str] = {
@@ -125,13 +125,17 @@ class Comparison:
         return not self.differences
 
 
-def _live_column(column: CatalogueColumn, column_key: str) -> dict[str, Any]:
+def _live_column(
+    column: CatalogueColumn, column_key: str, *, holds_less: bool = False
+) -> dict[str, Any]:
     """*column* as a plan's structure holds it, under *column_key*: its type the form's that
-    its kind is held as, else its kind, and the type the database names it by."""
+    its kind is held as, else its kind, or, where it *holds_less* than the store's type of its
+    kind, the database's name for it, so a plan retypes it; and the type the database names
+    it by."""
     return {
         "key": column_key,
         "name": column.name,
-        "type": _FORM_TYPES.get(column.kind, column.kind),
+        "type": column.type if holds_less else _FORM_TYPES.get(column.kind, column.kind),
         "index": False,
         "sql_type": column.type,
     }
@@ -183,9 +187,11 @@ class _Matcher:
         quotes: int | None = None,
     ) -> None:
         """The ways *found* differs from *expected* beyond its type, which a plan's retype
-        changes: each a note."""
+        changes: each a note. A form's column is never one the database numbers."""
         counted = found.quotes if quotes is None else quotes
         for kind, said in column_problems(expected, found, self.dialect):
+            if kind == "numbered":
+                raise ValueError(f"{where} is a form's column the store has numbered.")
             if kind != "type":
                 self.note(table_key, column_key, kind, f"{where}{held(counted)} {said}")
 
@@ -336,8 +342,8 @@ def compare(
         matcher.own_columns(None, schema.activity, activity, set())
         known = {column.name for column in schema.activity.columns}
         matcher.not_null_extras(None, activity, known)
-        for _, said in table_problems(schema.activity, activity, refers=False):
-            matcher.note(None, None, "key", f"{ACTIVITY_TABLE} {said}")
+        for kind, said in table_problems(schema.activity, activity):
+            matcher.note(None, None, kind, f"{ACTIVITY_TABLE} {said}")
     made = plan(wanted, {"tables": matcher.tables}, matcher.counts, provider=provider)
     made = replace(made, activity=activity is None, notes=tuple(matcher.notes))
     for step in made.steps:
@@ -425,12 +431,19 @@ def _match_table(
             continue
         found_column, was = matched[column["key"]]
         quotes = UNCOUNTED if uncounted else found_column.quotes
-        live.append(_live_column(found_column, column["key"]))
+        wanted_column = expected.c[column["name"]]
+        # Of the form's type but holding less than the store's (a REAL for a Decimal): a type
+        # the plan changes, as one of another kind is.
+        holds_less = _FORM_TYPES.get(found_column.kind) == column["type"] and any(
+            kind == "type"
+            for kind, _ in column_problems(wanted_column, found_column, matcher.dialect)
+        )
+        planned = _live_column(found_column, column["key"], holds_less=holds_less)
+        live.append(planned)
         matcher.count((table["key"], column["key"]), quotes)
         if was is not None:
             matcher.differ(table["key"], column["key"], "renamed", f"the database names it {was}")
-        wanted_column = expected.c[column["name"]]
-        if _FORM_TYPES.get(found_column.kind, found_column.kind) != column["type"]:
+        if planned["type"] != column["type"]:
             new = wanted_column.type.compile(dialect=matcher.dialect)
             matcher.differ(
                 table["key"],
@@ -469,7 +482,7 @@ def _match_table(
     as_named = replace(
         found, primary_key=tuple(renamed.get(name, name) for name in found.primary_key)
     )
-    for kind, said in table_problems(expected, as_named, refers=table["key"] != QUOTE_DETAILS_NAME):
+    for kind, said in table_problems(expected, as_named):
         if not rows_differ:
             matcher.note(table["key"], None, kind, f"{found.name} {said}")
     matcher.tables.append(

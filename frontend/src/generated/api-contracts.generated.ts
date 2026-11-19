@@ -6244,8 +6244,9 @@ export interface WorkbenchStoreCatalogueResponse {
 }
 /**
  * A table of the store's as an environment's database holds it: its columns, its primary
- * key's columns, whether it refers by the identity to its quote's quote_details row, and
- * the quotes holding a row in it, None when the table lacks a quote identity column.
+ * key's columns, each set of its columns a unique constraint or a unique index holds, its
+ * foreign keys, and the quotes holding a row in it, None when the table lacks a quote
+ * identity column.
  */
 export interface WorkbenchCatalogueTable {
   /**
@@ -6258,21 +6259,61 @@ export interface WorkbenchCatalogueTable {
    */
   primary_key: string[];
   quotes: number | null;
-  refers: boolean;
+  /**
+   * @maxItems 10000
+   */
+  references: WorkbenchCatalogueReference[];
+  /**
+   * @maxItems 10000
+   */
+  unique: string[][];
 }
 /**
  * A column as an environment's database holds it: its name, its kind (``boolean``,
  * ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
- * the database names it, whether it takes a null, its collation where it has one, and the
- * quotes holding a value in it, None when the table lacks a quote identity column.
+ * the database names it, whether it takes a null, what its type holds beyond its kind,
+ * whether the database numbers it as each row is inserted, its collation where it has one,
+ * and the quotes holding a value in it, None when the table lacks a quote identity column.
  */
 export interface WorkbenchCatalogueColumn {
+  capacity: WorkbenchCatalogueCapacity;
   collation: string | null;
   kind: string;
   name: string;
   nullable: boolean;
+  numbered: boolean;
   quotes: number | null;
   type: string;
+}
+/**
+ * What a column's type holds beyond its kind on its engine: an integer's or a Decimal's
+ * bits, the most a text holds in its engine's units (None for any length), and whether a
+ * text holds every character and keeps its value unpadded and a moment is held without a
+ * time zone, each false where the type holds less.
+ */
+export interface WorkbenchCatalogueCapacity {
+  bits: number | null;
+  every_character: boolean;
+  length: number | null;
+  unpadded: boolean;
+  zoneless: boolean;
+}
+/**
+ * A foreign key as an environment's database holds it: the columns it constrains, the
+ * table it refers to and that table's columns, each paired in order with one constrained,
+ * and the referred table's SQL schema, None for the store's own.
+ */
+export interface WorkbenchCatalogueReference {
+  /**
+   * @maxItems 10000
+   */
+  columns: string[];
+  /**
+   * @maxItems 10000
+   */
+  referred: string[];
+  sql_schema: string | null;
+  table: string;
 }
 /**
  * The form compared with an environment's tables: each difference, each extra, the
