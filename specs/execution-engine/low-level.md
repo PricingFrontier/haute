@@ -2013,7 +2013,8 @@ present a structural or schema result as execution evidence.
   dataframe and preview caches instead of replaying predictions from the
   model they replaced. A destination that does not resolve records an
   "unresolved" marker with the configuration reason, and any other failed
-  resolution one naming only the exception type. The operation's scope keeps
+  resolution one naming only the exception type and the resolved backend
+  identity, so a failure at one destination is never another's. The operation's scope keeps
   that failure, so the load the same operation makes raises it and nothing is
   computed or stored under the marker; a store that stays unreachable reads the
   same identity when a seed plan opens and when its walk checks the inputs, so

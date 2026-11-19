@@ -4,9 +4,11 @@ MLflow-sourced ``MODEL_SCORE`` and ``OPTIMISER_APPLY`` nodes used to key the
 dataframe and preview caches on config strings alone, so a repointed server
 URL, a rewritten local folder, or a re-resolved auto destination kept the key
 identical and a warm entry replayed predictions loaded from the *previous*
-backend.  The entry now records ``resolve_backend(...).identity`` (secret-free)
-or an "unresolved" marker when configuration is missing
-(``specs/roadmap/mlflow-destinations.md`` MLF-D03, Task B7).
+backend. An Optimiser Apply's entry records ``resolve_backend(...).identity``
+(secret-free); a Model Score's records the model resolution's identity, which
+carries that backend identity, and a failed resolution's marker carries it too.
+Either is an "unresolved" marker when configuration is missing. The store is a
+fake (``tests/_mlflow_fakes.py``): no test here reaches a server.
 """
 
 from __future__ import annotations
@@ -78,6 +80,16 @@ def _graph(node_type: str, config: dict[str, object]) -> Any:
     )
 
 
+@pytest.fixture
+def store(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Every backend's client answers from one fake store holding the node's run."""
+    from tests._mlflow_fakes import FakeArtifactClient
+
+    client = FakeArtifactClient({"run-1": {"model/model.cbm": 128}})
+    monkeypatch.setattr("haute._mlflow_utils.pinned_client", lambda backend: client)
+    return client
+
+
 def _fingerprint(graph: Any) -> str:
     return dataframe_graph_input_fingerprint(graph, target_node_id="n1", source="live")
 
@@ -89,7 +101,9 @@ def _entry_files(graph: Any) -> dict[str, object]:
     return files
 
 
-def test_model_score_runtime_fingerprint_follows_backend_identity(workspace: Path) -> None:
+def test_model_score_runtime_fingerprint_follows_backend_identity(
+    workspace: Path, store: Any
+) -> None:
     """Two local folders are two backends for both MLflow-sourced node types."""
     for node_type, config in (
         ("modelScore", _MODEL_SCORE_RUN_CONFIG),
@@ -107,9 +121,25 @@ def test_model_score_runtime_fingerprint_follows_backend_identity(workspace: Pat
         assert _fingerprint(graph) == folder_a, node_type
 
 
+def test_a_failed_resolution_is_still_its_backends_own(workspace: Path, store: Any) -> None:
+    """Two destinations whose stores both fail to answer are still two identities."""
+    store.runs.clear()
+    graph = _graph("modelScore", dict(_MODEL_SCORE_RUN_CONFIG))
+
+    _write_settings(workspace, folder=workspace / "runs-a")
+    folder_a, files_a = _fingerprint(graph), _entry_files(graph)
+    _write_settings(workspace, folder=workspace / "runs-b")
+    folder_b, files_b = _fingerprint(graph), _entry_files(graph)
+
+    assert files_a["model"]["unresolved"] == files_b["model"]["unresolved"] == "KeyError"
+    assert files_a["model"]["backend"] != files_b["model"]["backend"]
+    assert folder_a != folder_b
+
+
 def test_configuring_databricks_never_retargets_a_node_without_a_destination(
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    store: Any,
 ) -> None:
     """A node without a destination stays on the local folder when Databricks
     credentials appear; only a node that chooses Databricks changes backend."""
@@ -132,11 +162,12 @@ def test_configuring_databricks_never_retargets_a_node_without_a_destination(
 
     assert local_before == local_after
     assert databricks != local_after
-    assert "dapi-not-a-real-token" not in str(files["mlflow_backend"])
+    assert str(files["model"]["backend"]).startswith("databricks:https://adb.example.net")
+    assert "dapi-not-a-real-token" not in str(files["model"])
 
 
 def test_removed_prerequisites_after_warm_change_the_fingerprint_and_execution_raises(
-    workspace: Path,
+    workspace: Path, store: Any
 ) -> None:
     """A warm entry from a resolvable server can never be served once it is gone."""
     graph = _graph(
@@ -152,7 +183,7 @@ def test_removed_prerequisites_after_warm_change_the_fingerprint_and_execution_r
 
     unconfigured = _fingerprint(graph)
     assert resolvable != unconfigured
-    assert _entry_files(graph)["mlflow_backend"] == {
+    assert _entry_files(graph)["model"] == {
         "unresolved": (
             "MLflow server is not configured: set [mlflow] tracking_uri in haute.toml "
             "or an http(s) MLFLOW_TRACKING_URI in the environment (.env)."

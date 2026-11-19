@@ -1061,7 +1061,8 @@ def _scoring_model_signature(config: Mapping[str, object]) -> object:
     cache's record, so the identity a result is stored under is the model the
     execution scores. A destination that does not resolve returns
     ``{"unresolved": <reason>}``; any other failure ``{"unresolved": <exception
-    type>}``, never the message, which can carry a server URL. The scope keeps the
+    type>, "backend": <backend identity>}``, never the message, which can carry a
+    server URL, so a failure at one destination is never another's. The scope keeps the
     failure, so the operation's load raises it and nothing is stored under the
     marker, while a store that stays unreachable reads the same identity at a
     plan's start and in its walk.
@@ -1081,7 +1082,7 @@ def _scoring_model_signature(config: Mapping[str, object]) -> object:
             raise ValueError("not an MLflow source")
         return model_resolution(source, backend=backend).identity_record()
     except Exception as exc:
-        return {"unresolved": type(exc).__name__}
+        return {"unresolved": type(exc).__name__, "backend": backend.identity}
 
 
 def _runtime_input_fingerprint_entry(
