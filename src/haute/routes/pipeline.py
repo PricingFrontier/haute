@@ -1074,6 +1074,9 @@ async def get_pipeline(name: str, response: Response) -> PipelineEditorDocument:
 
     def _find() -> PipelineEditorDocument | None:
         try:
+            # Read before the cached name index: a settings edit reaches the next load,
+            # which the index (rebuilt only for pipeline files) would not see.
+            read_project_settings(current_project().root)
             return _find_named()
         except ProjectSettingsError as exc:
             # The settings can hide every pipeline: the document says why.

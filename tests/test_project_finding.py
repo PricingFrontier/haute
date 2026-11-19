@@ -381,3 +381,54 @@ def test_serve_ends_in_one_line_when_the_configured_pipeline_is_missing(tmp_path
     assert result.exit_code == 1
     assert "[project].pipeline does not exist" in _said(result.output)
     assert "Traceback" not in result.output
+
+
+def test_a_named_load_reads_a_settings_edit_made_after_the_index_was_built(
+    tmp_path: Path,
+) -> None:
+    project = _inside(tmp_path)
+    assert project.root is not None
+    client = _editor(project.root)
+    assert client.get("/api/pipeline/main").json()["pipeline_name"] == "main"
+
+    (project.root / "haute.toml").write_text('[projct]\nname = "motor"\n', encoding="utf-8")
+    document = client.get("/api/pipeline/main").json()
+
+    assert document["diagnostics"][0]["code"] == "project_settings_invalid"
+    assert "unknown table [projct]" in document["diagnostics"][0]["message"]
+
+
+def test_a_failure_inside_a_found_project_is_recorded_in_that_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _inside(tmp_path)
+    assert project.root is not None
+    work_elsewhere(project.start)
+
+    def fails(**_params: Any) -> None:
+        raise TypeError("an unrecognised failure")
+
+    monkeypatch.setattr(_leaves(cli)[("status",)], "callback", fails)
+    result = CliRunner().invoke(cli, ["status"])
+
+    assert result.exit_code == 1
+    incidents = list((project.root / ".haute" / "incidents").glob("*.txt"))
+    assert len(incidents) == 1, result.output
+
+
+def test_a_pipeline_file_beside_a_haute_toml_outside_git_is_not_parsed_beside_it(
+    tmp_path: Path,
+) -> None:
+    from haute._project import ProjectOutsideGitError
+    from haute._project_context import project_scope
+    from haute.parser import parse_pipeline_file
+
+    project = _no_git(tmp_path)
+    main = project.start / "rating" / "main.py"
+
+    with pytest.raises(ProjectOutsideGitError):
+        parse_pipeline_file(main)
+    # A release or deployed bundle carries its haute.toml without a repository: the
+    # project its entry point installed parses it as before.
+    with project_scope(ProjectContext.at(project.start)):
+        assert parse_pipeline_file(main).pipeline_name == "main"

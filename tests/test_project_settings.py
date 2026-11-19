@@ -228,3 +228,52 @@ class TestWriters:
 
 def _never(path: Path, text: str) -> None:
     raise AssertionError(f"wrote {path}")
+
+
+class TestWorkbenchSubTables:
+    """The workbench's environments are named by the project; the parse still checks the
+    keys every one of them can hold, and the reader what its provider and sign-in take."""
+
+    @pytest.mark.parametrize(
+        ("raw", "named"),
+        [
+            (b"[workbench]\nenabled = true\napp = 1\n", "[workbench.app] must be a table"),
+            (
+                b"[workbench.app]\nhots = 'azure-container-apps'\n",
+                "[workbench.app] unknown key 'hots'",
+            ),
+            (
+                b"[workbench.app.dev]\ncontainer = 'x'\n",
+                "[workbench.app.dev] unknown key 'container'",
+            ),
+            (
+                b"[workbench.store.dev]\nprovder = 'sqlite'\n",
+                "[workbench.store.dev] unknown key 'provder'",
+            ),
+            (b"[workbench.store]\ndev = 'sqlite'\n", "[workbench.store] unknown key 'dev'"),
+            (
+                b"[workbench.store.dev]\nprovider = 'sqlserver'\npassword = 'x'\n",
+                "[workbench.store.dev] password would hold a secret's value",
+            ),
+            (
+                b"[workbench.store.dev]\nprovider = 'sqlite'\ndatabase = 'q.sqlite'\n",
+                "[workbench.store.dev] database: where an environment's database is",
+            ),
+        ],
+    )
+    def test_a_key_no_environment_takes_is_named(
+        self, tmp_path: Path, raw: bytes, named: str
+    ) -> None:
+        assert named in str(_refusal(tmp_path, raw))
+
+    def test_every_key_an_environment_can_hold_is_read(self, tmp_path: Path) -> None:
+        _settings_file(
+            tmp_path,
+            b"[workbench]\nenabled = true\n"
+            b"[workbench.app]\nhost = 'azure-container-apps'\nedit_role = 'Editors'\n"
+            b"[workbench.app.dev]\nresource_group = 'rg'\ncontainer_app = 'ca'\n"
+            b"[workbench.store.dev]\nprovider = 'postgresql'\nauth = 'service-principal'\n"
+            b"tenant_id_env = 'T'\nclient_id_env = 'C'\nclient_secret_env = 'S'\n"
+            b"username_env = 'U'\n",
+        )
+        assert read_project_settings(tmp_path) is not None

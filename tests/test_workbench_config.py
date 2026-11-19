@@ -109,18 +109,13 @@ def test_each_hosted_environment_names_the_container_app_it_runs_as(tmp_path: Pa
             "[workbench.app.test] names no environment [workbench.store] declares",
         ),
         (
-            "[workbench.app.prod]\nregion = 'uk'\n",
-            "[workbench.app.prod] has unknown key(s): region",
-        ),
-        (
             "[workbench.app.prod]\ncontainer_app = 3\n",
             "[workbench.app.prod].container_app must be text",
         ),
         # host and edit_role are the app's own settings, never an environment's table.
         ("host = { name = 'azure' }\n", "[workbench.app].host must be one of azure-container-apps"),
-        ("label = 'x'\n", "[workbench.app] has unknown key(s): label"),
     ],
-    ids=["undeclared", "unknown-key", "not-text", "host-table", "unknown-setting"],
+    ids=["undeclared", "not-text", "host-table"],
 )
 def test_a_hosted_environments_table_is_refused_naming_what_is_wrong(
     tmp_path: Path, app: str, message: str
@@ -220,12 +215,6 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
     [
         ("[workbench]\n", "[workbench].enabled must be true or false"),
         ('[workbench]\nenabled = "yes"\n', "[workbench].enabled must be true or false"),
-        ("[workbench]\nenabled = true\napp = 'azure'\n", "[workbench.app] must be a TOML table"),
-        (
-            "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
-            "port = 1\n",
-            "[workbench.app] has unknown key(s): port; the keys are host and edit_role",
-        ),
         (
             "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
             "edit_role = ' '\n",
@@ -249,7 +238,6 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
             "[workbench]\nenabled = true\n[workbench.app]\nhost = { name = 'azure' }\n",
             "[workbench.app].host must be one of azure-container-apps; got {'name': 'azure'}",
         ),
-        ("[workbench]\nenabled = true\nstore = 'test'\n", "[workbench.store] must be a table"),
         (
             "[workbench]\nenabled = true\n[workbench.store.Prod]\nprovider = 'sqlite'\n",
             "[workbench.store.Prod]: an environment's name is up to 32 lower-case letters",
@@ -263,22 +251,6 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
             "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
             "auth = 'password'\n",
             "[workbench.store.test].auth: a sqlite database is a file, which takes no sign-in",
-        ),
-        (
-            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\npool = 4\n",
-            "[workbench.store.test] has unknown key(s): pool; the keys are auth, provider",
-        ),
-        (
-            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
-            "database = 'quotes.sqlite'\n",
-            "[workbench.store.test].database: where an environment's database is comes from the "
-            "host's environment (HAUTE_STORE_DATABASE), never from a file",
-        ),
-        (
-            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
-            "password = 'hunter2'\n",
-            "[workbench.store.test].password would hold a secret's value: name the variable that "
-            "holds it (password_env) instead",
         ),
     ],
 )
@@ -307,6 +279,35 @@ def test_a_bad_table_is_refused_naming_what_to_set(
             "delete the key",
         ),
         ("[workbench\nenabled = true\n", "is malformed and could not be parsed"),
+        ("[workbench]\nenabled = true\napp = 'azure'\n", "[workbench.app] must be a table"),
+        (
+            "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
+            "port = 1\n",
+            "[workbench.app] unknown key 'port' (the keys are edit_role and host, beside a table "
+            "for each environment)",
+        ),
+        (
+            "[workbench.store.prod]\nprovider = 'sqlite'\n[workbench.app.prod]\nregion = 'uk'\n",
+            "[workbench.app.prod] unknown key 'region' (the keys are container_app and "
+            "resource_group)",
+        ),
+        ("[workbench]\nenabled = true\nstore = 'test'\n", "[workbench.store] must be a table"),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\npool = 4\n",
+            "[workbench.store.test] unknown key 'pool'",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
+            "database = 'quotes.sqlite'\n",
+            "[workbench.store.test] database: where an environment's database is comes from the "
+            "host's environment (HAUTE_STORE_DATABASE), never from a file",
+        ),
+        (
+            "[workbench]\nenabled = true\n[workbench.store.test]\nprovider = 'sqlite'\n"
+            "password = 'hunter2'\n",
+            "[workbench.store.test] password would hold a secret's value: name the variable that "
+            "holds it (password_env) instead",
+        ),
     ],
 )
 def test_a_table_the_settings_parse_refuses_is_refused_in_its_words(

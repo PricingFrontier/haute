@@ -6,7 +6,6 @@ import os
 import shutil
 import tempfile
 import webbrowser
-from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
@@ -170,14 +169,15 @@ class HauteCommand(click.Command):
         self.need: ProjectNeed = need
 
     def invoke(self, ctx: click.Context) -> Any:
-        with ExitStack() as stack:
-            installed = installed_project()
-            if installed is None:
-                # The CLI is an entry point: the command starts from the shell's folder.
-                stack.enter_context(project_scope(project_for(self.need, Path.cwd())))
-            else:
-                _installed_meets(self.need, installed)
-            return super().invoke(ctx)
+        installed = installed_project()
+        if installed is None:
+            # The CLI is an entry point: the command starts from the shell's folder. The
+            # project stays installed on the root context until the command line ends, so the
+            # ``haute`` group answers a failure in it (an incident under its ``.haute/``).
+            ctx.find_root().with_resource(project_scope(project_for(self.need, Path.cwd())))
+        else:
+            _installed_meets(self.need, installed)
+        return super().invoke(ctx)
 
 
 class HauteCommandGroup(click.Group):

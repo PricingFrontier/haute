@@ -271,13 +271,16 @@ def _parse_bytes(path: Path, raw: bytes) -> ProjectSettings:
     return ProjectSettings(path=path, text=text, _document=document)
 
 
-#: A table's schema: its own keys, its sub-tables' schemas, and keys an earlier Haute read that
-#: are refused in their own words.
 @dataclass(frozen=True, slots=True)
 class _Table:
+    """A table's schema: its own keys, its sub-tables' schemas by key, the schema of a
+    sub-table the analyst names (``[workbench.store.<environment>]``), and the words a key
+    is refused in when its reader has its own (a retired key, a secret's value)."""
+
     keys: frozenset[str] = frozenset()
     tables: Mapping[str, _Table] | None = None
-    retired: Mapping[str, str] | None = None
+    named: _Table | None = None
+    refuse: Callable[[str], str | None] | None = None
 
 
 @functools.cache
@@ -287,7 +290,13 @@ def _schema() -> Mapping[str, _Table]:
     The assistant's and the workbench's key sets are owned by their readers and imported
     here when first needed, so neither can drift from this check.
     """
-    from haute._workbench_config import WORKBENCH_RETIRED_KEYS, WORKBENCH_TOML_KEYS
+    from haute._workbench_config import (
+        APP_ENVIRONMENT_KEYS,
+        APP_TOML_KEYS,
+        STORE_ENVIRONMENT_KEYS,
+        refused_store_key,
+        refused_workbench_key,
+    )
     from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
 
     def table(*keys: str, **tables: _Table) -> _Table:
@@ -329,8 +338,20 @@ def _schema() -> Mapping[str, _Table]:
         "assistant": table(
             *(ASSISTANT_TOML_KEYS - {"egress"}), egress=table(*ASSISTANT_EGRESS_TOML_KEYS)
         ),
-        # The workbench's sub-tables name its environments, which its reader checks.
-        "workbench": _Table(WORKBENCH_TOML_KEYS, None, WORKBENCH_RETIRED_KEYS),
+        # The workbench's environments are named by the project; which of an environment's
+        # keys its provider and sign-in take is the workbench reader's to check.
+        "workbench": _Table(
+            frozenset({"enabled"}),
+            {
+                "app": _Table(
+                    frozenset(APP_TOML_KEYS), named=_Table(frozenset(APP_ENVIRONMENT_KEYS))
+                ),
+                "store": _Table(
+                    named=_Table(frozenset(STORE_ENVIRONMENT_KEYS), refuse=refused_store_key)
+                ),
+            },
+            refuse=refused_workbench_key,
+        ),
     }
 
 
@@ -358,16 +379,21 @@ def _check_table(where: str, value: object, spec: _Table, problems: list[str]) -
         problems.append(f"[{where}] must be a table, not {value!r}")
         return
     sub_tables = spec.tables or {}
-    retired = spec.retired or {}
     allowed = spec.keys | set(sub_tables)
     for key in sorted(value):
-        if key in retired:
-            problems.append(f"[{where}] {key} {retired[key]}")
-        elif key not in allowed:
-            problems.append(f"[{where}] unknown key '{key}' (the keys are {_listed(allowed)})")
-    for key, sub_spec in sub_tables.items():
-        if key in value:
-            _check_table(f"{where}.{key}", value[key], sub_spec, problems)
+        refusal = None if spec.refuse is None else spec.refuse(key)
+        if refusal is not None:
+            problems.append(f"[{where}] {key}{refusal}")
+        elif key in sub_tables:
+            _check_table(f"{where}.{key}", value[key], sub_tables[key], problems)
+        elif key in spec.keys:
+            continue
+        elif spec.named is not None and isinstance(value[key], dict):
+            _check_table(f"{where}.{key}", value[key], spec.named, problems)
+        else:
+            takes = f"the keys are {_listed(allowed)}" if allowed else "it holds no keys"
+            named = ", beside a table for each environment" if spec.named is not None else ""
+            problems.append(f"[{where}] unknown key '{key}' ({takes}{named})")
 
 
 def _path_text(raw: str) -> str:

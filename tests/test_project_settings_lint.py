@@ -50,6 +50,22 @@ def _names_the_file(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value == "haute.toml"
 
 
+def _settings_file_references(tree: ast.Module) -> list[int]:
+    """Lines naming the parse's ``SETTINGS_FILE``, imported or as an attribute: a module
+    that names it builds the path the parse alone opens."""
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "SETTINGS_FILE":
+            lines.append(node.lineno)
+        elif isinstance(node, ast.Attribute) and node.attr == "SETTINGS_FILE":
+            lines.append(node.lineno)
+        elif isinstance(node, ast.ImportFrom) and any(
+            alias.name == "SETTINGS_FILE" for alias in node.names
+        ):
+            lines.append(node.lineno)
+    return lines
+
+
 def _path_uses_of_the_file(tree: ast.Module) -> list[int]:
     """Lines building a path to ``haute.toml``: ``x / "haute.toml"``, ``Path("haute.toml")``,
     ``x.joinpath("haute.toml")``, ``open("haute.toml")``."""
@@ -92,7 +108,7 @@ def test_only_the_parse_names_the_settings_file_as_a_path() -> None:
         f"{module}:{line}"
         for module, tree in _modules()
         if module != PARSE_MODULE
-        for line in _path_uses_of_the_file(tree)
+        for line in [*_path_uses_of_the_file(tree), *_settings_file_references(tree)]
     ]
     assert offenders == [], (
         "Only haute._project_settings opens haute.toml: take the table from "
@@ -138,6 +154,13 @@ def test_the_ratchet_catches_each_way_of_opening_the_file() -> None:
         'open("haute.toml")',
     ):
         assert _path_uses_of_the_file(ast.parse(source)), source
+    for bypass in (
+        "tomllib.load((root / SETTINGS_FILE).open('rb'))",
+        "from haute._project_settings import SETTINGS_FILE",
+        "root / _project_settings.SETTINGS_FILE",
+    ):
+        assert _settings_file_references(ast.parse(bypass)), bypass
+    assert _calls(ast.parse("settings_path(root).read_text()"), "settings_path")
     assert _toml_imports(ast.parse("import tomllib"))
     assert _toml_imports(ast.parse("from tomlkit import parse"))
     assert not _path_uses_of_the_file(ast.parse('name == "haute.toml"'))

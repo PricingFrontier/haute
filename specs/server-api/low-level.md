@@ -573,7 +573,9 @@ its send-state.
 (`_WATCHER_RESTART_DELAY_SECONDS = 0.1`; `CancelledError` propagates, everything else logs
 and restarts). `_file_watcher()` watches `cwd`, the pipeline directory and its
 `config/` (each only if it exists and differs from `cwd`) via `watchfiles.awatch`
-(recursive); if `watchfiles` isn't installed, live sync is disabled with a warning, not a
+(recursive); a `haute.toml` the settings parse refuses, which the editor's load shows as
+the document's issue, leaves it watching `cwd` alone (`file_watcher_settings_refused`), never
+a crash-restart loop; if `watchfiles` isn't installed, live sync is disabled with a warning, not a
 crash. Every filesystem event batches into `pending_changes`; a 300ms debounce timer
 (`asyncio.Task`, cancelled and restarted on each new event) triggers `_flush()`, which:
 1. Snapshots and clears `pending_changes` (so new events queue independently of the batch

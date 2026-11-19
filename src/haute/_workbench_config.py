@@ -42,9 +42,11 @@ from haute._project_settings import read_project_settings
 from haute._sandbox import contained_path
 from haute.errors import ConfigError, HauteError, PathOutsideProjectError
 
-#: The keys the table may hold: the settings parse (``haute._project_settings``) checks them
-#: across the whole file.
+#: The keys the table may hold: the settings parse (``haute._project_settings``) checks them,
+#: and those of its sub-tables below, across the whole file.
 WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "app", "store"})
+#: ``[workbench.app]``'s own keys, beside a table for each hosted environment.
+APP_TOML_KEYS: frozenset[str] = frozenset({"host", "edit_role"})
 #: Where the underwriter app can run: the host whose sign-in fronts it.
 APP_HOSTS: frozenset[str] = frozenset({"azure-container-apps"})
 #: The databases an environment's quote store can be on.
@@ -103,9 +105,43 @@ SECRET_KEYS: Mapping[str, str] = {
 
 #: Keys an earlier Haute read under ``[workbench]``, each refused by the settings parse saying
 #: what replaced it.
-WORKBENCH_RETIRED_KEYS: Mapping[str, str] = {
+_RETIRED_KEYS: Mapping[str, str] = {
     "form": "was removed: the form is the pipeline folder's workbench/ folder; delete the key"
 }
+#: Every key an environment of the store can hold: which of them its provider and sign-in
+#: take is checked by :func:`store_environments`, the settings parse refusing any other.
+STORE_ENVIRONMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "provider",
+        "auth",
+        "username_env",
+        *(key for keys in STORE_SIGN_INS.values() for key in keys),
+        *(key for keys in _OPTIONAL_SIGN_IN_KEYS.values() for key in keys),
+    }
+)
+
+
+def refused_workbench_key(key: str) -> str | None:
+    """The words a ``[workbench]`` key is refused in, after its name; None for any other."""
+    words = _RETIRED_KEYS.get(key)
+    return None if words is None else f" {words}"
+
+
+def refused_store_key(key: str) -> str | None:
+    """The words an environment's key that would put where a database is, or a secret's
+    value, in the file is refused in, after its name, naming the variable it belongs in;
+    None for any other key. The settings parse and a release's store read both."""
+    if key in _LOCATION_KEYS:
+        return (
+            ": where an environment's database is comes from the host's environment "
+            f"({_LOCATION_KEYS[key]}), never from a file"
+        )
+    if key in SECRET_KEYS:
+        return (
+            f" would hold a secret's value: name the variable that holds it "
+            f"({SECRET_KEYS[key]}) instead"
+        )
+    return None
 
 
 class WorkbenchError(HauteError):
@@ -262,16 +298,9 @@ def store_environments(raw: object, where: str) -> tuple[StoreEnvironment, ...]:
 
 def _environment(name: str, settings: dict[str, object], at: str) -> StoreEnvironment:
     for key in settings:
-        if key in _LOCATION_KEYS:
-            raise ValueError(
-                f"{at}.{key}: where an environment's database is comes from the host's "
-                f"environment ({_LOCATION_KEYS[key]}), never from a file"
-            )
-        if key in SECRET_KEYS:
-            raise ValueError(
-                f"{at}.{key} would hold a secret's value: name the variable that holds it "
-                f"({SECRET_KEYS[key]}) instead"
-            )
+        refusal = refused_store_key(key)
+        if refusal is not None:
+            raise ValueError(f"{at}.{key}{refusal}")
     provider = settings.get("provider")
     if not isinstance(provider, str) or provider not in STORE_PROVIDERS:
         raise ValueError(
@@ -319,25 +348,14 @@ def _app_settings(
     one of the store's environments, *declared*; none of them without the table."""
     if raw is None:
         return None, None, ()
-    if not isinstance(raw, dict):
-        raise WorkbenchConfigError("[workbench.app] must be a TOML table", path=str(toml_path))
-    settings_keys = {"host", "edit_role"}
+    # The settings parse has refused a table that is not one and any key but APP_TOML_KEYS
+    # beside a table for each hosted environment.
+    assert isinstance(raw, dict)
     environments = tuple(
         _app_environment(name, settings, toml_path, declared)
         for name, settings in raw.items()
-        if name not in settings_keys and isinstance(settings, dict)
+        if name not in APP_TOML_KEYS
     )
-    unknown = sorted(
-        key
-        for key, value in raw.items()
-        if key not in settings_keys and not isinstance(value, dict)
-    )
-    if unknown:
-        raise WorkbenchConfigError(
-            f"[workbench.app] has unknown key(s): {', '.join(unknown)}; the keys are host and "
-            "edit_role, beside a table for each hosted environment",
-            path=str(toml_path),
-        )
     host = raw.get("host")
     if not isinstance(host, str) or host not in APP_HOSTS:
         raise WorkbenchConfigError(
@@ -366,13 +384,7 @@ def _app_environment(
             f"[workbench.store.{name}], whose database its app keeps its quotes in",
             path=str(toml_path),
         )
-    unknown = sorted(set(settings) - set(APP_ENVIRONMENT_KEYS))
-    if unknown:
-        raise WorkbenchConfigError(
-            f"{at} has unknown key(s): {', '.join(unknown)}; the keys are "
-            + " and ".join(APP_ENVIRONMENT_KEYS),
-            path=str(toml_path),
-        )
+    # The settings parse has refused any key but APP_ENVIRONMENT_KEYS.
     values: dict[str, str] = {}
     for key in APP_ENVIRONMENT_KEYS:
         value = settings.get(key, "")
