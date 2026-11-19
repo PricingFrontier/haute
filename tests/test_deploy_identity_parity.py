@@ -286,7 +286,7 @@ class TestOutputSchemaCacheFoldsArtifactIdentity:
 
         with (
             patch.object(schema_module, "atomic_write_text", side_effect=recording_write),
-            resolve_config(DeployConfig.from_toml(project / "haute.toml")),
+            resolve_config(DeployConfig.from_project(project)),
         ):
             pass
 

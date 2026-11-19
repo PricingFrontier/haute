@@ -581,7 +581,7 @@ def _test_quote_folder(config: WorkbenchConfig) -> Path:
     whether or not it exists yet (the first save makes it)."""
     from haute.deploy._config import DEFAULT_TEST_QUOTES_DIR, DeployConfig
 
-    named = DeployConfig.from_toml(config.project_root / "haute.toml").test_quotes_dir
+    named = DeployConfig.from_project(config.project_root).test_quotes_dir
     return named if named is not None else config.project_root / DEFAULT_TEST_QUOTES_DIR
 
 

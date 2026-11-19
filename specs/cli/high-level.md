@@ -261,6 +261,28 @@ Out of scope, owned elsewhere:
   workflows give them.
 
 Invariants that hold across every command:
+- Every command states what it needs of the project, and the command line finds it from
+  the shell's folder by the one finder ([pipeline-config](../pipeline-config/high-level.md),
+  "Finding the project") before the command runs. No command's need differs from what it
+  did before the finder was shared:
+
+  | Need | Commands | Where it runs |
+  |---|---|---|
+  | none | `init`, `gpu-setup` | the shell's folder; no project is looked for |
+  | the pipeline file's project | `run`, `lint` | the project holding the pipeline file, found from the file's folder; the file's folder when no `haute.toml` is above it |
+  | a project if there is one | `status`, `deploy`, `train` | the project holding the shell's folder, from any folder inside it; the shell's folder when no `haute.toml` is above it (`status` and `deploy` then need the model named on the command line) |
+  | a project | `serve`, `smoke`, `impact`, `ci secrets`, `ci update`, `ci registry-host`, `app build`, `app rollout`, `app impact`, `app serve` | the project holding the shell's folder, from any folder inside it; refused without one |
+
+  A command that needs a project and finds none is refused in one sentence, the same for
+  each: no `haute.toml` in the folder or above it, run inside a Haute project or make one
+  with `haute init`. A `haute.toml` found outside a git repository is refused by every
+  command but `init` and `gpu-setup`, naming the folder and `git init`. Every command that
+  finds a `haute.toml` reads it through the one settings parse, so a byte-order mark is read
+  through by all of them and a misspelt key or table is refused by all of them in the same
+  words. `tests/test_project_finding.py` runs every command on a table of projects and fails
+  for a command without a row.
+- `haute serve` checks the configured pipeline file before the server starts: one missing,
+  or holding no pipeline, ends the command in one line and exit 1, naming the file.
 - Where `resolve_model_name` is used (`status`), precedence is **CLI value >
   `HAUTE_MODEL_NAME` > `[deploy].model_name` in `haute.toml` > loud error**. `deploy` loads the TOML config then
   applies its `--model-name` override; without TOML it derives the default from the resolved
@@ -299,10 +321,11 @@ Invariants that hold across every command:
   Vite port is occupied, waits for both listeners before opening the browser, and never follows
   Vite's automatic port rollover to a different, unreported origin.
 - **Command-scoped failure rules.** Missing Node/npm and a missing production frontend build
-  fail rather than guessing; malformed TOML fails. `smoke`/`impact` require `haute.toml`, while
-  deploy and explicit-model status have non-TOML paths. `serve` deliberately treats a missing
-  file as no override and an unreadable file as a warning plus the loopback default; it still
-  rejects malformed TOML. No hardcoded Windows Node/npm path is guessed.
+  fail rather than guessing; malformed TOML fails. What each command needs of the
+  project is the table above: `smoke`/`impact` need one, while deploy and explicit-model
+  status have non-TOML paths. `serve` reads `[server] host` from the settings parse like
+  every other setting: no table is no override, and an unreadable or malformed file is
+  refused. No hardcoded Windows Node/npm path is guessed.
 - **`impact`/`smoke` share a transport abstraction.** Both commands need to dispatch to either
   Databricks Model Serving or a plain HTTP endpoint depending on `DeployConfig.target`. That
   dispatch logic lives once in `haute.cli._helpers.resolve_transport` / `TransportInfo` rather than

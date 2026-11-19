@@ -261,9 +261,51 @@ and deploy execution, uses the same four-tier chain: the
 unambiguous auto-discovered `.py` file, and finally a hard failure enumerating what was tried.
 Malformed TOML and a broken configured path fail before any lower tier is considered.
 
-The GUI's plural listing path applies the same strict configured-path checks
-but also returns additional valid root-level pipelines. It lists rather than
-chooses among them; the single-pipeline binding policy remains authoritative.
+**The project's pipelines.** One list answers which pipelines a project holds
+(`discover_pipelines`): the configured pipeline, every other `.py` file holding
+`haute.Pipeline` in the configured pipeline's folder, and those in the project
+folder itself. The editor's picker and every check that asks what else uses a file
+read it: a save deleting a submodel's definition file, a utility module's edit, the
+index of which pipelines import a module, and the notice a save sends to other open
+documents. A pipeline beside the configured one, as `rating/renewal.py` is beside
+`rating/main.py`, imports the same `modules/` and `utility/` folders, so a save in one
+keeps a definition the other uses. The list applies the same strict configured-path
+checks; it lists rather than chooses among them, and the single-pipeline binding
+policy remains authoritative.
+
+**The settings file.** `haute.toml` is read by one parse (`haute._project_settings`),
+made afresh for each operation, so an edit to the file reaches the next call of a
+running server; nothing holds the settings for the life of a process. Every reader of
+a table (the configured pipeline, the deploy settings, `[server]`, `[workbench]`,
+`[assistant]`, `[mlflow]`, `haute init` reading the answers a re-run starts from) takes
+its table from that parse and opens the file nowhere else. The parse states one rule
+for each of these, and every command and the editor follow it:
+
+- **Encoding.** The file is UTF-8. A leading UTF-8 byte-order mark, as Windows
+  PowerShell 5 writes "utf8", is read through, as Haute reads a JSON input's; any
+  other byte that is not UTF-8 is refused, naming the file and the byte's position.
+  Malformed TOML is refused naming the file and TOML's own line and column.
+- **Tables and keys.** Every table and key Haute knows is checked across the whole
+  file. A misspelt key (`pipline` under `[project]`) or table (`[projct]`,
+  `[workbnch]`) is refused, naming it where it is and the keys or tables that place
+  takes, never read as an absent setting. A table a key names that is not a table is
+  refused the same way. A table's own reader goes on to check its values.
+- **Paths.** A path the file names (`[project].pipeline`, `[test_quotes].dir`,
+  `[mlflow].folder`) is read by the rule a node's path is read by: a backslash is a
+  separator on every system, so `pipeline = 'rating\main.py'` names
+  `rating/main.py` on Linux as on Windows. A configured pipeline must lie inside the
+  project.
+
+The editor's load reports what the parse refuses as an issue of the document, where it
+shows a pipeline file's own faults: a source-only document of `haute.toml`, whose
+issue names the key, the table or the byte, never an empty canvas.
+
+**Finding the project.** One finder walks up from a starting folder to the first
+folder holding a `haute.toml`. That folder is the project when it is inside a git
+repository; a `haute.toml` outside one is refused, naming the folder and `git init`, by
+every caller, since a project is a `haute.toml` inside a git repository. Each CLI command
+states what it needs of the finder ([cli](../cli/high-level.md)), and commands with the
+same need refuse in the same words when it is not met.
 
 **Project context.** A process resolves its project once, where it starts, and every call
 reads it from the one accessor, `current_project()`; nothing reads the working directory or a
@@ -274,8 +316,8 @@ settings the server can change while it runs, such as the `[mlflow]` table, reac
 call, a worker's included. The context does not bind one pipeline file, because the editor
 serves every pipeline in the project; a command that binds one pipeline resolves it through
 the four-tier chain above as before. The one resolver,
-`resolve_project`, walks up from where the process starts to the first `haute.toml` inside a
-git repository, and anywhere else raises. Who installs the project:
+`resolve_project`, is the finder above from where the process starts, and raises where it
+finds no project. Who installs the project:
 
 - **The editor server.** `haute serve` resolves the project holding the directory it is run in
   and refuses to start outside one. The application is built for that context, and every
@@ -284,12 +326,13 @@ git repository, and anywhere else raises. Who installs the project:
   the project's root, set once at start: Haute never reads the working directory, but the
   user's pipeline code reads a relative path from it, and this way it names the same file a
   relative path in the project's configuration does.
-- **The CLI.** A command works in the shell's working directory, read once when the command
-  starts (a caller that installed a project already, such as a test, keeps it), so
-  `haute deploy`, `haute init` and the rest read that directory's `haute.toml` as before; a
-  command given a pipeline file (`run`, `lint`) runs in the project holding that file
-  instead, and `haute serve` resolves the project holding the directory and refuses to start
-  outside one.
+- **The CLI.** A command starts from the shell's working directory, read once when the
+  command starts (a caller that installed a project already, such as a test, keeps it),
+  and installs what its stated need finds there: the project holding that folder, from
+  any folder inside it, for `status`, `deploy`, `smoke`, `impact`, `ci`, `app`, `train`
+  and `serve`; the folder itself for `init` and `gpu-setup`, which need no project. A
+  command given a pipeline file (`run`, `lint`) runs in the project holding that file,
+  or in the file's folder when no `haute.toml` is above it.
 - **A standalone run.** `Pipeline.run()`, `Pipeline.score()`, a configured node called
   directly and a `TrainingJob` run by an exported training script run in the project already
   installed, if any (a deploy's validated root);
@@ -975,7 +1018,16 @@ refused, naming the map form. An
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent
 pipeline-file resolution raises, enumerating every candidate it considered. Not being inside
-a Haute project (no `haute.toml`, or no git repository above it) raises. An unrecognised config
+a Haute project (no `haute.toml`, or no git repository above it) raises where a project is
+needed; a `haute.toml` outside a git repository is refused by every caller, a pipeline run
+as Python and `haute run` included, naming `git init`. A `haute.toml` the settings parse
+refuses (a byte that is not UTF-8, malformed TOML, an unknown table or key, a table that is
+not one, a configured pipeline outside the project) is refused by every command in the
+parse's own words, and shown by the editor as the document's issue. A configured pipeline
+path that ends in a space, or names a file the system will not let Haute read, is refused
+saying so; the extension is compared without regard to letter case, as a pipeline file
+given as a command's argument is, and only a file that was read and holds no
+`haute.Pipeline` is "not a Haute pipeline". An unrecognised config
 key is a `ConfigError` at parse that names the node and the key, and a save that carries one is
 refused with HTTP 400 naming both, before any file is written. Retired identity fields are
 refused with their own targeted message. Optimiser

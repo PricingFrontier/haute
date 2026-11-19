@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 import click
 
 from haute._project_context import current_project
+from haute.cli._helpers import HauteCommandGroup
 
 if TYPE_CHECKING:
     from haute._workbench_test_quotes import Checked
@@ -292,12 +293,12 @@ def handle_app_serve(config: AppServeConfig) -> None:
     uvicorn.run(application, host=SERVE_HOST, port=config.port, log_level="warning")
 
 
-@click.group(name="app")
+@click.group(name="app", cls=HauteCommandGroup)
 def app() -> None:
     """The underwriter app: the sheets apart from the builder, priced in the app."""
 
 
-@app.command()
+@app.command(need="project")
 @click.argument(
     "output",
     type=click.Path(file_okay=False, path_type=Path),
@@ -319,7 +320,7 @@ def build(output: Path, image: str | None, push: bool) -> None:
     handle_app_build(AppBuildConfig(output=output, image=image, push=push))
 
 
-@app.command(name="rollout")
+@app.command(name="rollout", need="project")
 @click.argument("environment")
 @click.option("--image", default=None, help="The image to roll out, named by digest.")
 @click.option(
@@ -335,7 +336,7 @@ def rollout_command(environment: str, image: str | None, source: str | None) -> 
     handle_app_rollout(AppRolloutConfig(environment=environment, image=image, source=source))
 
 
-@app.command(name="impact")
+@app.command(name="impact", need="project")
 @click.option(
     "--sample",
     default=100,
@@ -348,7 +349,7 @@ def impact_command(sample: int) -> None:
     handle_app_impact(AppImpactConfig(sample=sample))
 
 
-@app.command()
+@app.command(need="project")
 @click.option(
     "--port",
     default=8001,

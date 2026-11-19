@@ -3534,8 +3534,8 @@ Out of scope:
   `haute.toml` schema, the starter form folder among the scaffold's templates, and the
   `workbench_input` and `workbench_output` decorators and their config folders, whose
   files hold neither tables nor a sample.
-- [deploy](../deploy/high-level.md): `DeployConfig.from_toml`'s whole-file check accepts the
-  `[workbench]` table; save and deploy refuse a second request input or response node, deploy
+- [deploy](../deploy/high-level.md): the settings parse's whole-file check, which deploy
+  reads through, accepts the `[workbench]` table; save and deploy refuse a second request input or response node, deploy
   reads the form's tables into the bundle, takes a Workbench Input's request schema and
   dry-run quote from them and reads a served request into them, and a deployed pipeline
   answers with a Workbench Output's response as with a Quote Response's; deploy refuses a

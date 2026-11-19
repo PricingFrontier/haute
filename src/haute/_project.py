@@ -17,16 +17,19 @@ silently falling back to a default.
 from __future__ import annotations
 
 import errno
-import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from haute.errors import ConfigError, InvalidPathError, PathOutsideProjectError
+from haute._project_settings import has_settings, read_project_settings
+from haute.errors import ConfigError
+
+PipelineFileReason = Literal["missing", "not_a_pipeline", "unreadable"]
 
 
 class PipelineFileError(FileNotFoundError):
-    """``haute.toml``'s ``[project].pipeline`` names a file that is not there (``missing``) or
-    that holds no pipeline (``not_a_pipeline``).
+    """``haute.toml``'s ``[project].pipeline`` names a file that is not there (``missing``),
+    that the system would not let Haute read (``unreadable``, with the system's *detail*), or
+    that was read and holds no pipeline (``not_a_pipeline``).
 
     Still a ``FileNotFoundError``, so every caller that catches one keeps doing so. It carries
     the file, so each edge names it as it names files (relative to the project), and its
@@ -34,9 +37,10 @@ class PipelineFileError(FileNotFoundError):
     """
 
     def __init__(
-        self, path: str, *, reason: Literal["missing", "not_a_pipeline"] = "missing"
+        self, path: str, *, reason: PipelineFileReason = "missing", detail: str = ""
     ) -> None:
         self.reason = reason
+        self.detail = detail
         super().__init__(errno.ENOENT, self.words(path), path)
 
     def words(self, named: str) -> str:
@@ -45,6 +49,12 @@ class PipelineFileError(FileNotFoundError):
             return (
                 f"Pipeline file configured in haute.toml [project].pipeline does not exist: "
                 f"{named}. Fix the path in haute.toml or create the file."
+            )
+        if self.reason == "unreadable":
+            return (
+                f"Pipeline file configured in haute.toml [project].pipeline could not be read: "
+                f"{named} ({self.detail}). Close the program holding it, or check the file's "
+                "permissions, and try again."
             )
         return (
             f"Pipeline file configured in haute.toml [project].pipeline does not look like a "
@@ -56,16 +66,48 @@ class PipelineFileError(FileNotFoundError):
         return str(self.strerror)
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (_restore_pipeline_file_error, (type(self), str(self.filename), self.reason))
+        return (
+            _restore_pipeline_file_error,
+            (type(self), str(self.filename), self.reason, self.detail),
+        )
 
 
 def _restore_pipeline_file_error(
     error_type: type[PipelineFileError],
     path: str,
-    reason: Literal["missing", "not_a_pipeline"],
+    reason: PipelineFileReason,
+    detail: str,
 ) -> PipelineFileError:
     """A :class:`PipelineFileError` as a worker sent it."""
-    return error_type(path, reason=reason)
+    return error_type(path, reason=reason, detail=detail)
+
+
+class NoProjectError(ConfigError):
+    """No ``haute.toml`` at or above the folder a command or call starts from."""
+
+    def __init__(self, start: Path) -> None:
+        self.start = start
+        super().__init__(
+            f"No haute.toml in {start} or any folder above it: run this inside a Haute "
+            "project, or make one with 'haute init'."
+        )
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.start,))
+
+
+class ProjectOutsideGitError(ConfigError):
+    """A ``haute.toml`` outside a git repository: a project is a ``haute.toml`` inside one."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        super().__init__(
+            f"haute.toml found in {folder}, which is not inside a git repository: run "
+            "'git init' there to make it a Haute project."
+        )
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self), (self.folder,))
 
 
 # Files that look like Python modules but are never pipeline entry points.
@@ -83,55 +125,47 @@ def _has_git(path: Path) -> bool:
     return False
 
 
-def get_project_root(start: Path) -> Path:
-    """Walk upward from ``start`` to find the Haute project root.
+def find_project_root(start: Path) -> Path | None:
+    """The project holding *start*: the one finder.
 
-    The project root is the first ancestor directory (inclusive of
-    ``start``) that contains a ``haute.toml`` file *and* sits inside a
-    git repository (a ``.git`` directory or worktree-style file at or
-    above the haute.toml location).
-
-    Parameters
-    ----------
-    start:
-        Directory to start the search from.
-
-    Returns
-    -------
-    Path
-        Resolved absolute path to the project root.
+    Walks up from *start*, inclusive, to the first folder holding a ``haute.toml``, and
+    answers it when it is inside a git repository (a ``.git`` directory or worktree file at
+    or above it); nested projects inner-win. ``None`` when no folder at or above holds one.
 
     Raises
     ------
+    ProjectOutsideGitError
+        When the ``haute.toml`` found is not inside a git repository: every caller refuses
+        it, since a project is a ``haute.toml`` inside a git repository.
     ConfigError
-        If no ``haute.toml`` is found walking upward, if the discovered
-        ``haute.toml`` is not inside a git repo, or if ``start`` does
-        not exist.
+        When *start* does not exist.
     PermissionError
-        Propagated unwrapped when the filesystem refuses to stat an
-        ancestor directory.
+        Propagated unwrapped when the filesystem refuses to stat an ancestor directory.
     """
     if not start.exists():
         raise ConfigError(
             "start path does not exist; check the path or cd to a Haute project",
             start=str(start),
         )
-
     current = start.resolve()
-    # First haute.toml walking up wins — nested projects inner-win.
     for candidate in [current, *current.parents]:
-        if (candidate / "haute.toml").exists():
+        if has_settings(candidate):
             if not _has_git(candidate):
-                raise ConfigError(
-                    "haute.toml found but not inside a git repository; run 'git init'",
-                    project=str(candidate),
-                )
+                raise ProjectOutsideGitError(candidate)
             return candidate
+    return None
 
-    raise ConfigError(
-        "no haute.toml found walking up from start; not inside a Haute project",
-        start=str(start),
-    )
+
+def get_project_root(start: Path) -> Path:
+    """The project holding *start* (:func:`find_project_root`), resolved and absolute.
+
+    Raises :class:`NoProjectError` when no folder at or above *start* holds a
+    ``haute.toml``, and as :func:`find_project_root` raises otherwise.
+    """
+    root = find_project_root(start)
+    if root is None:
+        raise NoProjectError(start.resolve())
+    return root
 
 
 def is_haute_project(path: Path) -> bool:
@@ -142,63 +176,38 @@ def is_haute_project(path: Path) -> bool:
     No walk-up is performed for the ``haute.toml`` check — subdirectories
     of a project return ``False``.
     """
-    return bool((path / "haute.toml").exists() and _has_git(path))
+    return has_settings(path) and _has_git(path)
 
 
-def _toml_configured_pipeline(root: Path) -> Path | None:
-    """Return ``[project].pipeline`` from *root*/haute.toml, if set.
+def configured_pipeline_file(root: Path) -> Path | None:
+    """The pipeline *root*'s ``haute.toml`` configures, checked; ``None`` when it names none.
 
-    A thin wrapper around :mod:`tomllib` that returns :data:`None` when
-    the TOML is missing or simply doesn't define ``[project].pipeline``.
-    Malformed or unreadable project configuration fails loudly so tier 1
-    cannot disappear and bind a different pipeline.
-
-    Note the return value is **unresolved** — the caller checks existence
-    and raises :class:`FileNotFoundError` if the configured file is
-    missing so a typo in ``haute.toml`` doesn't silently fall through to
-    auto-discovery.
+    The path is read by the settings parse (``haute._project_settings``), which refuses one
+    outside the project or ending in a space. Raises :class:`PipelineFileError` for a file
+    that is not there, that the system will not let Haute read, or that was read and holds no
+    ``haute.Pipeline``, so a typo in ``haute.toml`` never falls through to discovery.
     """
-    toml_path = root / "haute.toml"
-    if not toml_path.exists():
+    settings = read_project_settings(root)
+    configured = None if settings is None else settings.configured_pipeline
+    if configured is None:
         return None
+    if not configured.is_file():
+        raise PipelineFileError(str(configured), reason="missing")
     try:
-        with open(toml_path, "rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ConfigError(
-            "Could not read haute.toml while resolving the project pipeline",
-            path=str(toml_path),
-            error_type=type(exc).__name__,
-            reason=str(exc),
+        text = configured.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise PipelineFileError(
+            str(configured), reason="unreadable", detail=exc.strerror or str(exc)
         ) from exc
-    project = data.get("project", {})
-    if not isinstance(project, dict):
-        raise ConfigError(
-            "haute.toml [project] must be a table",
-            path=str(toml_path),
-        )
-    pipeline = project.get("pipeline")
-    if pipeline is None or pipeline == "":
-        return None
-    if not isinstance(pipeline, str):
-        # A configured value that is not a path is a broken tier one, not an
-        # absent one: falling through would bind a different pipeline.
-        raise ConfigError(
-            "haute.toml [project].pipeline must be a path string",
-            path=str(toml_path),
-            value_type=type(pipeline).__name__,
-        )
-    from haute._sandbox import contained_path
+    if not _is_python_file(configured) or "haute.Pipeline" not in text:
+        raise PipelineFileError(str(configured), reason="not_a_pipeline")
+    return configured.resolve()
 
-    try:
-        contained_path(root, pipeline)
-    except (InvalidPathError, PathOutsideProjectError) as exc:
-        raise ConfigError(
-            "haute.toml [project].pipeline must name a file inside the project",
-            path=str(toml_path),
-            pipeline=pipeline,
-        ) from exc
-    return root / pipeline
+
+def _is_python_file(candidate: Path) -> bool:
+    """A ``.py`` file that can be a pipeline: the extension in any letter case, as Windows
+    opens it, and not one of the module files that never are."""
+    return candidate.suffix.lower() == ".py" and candidate.name.lower() not in _NOT_A_PIPELINE
 
 
 def _discover_root_pipelines(root: Path) -> list[Path]:
@@ -224,7 +233,7 @@ def _discover_root_pipelines(root: Path) -> list[Path]:
 
 def _looks_like_pipeline_file(candidate: Path) -> bool:
     """Return True when *candidate* appears to contain a Haute pipeline."""
-    if candidate.name in _NOT_A_PIPELINE or candidate.suffix != ".py":
+    if not _is_python_file(candidate):
         return False
     try:
         text = candidate.read_text(encoding="utf-8", errors="replace")
@@ -262,13 +271,9 @@ def _resolve_default_in(root: Path) -> Path:
     ``--file <path>`` or rename the intended entry point to ``main.py``.
     """
     # Tier 1 — [project].pipeline wins over everything.
-    configured = _toml_configured_pipeline(root)
+    configured = configured_pipeline_file(root)
     if configured is not None:
-        if not configured.exists():
-            raise PipelineFileError(str(configured), reason="missing")
-        if not _looks_like_pipeline_file(configured):
-            raise PipelineFileError(str(configured), reason="not_a_pipeline")
-        return configured.resolve()
+        return configured
 
     discovered = _discover_root_pipelines(root)
     main_py = root / "main.py"

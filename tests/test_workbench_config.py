@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
+from haute._project_settings import read_project_settings
 from haute._workbench_config import (
     AppEnvironment,
     WorkbenchConfigError,
     read_workbench_config,
     store_environments,
 )
-from haute.deploy._config import _validate_toml_keys
 from haute.errors import ConfigError
 from tests._workbench_helpers import PIPELINE_SOURCE, enable
 
@@ -220,16 +220,6 @@ def test_the_app_table_names_the_role_that_may_change_quotes(tmp_path: Path) -> 
     [
         ("[workbench]\n", "[workbench].enabled must be true or false"),
         ('[workbench]\nenabled = "yes"\n', "[workbench].enabled must be true or false"),
-        ("workbench = true\n", "[workbench] must be a TOML table"),
-        (
-            "[workbench]\nenabled = true\nenable = true\nlabel = 'x'\n",
-            "[workbench] has unknown key(s): enable, label; the keys are enabled, app and store",
-        ),
-        (
-            "[workbench]\nenabled = true\nform = 'forms/form.json'\n",
-            "[workbench].form was removed: the form is the pipeline folder's workbench/ folder; "
-            "delete the key",
-        ),
         ("[workbench]\nenabled = true\napp = 'azure'\n", "[workbench.app] must be a TOML table"),
         (
             "[workbench]\nenabled = true\n[workbench.app]\nhost = 'azure-container-apps'\n"
@@ -302,19 +292,37 @@ def test_a_bad_table_is_refused_naming_what_to_set(
         read_workbench_config(tmp_path)
 
 
-def test_a_malformed_haute_toml_is_refused_as_a_config_error(tmp_path: Path) -> None:
-    _write(tmp_path, "[workbench\nenabled = true\n")
+@pytest.mark.parametrize(
+    ("table", "message"),
+    [
+        ("workbench = true\n", "[workbench] must be a table"),
+        (
+            "[workbench]\nenabled = true\nenable = true\nlabel = 'x'\n",
+            "[workbench] unknown key 'enable' (the keys are app, enabled and store); "
+            "[workbench] unknown key 'label'",
+        ),
+        (
+            "[workbench]\nenabled = true\nform = 'forms/form.json'\n",
+            "[workbench] form was removed: the form is the pipeline folder's workbench/ folder; "
+            "delete the key",
+        ),
+        ("[workbench\nenabled = true\n", "is malformed and could not be parsed"),
+    ],
+)
+def test_a_table_the_settings_parse_refuses_is_refused_in_its_words(
+    tmp_path: Path, table: str, message: str
+) -> None:
+    # The settings parse checks the table's keys for every reader of haute.toml.
+    _write(tmp_path, table)
 
-    with pytest.raises(WorkbenchConfigError, match="malformed") as caught:
+    with pytest.raises(ConfigError, match=re.escape(message)):
         read_workbench_config(tmp_path)
-    # A caller reading haute.toml for another purpose catches it as a ConfigError.
-    assert isinstance(caught.value, ConfigError)
 
 
 def test_a_haute_toml_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
     (tmp_path / "haute.toml").write_bytes(b"[workbench]\nenabled = true\n# \xff\xfe\n")
 
-    with pytest.raises(WorkbenchConfigError, match="haute.toml is not UTF-8 text"):
+    with pytest.raises(ConfigError, match="is not UTF-8 text"):
         read_workbench_config(tmp_path)
 
 
@@ -340,19 +348,21 @@ def test_a_form_folder_leading_outside_the_project_is_refused(tmp_path: Path) ->
         read_workbench_config(project)
 
 
-def test_deploy_s_whole_file_check_accepts_the_table_and_refuses_an_unknown_key(
+def test_the_settings_parse_accepts_the_table_and_refuses_an_unknown_key(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "haute.toml"
-    _validate_toml_keys({"workbench": {"enabled": True}}, path)
-    _validate_toml_keys(
-        {"workbench": {"enabled": True, "app": {"host": "azure-container-apps"}}}, path
-    )
-    _validate_toml_keys(
-        {"workbench": {"enabled": True, "store": {"test": {"provider": "x"}}}}, path
-    )
+    for accepted in (
+        "[workbench]\nenabled = true\n",
+        '[workbench]\nenabled = true\n[workbench.app]\nhost = "azure-container-apps"\n',
+        '[workbench]\nenabled = true\n[workbench.store.test]\nprovider = "x"\n',
+    ):
+        path.write_text(accepted, encoding="utf-8")
+        assert read_project_settings(tmp_path) is not None
 
-    with pytest.raises(ValueError, match=r"\[workbench\] unknown key 'enable'"):
-        _validate_toml_keys({"workbench": {"enable": True}}, path)
-    with pytest.raises(ValueError, match=r"\[workbench\] unknown key 'form'"):
-        _validate_toml_keys({"workbench": {"enabled": True, "form": "forms/form.json"}}, path)
+    path.write_text("[workbench]\nenable = true\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"\[workbench\] unknown key 'enable'"):
+        read_project_settings(tmp_path)
+    path.write_text('[workbench]\nenabled = true\nform = "forms/form.json"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match=r"\[workbench\] form was removed"):
+        read_project_settings(tmp_path)

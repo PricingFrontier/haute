@@ -29,8 +29,7 @@ signals and pipes. The main session ran each case again on 15 November
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CLI-02 | Planned | P3 | Every command finds the project from a folder inside it, as `run`, `lint`, `deploy` and `serve` do. |
-| CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target or table is named where it is. |
+| CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target is named where it is. |
 | CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
@@ -41,35 +40,6 @@ signals and pipes. The main session ran each case again on 15 November
 
 ## Planned improvements
 
-### CLI-02 — Every command finds the project from a folder inside it
-**Why:** Reproduced on 11 November 2026. With the shell in the project's
-`rating` folder, where the pipeline file is, `haute run`, `haute lint`,
-`haute deploy` and `haute serve` find the project above. The others do not,
-and say something else: `haute status` answers "model_name is required —
-pass --model-name on the command line or run inside a Haute project with
-[deploy].model_name set in haute.toml."; `haute impact` answers "No
-haute.toml found."; `haute ci update` answers "No haute.toml found: run this
-in a Haute project."; and `haute app build`, in a workbench project, answers
-"This project has no workbench: add [workbench] enabled = true to
-haute.toml.", which is false. The sweep saw `haute smoke` and
-`haute ci registry-host` answer as `impact` and `ci update` do, and saw
-`haute init`, run from that folder, make a second project inside the
-first.
-
-**Plan:** Have every command resolve the project as `run` does, walking up
-from the shell's folder to the `haute.toml`, and read its settings from
-there.
-
-**Acceptance:** From a folder inside a project, `status`, `impact`, `smoke`,
-`ci update`, `ci registry-host` and `app build` each behave as from the
-project's root.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_project_context.py::resolve_project`;
-`src/haute/cli/_status.py`; `src/haute/cli/_impact.py`;
-`src/haute/cli/_ci.py`; `src/haute/cli/_app.py`.
-
 ### CLI-03 — The CI commands name the setting that is wrong
 **Why:** Reproduced on 11 November 2026. A workbench project as
 `haute init --workbench` leaves it has `registry = ""`. Its generated
@@ -79,21 +49,17 @@ job logs in to an empty host. `haute app build --push` refuses the same
 file: "[deploy.container] registry is empty: name the registry the app's
 image is pushed to in haute.toml."
 
-Two more answers name the wrong place. With `[deploy] target` mistyped as
+One more answer names the wrong place. With `[deploy] target` mistyped as
 `databrick`, `haute ci update` answers "Unknown target: databrick in [ci]
-provider of haute.toml.", though the `[ci]` table is right. With the
-`[workbench]` table mistyped as `[workbnch]`, `haute app build` answers
-"[workbench].enabled must be true or false", while `haute ci update` names
-the unknown section.
+provider of haute.toml.", though the `[ci]` table is right.
 
 **Plan:** Have `haute ci registry-host` refuse an empty registry in the
 words `haute app build --push` uses. Name `[deploy] target` in the unknown
-target's message, and let `haute app build` and `haute app serve` report an
-unknown table as `haute ci update` does.
+target's message.
 
 **Acceptance:** `haute ci registry-host` on a project with no registry exits
 non-zero naming `[deploy.container] registry`. A mistyped `[deploy] target`
-and a mistyped `[workbench]` table are each named as they are written.
+is named as it is written.
 
 **Dependencies:** None.
 

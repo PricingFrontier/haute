@@ -33,17 +33,17 @@ workbench route needs it, so an edit reaches the next request.
 from __future__ import annotations
 
 import re
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from haute._project import resolve_pipeline_file
+from haute._project_settings import read_project_settings
 from haute._sandbox import contained_path
 from haute.errors import ConfigError, HauteError, PathOutsideProjectError
 
-#: The keys the table may hold. ``haute deploy``'s whole-file check of ``haute.toml``
-#: (``haute.deploy._config``) accepts exactly these under ``[workbench]``.
+#: The keys the table may hold: the settings parse (``haute._project_settings``) checks them
+#: across the whole file.
 WORKBENCH_TOML_KEYS: frozenset[str] = frozenset({"enabled", "app", "store"})
 #: Where the underwriter app can run: the host whose sign-in fronts it.
 APP_HOSTS: frozenset[str] = frozenset({"azure-container-apps"})
@@ -101,11 +101,11 @@ SECRET_KEYS: Mapping[str, str] = {
     "connection_string": STORE_URL_ENV,
 }
 
-#: Where an earlier Haute named the form's one file; refused saying what replaced it.
-_REMOVED_FORM_KEY = (
-    "[workbench].form was removed: the form is the pipeline folder's workbench/ folder; "
-    "delete the key"
-)
+#: Keys an earlier Haute read under ``[workbench]``, each refused by the settings parse saying
+#: what replaced it.
+WORKBENCH_RETIRED_KEYS: Mapping[str, str] = {
+    "form": "was removed: the form is the pipeline folder's workbench/ folder; delete the key"
+}
 
 
 class WorkbenchError(HauteError):
@@ -200,40 +200,15 @@ def read_workbench_config(project_root: Path) -> WorkbenchConfig:
     not as the module docstring describes, or, while enabled, the project has no pipeline
     file or its form folder resolves outside the project.
     """
-    toml_path = project_root / "haute.toml"
     disabled = WorkbenchConfig(enabled=False, project_root=project_root)
-    if not toml_path.is_file():
+    settings = read_project_settings(project_root)
+    if settings is None:
         return disabled
-    try:
-        with toml_path.open("rb") as handle:
-            data = tomllib.load(handle)
-    except OSError as exc:
-        raise WorkbenchConfigError(
-            f"haute.toml could not be read: {exc}", path=str(toml_path)
-        ) from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise WorkbenchConfigError(
-            f"haute.toml is malformed and could not be parsed: {exc}", path=str(toml_path)
-        ) from exc
-    except UnicodeDecodeError as exc:
-        raise WorkbenchConfigError(
-            f"haute.toml is not UTF-8 text: {exc}", path=str(toml_path)
-        ) from exc
-
-    table = data.get(_TABLE)
+    toml_path = settings.path
+    # The parse has checked the table's keys (``WORKBENCH_TOML_KEYS``).
+    table = settings.table(_TABLE)
     if table is None:
         return disabled
-    if not isinstance(table, dict):
-        raise WorkbenchConfigError("[workbench] must be a TOML table", path=str(toml_path))
-    if "form" in table:
-        raise WorkbenchConfigError(_REMOVED_FORM_KEY, path=str(toml_path))
-    unknown = sorted(set(table) - WORKBENCH_TOML_KEYS)
-    if unknown:
-        raise WorkbenchConfigError(
-            f"[workbench] has unknown key(s): {', '.join(unknown)}; the keys are enabled, app "
-            "and store",
-            path=str(toml_path),
-        )
     enabled = table.get("enabled")
     if not isinstance(enabled, bool):
         raise WorkbenchConfigError("[workbench].enabled must be true or false", path=str(toml_path))

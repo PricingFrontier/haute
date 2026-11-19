@@ -516,7 +516,8 @@ class TestDatabricksConfiguration:
             '[assistant]\nprovider = "openai"\nmodel = "m"\n'
             'base_url = "https://api.example/v1"\n[assistant.egress]\n' + egress,
         )
-        with pytest.raises(ConfigError, match=r"\[assistant\]\.egress"):
+        # A missing key is the reader's to name; an unknown one the settings parse's.
+        with pytest.raises(ConfigError, match=r"\[assistant\]?\.egress"):
             resolve_assistant_config()
 
 
@@ -533,7 +534,7 @@ class TestClosedTableAndBaseUrlValidation:
             "_sdk_importable",
             lambda _provider: pytest.fail("SDK probe must not run for invalid configuration"),
         )
-        with pytest.raises(ConfigError, match=r"\[assistant\]\.endpoint") as exc_info:
+        with pytest.raises(ConfigError, match=r"\[assistant\] unknown key 'endpoint'") as exc_info:
             resolve_assistant_config()
         assert "secret" not in str(exc_info.value)
 
@@ -544,8 +545,9 @@ class TestClosedTableAndBaseUrlValidation:
         )
         with pytest.raises(ConfigError) as exc_info:
             resolve_assistant_config()
-        assert str(exc_info.value) == (
-            "Unknown [assistant] configuration key(s): [assistant].alpha, [assistant].zebra."
+        message = str(exc_info.value)
+        assert message.index("[assistant] unknown key 'alpha'") < message.index(
+            "[assistant] unknown key 'zebra'"
         )
 
     @pytest.mark.parametrize(

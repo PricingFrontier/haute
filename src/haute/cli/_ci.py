@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import click
 
 from haute._project_context import current_project
+from haute.cli._helpers import HauteCommandGroup, require_command_settings
 
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
@@ -45,15 +46,11 @@ class CiSecretsConfig:
 
 
 def _project() -> tuple[Path, DeployConfig]:
-    """The project in the working directory and its ``haute.toml``."""
+    """The command's project and its deploy settings."""
     from haute.deploy._config import DeployConfig
 
-    project_dir = current_project().root
-    toml_path = project_dir / "haute.toml"
-    if not toml_path.is_file():
-        raise click.ClickException("No haute.toml found: run this in a Haute project.")
     try:
-        return project_dir, DeployConfig.from_toml(toml_path)
+        return current_project().root, DeployConfig.from_settings(require_command_settings())
     except ValueError as exc:
         # A value haute.toml cannot hold (a key of the wrong type) names its key.
         raise click.ClickException(str(exc)) from exc
@@ -261,12 +258,12 @@ def handle_ci_registry_host() -> None:
     click.echo(registry_host(deploy_config.container.registry))
 
 
-@click.group(name="ci")
+@click.group(name="ci", cls=HauteCommandGroup)
 def ci() -> None:
     """The CI files and secrets a project's deploys need."""
 
 
-@ci.command(name="secrets")
+@ci.command(name="secrets", need="project")
 @click.option(
     "--check",
     "check_only",
@@ -283,13 +280,13 @@ def secrets(check_only: bool, no_verify: bool) -> None:
     handle_ci_secrets(CiSecretsConfig(check_only=check_only, verify=not no_verify))
 
 
-@ci.command(name="update")
+@ci.command(name="update", need="project")
 def update() -> None:
     """Rewrite the generated CI files and .env.example for this haute."""
     handle_ci_update()
 
 
-@ci.command(name="registry-host")
+@ci.command(name="registry-host", need="project")
 def registry_host_command() -> None:
     """Print the host of the registry a container deploy pushes to."""
     handle_ci_registry_host()

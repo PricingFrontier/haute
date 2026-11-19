@@ -13,8 +13,7 @@ from dataclasses import dataclass
 
 import click
 
-from haute._project_context import current_project
-from haute.cli._helpers import resolve_model_name
+from haute.cli._helpers import HauteCommand, command_settings, resolve_model_name
 
 
 @dataclass
@@ -35,26 +34,19 @@ def handle_status(config: StatusConfig) -> None:
     """
     from haute.deploy._config import DatabricksConfig, DeployConfig
 
-    toml_path = current_project().root / "haute.toml"
-    toml_exists = toml_path.exists()
+    settings = command_settings()
 
     # Resolve model name: CLI > TOML > error with hint.
     try:
-        model_name = resolve_model_name(
-            config.model_name,
-            toml_path if toml_exists else None,
-        )
-    except (ValueError, FileNotFoundError) as exc:
+        model_name = resolve_model_name(config.model_name, settings)
+    except ValueError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
 
-    # Load catalog/schema from haute.toml if available; else fall back to
-    # DatabricksConfig defaults.
-    if toml_exists:
-        deploy_config = DeployConfig.from_toml(toml_path)
-        databricks = deploy_config.databricks
-    else:
-        databricks = DatabricksConfig()
+    # Catalog/schema from haute.toml when the project has one; the defaults without.
+    databricks = (
+        DatabricksConfig() if settings is None else DeployConfig.from_settings(settings).databricks
+    )
 
     try:
         from haute.deploy._mlflow import get_deploy_status
@@ -96,7 +88,7 @@ def handle_status(config: StatusConfig) -> None:
     click.echo(f"  Run ID: {info.get('run_id', 'N/A')}")
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="project_if_any")
 @click.argument("model_name", required=False)
 @click.option(
     "--version-only",

@@ -2482,8 +2482,9 @@ no longer has; and `InputSource` in
   Workbench Output config holding the removed `mapping` (its
   `src/haute/_config_validation.py::REMOVED_CONFIG_KEYS` row, carrying `removed_config_keys`), so `load_node_config` refuses it where the standalone
   runner reads the sidecar, which checks no undeclared key, as well as in parsing and save.
-- `DeployConfig.from_toml` raises `ValueError` for a key under `[workbench]` outside
-  `WORKBENCH_TOML_KEYS`, as for any unknown `haute.toml` key.
+- The settings parse (`haute._project_settings`) raises `ProjectSettingsError` for a key under
+  `[workbench]` outside `WORKBENCH_TOML_KEYS`, as for any unknown `haute.toml` key, and for a
+  key of `WORKBENCH_RETIRED_KEYS` (`form`) in its own words, for every reader of the file.
 - `ExportRefusedError` and `StaleExportError` (`src/haute/_workbench_export.py`) are
   `WorkbenchError`s the export route answers itself, 422 and 409, each with its message;
   openpyxl's `IllegalCharacterError` is caught where a cell's text is set and raised as an
@@ -2806,7 +2807,7 @@ no longer has; and `InputSource` in
   host` and `edit_role` read, the environments read in the file's order with their
   providers, a server provider naming the variables of its sign-in (a service principal's tenant,
   client and secret, a managed identity's client id only when user-assigned, the role an
-  Entra ID sign-in takes on PostgreSQL) and refused without them, and that `DeployConfig.from_toml`'s whole-file check accepts the table, with
+  Entra ID sign-in takes on PostgreSQL) and refused without them, and that the settings parse's whole-file check accepts the table, with
   `app` and `store`, and refuses an unknown key under it.
 - `tests/test_quote_store_environment.py` covers a SQLite environment at the file its
   database variable names and at a whole URL, its URL never in its `repr`; an environment the

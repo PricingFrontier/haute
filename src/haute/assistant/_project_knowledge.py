@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from haute._file_ops import atomic_write_text
+from haute._project_settings import settings_path
 from haute._sandbox import contained_path, is_contained
 from haute.assistant._config import EgressPolicy, Sensitivity
 from haute.errors import HauteError, PathOutsideProjectError
@@ -139,7 +140,8 @@ def _graph_fact(project_root: Path, source_file: str) -> KnowledgeItem:
 
 
 def _toml_fact(project_root: Path) -> KnowledgeItem | None:
-    path = project_root / "haute.toml"
+    # Only the file's digest is a fact; its settings are read by the one parse.
+    path = settings_path(project_root)
     if not path.is_file():
         return None
     if path.is_symlink() or not is_contained(project_root, path.resolve()):

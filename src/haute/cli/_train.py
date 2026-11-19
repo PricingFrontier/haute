@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from haute.cli._helpers import EXPECTED_FAILURES
+from haute.cli._helpers import EXPECTED_FAILURES, HauteCommand
 
 
 @dataclass
@@ -116,7 +116,7 @@ def handle_train(config: TrainConfig) -> None:
         raise
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="project_if_any")
 @click.argument("training_script")
 def train(training_script: str) -> None:
     """Run a model training job from a training script.

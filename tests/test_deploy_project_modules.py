@@ -99,7 +99,7 @@ def _make_project(
 
 
 def _resolve(project: Path) -> ResolvedDeploy:
-    return resolve_config(DeployConfig.from_toml(project / "haute.toml"))
+    return resolve_config(DeployConfig.from_project(project))
 
 
 def _run_isolated(script: str, *args: str, cwd: Path) -> str:

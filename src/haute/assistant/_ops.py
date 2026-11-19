@@ -70,6 +70,7 @@ from haute._polars_steps import (
     validate_polars_steps,
 )
 from haute._polars_steps_lift import canonical_steps
+from haute._project_settings import settings_path
 from haute._sandbox import _bound_names
 from haute._types import (
     GraphEdge,
@@ -1800,7 +1801,8 @@ def build_project_snapshot(
 
     root = project_root.resolve()
     source_entries = [_source_manifest_entry(root, source_file)]
-    config_path = root / "haute.toml"
+    # The settings file's bytes are part of the snapshot's identity, not read as settings.
+    config_path = settings_path(root)
     if config_path.exists():
         source_entries.append(_source_manifest_entry(root, config_path))
     for source in project_sources:
