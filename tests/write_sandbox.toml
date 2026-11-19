@@ -491,9 +491,6 @@ strict = [
     "6990055a2eb30461",  # TestGPUOnIterationPath.test_gpu_with_on_iteration_creates_tempdir_and_polls.fake_fit
     "6ce0ed17de73b5d6",  # TestGPUOnIterationPath.test_gpu_fit_error_is_reraised
 ]
-"tests/test_deploy.py" = [
-    "d2f2018ff6fb11d7",  # _write_cached_model
-]
 # The temp directory is created by the code under test
 # (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),
 # so the tests can only write into and clean up the path it hands back.

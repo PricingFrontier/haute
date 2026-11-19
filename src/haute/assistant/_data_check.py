@@ -116,7 +116,7 @@ from haute.assistant._tools import (
     _json_size,
     execution_error_record,
 )
-from haute.errors import MlflowConfigError, PreambleError
+from haute.errors import ConfigError, MlflowConfigError, PreambleError
 from haute.execution import (
     dataframe_graph_input_identity,
     mlflow_backend_signature,
@@ -1094,10 +1094,10 @@ def _artifact_exclusion(node: GraphNode) -> _Exclusion | None:
     if artifact != "scoring_model" or not config.get("source_type"):
         # An unconfigured Model Score passes its input through and loads nothing.
         return None
-    cached = _cached_run_model(config)
-    if cached is None:
+    if not _cacheable_run_model(config):
         return _Exclusion("artifact_not_local", node.id)
-    if cached.present():
+    cached = _cached_run_model(config)
+    if cached is not None and cached.present():
         return None
     return _Exclusion(
         "artifact_not_local",
@@ -1107,12 +1107,36 @@ def _artifact_exclusion(node: GraphNode) -> _Exclusion | None:
     )
 
 
-def _cached_run_model(config: Mapping[str, Any]) -> DiskCachedRunModel | None:
-    """The disk-cache files a run-sourced, single-file model loads from, or ``None``.
+def _cacheable_run_model(config: Mapping[str, Any]) -> bool:
+    """Whether the node names one file of an MLflow run, which a preview caches on disk.
 
-    ``None`` for a registered model (resolved by the registry on every load),
-    a run without an artifact path (discovered through the tracking server),
-    a ``pyfunc`` directory, and a destination that does not resolve.
+    Not a registered model (resolved by the registry on every load), a run
+    without an artifact path (found through the tracking server), a ``pyfunc``
+    directory, an artifact path no family loads, or a destination that does not
+    resolve: none of them can be local, and a preview would not make them so.
+    """
+    from haute._mlflow_model import validate_artifact_path
+    from haute._mlflow_utils import resolve_backend
+    from haute._model_flavors import family_for_artifact
+
+    run_id = str(config.get("run_id") or "")
+    artifact_path = str(config.get("artifact_path") or "")
+    if config.get("source_type") != "run" or not run_id or not artifact_path:
+        return False
+    try:
+        validate_artifact_path(artifact_path)
+        loads_from_file = family_for_artifact(artifact_path).load_file is not None
+        resolve_backend(str(config.get("mlflow_destination") or ""))
+    except (ConfigError, ValueError):
+        return False
+    return loads_from_file
+
+
+def _cached_run_model(config: Mapping[str, Any]) -> DiskCachedRunModel | None:
+    """The copies the last resolved load of a run artifact recorded, or ``None``.
+
+    ``None`` for a source :func:`_cacheable_run_model` refuses and for a run
+    artifact no preview has loaded yet.
     """
     run_id = str(config.get("run_id") or "")
     artifact_path = str(config.get("artifact_path") or "")

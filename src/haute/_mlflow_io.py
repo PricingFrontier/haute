@@ -1798,6 +1798,18 @@ def _load_with_bounded_retry(
             # corrupt artifact would hide the real reason.
             raise
         except Exception as err:
+            if _DISK_CACHE_ONLY.get():
+                # This execution may neither fetch the model again nor change the
+                # cache: an unreadable copy is its failure, and the copy stays.
+                from haute.errors import ModelNotInDiskCacheError
+
+                raise ModelNotInDiskCacheError(
+                    f"The local model cache's copy of {artifact!r} of MLflow run {run_id!r} "
+                    f"does not load ({type(err).__name__}), and this execution loads models "
+                    "only from that cache and leaves it as it is. Preview the Model Scoring "
+                    "node in the editor, which fetches the model again.",
+                    source_type="run",
+                ) from err
             last_err = err
             logger.warning(
                 "model_load_failed",

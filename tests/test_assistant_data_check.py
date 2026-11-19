@@ -25,6 +25,7 @@ import pytest
 
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionCancellationToken, ExecutionProfile
+from haute._mlflow_io import DiskCachedRunModel
 from haute._project_context import context_thread
 from haute._types import PipelineGraph
 from haute.assistant import _data_check as data_check
@@ -84,6 +85,9 @@ _QUOTES = {
 @pytest.fixture()
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     use_project(tmp_path)
+    # A model's run is logged to the project's local MLflow store.
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     (tmp_path / "haute.toml").write_text(_TOML, encoding="utf-8")
     (tmp_path / "main.py").write_text("", encoding="utf-8")
     (tmp_path / "data").mkdir()
@@ -631,7 +635,60 @@ def test_each_eligibility_reason_names_its_blocking_node_in_precedence(
     assert loads == []
 
 
-def test_a_registered_model_and_an_uncached_run_model_are_not_local(project: Path) -> None:
+def _cache_entries(project: Path) -> set[str]:
+    """Every file of the project's input, source and model caches."""
+    roots = [project / ".haute_cache", project / ".cache"]
+    return {
+        str(path.relative_to(project))
+        for root in roots
+        if root.exists()
+        for path in root.rglob("*")
+        # A reader's process liveness token is no cache entry.
+        if path.is_file() and ".processes" not in path.parts
+    }
+
+
+def _store_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+    """Record, and refuse, each way a model load could reach a tracking server or registry.
+
+    Recorded as well as refused: a failed identity read is folded into a marker and
+    a failed load into a node failure, so a raise alone could pass unnoticed.
+    """
+    import mlflow
+
+    calls: dict[str, list[str]] = {"client": [], "resolution": [], "registry": [], "download": []}
+
+    def trap(kind: str) -> Callable[..., Any]:
+        def refused(*args: Any, **kwargs: Any) -> Any:
+            calls[kind].append(repr(args))
+            raise AssertionError(f"the check reached the store ({kind})")
+
+        return refused
+
+    monkeypatch.setattr("haute._mlflow_utils.pinned_client", trap("client"))
+    monkeypatch.setattr("haute._mlflow_io.resolve_model", trap("resolution"))
+    monkeypatch.setattr("haute._mlflow_model.resolve_model", trap("resolution"))
+    monkeypatch.setattr("haute._mlflow_utils.resolve_mlflow_source", trap("registry"))
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", trap("download"))
+    return calls
+
+
+_NO_STORE_CALLS: dict[str, list[str]] = {
+    "client": [],
+    "resolution": [],
+    "registry": [],
+    "download": [],
+}
+
+
+def test_a_registered_model_and_an_uncached_run_model_are_not_local(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run is in the store, but no preview has loaded it into the disk model cache.
+    work = project / "logged"
+    work.mkdir()
+    (work / "model.cbm").write_bytes(b"never loaded")
+    run_id = _logged_run(project, work / "model.cbm")
     graph = _graph(
         project,
         [
@@ -639,7 +696,7 @@ def test_a_registered_model_and_an_uncached_run_model_are_not_local(project: Pat
             _node(
                 "uncached",
                 "modelScore",
-                {"source_type": "run", "run_id": "run1", "artifact_path": "model.cbm"},
+                {"source_type": "run", "run_id": run_id, "artifact_path": "model.cbm"},
             ),
             _node(
                 "registered",
@@ -656,9 +713,13 @@ def test_a_registered_model_and_an_uncached_run_model_are_not_local(project: Pat
             _edge("registered", "uses_registered"),
         ],
     )
+    before = _cache_entries(project)
+    calls = _store_calls(monkeypatch)
     exclusions = server_exclusions(
         graph, flatten_graph(graph), ["uses_uncached", "uses_registered"]
     )
+    assert calls == _NO_STORE_CALLS
+    assert _cache_entries(project) == before
     uncached, registered = exclusions["uses_uncached"], exclusions["uses_registered"]
     assert uncached is not None and registered is not None
     assert (uncached.reason, uncached.blocking_node) == ("artifact_not_local", "uncached")
@@ -673,18 +734,12 @@ def test_a_registered_model_and_an_uncached_run_model_are_not_local(project: Pat
 def test_a_cached_model_that_disappears_is_a_failure_never_a_registry_call(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute._mlflow_io import disk_cached_run_model
-
-    def no_registry(**_kwargs: object) -> None:
-        raise AssertionError("the check must never resolve a model through MLflow")
-
-    monkeypatch.setattr("haute._mlflow_io.resolve_mlflow_source", no_registry)
-    graph = _model_graph(project)
-    cached = disk_cached_run_model(run_id="run1", artifact_path="model.cbm", destination="")
-    assert cached is not None
+    graph, cached = _model_graph(project)
     job = _job(graph, "uses_score")
     assert job.candidates == ("uses_score",)
     cached.model_path.unlink()
+    before = _cache_entries(project)
+    calls = _store_calls(monkeypatch)
 
     context = create_admitted_execution_context(
         operation="assistant_data_check", profile=ExecutionProfile.PREVIEW_EAGER
@@ -700,6 +755,38 @@ def test_a_cached_model_that_disappears_is_a_failure_never_a_registry_call(
         "haute",
         "ModelNotInDiskCacheError",
     )
+    assert calls == _NO_STORE_CALLS
+    assert _cache_entries(project) == before
+
+
+def test_a_cached_model_that_no_longer_loads_is_a_failure_and_the_copy_stays(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copy that fails to load is neither fetched again nor deleted by the check."""
+    graph, cached = _model_graph(project)
+    job = _job(graph, "uses_score")
+    assert job.candidates == ("uses_score",)
+    (project / cached.model_path.relative_to(project.resolve())).write_bytes(b"not a model")
+    before = _cache_entries(project)
+    calls = _store_calls(monkeypatch)
+
+    context = create_admitted_execution_context(
+        operation="assistant_data_check", profile=ExecutionProfile.PREVIEW_EAGER
+    )
+    try:
+        outcome = measure_candidate(job, context)
+    finally:
+        context.release_admission()
+
+    assert outcome.records["uses_score"]["failed_node"] == "scored"
+    [failure] = _findings(outcome, "execution_failed")
+    assert (failure["error"]["class"], failure["error"]["type"]) == (
+        "haute",
+        "ModelNotInDiskCacheError",
+    )
+    assert calls == _NO_STORE_CALLS
+    assert _cache_entries(project) == before
+    assert cached.model_path.read_bytes() == b"not a model"
 
 
 def test_a_refresh_in_progress_makes_the_nodes_that_read_it_not_prepared(project: Path) -> None:
@@ -744,21 +831,10 @@ def test_a_check_writes_no_cache_entry(project: Path) -> None:
         [_edge("cached_input", "reads_both"), _edge("quotes", "reads_both")],
     )
 
-    def entries() -> set[str]:
-        roots = [project / ".haute_cache", project / ".cache"]
-        return {
-            str(path.relative_to(project))
-            for root in roots
-            if root.exists()
-            for path in root.rglob("*")
-            # A reader's process liveness token is no cache entry.
-            if path.is_file() and ".processes" not in path.parts
-        }
-
-    before = entries()
+    before = _cache_entries(project)
     outcome = _measure(graph, "reads_both")
     assert outcome.records["reads_both"]["status"] == "checked"
-    assert entries() == before
+    assert _cache_entries(project) == before
 
 
 # ---------------------------------------------------------------------------
@@ -766,30 +842,108 @@ def test_a_check_writes_no_cache_entry(project: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _model_graph(project: Path, *, artifact: str = "model.cbm") -> PipelineGraph:
-    from haute._mlflow_io import disk_cached_run_model
+def _logged_run(project: Path, *files: Path) -> str:
+    """A finished run that logged each of *files*, in the project's local MLflow store."""
+    from haute._mlflow_utils import pinned_client, resolve_backend
 
-    cached = disk_cached_run_model(run_id="run1", artifact_path=artifact, destination="")
-    assert cached is not None
-    for cached_file in (cached.model_path, cached.contract_path):
-        # The disk model cache lives under the project (the working directory).
-        path = project / cached_file.relative_to(project.resolve())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"cached model bytes")
-    return _graph(
+    client = pinned_client(resolve_backend(""))
+    experiment = client.get_experiment_by_name("data-check")
+    experiment_id = (
+        experiment.experiment_id
+        if experiment is not None
+        else client.create_experiment("data-check")
+    )
+    run_id = client.create_run(experiment_id).info.run_id
+    for path in files:
+        client.log_artifact(run_id, str(path))
+    client.set_terminated(run_id)
+    return run_id
+
+
+def _trained(project: Path, artifact: str) -> tuple[Path, Path]:
+    """A model of *artifact*'s family scoring ``premium``, and the contract saved beside it."""
+    import numpy as np
+
+    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._training_job import model_contract_filename
+
+    rng = np.random.default_rng(5)
+    premium = rng.uniform(100.0, 1100.0, 200)
+    train = pl.DataFrame({"premium": premium, "y": 0.1 * premium + rng.normal(size=200)})
+    work = project / "trained"
+    work.mkdir()
+    model = work / artifact
+    if model.suffix == ".ebm":
+        from haute.modelling._ebm import EBMAlgorithm
+
+        params = {"max_rounds": 20, "interactions": 0}
+        fitted = EBMAlgorithm().fit(
+            train, ["premium"], [], "y", None, params, "regression", loss="RMSE", seed=0
+        )
+        fitted.model.save(model)
+    else:
+        from catboost import CatBoostRegressor
+
+        catboost = CatBoostRegressor(iterations=5, depth=2, verbose=0, allow_writing_files=False)
+        catboost.fit(train.select("premium").to_pandas(), train["y"].to_numpy())
+        catboost.get_metadata()["haute_offset_column"] = ""
+        catboost.save_model(str(model))
+    contract = work / model_contract_filename(model.stem)
+    save_contract(
+        build_contract(
+            features=["premium"],
+            feature_types={"premium": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract,
+    )
+    return model, contract
+
+
+def _model_graph(
+    project: Path, *, artifact: str = "model.cbm"
+) -> tuple[PipelineGraph, DiskCachedRunModel]:
+    """A graph scoring a run's model that a preview has loaded, and the cache's copies of it.
+
+    The model and its contract are logged to the project's local store and loaded
+    once as a preview loads them, which copies both into the disk model cache and
+    records them there. The check's worker is another process, which starts with
+    no model in memory.
+    """
+    from haute._mlflow_io import _model_cache, disk_cached_run_model, load_mlflow_model
+    from haute._model_source import RunModelSource
+
+    run_id = _logged_run(project, *_trained(project, artifact))
+    load_mlflow_model(RunModelSource(run_id=run_id, artifact_path=artifact, mlflow_destination=""))
+    _model_cache.clear()
+    cached = disk_cached_run_model(run_id=run_id, artifact_path=artifact, destination="")
+    assert cached is not None and cached.present()
+    assert cached.contract_path is not None
+    graph = _graph(
         project,
         [
             _parquet("quotes"),
             _node(
                 "scored",
                 "modelScore",
-                {"source_type": "run", "run_id": "run1", "artifact_path": artifact},
+                {"source_type": "run", "run_id": run_id, "artifact_path": artifact},
             ),
             _code("uses_score", "df = scored"),
             _code("plain", "df = quotes.with_columns(net=pl.col('premium') * 0.5)"),
         ],
         [_edge("quotes", "scored"), _edge("scored", "uses_score"), _edge("quotes", "plain")],
     )
+    return graph, cached
+
+
+def _cached_copy(cached: DiskCachedRunModel, replaced: str) -> Path:
+    """The cache's copy of the model or of the contract beside it."""
+    path = cached.model_path if replaced == "model" else cached.contract_path
+    assert path is not None
+    return path
 
 
 def _stored(
@@ -804,18 +958,15 @@ def _stored(
 
 
 @pytest.mark.parametrize(
-    ("artifact", "replaced"), [("model.cbm", 0), ("model.cbm", 1), ("model.ebm", 1)]
+    ("artifact", "replaced"),
+    [("model.cbm", "model"), ("model.cbm", "contract"), ("model.ebm", "contract")],
 )
 def test_replacing_a_cached_model_or_its_contract_during_a_check_is_source_changed(
-    project: Path, artifact: str, replaced: int
+    project: Path, monkeypatch: pytest.MonkeyPatch, artifact: str, replaced: str
 ) -> None:
     """The graph configuration is unchanged; only the cache's bytes move."""
-    from haute._mlflow_io import disk_cached_run_model
-
-    graph = _model_graph(project, artifact=artifact)
-    cached = disk_cached_run_model(run_id="run1", artifact_path=artifact, destination="")
-    assert cached is not None
-    target = cached.files[replaced].as_posix()
+    graph, cached = _model_graph(project, artifact=artifact)
+    target = _cached_copy(cached, replaced).as_posix()
     rewrite = (
         f"df = quotes.with_columns(w=pl.lit(open({target!r}, 'wb').write(b'other model bytes')))"
     )
@@ -827,44 +978,53 @@ def test_replacing_a_cached_model_or_its_contract_during_a_check_is_source_chang
         [*nodes, _code("rewrites", rewrite)],
         [*edges, _edge("quotes", "rewrites")],
     )
+    before = _cache_entries(project)
+    calls = _store_calls(monkeypatch)
 
     outcome = _measure(rewriting, "uses_score", "rewrites")
 
     assert outcome.kind == "source_changed"
+    assert calls == _NO_STORE_CALLS
+    assert _cache_entries(project) - before == set()
 
 
 @pytest.mark.parametrize(
-    ("artifact", "replaced"), [("model.cbm", 0), ("model.cbm", 1), ("model.ebm", 1)]
+    ("artifact", "replaced"),
+    [("model.cbm", "model"), ("model.cbm", "contract"), ("model.ebm", "contract")],
 )
 def test_findings_are_labelled_after_their_cached_model_or_contract_is_replaced(
-    project: Path, artifact: str, replaced: int
+    project: Path, monkeypatch: pytest.MonkeyPatch, artifact: str, replaced: str
 ) -> None:
-    from haute._mlflow_io import disk_cached_run_model
-
-    graph = _model_graph(project, artifact=artifact)
-    stored = _stored(graph, _measure(graph, "uses_score", "plain"), "uses_score", "plain")
+    graph, cached = _model_graph(project, artifact=artifact)
+    calls = _store_calls(monkeypatch)
+    outcome = _measure(graph, "uses_score", "plain")
+    # The check scored the cached model.
+    assert outcome.records["uses_score"]["status"] == "checked"
+    stored = _stored(graph, outcome, "uses_score", "plain")
     assert stored.binding.source_generation is not None
     assert data_check_visibility(stored, graph) == "current"
 
-    cached = disk_cached_run_model(run_id="run1", artifact_path=artifact, destination="")
-    assert cached is not None
-    retrained = project / cached.files[replaced].relative_to(project.resolve())
+    retrained = project / _cached_copy(cached, replaced).relative_to(project.resolve())
     retrained.write_bytes(b"retrained model bytes, longer than before")
 
     assert data_check_visibility(stored, graph) == "earlier_inputs"
+    assert calls == _NO_STORE_CALLS
 
 
 def test_findings_are_labelled_after_a_destination_moves_with_old_cached_files_untouched(
-    project: Path,
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (project / "haute.toml").write_text(_TOML + '[mlflow]\nfolder = "runs_a"\n', encoding="utf-8")
-    graph = _model_graph(project)
+    graph, cached = _model_graph(project)
+    calls = _store_calls(monkeypatch)
     stored = _stored(graph, _measure(graph, "uses_score"), "uses_score")
     assert data_check_visibility(stored, graph) == "current"
 
     (project / "haute.toml").write_text(_TOML + '[mlflow]\nfolder = "runs_b"\n', encoding="utf-8")
 
     assert data_check_visibility(stored, graph) == "earlier_inputs"
+    assert cached.present()
+    assert calls == _NO_STORE_CALLS
 
 
 def test_findings_are_hidden_for_another_graph_or_scenario_and_labelled_after_a_refresh(

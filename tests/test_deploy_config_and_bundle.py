@@ -382,6 +382,28 @@ class TestArtifactContainmentAndModelContracts:
             {"nodes": [{"id": "model", "data": {"nodeType": "modelScore", "config": config}}]}
         )
 
+    @staticmethod
+    def _logged_run(project: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        """A run that logged ``model.cbm`` and its contract, in the project's local store."""
+        from mlflow.tracking import MlflowClient
+
+        from haute._mlflow_utils import resolve_backend
+
+        use_project(project)
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        backend = resolve_backend("")
+        logged = project / "logged"
+        logged.mkdir()
+        (logged / "model.cbm").write_bytes(b"model")
+        (logged / "model.feature_contract.json").write_text("logged", encoding="utf-8")
+        client = MlflowClient(tracking_uri=backend.tracking_uri, registry_uri=backend.registry_uri)
+        run_id = client.create_run(client.create_experiment("contracts")).info.run_id
+        for name in ("model.cbm", "model.feature_contract.json"):
+            client.log_artifact(run_id, str(logged / name))
+        client.set_terminated(run_id)
+        return run_id
+
     @pytest.mark.parametrize(
         ("artifact_path", "error"),
         [
@@ -396,30 +418,36 @@ class TestArtifactContainmentAndModelContracts:
     def test_model_artifact_identifier_is_rejected_before_download(
         self, tmp_path: Path, artifact_path: object, error: type[Exception]
     ) -> None:
+        def no_store(backend: object) -> None:
+            raise AssertionError("the store was asked before the artifact path was refused")
+
         graph = self._model_graph(
             {"source_type": "run", "run_id": "run", "artifact_path": artifact_path}
         )
-        with pytest.raises(error, match="artifact_path"):
+        with (
+            patch("haute._mlflow_utils.pinned_client", new=no_store),
+            pytest.raises(error, match="artifact_path"),
+        ):
             collect_artifacts(graph, [], tmp_path)
 
-    def test_explicit_feature_contract_wins_and_missing_fails(self, tmp_path: Path) -> None:
-        model = tmp_path / "model.cbm"
-        model.write_bytes(b"model")
-        adjacent = tmp_path / "feature_contract.json"
-        adjacent.write_text("adjacent")
+    def test_explicit_feature_contract_wins_and_missing_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The run logged a contract beside the model; the node names another.
+        run_id = self._logged_run(tmp_path, monkeypatch)
         explicit = tmp_path / "chosen.json"
         explicit.write_text("explicit")
         graph = self._model_graph(
             {
                 "source_type": "run",
-                "run_id": "run",
+                "run_id": run_id,
                 "artifact_path": "model.cbm",
                 "feature_contract_path": "chosen.json",
             }
         )
-        with patch("haute.deploy._bundler._download_model_artifact", return_value=model):
-            artifacts = collect_artifacts(graph, [], tmp_path)
+        artifacts = collect_artifacts(graph, [], tmp_path)
         assert artifacts["model__feature_contract.json"] == explicit
+        assert artifacts["model__model.cbm"].read_bytes() == b"model"
 
         graph.nodes[0].data.config["feature_contract_path"] = "missing.json"
         with pytest.raises(FileNotFoundError, match="feature contract"):

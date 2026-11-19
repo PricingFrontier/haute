@@ -488,7 +488,10 @@ the cached model file (so the next attempt re-downloads), and — if attempts
 remain — sleep `_LOAD_BACKOFF_BASE_S * 2**(attempt-1) +
 random.uniform(0, _LOAD_BACKOFF_JITTER_S)` before retrying. After the
 final attempt fails, raise `RuntimeError` naming the run/artifact/flavor
-and wrapping the last error (`raise ... from last_err`).
+and wrapping the last error (`raise ... from last_err`). Inside
+`disk_cache_only_model_loads()` nothing is retried or deleted: such a failure
+raises `ModelNotInDiskCacheError` at once, chained from it, and the copy stays,
+since that execution may neither fetch the model again nor change the cache.
 
 ### Model resolution — `resolve_model(source, *, backend)` (`_mlflow_model.py`)
 
