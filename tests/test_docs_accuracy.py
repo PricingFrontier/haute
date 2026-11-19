@@ -180,6 +180,14 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-plan.md",
     "price-contour-polars-2.md",
 )
+# One shared cause each, taken before the packages it lists. They stand alone: no row in
+# the index and no priorities table.
+_ROADMAP_ROOT_CAUSES: tuple[str, ...] = (
+    "root-cause-model-file.md",
+    "root-cause-project-settings.md",
+    "root-cause-save-record.md",
+    "root-cause-unedited-values.md",
+)
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
@@ -399,6 +407,7 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
         {"README.md"}
         | {f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS}
         | set(_ROADMAP_SUPPORTING_REPORTS)
+        | set(_ROADMAP_ROOT_CAUSES)
     )
     roadmap_markdown = {
         path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
@@ -408,7 +417,9 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
     component_files = {
         path.stem: path
         for path in ROADMAP_ROOT.glob("*.md")
-        if path.name != ROADMAP_INDEX.name and path.name not in _ROADMAP_SUPPORTING_REPORTS
+        if path.name != ROADMAP_INDEX.name
+        and path.name not in _ROADMAP_SUPPORTING_REPORTS
+        and path.name not in _ROADMAP_ROOT_CAUSES
     }
     assert tuple(sorted(component_files)) == _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
 
@@ -520,6 +531,36 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
                 assert field in package_text, (
                     f"{path.relative_to(ROOT)} package {package_id} is missing {field}"
                 )
+
+    for name in _ROADMAP_ROOT_CAUSES:
+        path = ROADMAP_ROOT / name
+        text = path.read_text(encoding="utf-8")
+        package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
+        assert len(package_ids) == 1, f"{name} holds one package, got {package_ids}"
+        (package_id,) = package_ids
+        assert package_id not in package_owners, (
+            f"{package_id} is owned by both {package_owners[package_id]} and {name}"
+        )
+        package_owners[package_id] = name
+        for field in _REQUIRED_PACKAGE_FIELDS:
+            assert field in text.split(f"### {package_id}", maxsplit=1)[1], (
+                f"{name} package {package_id} is missing {field}"
+            )
+        history = _roadmap_history_markers(text)
+        assert not history, f"{name} retains delivered/superseded package history: {history}"
+        resolved = _markdown_table_records(
+            _h2_sections(text)["Packages this resolves"],
+            required_columns=("package", "roadmap", "what it records", "expected"),
+            context=name,
+        )
+        assert resolved, f"{name} lists no package it resolves"
+        for row in resolved:
+            listed = row["package"].strip().strip("`")
+            target = re.fullmatch(r"\[[^\]]+\]\(([a-z0-9-]+)\.md\)", row["roadmap"].strip())
+            assert target is not None, f"{name} row {listed} does not link its roadmap"
+            assert package_owners.get(listed) == target.group(1), (
+                f"{name} lists {listed} under {target.group(1)}, which does not hold it"
+            )
 
     for retired_root in (
         ROOT / "docs" / "fable-Review",
