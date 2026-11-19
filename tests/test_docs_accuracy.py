@@ -183,7 +183,6 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
 # One shared cause each, taken before the packages it lists. They stand alone: no row in
 # the index and no priorities table.
 _ROADMAP_ROOT_CAUSES: tuple[str, ...] = (
-    "root-cause-model-file.md",
     "root-cause-project-settings.md",
     "root-cause-save-record.md",
     "root-cause-unedited-values.md",

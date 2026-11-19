@@ -331,7 +331,11 @@ def _resolve_bundled_model(
 ) -> ResolvedModel:
     """The model a run or registered node's reference resolves to, refusing a pyfunc folder."""
     from haute._mlflow_model import resolve_model
+    from haute._model_source import RunModelSource
 
+    if isinstance(model_source, RunModelSource) and model_source.artifact_path:
+        # A configured path is refused naming the node before the store is asked.
+        _validate_mlflow_artifact_identifier(nid, model_source.artifact_path)
     resolved = resolve_model(model_source, backend=backend)
     if not resolved.loads_from_file:
         raise DeployError(

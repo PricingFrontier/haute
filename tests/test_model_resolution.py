@@ -242,7 +242,7 @@ def _bundle(store: _Store, source: Any) -> dict[str, Path]:
     return collect_artifacts(graph, ["src"], store.root, project_root=store.root)
 
 
-def _image_distributions(source: Any, artifacts: dict[str, Path]) -> set[str]:
+def _image_distributions(config: dict[str, Any], artifacts: dict[str, Path]) -> set[str]:
     from haute.deploy._config import ContainerConfig
     from haute.deploy._container import runtime_versions
     from tests._deploy_helpers import make_resolved_deploy
@@ -252,7 +252,7 @@ def _image_distributions(source: Any, artifacts: dict[str, Path]) -> set[str]:
         model_name="resolution",
         target="container",
         container=ContainerConfig(base_image="python:3.11.9-slim"),
-        pruned_graph=_graph(_config(source)),
+        pruned_graph=_graph(config),
         artifacts=artifacts,
         input_schema={"x0": "Float64", "x1": "Float64"},
         output_schema={"prediction": "Float64"},
@@ -261,9 +261,7 @@ def _image_distributions(source: Any, artifacts: dict[str, Path]) -> set[str]:
 
 
 def _listed(client: Any, store: _Store) -> dict[str, list[str]]:
-    response = client.get(
-        f"/api/mlflow/runs?experiment_id={store.experiment_id}&max_results=100"
-    )
+    response = client.get(f"/api/mlflow/runs?experiment_id={store.experiment_id}&max_results=100")
     assert response.status_code == 200, response.text
     return {run["run_id"]: run["artifacts"] for run in response.json()}
 
@@ -353,10 +351,22 @@ class TestEveryCallerScoresOneModel:
             [f"ms__{name}", *(["ms__feature_contract.json"] if has_contract else [])]
         )
 
-        distributions = _image_distributions(source, bundled)
+        distributions = _image_distributions(_config(source), bundled)
         assert engine in distributions
         assert other_engine not in distributions
         assert "mlflow" not in distributions
+
+    def test_a_model_file_in_the_project_gives_the_image_its_engine(self, store: _Store) -> None:
+        from haute.deploy._bundler import collect_artifacts
+
+        # With the run and registered cases above, the dependency list of every source type.
+        store.models["contracted"].save_model(str(store.root / "file_model.cbm"))
+        config = {"source_type": "file", "model_path": "file_model.cbm", "task": "regression"}
+        bundled = collect_artifacts(_graph(config), ["src"], store.root, project_root=store.root)
+        assert sorted(bundled) == ["ms__file_model.cbm"]
+        distributions = _image_distributions(config, bundled)
+        assert "catboost" in distributions
+        assert {"lightgbm", "mlflow"}.isdisjoint(distributions)
 
     def test_a_pyfunc_folder_is_loaded_and_listed_and_refused_by_the_bundle(
         self, store: _Store, client: Any
@@ -403,8 +413,9 @@ class TestALoggedAgainFileScores:
 
         def trace() -> float:
             return float(
-                execute_trace(graph, row_index=0, target_node_id="ms", column="prediction")
-                .output_value
+                execute_trace(
+                    graph, row_index=0, target_node_id="ms", column="prediction"
+                ).output_value
             )
 
         first = store.models["relogged"].predict(store.frame.head(3))
@@ -452,6 +463,223 @@ class TestALoggedAgainFileScores:
         _model_cache.clear()
         np.testing.assert_allclose(_scores(source, head), retrained.predict(head), rtol=1e-6)
         assert len(downloads) == 2
+
+
+# ---------------------------------------------------------------------------
+# The discovery rule, a version's source and the refusals, against a fake store
+# ---------------------------------------------------------------------------
+
+
+def _remote() -> Any:
+    from haute._mlflow_utils import ResolvedBackend
+
+    return ResolvedBackend(
+        mode="server",
+        tracking_uri="http://tracking.invalid",
+        registry_uri="http://tracking.invalid",
+        identity="server:http://tracking.invalid|registry=http://tracking.invalid",
+        digest="0123456789abcdef",
+    )
+
+
+class _FakeRegistry:
+    def __init__(self, client: Any, versions: dict[str, tuple[str | None, str]]) -> None:
+        self.client = client
+        self.versions = versions
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.client, name)
+
+    def get_model_version(self, name: str, version: str) -> Any:
+        from types import SimpleNamespace
+
+        run_id, source = self.versions[version]
+        return SimpleNamespace(run_id=run_id, source=source)
+
+
+def _resolve(monkeypatch: pytest.MonkeyPatch, client: Any, source: Any) -> Any:
+    from haute._mlflow_model import resolve_model
+
+    monkeypatch.setattr("haute._mlflow_utils.pinned_client", lambda backend: client)
+    return resolve_model(source, backend=_remote())
+
+
+class TestTheDiscoveryRule:
+    @pytest.mark.parametrize(
+        ("files", "candidates"),
+        [
+            # A top-level file answers before anything one folder down.
+            ({"a.cbm": 1, "sub/b.cbm": 2, "pf/MLmodel": 3}, ("a.cbm",)),
+            # Several at the answering level are all candidates, in listing order.
+            ({"a.cbm": 1, "b.rsglm": 2}, ("a.cbm", "b.rsglm")),
+            # One folder down, never inside a pyfunc folder.
+            ({"sub/b.cbm": 2, "pf/MLmodel": 3, "pf/inner.cbm": 4}, ("sub/b.cbm",)),
+            # A pyfunc folder only when no model file sits at either level.
+            ({"pf/MLmodel": 3, "pf/model.cb": 4, "notes.txt": 5}, ("pf",)),
+            # Two folders down is not searched; other files are not models.
+            ({"a/b/c.cbm": 1, "feature_contract.json": 2}, ()),
+        ],
+    )
+    def test_the_level_that_holds_a_model_answers(
+        self, files: dict[str, int], candidates: tuple[str, ...]
+    ) -> None:
+        from haute._mlflow_model import run_model_candidates
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        assert run_model_candidates(FakeArtifactClient({"r": files}), "r") == candidates
+
+    def test_a_run_holding_its_model_at_the_top_costs_one_listing(self) -> None:
+        from haute._mlflow_model import run_model_candidates
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient(
+            {"r": {"m.cbm": 1, "evaluation/plan.json": 2, "shap/values.json": 3}}
+        )
+        run_model_candidates(client, "r")
+        assert client.listings == [("r", "")]
+
+
+class TestAVersionResolvesThroughItsSource:
+    _RUN = {"r": {"frequency.cbm": 10, "severity.cbm": 20, "severity.feature_contract.json": 5}}
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "runs:/r/severity.cbm",
+            "mlflow-artifacts:/0/r/artifacts/severity.cbm",
+        ],
+    )
+    def test_a_source_naming_a_file_resolves_to_it(
+        self, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = _FakeRegistry(FakeArtifactClient(self._RUN), {"1": ("r", source)})
+        resolved = _resolve(monkeypatch, client, _registered_source("sev", "1"))
+        assert (resolved.run_id, resolved.artifact.path, resolved.version) == (
+            "r",
+            "severity.cbm",
+            "1",
+        )
+        assert resolved.artifact.identity == "size:20"
+        assert resolved.contract is not None
+        assert resolved.contract.identity == "size:5"
+
+    @pytest.mark.parametrize(
+        "source", ["runs:/r", "mlflow-artifacts:/0/r/artifacts", "models:/m-0123"]
+    )
+    def test_a_source_naming_the_run_or_a_logged_model_searches_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = _FakeRegistry(FakeArtifactClient(self._RUN), {"1": ("r", source)})
+        with pytest.raises(ModelResolutionError) as refused:
+            _resolve(monkeypatch, client, _registered_source("sev", "1"))
+        message = str(refused.value)
+        assert "MLflow run 'r' (version 1 of registered model 'sev'" in message
+        assert "holds several models: frequency.cbm, severity.cbm" in message
+        assert "Register the model from its file." in message
+        assert ("registered from a logged model" in message) is source.startswith("models:/")
+        assert refused.value.context["candidates"] == ["frequency.cbm", "severity.cbm"]
+
+    def test_a_version_with_no_run_or_a_source_outside_it_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = _FakeRegistry(
+            FakeArtifactClient(self._RUN),
+            {"1": (None, "s3://bucket/model.cbm"), "2": ("r", "s3://secret-bucket/x.cbm")},
+        )
+        with pytest.raises(ModelResolutionError, match="has no run"):
+            _resolve(monkeypatch, client, _registered_source("sev", "1"))
+        with pytest.raises(ModelResolutionError, match="outside its run's artifacts") as outside:
+            _resolve(monkeypatch, client, _registered_source("sev", "2"))
+        assert "secret-bucket" not in str(outside.value)
+
+
+class TestARunReferenceIsRefusedByName:
+    def test_an_artifact_the_run_does_not_hold_names_what_it_holds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"model.cbm": 1}})
+        with pytest.raises(
+            ModelResolutionError, match=r"holds no artifact 'other\.cbm'\. It holds model\.cbm\."
+        ):
+            _resolve(monkeypatch, client, _run_source("r", "other.cbm"))
+
+    def test_a_folder_without_mlmodel_is_not_a_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"model/notes.txt": 1}})
+        with pytest.raises(ModelResolutionError, match="is a folder without an MLmodel file"):
+            _resolve(monkeypatch, client, _run_source("r", "model"))
+
+    def test_a_run_with_no_model_names_the_files_haute_scores(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"readme.txt": 1}})
+        no_model = r"holds no model Haute can score\. Expected"
+        with pytest.raises(ModelResolutionError, match=no_model):
+            _resolve(monkeypatch, client, _run_source("r"))
+
+    def test_a_store_that_reports_no_size_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"model.cbm": None}})
+        with pytest.raises(ModelResolutionError, match="reports no size"):
+            _resolve(monkeypatch, client, _run_source("r", "model.cbm"))
+
+    def test_a_pyfunc_folders_identity_is_its_listing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"model/MLmodel": 1, "model/model.cb": 2}})
+        first = _resolve(monkeypatch, client, _run_source("r"))
+        client.runs["r"]["model/model.cb"] = 3
+        second = _resolve(monkeypatch, client, _run_source("r"))
+        assert first.family.flavor == second.family.flavor == "pyfunc"
+        assert first.contract is None
+        assert first.artifact.identity.startswith("listing:")
+        assert first.artifact.identity != second.artifact.identity
+
+
+class TestOneResolutionPerOperation:
+    def test_a_scope_answers_a_reference_once_failure_included(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._mlflow_model import model_resolution_scope
+        from haute.errors import ModelResolutionError
+        from tests._mlflow_fakes import FakeArtifactClient
+
+        client = FakeArtifactClient({"r": {"model.cbm": 1}, "empty": {}})
+        with model_resolution_scope():
+            first = _resolve(monkeypatch, client, _run_source("r", "model.cbm"))
+            with model_resolution_scope():
+                assert _resolve(monkeypatch, client, _run_source("r", "model.cbm")) is first
+            with pytest.raises(ModelResolutionError, match="holds no model"):
+                _resolve(monkeypatch, client, _run_source("empty"))
+            client.runs["empty"]["model.cbm"] = 1
+            # The failure stands for the operation, though the run now holds a model.
+            with pytest.raises(ModelResolutionError, match="holds no model"):
+                _resolve(monkeypatch, client, _run_source("empty"))
+        assert client.listings == [("r", ""), ("empty", "")]
+
+        client.runs["r"]["model.cbm"] = 2
+        outside = _resolve(monkeypatch, client, _run_source("r", "model.cbm"))
+        assert outside.artifact.identity == "size:2"
 
 
 # ---------------------------------------------------------------------------

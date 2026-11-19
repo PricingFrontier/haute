@@ -1057,8 +1057,10 @@ def _scoring_model_signature(config: Mapping[str, object]) -> object:
     cache's record, so the identity a result is stored under is the model the
     execution scores. A destination that does not resolve returns
     ``{"unresolved": <reason>}``; any other failure ``{"unresolved": <exception
-    type>, "attempt": <random id>}``, never the message, which can carry a server
-    URL, so every failed lookup is a distinct identity; execution itself reports it.
+    type>}``, never the message, which can carry a server URL. The scope keeps the
+    failure, so the operation's load raises it and nothing is stored under the
+    marker, while a store that stays unreachable reads the same identity at a
+    plan's start and in its walk.
     """
     from haute._mlflow_io import model_resolution
     from haute._mlflow_utils import resolve_backend
@@ -1075,7 +1077,7 @@ def _scoring_model_signature(config: Mapping[str, object]) -> object:
             raise ValueError("not an MLflow source")
         return model_resolution(source, backend=backend).identity_record()
     except Exception as exc:
-        return {"unresolved": type(exc).__name__, "attempt": uuid.uuid4().hex}
+        return {"unresolved": type(exc).__name__}
 
 
 def _runtime_input_fingerprint_entry(

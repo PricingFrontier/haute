@@ -40,7 +40,7 @@
 - **`StoredArtifact`** (`_mlflow_model.py`, frozen slotted dataclass) — one
   file or folder of a run as the store describes it: `path` (run-relative,
   validated by `_validate_artifact_path`) and `identity`, what identifies
-  its bytes as the store gives them: `sha256:<hex>` (the content hash of a
+  its bytes as the store gives them: `content:<algorithm>:<digest>` (the content hash of a
   file in a local `file:` artifact location, read through the shared
   stat-gated `file_signature`), `size:<bytes>` (a file elsewhere: the size
   the listing reports, all MLflow's artifact stores give without a
@@ -433,7 +433,7 @@ the scoring errors and the route returns them as `400`.
    `mlflow.artifacts.download_artifacts`, verify the downloaded file
    exists (falling back to a name-based lookup if `download_artifacts`
    nested it), and verify its bytes match the identity the store gave (its
-   size for `size:`, its content hash for `sha256:`); a mismatch raises
+   size for `size:`, its content hash for `content:`, through `copy_identity`); a mismatch raises
    `ModelResolutionError` ("changed while it was loaded") and keeps nothing.
    Then `shutil.move` it into the cache path. Any exception during
    download/move deletes a partially-written cache file before re-raising;
@@ -529,7 +529,7 @@ client pinned to the backend (`pinned_client`) and:
    run with that path, reusing the listings already made.
 4. **Identities.** For a file in a local `file:` artifact location (the run's
    `artifact_uri`, read once per resolution and only for a local backend) the
-   identity is `sha256:` of the stored file's content (`file_signature`,
+   identity is `content:` of the stored file's content (`file_signature`,
    memoised per freshness token); elsewhere `size:` from the listing. A pyfunc
    folder's is `listing:` of its own listing.
 
@@ -540,7 +540,9 @@ inside another shares the outer memo. The preview and trace entry points, a
 graph walk, a standalone `haute run`, and deploy's `collect_artifacts` each
 open one, so the identity a stored result is kept under, the planner's load,
 the scorer's load and the trace's explanation are one answer. A failed
-resolution is not memoised.
+resolution is kept too, and raised again to every later consumer of the
+operation, so nothing in it is computed from a model whose identity could not
+be read.
 
 ### Cache clearing — `clear_model_cache(run_id=None)` (`_mlflow_io.py`)
 
@@ -1094,6 +1096,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 
 ## Testing
 
+- **`tests/test_model_resolution.py`** — the model resolution against a real local MLflow store holding a run with a CatBoost and a LightGBM file and a version registered from the second, a run whose model is one folder down, a run holding only a pyfunc folder, a native model with its contract beside it, and a run whose model is logged again over its own path with the same number of bytes. For each reference to a native model the resolution, the scores (equal to that model's own `predict`), the run picker's `/api/mlflow/runs` listing, the deploy bundle (the stored bytes, and the contract exactly when one is beside the model) and the container image's dependency list (the model's engine, not the other's, and no `mlflow`) name the same model, and a file source's list carries its engine too; a pyfunc folder scores as its own `predict`, is listed as `model`, and is refused by the bundle naming the node; a run holding two models is refused naming both by the scorer and the bundle and listed with both. After the file is logged again with the same size the same preview and the same trace give the new model's scores, and a load whose run is unchanged downloads nothing, in the same process and after the in-memory cache is cleared. An AST guard fails when code outside `_mlflow_model.py` calls `list_artifacts`, with the optimiser result's own lookup (`routes/mlflow.py::_optimiser_result_listed`) the one named exception, and a second test proves the guard sees such a call.
 - `tests/test_offset_scoring.py` verifies offset-aware GLM/CatBoost/pyfunc/canvas/deploy scoring, feature-name handling, metrics, and signature contracts.
 - `tests/test_model_families.py` verifies the registry: a stub family registered with one call loads and scores from a local file, loads from a run artifact both named and by discovery, appears in the suffix list and maps to its deploy distributions; an unrecognised suffix fails locally and from a run with a `ConfigError` naming the supported suffixes; artifact paths resolve to their family (case, separators, directories); the built-in registrations are exactly `_SUPPORTED_FLAVORS`; duplicates are refused; every training descriptor's suffix is its family's; and `frontend/src/utils/modelFamilies.json` equals `model_family_fixture()`.
 - `tests/test_model_source.py` verifies the parsed source: each invalid config (no run ID, no registered model, no model path, an unknown `source_type`, a version beside an alias) fails with the same `ConfigError` through the builder, `score_from_config` and the trace explanation; the parser's defaults; the deploy passthrough guard chaining the parse failure; and that `load_mlflow_model` is called only from `_model_source.py`.

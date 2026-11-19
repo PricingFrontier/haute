@@ -2013,14 +2013,19 @@ present a structural or schema result as execution evidence.
   dataframe and preview caches instead of replaying predictions from the
   model they replaced. A destination that does not resolve records an
   "unresolved" marker with the configuration reason, and any other failed
-  resolution one naming only the exception type plus a random attempt id, so
-  every failed lookup is a distinct identity and an entry cached after one
-  failure is never served during another; execution reports the failure. An
-  MLflow-sourced `OPTIMISER_APPLY` node, whose result is not a scoring model,
-  records the resolved backend identity (`mlflow_backend`) and, for a
-  `registered` source, `registered_version`, the concrete version its alias,
-  `latest` or empty version resolves to through the registry at fingerprint
-  time (a concrete version is recorded as given), with the same markers.
+  resolution one naming only the exception type. The operation's scope keeps
+  that failure, so the load the same operation makes raises it and nothing is
+  computed or stored under the marker; a store that stays unreachable reads the
+  same identity when a seed plan opens and when its walk checks the inputs, so
+  the run reports the store's failure, not changed inputs. An MLflow-sourced
+  `OPTIMISER_APPLY` node, whose result is not a scoring model, records the
+  resolved backend identity (`mlflow_backend`, or the configuration marker) and,
+  for a `registered` source, `registered_version`, the concrete version its
+  alias, `latest` or empty version resolves to through the registry at
+  fingerprint time (a concrete version is recorded as given); a failed lookup
+  records an "unresolved" marker naming only the exception type plus a random
+  attempt id, so every failed lookup is a distinct identity and an entry cached
+  after one failure is never served during another.
 - **File-sourced Model Score nodes sign their model and contract.** A
   `MODEL_SCORE` node with `source_type: "file"` lists `model_path` among its
   local runtime input path fields (beside `feature_contract_path`), so

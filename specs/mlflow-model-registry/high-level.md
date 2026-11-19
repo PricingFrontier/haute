@@ -180,9 +180,10 @@ Out of scope (owned elsewhere):
     run holds, in the same words in the preview, `haute run`, the trace and
     the deploy.
   - Within one operation (a preview, a trace, a run, a bundle) a reference is
-    resolved once and every consumer of that operation shares the answer, so
-    the identity a result is stored under and the model it was computed from
-    are the same model.
+    resolved once and every consumer of that operation shares the answer, a
+    failure included, so the identity a result is stored under and the model
+    it was computed from are the same model, and nothing is computed from a
+    model whose identity could not be read.
 - A loaded model is bound to the feature contract it scores under before
   anything scores it. A contract that records a model identity must describe
   the loaded model. A CatBoost file records no baseline of its own, so its

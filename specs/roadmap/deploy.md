@@ -14,7 +14,7 @@ comparison a deploy's validation uses. `DPL-05` comes from the review
 plan's sweep of the commands on 11 November 2026 and was reproduced on
 fresh copies of the shipped examples.
 
-`DPL-06`, `DPL-07` and `DPL-10` come from the review plan's phase 5, a reader from a second
+`DPL-06` and `DPL-07` come from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
@@ -33,7 +33,6 @@ and the main session ran each again on 16 November 2026.
 | DPL-05 | Planned | P2 | `haute deploy --dry-run`, and the pipeline file run as Python, pass on a clean checkout of a pipeline whose input is a CSV Data Input, as a CI job runs them, without `haute run` first. |
 | DPL-06 | Planned | P2 | `haute impact` fails, naming the output, when staging answers no premium where production answers one. |
 | DPL-07 | Planned | P3 | `haute impact` sends a Date column as ISO text instead of ending in a traceback. |
-| DPL-10 | Planned | P2 | A container for a Model Scoring node that names a run carries MLflow and the model's engine, or the node is refused in words. |
 | DPL-11 | Planned | P2 | A deployed container with less than 8 GiB of memory answers a request of several quotes, or refuses it in words that name the limit and the setting. |
 | DPL-12 | Planned | P2 | A deployed container with one CPU answers a request of several quotes in seconds, not with a timeout after five minutes. |
 
@@ -228,29 +227,6 @@ its report.
 
 **Evidence:** `src/haute/deploy/_impact.py`; `src/haute/cli/_impact.py`;
 `specs/deploy/high-level.md`.
-
-### DPL-10 — A container for a model chosen by run carries MLflow and the model's engine
-**Why:** Run on 14 November 2026 as far as the image's list of
-dependencies; no image was built. A Model Scoring node names an MLflow
-run and leaves the artifact path empty, so the model is found when the
-service scores. `haute run` and the dry run pass. The bundle holds no
-model file, and the dependencies written for the image hold neither
-`mlflow` nor `catboost`, the model's engine. MLflow is added for an
-Optimiser Apply node only, and engines are read from the suffixes of
-bundled files. The image as listed cannot load the model its node names.
-
-**Plan:** Add MLflow, and the engine the run's model records, to the
-image whenever a Model Scoring node resolves its model at run time; or
-refuse such a node for a container target and say to bundle the file.
-
-**Acceptance:** For the project above the image's dependencies hold both
-packages, or the dry run refuses the node in words. A test builds the
-list for a node of each source type.
-
-**Dependencies:** `MLR-06` is about which file such a node scores.
-
-**Evidence:** `src/haute/deploy/_container.py`;
-`specs/deploy/low-level.md`.
 
 ### DPL-11 — A container with less than 8 GiB answers a request of several quotes
 **Why:** Reproduced on 16 November 2026 with the deploy image of the

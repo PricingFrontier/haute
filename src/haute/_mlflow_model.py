@@ -47,7 +47,7 @@ MLMODEL_FILE = "MLmodel"
 ListingObserver = Callable[[float, float], None]
 
 _ResolutionKey = tuple[str, RunModelSource | RegisteredModelSource]
-_RESOLUTIONS: ContextVar[dict[_ResolutionKey, ResolvedModel] | None] = ContextVar(
+_RESOLUTIONS: ContextVar[dict[_ResolutionKey, ResolvedModel | Exception] | None] = ContextVar(
     "haute_model_resolutions", default=None
 )
 
@@ -133,8 +133,10 @@ def model_resolution_scope() -> Iterator[None]:
 
     Inside the scope :func:`resolve_model` asks the store once per backend and
     source and every later call shares that answer, so the identity a result is
-    stored under and the model it was computed from are the same model. A scope
-    opened inside another shares the outer one. A failed resolution is not kept.
+    stored under and the model it was computed from are the same model. A failed
+    resolution is kept too: every later call raises it again, so nothing in the
+    operation is computed from a model whose identity could not be read. A scope
+    opened inside another shares the outer one.
     """
     if _RESOLUTIONS.get() is not None:
         yield
@@ -163,24 +165,36 @@ def resolve_model(
     key = (backend.identity, source)
     if memo is not None:
         known = memo.get(key)
+        if isinstance(known, Exception):
+            raise known
         if known is not None:
             return known
+    try:
+        resolved = _resolve(source, backend)
+    except Exception as exc:
+        if memo is not None:
+            memo[key] = exc
+        raise
+    if memo is not None:
+        memo[key] = resolved
+    return resolved
+
+
+def _resolve(
+    source: RunModelSource | RegisteredModelSource, backend: ResolvedBackend
+) -> ResolvedModel:
     from haute._mlflow_utils import pinned_client
 
     client = pinned_client(backend)
     if isinstance(source, RunModelSource):
-        resolved = _resolve_in_run(
+        return _resolve_in_run(
             _RunArtifacts(client, source.run_id),
             backend,
             source.artifact_path,
             version="",
             reference=f"MLflow run {source.run_id!r}",
         )
-    else:
-        resolved = _resolve_version(client, backend, source)
-    if memo is not None:
-        memo[key] = resolved
-    return resolved
+    return _resolve_version(client, backend, source)
 
 
 def run_model_candidates(
@@ -293,7 +307,8 @@ def _resolve_version(
     # MLflow 3 makes of ``runs:/<run>/model``) names no file of its run, so its run is
     # searched; a source naming the run itself is the run with no path.
     source_text = str(model_version.source or "")
-    if source_text.startswith("models:/"):
+    logged_model = source_text.startswith("models:/")
+    if logged_model:
         artifacts, path = _RunArtifacts(client, run_id), ""
     elif source_text.startswith("runs:/"):
         named_run, _, rest = source_text[len("runs:/") :].partition("/")
@@ -301,7 +316,10 @@ def _resolve_version(
     else:
         artifacts = _RunArtifacts(client, run_id)
         path = _path_under(source_text, artifacts.location(), reference)
-    return _resolve_in_run(artifacts, backend, path, version=version, reference=reference)
+    # What a refusal names is the run read, and which version sent it there.
+    registered_from = ", registered from a logged model" if logged_model else ""
+    in_run = f"MLflow run {artifacts.run_id!r} ({reference}{registered_from})"
+    return _resolve_in_run(artifacts, backend, path, version=version, reference=in_run)
 
 
 def _path_under(source: str, location: str, reference: str) -> str:

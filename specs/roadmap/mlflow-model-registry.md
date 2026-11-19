@@ -11,7 +11,7 @@ codebase review. `MLR-01` was reproduced against `HEAD` on that day with the
 loader's collaborators replaced by stubs, and `MLR-04` by running the
 commands on a shipped example; `MLR-02` and `MLR-03` are read from the
 source. `MLR-05` was reproduced on 10 November 2026 against a local address
-where nothing listens. `MLR-06` to `MLR-08` come from the review plan's
+where nothing listens. `MLR-06` and `MLR-08` come from the review plan's
 phase 5, a reader from a second model family (Codex) over the code changed
 since the 31 October audit. A worker ran each against a local MLflow store
 and the main session ran each again on 13 November.
@@ -32,11 +32,10 @@ session ran each again on 15 November 2026.
 |---|---|---:|---|
 | MLR-01 | Planned | P2 | A model load that fails for a reason other than unreadable bytes keeps its error and leaves the local copy alone. |
 | MLR-02 | Planned | P3 | Clearing old model copies never fails a load that succeeded, and never removes a copy another process is reading. |
-| MLR-03 | Planned | P3 | The run picker says how many runs it could not check, and lists the runs the loader can load. |
+| MLR-03 | Planned | P3 | The run picker says how many runs it could not check, and shows an error when it could check none. |
 | MLR-04 | Planned | P3 | A Model Scoring node whose MLflow run does not exist is reported by node, run and destination, not as a traceback. |
 | MLR-05 | Planned | P2 | A model load from an MLflow server that cannot be reached fails within seconds and says so, instead of holding a preview for four and a half minutes. |
-| MLR-06 | Planned | P1 | A Model Scoring node that names a registered model and version scores the file that version was registered from, not the first model file of its run. |
-| MLR-07 | Planned | P3 | A model file logged again over the same path of a run is the one that scores. |
+| MLR-06 | Planned | P3 | A version registered from a logged model is read from the logged model, or refused in words that say what it scores. |
 | MLR-08 | Planned | P3 | A logged model takes a part-year or a missing exposure whatever type its training exposure had. |
 | MLR-09 | Planned | P3 | A GLM trained on the canvas logs its family, link, terms and penalty to MLflow, as a scripted run does. |
 | MLR-10 | Planned | P2 | Retry after the experiment was changed logs to the new experiment, or names the one the run is in. |
@@ -59,8 +58,8 @@ made. `MemoryError` is the one that matters most: its text is empty, so the
 message ends "Last error:" with nothing after it, and as a `RuntimeError` it
 no longer reaches the memory-limit handling the rest of the engine gives it
 (the optimiser's handlers all test for it first). A tracking-server blip
-during the contract fetch destroys the copy that the disk-cache fast path,
-and an execution allowed to load only from that cache, would have used.
+during the contract fetch destroys the copy that a later load of the same
+file, and an execution allowed to load only from that cache, would have used.
 
 **Plan:** Retry, delete and download again only for a failure of the
 family's file loader to read the bytes. Let a memory error, an operating
@@ -77,7 +76,7 @@ fails twice, reported as corrupt.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_mlflow_io.py::_load_with_bounded_retry`;
-`src/haute/_mlflow_io.py::_run_contract_if_logged`;
+`src/haute/_mlflow_io.py::fetch_resolved_files`;
 `src/haute/_mlflow_io.py::_resolve_artifact_local`;
 `src/haute/_memory_errors.py::memory_error_in` is the test the optimiser's
 handlers apply; `src/haute/errors.py::ModelNotInDiskCacheError`.
@@ -112,34 +111,24 @@ file, asserted with the cross-process test helpers the snapshot store uses.
 move; `src/haute/_mlflow_io.py::_disk_cache_active_runs` is the process-local
 guard; `src/haute/_mlflow_io.py::_delete_tombstone` states the rule.
 
-### MLR-03 — The run picker reports what it could not check and lists what loads
-**Why:** Read from the source. To list an experiment's runs, the route lists
-each run's artifacts and keeps the runs holding a model file. A run whose
-listing raises is skipped; the number skipped goes to a log line and nowhere
-else. When the artifact store refuses or flaps while the tracking store
-answers, every run is skipped and the picker shows its "no runs" text, not
-an error. The filter also looks only at top-level artifact names ending in a
-native model suffix, while the loader's own discovery looks one folder deep
-and falls back to an MLflow pyfunc model folder. A run that holds
-`model/model.cbm`, or only a pyfunc model, loads when its run id is typed by
-hand and is never offered in the list.
+### MLR-03 — The run picker reports the runs it could not check
+**Why:** Read from the source. To list an experiment's runs, the route checks
+each run's artifacts. A run whose listing raises is skipped; the number
+skipped goes to a log line and nowhere else. When the artifact store refuses
+or flaps while the tracking store answers, every run is skipped and the picker
+shows its "no runs" text, not an error. Which runs it lists, exactly the runs
+the loader can load, was delivered by `MLR-11` on 19 November 2026.
 
-**Plan:** Return the number of runs that could not be checked, show it in
-the picker, and answer an error when every listing failed. Give the picker
-and the loader one discovery rule, so a run is listed exactly when it can be
-loaded.
+**Plan:** Return the number of runs that could not be checked, show it in the
+picker, and answer an error when every listing failed.
 
 **Acceptance:** With one run's listing made to fail, the response carries a
 count of one and the picker says so; with all failing, the picker shows the
-error. A run holding its model one folder deep, and a pyfunc-only run, are
-listed, and a test holds the picker's rule and the loader's to the same
-fixture runs.
+error.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/routes/mlflow.py::_run_summaries`;
-`src/haute/_mlflow_io.py::_find_artifact_by_extension`;
-`src/haute/_mlflow_io.py::_find_model_artifact`;
 `frontend/src/panels/editors/MlflowModelPicker.tsx`.
 
 ### MLR-04 — A missing MLflow run is reported as the node's configuration error
@@ -226,78 +215,39 @@ second wait where its retry stops treating every failure as a damaged file.
 `src/haute/routes/mlflow.py::_search_experiments_probe` is the bounded call
 to follow.
 
-### MLR-06 — A registered model version scores the file it was registered from
-**Why:** Reproduced on 13 November 2026 with a local MLflow store. An
-analyst's script logs two CatBoost models into one run, `frequency.cbm` and
-`severity.cbm`, and registers the second as version 1 of `severity`. The
-version's source ends `artifacts/severity.cbm`. A Model Scoring node names
-that model and version, with no artifact path. Its scores are the frequency
-model's: 0.465, 0.478 and 0.645, where the severity model's own `predict`
-gives 2287.21, 2356.015 and 3571.833. The preview, `haute run` and the
-deploy scorer all give the frequency scores, and the deploy bundle carries
-`frequency.cbm`. Nothing says another file was chosen.
+### MLR-06 — A version registered from a logged model is read from it, or refused in words
+**Why:** Reproduced on 13 November 2026 with a local MLflow store. The rest
+of this package was delivered by `MLR-11` on 19 November 2026: a registered
+version resolves through its source, so a version registered from a file
+scores that file everywhere, and one whose run cannot say which file is
+refused by name. A version registered from a logged model is left. MLflow 3
+registers `runs:/<run>/model` that way, and Haute's candidate runs are
+promoted that way. Its source names the logged model (`models:/m-...`), whose
+files are not among its run's artifacts, so Haute scores the model file its
+run holds, found by the discovery rule. Every Haute training run logs the
+native file at its root beside the logged model, so those versions score.
+An analyst's run made with `mlflow.catboost.log_model` holds no file of its
+own, and is refused in the same words by the preview, `haute run` and the
+deploy: the run "holds no model Haute can score". Nothing reads the logged
+model's own files, and a run whose own files hold another model than the
+logged one would score that file.
 
-Resolving a registered version keeps the version's run and drops its
-source. The loader then searches the run's artifacts and takes the first
-model file it finds. The specification locates a registered model by its
-name and its version; a search of the run belongs to a model given by run
-with no path. Haute's own Log to MLflow makes one run for each model, so
-the fault needs a run that a script of the analyst's own made.
+**Plan:** Decide whether a version registered from a logged model is
+supported. If so, read it from the logged model's own location, its native
+file where the logged model is Haute's package and its pyfunc otherwise, and
+stop searching its run. If not, say in every path that such a version scores
+the model file its run holds, and refuse one whose run holds none, naming the
+remedy.
 
-The same pair logged with `mlflow.catboost.log_model` and registered from
-the logged model, as MLflow 3 registers, is not scored at all. `haute run`
-and the deploy say "No model artifact found in run", and the preview
-answers 500, "Operation failed. Check the server logs for details." A
-logged model's files are not among its run's artifacts.
-
-**Plan:** Load the file a version's source names. When a version cannot be
-resolved to one model file, refuse by name: the model, the version and the
-files found. Decide whether a version registered from a logged model is
-supported; read it from the logged model's own location if so, and say in
-every path that it is not if not.
-
-**Acceptance:** The node above scores 2287.21, 2356.015 and 3571.833 in
-the preview, in `haute run` and in the deploy scorer, and the bundle
-carries `severity.cbm`. A version that cannot be told from another file of
-its run is refused by name. A version registered from a logged model
-either scores that model or is refused in the same words by the preview,
-the run and the deploy.
+**Acceptance:** A version registered from an `mlflow.catboost.log_model`
+model either scores that model in the preview, `haute run` and the deploy,
+or is refused in the same words naming the remedy. A Haute candidate run
+promoted through `runs:/<run>/model` scores as it does now.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_mlflow_utils.py::resolve_mlflow_source`;
-`src/haute/_mlflow_io.py::_find_model_artifact`;
-`src/haute/_mlflow_io.py::load_mlflow_model`;
-`src/haute/deploy/_bundler.py`;
+**Evidence:** `src/haute/_mlflow_model.py::_resolve_version`;
 `specs/mlflow-model-registry/high-level.md`.
-
-### MLR-07 — A run's model file logged again is the one that scores
-**Why:** Reproduced on 13 November 2026 with a local MLflow store. A Model
-Scoring node names a run and the artifact path `model.cbm`. The analyst's
-script resumes that run and logs a retrained `model.cbm` over the same
-path, and the store then holds the retrained file. Haute goes on scoring
-with the first one: 290.45 and 599.24, where the retrained model gives
-1029.05 and 1059.92. It does so in the same editor process with another
-row limit, in a new process, and from `haute run`.
-
-The first download is kept in the project's `.cache/models` folder under
-the store, the run and the path, and a copy that exists is used without
-asking MLflow. The plan's earlier sweep found that a model retrained over a
-file path, and an alias moved to another version, are both picked up at
-once; a run's artifact is the one source that is not.
-
-**Plan:** Before a kept copy is used, compare it with what the run holds
-now, at the cost of one request, or key the copy on what identifies the
-stored file.
-
-**Acceptance:** After the second log the node above scores 1029.05 and
-1059.92, in the same process and in a new one. A load whose run is
-unchanged makes no download.
-
-**Dependencies:** `MLR-01` and `MLR-02` change the same copy's handling.
-
-**Evidence:** `src/haute/_mlflow_io.py::_disk_cached_run_model`;
-`src/haute/_mlflow_io.py::_resolve_artifact_local_in_use`.
 
 ### MLR-08 — A logged model takes a part-year or a missing exposure whatever its training data held
 **Why:** Reproduced on 13 November 2026. A Poisson model is trained through
