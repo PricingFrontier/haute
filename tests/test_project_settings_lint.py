@@ -11,7 +11,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from tests._source_files import REPO_ROOT, source_files
+
+# These read the repository's files; the compatibility lanes leave them to the reference run.
+pytestmark = pytest.mark.meta
 
 SOURCE_ROOT = REPO_ROOT / "src" / "haute"
 PARSE_MODULE = "src/haute/_project_settings.py"

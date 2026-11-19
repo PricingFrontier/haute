@@ -335,12 +335,13 @@ def test_a_setting_edited_between_two_calls_to_a_running_server_is_read_by_the_s
     client = _editor(project.root)
     assert client.get("/api/pipeline").json()["pipeline_name"] == "main"
 
-    (project.root / "haute.toml").write_text(
+    settings = tmp_path / "second" / "haute.toml"
+    settings.write_text(
         '[project]\nname = "motor"\npipeline = "rating/renewal.py"\n', encoding="utf-8"
     )
     assert client.get("/api/pipeline").json()["pipeline_name"] == "renewal"
 
-    (project.root / "haute.toml").write_text('[projct]\nname = "motor"\n', encoding="utf-8")
+    settings.write_text('[projct]\nname = "motor"\n', encoding="utf-8")
     document = client.get("/api/pipeline").json()
     assert document["diagnostics"][0]["code"] == "project_settings_invalid"
 
@@ -391,7 +392,7 @@ def test_a_named_load_reads_a_settings_edit_made_after_the_index_was_built(
     client = _editor(project.root)
     assert client.get("/api/pipeline/main").json()["pipeline_name"] == "main"
 
-    (project.root / "haute.toml").write_text('[projct]\nname = "motor"\n', encoding="utf-8")
+    (tmp_path / "inside" / "haute.toml").write_text('[projct]\nname = "motor"\n', encoding="utf-8")
     document = client.get("/api/pipeline/main").json()
 
     assert document["diagnostics"][0]["code"] == "project_settings_invalid"

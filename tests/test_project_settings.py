@@ -147,10 +147,13 @@ class TestPaths:
 
         assert "[test_quotes] dir must be a path written as a string" in str(error)
 
-    @pytest.mark.parametrize("pipeline", ["../outside.py", "C:/elsewhere/main.py", "/etc/main.py"])
+    @pytest.mark.parametrize("pipeline", ["../outside.py", "ABSOLUTE"])
     def test_a_configured_pipeline_outside_the_project_is_refused(
         self, tmp_path: Path, pipeline: str
     ) -> None:
+        if pipeline == "ABSOLUTE":
+            # An absolute path outside, as this system writes one.
+            pipeline = (tmp_path.parent / "elsewhere" / "main.py").as_posix()
         error = _refusal(tmp_path, f"[project]\npipeline = '{pipeline}'\n".encode())
 
         assert "must name a file inside the project" in str(error)

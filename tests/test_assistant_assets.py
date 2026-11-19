@@ -432,7 +432,10 @@ class TestExecutableBundles:
                 {"assertion_tier": "fast", "resources": []},
             )
 
+    @pytest.mark.no_project
     def test_every_bundle_validates_and_fast_subset_parses(self):
+        # With no project installed, as the package smoke check runs it: each bundle is its
+        # own project, whose haute.toml is not inside a git repository.
         report = _assets.validate_example_bundles(execute_fast=False)
         assert {item["id"] for item in report} >= self.EXPECTED
         assert all(item["validated"] is True for item in report)
