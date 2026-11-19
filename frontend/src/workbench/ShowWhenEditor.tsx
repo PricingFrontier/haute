@@ -12,7 +12,7 @@ import type { CSSProperties } from "react"
 import type { Condition, ConditionGroup, FormSpec, RowsCondition, RowTest, SchemaColumn, SchemaTable, ShowWhen } from "../api/types"
 import { CommittedTextField, ConfigCheckbox, FIELD_CLASS, INPUT_STYLE, NumberField, QuietAction, ValidatedTextField } from "../components/form"
 import { hasInputs, hasOutputs, isOutputColumn, ownOutputs, tableColumns, typedInputs } from "../utils/quoteIdentity"
-import { readTypedNumber } from "../utils/typedNumbers"
+import { readTypedNumber, trimTyped } from "../utils/typedNumbers"
 import {
   columnKey,
   CONDITION_TESTS,
@@ -76,7 +76,7 @@ const rowsKey = (tableId: string) => `${tableId}#rows`
 const label = (column: SchemaColumn) => column.label || readableName(column.name)
 const PROBLEM_CLASS = "mt-0.5 block text-[10px] leading-snug"
 /** A total's number: blank, which its fault names, or a number as the sample's are typed. */
-const numberValid = (text: string): string | null => (text.trim() === "" || readTypedNumber(text.trim()) !== null ? null : "Enter a number.")
+const numberValid = (text: string): string | null => (trimTyped(text) === "" || readTypedNumber(text) !== null ? null : "Enter a number.")
 /** A number written with a thousands separator, `1,000` or `1,000,000.5`. */
 const GROUPED = /(?<![\d.])\d+(?:,\d{3})+(?:\.\d+)?(?!\d)/
 /** A number column's values, comma-separated: none with a thousands separator, which the split would cut in two. */

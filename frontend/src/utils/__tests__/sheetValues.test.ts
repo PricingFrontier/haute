@@ -236,6 +236,10 @@ describe("cellProblem", () => {
     expect(cellProblem(value, "$1,000,001")).toBe("At most 1,000,000")
     expect(cellProblem(value, "$999,999")).toBeNull()
     expect(cellProblem(policy.inputs[1], "1.5")).toBe("Not a whole number")
+    // Told from the digits as the server tells it, never from a rounded Number.
+    expect(cellProblem(policy.inputs[1], "1234567890123456789.5")).toBe("Not a whole number")
+    expect(cellProblem(policy.inputs[1], "1.0000000000000001")).toBe("Not a whole number")
+    expect(cellProblem(policy.inputs[1], "150.0")).toBeNull()
     expect(cellProblem(policy.inputs[1], "2.0")).toBeNull()
     expect(cellProblem(policy.inputs[0], "TX")).toBe("Not one of the allowed values")
     expect(cellProblem(policy.inputs[0], "NY")).toBeNull()

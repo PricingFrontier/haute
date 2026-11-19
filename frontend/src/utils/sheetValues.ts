@@ -187,9 +187,13 @@ export function cellProblem(column: SchemaColumn, value: SampleValue | undefined
   if (text === "") return column.required ? "Required" : null
   if (column.type === "date" && !isDay(text)) return "Not a date"
   if (column.type === "int" || column.type === "float") {
-    const number = readTypedNumber(text)
-    if (number === null) return "Not a number"
-    if (column.type === "int" && !Number.isInteger(number)) return "Not a whole number"
+    // An Integer's whole number is told from its digits, as the server reads it, never from
+    // a rounded Number: 1234567890123456789.5 is not whole.
+    const whole = column.type === "int" ? readTypedWhole(text) : null
+    const read = readTypedNumber(text)
+    if (read === null && whole === null) return "Not a number"
+    if (column.type === "int" && whole === null) return "Not a whole number"
+    const number = read ?? Number(whole)
     if (column.min !== null && number < column.min) return `At least ${column.min.toLocaleString()}`
     if (column.max !== null && number > column.max) return `At most ${column.max.toLocaleString()}`
   }

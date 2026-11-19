@@ -23,7 +23,7 @@ import functools
 import re
 from collections.abc import Callable
 
-from mypy.nodes import CallExpr, Expression, FuncBase, RefExpr
+from mypy.nodes import CallExpr, Expression, FuncBase, MemberExpr, NameExpr, RefExpr
 from mypy.plugin import FunctionContext, Plugin
 from mypy.types import Instance, Type, UnionType, get_proper_type
 
@@ -299,18 +299,18 @@ def _source_lines(path: str) -> tuple[str, ...]:
         return tuple(handle.read().splitlines())
 
 
-#: A language reader's name where a call of it starts.
-_CALLEE = re.compile(r"\b(?:float|int|Decimal)\(")
+#: A language reader's name where a call of it starts, qualified or not.
+_CALLEE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*(?:float|int|Decimal)\(")
 
 
-def _call_text(lines: tuple[str, ...], line: int, column: int) -> str:
-    """The source of the reader called at *line* (from 1), at or after *column*: its name
-    and its parenthesised arguments, across lines, its spaces collapsed. A call inside an
-    f-string is found by its name, whose column mypy does not give."""
-    text = lines[line - 1]
-    found = _CALLEE.search(text, column) or _CALLEE.search(text)
+def _call_text(lines: tuple[str, ...], line: int, column: int) -> str | None:
+    """The source of the reader called at *line* (from 1) and *column*: its name and its
+    parenthesised arguments, across lines, its spaces collapsed; or None when no call starts
+    there. mypy gives a call inside an f-string the f-string's place, which names no one call,
+    so such a call has no source of its own."""
+    found = _CALLEE.match(lines[line - 1], column)
     if found is None:
-        return " ".join(text[column:].split())
+        return None
     depth, taken = 0, []
     for row in range(line - 1, len(lines)):
         piece = lines[row][found.start() :] if row == line - 1 else lines[row]
@@ -323,13 +323,17 @@ def _call_text(lines: tuple[str, ...], line: int, column: int) -> str:
     return " ".join(" ".join(taken).split())
 
 
-def _call_key(ctx: FunctionContext, where: str) -> str:
+def _call_key(ctx: FunctionContext, where: str) -> str | None:
     """The call's key on ``NOT_TYPED``: ``module.function::call``, the call's own source text
     with its spaces collapsed, a second of the same call in one function ``call#2`` by its
-    place in the source, so an exception covers that one call and no other beside it."""
+    place in the source, so an exception covers that one call and no other beside it; None for
+    a call that cannot be told from others by its source (one inside an f-string), which no
+    exception covers."""
     node = ctx.context
     lines = _source_lines(ctx.api.path)
     call = _call_text(lines, node.line, node.column)
+    if call is None:
+        return None
     function = ctx.api.scope.current_function()  # type: ignore[attr-defined]
     first = function.line if isinstance(function, FuncBase) else 1
     before = "\n".join([*lines[first - 1 : node.line - 1], lines[node.line - 1][: node.column]])
@@ -343,9 +347,20 @@ def _check(ctx: FunctionContext) -> Type:
     if _may_be_text(ctx.arg_types[0][0]) and not _numbers_own_text(ctx, ctx.args[0][0]):
         where = _where(ctx)
         key = _call_key(ctx, where)
-        if not where.startswith(f"{READER}.") and key not in NOT_TYPED:
+        if not where.startswith(f"{READER}.") and (key is None or key not in NOT_TYPED):
+            call = ctx.context
+            reader = (
+                call.callee.name
+                if isinstance(call, CallExpr) and isinstance(call.callee, NameExpr | MemberExpr)
+                else "a reader"
+            )
+            at = (
+                f"`{key}`"
+                if key is not None
+                else f"{reader}() in an f-string in {where}, which no exception covers"
+            )
             ctx.api.fail(
-                f"Text read as a number by hand at `{key}`: read typed text with "
+                f"Text read as a number by hand at {at}: read typed text with "
                 "haute._typed_numbers (read_typed_number, read_typed_whole, setting_number), "
                 "or list text no one types on NOT_TYPED in scripts/mypy_typed_numbers.py "
                 "with its reason",

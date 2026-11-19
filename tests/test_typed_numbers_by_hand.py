@@ -49,6 +49,9 @@ def test_a_language_reader_given_text_is_refused_and_one_given_a_number_is_not(
             int(raw)
             float(text)
 
+        def in_text(text: str, other: str) -> str:
+            return f"{float(text)} {int(other)}"
+
         def not_typed(number: float, whole: int, anything: Any) -> None:
             float(number)
             int(whole)
@@ -58,7 +61,7 @@ def test_a_language_reader_given_text_is_refused_and_one_given_a_number_is_not(
         """,
     )
 
-    lines = [line for line in found.splitlines() if "Text read as a number by hand" in line]
+    lines = [line for line in found.splitlines() if "Text read as a number by hand at `" in line]
     assert [re.search(r":(\d+): error", line).group(1) for line in lines] == [
         "6",
         "7",
@@ -75,6 +78,10 @@ def test_a_language_reader_given_text_is_refused_and_one_given_a_number_is_not(
         "typed_probe.typed::int(raw)",
         "typed_probe.typed::float(text)#2",
     ]
+    # mypy gives a call inside an f-string the f-string's place, which names no one call, so
+    # each such call is found and none can be excepted.
+    in_text = [line for line in found.splitlines() if "an f-string in typed_probe.in_text" in line]
+    assert len(in_text) == 2
 
 
 def test_every_exception_names_a_call_that_still_reads_a_number() -> None:

@@ -79,7 +79,7 @@ import {
   type PricedRows,
   type RowsByTable,
 } from "./sheetValues"
-import { readTypedNumber, trimTyped } from "./typedNumbers"
+import { readTypedNumber, readTypedWhole, trimTyped } from "./typedNumbers"
 import { keyCollisions } from "./workbenchTables"
 import {
   ALWAYS,
@@ -2685,7 +2685,12 @@ const EQUALITY_TESTS: ReadonlySet<ConditionTest> = new Set(["equals", "not_equal
 
 /** Whether `value` is one of `column`'s allowed values, a number's read as numbers. */
 function allowed(column: SchemaColumn, value: string): boolean {
-  if (column.type === "int" || column.type === "float") {
+  if (column.type === "int") {
+    // Whole numbers compared exactly, from their digits, never as rounded Numbers.
+    const whole = readTypedWhole(value)
+    return column.options.some((option) => whole !== null && readTypedWhole(option) === whole)
+  }
+  if (column.type === "float") {
     const number = readTypedNumber(value)
     return column.options.some((option) => number !== null && readTypedNumber(option) === number)
   }
@@ -2886,10 +2891,9 @@ export function columnNameProblem(name: string): string | null {
 }
 
 /** Whether `text` is a number, a whole one when `whole`, as a cell and the server read one. */
-const isNumber = (text: string, whole: boolean): boolean => {
-  const n = readTypedNumber(text)
-  return n !== null && (!whole || Number.isInteger(n))
-}
+const isNumber = (text: string, whole: boolean): boolean =>
+  // A whole number is told from its digits, never from a rounded Number.
+  whole ? readTypedWhole(text) !== null : readTypedNumber(text) !== null
 
 /** A table's ports, as the pipeline's tables name them: `<name>_input` while it has inputs and `<name>_output` while it has outputs. */
 export const tablePorts = (table: SchemaTable): string[] => [
