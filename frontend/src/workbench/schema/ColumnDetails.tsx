@@ -1,7 +1,7 @@
 /** A schema column's details: its label, help, rules, format, allowed values and default (specs/workbench). */
 import { useId } from "react"
 import type { SchemaColumn, SchemaTable } from "../../api/types"
-import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE, ValidatedTextField } from "../../components/form"
+import { COMPACT_FIELD_CLASS, CommittedTextField, ConfigCheckbox, INPUT_STYLE, NumberField } from "../../components/form"
 import { isOutputColumn, tableColumns } from "../../utils/quoteIdentity"
 import { PIVOT_DECIMAL_PLACES_MAX, PIVOT_NUMBER_FORMATS } from "../../panels/explore/pivotConfig"
 import { NUMBER_FORMAT_LABELS } from "../../panels/explore/pivotNumberFormat"
@@ -49,9 +49,6 @@ export function ColumnDetails({
   const groups = [...new Set(tableColumns(table).map((other) => other.group).filter((group) => group !== ""))]
   // General with automatic decimal places shows a number as it is, separators and all.
   const grouped = column.number_format !== "general" || column.decimal_places !== null
-  const numberOrNothing = (text: string): string | null =>
-    text.trim() === "" || Number.isFinite(Number(text)) ? null : "Enter a number."
-  const bound = (text: string): number | null => (text.trim() === "" ? null : Number(text))
   return (
     <fieldset
       disabled={readOnly}
@@ -163,24 +160,26 @@ export function ColumnDetails({
         <>
           <span style={{ color: "var(--text-muted)" }}>Range</span>
           <div className="flex items-center gap-1.5">
-            <ValidatedTextField
-              dataTestId={`schema-column-${column.name}-min`}
-              value={column.min === null ? "" : String(column.min)}
-              onCommit={(text) => set({ min: bound(text) })}
-              validate={numberOrNothing}
+            <NumberField
+              data-testid={`schema-column-${column.name}-min`}
+              value={column.min}
+              onCommit={(next) => set({ min: next })}
               containerClassName="w-24"
               className={`${COMPACT_FIELD_CLASS} w-full`}
               style={INPUT_STYLE}
+              problemTestId={`schema-column-${column.name}-min-error`}
+              problemClassName="mt-0.5 block text-[10px] leading-snug"
             />
             <span style={{ color: "var(--text-muted)" }}>to</span>
-            <ValidatedTextField
-              dataTestId={`schema-column-${column.name}-max`}
-              value={column.max === null ? "" : String(column.max)}
-              onCommit={(text) => set({ max: bound(text) })}
-              validate={numberOrNothing}
+            <NumberField
+              data-testid={`schema-column-${column.name}-max`}
+              value={column.max}
+              onCommit={(next) => set({ max: next })}
               containerClassName="w-24"
               className={`${COMPACT_FIELD_CLASS} w-full`}
               style={INPUT_STYLE}
+              problemTestId={`schema-column-${column.name}-max-error`}
+              problemClassName="mt-0.5 block text-[10px] leading-snug"
             />
           </div>
         </>

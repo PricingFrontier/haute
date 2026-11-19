@@ -71,7 +71,9 @@ Out of scope (owned by neighbouring components):
 - `breakpoints` rules are an ordered list of boundaries with labels, closed on
   the right by default (`(lower, upper]`) or on the left when `right_closed:
   false`. At most one boundary may be open-ended (empty), and it anchors the
-  final unbounded range. A boundary is a number, a date (`YYYY-MM-DD`), or a
+  final unbounded range. A boundary is a number (read by the one grammar for a
+  typed number, specs/frontend-shared high-level "Typed numbers": `1,000` is a
+  thousand and `40,5` is refused, never 405), a date (`YYYY-MM-DD`), or a
   date and time (`YYYY-MM-DD HH:MM`, optionally `:SS` and a fraction, `T` or a
   space between; no UTC offset), and every bounded breakpoint of one factor is
   the same kind. Numbers band a numeric column. Dates band a Date column, or a
@@ -135,10 +137,13 @@ Out of scope (owned by neighbouring components):
   has no `default_value`, so it starts on **Leave empty**. Under the table the
   editor shows **On miss** (**Leave empty** / **Use default**) and **Default**,
   which is editable only on **Use default**: choosing **Use default** writes
-  `default_value` `1.0`, and choosing **Leave empty**, or clearing **Default**,
-  removes it. Whether a table uses a default is the engine's own rule (a
-  non-blank `default_value`, text or number), so the editor never says
-  **Leave empty** of a table the engine fills. Every edit leaves an absent
+  `default_value` `1`, and choosing **Leave empty**, or clearing **Default**,
+  removes it. **Default** is the shared number field (specs/frontend-shared
+  high-level, "Typed numbers"): `1,5` is refused at the field in words, in any
+  browser language, never saved as 15, and the Default is written as a number.
+  Whether a table uses a default is the engine's own rule (a non-blank
+  `default_value`, a number or text the grammar reads as one), so the editor
+  never says **Leave empty** of a table the engine fills. Every edit leaves an absent
   `default_value` absent.
 - Table lookup keys are compared as strings through the factor column's
   originating Polars dtype. Table-entry values are first coerced through that
@@ -220,8 +225,10 @@ Out of scope (owned by neighbouring components):
   column. A cell with no entry is `null`, and a lookup there misses and takes
   the table's default or stays empty; a rate of 0 is a rate. Levels keep their JSON type,
   so `25` and `"25"` stay distinct (JSON object keys would erase that, so the
-  grid uses arrays). `default_value` is written as the editor holds it, text,
-  which the engine reads as the number it is; an entry
+  grid uses arrays). `default_value` is written as the editor holds it, a
+  number; one a file holds as text is read by the one grammar for a typed
+  number (`haute._typed_numbers.setting_number`), as a relativity held as text
+  is; an entry
   holding a key other than its levels and its rate is refused at save, naming
   it, since the grid has no place for it,
   and `factor_dtypes`, the outputs and the other settings stay beside the grid,

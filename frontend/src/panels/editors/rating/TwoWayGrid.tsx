@@ -1,8 +1,8 @@
 import { useMemo } from "react"
 import { Copy } from "lucide-react"
 import type { RatingTable } from "./ratingTableUtils"
-import { parseRelativity, tableStats, resolveDefault } from "./ratingTableUtils"
-import { ControlledNumberCell } from "./ControlledNumberCell"
+import { parseRelativity, resolveDefault, storedNumber, tableStats } from "./ratingTableUtils"
+import { NumberCell } from "../shared/NumberCell"
 import { StatsFooter } from "./StatsFooter"
 import { EDITABLE_RELATIVITY_INPUT_STYLE, NON_EDITABLE_LABEL_CELL_STYLE } from "./cellStyles"
 import { useGridCellSelection } from "./useGridCellSelection"
@@ -65,7 +65,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
     const matchSlice = Object.entries(sliceKey).every(([k, v]) => String(e[k]) === v)
     if (!matchSlice) continue
     const key = `${e[rowFactor]}\x1F${e[colFactor]}`
-    lookup.set(key, typeof e.value === "number" ? e.value : parseFloat(String(e.value ?? "1")))
+    lookup.set(key, storedNumber(e.value) ?? NaN)
   }
 
   const valueFor = (row: string, col: string) => lookup.get(`${row}\x1F${col}`) ?? safeDefault
@@ -233,8 +233,8 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
                         borderRight: '1px solid var(--border)',
                       }}
                     >
-                      <ControlledNumberCell
-                        val={val}
+                      <NumberCell
+                        value={val}
                         onCommit={(v) => updateCell(row, col, v)}
                         onPaste={(e) => handlePaste(e, ri, ci)}
                         aria-label={`Relativity for ${rowFactor} ${row} and ${colFactor} ${col}`}

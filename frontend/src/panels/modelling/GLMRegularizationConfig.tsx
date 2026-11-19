@@ -140,7 +140,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                     value={numberOrUndefined(config.cv_folds)}
                     min={GLM_CV_FOLDS_RANGE[0]}
                     max={GLM_CV_FOLDS_RANGE[1]}
-                    step={1}
                     integer
                     required
                     className={INPUT_CLASS}
@@ -171,7 +170,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   value={numberOrUndefined(config.alpha)}
                   min={0}
                   exclusiveMin
-                  step="any"
                   integer={false}
                   required
                   className={INPUT_CLASS}
@@ -188,7 +186,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   id={`${solverId}-l1-ratio`}
                   type="range" min={0} max={1} step={0.05}
                   value={l1Ratio}
-                  onChange={(e) => onUpdate("l1_ratio", parseFloat(e.target.value))}
+                  onChange={(e) => onUpdate("l1_ratio", e.currentTarget.valueAsNumber)}
                   className="w-full mt-1.5"
                 />
                 <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
@@ -222,7 +220,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   value={numberOrUndefined(config.max_iter)}
                   min={GLM_MAX_ITER_RANGE[0]}
                   max={GLM_MAX_ITER_RANGE[1]}
-                  step={1}
                   integer
                   placeholder="Default"
                   className={INPUT_CLASS}
@@ -239,7 +236,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                   max={1}
                   exclusiveMin
                   exclusiveMax
-                  step="any"
                   integer={false}
                   placeholder="Default"
                   className={INPUT_CLASS}

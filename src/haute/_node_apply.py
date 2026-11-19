@@ -48,16 +48,19 @@ _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
 def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
     """The one-row frame a Constant node's ``values`` describe.
 
-    Each named value becomes a column, as a number when it reads as one and as
-    the raw value otherwise; an entry without a name is skipped, and a node
+    Each named value becomes a column of the type its settings file holds it as
+    (``constant_held``): canonical decimal text a whole number or a float, a
+    boolean a boolean, any other text text; a value that is not finite is
+    refused, naming the constant. An entry without a name is skipped, and a node
     with no named values yields the single column ``constant``. A name that is
     not text, and two entries with one name, are refused rather than the frame
     failing to build or the later value replacing the earlier.
     """
+    from haute._constant_config import constant_held
     from haute.errors import NodeConfigError
 
     data: dict[str, list[Any]] = {}
-    for entry in values:
+    for index, entry in enumerate(values):
         name = entry.get("name", "")
         if not isinstance(name, str):
             raise NodeConfigError(
@@ -72,11 +75,7 @@ def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
                 "give each value its own name.",
                 setting="values",
             )
-        value = entry.get("value", "")
-        try:
-            data[name] = [float(value)]
-        except (ValueError, TypeError):
-            data[name] = [value]
+        data[name] = [constant_held(name, entry.get("value", ""), setting=f"values[{index}].value")]
     if not data:
         data = {"constant": [0]}
     return pl.LazyFrame(data)

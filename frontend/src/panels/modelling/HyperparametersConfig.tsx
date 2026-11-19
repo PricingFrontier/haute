@@ -169,7 +169,6 @@ export function HyperparametersConfig({
                 max={50}
                 integer
                 required
-                step={1}
                 className={inputClass}
                 onCommit={(value) => updateTuning({ trial_count: value })}
               />
@@ -185,7 +184,6 @@ export function HyperparametersConfig({
                 max={Number.MAX_SAFE_INTEGER}
                 integer
                 required
-                step={1}
                 className={inputClass}
                 onCommit={(value) => updateTuning({ seed: value })}
               />

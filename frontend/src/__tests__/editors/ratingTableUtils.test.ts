@@ -23,9 +23,9 @@ import {
 
 describe("normaliseRatingTables", () => {
   it("returns normalised copies of existing tables when present", () => {
-    const tables = [{ factors: ["age"], output_column: "af", default_value: "1.0", entries: [] }]
+    const tables = [{ factors: ["age"], output_column: "af", default_value: 1.0, entries: [] }]
     const result = normaliseRatingTables({ tables })
-    expect(result).toEqual([{ factors: ["age"], output_column: "af", default_value: "1.0", entries: [] }])
+    expect(result).toEqual([{ factors: ["age"], output_column: "af", default_value: 1.0, entries: [] }])
     expect(result).not.toBe(tables)
     expect(result[0]).not.toBe(tables[0])
   })
@@ -33,10 +33,10 @@ describe("normaliseRatingTables", () => {
   it("preserves output_column and normalises invalid output values to blank", () => {
     const result = normaliseRatingTables({
       tables: [
-        { factors: [], output_column: "age_factor", default_value: "1.0", entries: [] },
-        { factors: [], output_column: "   ", default_value: "1.0", entries: [] },
-        { factors: [], default_value: "1.0", entries: [] },
-        { factors: [], output_column: 42, default_value: "1.0", entries: [] },
+        { factors: [], output_column: "age_factor", default_value: 1.0, entries: [] },
+        { factors: [], output_column: "   ", default_value: 1.0, entries: [] },
+        { factors: [], default_value: 1.0, entries: [] },
+        { factors: [], output_column: 42, default_value: 1.0, entries: [] },
       ],
     })
 
@@ -118,7 +118,7 @@ describe("normaliseRatingTables", () => {
       {
         factors: ["age", "region"],
         output_column: "risk_factor",
-        default_value: "1.25",
+        default_value: 1.25,
         entries: [{ age: "young", value: 1.1 }],
       },
       {
@@ -153,7 +153,7 @@ describe("normaliseRatingTables", () => {
     const tables = [{
       factors: ["age", "region"],
       output_column: "rating",
-      default_value: "1.0",
+      default_value: 1.0,
       entries: [{ age: "young", region: "north", value: 1.1 }],
       factor_dtypes: {
         age: { kind: "Enum", categories: ["young", "old"] },
@@ -244,7 +244,7 @@ describe("ratingTableStatus", () => {
     const tables = [{
       factors: ["age_band"],
       output_column: "age_factor",
-      default_value: "1.0",
+      default_value: 1.0,
       entries: [{ age_band: "young", value: 1.1 }],
     }]
 
@@ -258,7 +258,7 @@ describe("ratingTableStatus", () => {
     const tables = [{
       factors: [],
       output_column: " ",
-      default_value: "1.0",
+      default_value: 1.0,
       entries: [],
     }]
 
@@ -277,13 +277,13 @@ describe("ratingTableStatus", () => {
       {
         factors: ["region"],
         output_column: "region_factor",
-        default_value: "1.0",
+        default_value: 1.0,
         entries: [{ region: "north", value: 1.0 }],
       },
       {
         factors: ["region"],
         output_column: "region_factor",
-        default_value: "1.0",
+        default_value: 1.0,
         entries: [{ region: "south", value: 1.0 }],
       },
     ]
@@ -451,14 +451,14 @@ describe("buildCartesianEntries", () => {
   })
 
   it("builds 1-way cartesian product", () => {
-    const result = buildCartesianEntries(["age_band"], bandingLevels, [], "1.0")
+    const result = buildCartesianEntries(["age_band"], bandingLevels, [], 1.0)
     expect(result).toHaveLength(3)
     expect(result.map(e => e.age_band)).toEqual(["young", "mid", "old"])
     expect(result.every(e => e.value === 1.0)).toBe(true)
   })
 
   it("builds 2-way cartesian product", () => {
-    const result = buildCartesianEntries(["age_band", "region"], bandingLevels, [], "1.0")
+    const result = buildCartesianEntries(["age_band", "region"], bandingLevels, [], 1.0)
     expect(result).toHaveLength(6) // 3 * 2
     // Check all combinations exist
     const combos = result.map(e => `${e.age_band}|${e.region}`)
@@ -468,7 +468,7 @@ describe("buildCartesianEntries", () => {
 
   it("preserves existing values", () => {
     const existing = [{ age_band: "young", value: 1.5 }]
-    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, "1.0")
+    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, 1.0)
     const youngEntry = result.find(e => e.age_band === "young")
     expect(youngEntry?.value).toBe(1.5)
     // Other entries get default
@@ -482,30 +482,32 @@ describe("buildCartesianEntries", () => {
   })
 
   it("uses 1.0 as default when defaultValue is empty string", () => {
-    const result = buildCartesianEntries(["age_band"], bandingLevels, [], "")
+    const result = buildCartesianEntries(["age_band"], bandingLevels, [], null)
     expect(result.every(e => e.value === 1.0)).toBe(true)
   })
 
   it("parses defaultValue as number", () => {
-    const result = buildCartesianEntries(["age_band"], bandingLevels, [], "2.5")
+    const result = buildCartesianEntries(["age_band"], bandingLevels, [], 2.5)
     expect(result.every(e => e.value === 2.5)).toBe(true)
   })
 
   it("preserves string existing values as numbers", () => {
     const existing = [{ age_band: "young", value: "1.3" }]
-    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, "1.0")
+    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, 1.0)
     const youngEntry = result.find(e => e.age_band === "young")
     expect(youngEntry?.value).toBe(1.3)
   })
 
-  it("ignores blank, null, and invalid existing values and invalid defaults", () => {
+  it("ignores blank, null, and invalid existing values", () => {
     const existing = [
       { age_band: "young", value: "" },
       { age_band: "mid", value: null as unknown as string },
       { age_band: "old", value: "not numeric" },
+      // Two numbers, never guessed: not a relativity.
+      { age_band: "older", value: "1,5" },
     ]
 
-    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, "not numeric")
+    const result = buildCartesianEntries(["age_band"], bandingLevels, existing, null)
 
     expect(result).toEqual([
       { age_band: "young", value: 1.0 },
@@ -516,7 +518,7 @@ describe("buildCartesianEntries", () => {
 
   it("handles 3-way product", () => {
     const levels3 = { ...bandingLevels, size: ["small", "large"] }
-    const result = buildCartesianEntries(["age_band", "region", "size"], levels3, [], "1.0")
+    const result = buildCartesianEntries(["age_band", "region", "size"], levels3, [], 1.0)
     expect(result).toHaveLength(12) // 3 * 2 * 2
   })
 
@@ -525,7 +527,7 @@ describe("buildCartesianEntries", () => {
       { age_band: "young", region: "north", value: 2.0 },
       { age_band: "old", region: "south", value: 3.0 },
     ]
-    const result = buildCartesianEntries(["age_band", "region"], bandingLevels, existing, "1.0")
+    const result = buildCartesianEntries(["age_band", "region"], bandingLevels, existing, 1.0)
     expect(result).toHaveLength(6)
     const youngNorth = result.find(e => e.age_band === "young" && e.region === "north")
     expect(youngNorth?.value).toBe(2.0)
@@ -599,7 +601,7 @@ describe("extractTableEntryFactorLevels", () => {
       {
         factors: ["channel"],
         output_column: "channel_factor",
-        default_value: "1.0",
+        default_value: 1.0,
         entries: [
           { channel: "direct", value: 1.0 },
           { channel: "broker", value: 1.1 },
@@ -616,7 +618,7 @@ describe("extractTableEntryFactorLevels", () => {
       {
         factors: ["channel", "segment"],
         output_column: "factor",
-        default_value: "1.0",
+        default_value: 1.0,
         entries: [
           { channel: "direct", segment: "retail", value: 1.0 },
           { channel: "broker", segment: "fleet", value: 1.1 },
@@ -634,7 +636,7 @@ describe("extractTableEntryFactorLevels", () => {
       {
         factors: ["channel"],
         output_column: "channel_factor",
-        default_value: "1.0",
+        default_value: 1.0,
         entries: [
           { channel: null as unknown as string, value: 1.0 },
           { channel: undefined as unknown as string, value: 1.1 },
@@ -651,7 +653,7 @@ describe("extractTableEntryFactorLevels", () => {
       {
         factors: ["channel"],
         output_column: "channel_factor",
-        default_value: "1.0",
+        default_value: 1.0,
         entries: [],
       },
     ])).toEqual({})

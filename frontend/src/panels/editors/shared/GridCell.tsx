@@ -1,6 +1,11 @@
-import type { InputHTMLAttributes } from "react"
+import { useId, type InputHTMLAttributes } from "react"
 import { DraftTextField } from "../../../components/form/CommittedTextField"
 import { useCommittedDraft } from "../../../components/form/useCommittedDraft"
+import { CellIssueMark } from "./CellIssueMark"
+import { cellIssueStyle } from "./cellIssueStyle"
+
+/** What a cell's typed text reads as: the text to store, or why it is refused. */
+export type CellRead = { ok: true; value: string } | { ok: false; problem: string }
 
 type GridCellProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "onKeyDown"> & {
   /** The cell's stored text. */
@@ -14,21 +19,46 @@ type GridCellProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onCh
    * added in the same update), so the cell commits nothing more.
    */
   onEnter?: (shown: string) => boolean
+  /**
+   * How the typed text is read before it is stored (a number box's: by the one grammar for a
+   * typed number); text it refuses stays in the cell, marked with its reason, uncommitted.
+   */
+  read?: (text: string) => CellRead
 }
 
 /** A grid's text cell: its edit is one undo step, and an Undo that moves the row is what it shows. */
-export function GridCell({ value, row, onCommit, onEnter, ...rest }: GridCellProps) {
-  const draft = useCommittedDraft(value, onCommit, { owner: row })
+export function GridCell({ value, row, onCommit, onEnter, read, ...rest }: GridCellProps) {
+  const draft = useCommittedDraft(
+    value,
+    (next) => {
+      if (read === undefined) return onCommit(next)
+      const typed = read(next)
+      if (!typed.ok) return { ok: false }
+      if (typed.value !== value) onCommit(typed.value)
+    },
+    { owner: row },
+  )
+  const typed = read !== undefined && draft.editing ? read(draft.shown) : null
+  const problem = typed !== null && !typed.ok ? typed.problem : null
+  const problemId = useId()
   return (
-    <DraftTextField
-      {...rest}
-      draft={draft}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && onEnter?.(draft.shown)) {
-          e.preventDefault()
-          draft.discard()
-        }
-      }}
-    />
+    <>
+      <DraftTextField
+        {...rest}
+        draft={draft}
+        aria-invalid={problem !== null ? true : rest["aria-invalid"]}
+        aria-describedby={problem !== null ? problemId : rest["aria-describedby"]}
+        title={problem ?? rest.title}
+        className={problem !== null && !(rest.className ?? "").includes("pr-5") ? `${rest.className ?? ""} pr-5` : rest.className}
+        style={problem !== null ? cellIssueStyle(rest.style ?? {}, "error") : rest.style}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && onEnter?.(draft.shown)) {
+            e.preventDefault()
+            draft.discard()
+          }
+        }}
+      />
+      {problem !== null && <CellIssueMark id={problemId} message={problem} severity="error" />}
+    </>
   )
 }

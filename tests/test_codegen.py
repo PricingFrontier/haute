@@ -3325,13 +3325,13 @@ class TestGenConstantEdgeCases:
             _run_saved_node(node, tmp_path)
         assert raised.value.setting == "values"
 
-    def test_nan_handling(self, tmp_path: Path):
+    def test_nan_is_refused_naming_the_constant(self, tmp_path: Path):
+        # EXE-02: a value no column can hold is refused before the node runs, never a NaN in
+        # every row the constant joins.
         node = _constant("NanConst", [{"name": "x", "value": "nan"}])
-        code = _node_to_code(node)
-        assert "nan" not in code
-        _compile_node_code(code)
-        frame = _run_saved_node(node, tmp_path).collect()
-        assert frame["x"].is_nan().to_list() == [True]
+        with pytest.raises(NodeConfigError, match="Constant 'x' has the value 'nan'") as raised:
+            _run_saved_node(node, tmp_path)
+        assert raised.value.setting == "values[0].value"
 
     def test_numeric_values(self, tmp_path: Path):
         node = _constant(

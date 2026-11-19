@@ -3,8 +3,7 @@ import { useCallback, useEffect, useRef } from "react"
 import { Loader2, RefreshCw, X } from "lucide-react"
 import type { PreparedGraph } from "../../api/types"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
-import { CommittedTextField } from "../../components/form"
-import { safeParseInt } from "../../utils/configField"
+import { NumberField } from "../../components/form"
 import { withAlpha } from "../../utils/color"
 import type { OnUpdateConfig } from "../editors/_shared"
 import { useOptimiserAutoRange, type FrontierRange } from "./useOptimiserAutoRange"
@@ -49,13 +48,6 @@ const BOUND_MODES = [
   { swept: false, label: "Fixed" },
   { swept: true, label: "Sweep" },
 ] as const
-
-function parseOptionalNumber(raw: string): number | undefined {
-  const trimmed = raw.trim()
-  if (trimmed === "") return undefined
-  const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
 
 /**
  * The Constraints pane's cards and frontier settings. Each card reads as a
@@ -180,12 +172,11 @@ export default function OptimiserConstraintSettings({
           const boundKind = constraintBoundKind(spec)
           const storedValue = boundKind === null ? undefined : constraintBoundValue(spec, boundKind)
           const percent = boundKind !== null && isPercentBound(boundKind)
+          // A bound is typed as the analyst reads it, a percentage for a pct bound.
           const shown = (stored: number | undefined) =>
-            stored === undefined || boundKind === null ? "" : String(boundToDisplay(boundKind, stored))
-          const stored = (raw: string) => {
-            const parsed = parseOptionalNumber(raw)
-            return parsed === undefined || boundKind === null ? undefined : boundFromDisplay(boundKind, parsed)
-          }
+            stored === undefined || boundKind === null ? null : boundToDisplay(boundKind, stored)
+          const stored = (typed: number | null) =>
+            typed === null || boundKind === null ? undefined : boundFromDisplay(boundKind, typed)
           const unit = percent
             ? <span aria-hidden="true" style={{ color: "var(--text-muted)" }}>%</span>
             : null
@@ -287,29 +278,27 @@ export default function OptimiserConstraintSettings({
                   {isSwept ? (
                     <div className={`grid ${percent ? "grid-cols-[2rem_minmax(0,1fr)_auto]" : "grid-cols-[2rem_minmax(0,1fr)]"} items-center gap-x-1.5 gap-y-1 text-[11px]`}>
                       <span style={{ color: "var(--text-muted)" }}>from</span>
-                      <CommittedTextField
-                        type="number"
-                        step="any"
+                      <NumberField
                         value={shown(range.min)}
                         aria-label={`${name} sweep from${percent ? " (% of baseline)" : ""}`}
                         aria-invalid={minMissing || undefined}
                         placeholder="Required"
-                        onCommit={(raw) => handleFrontierRangeChange(name, "min", stored(raw))}
+                        onCommit={(typed) => handleFrontierRangeChange(name, "min", stored(typed))}
                         className={valueClass}
                         style={rangeInputStyle(minMissing)}
+                        problemClassName="col-span-full text-[10px]"
                       />
                       {unit}
                       <span style={{ color: "var(--text-muted)" }}>to</span>
-                      <CommittedTextField
-                        type="number"
-                        step="any"
+                      <NumberField
                         value={shown(range.max)}
                         aria-label={`${name} sweep to${percent ? " (% of baseline)" : ""}`}
                         aria-invalid={maxMissing || undefined}
                         placeholder="Required"
-                        onCommit={(raw) => handleFrontierRangeChange(name, "max", stored(raw))}
+                        onCommit={(typed) => handleFrontierRangeChange(name, "max", stored(typed))}
                         className={valueClass}
                         style={rangeInputStyle(maxMissing)}
+                        problemClassName="col-span-full text-[10px]"
                       />
                       {unit}
                       <div className="col-start-2 flex items-center justify-end gap-1.5">
@@ -341,21 +330,20 @@ export default function OptimiserConstraintSettings({
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <CommittedTextField
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <NumberField
                         aria-label={`${name} constraint value${percent ? " (% of baseline)" : ""}`}
-                        type="number"
-                        step="any"
                         value={shown(storedValue)}
                         disabled={boundKind === null}
-                        onCommit={(raw) => {
-                          // A cleared or unreadable bound keeps its stored value:
-                          // committing 0 would silently relax the constraint.
-                          const value = stored(raw)
+                        // A cleared bound is refused: committing 0 would silently relax the constraint.
+                        required
+                        onCommit={(typed) => {
+                          const value = stored(typed)
                           if (value !== undefined && boundKind !== null) onConstraintValueChange(name, boundKind, value)
                         }}
                         className={valueClass}
                         style={inputStyle}
+                        problemClassName="basis-full text-[10px]"
                       />
                       {unit}
                     </div>
@@ -389,15 +377,16 @@ export default function OptimiserConstraintSettings({
             <label className="text-[11px]" style={{ color: "var(--text-muted)" }} htmlFor={`${nodeId}-frontier-steps`}>
               Points per swept constraint
             </label>
-            <CommittedTextField
+            <NumberField
               id={`${nodeId}-frontier-steps`}
-              type="number"
+              integer
               min={2}
-              step={1}
-              value={String(frontierSteps)}
-              onCommit={(value) => onUpdate("frontier_steps", safeParseInt(value, 15))}
+              required
+              value={frontierSteps}
+              onCommit={(value) => { if (value !== null) onUpdate("frontier_steps", value) }}
               className="w-full mt-0.5 px-2 py-1 rounded text-xs font-mono"
               style={inputStyle}
+              problemClassName="mt-0.5 block text-[10px]"
             />
           </div>
         </section>

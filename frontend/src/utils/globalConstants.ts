@@ -10,6 +10,7 @@
  * all validate.
  */
 import { isDay } from "./isoDate"
+import { DECIMAL_COMMA, readTypedNumber, readTypedWhole } from "./typedNumbers"
 
 export const GLOBAL_CONSTANT_TYPES = ["integer", "float", "text", "boolean", "date"] as const
 export type GlobalConstantType = (typeof GLOBAL_CONSTANT_TYPES)[number]
@@ -51,20 +52,22 @@ export const PYTHON_KEYWORDS: ReadonlySet<string> = new Set([
   "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
   "try", "while", "with", "yield",
 ])
-const INTEGER_PATTERN = /^[+-]?\d+$/
-const FLOAT_PATTERN = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
 
 /** Why *text* is not a value of *type*, or null when it is. */
 export function valueProblem(type: GlobalConstantType, text: string): string | null {
   switch (type) {
-    case "integer":
-      if (!INTEGER_PATTERN.test(text.trim())) return "Enter a whole number."
+    case "integer": {
+      // Read by the one grammar for a typed number (specs/frontend-shared, "Typed numbers").
+      const whole = readTypedWhole(text)
+      if (whole === null) return readTypedNumber(text) === null && text.includes(",") ? DECIMAL_COMMA : "Enter a whole number."
       // The backend refuses what a JavaScript number cannot hold exactly.
-      return Number.isSafeInteger(Number(text.trim()))
+      return Number.isSafeInteger(Number(whole))
         ? null
         : `Enter a whole number between -${Number.MAX_SAFE_INTEGER} and ${Number.MAX_SAFE_INTEGER}.`
+    }
     case "float":
-      return FLOAT_PATTERN.test(text.trim()) && Number.isFinite(Number(text)) ? null : "Enter a number."
+      if (readTypedNumber(text) !== null) return null
+      return text.includes(",") ? DECIMAL_COMMA : "Enter a number."
     case "boolean":
       return text === "true" || text === "false" ? null : "Choose true or false."
     case "date":
@@ -87,9 +90,9 @@ export function nameProblem(name: string): string | null {
 function parsedValue(type: GlobalConstantType, text: string): GlobalConstantValue {
   switch (type) {
     case "integer":
-      return Number.parseInt(text.trim(), 10)
+      return Number(readTypedWhole(text))
     case "float":
-      return Number(text.trim())
+      return readTypedNumber(text) as number
     case "boolean":
       return text === "true"
     default:

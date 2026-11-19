@@ -334,6 +334,67 @@ unknown, and its answer is dropped or settled. A component's requests are let go
 unmounts, and an effect's when it runs again. No code writes state after waiting for the
 server any other way: a scan of the browser source fails for any function that does.
 
+**Typed numbers.** Text typed as a number is read by one grammar, the same in every field, in
+every browser language and on the server. A number is, once the typed spaces are trimmed from
+either end: an optional sign and an optional currency sign (`$`, `£` or `€`, either side of the
+sign, spaces allowed after it); digits, either ungrouped or grouped in threes from a first group
+of one to three digits that does not start with 0, all groups separated by commas or all by
+spaces (a space, a no-break space, a thin space or a narrow no-break space); an optional point
+and fraction digits, or a point and fraction digits alone; an optional exponent (`e` or `E`, a
+sign, digits); and the value finite. The point is the only decimal mark. Text that could be two
+numbers is refused and never guessed: `1,5` (one and a half, or fifteen), `1,00`, `12,34,567`,
+`1 000,50` and `0,500` are not numbers, while `1,000`, `1,234.5`, `£ 1 000` and `0123` are. So
+are `1E5` and `.5`; `1_000`, `0x10`, `nan` and `Infinity` are not. The typed spaces are one
+named list, kept by both languages and the case file (`TYPED_SPACES`): tab, line feed, line
+tabulation, form feed, carriage return, space, no-break space, Ogham space mark, the spaces
+U+2000 to U+200A, line and paragraph separators, narrow no-break space, medium mathematical
+space, ideographic space and the byte-order mark. Whether a value counts as typed at all is the
+same list's: text holding only those characters is empty.
+
+The grammar is read in two named ways, because they answer two questions. A field declared
+numeric (a relativity, a boundary, a bound, a share, a count, a Decimal or an Integer column
+of the workbench, a params file's number) reads text as a number or refuses it; a whole-number
+field reads a whole number exactly however large, and refuses a fraction. A Constant's value,
+which has no declared type, is a number only when it is canonical finite decimal text, the
+text a number is written as: digits with an optional `-`, no leading zero and not `-0`, which
+stay a whole number (refused outside a 64-bit integer's range), or digits, a point and digits
+that are the float's shortest digits written without an exponent (`2.5`, `0.00001`, `5.0`; not
+`2.50`), which stay a float; a whole number or a float given as such (from the settings file)
+is the same; a boolean stays a boolean; `nan`, `inf` and `infinity`,
+with any sign or letter case, and a non-finite float are refused, naming the constant; anything
+else, `0123`, `1E5`, `1.50` and `True` among them, stays text. Both readings are held to one
+case file (`frontend/src/utils/__tests__/fixtures/typedText.json`), each case's text with its
+type and value or its refusal under each way, which the browser's reader
+(`frontend/src/utils/typedNumbers.ts`, the Constant's reading in `constantValues.ts`) and the
+server's (`src/haute/_typed_numbers.py`) are both tested against.
+
+Every box of the editor and the Workbench that edits a stored number is the one shared field,
+`NumberField` (`components/form/NumberField.tsx`), or, in a grid, a cell drawn on its draft
+(`useNumberDraft`: the Rating tables' relativities): it shows the stored number, reads what is
+typed by the grammar on blur or Enter under the field's rule (a whole number, a least and a
+greatest, whether it may be blank), commits the number, and refuses anything else in words,
+keeping the draft on screen (a decimal comma: "Use a point for decimals."; otherwise what to
+enter, "Enter a whole number from 1 to 12."). A stored number its rule refuses (from a settings
+file) is marked without any typing. It is a text field, never the browser's own number input,
+which reads and drops characters by the browser's language. A value the field stores is
+stored as a number, not as its text: a Rating Step's Default and a combined output's Base
+Value among them. A box whose value may be a number or something else reads its text by the
+same grammar: a Banding boundary is a date on a date factor and otherwise a number, stored as
+the number's own text; a Constant's value is read the Constant way, refusing what no column
+can hold; a Global Constant's value is read by its declared type; a dialog's own form (the
+Generate bands dialog, the Insert rows box) reads its text by the grammar when it is used.
+No other code on either side reads typed text with the language's own number parsing
+(`Number`, `parseFloat`, `parseInt` and unary `+` in the browser; `float`, `int` and `Decimal`
+in Python): a scan of the browser's sources by their types
+(`frontend/src/components/form/__tests__/typedNumbersByHand.test.ts`, which also refuses an
+element of `type="number"`) and a mypy plugin over the server's
+(`scripts/mypy_typed_numbers.py`, loaded by `[tool.mypy] plugins`) fail for any such call on
+text that is not on a list of named exceptions, each one call with its reason, so another
+conversion beside an excepted one is still refused (a regular expression's
+matched digits, a select's own option value, an environment variable, an answer's field). The
+plugin sees text by its declared type; a setting the server receives as `Any` is read through
+`setting_number`, the grammar for a value a settings file holds as a JSON number or as text.
+
 **Pipeline imports.** The Utility pane's file list starts with a fixed `Imports` entry, which
 edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl` and
 `import haute` are always included, has no delete button and never goes through the utility

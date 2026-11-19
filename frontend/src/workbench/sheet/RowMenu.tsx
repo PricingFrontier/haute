@@ -3,6 +3,7 @@ import { ChevronRight, Plus, Trash2 } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 import { createPortal } from "react-dom"
 import { ModalFormActions, ModalFormHeader, ModalTextInput } from "../../components/ModalForm"
+import { readNumberDraft } from "../../utils/numberRule"
 import ModalShell from "../../components/ModalShell"
 import { typeHere } from "./fieldCells"
 
@@ -248,7 +249,9 @@ export function RowMenu({
 function CountBox({ title, label, onInsert, onCancel }: { title: string; label: string; onInsert: (count: number) => void; onCancel: () => void }) {
   const [text, setText] = useState("")
   const input = useRef<HTMLInputElement>(null)
-  const count = /^\d+$/.test(text) ? Number(text) : 0
+  // Read by the one grammar for a typed number: a whole number from 1, else nothing to insert.
+  const typed = readNumberDraft(text, { integer: true, min: 1, required: true })
+  const count = typed.ok && typed.value !== null ? typed.value : 0
   // After the dialog's own focus, which goes to its frame.
   useEffect(() => {
     input.current?.focus()
@@ -266,7 +269,7 @@ function CountBox({ title, label, onInsert, onCancel }: { title: string; label: 
         >
           <label className="flex flex-col gap-1 text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
             {label}
-            <ModalTextInput ref={input} type="number" min={1} step={1} value={text} onChange={(event) => setText(event.target.value)} />
+            <ModalTextInput ref={input} type="text" inputMode="numeric" value={text} onChange={(event) => setText(event.target.value)} />
           </label>
           <ModalFormActions onCancel={onCancel} submitLabel="Insert" busyLabel="Inserting…" busy={false} disabled={count < 1} submitTestId="row-count-insert" />
         </form>

@@ -172,7 +172,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-node-clarity",
     "rating",
     "root-cause-store-check",
-    "root-cause-typed-numbers",
     "sandbox-security",
     "server-api",
     "tracing",

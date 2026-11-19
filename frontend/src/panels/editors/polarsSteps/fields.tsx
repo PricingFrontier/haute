@@ -41,6 +41,7 @@ import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, NUMBER_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal, numberTypeOf } from "./catalogue"
 import { castFamily, decimalScale } from "../../../utils/polarsDtypes"
+import { readNumberDraft } from "../../../utils/numberRule"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
@@ -278,13 +279,10 @@ export function NumberField({
   /** Told why a commit was refused, or null once one is taken. */
   onRefused?: (reason: string | null) => void
 }) {
+  // Read by the one grammar for a typed number (specs/frontend-shared, "Typed numbers").
   const read = (text: string): number | { refusal: string } => {
-    const parsed = text.trim() === "" ? Number.NaN : Number(text)
-    if (!Number.isFinite(parsed)) return { refusal: "Enter a finite number." }
-    if (integer && !Number.isInteger(parsed)) return { refusal: "Enter a whole number." }
-    if (min !== undefined && parsed < min) return { refusal: `Enter a value of at least ${min}.` }
-    if (max !== undefined && parsed > max) return { refusal: `Enter a value of at most ${max}.` }
-    return parsed
+    const typed = readNumberDraft(text, { integer, min, max, required: true })
+    return typed.ok ? (typed.value as number) : { refusal: typed.problem }
   }
   // Why the open draft's last commit, from leaving the box or from a save, was refused.
   const [refusal, setRefusal] = useState<string | null>(null)
@@ -323,11 +321,8 @@ export function NumberField({
           },
         }}
         id={id}
-        type="number"
+        type="text"
         inputMode={integer ? "numeric" : "decimal"}
-        step={integer ? 1 : "any"}
-        min={min}
-        max={max}
         aria-label={ariaLabel}
         aria-invalid={error !== null ? true : undefined}
         aria-describedby={error === null ? undefined : errorId}

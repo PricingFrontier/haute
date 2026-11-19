@@ -263,12 +263,12 @@ export function EncodingControls({
       </Field>
       {fixed && (
         <Field label="Weight">
-          <NumberField label={`${label} prior weight`} value={priorWeight} min={0} step={0.5} integer={false} required onCommit={(value) => onChangeField("prior_weight", value)} />
+          <NumberField label={`${label} prior weight`} value={priorWeight} min={0} integer={false} required onCommit={(value) => onChangeField("prior_weight", value)} />
         </Field>
       )}
       <AdvancedDisclosure>
         <Field label="Permutations">
-          <NumberField label={`${label} n permutations`} value={spec.n_permutations as number | undefined} min={1} max={MAX_PERMUTATIONS} step={1} integer placeholder="4" onCommit={(value) => onChangeField("n_permutations", value)} />
+          <NumberField label={`${label} n permutations`} value={spec.n_permutations as number | undefined} min={1} max={MAX_PERMUTATIONS} integer placeholder="4" onCommit={(value) => onChangeField("n_permutations", value)} />
         </Field>
       </AdvancedDisclosure>
     </div>
@@ -301,18 +301,18 @@ function SplineFields({
         <div className={FIELD_CLASS}><span>df</span><span className="flex h-7 items-center text-xs" style={{ color: "var(--text-muted)" }}>Custom knots</span></div>
       ) : (
         <Field label="df">
-          <NumberField label={`${label} df`} value={spec.df as number | undefined} min={minimum} max={SPLINE_LIMITS.maxBasis} step={1} integer required onCommit={(value) => onChangeField("df", value)} />
+          <NumberField label={`${label} df`} value={spec.df as number | undefined} min={minimum} max={SPLINE_LIMITS.maxBasis} integer required onCommit={(value) => onChangeField("df", value)} />
         </Field>
       ))}
       {hasDegree && (
         <Field label="Degree">
-          <NumberField label={`${label} degree`} value={spec.degree as number | undefined} min={SPLINE_LIMITS.minDegree} max={SPLINE_LIMITS.maxDegree} step={1} integer placeholder={String(SPLINE_LIMITS.defaultDegree)} onCommit={(value) => onChangeField("degree", value)} />
+          <NumberField label={`${label} degree`} value={spec.degree as number | undefined} min={SPLINE_LIMITS.minDegree} max={SPLINE_LIMITS.maxDegree} integer placeholder={String(SPLINE_LIMITS.defaultDegree)} onCommit={(value) => onChangeField("degree", value)} />
         </Field>
       )}
       <AdvancedDisclosure>
         {mode === "auto" ? (
           <Field label="Basis size (k)">
-            <NumberField label={`${label} k`} value={spec.k as number | undefined} min={minimum} max={SPLINE_LIMITS.maxBasis} step={1} integer placeholder="10" onCommit={(value) => onChangeField("k", value)} />
+            <NumberField label={`${label} k`} value={spec.k as number | undefined} min={minimum} max={SPLINE_LIMITS.maxBasis} integer placeholder="10" onCommit={(value) => onChangeField("k", value)} />
           </Field>
         ) : (
           <JsonArrayField label="Interior knots" inputLabel={`${label} knots`} value={spec.knots} placeholder="[1, 2, 3]" help="Finite, strictly increasing numbers. Replaces df." validate={validateKnots} onChange={(value) => value === undefined ? onChangeSplineMode("fixed") : onChangeField("knots", value)} />

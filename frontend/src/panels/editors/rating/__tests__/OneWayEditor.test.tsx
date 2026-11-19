@@ -7,7 +7,7 @@ function makeTable(overrides: Partial<RatingTable> = {}): RatingTable {
   return {
     factors: ["age_band"],
     output_column: "age_factor",
-    default_value: "1.0",
+    default_value: 1.0,
     entries: [
       { age_band: "young", value: 1.2 },
       { age_band: "mid", value: 1.0 },
@@ -100,7 +100,11 @@ describe("OneWayEditor", () => {
     ]))
   })
 
-  it.each(["1,5", "abc", "1.2.3"])("refuses a typed relativity %j that is not a number, marking the cell", (typed) => {
+  it.each([
+    ["1,5", "Use a point for decimals."],
+    ["abc", "Enter a number."],
+    ["1.2.3", "Enter a number."],
+  ])("refuses a typed relativity %j that is not a number, marking the cell", (typed, reason) => {
     const onUpdateEntries = vi.fn()
     render(
       <OneWayEditor table={makeTable()} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
@@ -112,13 +116,13 @@ describe("OneWayEditor", () => {
     expect(onUpdateEntries).not.toHaveBeenCalled()
     expect(cell).toHaveValue(typed)
     expect(cell).toHaveAttribute("aria-invalid", "true")
-    expect(screen.getByRole("img", { name: "Enter a number, such as 1.25." })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: reason })).toBeInTheDocument()
   })
 
   it("commits a typed number exactly and a cleared cell as the table default", () => {
     const onUpdateEntries = vi.fn()
     render(
-      <OneWayEditor table={makeTable({ default_value: "1.0" })} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
+      <OneWayEditor table={makeTable({ default_value: 1.0 })} bandingLevels={{ age_band: ["young", "mid", "old"] }} onUpdateEntries={onUpdateEntries} />,
     )
     const young = screen.getByLabelText("Relativity for age_band young")
     fireEvent.change(young, { target: { value: " 1.5 " } })

@@ -16,7 +16,7 @@ A Constant has no inputs. Its output is a single-row table with one column per v
 | Field | What it does |
 |---|---|
 | Name (placeholder "name") | The column the value becomes. A row without a name is left out of the output. Two values cannot share a name: a name another row uses is refused ("Another value is named expense_loading"). |
-| Value (placeholder "value") | The value. A value that reads as a number becomes a decimal number (`250` becomes `250.0`); anything else stays text. |
+| Value (placeholder "value") | The value. A number written as numbers are written becomes a number: a whole number stays whole (`250`) and a decimal stays a decimal (`1.15`). Anything else stays text, so a code with a leading zero (`0123`) keeps it, and `1E5`, `1.50` and `True` stay as typed. `nan`, `inf` and a whole number too large for a 64-bit integer are refused ("Enter a finite number, or text."). The value runs as it is saved: what you see in the settings file is what the node outputs. |
 
 - **Add value** adds a row with the value `0`, named with the first free `constant_<n>` (`constant_2`, `constant_3` and so on).
 - The bin at the end of a row (its tooltip reads "Remove") deletes it.

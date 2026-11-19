@@ -647,7 +647,7 @@ class TestRatingStepExecutor:
                 "ratingStep combined_outputs[1].base_value must be numeric",
             ),
             (
-                {"output_column": "premium", "operation": "multiply", "base_value": "inf"},
+                {"output_column": "premium", "operation": "multiply", "base_value": float("inf")},
                 "ratingStep combined_outputs[1].base_value must be finite",
             ),
         ],
@@ -1343,16 +1343,38 @@ def test_validate_rating_value_rejects_non_numeric_string() -> None:
         _validate_rating_value("abc", "ctx")
 
 
-def test_validate_rating_value_rejects_non_finite_numeric_string() -> None:
-    with pytest.raises(ValueError, match="must be finite"):
+def test_validate_rating_value_rejects_a_value_that_is_not_finite() -> None:
+    # Words Python reads as numbers are not numbers by the typed-number grammar.
+    with pytest.raises(ValueError, match="must be numeric"):
         _validate_rating_value("nan", "ctx")
-    with pytest.raises(ValueError, match="must be finite"):
+    with pytest.raises(ValueError, match="must be numeric"):
         _validate_rating_value("inf", "ctx")
+    with pytest.raises(ValueError, match="must be finite"):
+        _validate_rating_value(float("inf"), "ctx")
 
 
 def test_validate_rating_value_coerces_numeric_string() -> None:
     # Numeric strings are accepted (coerced for the finite check) without raising.
     assert _validate_rating_value("2.25", "ctx") is None
+
+
+@pytest.mark.parametrize("text", ["1,5", "1,00", "1 000,50", "1_000"])
+def test_a_relativity_and_a_default_that_could_be_two_numbers_are_refused(text: str) -> None:
+    # RTG-03: the one grammar for a typed number refuses a decimal comma, never guessing.
+    from haute._rating_step_config import rating_default_value
+
+    with pytest.raises(ValueError, match="must be numeric"):
+        _validate_rating_value(text, "ctx")
+    with pytest.raises(ValueError, match="not a finite number"):
+        rating_default_value(text, where="tables[0]")
+
+
+def test_a_relativity_and_a_default_read_thousands_as_the_grammar_does() -> None:
+    from haute._rating_step_config import rating_default_value
+
+    assert _validate_rating_value("1,000.5", "ctx") is None
+    assert rating_default_value("1,000.5", where="tables[0]") == 1000.5
+    assert rating_default_value(1.5, where="tables[0]") == 1.5
 
 
 def test_validate_rating_value_rejects_other_types() -> None:
@@ -1775,3 +1797,40 @@ def test_a_save_refuses_levels_equal_under_the_tables_factor_dtypes() -> None:
 
     as_text = {"tables": [_age_table("25.0", "25.00", dtypes={"age": {"kind": "String"}})]}
     assert _prepare_config_for_sidecar(NodeType.RATING_STEP, as_text, node_label="rate")
+
+
+@pytest.mark.parametrize(
+    ("rate", "priced"), [("1,000.5", 1000.5), ("1 000", 1000.0), (" 2.5 ", 2.5)]
+)
+def test_a_rate_held_as_grouped_text_prices_as_the_number_it_is(rate: str, priced: float) -> None:
+    # The run reads a rate as the config codec validated it: by the one grammar for a typed
+    # number, never by Polars' own cast, which refuses a thousands separator.
+    from haute._config_validation import validate_node_config
+    from haute._rating import apply_rating_step_from_config
+
+    config = {
+        "tables": [
+            {
+                "factors": ["region"],
+                "output_column": "region_factor",
+                "entries": [{"region": "north", "value": rate}],
+            }
+        ]
+    }
+    validate_node_config(NodeType.RATING_STEP, config)
+    out = apply_rating_step_from_config(pl.LazyFrame({"region": ["north"]}), config).collect()
+
+    assert out["region_factor"].to_list() == [priced]
+
+
+def test_a_rate_held_as_text_that_is_not_a_number_is_refused_naming_the_table() -> None:
+    # A raw table the codec has not validated is refused at the lookup, in the grammar's terms.
+    from haute._rating import rating_table_lookup
+
+    table = {
+        "factors": ["region"],
+        "output_column": "region_factor",
+        "entries": [{"region": "north", "value": "1,5"}],
+    }
+    with pytest.raises(ValueError, match="has the rate '1,5', which is not a number"):
+        rating_table_lookup(table, pl.Schema({"region": pl.String}))

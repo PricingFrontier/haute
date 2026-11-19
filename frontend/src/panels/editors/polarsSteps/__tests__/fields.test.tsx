@@ -143,7 +143,7 @@ describe("number fields", () => {
   it("validates the whole value before committing and recovers after a valid edit", () => {
     const onCommit = vi.fn()
     const { rerender } = render(<NumberField value={2} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
-    const input = screen.getByRole("spinbutton", { name: "Count" })
+    const input = screen.getByRole("textbox", { name: "Count" })
     const reject = (value: string) => {
       fireEvent.change(input, { target: { value } })
       fireEvent.blur(input)
@@ -169,7 +169,7 @@ describe("number fields", () => {
   it("accepts decimals when the field is not an integer", () => {
     const onCommit = vi.fn()
     render(<NumberField value={2} onCommit={onCommit} ariaLabel="Rate" />)
-    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    const input = screen.getByRole("textbox", { name: "Rate" })
     fireEvent.change(input, { target: { value: "1.5" } })
     fireEvent.blur(input)
     expect(onCommit).toHaveBeenCalledWith(1.5)
@@ -178,7 +178,7 @@ describe("number fields", () => {
   it("writes nothing while typing and once on commit", () => {
     const onCommit = vi.fn()
     render(<NumberField value={2} onCommit={onCommit} ariaLabel="Rate" />)
-    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    const input = screen.getByRole("textbox", { name: "Rate" })
     fireEvent.change(input, { target: { value: "4" } })
     fireEvent.change(input, { target: { value: "45" } })
     expect(onCommit).not.toHaveBeenCalled()
@@ -191,10 +191,10 @@ describe("number fields", () => {
   it("shows the stored number when it moves under an open draft", () => {
     const onCommit = vi.fn()
     const { rerender } = render(<NumberField value={2} onCommit={onCommit} ariaLabel="Rate" />)
-    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    const input = screen.getByRole("textbox", { name: "Rate" })
     fireEvent.change(input, { target: { value: "7" } })
     rerender(<NumberField value={5} onCommit={onCommit} ariaLabel="Rate" />)
-    expect(input).toHaveValue(5)
+    expect(input).toHaveValue("5")
     fireEvent.blur(input)
     expect(onCommit).not.toHaveBeenCalled()
   })
@@ -202,16 +202,16 @@ describe("number fields", () => {
   it("keeps a refused number in the box with its reason until the stored number moves", () => {
     const onCommit = vi.fn()
     const { rerender } = render(<NumberField value={2} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
-    const input = screen.getByRole("spinbutton", { name: "Count" })
+    const input = screen.getByRole("textbox", { name: "Count" })
     fireEvent.change(input, { target: { value: "1.5" } })
     fireEvent.blur(input)
-    expect(input).toHaveValue(1.5)
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number.")
+    expect(input).toHaveValue("1.5")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number, 1 or more.")
     // The reason stays while the value is being fixed, until the next commit.
     fireEvent.change(input, { target: { value: "1.25" } })
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a whole number, 1 or more.")
     rerender(<NumberField value={3} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
-    expect(input).toHaveValue(3)
+    expect(input).toHaveValue("3")
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     // A new draft starts without the old reason.
     fireEvent.change(input, { target: { value: "4" } })
@@ -222,7 +222,7 @@ describe("number fields", () => {
   it("a save commits an open number once, and a refused one keeps its value and reason", () => {
     const onCommit = vi.fn()
     render(<NumberField value={2} min={1} onCommit={onCommit} ariaLabel="Rate" />)
-    const input = screen.getByRole("spinbutton", { name: "Rate" })
+    const input = screen.getByRole("textbox", { name: "Rate" })
     fireEvent.change(input, { target: { value: "6" } })
     act(() => commitOpenDrafts())
     act(() => commitOpenDrafts())
@@ -231,8 +231,8 @@ describe("number fields", () => {
     fireEvent.change(input, { target: { value: "0" } })
     act(() => commitOpenDrafts())
     expect(onCommit).toHaveBeenCalledTimes(1)
-    expect(input).toHaveValue(0)
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter a value of at least 1.")
+    expect(input).toHaveValue("0")
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a number, 1 or more.")
     expect(isDraftOpen()).toBe(true)
   })
 })

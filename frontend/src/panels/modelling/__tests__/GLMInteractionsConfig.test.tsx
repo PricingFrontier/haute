@@ -80,7 +80,7 @@ describe("GLMInteractionsConfig", () => {
     expect(within(card(1)).queryByRole("group", { name: "age monotonicity" })).not.toBeInTheDocument()
     fireEvent.change(within(card(1)).getByRole("combobox", { name: "age df mode" }), { target: { value: "fixed" } })
     expect(latest.config.interactions).toEqual([{ factors: ["age", "region"], specs: { age: { type: "bs", df: 5 } }, include_main: true }])
-    const df = within(card(1)).getByRole("spinbutton", { name: "age df" })
+    const df = within(card(1)).getByRole("textbox", { name: "age df" })
     fireEvent.change(df, { target: { value: "7" } })
     fireEvent.blur(df)
     expect(latest.config.interactions).toEqual([{ factors: ["age", "region"], specs: { age: { type: "bs", df: 7 } }, include_main: true }])
@@ -97,15 +97,15 @@ describe("GLMInteractionsConfig", () => {
     })
     const advanced = within(card(2)).getByRole("button", { name: "Advanced" })
     fireEvent.click(advanced)
-    const df = within(card(2)).getByRole("spinbutton", { name: "age df" })
+    const df = within(card(2)).getByRole("textbox", { name: "age df" })
     fireEvent.change(df, { target: { value: "30" } })
     fireEvent.click(within(card(1)).getByRole("button", { name: "Remove interaction 1" }))
     expect(latest.config.interactions).toEqual([
       { factors: ["age", "brand"], specs: { age: { type: "bs", df: 6 } }, include_main: true },
     ])
     expect(within(card(1)).getByRole("button", { name: "Advanced" })).toHaveAttribute("aria-expanded", "true")
-    expect(within(card(1)).getByRole("spinbutton", { name: "age df" })).toHaveValue(30)
-    expect(within(card(1)).getByRole("alert")).toHaveTextContent("Enter an integer from 4 to 20")
+    expect(within(card(1)).getByRole("textbox", { name: "age df" })).toHaveValue("30")
+    expect(within(card(1)).getByRole("alert")).toHaveTextContent("Enter a whole number from 4 to 20.")
   })
 
   it("removing a slot keeps the remaining slots' state", () => {
@@ -160,7 +160,7 @@ describe("GLMInteractionsConfig", () => {
     expect(latest.config.interactions).toEqual([{ factors: ["region", "brand"], include_main: false, encoding: "target_encoding" }])
     expect(within(card(1)).getByText("Encodes the combination of raw feature values.")).toBeInTheDocument()
     fireEvent.click(within(card(1)).getByRole("button", { name: "Advanced" }))
-    const permutations = within(card(1)).getByRole("spinbutton", { name: "Interaction 1 n permutations" })
+    const permutations = within(card(1)).getByRole("textbox", { name: "Interaction 1 n permutations" })
     fireEvent.change(permutations, { target: { value: "6" } })
     fireEvent.blur(permutations)
     expect(latest.config.interactions).toEqual([{ factors: ["region", "brand"], include_main: false, encoding: "target_encoding", n_permutations: 6 }])

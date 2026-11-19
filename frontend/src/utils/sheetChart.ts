@@ -10,7 +10,8 @@ import type { ChartWidget, FormSchema, SchemaColumn, SchemaTable } from "../api/
 import type { ChartThemeTokens } from "../panels/explore/chartOptions"
 import { formatChartNumber } from "./chartHelpers"
 import { formatValue } from "./formatValue"
-import { formattedNumber, parseTypedNumber, rowFilled, type PricedRows, type RowsByTable } from "./sheetValues"
+import { formattedNumber, rowFilled, type PricedRows, type RowsByTable } from "./sheetValues"
+import { readTypedNumber, trimTyped } from "./typedNumbers"
 import { isOutputColumn, tableColumns } from "./quoteIdentity"
 import { columnKey } from "./sheetVisibility"
 import { inputRowLayout } from "./sheetRowAlignment"
@@ -71,7 +72,7 @@ const columnLabel = (column: SchemaColumn): string => column.label || readableNa
 const shownValue = (column: SchemaColumn, value: unknown): string => formattedNumber(column, value) ?? formatValue(value)
 
 /** A typed value as a number, as the server reads it, or null. */
-const typedNumber = (value: SampleValue | undefined): number | null => (typeof value === "string" ? parseTypedNumber(value) : null)
+const typedNumber = (value: SampleValue | undefined): number | null => (typeof value === "string" ? readTypedNumber(value) : null)
 
 /** A priced value as a number, or null for anything else. */
 const pricedNumber = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null)
@@ -179,7 +180,7 @@ export function sheetChartData(schema: FormSchema, widget: ChartWidget, values: 
       if (label.column.index === "numbered") return String(row + 1)
       const typed = valueAt(label, row)
       if (label.column.type === "bool") return typed === true ? "Yes" : "No"
-      const text = typeof typed === "string" ? typed.trim() : ""
+      const text = typeof typed === "string" ? trimTyped(typed) : ""
       return text === "" ? UNNAMED : (formattedNumber(label.column, text) ?? text)
     }
     const priced = valueAt(label, row)
