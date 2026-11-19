@@ -180,6 +180,14 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-plan.md",
     "price-contour-polars-2.md",
 )
+# One shared cause each, taken before the packages it lists. They stand alone: no row in
+# the index and no priorities table.
+_ROADMAP_ROOT_CAUSES: tuple[str, ...] = (
+    "root-cause-model-file.md",
+    "root-cause-project-settings.md",
+    "root-cause-save-record.md",
+    "root-cause-unedited-values.md",
+)
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
@@ -399,6 +407,7 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
         {"README.md"}
         | {f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS}
         | set(_ROADMAP_SUPPORTING_REPORTS)
+        | set(_ROADMAP_ROOT_CAUSES)
     )
     roadmap_markdown = {
         path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
@@ -408,7 +417,9 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
     component_files = {
         path.stem: path
         for path in ROADMAP_ROOT.glob("*.md")
-        if path.name != ROADMAP_INDEX.name and path.name not in _ROADMAP_SUPPORTING_REPORTS
+        if path.name != ROADMAP_INDEX.name
+        and path.name not in _ROADMAP_SUPPORTING_REPORTS
+        and path.name not in _ROADMAP_ROOT_CAUSES
     }
     assert tuple(sorted(component_files)) == _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
 
