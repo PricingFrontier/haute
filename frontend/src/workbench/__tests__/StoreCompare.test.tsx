@@ -27,15 +27,20 @@ import { detailsTable, sheetForm } from "./fixtures"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import type { FormSpec, WorkbenchStoreRename } from "../../api/types"
 
+const TEXT = { bits: null, length: null, every_character: true, unpadded: true, zoneless: true }
+const BIGINT = { ...TEXT, bits: 64 }
+const QUOTE_LINK = { columns: ["quote_reference", "quote_option"], table: "quote_details", referred: ["quote_reference", "quote_option"], sql_schema: null }
+
 const TABLES: WorkbenchCatalogueTable[] = [
   {
     name: "policy",
     columns: [
-      { name: "region", kind: "string", type: "TEXT", nullable: true, collation: null, quotes: 3 },
-      { name: "year", kind: "string", type: "TEXT", nullable: false, collation: null, quotes: 3 },
+      { name: "region", kind: "string", type: "TEXT", nullable: true, capacity: TEXT, numbered: false, collation: null, quotes: 3 },
+      { name: "year", kind: "string", type: "TEXT", nullable: false, capacity: TEXT, numbered: false, collation: null, quotes: 3 },
     ],
     primary_key: ["quote_reference", "quote_option"],
-    refers: true,
+    unique: [],
+    references: [QUOTE_LINK],
     quotes: 4,
   },
 ]
@@ -371,8 +376,8 @@ describe("Compare", () => {
     key.index = "typed"
     useWorkbenchFormStore.getState().install(form, "rev-1")
     const catalogue: WorkbenchCatalogueTable = {
-      name: "equipment", primary_key: ["quote_reference", "quote_option", "quote_row"], refers: true, quotes: 3,
-      columns: [{ name: "quote_row", kind: "integer", type: "BIGINT", nullable: false, collation: null, quotes: 3 }],
+      name: "equipment", primary_key: ["quote_reference", "quote_option", "quote_row"], unique: [], references: [QUOTE_LINK], quotes: 3,
+      columns: [{ name: "quote_row", kind: "integer", type: "BIGINT", nullable: false, capacity: BIGINT, numbered: false, collation: null, quotes: 3 }],
     }
     vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [...TABLES, catalogue] })
     const messages = [
@@ -431,6 +436,26 @@ describe("Compare", () => {
     expect(within(details).getByText(repair)).toBeVisible()
   })
 
+  it("names a database type of the field's kind that holds less, and asks for no Haute type change", async () => {
+    const narrow = "the database holds it as INTEGER, not BIGINT (3 quotes hold values in it)"
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000,
+      tables: [{ ...TABLES[0], columns: [TABLES[0].columns[0],
+        { ...TABLES[0].columns[1], kind: "integer", type: "INTEGER", capacity: { ...TEXT, bits: 32 } }] }],
+    })
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
+      differences: [{ table: "policy", column: "year", kind: "type", message: narrow }],
+    })
+    open()
+    choose("dev")
+    await waitFor(() => expect(screen.getByTestId("database-mark-policy-year")).toHaveTextContent("Type change"))
+    openField("year")
+    const details = screen.getByRole("region", { name: "Database details for policy.year" })
+    expect(within(details).getByText("Database type too narrow")).toBeVisible()
+    expect(within(details).getByText("Haute: year (Integer). Database: year (INTEGER), which holds less than Integer needs.")).toBeVisible()
+    expect(within(details).getByText(/Widen the database column/)).toHaveTextContent("Export SQL does not convert existing columns")
+    expect(within(details).queryByText(/Change the type in Haute/)).not.toBeInTheDocument()
+  })
+
   it("keeps the retained source's NOT NULL repair beside a renamed addition", async () => {
     vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000,
       tables: [{ ...TABLES[0], columns: [{ ...TABLES[0].columns[0], nullable: false }] }],
@@ -458,8 +483,8 @@ describe("Compare", () => {
     useWorkbenchFormStore.getState().install(form, "rev-1")
     const names = ["quote_reference", "insured"]
     vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [{
-      name: "quote_details", primary_key: ["quote_reference", "quote_option"], refers: false, quotes: 3,
-      columns: names.map((name) => ({ name, kind: "integer", type: "BIGINT", nullable: false, collation: null, quotes: 3 })),
+      name: "quote_details", primary_key: ["quote_reference", "quote_option"], unique: [], references: [], quotes: 3,
+      columns: names.map((name) => ({ name, kind: "integer", type: "BIGINT", nullable: false, capacity: BIGINT, numbered: false, collation: null, quotes: 3 })),
     }] })
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, changes: [],
       differences: names.map((column) => ({ table: "quote_details", column, kind: "type", message: "Wrong SQL type" })),

@@ -52,9 +52,6 @@ on PostgreSQL 16 and SQL Server 2022 under repeated requests, lost
 connections and hand-made schemas. A worker built each run and the main
 session ran each again on 16 November 2026.
 
-A cause several packages here share has its own file and is taken first:
-[the quote store check](root-cause-store-check.md).
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -84,11 +81,8 @@ A cause several packages here share has its own file and is taken first:
 | WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
 | WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
 | WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
-| WB-65 | Planned | P3 | A single-precision column for a Decimal field is named as a difference, not left to round values. |
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
-| WB-72 | Planned | P3 | The store check reports a foreign key that refers to other columns or another schema. |
-| WB-73 | Planned | P2 | The store check reports a missing unique constraint on the operation key, so one alternative sent twice cannot make two options. |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 | WB-76 | Planned | P2 | A workbench's sample is priced under the stand-in identity by the preview and `haute run`, as `pipeline.run()` prices it. |
 
@@ -1005,26 +999,6 @@ that takes no null.
 **Evidence:** `src/haute/_quote_store/_migrate.py`;
 `specs/workbench/high-level.md`.
 
-### WB-65 — A single-precision column is named as a difference for a Decimal field
-**Why:** Reproduced on 14 November 2026 on SQL Server 2022 and
-PostgreSQL 16. A Decimal field's column was made `REAL` by hand. The
-comparison of the form with the database reports no difference and the app
-opens. A quote saved with 16,777,217 there opens as 16,777,216, with
-nothing said. The specification makes a Decimal a double. The comparison
-reads `REAL` and a double as one kind.
-
-**Plan:** Tell single from double precision when the database's columns
-are read, and report a single-precision column for a Decimal field as a
-difference the migration SQL widens.
-
-**Acceptance:** The comparison above names the column, and after the SQL
-is run the value is kept.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_catalogue.py`;
-`specs/workbench/high-level.md`.
-
 ### WB-66 — A test quote's rows are opened by their values after a list of codes is reordered
 **Why:** Reproduced on 14 November 2026 through the designer's routes. A
 table's index takes its allowed values from a params file holding `01`
@@ -1074,52 +1048,6 @@ one quote on PostgreSQL and on SQL Server with either setting.
 
 **Evidence:** `src/haute/_quote_store/_book.py`;
 `specs/workbench/high-level.md`.
-
-### WB-72 — The store check reads what a foreign key refers to
-**Why:** Reproduced on 16 November 2026 on SQLite, PostgreSQL 16 and SQL
-Server 2022. Two stores were made whose input table's foreign key does
-not refer to the quote as the store keys it: one refers to two other
-columns of `quote_details`, the other to a copy of `quote_details` moved
-aside into another schema, as happens when the table is moved and made
-again. The comparison reports no difference and the app opens the store.
-The first creation answers 500 "Internal Server Error" with the
-database's foreign key violation inside; nothing is stored. The check
-reads the table a foreign key refers to and the columns it constrains,
-never the columns or the schema it refers to.
-
-**Plan:** Compare the referred columns and schema of each foreign key
-too, and name the constraint in the difference.
-
-**Acceptance:** Both stores above are reported as different, naming the
-foreign key, and the app refuses them when it opens.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_catalogue.py`;
-`specs/workbench/high-level.md`.
-
-### WB-73 — The store check requires the unique operation key
-**Why:** Reproduced on 16 November 2026. A store was made from Haute's
-own SQL with one line left out: the unique constraint on the activity
-table's operation key. The comparison reports no difference and the app
-opens the store. Two instances were then sent the same alternative
-creation under one key at once, 30 rounds. On PostgreSQL and on SQL
-Server, with read committed snapshot on and off, every round made two
-options: 61 options for 31 keys. With the constraint present every
-backend made 31. Creation relies on that constraint to settle the race,
-and the check reads columns, primary keys and foreign keys, never unique
-constraints.
-
-**Plan:** Read unique constraints in the store check and report a
-missing one as a difference.
-
-**Acceptance:** The store above is reported as different, naming the
-constraint, and the app refuses it when it opens.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_catalogue.py`;
-`src/haute/_quote_store/_book.py`.
 
 ### WB-74 — A password corrected in `.env` is used without restarting the editor
 **Why:** Reproduced on 16 November 2026 with the editor's real server

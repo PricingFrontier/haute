@@ -442,7 +442,6 @@ def _store_compare(
 ) -> WorkbenchStoreCompareResponse:
     from haute._connections import project_environ
     from haute._quote_store import connected_store, render_sql
-    from haute._quote_store._catalogue import Catalogue, CatalogueColumn, CatalogueTable
     from haute._quote_store._compare import Rename, additions_plan, compare
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import provider_of
@@ -451,7 +450,7 @@ def _store_compare(
         retention_description,
         review_plan,
     )
-    from haute._workbench_catalogue import catalogue_target
+    from haute._workbench_catalogue import catalogue_of, catalogue_target
 
     spec = _checked_form(body.form)
     location = connected_store(config, body.environment, project_environ(config.project_root))
@@ -460,28 +459,7 @@ def _store_compare(
             f"The {body.environment} connection changed since this database schema was read. "
             "Use Refresh on the schema pane before comparing or exporting SQL."
         )
-    catalogue = Catalogue(
-        tables=tuple(
-            CatalogueTable(
-                name=table.name,
-                columns=tuple(
-                    CatalogueColumn(
-                        name=column.name,
-                        kind=column.kind,
-                        type=column.type,
-                        nullable=column.nullable,
-                        collation=column.collation,
-                        quotes=column.quotes,
-                    )
-                    for column in table.columns
-                ),
-                primary_key=tuple(table.primary_key),
-                refers=table.refers,
-                quotes=table.quotes,
-            )
-            for table in body.tables
-        )
-    )
+    catalogue = catalogue_of(body.tables)
     provider = provider_of(location.url)
     renames = [Rename(each.table, each.column, each.was) for each in body.renames]
     comparison = compare(

@@ -71,12 +71,21 @@ export function fieldDatabaseIssues(
             ? `Fill ${column.name}, make it required (NOT NULL), and update the primary key manually.`
             : `Copy values to ${column.name} manually; Export SQL leaves the old column unchanged.` })
         break
-      case "type":
+      case "type": {
+        const found = databaseColumn()
+        if (DATABASE_TYPES[found.kind] === expectedType) {
+          // Of the field's type but holding less than Haute keeps there (a REAL for a Decimal).
+          issues.push({ title: "Database type too narrow",
+            description: `Haute: ${column.name} (${expectedType}). Database: ${found.name} (${found.type}), which holds less than ${expectedType} needs.`,
+            action: "Widen the database column as SQL details shows. Export SQL does not convert existing columns." })
+          break
+        }
         issues.push({ title: "Different data type", description: sides(),
           action: IDENTITY_NAMES.has(column.name) || table.name === QUOTE_DETAILS_NAME
             ? `Convert this database column to ${expectedType} manually after checking its values; Haute has a fixed type.`
             : "Change the type in Haute to match, or convert the data manually. Export SQL does not convert existing columns." })
         break
+      }
       case "collation":
         issues.push({ title: "Different text comparison", description: "This field needs exact text matching, including case.",
           action: "Apply the collation in SQL details. Export SQL does not change existing columns." })
