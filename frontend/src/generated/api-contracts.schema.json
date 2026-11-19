@@ -28604,9 +28604,60 @@
       "title": "WorkbenchAppReleaseResponse",
       "type": "object"
     },
-    "WorkbenchCatalogueColumn": {
-      "description": "A column as an environment's database holds it: its name, its kind (``boolean``,\n``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as\nthe database names it, whether it takes a null, its collation where it has one, and the\nquotes holding a value in it, None when the table lacks a quote identity column.",
+    "WorkbenchCatalogueCapacity": {
+      "description": "What a column's type holds beyond its kind on its engine: an integer's or a Decimal's\nbits, the most a text holds in its engine's units (None for any length), and whether a\ntext holds every character and keeps its value unpadded and a moment is held without a\ntime zone, each false where the type holds less.",
       "properties": {
+        "bits": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bits"
+        },
+        "every_character": {
+          "title": "Every Character",
+          "type": "boolean"
+        },
+        "length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Length"
+        },
+        "unpadded": {
+          "title": "Unpadded",
+          "type": "boolean"
+        },
+        "zoneless": {
+          "title": "Zoneless",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "bits",
+        "length",
+        "every_character",
+        "unpadded",
+        "zoneless"
+      ],
+      "title": "WorkbenchCatalogueCapacity",
+      "type": "object"
+    },
+    "WorkbenchCatalogueColumn": {
+      "description": "A column as an environment's database holds it: its name, its kind (``boolean``,\n``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as\nthe database names it, whether it takes a null, what its type holds beyond its kind,\nwhether the database numbers it as each row is inserted, its collation where it has one,\nand the quotes holding a value in it, None when the table lacks a quote identity column.",
+      "properties": {
+        "capacity": {
+          "$ref": "#/$defs/WorkbenchCatalogueCapacity"
+        },
         "collation": {
           "anyOf": [
             {
@@ -28617,7 +28668,6 @@
               "type": "null"
             }
           ],
-          "default": null,
           "title": "Collation"
         },
         "kind": {
@@ -28634,6 +28684,10 @@
           "title": "Nullable",
           "type": "boolean"
         },
+        "numbered": {
+          "title": "Numbered",
+          "type": "boolean"
+        },
         "quotes": {
           "anyOf": [
             {
@@ -28643,7 +28697,6 @@
               "type": "null"
             }
           ],
-          "default": null,
           "title": "Quotes"
         },
         "type": {
@@ -28657,14 +28710,64 @@
         "kind",
         "type",
         "nullable",
+        "capacity",
+        "numbered",
         "collation",
         "quotes"
       ],
       "title": "WorkbenchCatalogueColumn",
       "type": "object"
     },
+    "WorkbenchCatalogueReference": {
+      "description": "A foreign key as an environment's database holds it: the columns it constrains, the\ntable it refers to and that table's columns, each paired in order with one constrained,\nand the referred table's SQL schema, None for the store's own.",
+      "properties": {
+        "columns": {
+          "items": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Columns",
+          "type": "array"
+        },
+        "referred": {
+          "items": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "maxItems": 10000,
+          "title": "Referred",
+          "type": "array"
+        },
+        "sql_schema": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sql Schema"
+        },
+        "table": {
+          "maxLength": 512,
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "columns",
+        "table",
+        "referred",
+        "sql_schema"
+      ],
+      "title": "WorkbenchCatalogueReference",
+      "type": "object"
+    },
     "WorkbenchCatalogueTable": {
-      "description": "A table of the store's as an environment's database holds it: its columns, its primary\nkey's columns, whether it refers by the identity to its quote's quote_details row, and\nthe quotes holding a row in it, None when the table lacks a quote identity column.",
+      "description": "A table of the store's as an environment's database holds it: its columns, its primary\nkey's columns, each set of its columns a unique constraint or a unique index holds, its\nforeign keys, and the quotes holding a row in it, None when the table lacks a quote\nidentity column.",
       "properties": {
         "columns": {
           "items": {
@@ -28697,19 +28800,35 @@
               "type": "null"
             }
           ],
-          "default": null,
           "title": "Quotes"
         },
-        "refers": {
-          "title": "Refers",
-          "type": "boolean"
+        "references": {
+          "items": {
+            "$ref": "#/$defs/WorkbenchCatalogueReference"
+          },
+          "maxItems": 10000,
+          "title": "References",
+          "type": "array"
+        },
+        "unique": {
+          "items": {
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxItems": 10000,
+          "title": "Unique",
+          "type": "array"
         }
       },
       "required": [
         "name",
         "columns",
         "primary_key",
-        "refers",
+        "unique",
+        "references",
         "quotes"
       ],
       "title": "WorkbenchCatalogueTable",

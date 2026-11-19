@@ -278,30 +278,59 @@ class WorkbenchStoreSqlResponse(BaseModel):
     environments: list[WorkbenchStoreSqlEnvironment]
 
 
+class WorkbenchCatalogueCapacity(BaseModel):
+    """What a column's type holds beyond its kind on its engine: an integer's or a Decimal's
+    bits, the most a text holds in its engine's units (None for any length), and whether a
+    text holds every character and keeps its value unpadded and a moment is held without a
+    time zone, each false where the type holds less."""
+
+    bits: int | None
+    length: int | None
+    every_character: bool
+    unpadded: bool
+    zoneless: bool
+
+
 class WorkbenchCatalogueColumn(BaseModel):
     """A column as an environment's database holds it: its name, its kind (``boolean``,
     ``integer``, ``float``, ``datetime``, ``date``, ``string`` or another type's), its type as
-    the database names it, whether it takes a null, its collation where it has one, and the
-    quotes holding a value in it, None when the table lacks a quote identity column."""
+    the database names it, whether it takes a null, what its type holds beyond its kind,
+    whether the database numbers it as each row is inserted, its collation where it has one,
+    and the quotes holding a value in it, None when the table lacks a quote identity column."""
 
     name: BoundedName
     kind: BoundedName
     type: BoundedName
     nullable: bool
-    collation: BoundedName | None = None
-    quotes: int | None = None
+    capacity: WorkbenchCatalogueCapacity
+    numbered: bool
+    collation: BoundedName | None
+    quotes: int | None
+
+
+class WorkbenchCatalogueReference(BaseModel):
+    """A foreign key as an environment's database holds it: the columns it constrains, the
+    table it refers to and that table's columns, each paired in order with one constrained,
+    and the referred table's SQL schema, None for the store's own."""
+
+    columns: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
+    table: BoundedName
+    referred: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
+    sql_schema: BoundedName | None
 
 
 class WorkbenchCatalogueTable(BaseModel):
     """A table of the store's as an environment's database holds it: its columns, its primary
-    key's columns, whether it refers by the identity to its quote's quote_details row, and
-    the quotes holding a row in it, None when the table lacks a quote identity column."""
+    key's columns, each set of its columns a unique constraint or a unique index holds, its
+    foreign keys, and the quotes holding a row in it, None when the table lacks a quote
+    identity column."""
 
     name: BoundedName
     columns: list[WorkbenchCatalogueColumn] = Field(max_length=MAX_REQUEST_ITEMS)
     primary_key: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
-    refers: bool
-    quotes: int | None = None
+    unique: list[list[BoundedName]] = Field(max_length=MAX_REQUEST_ITEMS)
+    references: list[WorkbenchCatalogueReference] = Field(max_length=MAX_REQUEST_ITEMS)
+    quotes: int | None
 
 
 class WorkbenchStoreCatalogueRequest(BaseModel):

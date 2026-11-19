@@ -774,9 +774,10 @@ Out of scope:
     quotes holding values in each table and column, and changes nothing; the form the view
     holds, saved or not, is compared with what was read as it changes. Each table and column
     of the form is marked where it differs there (missing, renamed from another name, of
-    another kind, a table of other rows, taking a null otherwise, keyed or referring
-    otherwise, under another collation on SQL Server, the store's own columns missing or of
-    another kind), each mark saying how, with the quotes holding values it concerns;
+    another kind or holding less than the store's type, a table of other rows, taking a null
+    otherwise, keyed, holding unique or referring otherwise, under another collation on SQL
+    Server, the store's own columns missing, of another kind or holding less), each mark
+    saying how, with the quotes holding values it concerns;
     `haute_activity` missing is said above the tables; each table of the store's (one with
     the quote's `quote_reference` and `quote_option`) and each column of the form's tables
     that the database holds and the form does not is listed with the quotes holding values
@@ -865,7 +866,9 @@ Out of scope:
     manual work. Type/collation differences on that old column do not become duplicate
     repair tasks when the addition supplies the new definition. Existing-column type,
     blank-value and text-comparison differences explain the required manual change;
-    they never imply Export SQL changes existing columns. Fixed Haute field types direct
+    they never imply Export SQL changes existing columns. A column of the field's type that
+    holds less than Haute keeps (a `REAL` for a Decimal) is named by its database type and
+    widened by hand, never by changing the field's type. Fixed Haute field types direct
     the user to database repair, not an unavailable schema edit. A blocked addition retains
     its specific reason and is never presented as ready to export.
     Without a database selected the normal configuration summaries return. Database-only fields
@@ -2934,8 +2937,9 @@ Out of scope:
   alone is
   written afresh by each pricing, so a column of it the form no longer holds is cleared by
   the quote's next save, priced or not; from the database,
-  each other way its tables differ (a column taking a null otherwise, a table keyed or
-  referring otherwise, a collation, the store's own columns missing or of another kind) as a
+  each other way its tables differ (a column taking a null otherwise, a table keyed,
+  holding unique or referring otherwise, a collation, the store's own columns missing, of
+  another kind or holding less) as a
   note that the SQL does not change it, and each note on a table or column that holds
   values with the quotes holding them; and a name its engine does not keep whole
   (PostgreSQL's 63 bytes), or a table or column taking the name of one the form removes, as
@@ -2945,11 +2949,25 @@ Out of scope:
   from a database is shown, logged or written to the project. A Haute release that changes
   the store's own columns gives their SQL in its upgrade notes.
 
-  The app's check reads the database's own catalogue against its release's form: every
-  table and column the release uses there and `haute_activity`'s, of its kind, taking a null
-  as the store's does, keyed and referring to its quote as the store keys it, every other
-  column of those tables taking a null, and, on SQL Server, each text the store compares
-  exactly under its binary collation; on a server, each privilege the store needs (reading,
+  The app's check reads the database's own catalogue against its release's form, as the
+  store derives the tables from it, the tables the SQL Haute writes makes line for line:
+  every table and column the release uses there and `haute_activity`'s, of its kind and
+  holding every value the store writes in it, taking a null as the store's does, and
+  `haute_activity.activity_id` numbered by the database as the store's is; each table keyed
+  as the store keys it, `haute_activity` holding its `operation_key` unique (by a unique
+  constraint or a unique index), and each table but `quote_details`, `haute_activity`
+  among them, referring by the quote's identity to `quote_details`' own identity in the
+  store's SQL schema; every other column of those tables taking a null; and, on SQL Server,
+  each text the store compares exactly under its binary collation. On PostgreSQL and SQL
+  Server a column holds less than the store's that keeps a narrower integer, a Decimal in
+  single precision, shorter text, text padded to its length or, on PostgreSQL, a moment read
+  in the session's time zone, and on SQL Server text that cannot hold every character
+  (`VARCHAR` for `NVARCHAR`); SQLite keeps any integer, double, text and moment whatever
+  its declared type. A type holding more than the store's, a constraint or an index named
+  otherwise, a moment kept to fewer digits of a second (Haute shows moments to the minute)
+  or a missing index that is not unique (it decides how fast a read finds rows, never what
+  is stored or read) is no difference. On a server the check reads each privilege the store
+  needs (reading,
   inserting, changing and emptying the form's tables as each needs, and reading and inserting
   in `haute_activity`). Each difference it finds is named, and closes the quotes (the app,
   above). Every table and column name is quoted in the SQL Haute writes, so

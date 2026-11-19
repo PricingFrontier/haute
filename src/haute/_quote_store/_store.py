@@ -42,7 +42,7 @@ from haute._workbench_config import (
     STORE_URL_ENV,
     WorkbenchError,
 )
-from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
+from haute._workbench_form import FormSpec
 
 #: What places a hosted app's database and signs it in, as a refusal names it.
 HOST_VARIABLES = (
@@ -268,17 +268,16 @@ def _resolve(environment: str) -> str:
 def _catalogue_differences(
     catalogue: Catalogue, schema: StoreSchema, dialect: Dialect
 ) -> list[str]:
-    """Each way the database's own *catalogue* differs from the tables *schema* derives, which
-    every write and read of the store takes as they are: a table or a column missing, of
-    another kind, taking a null where the store needs a value or none where it writes one,
-    keyed otherwise or not referring to its quote; a text the store compares exactly under
-    another collation, on SQL Server (:func:`._catalogue.column_problems` and
-    :func:`._catalogue.table_problems`); and a column of those tables the store does not
+    """Each way the database's own *catalogue* differs from the tables *schema* derives, the
+    tables the SQL Haute writes makes, which every write and read of the store takes as they
+    are: a table or a column missing, of another kind or holding less, taking a null where
+    the store needs a value or none where it writes one, not numbered where the store's is,
+    a text the store compares exactly under another collation on SQL Server
+    (:func:`._catalogue.column_problems`); each constraint of the store's table not held
+    (:func:`._catalogue.table_problems`); and a column of those tables the store does not
     write that takes no null, so no row could be inserted."""
     differences: list[str] = []
-    tables = [(stored.table, stored.form.name != QUOTE_DETAILS_NAME) for stored in schema.tables]
-    tables.append((schema.activity, False))
-    for table, refers in tables:
+    for table in [*(stored.table for stored in schema.tables), schema.activity]:
         found = catalogue.table(table.name)
         if found is None:
             differences.append(f"the table {table.name} is missing")
@@ -298,9 +297,7 @@ def _catalogue_differences(
                     f"{table.name}.{extra.name} is no column of the release's and takes no "
                     "null, so no row of it could be saved"
                 )
-        differences.extend(
-            f"{table.name} {said}" for _, said in table_problems(table, found, refers)
-        )
+        differences.extend(f"{table.name} {said}" for _, said in table_problems(table, found))
     return differences
 
 
