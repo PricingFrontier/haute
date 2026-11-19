@@ -49,6 +49,7 @@ from sqlalchemy import (
     String,
     Table,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.engine import Dialect, make_url
@@ -157,6 +158,9 @@ ACCEPTED: dict[str, str] = {
         "SQL Server's DATETIMEOFFSET keeps the UTC moment the store writes at offset zero and "
         "reads it back as the same moment"
     ),
+    "unique by an index": (
+        "a unique index holds its columns unique in every row, as the unique constraint does"
+    ),
 }
 
 
@@ -201,18 +205,20 @@ class ReferenceLine:
 
 @dataclass(frozen=True)
 class IndexLine:
-    """A CREATE INDEX: its name, columns and whether it is unique."""
+    """A CREATE INDEX: its name, columns, whether it is unique and the predicate filtering
+    the rows it holds, None for every row."""
 
     name: str | None
     columns: tuple[str, ...]
     unique: bool
+    where: str | None = None
 
 
 @dataclass(frozen=True)
 class TableLines:
     """A table as its SQL makes it: its columns, keys, references (in the order the table
-    declares them, keys and references together) and indexes, and whether it is set aside
-    (:data:`Aside`)."""
+    declares them, keys and references together) and indexes, whether it is set aside
+    (:data:`Aside`) and, on SQLite, whether it has no rowid."""
 
     name: str
     columns: tuple[ColumnLine, ...]
@@ -220,6 +226,7 @@ class TableLines:
     constraints: tuple[KeyLine | ReferenceLine, ...] = ()
     indexes: tuple[IndexLine, ...] = ()
     aside: Aside = False
+    without_rowid: bool = False
 
     def column(self, name: str) -> ColumnLine:
         return next(column for column in self.columns if column.name == name)
@@ -310,6 +317,8 @@ def describe(form: FormSpec) -> tuple[TableLines, ...]:
 
 #: The SQL schema each case's referred copy is set aside in, after the case's own.
 _ASIDE = "{}_aside"
+#: The dialects whose filtered index takes its predicate as ``<name>_where``.
+_WHERE_DIALECTS = ("postgresql", "sqlite", "mssql")
 
 
 def _tables(lines: tuple[TableLines, ...], sql_schema: str | None) -> list[Table]:
@@ -350,9 +359,20 @@ def _tables(lines: tuple[TableLines, ...], sql_schema: str | None) -> list[Table
                 )
             )
         items.extend(
-            Index(index.name, *index.columns, unique=index.unique) for index in each.indexes
+            Index(
+                index.name,
+                *index.columns,
+                unique=index.unique,
+                **(
+                    {}
+                    if index.where is None
+                    else {f"{name}_where": text(index.where) for name in _WHERE_DIALECTS}
+                ),
+            )
+            for index in each.indexes
         )
-        tables.append(Table(each.name, metadata, *items, schema=placed(each.aside)))
+        rowid = {"sqlite_with_rowid": False} if each.without_rowid else {}
+        tables.append(Table(each.name, metadata, *items, schema=placed(each.aside), **rowid))
     return tables
 
 
@@ -723,6 +743,16 @@ def alterations(lines: tuple[TableLines, ...], backend: str) -> list[Case]:
                         _column_mark(name, column.name, "numbered"),
                     )
                 )
+                if backend == "sqlite":
+                    # Its INTEGER key kept, a table with no rowid numbers no row.
+                    cases.append(
+                        Case(
+                            f"{name} with no rowid",
+                            _swap(lines, name, replace(table, without_rowid=True)),
+                            (f"{where} is not numbered by the database",),
+                            _column_mark(name, column.name, "numbered"),
+                        )
+                    )
             wider = _wider(column, backend)
             if wider is not None and unlinked == lines:
                 cases.append(
@@ -758,11 +788,42 @@ def alterations(lines: tuple[TableLines, ...], backend: str) -> list[Case]:
             others = tuple(each for each in table.constraints if each is not constraint)
             without = _swap(lines, name, replace(table, constraints=others))
             if isinstance(constraint, KeyLine):
+                held = ", ".join(constraint.columns)
+                not_unique = (f"{name} does not hold {held} unique",)
                 cases.append(
                     Case(
-                        f"{name} not holding {', '.join(constraint.columns)} unique",
+                        f"{name} not holding {held} unique",
                         _sound(without),
-                        (f"{name} does not hold {', '.join(constraint.columns)} unique",),
+                        not_unique,
+                        _table_mark(name, "key"),
+                    )
+                )
+                by_index = IndexLine(None, constraint.columns, unique=True)
+                cases.append(
+                    Case(
+                        f"{name} holding {held} unique by an index",
+                        _swap(
+                            lines,
+                            name,
+                            replace(table, constraints=others, indexes=(*table.indexes, by_index)),
+                        ),
+                        None,
+                        None,
+                        "unique by an index",
+                    )
+                )
+                # Unique only among the rows a predicate keeps: two outside it hold the same.
+                beside = next(each.name for each in table.columns if each.nullable)
+                filtered = replace(by_index, where=f"{beside} IS NULL")
+                cases.append(
+                    Case(
+                        f"{name} holding {held} unique only where {beside} is null",
+                        _swap(
+                            lines,
+                            name,
+                            replace(table, constraints=others, indexes=(*table.indexes, filtered)),
+                        ),
+                        not_unique,
                         _table_mark(name, "key"),
                     )
                 )
@@ -1011,6 +1072,29 @@ def test_a_store_made_from_the_description_is_accepted(target: Target) -> None:
             _made(target, describe(FORM), sql_schema)
 
             assert _judged(target, sql_schema) == ([], []), sql_schema
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        pytest.param(name, marks=pytest.mark.store_servers)
+        for name in configured()
+        if name == "postgresql"
+    ],
+)
+def test_a_store_its_search_path_finds_behind_an_empty_schema_is_accepted(
+    server: str, tmp_path: Path
+) -> None:
+    # PostgreSQL reads every table its search path finds when no schema is named: a store in
+    # public is the connection's though an empty schema comes first on the path.
+    with database(server, tmp_path) as target:
+        _made(target, describe(FORM), None)
+        target.script("CREATE SCHEMA app")
+        target.script(
+            f"ALTER DATABASE {make_url(target.url).database} SET search_path = app, public"
+        )
+
+        assert _judged(target, None) == ([], [])
 
 
 def _dropped(target: Target, lines: tuple[TableLines, ...], sql_schema: str) -> None:

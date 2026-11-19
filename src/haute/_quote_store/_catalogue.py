@@ -257,7 +257,7 @@ def read_catalogue(
             *(
                 tuple(str(column) for column in index["column_names"])
                 for index in indexes[key]
-                if index.get("unique")
+                if _unconditionally_unique(index)
             ),
         ]
         if count and set(IDENTITY) <= {column["name"] for column in reflected}:
@@ -314,15 +314,28 @@ def _distinct(sets: Iterable[tuple[str, ...]]) -> tuple[tuple[str, ...], ...]:
     return tuple(kept)
 
 
-class _ReferredSchema:
-    """The SQL schema each foreign key read from *sql_schema* refers to, None for that schema
-    itself (the connection's default when *sql_schema* is None).
+def _unconditionally_unique(index: Any) -> bool:
+    """Whether the reflected *index* holds its columns unique in every row: unique, on columns
+    rather than expressions, and filtered by no predicate (each dialect's ``<name>_where``),
+    under which two rows outside it could hold the same."""
+    return bool(index.get("unique")) and (
+        None not in index["column_names"]
+        and not any(
+            option.endswith("_where") and value is not None
+            for option, value in (index.get("dialect_options") or {}).items()
+        )
+    )
 
-    A dialect leaves the referred schema unsaid in some cases. PostgreSQL's leaves it unsaid
-    for a table its search path finds by the bare name, the schema read or another, so the
-    schema is the one ``to_regclass`` finds the bare name in. Any other dialect leaves only
-    the connection's default unsaid, so reading the default it means the schema read; reading
-    a named schema it says nothing that can be placed, a fault.
+
+class _ReferredSchema:
+    """The SQL schema each foreign key read from *sql_schema* refers to, None for the store's
+    own: *sql_schema*, or, when it is None, wherever the connection finds a table by its bare
+    name, as the store's every statement names its tables.
+
+    A dialect leaves the referred schema unsaid where a bare name reaches the table: reading
+    no schema, that is the store's own. Reading a named schema, SQL Server's and PostgreSQL's
+    dialects name the schema read, and PostgreSQL's leaves unsaid another schema on its search
+    path, which ``to_regclass`` finds the bare name in; any other unsaid schema is a fault.
     """
 
     def __init__(self, connection: Connection, inspector: Inspector, sql_schema: str | None):
@@ -334,10 +347,10 @@ class _ReferredSchema:
     def of(self, table: str, foreign: Any) -> str | None:
         """The schema *table*'s foreign key *foreign*, as the Inspector reflects it, refers to."""
         referred: str | None = foreign.get("referred_schema")
+        if referred is None and self._sql_schema is None:
+            return None
         if referred is None and self._connection.dialect.name == "postgresql":
             referred = self._found_by_path(foreign["referred_table"])
-        elif referred is None and self._sql_schema is None:
-            referred = self._read
         if referred is None:
             raise ValueError(
                 f"The catalogue does not say which SQL schema {table}'s foreign key refers to "
@@ -363,8 +376,10 @@ def _sqlite_numbered(
     connection: Connection, sql_schema: str | None, name: str, primary_key: tuple[str, ...]
 ) -> set[str]:
     """The column of the SQLite table *name* that SQLite numbers as a row is inserted: the
-    primary key's sole column when it is declared ``INTEGER``, which makes it the rowid.
-    The catalogue reflects ``INT`` alike, which does not, so the declaration is read."""
+    primary key's sole column when it is declared ``INTEGER`` in a table with a rowid, which
+    makes it the rowid. The catalogue reflects ``INT`` alike, which does not, so the
+    declaration is read; and a key that is not the rowid (``WITHOUT ROWID``, or not declared
+    ``INTEGER``) is held by an index of its own, which a rowid never is."""
     if len(primary_key) != 1:
         return set()
     quote = connection.dialect.identifier_preparer.quote
@@ -373,7 +388,12 @@ def _sqlite_numbered(
         row[1]: str(row[2])
         for row in connection.exec_driver_sql(f"PRAGMA {where}table_xinfo({quote(name)})")
     }
-    return set(primary_key) if declared.get(primary_key[0], "").upper() == "INTEGER" else set()
+    keyed_by_index = any(
+        row[3] == "pk"
+        for row in connection.exec_driver_sql(f"PRAGMA {where}index_list({quote(name)})")
+    )
+    rowid = declared.get(primary_key[0], "").upper() == "INTEGER" and not keyed_by_index
+    return set(primary_key) if rowid else set()
 
 
 def _quote_counts(

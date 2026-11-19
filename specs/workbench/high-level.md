@@ -2955,7 +2955,7 @@ Out of scope:
   holding every value the store writes in it, taking a null as the store's does, and
   `haute_activity.activity_id` numbered by the database as the store's is; each table keyed
   as the store keys it, `haute_activity` holding its `operation_key` unique (by a unique
-  constraint or a unique index), and each table but `quote_details`, `haute_activity`
+  constraint, or a unique index that filters no rows), and each table but `quote_details`, `haute_activity`
   among them, referring by the quote's identity to `quote_details`' own identity in the
   store's SQL schema; every other column of those tables taking a null; and, on SQL Server,
   each text the store compares exactly under its binary collation. On PostgreSQL and SQL
