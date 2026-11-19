@@ -78,6 +78,7 @@ import type {
   MlflowDestinationsResponse,
   MlflowSettingsResponse,
   MlflowSettingsUpdateRequest,
+  PipelineRepairOptionsResponse,
   PipelineSettingsResponse,
   PipelineSettingsValues,
   MlflowTestConnectionRequest,
@@ -804,6 +805,32 @@ export function applyRecoverUnavailableNode(
     target_recovery_id: args.targetRecoveryId,
     action: args.action,
   }, options, parseRecoverUnavailableNodeApplyResponse, "applyRecoverUnavailableNode")
+}
+
+export interface RepairOptionsRequest {
+  sourceFile: string
+  sourceRevision: string
+  targets: { sourceFile: string; recoveryId: string }[]
+}
+
+/** Which of Recover and Reset each named unavailable node admits: the server dry-runs
+ *  each plan against the named revision and writes nothing. */
+export function fetchRepairOptions(
+  args: RepairOptionsRequest,
+  options?: MutationOptions,
+): Promise<PipelineRepairOptionsResponse> {
+  return post<unknown>("/api/pipeline/repair/options", {
+    source_file: args.sourceFile,
+    source_revision: args.sourceRevision,
+    targets: args.targets.map((target) => ({
+      target_source_file: target.sourceFile,
+      target_recovery_id: target.recoveryId,
+    })),
+  }, options).then(async (data) => expectGeneratedContract(
+    "PipelineRepairOptionsResponse",
+    (await editorValidators()).validatePipelineRepairOptionsResponse,
+    data,
+  ))
 }
 
 export function applyRemoveBrokenConnection(

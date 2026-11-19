@@ -36,7 +36,6 @@ from haute._node_specs import (
     RESPONSE_NODE_TYPES,
     SOURCE_NODE_TYPES,
     node_spec,
-    singleton_name_problem,
 )
 from haute._project_context import standalone_project_scope
 from haute._standalone_nodes import (
@@ -469,6 +468,7 @@ class NodeRegistry:
         from haute._config_validation import (
             reject_camel_case_decorator_kwargs,
             reject_removed_node_reuse_kwargs,
+            reject_singleton_misname,
             validate_node_config,
         )
 
@@ -495,9 +495,7 @@ class NodeRegistry:
 
         def _register(f: Callable) -> Callable:
             node_type = NodeType(config.get("_node_type", DEFAULT_NODE_TYPE))
-            named = singleton_name_problem(node_type, f.__name__)
-            if named is not None:
-                raise ConfigError(named, func_name=f.__name__, node_type=node_type.value)
+            reject_singleton_misname(node_type, f.__name__)
             if is_configured(node_type, config):
                 # A configured source's hook takes df, yet it has no inputs.
                 is_source = node_type in SOURCE_NODE_TYPES

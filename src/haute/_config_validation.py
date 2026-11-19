@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from haute._api_input_schema import ApiInputSchemaError
 from haute._contracts import DEPLOY_ANSWER_PER_ROW_CONFIG_KEY, DEPLOY_PRIVATE_CONFIG_KEYS
 from haute._node_config_models import NODE_CONFIG_MODELS
-from haute._node_specs import node_spec, node_type_table
+from haute._node_specs import node_spec, node_type_table, singleton_name_problem
 from haute._output_assembler import OutputMappingSchemaError
 from haute._types import NodeType
 from haute.errors import ConfigError, NodeConfigError, ParseError
@@ -214,6 +214,20 @@ def removed_node_instance_error(form: str) -> ParseError:
         removed_node_instance=form,
         remediation=remediation,
     )
+
+
+def reject_singleton_misname(node_type: NodeType, func_name: str) -> None:
+    """Refuse a request input or response node named other than its type's one name
+    (READ-46). The refusal carries ``singleton_name``, so recovery reports a naming problem,
+    which no settings rebuild mends."""
+    problem = singleton_name_problem(node_type, func_name)
+    if problem is not None:
+        raise ConfigError(
+            problem,
+            func_name=func_name,
+            node_type=node_type.value,
+            singleton_name=node_spec(node_type).singleton_name,
+        )
 
 
 def reject_camel_case_decorator_kwargs(kwargs: Mapping[str, Any], func_name: str = "") -> None:

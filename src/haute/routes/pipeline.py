@@ -91,7 +91,7 @@ from haute._pipeline_repair import (
     apply_remove_connection_plan,
     apply_remove_unavailable_node_plan,
 )
-from haute._pipeline_repair_actions import apply_scoped_node_save
+from haute._pipeline_repair_actions import apply_scoped_node_save, recovery_action_options
 from haute._pipeline_settings import (
     SETTINGS_PATH,
     apply_chunk_rows,
@@ -238,6 +238,8 @@ from haute.schemas import (
     PipelineEditorDocument,
     PipelineNodeSaveRequest,
     PipelineRepairApplyResponse,
+    PipelineRepairOptionsRequest,
+    PipelineRepairOptionsResponse,
     PipelineRepairRecoverRequest,
     PipelineRepairRemoveConnectionRequest,
     PipelineRepairRemoveRequest,
@@ -1240,6 +1242,31 @@ async def apply_remove_broken_connection(
         io_event="pipeline_repair_apply_io_failed",
         noun="repair",
     )
+
+
+@router.post("/pipeline/repair/options", response_model=PipelineRepairOptionsResponse)
+async def repair_options(
+    body: PipelineRepairOptionsRequest,
+) -> PipelineRepairOptionsResponse | JSONResponse:
+    """Which of Recover and Reset each asked unavailable node admits, each plan dry-run in
+    an isolated preview. Nothing is written; the save lock keeps the one revision every
+    plan reads, and its copy into each preview, from changing under them."""
+    try:
+        async with save_lock:
+            return await run_in_threadpool(
+                recovery_action_options, project_root=current_project().root, request=body
+            )
+    except PipelineRepairError as exc:
+        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
+    except OSError as exc:
+        logger.warning("pipeline_repair_options_io_failed", error=str(exc))
+        return _pipeline_recovery_error_response(
+            409,
+            {
+                "code": "repair_artifact_unavailable",
+                "message": "A repair artifact could not be read, so no repair could be checked.",
+            },
+        )
 
 
 @router.post("/pipeline/repair/recover/apply", response_model=PipelineRepairApplyResponse)

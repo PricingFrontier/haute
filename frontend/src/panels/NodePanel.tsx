@@ -50,6 +50,13 @@ import {
 } from "./useNodePanelSession"
 import { NodeConfigEditor } from "./NodeConfigEditor"
 import { useRecordedNodeColumns } from "./useRecordedNodeColumns"
+import {
+  useRepairOptions,
+  type RepairOffer,
+  type RepairOffers,
+  type RepairOptions,
+  type RepairTarget,
+} from "../hooks/useRepairOptions"
 
 type NodePanelProps = {
   node: SimpleNode | null
@@ -552,7 +559,8 @@ function diagnosticsFor(data: HauteNodeData, diagnostics: PipelineDiagnostic[]):
   return diagnostics.filter((diagnostic) => diagnosticIds.has(diagnostic.diagnostic_id))
 }
 
-/** Recover and Reset rebuild a known ordinary node: never a submodel or its port. */
+/** Recover and Reset rebuild the settings of a known ordinary node, never a submodel or its
+ *  port, which have none; whether the server admits either is its dry run's answer. */
 function rebuildsSettings(node: RecoveryNode): boolean {
   const nodeType = effectiveNodeType(node)
   return Object.hasOwn(NODE_TYPE_META, nodeType)
@@ -560,14 +568,99 @@ function rebuildsSettings(node: RecoveryNode): boolean {
     && nodeType !== NODE_TYPES.SUBMODEL_PORT
 }
 
-/** Reset writes a new node's settings; a new Edge Join has no keys, and cannot be written. */
-function resettable(node: RecoveryNode): boolean {
-  return rebuildsSettings(node) && effectiveNodeType(node) !== NODE_TYPES.EDGE_JOIN
+type RepairRequest = Parameters<NonNullable<NodePanelProps["onRemoveUnavailableNode"]>>[0]
+
+/** Why a repair the node's kind has is not offered: the server refused it, or could not be
+ *  asked. One line per reason, naming each repair it covers. */
+function RepairNotes({ notes, retry }: {
+  notes: { label: string; offer: RepairOffer }[]
+  retry: () => void
+}) {
+  const lines = new Map<string, { failed: boolean; reason: string; labels: string[] }>()
+  for (const { label, offer } of notes) {
+    if (offer.state !== "unavailable" && offer.state !== "failed") continue
+    const key = JSON.stringify([offer.state, offer.reason])
+    const line = lines.get(key) ?? { failed: offer.state === "failed", reason: offer.reason, labels: [] }
+    line.labels.push(label)
+    lines.set(key, line)
+  }
+  if (lines.size === 0) return null
+  return (
+    <div data-testid="node-repair-refusals" className="space-y-1 text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+      {[...lines].map(([key, { failed, reason, labels }]) => (
+        <p key={key}>
+          <span className="font-semibold">
+            {labels.join(" and ")}{" "}
+            {failed ? "couldn't be checked:" : labels.length > 1 ? "aren't available:" : "isn't available:"}
+          </span>{" "}
+          {reason}
+        </p>
+      ))}
+      {[...lines.values()].some((line) => line.failed) && (
+        <button type="button" onClick={retry} className="font-semibold underline" style={{ color: "var(--text-primary)" }}>
+          Check again
+        </button>
+      )}
+    </div>
+  )
 }
 
-/** Diagnostics that rebuilding settings cannot mend: only removal is supported. */
-function connectionsBroken(data: HauteNodeData, diagnostics: PipelineDiagnostic[]): boolean {
-  return diagnosticsFor(data, diagnostics).some((diagnostic) => ["node_topology_invalid", "node_instance_removed"].includes(diagnostic.code))
+/** One unavailable node's repairs, in the root inspector and in an unavailable submodel's
+ *  list alike: Recover and Reset show only as the server's dry run admits them. */
+function RepairActions({ target, rebuilds, offers, retry, onRepair, layout, removeText, ariaLabels }: {
+  target: RepairTarget
+  /** The node's kind has settings to rebuild. */
+  rebuilds: boolean
+  offers: RepairOffers
+  retry: () => void
+  onRepair: (request: RepairRequest) => void
+  layout: "stacked" | "row"
+  removeText: string
+  /** Accessible names for a node named among others. */
+  ariaLabels?: { recover: string; reset: string; remove: string }
+}) {
+  const buttonClass = layout === "stacked"
+    ? "w-full rounded px-3 py-2 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+    : "flex-1 rounded px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+  const actions = rebuilds
+    ? ([
+      { action: "recover", label: "Recover settings", offer: offers.recover },
+      { action: "reset", label: "Reset node", offer: offers.reset },
+    ] as const)
+    : []
+  return (
+    <>
+      <RepairNotes notes={[...actions]} retry={retry} />
+      <div className={layout === "stacked" ? "space-y-2" : "flex gap-2"}>
+        {actions.filter(({ offer }) => offer.state !== "unavailable").map(({ action, label, offer }) => {
+          const held = offer.state !== "available"
+          return (
+            <button
+              key={action}
+              type="button"
+              aria-label={ariaLabels?.[action]}
+              disabled={held}
+              aria-busy={offer.state === "checking"}
+              onClick={() => onRepair({ ...target, action })}
+              className={buttonClass}
+              style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
+            >
+              {label}
+            </button>
+          )
+        })}
+        <button
+          type="button"
+          aria-label={ariaLabels?.remove}
+          onClick={() => onRepair(target)}
+          className={buttonClass}
+          style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
+        >
+          {removeText}
+        </button>
+      </div>
+    </>
+  )
 }
 
 /** An unavailable submodel's own unavailable nodes: the editor does not open its definition. */
@@ -588,7 +681,16 @@ type UnavailableDefinitionNodeProps = {
   node: PipelineGraph["nodes"][number]
   diagnostics: PipelineDiagnostic[]
   canRepair: boolean
+  options: RepairOptions
   onRemoveUnavailableNode?: NodePanelProps["onRemoveUnavailableNode"]
+}
+
+/** The repair identity of one unavailable node of an unavailable submodel, in the submodel's file. */
+function definitionNodeTarget(node: PipelineGraph["nodes"][number], canRepair: boolean): RepairTarget | null {
+  const data = node.data as HauteNodeData
+  return canRepair && typeof data._sourceFile === "string" && typeof data._recoveryId === "string"
+    ? { sourceFile: data._sourceFile, recoveryId: data._recoveryId }
+    : null
 }
 
 /** One unavailable node of an unavailable submodel, recovered by its own identity in the submodel's file. */
@@ -596,19 +698,12 @@ function UnavailableDefinitionNode({
   node,
   diagnostics,
   canRepair,
+  options,
   onRemoveUnavailableNode,
 }: UnavailableDefinitionNodeProps) {
   const data = node.data as HauteNodeData
   const label = String(data.label)
-  const repair = onRemoveUnavailableNode
-  const target = canRepair
-    && typeof data._sourceFile === "string"
-    && typeof data._recoveryId === "string"
-    ? { sourceFile: data._sourceFile, recoveryId: data._recoveryId }
-    : null
-  // An unknown decorator, an instance or a node with wrong connections has
-  // nothing a rebuild can mend, but can still be removed.
-  const rebuilds = target !== null && rebuildsSettings(node) && !connectionsBroken(data, diagnostics)
+  const target = definitionNodeTarget(node, canRepair)
   return (
     <li
       className="rounded-lg p-3 text-[11px] leading-relaxed"
@@ -620,45 +715,18 @@ function UnavailableDefinitionNode({
           {diagnostic.message}
         </div>
       ))}
-      {target && repair && (
-        <div className="mt-2 flex gap-2">
-          {rebuilds && (
-            <>
-              <button
-                type="button"
-                aria-label={`Recover settings for ${label}`}
-                onClick={() => repair({ ...target, action: "recover" })}
-                className="flex-1 rounded px-3 py-1.5 font-semibold"
-                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-              >
-                Recover settings
-              </button>
-              {resettable(node) && (
-                <button
-                  type="button"
-                  aria-label={`Reset node ${label}`}
-                  onClick={() => repair({ ...target, action: "reset" })}
-                  className="flex-1 rounded px-3 py-1.5 font-semibold"
-                  style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-                >
-                  Reset node
-                </button>
-              )}
-            </>
-          )}
-          <button
-            type="button"
-            aria-label={`Remove node ${label}`}
-            onClick={() => repair(target)}
-            className="flex-1 rounded px-3 py-1.5 font-semibold"
-            style={{
-              color: "var(--danger-text)",
-              background: "var(--danger-soft)",
-              border: "1px solid var(--danger-border)",
-            }}
-          >
-            Remove node
-          </button>
+      {target && onRemoveUnavailableNode && (
+        <div className="mt-2 space-y-2">
+          <RepairActions
+            target={target}
+            rebuilds={rebuildsSettings(node)}
+            offers={options.offersFor(target)}
+            retry={options.retry}
+            onRepair={onRemoveUnavailableNode}
+            layout="row"
+            removeText="Remove node"
+            ariaLabels={{ recover: `Recover settings for ${label}`, reset: `Reset node ${label}`, remove: `Remove node ${label}` }}
+          />
         </div>
       )}
     </li>
@@ -687,12 +755,19 @@ function RecoveryNodePanel({
   const canRemove = availability === "unavailable"
     && canRepair
     && hasRecoveryTarget
-  // Recover and Reset share eligibility (unavailable, known ordinary, owned,
-  // connections sound), except that an Edge Join cannot be reset.
-  const settingsMendable = canRemove && !connectionsBroken(recoveryData, diagnostics)
-  const canRecover = settingsMendable && rebuildsSettings(node)
-  const canReset = settingsMendable && resettable(node)
+  const ownTarget: RepairTarget | null = canRemove
+    ? { sourceFile: recoveryData._sourceFile!, recoveryId: recoveryData._recoveryId! }
+    : null
   const innerNodes = availability === "unavailable" ? unavailableDefinitionNodes(node, submodels) : []
+  // One question asks the server's dry run for every node this inspector can rebuild.
+  const asked = onRemoveUnavailableNode === undefined ? [] : [
+    ...(ownTarget !== null && rebuildsSettings(node) ? [ownTarget] : []),
+    ...innerNodes.flatMap((inner) => {
+      const target = definitionNodeTarget(inner, canRepair)
+      return target !== null && rebuildsSettings(inner) ? [target] : []
+    }),
+  ]
+  const repairOptions = useRepairOptions(asked)
 
   return (
     <PanelShell testId="node-panel">
@@ -798,53 +873,24 @@ function RecoveryNodePanel({
                   node={inner}
                   diagnostics={diagnostics}
                   canRepair={canRepair}
+                  options={repairOptions}
                   onRemoveUnavailableNode={onRemoveUnavailableNode}
                 />
               ))}
             </ul>
           </section>
         )}
-        {(canRemove || canRecover) && (
+        {ownTarget !== null && onRemoveUnavailableNode && (
           <div className="space-y-2">
-            {canRecover && (
-              <button
-                type="button"
-                onClick={() => onRemoveUnavailableNode({
-                  sourceFile: recoveryData._sourceFile!,
-                  recoveryId: recoveryData._recoveryId!,
-                  action: "recover",
-                })}
-                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-              >
-                Recover settings
-              </button>
-            )}
-            {canReset && (
-              <button
-                type="button"
-                onClick={() => onRemoveUnavailableNode({
-                  sourceFile: recoveryData._sourceFile!,
-                  recoveryId: recoveryData._recoveryId!,
-                  action: "reset",
-                })}
-                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-              >
-                Reset node
-              </button>
-            )}
-            {canRemove && <button
-              type="button"
-              onClick={() => onRemoveUnavailableNode({
-                sourceFile: recoveryData._sourceFile!,
-                recoveryId: recoveryData._recoveryId!,
-              })}
-              className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-              style={{ color: "var(--danger-text)", background: "var(--danger-soft)", border: "1px solid var(--danger-border)" }}
-            >
-              Remove unavailable node
-            </button>}
+            <RepairActions
+              target={ownTarget}
+              rebuilds={rebuildsSettings(node)}
+              offers={repairOptions.offersFor(ownTarget)}
+              retry={repairOptions.retry}
+              onRepair={onRemoveUnavailableNode}
+              layout="stacked"
+              removeText="Remove unavailable node"
+            />
           </div>
         )}
       </div>

@@ -20823,6 +20823,108 @@
       "title": "PipelineRepairFieldChange",
       "type": "object"
     },
+    "PipelineRepairNodeOptions": {
+      "additionalProperties": false,
+      "description": "Recover and Reset for one unavailable node, each dry-run against the named revision.",
+      "properties": {
+        "recover": {
+          "$ref": "#/$defs/PipelineRepairOption"
+        },
+        "reset": {
+          "$ref": "#/$defs/PipelineRepairOption"
+        },
+        "target_recovery_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Target Recovery Id",
+          "type": "string"
+        },
+        "target_source_file": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Target Source File",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_source_file",
+        "target_recovery_id",
+        "recover",
+        "reset"
+      ],
+      "title": "PipelineRepairNodeOptions",
+      "type": "object"
+    },
+    "PipelineRepairOption": {
+      "additionalProperties": false,
+      "description": "Whether one repair's plan builds for the node, and the refusal when it does not.",
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "available",
+        "code",
+        "reason"
+      ],
+      "title": "PipelineRepairOption",
+      "type": "object"
+    },
+    "PipelineRepairOptionsResponse": {
+      "additionalProperties": false,
+      "description": "The repairs each asked node admits, in the order the request named them.",
+      "properties": {
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/PipelineRepairNodeOptions"
+          },
+          "maxItems": 256,
+          "title": "Nodes",
+          "type": "array"
+        },
+        "source_revision": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_revision",
+        "nodes"
+      ],
+      "title": "PipelineRepairOptionsResponse",
+      "type": "object"
+    },
     "PipelineSettingsAutomatic": {
       "description": "Each pipeline setting's automatic figure now; ``null`` time limit is no limit.",
       "properties": {
@@ -30383,6 +30485,9 @@
     "PipelineRepairApplyResponse": {
       "$ref": "#/$defs/PipelineRepairApplyResponse"
     },
+    "PipelineRepairOptionsResponse": {
+      "$ref": "#/$defs/PipelineRepairOptionsResponse"
+    },
     "PipelineSettingsResponse": {
       "$ref": "#/$defs/PipelineSettingsResponse"
     },
@@ -30722,6 +30827,7 @@
     "PolarsStepsRenderResponse",
     "PolarsFreeCodeColumnsResponse",
     "PipelineSettingsResponse",
+    "PipelineRepairOptionsResponse",
     "OptimiserSolveResponse",
     "OptimiserEstimateResponse",
     "OptimiserStatusResponse",
@@ -30869,7 +30975,8 @@
       "EditorIdentitiesResponse",
       "PolarsStepsRenderResponse",
       "PolarsFreeCodeColumnsResponse",
-      "PipelineSettingsResponse"
+      "PipelineSettingsResponse",
+      "PipelineRepairOptionsResponse"
     ],
     "editor-document": [
       "PipelineEditorDocument",

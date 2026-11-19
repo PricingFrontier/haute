@@ -48,14 +48,27 @@ from haute.schemas import (
     PipelineNodeSaveRequest,
     PipelineRepairChange,
     PipelineRepairFieldChange,
+    PipelineRepairNodeOptions,
+    PipelineRepairOption,
+    PipelineRepairOptionsRequest,
+    PipelineRepairOptionsResponse,
     PipelineRepairPlanResponse,
     PipelineRepairRecoverRequest,
+    PipelineRepairTarget,
     RecoveryGraphSnapshot,
     RecoveryPipelineNode,
 )
 
 if TYPE_CHECKING:
     from haute._node_config_recovery import RecoveryIssue
+
+
+#: Node diagnostics that a rebuild of the node's settings cannot mend: wrong connections, a
+#: removed reuse form and a request input or response node under another name (READ-46).
+#: Recover and Reset refuse them before any plan, with the diagnostic's own message.
+SETTINGS_UNMENDABLE_CODES = frozenset(
+    {"node_topology_invalid", "node_instance_removed", "node_name_invalid"}
+)
 
 
 def _unsupported(message: str) -> PipelineRepairError:
@@ -495,7 +508,7 @@ def _recover_node(
     node_type, raw, raw_changes = read_raw_node_settings(root, document, target)
     # Engine issues are completeness for a direct recover, never a plan gate.
     result = reconcile_config(node_type, raw)
-    _require_recoverable(node_type, result.config)
+    _require_recoverable(node_type, result.config, _node_diagnostics(document, target))
     edits = _reset_node(
         root,
         root_path,
@@ -523,21 +536,36 @@ def _recover_node(
     )
 
 
-def _require_recoverable(node_type: NodeType, config: dict[str, Any]) -> None:
+def _node_diagnostics(document: PipelineEditorDocument, target: RecoveryPipelineNode) -> list[str]:
+    """The messages of the diagnostics that made *target* unavailable."""
+    return [
+        diagnostic.message
+        for diagnostic in document.diagnostics
+        if diagnostic.diagnostic_id in target.diagnostic_ids
+    ]
+
+
+def _require_recoverable(
+    node_type: NodeType, config: dict[str, Any], diagnostics: Sequence[str] = ()
+) -> None:
     """Refuse a recover whose candidate config its model refuses, before any edit is planned.
 
     The candidate must pass the model's shape and engine rules, so a recovered
     config always loads; one that does not (no provider survived, a required
     value with no default to take) is refused, and Reset starts the node afresh.
+    The refusal names the node's own *diagnostics* when it has them: what the authored
+    settings need. The candidate's failure (often a key the recover dropped, so missing)
+    is named only when there are none, since it describes the candidate, not the source.
     """
     from haute._config_validation import CONFIG_REFUSALS, validate_node_config
 
     try:
         validate_node_config(node_type, config, require_complete=False)
     except CONFIG_REFUSALS as exc:
+        authored = " ".join(diagnostics[:3])
         raise _unsupported(
-            f"Recover settings cannot rebuild these settings ({exc}). "
-            "Reset node replaces them with a new node's."
+            f"Recover settings cannot rebuild these settings: {authored or exc} "
+            "Fix them in the source, or Reset node replaces them with a new node's."
         ) from exc
 
 
@@ -599,6 +627,28 @@ def build_recovery_action_plan(
 ) -> PipelineRepairPlan:
     root = project_root.resolve()
     root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
+    return _plan_recovery_action(
+        root,
+        root_path,
+        document,
+        PipelineRepairTarget(
+            target_source_file=request.target_source_file,
+            target_recovery_id=request.target_recovery_id,
+        ),
+        request.action,
+        request.source_revision,
+    )
+
+
+def _plan_recovery_action(
+    root: Path,
+    root_path: Path,
+    document: PipelineEditorDocument,
+    request: PipelineRepairTarget,
+    action: Literal["reset", "recover"],
+    source_revision: str,
+) -> PipelineRepairPlan:
+    """The plan of one Recover or Reset against *document*, already read at *source_revision*."""
     path = _resolve_project_file(root, request.target_source_file, suffix=".py")
     target = _find_target(
         document,
@@ -608,20 +658,20 @@ def build_recovery_action_plan(
     for diagnostic in document.diagnostics:
         if (
             diagnostic.diagnostic_id in target.diagnostic_ids
-            and diagnostic.code == "node_instance_removed"
+            and diagnostic.code in SETTINGS_UNMENDABLE_CODES
         ):
             raise _unsupported(diagnostic.message)
     field_changes: list[PipelineRepairFieldChange] = []
     completeness: list[PipelineNodeCompleteness] = []
     previous_config: dict[str, Any] | None = None
-    if request.action == "recover":
+    if action == "recover":
         edits, previous_config, field_changes, completeness = _recover_node(
             root, root_path, path, target, document
         )
     else:
         edits = _reset_node(root, root_path, path, target, document)
     kind: Literal["reset_node", "recover_node"] = (
-        "recover_node" if request.action == "recover" else "reset_node"
+        "recover_node" if action == "recover" else "reset_node"
     )
     return _finalise_action_plan(
         root=root,
@@ -629,12 +679,52 @@ def build_recovery_action_plan(
         path=path,
         target=target,
         document=document,
-        source_revision=request.source_revision,
+        source_revision=source_revision,
         kind=kind,
         edits=edits,
         field_changes=field_changes,
         completeness=completeness,
         previous_config=previous_config,
+    )
+
+
+def recovery_action_options(
+    *, project_root: Path, request: PipelineRepairOptionsRequest
+) -> PipelineRepairOptionsResponse:
+    """Which of Recover and Reset each asked node admits: each is available exactly when its
+    plan builds, with the plan's refusal as the reason when it does not.
+
+    Each plan is the one an apply would build, verified in an isolated preview, so the
+    answer writes nothing and cannot drift from what an apply does: a refusal no
+    diagnostic code anticipates still withholds its action. The revision is read once for
+    every asked node; a stale one is no answer about any node, and propagates, as it does
+    from an apply.
+    """
+    root = project_root.resolve()
+    root_path, document = _document_at_revision(root, request.source_file, request.source_revision)
+
+    def option(
+        target: PipelineRepairTarget, action: Literal["reset", "recover"]
+    ) -> PipelineRepairOption:
+        try:
+            _plan_recovery_action(
+                root, root_path, document, target, action, request.source_revision
+            )
+        except PipelineRepairError as exc:
+            return PipelineRepairOption(available=False, code=exc.code, reason=exc.message[:4096])
+        return PipelineRepairOption(available=True)
+
+    return PipelineRepairOptionsResponse(
+        source_revision=request.source_revision,
+        nodes=[
+            PipelineRepairNodeOptions(
+                target_source_file=target.target_source_file,
+                target_recovery_id=target.target_recovery_id,
+                recover=option(target, "recover"),
+                reset=option(target, "reset"),
+            )
+            for target in request.targets
+        ],
     )
 
 
@@ -672,9 +762,15 @@ def _finalise_action_plan(
             for diagnostic in preview.diagnostics
             if diagnostic.element_id == target.recovery_id
         ]
+        done = (
+            "Recover settings would rebuild the settings"
+            if kind == "recover_node"
+            else "Reset node would replace the settings"
+        )
+        remaining = " ".join(messages[:3]) or "Its source still does not load."
         raise _unsupported(
-            "This action still requires valid configuration before the node can be recovered. "
-            + " ".join(messages[:3])
+            f"{done}, but {target.authored_id!r} would still not load, "
+            f"since this is not in its settings: {remaining}"
         )
     # Recovery rewrites may expose child nodes; they may not lose existing identities.
     before_ids = {(node.source_file, node.authored_id) for node in _iter_recovery_nodes(document)}

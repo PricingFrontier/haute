@@ -36,7 +36,6 @@ from haute._node_specs import (
     STEPPED_NODE_TYPES,
     node_spec,
     node_type_table,
-    singleton_name_problem,
 )
 from haute._polars_steps import (
     JOIN_MAINTAIN_ORDER,
@@ -576,14 +575,13 @@ def _resolve_node_config(
     from haute._config_validation import (
         reject_camel_case_decorator_kwargs,
         reject_removed_node_reuse_kwargs,
+        reject_singleton_misname,
     )
 
     reject_removed_node_reuse_kwargs(decorator_kwargs)
     reject_camel_case_decorator_kwargs(decorator_kwargs, func_name)
     if func_name and explicit_node_type is not None:
-        named = singleton_name_problem(explicit_node_type, func_name)
-        if named is not None:
-            raise ConfigError(named, func_name=func_name, node_type=explicit_node_type.value)
+        reject_singleton_misname(explicit_node_type, func_name)
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or DEFAULT_NODE_TYPE

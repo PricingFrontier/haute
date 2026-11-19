@@ -1716,6 +1716,57 @@ class PipelineRepairRecoverRequest(BaseModel):
     action: Literal["reset", "recover"]
 
 
+class PipelineRepairTarget(BaseModel):
+    """One unavailable node, by its recovery identity in the file that authors it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_source_file: BoundedPath = Field(min_length=1)
+    target_recovery_id: BoundedName = Field(min_length=1)
+
+
+class PipelineRepairOptionsRequest(BaseModel):
+    """Which settings repairs the unavailable nodes one inspector shows admit, asked of one
+    document revision before any is offered."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_file: BoundedPath = Field(min_length=1)
+    source_revision: RevisionToken
+    targets: list[PipelineRepairTarget] = Field(min_length=1, max_length=256)
+
+
+class PipelineRepairOption(BaseModel):
+    """Whether one repair's plan builds for the node, and the refusal when it does not."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    #: The refusal's stable code and message, when the repair is not available.
+    code: str | None = Field(default=None, max_length=128)
+    reason: str | None = Field(default=None, max_length=4096)
+
+
+class PipelineRepairNodeOptions(BaseModel):
+    """Recover and Reset for one unavailable node, each dry-run against the named revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_source_file: BoundedPath = Field(min_length=1)
+    target_recovery_id: BoundedName = Field(min_length=1)
+    recover: PipelineRepairOption
+    reset: PipelineRepairOption
+
+
+class PipelineRepairOptionsResponse(BaseModel):
+    """The repairs each asked node admits, in the order the request named them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_revision: RevisionToken
+    nodes: list[PipelineRepairNodeOptions] = Field(max_length=256)
+
+
 class PipelineRepairRemoveConnectionRequest(BaseModel):
     """One confirmed removal of a broken ``connect()`` statement, by its recovery identity."""
 

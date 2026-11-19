@@ -851,6 +851,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/PipelineEditorDocument"},
         },
     },
+    "/api/pipeline/repair/options": {
+        "POST": {
+            "request_ref": "#/components/schemas/PipelineRepairOptionsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PipelineRepairOptionsResponse"},
+        },
+    },
     "/api/pipeline/repair/recover/apply": {
         "POST": {
             "request_ref": "#/components/schemas/PipelineRepairRecoverRequest",

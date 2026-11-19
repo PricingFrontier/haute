@@ -17,10 +17,14 @@ import pytest
 import haute
 from haute._graph_shape import validate_singleton_groups
 from haute._node_specs import SINGLETON_NODE_NAMES, singleton_name_problem
+from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
 from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from haute.parser import parse_pipeline_source
+from haute.schemas import PipelineRepairRecoverRequest
+from tests._git_helpers import init_repo
 
 NODE_TYPES_TS = Path(__file__).parents[1] / "frontend" / "src" / "utils" / "nodeTypes.ts"
 
@@ -81,6 +85,38 @@ def test_a_standalone_run_refuses_it_too() -> None:
 
         @pipeline.output(config="config/quote_response/response.json")
         def response(): ...
+
+
+@pytest.mark.parametrize("action", ["recover", "reset"])
+def test_recovery_reports_the_name_and_rebuilds_no_settings(tmp_path: Path, action: str) -> None:
+    """A misnamed one is a naming problem, never a settings one: the editor document gives
+    it its own code, and Recover and Reset refuse with the rename it needs, writing nothing."""
+    init_repo(tmp_path)
+    (tmp_path / "config" / "quote_response").mkdir(parents=True)
+    (tmp_path / "config" / "quote_response" / "response.json").write_text(
+        '{"output_mapping": []}', encoding="utf-8"
+    )
+    path = tmp_path / "main.py"
+    source = _RESPONSE_NAMED.format(name="response")
+    path.write_text(source, encoding="utf-8", newline="\n")
+
+    document = load_pipeline_editor_document(path, project_root=tmp_path)
+    node = next(node for node in document.nodes if node.authored_id == "response")
+    assert node.availability == "unavailable"
+    [diagnostic] = [d for d in document.diagnostics if d.diagnostic_id in node.diagnostic_ids]
+    assert diagnostic.code == "node_name_invalid"
+    request = PipelineRepairRecoverRequest(
+        source_file=document.source_file,
+        source_revision=document.source_revision,
+        target_source_file=node.source_file,
+        target_recovery_id=node.recovery_id,
+        action=action,
+    )
+    with pytest.raises(PipelineRepairError) as refused:
+        build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    assert str(refused.value) == diagnostic.message
+    assert "rename 'response' to 'quote_response'" in diagnostic.message
+    assert path.read_text(encoding="utf-8") == source
 
 
 @pytest.mark.parametrize("node_type", list(SINGLETON_NODE_NAMES), ids=lambda t: t.value)

@@ -1013,19 +1013,29 @@ No MISSING COLUMNS section is rendered when the instance has no such warnings.
 node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
 the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
 repair flow; it never derives or submits source spans.
-Known unavailable ordinary nodes offer `Recover settings` as the primary action
-and `Reset node` as the destructive alternative, except an Edge Join, which offers no
-Reset: a new join has no keys, and a join without keys cannot be written. A node whose
-connections are wrong (a `node_topology_invalid` diagnostic) offers neither, since
-rebuilding its settings cannot mend them; removal stays. Submodels, unknown types and
-blocked nodes cannot reset or recover; a node refused for a removed node-level instance
-form (`@pipeline.instance`, `of=`, `instanceOf`) offers removal only, with the parser's
-message naming the one-node submodel form. The editor does not open an
+A known unavailable ordinary node may offer `Recover settings` as the primary action
+and `Reset node` as the destructive alternative; submodels, their ports, unknown types
+and blocked nodes have no settings to rebuild, so they show neither, and every
+unavailable node keeps its removal. Which of the two a node is offered is the server's
+answer alone: `useRepairOptions` asks `/api/pipeline/repair/options` once for every
+node the inspector shows (the node and its submodel's listed unavailable nodes), and
+asks again when the document's revision changes. The editor keeps no list of diagnostic
+codes or node types it refuses. Until the server answers, both buttons show disabled; a
+repair it refuses is withheld and its reason shown instead (one line names both when they
+share it). So an Edge Join offers no Reset (a new join has no keys, and a join without
+keys cannot be written), and a node whose connections are wrong (`node_topology_invalid`),
+a removed node-level instance form (`@pipeline.instance`, `of=`, `instanceOf`, the
+parser's message naming the one-node submodel form) or a request input or response node
+under another name than its type's (`node_name_invalid`, READ-46, with the rename it
+needs) offers removal only. A failed question admits nothing: both buttons stay
+disabled, the failure's message shows, and `Check again` asks once more. A Recover the
+server still refuses leads with the node's own diagnostics. Both places render their
+repairs through one `RepairActions` component. The editor does not open an
 unavailable submodel's definition, so that submodel's inspector lists the
 definition's unavailable nodes (`submodels[config.definition_id]`) under
 "Unavailable nodes in this submodel", each with its diagnostics, `Recover settings`
-and `Reset node` for a known ordinary node, and `Remove node` for any of them (an
-unknown decorator has nothing to rebuild), all submitted with that
+and `Reset node` for a known ordinary node as the server admits them, and `Remove node`
+for any of them (an unknown decorator has nothing to rebuild), all submitted with that
 node's own `_recoveryId` and `_sourceFile` (the submodel's file). `PipelineRepairTarget.action` chooses the dialog
 transport and confirmation labels. Reset explicitly warns that settings/custom
 code are replaced and configuration may be needed; recover explains that valid
