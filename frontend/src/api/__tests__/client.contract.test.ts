@@ -79,6 +79,7 @@ import {
   trainModel,
   updateUtilityFile,
 } from "../client"
+import { sentHeld } from "../../testSupport/keyedWrites"
 
 let mockFetch: ReturnType<typeof vi.fn>
 
@@ -154,7 +155,7 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({ file: 123, pipeline_name: "pricing" }))
 
     await expect(
-      savePipeline({
+      sentHeld((ticket) => savePipeline({
         name: "pricing",
         description: "",
         graph: dummyGraph,
@@ -165,7 +166,7 @@ describe("client runtime contracts", () => {
         connection_id: null,
         operation: "save-test-operation",
         edited_steps: [],
-      }),
+      }, ticket)),
     ).rejects.toThrow("SavePipelineResponse: invalid contract")
   })
 
@@ -1295,7 +1296,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "logToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("train_mlflow_log_response"), run_id: 42 },
-      call: () => logToMlflow({ job_id: "job-1", destination: "" }),
+      call: () => sentHeld((ticket) => logToMlflow({ job_id: "job-1", destination: "", operation_id: "op-mlflow-1" }, ticket)),
       error: "LogExperimentResponse: invalid contract at /run_id: type",
     },
     {

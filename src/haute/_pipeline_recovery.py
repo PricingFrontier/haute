@@ -74,6 +74,7 @@ from haute._pipeline_revision import pipeline_recovery_revision
 from haute._polars_steps import STEPS_FROM_CODE
 from haute._project_settings import ProjectSettingsError
 from haute._sandbox import is_contained
+from haute._save_records import interrupted_save, interruption_words
 from haute._sidecar import (
     SidecarReadResult,
     _normalise_sidecar_sources,
@@ -2864,6 +2865,36 @@ def load_pipeline_editor_document(
     root = (project_root or path.parent).resolve()
     if not is_contained(root, path):
         raise ValueError("Pipeline recovery path escapes the project root.")
+    return _with_interrupted_save(_load_editor_document(path, root), root)
+
+
+def _with_interrupted_save(document: PipelineEditorDocument, root: Path) -> PipelineEditorDocument:
+    """*document* with a warning naming the files of a save of it that stopped before it
+    committed (``haute._save_records``). The warning comes after the load status is decided:
+    the document is as loadable as its files make it, and saving it again writes them all."""
+    record = interrupted_save(root, document.source_file)
+    if record is None:
+        return document
+    message, remediation = interruption_words(record)
+    warning = _diagnostic(
+        code="save_interrupted",
+        scope="pipeline",
+        message=message,
+        source_file=document.source_file,
+        remediation=remediation,
+    ).model_copy(update={"severity": "warning"})
+    diagnostics = [warning, *document.diagnostics]
+    return document.model_copy(
+        update={
+            "diagnostics": diagnostics[:_MAX_DIAGNOSTICS],
+            "diagnostics_omitted": document.diagnostics_omitted
+            + max(0, len(diagnostics) - _MAX_DIAGNOSTICS),
+        }
+    )
+
+
+def _load_editor_document(path: Path, root: Path) -> PipelineEditorDocument:
+    """:func:`load_pipeline_editor_document` for the resolved *path* inside *root*."""
     captures = _SourceCaptures(root)
     raw_source = captures.read_bytes(path)
     try:

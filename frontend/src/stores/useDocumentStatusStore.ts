@@ -160,6 +160,9 @@ function documentState(
   }
 }
 
+/** The warning a pipeline's document carries for a save of it that stopped part-way. */
+const SAVE_INTERRUPTED = "save_interrupted"
+
 const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   ...initialState(),
   resyncRequests: 0,
@@ -187,7 +190,13 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   // Keep their original config/version stamps so edited results still read stale.
   // The canvas now holds the saved document: a resync naming its fingerprint is
   // answered with nothing while the file is still that version.
-  acknowledgeSave: (sourceRevision, documentFingerprint) => set({ sourceRevision, documentFingerprint }),
+  // The save's document is the one on disk now: a save that stopped part-way, which a save
+  // that lands replaces, is no longer reported.
+  acknowledgeSave: (sourceRevision, documentFingerprint) => set((state) => ({
+    sourceRevision,
+    documentFingerprint,
+    diagnostics: state.diagnostics.filter((diagnostic) => diagnostic.code !== SAVE_INTERRUPTED),
+  })),
   reset: () => set((state) => ({ ...initialState(), executionGeneration: state.executionGeneration + 1 })),
 }))
 

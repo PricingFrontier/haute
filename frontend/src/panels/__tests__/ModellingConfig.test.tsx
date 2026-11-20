@@ -3119,6 +3119,7 @@ describe("ModellingConfig", () => {
         await waitFor(() => {
           expect(mockLogToMlflow).toHaveBeenCalledWith(
             expect.objectContaining({ job_id: "job_1", destination: "" }),
+            expect.anything(),
           )
         })
         expect(await screen.findByTestId("mlflow-log-success")).toHaveTextContent("Run ID: run-1")

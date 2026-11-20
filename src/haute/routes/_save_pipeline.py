@@ -16,6 +16,11 @@ If any write, config step, or the sidecar raises, we restore the
 snapshotted content for every file we touched and delete the files we
 newly created.  The original error is re-raised unchanged so upstream
 handlers see the real cause.
+
+A save's progress and outcome are on disk (:mod:`haute._save_records`): its record names
+every file it writes or removes before the first is replaced, is marked committed once they
+are parsed back, and is finished (stale removals, capture, receipt) by
+:func:`_finish_committed`, which a settle runs too for a save a server died in.
 """
 
 from __future__ import annotations
@@ -24,13 +29,14 @@ import ast
 import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._ast_helpers import _extract_global_constants_declaration
 from haute._failure_answers import answer_failure, git_refusal_answer
-from haute._file_ops import Writer, atomic_write_bytes
+from haute._file_ops import Writer, atomic_write_bytes, staging_files_of
 from haute._git_lock import repository_mutation
 from haute._global_constants import (
     code_binds_global_constants,
@@ -52,6 +58,19 @@ from haute._pipeline_recovery import (
     pipeline_document_fingerprint,
 )
 from haute._sandbox import contained_path, is_contained
+from haute._save_records import (
+    Removal,
+    SaveRecord,
+    clear_record,
+    is_running,
+    keep_receipt,
+    read_record,
+    replay_receipt,
+    save_request_digest,
+    saved_records,
+    saving,
+    write_record,
+)
 from haute._submodel_paths import (
     SUBMODEL_PACKAGE,
     MalformedSubmodelPathError,
@@ -64,6 +83,7 @@ from haute.errors import (
     ConflictError,
     ForbiddenError,
     HauteError,
+    InvalidPathError,
     InvalidRequestError,
     ParseError,
     PathOutsideProjectError,
@@ -427,6 +447,196 @@ def capture_save_in_ledger(
     return LedgerCapture(None, False, list(rel_paths))
 
 
+class FinishedSave(NamedTuple):
+    """What finishing a committed save's record gave: its answer (None for a record that held
+    only removals a save before could not make), the files it removed, and the committed
+    document's payload when the capture changed a file it wrote and it was loaded again."""
+
+    response: SavePipelineResponse | None
+    removed: list[Path]
+    payload: dict[str, Any] | None
+
+
+def _prune_emptied_config_folders(root: Path, path: Path) -> None:
+    """Remove the folders the removal of *path* left empty, up to and including ``config/``."""
+    folder = path.parent
+    try:
+        while folder != root and folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+            if folder.name == "config":
+                return
+            folder = folder.parent
+    except OSError as exc:  # an empty folder left is harmless; the next removal tries again
+        logger.warning("stale_config_folder_not_removed", folder=str(folder), error=str(exc))
+
+
+def _recorded_path(root: Path, rel: str) -> Path | None:
+    """The file *rel* a save's record names, inside the project as it resolves now; None, and
+    logged, for one that leaves it (a folder replaced by a link since the record was made)."""
+    try:
+        return contained_path(root, rel)
+    except (PathOutsideProjectError, InvalidPathError):
+        logger.warning("save_record_path_outside_project", path=rel)
+        return None
+
+
+class _Removals(NamedTuple):
+    """What removing a committed save's stale files did: the files removed now; each file
+    the record named that is gone, whenever it went, for the capture; and the removals that
+    failed, kept for the next save."""
+
+    removed: list[Path]
+    gone: list[str]
+    remaining: list[Removal]
+
+
+def _remove_saved_away(root: Path, removes: Sequence[Removal], warnings: list[str]) -> _Removals:
+    """Remove the stale files a committed save names: each that still holds the bytes it
+    held when the save planned its removal, marked a self-write deletion first. One that
+    cannot be removed is a warning naming it, and is kept for the next save. One already
+    gone (removed before a server died, say) is still the save's to capture."""
+    done = _Removals([], [], [])
+    for removal in removes:
+        path = _recorded_path(root, removal.file)
+        if path is None:
+            continue
+        try:
+            current = _artifact_digest(path)
+            if current is None:
+                done.gone.append(removal.file)
+                continue
+            if current != removal.digest:
+                # Written since by someone else: not this save's to remove.
+                continue
+            mark_self_write(path, deleted=True)
+            path.unlink()
+        except OSError as exc:
+            done.remaining.append(removal)
+            reason = exc.strerror or type(exc).__name__
+            warnings.append(
+                f"Saved, but {removal.file} could not be removed ({reason}). "
+                "The next save removes it."
+            )
+            logger.warning("stale_config_not_removed", path=removal.file, error=str(exc))
+            continue
+        done.removed.append(path)
+        done.gone.append(removal.file)
+        logger.info("stale_config_removed", path=removal.file)
+        _prune_emptied_config_folders(root, path)
+    return done
+
+
+def _remove_staging(root: Path, writes: Sequence[str]) -> list[str]:
+    """Remove the staging files atomic writes of *writes* left (a writer killed before its
+    rename), so no Commit takes them; the files whose staging could not be removed, to be
+    tried again."""
+    targets = {path: rel for rel in writes if (path := _recorded_path(root, rel)) is not None}
+    left: list[str] = []
+    by_stem = {(path.parent, path.stem): rel for path, rel in targets.items()}
+    for staged in staging_files_of(targets):
+        try:
+            staged.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:  # tried again at the next settle
+            logger.warning("save_staging_not_removed", path=str(staged), error=str(exc))
+            stem = staged.name.rsplit(".", 2)[0]
+            rel = by_stem.get((staged.parent, stem))
+            if rel is not None:
+                left.append(rel)
+            continue
+        logger.info("save_staging_removed", path=str(staged))
+    return list(dict.fromkeys(left))
+
+
+def _finish_committed(
+    root: Path, record: SaveRecord, *, commit_message: str | None = None
+) -> FinishedSave:
+    """Finish the committed save *record* names: remove its stale files and any staging file
+    left beside what it wrote, capture what it wrote and removed, keep its answer as the
+    receipt of its operation, and forget the record, or keep only what is still to do (a
+    removal that failed, a staging file still held). The save runs it once its files commit,
+    and a settle runs it for a save a server died in, or that raised, after it committed.
+
+    Something outside Haute (an IDE, a formatter on watch, a commit hook) may rewrite what
+    the save wrote while the capture runs: the answer then names the document on disk, so
+    the editor's next save is made against the revision there."""
+    answer = None if record.answer is None else SavePipelineResponse.model_validate(record.answer)
+    warnings = [] if answer is None else list(answer.warnings)
+    removals = _remove_saved_away(root, record.removes, warnings)
+    staging_left = _remove_staging(root, [*record.writes, *record.leftover])
+    written = {
+        path: _artifact_digest(path)
+        for rel in record.writes
+        if (path := _recorded_path(root, rel)) is not None
+    }
+    captured = capture_save_in_ledger(
+        root, [*record.writes, *removals.gone], warnings, commit_message
+    )
+    response: SavePipelineResponse | None = None
+    payload: dict[str, Any] | None = None
+    if answer is not None:
+        update: dict[str, Any] = {"warnings": warnings, **captured._asdict()}
+        if any(_artifact_digest(path) != digest for path, digest in written.items()):
+            from haute.routes import _helpers
+
+            document = _helpers.load_pipeline_editor_document(
+                root / record.source_file, project_root=root
+            )
+            if not document.source_revision:
+                raise RuntimeError("The saved pipeline changed on disk and no longer reads.")
+            payload = document.model_dump(mode="json", by_alias=True)
+            update["source_revision"] = document.source_revision
+            update["document_fingerprint"] = pipeline_document_fingerprint(payload)
+        response = answer.model_copy(update=update)
+        if record.operation is not None and record.digest is not None:
+            keep_receipt(root, record.operation, record.digest, response)
+    if removals.remaining or staging_left:
+        write_record(
+            root,
+            SaveRecord(
+                source_file=record.source_file,
+                leftover=tuple(staging_left),
+                removes=tuple(removals.remaining),
+                committed=True,
+            ),
+        )
+    else:
+        clear_record(root, record.source_file)
+    return FinishedSave(response, removals.removed, payload)
+
+
+class _Settled(NamedTuple):
+    """What settling a record left for the next save to carry (the files of a save that never
+    committed, which it goes on reporting, and what is still to remove), and the save a settle
+    finished, when the record was one committed with its answer."""
+
+    remaining: SaveRecord | None
+    finished: FinishedSave | None
+
+
+def _settle_record(root: Path, record: SaveRecord | None) -> _Settled:
+    """Settle *record*, left by a save before this one: finish a committed one, and remove
+    the staging files of one that never committed, so no Commit takes them."""
+    if record is None or is_running(root, record.source_file):
+        return _Settled(None, None)
+    if record.committed:
+        finished = _finish_committed(root, record)
+        return _Settled(read_record(root, record.source_file), finished)
+    _remove_staging(root, [*record.writes, *record.leftover])
+    return _Settled(record, None)
+
+
+def settle_saves(project_root: Path) -> None:
+    """Settle every record a save left in the project: the server runs it as it starts, so
+    a save it died in is finished, or its staging files are gone and it is reported, before
+    any request or Commit meets it. No canvas is open yet to be sent what it finishes."""
+    root = project_root.resolve()
+    with repository_mutation(root):
+        for record in saved_records(root):
+            _settle_record(root, record)
+
+
 class SavePipelineService:
     """Orchestrates every side-effect of saving a pipeline graph.
 
@@ -461,6 +671,11 @@ class SavePipelineService:
         self._identity_roots: tuple[Path, ...] = ()
         # What the last successful save committed, for the route to publish.
         self.committed: CommittedDocument | None = None
+        # True when the last save was a repeat answered from its receipt: nothing written.
+        self.replayed = False
+        # A save a server stopped in, or that raised, after it committed, which this save's
+        # settle finished: its document is one no canvas has been sent.
+        self.recovered: CommittedDocument | None = None
 
     def _read_on_disk(self, py_path: Path, base_revision: str | None) -> _OnDisk:
         """Load the pipeline file's editor document and strict graph, once each, for
@@ -592,15 +807,65 @@ class SavePipelineService:
 
         *commit_message* is the ledger commit's message; without one the
         commit names the changed files.
+
+        Under the lock, the save first settles its pipeline's record left by a save
+        before it (:func:`_settle_record`). A request naming an operation that has a
+        receipt is then answered with it, writing nothing (``replayed``), before the
+        file is read: a repeat of a committed save returns what that save did.
         """
+        self.committed = None
+        self.replayed = False
+        self.recovered = None
         with repository_mutation(self._root):
-            return self._save(body, commit_message=commit_message)
+            py_path = self._resolve_source_file(body.source_file)
+            source_file = py_path.relative_to(self._root).as_posix()
+            left = read_record(self._root, source_file)
+            settled = _settle_record(self._root, left)
+            if left is not None and settled.finished is not None and left.answer is not None:
+                self.recovered = self._recovered_document(py_path, left, settled.finished)
+            carried = settled.remaining
+            # The digest serializes the whole request: made only for one a repeat can name.
+            digest = None if body.operation is None else save_request_digest(body)
+            if body.operation is not None and digest is not None:
+                replayed = replay_receipt(self._root, body.operation, digest)
+                if replayed is not None:
+                    self.replayed = True
+                    return replayed
+            with saving(self._root, source_file):
+                return self._save(
+                    body,
+                    commit_message=commit_message,
+                    source_file=source_file,
+                    digest=digest,
+                    carried=carried,
+                )
+
+    def _recovered_document(
+        self, py_path: Path, record: SaveRecord, finished: FinishedSave
+    ) -> CommittedDocument:
+        """The document of the save *record* names, which a settle finished, as live sync
+        sends it, with the files it wrote and removed."""
+        payload = finished.payload
+        if payload is None:
+            payload = load_pipeline_editor_document(py_path, project_root=self._root).model_dump(
+                mode="json", by_alias=True
+            )
+        written = (path for rel in record.writes if (path := _recorded_path(self._root, rel)))
+        return CommittedDocument(
+            py_path,
+            payload,
+            pipeline_document_fingerprint(payload),
+            (*written, *finished.removed),
+        )
 
     def _save(
         self,
         body: SavePipelineRequest,
         *,
         commit_message: str | None,
+        source_file: str,
+        digest: str | None,
+        carried: SaveRecord | None,
     ) -> SavePipelineResponse:
         graph = body.graph
 
@@ -645,17 +910,77 @@ class SavePipelineService:
         # Bundle 6 sub-task C — capture the pre-save view of what config
         # files haute owns, derived from the on-disk pipeline graph
         # BEFORE this save overwrites it.  This is the diff baseline
-        # consumed by `_remove_stale_config_files` later in this method.
+        # consumed by `_stale_config_files` later in this method.
         # Files NOT in this baseline (manual edits, files from other
         # tools, residue from older haute versions) are not haute's to
         # delete — see `notes-haute/security/SECURITY.md` §3
         # "Stable-layer file ownership".
         self._prev_config_files = self._compute_disk_prev_config_files(on_disk)
 
+        code_files = self._generate_code(body, graph, py_path)
+        config_files = self._config_files(graph)
+        sidecars = [
+            py_path.with_suffix(".haute.json"),
+            *(child.source_path.with_suffix(".haute.json") for child in managed_child_sidecars),
+        ]
+        planned = [path for path, _code in code_files] + list(config_files) + sidecars
+        # Skip delete targets that casefold-match a file this save writes, mirroring the
+        # stale-diff guard in `_stale_config_files`: after a case-only submodel rename
+        # (``modules/foo.py`` → ``modules/Foo.py``) the client requests deletion of the old
+        # casing, but on the case-insensitive filesystems macOS and Windows default to that
+        # names the SAME on-disk file as the freshly written module — unlinking it would
+        # destroy the survivor. On case-SENSITIVE Linux the skip leaves the old-cased file
+        # behind as harmless residue; data safety on macOS/Windows wins over Linux tidiness.
+        written_folded = {str(path.resolve()).casefold() for path in planned}
+        deletes: list[Path] = []
+        for target in delete_targets:
+            if str(target.resolve()).casefold() in written_folded:
+                continue
+            target_sidecar = target.with_suffix(".haute.json")
+            deletes.append(target)
+            if str(target_sidecar.resolve()).casefold() not in written_folded:
+                deletes.append(target_sidecar)
+
+        # The save's record, before its first file is replaced: what it writes and deletes,
+        # and what it removes once committed. A record a settle left (a save that never
+        # committed, removals and staging files not yet removed) is carried: its files may
+        # hold either save until this one commits, which captures them, the staging beside
+        # them is removed when it does, and its removals are made unless this save writes
+        # the file.
+        planned_folded = {self._project_file(path).casefold() for path in [*planned, *deletes]}
+        removes = {removal.file.casefold(): removal for removal in self._stale_config_files()}
+        if carried is not None:
+            for removal in carried.removes:
+                if removal.file.casefold() not in planned_folded:
+                    removes.setdefault(removal.file.casefold(), removal)
+        # A record left before: the files of a save that never committed, which may hold
+        # either save until this one commits and are captured with it (a deletion it made is
+        # still to record), and those whose staging is still to remove, never captured.
+        carried_writes = () if carried is None else carried.writes
+        leftover = () if carried is None else carried.leftover
+        record = SaveRecord(
+            source_file=source_file,
+            operation=body.operation,
+            digest=digest,
+            base_revision=body.base_revision,
+            writes=tuple(
+                dict.fromkeys(
+                    [
+                        *carried_writes,
+                        *(self._project_file(path) for path in planned),
+                        *(self._project_file(path) for path in deletes if path.exists()),
+                    ]
+                )
+            ),
+            leftover=tuple(dict.fromkeys(leftover)),
+            removes=tuple(removes.values()),
+        )
+        write_record(self._root, record)
+
         touched: list[_TouchedFile] = []
         try:
-            self._write_code(body, graph, py_path, touched)
-            self._write_config_files(graph, touched)
+            self._write_code(code_files, touched)
+            self._write_config_files(config_files, touched)
             warnings.extend(
                 self._write_sidecar(
                     py_path,
@@ -673,24 +998,8 @@ class SavePipelineService:
                     touched=touched,
                 )
             )
-            # Skip delete targets that casefold-match a file this save just
-            # wrote, mirroring the stale-diff guard in
-            # `_remove_stale_config_files`: after a case-only submodel rename
-            # (``modules/foo.py`` → ``modules/Foo.py``) the client requests
-            # deletion of the old casing, but on the case-insensitive
-            # filesystems macOS and Windows default to that names the SAME
-            # on-disk file as the freshly written module — unlinking it would
-            # destroy the survivor. On case-SENSITIVE Linux the skip leaves
-            # the old-cased file behind as harmless residue; data safety on
-            # macOS/Windows wins over Linux tidiness.
-            written_folded = {str(item.target.resolve()).casefold() for item in touched}
-            for target in delete_targets:
-                if str(target.resolve()).casefold() in written_folded:
-                    continue
+            for target in deletes:
                 self._stage_delete(target, touched)
-                target_sidecar = target.with_suffix(".haute.json")
-                if str(target_sidecar.resolve()).casefold() not in written_folded:
-                    self._stage_delete(target_sidecar, touched)
 
             from haute.routes import _helpers
 
@@ -706,15 +1015,26 @@ class SavePipelineService:
             if committed_document.load_status != "ready" or not source_revision:
                 raise RuntimeError("Committed pipeline did not produce a ready editor revision.")
             committed_payload = committed_document.model_dump(mode="json", by_alias=True)
+            # Committed: from here the save answers as saved, whatever its removals and its
+            # capture do, and a server that dies before they are made leaves them for a settle.
+            answer = SavePipelineResponse(
+                file=py_path.relative_to(self._root).as_posix(),
+                pipeline_name=body.name,
+                source_revision=source_revision,
+                document_fingerprint=pipeline_document_fingerprint(committed_payload),
+                warnings=warnings,
+                step_code=self._saved_step_code(graph, edited),
+            )
+            record = replace(record, committed=True, answer=answer.model_dump(mode="json"))
+            write_record(self._root, record)
         except BaseException:
-            self._rollback(touched)
+            if not _rollback_artifacts(touched):
+                # Nothing of this save is left on disk: the record before it stands again.
+                if carried is None:
+                    clear_record(self._root, source_file)
+                else:
+                    write_record(self._root, carried)
             raise
-
-        # Stale-config removal is NOT part of the transaction: these deletions
-        # are non-recoverable once committed, so run them only after every
-        # write has succeeded.  If sidecar write fails mid-save, stale configs
-        # remain on disk and will be cleaned up on the next successful save.
-        removed = self._remove_stale_config_files(graph)
 
         # The file-watcher skips self-written paths before invalidating the
         # pipeline index, so a save that renames a pipeline (or adds/removes
@@ -723,37 +1043,16 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
-        written = {
-            touched_file.target: _artifact_digest(touched_file.target) for touched_file in touched
-        }
-        captured = self._capture_save_in_ledger(touched, removed, warnings, commit_message)
-        # Something outside Haute (an IDE, a formatter on watch) may rewrite what the save
-        # wrote while the capture runs: hand back the document on disk, so the editor's next
-        # save is made against the revision there.
-        if any(_artifact_digest(target) != digest for target, digest in written.items()):
-            committed_document = _helpers.load_pipeline_editor_document(
-                py_path, project_root=self._root
-            )
-            source_revision = committed_document.source_revision
-            if not source_revision:
-                raise RuntimeError("The saved pipeline changed on disk and no longer reads.")
-            committed_payload = committed_document.model_dump(mode="json", by_alias=True)
-
+        finished = _finish_committed(self._root, record, commit_message=commit_message)
+        assert finished.response is not None
+        payload = committed_payload if finished.payload is None else finished.payload
         self.committed = CommittedDocument(
             py_path,
-            committed_payload,
-            pipeline_document_fingerprint(committed_payload),
-            (*(touched_file.target for touched_file in touched), *removed),
+            payload,
+            finished.response.document_fingerprint,
+            (*(touched_file.target for touched_file in touched), *finished.removed),
         )
-        return SavePipelineResponse(
-            file=py_path.relative_to(self._root).as_posix(),
-            pipeline_name=body.name,
-            source_revision=source_revision,
-            document_fingerprint=self.committed.fingerprint,
-            warnings=warnings,
-            step_code=self._saved_step_code(graph, edited),
-            **captured._asdict(),
-        )
+        return finished.response
 
     @staticmethod
     def _with_recorded_unfinished_steps(
@@ -814,22 +1113,6 @@ class SavePipelineService:
             for node in scoped.nodes
             if (scope, node.id) in edited
         ]
-
-    def _capture_save_in_ledger(
-        self,
-        touched: list[_TouchedFile],
-        removed: list[Path],
-        warnings: list[str],
-        message: str | None,
-    ) -> LedgerCapture:
-        """Capture the files this save wrote or removed: `capture_save_in_ledger` on them."""
-        rel_paths: list[str] = []
-        for path in [t.target for t in touched] + removed:
-            try:
-                rel_paths.append(path.relative_to(self._root).as_posix())
-            except ValueError:
-                continue  # outside the project root — not this repo's concern
-        return capture_save_in_ledger(self._root, rel_paths, warnings, message)
 
     def save_graph_transactionally(
         self,
@@ -1617,33 +1900,24 @@ class SavePipelineService:
     # Code generation
     # ------------------------------------------------------------------
 
-    def _write_code(
+    def _generate_code(
         self,
         body: SavePipelineRequest,
         graph: PipelineGraph,
         py_path: Path,
-        touched: list[_TouchedFile] | None = None,
-    ) -> None:
-        """Generate and write the ``.py`` file(s).
-
-        All writes pass through ``Writer`` (per-rename
-        mark_self_write callback) and the allowlist gate.
-        *touched* records rollback state for the surrounding save
-        transaction; when ``None`` the method owns an
-        internal list (used by unit tests that drive ``_write_code``
-        directly without the broader save pipeline).
-        """
+    ) -> list[tuple[Path, str]]:
+        """The ``.py`` files the save writes, by absolute path: the generated code through
+        the output allowlist, then an empty package marker in each ``modules/`` folder a
+        definition module is written into that has none. Nothing is written here, so the
+        save's record can name every file before the first is replaced."""
         from haute._io import read_user_source
         from haute.codegen import graph_to_code, graph_to_code_multi
-
-        if touched is None:
-            touched = []
 
         self._validate_source_file_matches_pipeline_root(py_path.resolve())
 
         def read_existing(rel_path: str) -> str | None:
             # The file a generated path overwrites, so its functions keep their order
-            # (READ-12); a path refused here is refused again when it is written.
+            # (READ-12); a path refused here is refused again when it is resolved.
             try:
                 out_path = self._validate_output_rel_path(rel_path, body.source_file)
             except (HauteError, ValueError):
@@ -1671,15 +1945,12 @@ class SavePipelineService:
                     existing_source=read_existing(body.source_file),
                 )
             }
-        self._write_generated_code_files(files, body.source_file, touched)
+        return self._resolve_generated_code_files(files, body.source_file)
 
-    def _write_generated_code_files(
-        self,
-        files: dict[str, str],
-        source_file: str,
-        touched: list[_TouchedFile],
-    ) -> None:
-        """Write generated ``.py`` files through the shared output allowlist."""
+    def _resolve_generated_code_files(
+        self, files: dict[str, str], source_file: str
+    ) -> list[tuple[Path, str]]:
+        """Generated ``.py`` files by absolute path, through the shared output allowlist."""
         from haute._io import read_user_source
         from haute.codegen import keep_module_docstring
 
@@ -1708,8 +1979,6 @@ class SavePipelineService:
                 # for a file that has none (READ-02).
                 code = keep_module_docstring(code, read_user_source(out_path)[1])
             resolved.append((out_path, code))
-        for out_path, code in resolved:
-            self._stage_write(out_path, code, touched)
         # A regular package, so ``from modules import x`` imports the module beside this
         # pipeline and never a ``modules`` folder found elsewhere on ``sys.path``. One
         # that exists is the project's, and is left as it is.
@@ -1720,7 +1989,20 @@ class SavePipelineService:
         }
         for package in sorted(packages):
             if not (package / "__init__.py").exists():
-                self._stage_write(package / "__init__.py", "", touched)
+                resolved.append((package / "__init__.py", ""))
+        return resolved
+
+    def _write_code(
+        self, code_files: Sequence[tuple[Path, str]], touched: list[_TouchedFile]
+    ) -> None:
+        """Write the generated ``.py`` files, each through ``Writer`` (a per-rename
+        mark_self_write callback) with its rollback state recorded in *touched*."""
+        for out_path, code in code_files:
+            self._stage_write(out_path, code, touched)
+
+    def _project_file(self, path: Path) -> str:
+        """*path*, inside the project, as its record names it: relative, ``/``-separated."""
+        return path.resolve().relative_to(self._root).as_posix()
 
     # ------------------------------------------------------------------
     # JSON apiInput schema validation (no on-disk mutation)
@@ -1815,20 +2097,9 @@ class SavePipelineService:
     # Config file I/O
     # ------------------------------------------------------------------
 
-    def _write_config_files(
-        self,
-        graph: PipelineGraph,
-        touched: list[_TouchedFile] | None = None,
-    ) -> None:
-        """Write per-node config JSON sidecar files.
-
-        *touched* records rollback state when called from the
-        transactional save path; unit tests can omit it and an internal
-        list is used.
-        """
-        if touched is None:
-            touched = []
-
+    def _config_files(self, graph: PipelineGraph) -> dict[Path, str]:
+        """The per-node config JSON files the save writes, by absolute path, and the
+        constants file when it loads; nothing is written here."""
         # `_prev_config_files` is set at the top of `save()` from the
         # on-disk graph, not rotated from the previous `_last`.  See
         # `_compute_disk_prev_config_files` for rationale.
@@ -1839,6 +2110,7 @@ class SavePipelineService:
             self._last_config_files[GLOBAL_CONSTANTS_FILE] = global_constants_json(
                 graph.global_constants
             )
+        files: dict[Path, str] = {}
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not is_contained(self._pipeline_root, out_path):
@@ -1848,6 +2120,14 @@ class SavePipelineService:
                     f"Cannot save {rel_path}: it resolves outside the pipeline folder. "
                     "Replace the link with a folder inside the project, then save again."
                 )
+            files[out_path] = json_content
+        return files
+
+    def _write_config_files(
+        self, config_files: Mapping[Path, str], touched: list[_TouchedFile]
+    ) -> None:
+        """Write the per-node config JSON files, recording rollback state in *touched*."""
+        for out_path, json_content in config_files.items():
             self._stage_write(out_path, json_content, touched)
 
     @staticmethod
@@ -1954,10 +2234,12 @@ class SavePipelineService:
             "nodes before saving."
         )
 
-    def _remove_stale_config_files(self, graph: PipelineGraph) -> list[Path]:
-        """Delete config JSON files that THIS pipeline previously owned but no longer needs.
+    def _stale_config_files(self) -> list[Removal]:
+        """The config JSON files THIS pipeline owned on disk and the save no longer writes,
+        each with the digest of the bytes it holds now, for the save to remove once it has
+        committed.
 
-        Only removes files in the diff (prev - current).  Prev is the
+        Only files in the diff (prev - current) are named.  Prev is the
         set of configs the on-disk pipeline graph referenced before this
         save ran (computed at the top of `save()` via
         `_compute_disk_prev_config_files`).  This preserves files that
@@ -1972,13 +2254,9 @@ class SavePipelineService:
         model.  That fallback is gone; the safe answer when we can't
         compute prev (no .py yet, .py unparseable) is to delete nothing
         and let the user clean up via the file tree if desired.
-
-        Returns the absolute paths of every file removed, so deletions
-        ride the same ledger commit as the writes they accompany.
         """
         prev = getattr(self, "_prev_config_files", {}) or {}
         current = getattr(self, "_last_config_files", {})
-        removed: list[Path] = []
 
         # Compute the stale diff casefolded, mirroring the collision guards in
         # `_validate_unique_config_paths_in_graph` / `_merge_config_maps`:
@@ -1991,28 +2269,15 @@ class SavePipelineService:
         # leaves the old-cased file behind as harmless residue; data safety on
         # macOS/Windows wins over Linux tidiness.
         keep_folded = {rel.casefold() for rel in current}
-        stale = {rel for rel in prev if rel.casefold() not in keep_folded}
-        if not stale:
-            return removed
-
-        for rel in stale:
-            stale_path = (self._pipeline_root / rel).resolve()
-            if not is_contained(self._pipeline_root, stale_path):
+        stale: list[Removal] = []
+        for rel in sorted(prev):
+            if rel.casefold() in keep_folded:
                 continue
-            if stale_path.is_file():
-                # The server's own deletion: the watcher must not re-parse for it.
-                mark_self_write(stale_path, deleted=True)
-                stale_path.unlink()
-                removed.append(stale_path)
-                logger.info("stale_config_removed", path=rel)
-            folder = stale_path.parent
-            if folder.is_dir() and not any(folder.iterdir()):
-                folder.rmdir()
-
-        config_dir = self._pipeline_root / "config"
-        if config_dir.is_dir() and not any(config_dir.iterdir()):
-            config_dir.rmdir()
-        return removed
+            stale_path = (self._pipeline_root / rel).resolve()
+            if not is_contained(self._pipeline_root, stale_path) or not stale_path.is_file():
+                continue
+            stale.append(Removal(self._project_file(stale_path), _artifact_digest(stale_path)))
+        return stale
 
     def _compute_disk_prev_config_files(self, on_disk: _OnDisk) -> dict[str, str]:
         """Return the rel-path → JSON map for configs the on-disk graph
@@ -2032,7 +2297,7 @@ class SavePipelineService:
             safe answer is "delete nothing").
 
         Both cases produce ``stale = {} - current = {}``, so
-        `_remove_stale_config_files` deletes nothing.  Hand-added
+        `_stale_config_files` names nothing.  Hand-added
         configs, configs from other tools, and configs from older
         haute versions are preserved by virtue of never appearing in
         any parsed graph's reference set.
@@ -2147,20 +2412,3 @@ class SavePipelineService:
                 )
             )
         return warnings
-
-    # ------------------------------------------------------------------
-    # Rollback — invoked by ``save`` when any step fails
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _rollback(touched: list[_TouchedFile]) -> None:
-        """Undo every file write recorded in *touched*.
-
-        For files that did not exist before the save (``previous_bytes
-        is None``) we delete the target.  For files we overwrote we
-        restore the original bytes atomically.  Best-effort: if a
-        rollback step itself fails we log and continue so the remaining
-        files still have a chance to recover — losing *part* of a
-        rollback is strictly better than losing all of it.
-        """
-        _rollback_artifacts(touched)

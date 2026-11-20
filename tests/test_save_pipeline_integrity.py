@@ -571,12 +571,12 @@ class TestSaveServiceTransaction:
       1. singleton validation
       2. unique-sanitized-name validation
       3. source-file resolution
-      4. _write_code (generates main + module .py files)
+      4. _write_code (writes the main + module .py files _generate_code made)
       5. _validate_api_inputs_have_schemas
       6. _write_config_files
-      7. _remove_stale_config_files
-      8. _write_sidecar
-      9. mark_self_write
+      7. _write_sidecar
+      8. mark_self_write
+      9. the stale config files removed once the save has committed
 
     Stages 4, 6, and 8 touch disk.  A failure at stage 8 (sidecar write)
     currently leaves the .py file and config JSONs on disk as a partial
@@ -1005,16 +1005,14 @@ class TestRollbackRobustness:
     def test_partial_rollback_failure_continues_and_preserves_original_error(
         self, project_root: Path, tmp_path: Path
     ) -> None:
-        """If _rollback itself hits an OSError on one entry, remaining
+        """If the rollback itself hits an OSError on one entry, remaining
         entries must still be rolled back, a save_rollback_failed log
         must be emitted, and the ORIGINAL save exception (not the
         rollback exception) must propagate to the caller.
         """
         import structlog.testing
 
-        from haute.routes._save_pipeline import SavePipelineService, _TouchedFile
-
-        svc = SavePipelineService(project_root)
+        from haute.routes._save_pipeline import _TouchedFile
 
         # Three targets, all pre-existing with known content so rollback
         # needs to restore bytes for each.
@@ -1051,7 +1049,7 @@ class TestRollbackRobustness:
 
         with patch.object(sp_mod, "atomic_write_bytes", side_effect=flaky_atomic):
             with structlog.testing.capture_logs() as captured:
-                svc._rollback(touched)
+                sp_mod._rollback_artifacts(touched)
 
         # Remaining entries (not the one that failed) must have been rolled
         # back — the iteration is reverse, so c -> b (fails) -> a.  After
@@ -1065,7 +1063,7 @@ class TestRollbackRobustness:
 
         failed_events = [e for e in captured if e.get("event") == "save_rollback_failed"]
         assert failed_events, (
-            "#50: _rollback swallowed a partial-rollback error without "
+            "#50: the rollback swallowed a partial-rollback error without "
             "emitting save_rollback_failed"
         )
 

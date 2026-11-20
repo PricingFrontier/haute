@@ -184,7 +184,6 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
 # the index and no priorities table.
 _ROADMAP_ROOT_CAUSES: tuple[str, ...] = (
     "root-cause-model-file.md",
-    "root-cause-save-record.md",
     "root-cause-unedited-values.md",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(

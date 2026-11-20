@@ -88,6 +88,7 @@ from haute.routes._optimiser_artifacts import (
     _artifact_stale_seconds,
     reap_stale_optimiser_artifacts,
 )
+from haute.routes._save_pipeline import settle_saves
 from haute.routes._training_artifacts import reap_stale_training_artifacts
 from haute.routes.assistant import router as assistant_router
 from haute.routes.banding import router as banding_router
@@ -447,6 +448,18 @@ async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> N
         raise
 
 
+def _settle_saves() -> None:
+    """Settle the saves a server stopped in, before any request or Commit meets them.
+
+    A failure here must not stop the server: the next save of the pipeline settles its
+    record again, and a save that never committed is reported on its document meanwhile.
+    """
+    try:
+        settle_saves(current_project().root)
+    except Exception as exc:
+        logger.error("save_records_unsettled_at_startup", error=str(exc), exc_info=True)
+
+
 def _follow_pipeline_settings_chunk_rows() -> None:
     """Apply the settings' chunk rows now and follow the file's changes.
 
@@ -477,6 +490,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # callback that is allowed to (re)build this index — see
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
+    _settle_saves()
     global _watcher_task, _artifact_reaper_task, _server_loop
     _watcher_task = None
     _artifact_reaper_task = None

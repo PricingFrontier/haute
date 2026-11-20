@@ -13,7 +13,8 @@
  */
 import { create } from "zustand"
 import { createAppQuote, openAppQuote, type QuoteSource } from "../api/app"
-import { apiErrorCode, apiErrorMessage, apiErrorRawDetail, apiErrorRefused } from "../api/errors"
+import { contentWithout, keyedWriteSettled, sendHeld, type KeyedHold } from "../api/keyedWrites"
+import { apiErrorCode, apiErrorMessage, apiErrorRawDetail } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
@@ -200,16 +201,24 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
     const key = keptKey()
     const sentFrom = here()
     update({ status: "sending", kept: creation, error: null, taken: null, releaseMoved: false })
-    const { operation, form_revision, release, values, source, reference } = creation
-    // Answered, or refused, it is made or never will be: the tab keeps it no longer.
-    const letGo = () => {
-      if (key !== null) forgetCreation(key)
+    // Kept in this browser until an answer settles it: answered, or refused, it is made or
+    // never will be, and the tab keeps it no longer.
+    const hold: KeyedHold<KeptCreation> = {
+      held: () => (key === null ? null : readKeptCreation(key)),
+      hold: (kept) => {
+        if (key === null) return
+        if (kept === null) forgetCreation(key)
+        else keepCreation(key, kept)
+      },
+      key: (kept) => kept.operation,
+      content: (kept) => contentWithout(kept, "operation"),
     }
+    const sending = sendHeld(hold, creation, ({ operation, form_revision, release, values, source, reference }, ticket) =>
+      createAppQuote({ operation, form_revision, release, values }, source, reference, ticket))
     // The window closes nothing while it sends (`shut`), and opens no other: its answer is always
     // the window's.
-    await answer([under(fills)], createAppQuote({ operation, form_revision, release, values }, source, reference), {
+    await answer([under(fills)], sending, {
       ok: async (made) => {
-        letGo()
         const done = get().shown
         set({ shown: null })
         const savedAsNew = done?.savedFrom != null
@@ -226,9 +235,8 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         if (!opened && !savedAsNew) useToastStore.getState().addToast("success", `Made ${made.quote.label}`)
       },
       failed: (error) => {
-        if (apiErrorRefused(error)) {
+        if (keyedWriteSettled(error)) {
           // Refused, it was not made and never will be: the window takes typing again, saying why.
-          letGo()
           const moved = releaseMoved(error)
           if (moved) useAppStore.getState().noteReleaseChanged()
           update({

@@ -615,7 +615,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(false)
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
       preserved_blocks: ["KEEP = 1"],
-    }))
+    }), expect.anything())
     expect(params.sourceRevisionRef.current).toBe("revision-save")
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-save")
   })
@@ -635,7 +635,7 @@ describe("usePipelineAPI", () => {
 
       await act(async () => { await result.current.handleSave() })
 
-      expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ connection_id: "tab-1" }))
+      expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ connection_id: "tab-1" }), expect.anything())
     } finally {
       setSyncConnectionId(null)
     }
@@ -673,7 +673,7 @@ describe("usePipelineAPI", () => {
         graph: expect.objectContaining({
           global_constants: [{ name: "rate", type: "float", by_source: { live: 2 } }],
         }),
-      }))
+      }), expect.anything())
       expect(useGraphStore.getState().isDirty()).toBe(false)
     })
 
@@ -729,7 +729,7 @@ describe("usePipelineAPI", () => {
     })
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
       base_revision: "revision-load",
-    }))
+    }), expect.anything())
   })
 
   it("sends a null base_revision for a document that was never persisted", async () => {
@@ -761,7 +761,7 @@ describe("usePipelineAPI", () => {
     })
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
       base_revision: null,
-    }))
+    }), expect.anything())
   })
 
   it("a stale_document_revision conflict keeps the edit dirty and blocks until reload", async () => {
@@ -923,7 +923,7 @@ describe("usePipelineAPI", () => {
     expect(useUIStore.getState().syncBanner).toBe("External change is waiting.")
   })
 
-  it("keeps the newest column-config save baseline when an older save resolves last", async () => {
+  it("sends a Save made while another is under way once that one settles, on the revision it answered", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], source_revision: "revision-load" }))
     const resolvers: Array<(value: SavePipelineResponse) => void> = []
     mockSave.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve) }))
@@ -945,10 +945,17 @@ describe("usePipelineAPI", () => {
       useGraphStore.getState().setNodes([second])
       newer = result.current.handleSave()
     })
-    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(2))
+    // Nothing newer is sent while the first save is under way.
+    await act(async () => { await Promise.resolve() })
+    expect(mockSave).toHaveBeenCalledTimes(1)
     const oldSavedSnapshot = structuredClone(useGraphStore.getState().undoStack[0])
     if (!("nodes" in oldSavedSnapshot)) throw new Error("Expected the first save snapshot in graph history")
+
+    await act(async () => { resolvers[0](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old", document_fingerprint: "fingerprint-old" })); await older })
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(2))
+    expect(mockSave.mock.calls[1][0].base_revision).toBe("revision-old")
     await act(async () => { resolvers[1](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-new", document_fingerprint: "fingerprint-saved" })); await newer })
+
     const newestSavedConfig = { selected_columns: ["country"], column_renames: { country: "Country" } }
     const liveConfig = { ...newestSavedConfig, column_renames: { country: "Nation" } }
     act(() => {
@@ -963,10 +970,9 @@ describe("usePipelineAPI", () => {
       expect(params.sourceRevisionRef.current).toBe("revision-new")
       expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-new")
     }
-    await act(async () => { resolvers[0](makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-old", document_fingerprint: "fingerprint-saved" })); await older })
     assertNewestSaveState()
 
-    // Mutation witness: accepting the old response at the production saved
+    // Mutation witness: accepting the first save's snapshot at the production saved
     // baseline boundary must violate the same postcondition.
     act(() => { useGraphStore.getState().markSaved(oldSavedSnapshot) })
     expect(assertNewestSaveState).toThrowError()
@@ -1056,7 +1062,7 @@ describe("usePipelineAPI", () => {
 
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
       graph: expect.objectContaining({ submodels }),
-    }))
+    }), expect.anything())
   })
 
   it("saves submodel boundary handles as the edge carries them", async () => {
@@ -1087,7 +1093,7 @@ describe("usePipelineAPI", () => {
           }),
         ],
       }),
-    }))
+    }), expect.anything())
   })
 
   it("strips editor identities recursively from Save without changing live state", async () => {
@@ -1173,7 +1179,7 @@ describe("usePipelineAPI", () => {
 
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
       graph: expect.objectContaining({ nodes: savedNodes }),
-    }))
+    }), expect.anything())
 
     act(() => {
       useGraphStore.getState().setNodes(editedNodes)
@@ -1235,60 +1241,6 @@ describe("usePipelineAPI", () => {
       useGraphStore.getState().setEdges([savedEdge])
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
-  })
-
-  it("does not let an older save response replace a newer saved baseline", async () => {
-    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
-    let resolveFirst!: (value: SavePipelineResponse) => void
-    let resolveSecond!: (value: SavePipelineResponse) => void
-    const firstSave = new Promise<SavePipelineResponse>((resolve) => {
-      resolveFirst = resolve
-    })
-    const secondSave = new Promise<SavePipelineResponse>((resolve) => {
-      resolveSecond = resolve
-    })
-    mockSave
-      .mockReturnValueOnce(firstSave)
-      .mockReturnValueOnce(secondSave)
-
-    const firstNodes = [makeNode("n1", "polars", { data: { label: "First" } })]
-    const secondNodes = [makeNode("n1", "polars", { data: { label: "Second" } })]
-    const params = makeParams()
-
-    const { result } = renderHook(() => usePipelineAPI(params))
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    useGraphStore.setState({ nodes: firstNodes, edges: [], preamble: "" })
-
-    await act(async () => {
-      result.current.handleSave()
-    })
-
-    act(() => {
-      useGraphStore.getState().setNodes(secondNodes)
-    })
-
-    await act(async () => {
-      result.current.handleSave()
-    })
-
-    await act(async () => {
-      resolveSecond(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-newer", document_fingerprint: "fingerprint-saved" }))
-      await secondSave
-    })
-    expect(useGraphStore.getState().isDirty()).toBe(false)
-    expect(params.sourceRevisionRef.current).toBe("revision-newer")
-
-    await act(async () => {
-      resolveFirst(makeSavePipelineResponse({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-older", document_fingerprint: "fingerprint-saved" }))
-      await firstSave
-    })
-    expect(useGraphStore.getState().isDirty()).toBe(false)
-    expect(params.sourceRevisionRef.current).toBe("revision-newer")
-
-    act(() => {
-      useGraphStore.getState().setNodes(firstNodes)
-    })
-    expect(useGraphStore.getState().isDirty()).toBe(true)
   })
 
   it("saves the whole pipeline from inside a submodel and leaves the view open and clean", async () => {

@@ -116,6 +116,7 @@ from haute._polars_steps import (
 from haute._project_context import current_project
 from haute._project_settings import ProjectSettingsError, read_project_settings
 from haute._sandbox import contained_path
+from haute._save_records import SaveOperationReusedError
 from haute._seed_plans import (
     ListedSeed,
     ReadGeneration,
@@ -212,12 +213,11 @@ from haute.routes._isolated_worker_async import (
     run_cancellable_worker_transaction,
 )
 from haute.routes._preview_progress import preview_progress
-from haute.routes._save_operations import (
-    SaveOperationReusedError,
-    committed_saves,
-    save_request_digest,
+from haute.routes._save_pipeline import (
+    CommittedDocument,
+    SavePipelineService,
+    StaleDocumentRevisionError,
 )
-from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
 from haute.routes._synchronous_analysis import await_until_disconnected
 from haute.routes._timeouts import (
@@ -1294,6 +1294,37 @@ async def apply_recover_unavailable_node(
     )
 
 
+async def _publish_committed(
+    committed: CommittedDocument,
+    exclude: DocumentUpdateExclusion | None,
+    project_root: Path,
+) -> None:
+    """Send every canvas but the saving tab's the document a save committed, and each other
+    open document reading what it wrote (a shared submodel's module or sidecar): the watcher
+    does not see the save's own writes. The save has committed, so failing to find the
+    others is only logged."""
+    default_bus.publish(
+        "pipeline.document.update",
+        pipeline_document_update_payload(
+            committed.path, committed.payload, committed.fingerprint, exclude=exclude
+        ),
+    )
+    try:
+        shared = await run_in_threadpool(
+            partial(
+                shared_document_updates,
+                committed.artifacts,
+                saved=committed.path,
+                project_root=project_root,
+            )
+        )
+    except Exception as exc:
+        logger.warning("save_shared_documents_unpublished", error=str(exc))
+        shared = []
+    for update in shared:
+        default_bus.publish("pipeline.document.update", update)
+
+
 @router.post("/pipeline/save", response_model=SavePipelineResponse)
 async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipelineResponse:
     """Save a graph: .py (source of truth) + config JSON + .haute.json (positions).
@@ -1311,28 +1342,7 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
     """
     try:
         async with save_lock:
-            # A repeat of a committed save (its answer was lost) is answered with
-            # what that save did, before the file is read: it writes nothing.
-            operation = body.operation
-            digest = "" if operation is None else save_request_digest(body)
-            if operation is not None:
-                replayed = committed_saves.replay(operation, digest)
-                if replayed is not None:
-                    return replayed
             project_root = current_project().root
-            # The service reads the file once, under the repository's lock; the
-            # editor's Save refuses one that is not ready on disk.
-            svc = SavePipelineService(
-                project_root=project_root,
-                pipeline_root=current_project().pipeline_dir,
-                require_ready=True,
-            )
-            response = await run_in_threadpool(svc.save, body)
-            committed = svc.committed
-            if committed is None:
-                raise RuntimeError("A save returned without the document it committed.")
-            if operation is not None:
-                committed_saves.record(operation, digest, response)
             exclude: DocumentUpdateExclusion | None = (
                 None
                 if body.connection_id is None
@@ -1341,29 +1351,29 @@ async def save_pipeline(body: SavePipelineRequest, request: Request) -> SavePipe
                     "owner": connection_owner(request.scope),
                 }
             )
-            default_bus.publish(
-                "pipeline.document.update",
-                pipeline_document_update_payload(
-                    committed.path, committed.payload, committed.fingerprint, exclude=exclude
-                ),
+            # The service reads the file once, under the repository's lock; the
+            # editor's Save refuses one that is not ready on disk. A repeat of a
+            # committed save (its answer was lost) is answered from its receipt
+            # before the file is read: it writes nothing.
+            svc = SavePipelineService(
+                project_root=project_root,
+                pipeline_root=current_project().pipeline_dir,
+                require_ready=True,
             )
-            # Another open document reading what the save wrote (a shared submodel's
-            # module or sidecar) is published too: the watcher no longer sees the write.
-            # The save has committed, so failing to find them is only logged.
             try:
-                shared = await run_in_threadpool(
-                    partial(
-                        shared_document_updates,
-                        committed.artifacts,
-                        saved=committed.path,
-                        project_root=project_root,
-                    )
-                )
-            except Exception as exc:
-                logger.warning("save_shared_documents_unpublished", error=str(exc))
-                shared = []
-            for update in shared:
-                default_bus.publish("pipeline.document.update", update)
+                response = await run_in_threadpool(svc.save, body)
+            finally:
+                # A save that committed and raised before it was published (a 500), or that a
+                # server stopped in, which this request's settle finished, is published now,
+                # whatever this request comes to.
+                if svc.recovered is not None:
+                    await _publish_committed(svc.recovered, exclude, project_root)
+            if svc.replayed:
+                return response
+            committed = svc.committed
+            if committed is None:
+                raise RuntimeError("A save returned without the document it committed.")
+            await _publish_committed(committed, exclude, project_root)
             return response
     except SaveOperationReusedError as exc:
         raise ConflictError(f"save_operation_reused: {exc}") from None

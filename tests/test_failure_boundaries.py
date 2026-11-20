@@ -157,7 +157,7 @@ ALLOWED_BROAD_CATCHES: dict[tuple[str, str], tuple[int, str]] = {
         1,
         "one unreadable pipeline is listed source_only; opening it answers its failure",
     ),
-    ("src/haute/routes/pipeline.py", "save_pipeline"): (
+    ("src/haute/routes/pipeline.py", "_publish_committed"): (
         1,
         "the save has landed; other open pipelines' documents not republished are reloaded",
     ),
@@ -192,6 +192,11 @@ ALLOWED_BROAD_CATCHES: dict[tuple[str, str], tuple[int, str]] = {
         "interrupted; the turn's answer is the loop's",
     ),
     # Background tasks nobody waits on.
+    ("src/haute/server.py", "_settle_saves"): (
+        1,
+        "a save record the server's start cannot settle is logged and settled again by the "
+        "next save of its pipeline; the server still starts",
+    ),
     ("src/haute/server.py", "_watcher_forever"): (
         1,
         "the live-sync watcher restarts after a crash, logged; no request waits on it",

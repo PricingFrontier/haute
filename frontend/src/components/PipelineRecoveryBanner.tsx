@@ -35,6 +35,37 @@ export default function PipelineRecoveryBanner({
   const diagnostics = useDocumentStatusStore((state) => state.diagnostics)
   const diagnosticsOmitted = useDocumentStatusStore((state) => state.diagnosticsOmitted)
 
+  // A ready document's diagnostics are warnings (a save that stopped part-way): said, and
+  // nothing is blocked.
+  if (loadStatus === "ready" && diagnostics.length > 0) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        data-testid="pipeline-warnings-notice"
+        className="px-3 py-2 text-[12px] font-medium"
+        style={{
+          background: "var(--warning-soft-emphasis)",
+          color: "var(--warning)",
+          borderBottom: "1px solid var(--warning-border)",
+        }}
+      >
+        {diagnostics.map((diagnostic) => (
+          <div key={diagnostic.diagnostic_id} className="flex items-start gap-2">
+            <AlertTriangle size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
+            <span className="flex-1">
+              {diagnostic.message}
+              {diagnostic.remediation !== null && (
+                <span className="block text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  {diagnostic.remediation}
+                </span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    )
+  }
   if (loadStatus !== "degraded") return null
   const total = diagnostics.length + diagnosticsOmitted
   return (

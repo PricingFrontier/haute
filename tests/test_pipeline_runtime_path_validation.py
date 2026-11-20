@@ -18,7 +18,7 @@ from haute._types import GraphNode, NodeData, NodeType, PipelineGraph, SubmodelD
 from haute.errors import RequestRefusedError
 from haute.routes import modelling as modelling_routes
 from haute.routes import optimiser as optimiser_routes
-from haute.routes._save_pipeline import SavePipelineService
+from haute.routes._save_pipeline import SavePipelineService, _remove_saved_away
 from haute.routes.pipeline import _prepare_runtime_graph, _validate_runtime_input_paths
 from haute.schemas import (
     DispersionEstimateRequest,
@@ -31,6 +31,16 @@ from haute.schemas import (
 )
 from tests._project import use_project
 from tests.conftest import current_source_revision
+
+
+def _write_configs(svc: SavePipelineService, graph: PipelineGraph) -> None:
+    """Write *graph*'s config files as a save does."""
+    svc._write_config_files(svc._config_files(graph), [])
+
+
+def _remove_stale(svc: SavePipelineService) -> list[Path]:
+    """Remove the stale config files a save names, as it does once it has committed."""
+    return _remove_saved_away(svc._root, svc._stale_config_files(), [])[0]
 
 
 @pytest.fixture(autouse=True)
@@ -313,7 +323,7 @@ def test_case_only_label_collision_rejected_before_any_config_write(
     )
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
     assert exc_info.value.status_code == 400
     assert "Duplicate config sidecar path" in exc_info.value.detail
@@ -341,7 +351,7 @@ def test_case_only_collision_between_parent_and_submodel_rejected(
     }
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
     assert exc_info.value.status_code == 400
     assert "Duplicate config sidecar path" in exc_info.value.detail
@@ -356,7 +366,7 @@ def test_distinct_labels_still_write_one_sidecar_each(tmp_path: Path) -> None:
         edges=[],
     )
 
-    svc._write_config_files(graph)
+    _write_configs(svc, graph)
 
     assert (tmp_path / "config" / "data_input" / "Foo.json").is_file()
     assert (tmp_path / "config" / "data_input" / "Bar.json").is_file()
@@ -391,8 +401,8 @@ def test_case_only_rename_survives_stale_cleanup(tmp_path: Path) -> None:
     svc._prev_config_files = {"config/data_input/Foo.json": '{"path": "old.csv"}'}
     graph = PipelineGraph(nodes=[_config_node("a", "FOO")], edges=[])
 
-    svc._write_config_files(graph)
-    removed = svc._remove_stale_config_files(graph)
+    _write_configs(svc, graph)
+    removed = _remove_stale(svc)
 
     assert removed == []
     survivor = sidecar_dir / "FOO.json"
@@ -409,8 +419,8 @@ def test_genuine_rename_still_removes_stale_sidecar(tmp_path: Path) -> None:
     svc._prev_config_files = {"config/data_input/Foo.json": '{"path": "old.csv"}'}
     graph = PipelineGraph(nodes=[_config_node("a", "Bar")], edges=[])
 
-    svc._write_config_files(graph)
-    removed = svc._remove_stale_config_files(graph)
+    _write_configs(svc, graph)
+    removed = _remove_stale(svc)
 
     assert [path.name for path in removed] == ["Foo.json"]
     assert not (sidecar_dir / "Foo.json").exists()
@@ -425,7 +435,7 @@ def test_codegen_case_only_module_collision_rejected_before_any_write(
     files = {"modules/Pricing.py": "# a", "modules/pricing.py": "# b"}
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_generated_code_files(files, "main.py", [])
+        svc._write_code(svc._resolve_generated_code_files(files, "main.py"), [])
 
     assert exc_info.value.status_code == 400
     assert "duplicate output path" in exc_info.value.detail
@@ -440,7 +450,7 @@ def test_codegen_distinct_module_paths_still_write(tmp_path: Path) -> None:
     svc = SavePipelineService(tmp_path)
     files = {"modules/pricing.py": "# a", "modules/claims.py": "# b"}
 
-    svc._write_generated_code_files(files, "main.py", [])
+    svc._write_code(svc._resolve_generated_code_files(files, "main.py"), [])
 
     assert (tmp_path / "modules" / "pricing.py").is_file()
     assert (tmp_path / "modules" / "claims.py").is_file()
@@ -469,7 +479,7 @@ def test_reserved_device_label_rejected_before_any_config_write(
     graph = PipelineGraph(nodes=[_config_node("a", label)], edges=[])
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
     assert exc_info.value.status_code == 400
     assert "reserved device name on Windows" in exc_info.value.detail
@@ -494,7 +504,7 @@ def test_reserved_device_label_in_submodel_graph_rejected(tmp_path: Path) -> Non
     }
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_config_files(graph)
+        _write_configs(svc, graph)
 
     assert exc_info.value.status_code == 400
     assert "reserved device name on Windows" in exc_info.value.detail
@@ -507,7 +517,7 @@ def test_near_reserved_labels_still_save(tmp_path: Path, label: str) -> None:
     svc = SavePipelineService(tmp_path)
     graph = PipelineGraph(nodes=[_config_node("a", label)], edges=[])
 
-    svc._write_config_files(graph)
+    _write_configs(svc, graph)
 
     assert (tmp_path / "config" / "data_input" / f"{label}.json").is_file()
 
@@ -520,7 +530,7 @@ def test_codegen_reserved_module_filename_rejected_before_any_write(
     files = {"main.py": "# main", "modules/NUL.py": "# device, not a file"}
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_generated_code_files(files, "main.py", [])
+        svc._write_code(svc._resolve_generated_code_files(files, "main.py"), [])
 
     assert exc_info.value.status_code == 400
     assert "reserved device name on Windows" in exc_info.value.detail
@@ -536,7 +546,7 @@ def test_codegen_reserved_main_filename_rejected(tmp_path: Path) -> None:
     files = {"CON.py": "# console, not a file"}
 
     with pytest.raises(RequestRefusedError) as exc_info:
-        svc._write_generated_code_files(files, "CON.py", [])
+        svc._write_code(svc._resolve_generated_code_files(files, "CON.py"), [])
 
     assert exc_info.value.status_code == 400
     assert "reserved device name on Windows" in exc_info.value.detail
@@ -610,8 +620,8 @@ def test_case_only_rename_single_surviving_inode_holds_new_bytes(
     svc._prev_config_files = {"config/data_input/Foo.json": '{"path": "old.csv"}'}
     graph = PipelineGraph(nodes=[_config_node("a", "FOO")], edges=[])
 
-    svc._write_config_files(graph)
-    removed = svc._remove_stale_config_files(graph)
+    _write_configs(svc, graph)
+    removed = _remove_stale(svc)
 
     assert removed == []
     new = sidecar_dir / "FOO.json"

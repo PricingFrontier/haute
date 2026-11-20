@@ -280,15 +280,16 @@ class TestMutationEndToEnd:
         provider round receives its result. The degradation itself is the
         service's own tested behaviour; here it is simulated at its seam."""
 
-        from haute.routes._save_pipeline import LedgerCapture, SavePipelineService
+        import haute.routes._save_pipeline as save_pipeline
+        from haute.routes._save_pipeline import LedgerCapture
 
-        def degraded_capture(self, touched, removed, warnings, message):
+        def degraded_capture(root, rel_paths, warnings, message=None):
             warnings.append("Changes saved; version capture failed: simulated")
             # Capture degraded for a reason that is not a missing identity, so the
             # prompt must not fire.
             return LedgerCapture(None, False, ["main.py"])
 
-        monkeypatch.setattr(SavePipelineService, "_capture_save_in_ledger", degraded_capture)
+        monkeypatch.setattr(save_pipeline, "capture_save_in_ledger", degraded_capture)
 
         provider = ExactPlanProvider()
         store = SessionStore()
@@ -360,7 +361,7 @@ class TestMutationEndToEnd:
         assert "quotes" in saved_text
         assert (project_root / "main.py").read_bytes() != pre_mutation_bytes
 
-        # The apply lands through SavePipelineService.save -> _capture_save_in_ledger
+        # The apply lands through SavePipelineService.save -> capture_save_in_ledger
         # (src/haute/routes/_save_pipeline.py), which commits the saved file on the
         # working branch's ledger — the assistant never bypasses the save ledger.
         tip_after = _run_git(project_root, "rev-parse", f"{working}-save")

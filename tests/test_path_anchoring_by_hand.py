@@ -64,10 +64,10 @@ _ANCHORED_BY_HAND: dict[str, str] = {
     "src/haute/assistant/_application.py::_prove_steps_survive_save": (
         _SIDECAR + ", written to a scratch folder to prove the steps survive a save"
     ),
-    "src/haute/routes/_save_pipeline.py::SavePipelineService._write_config_files": (
+    "src/haute/routes/_save_pipeline.py::SavePipelineService._config_files": (
         _SIDECAR + ", written by a save"
     ),
-    "src/haute/routes/_save_pipeline.py::SavePipelineService._remove_stale_config_files": (
+    "src/haute/routes/_save_pipeline.py::SavePipelineService._stale_config_files": (
         _SIDECAR + ", removed by a save when its node goes"
     ),
     "src/haute/_parser_submodels.py::_validate_pipeline_dir": (
