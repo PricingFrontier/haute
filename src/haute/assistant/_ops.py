@@ -3235,6 +3235,7 @@ def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
     postconditions are what the committed graph holds. Steps that cannot render yet are
     saved whole beside the code, and stay as they are."""
     nodes: list[GraphNode] = []
+    nodes_by_id = {node.id: node for node in graph.nodes}
     changed = False
     for node in graph.nodes:
         steps = node.data.config.get("steps")
@@ -3244,7 +3245,11 @@ def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
             and node.data.editor.steps_error is None
         ):
             try:
-                reloaded = canonical_steps(NodeType(node.data.nodeType), steps)
+                reloaded = canonical_steps(
+                    NodeType(node.data.nodeType),
+                    steps,
+                    inputs=_incoming_input_names(graph, node.id, nodes_by_id),
+                )
             except PolarsStepError:
                 reloaded = steps
             if reloaded != steps:

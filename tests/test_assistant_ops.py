@@ -2624,7 +2624,10 @@ class TestSemanticPlans:
         saved.nodes[saved.nodes.index(coded)] = coded.with_config({"code": "df = src.head(3)"})
         reloaded = _get(saved, "rated")
         saved.nodes[saved.nodes.index(reloaded)] = reloaded.with_config(
-            {**reloaded.data.config, "steps": canonical_steps(NodeType.RATING_STEP, steps)}
+            {
+                **reloaded.data.config,
+                "steps": canonical_steps(NodeType.RATING_STEP, steps, inputs=()),
+            }
         )
         verify_postconditions(saved, plan.postconditions)
 

@@ -11,23 +11,22 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-09` and `CGEN-10` come from phase 5 of
+`CGEN-09` comes from phase 5 of
 [the codebase review plan](codebase-review-plan.md): a reader from a second
 model family (Codex) read the lift of code into steps, which is new since
-the 31 October 2026 audit, and the review reproduced both on 13 November
-2026 through the editor's load and save routes, `CGEN-09` in a browser too.
-Each was a save that rewrote code nobody edited. Since 17 November 2026 a
-save, and since 20 November 2026 every request that carries the editor's
-document, reads a node's steps only when they were edited ("Which parts a
-request reads" in the code generation specification), so what is left of
-each is a rendering that differs from the code it was read from.
+the 31 October 2026 audit, and the review reproduced it on 13 November
+2026 through the editor's load and save routes and in a browser. It was a
+save that rewrote code nobody edited. Since 17 November 2026 a save, and
+since 20 November 2026 every request that carries the editor's document,
+reads a node's steps only when they were edited ("Which parts a request
+reads" in the code generation specification), so what is left of it is a
+rendering that differs from the code it was read from.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CGEN-09 | Planned | P1 | A step list or a node's settings read after a browser held them keep the numbers they were read with: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
-| CGEN-10 | Planned | P3 | A Transform that rebinds its input's name loads that statement as code, so its steps render against its input names. |
 
 ## Planned improvements
 
@@ -86,35 +85,3 @@ one that renames a Rating Step's output column keeps its `default_value`
 `src/haute/_edited_parts.py::graph_as_read`;
 `frontend/src/utils/documentRequest.ts::documentRequestGraph`.
 
-### CGEN-10 — A Transform that rebinds its input's name loads that statement as code
-**Why:** Reproduced on 13 November 2026 through the editor's load and save
-routes; what is left of it read again on 17 November 2026. A Transform whose
-input is named `exposure` holds `df = exposure`, then `exposure = 365`, then
-`df.with_columns((pl.col("days") / exposure).alias("years"))`. It runs and
-gives 1.0 and 2.0, and since 20 November 2026 a save or a preview of it
-untouched keeps or runs its code ("Which parts a request reads" in the code
-generation specification). But the lift reads `exposure = 365` as a
-Variable step. It accepts a step when the step, rendered after the steps
-before it, gives the statement's text, and it makes that trial without the
-node's input names. A render with them refuses a variable named after an
-input: the editor marks the step unfinished, and once the analyst edits any
-step of the node the save writes `raise NotImplementedError(` with "This
-node's steps are incomplete. Complete or remove them before running." in
-place of the code. What the lift accepts and what a render against the
-inputs accepts are two rules.
-
-**Plan:** Give the lift the node's input names, so a statement a render
-against them would refuse stays code.
-
-**Acceptance:** The Transform above loads with `exposure = 365` and the
-line after it as code, a save after an edit to another step keeps them, and
-the node runs. A test renders every lifted list with its node's input names
-and requires the source back.
-
-**Dependencies:** None.
-
-**Evidence:**
-`src/haute/_polars_steps_lift.py::lift_steps`;
-`src/haute/_polars_steps.py::_Renderer`;
-`src/haute/_codegen_builders.py::_stepped_body_code`;
-`src/haute/_config_builder.py::_with_lifted_steps`.

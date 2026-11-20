@@ -111,16 +111,22 @@ through the LibCST boundary rather than a token splice or substring mutation.
 ## Rebuilding steps from code (READ-21)
 
 `haute._polars_steps_lift` is the inverse of the step renderer
-(`haute._polars_steps.render_node_steps`). `lift_steps(node_type, code)` rebuilds a stepped
-node's steps from its body, and `canonical_steps(node_type, steps)` gives the steps that a
-list's rendering rebuilds as. `READ-22` rebuilds every stepped node's steps from its code on
-load with `lift_steps`.
+(`haute._polars_steps.render_polars_steps`). `lift_steps(node_type, code, inputs=...)`
+rebuilds a stepped node's steps from its body, and `canonical_steps(node_type, steps,
+inputs=...)` gives the steps that a list's rendering rebuilds as. `inputs` is required: the
+names the node's incoming edges take in its function (its positional parameters), of which
+the surface's eligible ones (`step_input_names`) are what each trial renders against.
+`READ-22` rebuilds every stepped node's steps from its code on load with `lift_steps`.
 
 This fits the boundary above. The standard-library AST is used only to propose steps.
 Nothing is unparsed over authored code, and LibCST is not needed, since nothing is
 rewritten. A statement becomes a step only when the renderer, given that step after the
-steps rebuilt before it, prints exactly the statement's text. Every other statement keeps
-its text as code. The rebuilt steps never take authority over Python they cannot describe,
+steps rebuilt before it and the node's input names, prints exactly the statement's text.
+Every other statement keeps its text as code. The trial renders against the input names as
+every later render does (the editor's, a save's), so what the lift accepts and what such a
+render accepts are one rule: a statement that rebinds an input's name (`exposure = 365` in a
+node reading `exposure`) stays code, never a Variable step that a render against the inputs
+refuses and a save after any edit replaces with the incomplete-steps placeholder (CGEN-10). The rebuilt steps never take authority over Python they cannot describe,
 and a save writes a node from its steps only when they were edited: a list that has been
 held elsewhere since the load is not read for a node nobody edited ("Which steps a write
 renders" in [high-level](high-level.md)).

@@ -930,7 +930,11 @@ def _prove_steps_survive_save(
                 # .haute.json.
                 if node.data.editor.steps_error is not None:
                     continue
-                expected = canonical_steps(NodeType(node.data.nodeType), expected)
+                expected = canonical_steps(
+                    NodeType(node.data.nodeType),
+                    expected,
+                    inputs=skeletons[func_name].edge_param_names,
+                )
             discarded = resolved["editor"].steps_discarded
             if discarded or resolved["config"].get("steps") != expected:
                 reason = discarded or "Its steps change on reparse."

@@ -453,13 +453,34 @@ def test_a_scoped_save_keeps_an_unedited_nodes_settings_file(tmp_path: Path) -> 
     assert (tmp_path / "b.json").read_bytes() == settings
 
 
+#: The record a hand edit left behind: the steps of the code, lifted as if the node read no
+#: input, so it renders as the code does but binds a variable named after the node's input.
+_RECORD_WITHOUT_INPUTS = [
+    {"id": "source-1", "kind": "source", "input": "source_a"},
+    {
+        "id": "variable-2",
+        "kind": "variable",
+        "name": "source_a",
+        "value": {"kind": "literal", "type": "number", "value": 365},
+    },
+    {
+        "id": "with_column-3",
+        "kind": "with_column",
+        "name": "years",
+        "expr": {
+            "type": "binary",
+            "left": {"kind": "column", "name": "days"},
+            "op": "/",
+            "right": {"kind": "variable", "name": "source_a"},
+        },
+    },
+]
+
+
 def test_a_scoped_save_never_reads_a_record_a_hand_edit_left_behind(tmp_path: Path) -> None:
     """Working code written by hand over the placeholder leaves the record of its unfinished
     steps in ``.haute.json``; the load ignores it, and so does a scoped save of the node with
     nothing edited, even when the record renders as the code does without the node's inputs."""
-    from haute._polars_steps_lift import lift_steps
-    from haute._types import NodeType
-
     code = "\n".join(
         [
             "df = source_a",
@@ -472,7 +493,7 @@ def test_a_scoped_save_never_reads_a_record_a_hand_edit_left_behind(tmp_path: Pa
         tmp_path,
         "@pipeline.polars\n"
         f"def transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}    return df\n",
-        {"unfinished_steps": {"transform": lift_steps(NodeType.POLARS, code)}},
+        {"unfinished_steps": {"transform": _RECORD_WITHOUT_INPUTS}},
     )
     target = next(node for node in document.nodes if node.authored_id == "transform")
 

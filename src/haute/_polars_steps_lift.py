@@ -46,9 +46,11 @@ from haute._polars_steps import (
     FUNCTIONS,
     LITERAL_TYPES,
     PolarsStepError,
+    RenderedSteps,
     _code_bound_names,
     _decimal_text,
-    render_node_steps,
+    render_polars_steps,
+    step_input_names,
     stepped_surface_for,
 )
 from haute._types import GLOBAL_CONSTANTS_NAME, NodeType
@@ -73,18 +75,23 @@ class _NoMatchError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def lift_steps(node_type: NodeType, code: str) -> list[Step]:
-    """Rebuild the steps of a stepped *node_type* from *code*, its body.
+def lift_steps(node_type: NodeType, code: str, *, inputs: Sequence[str]) -> list[Step]:
+    """Rebuild the steps of a stepped *node_type* from *code*, its body, whose node's
+    *inputs* are the names of its incoming edges (``step_input_names`` keeps those its
+    surface reads).
 
     Each statement a step renders becomes that step, keeping the comment above
     it; each run of other statements, with the comments and blank lines among
-    them, becomes one ``free_code`` step. The result renders to exactly *code*
-    without its trailing newlines, or :class:`StepLiftError` is raised.
+    them, becomes one ``free_code`` step. Each trial renders against the node's
+    inputs, as every later render does, so a statement such a render refuses (a
+    variable named after an input) stays code (CGEN-10). The result renders to
+    exactly *code* without its trailing newlines, or :class:`StepLiftError` is raised.
     """
     body = code.rstrip("\n")
-    steps = _assemble(node_type, _units(body), partial(_recognised, _Reader()))
+    names = step_input_names(node_type, inputs)
+    steps = _assemble(node_type, _units(body), partial(_recognised, _Reader()), names)
     try:
-        rendered = render_node_steps(node_type, steps).code
+        rendered = _render(node_type, steps, names).code
     except PolarsStepError as exc:
         raise StepLiftError(f"The code does not rebuild as steps: {exc}") from None
     if rendered != body:
@@ -92,8 +99,9 @@ def lift_steps(node_type: NodeType, code: str) -> list[Step]:
     return steps
 
 
-def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
-    """The canonical form of a stepped *node_type*'s *steps*: what their code rebuilds as.
+def canonical_steps(node_type: NodeType, steps: object, *, inputs: Sequence[str]) -> list[Step]:
+    """The canonical form of a stepped *node_type*'s *steps*: what their code rebuilds as,
+    for a node whose incoming edges are named *inputs*, as :func:`lift_steps` takes them.
 
     A structured step's canonical form comes from the rules the specification
     records, not from reading its code back; the rendering only settles which
@@ -102,7 +110,8 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
     statements are read as :func:`lift_steps` reads them. Invalid steps raise
     :class:`~haute._polars_steps.PolarsStepError`.
     """
-    rendered = render_node_steps(node_type, steps)
+    names = step_input_names(node_type, inputs)
+    rendered = _render(node_type, steps, names)
     assert isinstance(steps, list)
     if stepped_surface_for(node_type).start == "frame":
         # A frame surface's body is read through extraction's finaliser, which takes the
@@ -111,7 +120,7 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
         read = normalise_user_code(rendered.code, kind="polars")
         if read != rendered.code.strip():
             try:
-                return lift_steps(node_type, read)
+                return lift_steps(node_type, read, inputs=inputs)
             except StepLiftError:
                 pass
     owner: dict[int, Mapping[str, Any]] = {}
@@ -127,7 +136,12 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
         normal = _with_comment(_normal_step(step), unit)
         return normal if context.rendering(normal) == unit.text else None
 
-    return _assemble(node_type, _units(rendered.code), choose)
+    return _assemble(node_type, _units(rendered.code), choose, names)
+
+
+def _render(node_type: NodeType, steps: object, names: Sequence[str]) -> RenderedSteps:
+    """*steps* rendered for *node_type* against its eligible input *names*."""
+    return render_polars_steps(steps, names, start=stepped_surface_for(node_type).start)
 
 
 # ---------------------------------------------------------------------------
@@ -1152,6 +1166,8 @@ class _Context:
 
     node_type: NodeType
     input_mode: bool
+    #: The input names the node's steps may read, which a trial renders against.
+    inputs: Sequence[str]
     position: int = 0
     source: Step | None = None
     variables: list[Step] = field(default_factory=list)
@@ -1171,7 +1187,7 @@ class _Context:
             program = [*([self.source] if self.source else []), *self.variables, step]
         numbered = [{**entry, "id": f"context-{i}"} for i, entry in enumerate(program)]
         try:
-            rendered = render_node_steps(self.node_type, numbered)
+            rendered = _render(self.node_type, numbered, self.inputs)
         except ValueError:  # a PolarsStepError, or a layout outside the vocabulary
             return None
         # Everything after the step before it: its comment, then its statement.
@@ -1218,6 +1234,7 @@ def _assemble(
     node_type: NodeType,
     read: tuple[list[_Unit], list[str]],
     choose: Callable[[_Unit, _Context], Step | None],
+    inputs: Sequence[str],
 ) -> list[Step]:
     """A step for each unit *choose* recognises, and one code step for each run of the rest.
 
@@ -1225,7 +1242,9 @@ def _assemble(
     code step of their own.
     """
     units, below = read
-    context = _Context(node_type, input_mode=stepped_surface_for(node_type).start == "input")
+    context = _Context(
+        node_type, input_mode=stepped_surface_for(node_type).start == "input", inputs=inputs
+    )
     steps: list[Step] = []
     code: list[str] = []
     for unit in units:

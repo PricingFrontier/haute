@@ -24,6 +24,7 @@ from haute._execution_context import ExecutionProfile
 from haute._input_providers import build_input_snapshot
 from haute._node_specs import SINGLETON_NODE_NAMES
 from haute._polars_io_registry import data_input_is_direct
+from haute._polars_steps import referenced_step_inputs
 from haute._polars_steps_lift import canonical_steps
 from haute._source_cache import SourceCacheStore
 from haute._types import NodeType, PipelineGraph
@@ -323,7 +324,9 @@ def test_every_card_configuration_applies_and_executes(
     elif isinstance(authored.get("steps"), list):
         # Every other stepped node's steps live only in its code too (READ-43, READ-44): a
         # card's code step comes back as the step its statement renders, if one does.
-        authored["steps"] = canonical_steps(node_type, authored["steps"])
+        authored["steps"] = canonical_steps(
+            node_type, authored["steps"], inputs=referenced_step_inputs(authored["steps"])
+        )
     if node_type == NodeType.API_INPUT:
         # A column's sidecar leaves out the settings inference gives it, which the load
         # gives back; one given no "selected" is written as not selected (READ-42).

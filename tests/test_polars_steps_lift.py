@@ -53,7 +53,9 @@ from haute._polars_steps import (
     STEPPED_NODE_TYPES,
     WINDOW_AGGREGATIONS,
     PolarsStepError,
+    referenced_step_inputs,
     render_node_steps,
+    render_polars_steps,
 )
 from haute._polars_steps_lift import StepLiftError, canonical_steps, lift_steps
 from haute._types import NodeType
@@ -76,10 +78,12 @@ FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y%m%d %H:%M")
 
 
 def assert_rebuilds(node_type: NodeType, steps: list[Step]) -> list[Step]:
-    """Both properties for one step list; returns the rebuilt steps."""
+    """Both properties for one step list, for a node whose inputs are those the steps
+    read; returns the rebuilt steps."""
     rendered = render_node_steps(node_type, steps).code
-    canonical = canonical_steps(node_type, steps)
-    lifted = lift_steps(node_type, rendered)
+    inputs = referenced_step_inputs(steps)
+    canonical = canonical_steps(node_type, steps, inputs=inputs)
+    lifted = lift_steps(node_type, rendered, inputs=inputs)
     assert lifted == canonical, rendered
     assert render_node_steps(node_type, lifted).code == rendered
     return lifted
@@ -765,6 +769,13 @@ def test_every_corpus_translation_rebuilds_without_code(snippet: str, steps: lis
 
 SOURCE: Step = {"kind": "source", "input": "quotes"}
 
+#: The step lists the backend hands the editor, one per vocabulary entry.
+_STEP_SHAPES_CASES: list[dict[str, Any]] = json.loads(
+    (
+        REPO_ROOT / "frontend/src/panels/editors/polarsSteps/__tests__/fixtures/stepShapes.json"
+    ).read_text(encoding="utf-8")
+)["cases"]
+
 
 def rebuilt(steps: list[Step], node_type: NodeType = NodeType.POLARS) -> list[Step]:
     """The rebuilt steps without their ids, after checking both properties."""
@@ -773,7 +784,7 @@ def rebuilt(steps: list[Step], node_type: NodeType = NodeType.POLARS) -> list[St
 
 
 def test_rebuilt_steps_carry_ids_from_kind_and_place_only() -> None:
-    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)")
+    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)", inputs=INPUTS)
     assert [step["id"] for step in lifted] == ["source-1", "limit-2"]
 
 
@@ -846,7 +857,7 @@ def test_a_run_of_unrecognised_statements_is_one_code_step_between_steps() -> No
             'df = df.drop("row")',
         ]
     )
-    lifted = lift_steps(NodeType.POLARS, code)
+    lifted = lift_steps(NodeType.POLARS, code, inputs=INPUTS)
     assert [step["kind"] for step in lifted] == [
         "source",
         "limit",
@@ -1032,6 +1043,55 @@ def test_membership_numbers_rebuild_as_their_number_type_writes_them() -> None:
     assert [type(v) for v in values[0] + values[1]] == [int, int, float, float]
 
 
+_REBINDS_ITS_INPUT = (
+    "import polars as pl\nimport haute\n\n"
+    'pipeline = haute.Pipeline("p")\n\n\n'
+    "@pipeline.polars\n"
+    "def exposure() -> pl.LazyFrame:\n"
+    '    return pl.LazyFrame({"days": [365.0, 730.0]})\n\n\n'
+    "@pipeline.polars\n"
+    "def years(exposure: pl.LazyFrame) -> pl.LazyFrame:\n"
+    "    df = exposure\n"
+    "    exposure = 365\n"
+    '    df = df.with_columns((pl.col("days") / exposure).alias("years"))\n'
+    "    return df\n"
+)
+
+
+def test_a_transform_that_rebinds_its_input_s_name_loads_that_statement_as_code() -> None:
+    """CGEN-10: the lift tried each step without the node's input names, so it read
+    ``exposure = 365`` as a Variable that a render against the inputs refuses, and a save
+    after any edit wrote the incomplete-steps placeholder in place of the code."""
+    from haute.codegen import graph_to_code
+    from haute.executor import execute_graph
+    from haute.parser import parse_pipeline_source
+
+    graph = parse_pipeline_source(_REBINDS_ITS_INPUT)
+    steps = graph.node_map["years"].data.config["steps"]
+    assert [step["kind"] for step in steps] == ["source", "free_code"]
+    assert steps[1]["code"] == (
+        'exposure = 365\ndf = df.with_columns((pl.col("days") / exposure).alias("years"))'
+    )
+    saved = graph_to_code(graph, pipeline_name="p")
+    assert "    exposure = 365\n" in saved and "NotImplementedError" not in saved
+    result = execute_graph(graph, target_node_id="years")["years"]
+    assert result.status == "ok", result.error
+    assert [row["years"] for row in result.preview] == [1.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    "case", _STEP_SHAPES_CASES, ids=[case["id"] for case in _STEP_SHAPES_CASES]
+)
+def test_every_lifted_list_renders_its_source_against_its_input_names(
+    case: dict[str, Any],
+) -> None:
+    """CGEN-10: what the lift accepts is what a render against the node's inputs accepts."""
+    inputs = referenced_step_inputs(case["steps"])
+    code = render_polars_steps(case["steps"], inputs, start="input").code
+    lifted = lift_steps(NodeType.POLARS, code, inputs=inputs)
+    assert render_polars_steps(lifted, inputs, start="input").code == code
+
+
 @pytest.mark.parametrize("text", ["abc", "1e5", ""])
 def test_a_decimal_membership_of_text_that_is_not_a_number_stays_code(text: str) -> None:
     """CGEN-02: the statement is kept as code, never a failure of the whole read."""
@@ -1039,21 +1099,18 @@ def test_a_decimal_membership_of_text_that_is_not_a_number_stays_code(text: str)
         f'df = df.filter(pl.col("x").is_in(pl.Series([{text!r}]).str.to_decimal(scale=2)'
         ".implode()))"
     )
-    lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{statement}")
+    lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{statement}", inputs=INPUTS)
     assert [step["kind"] for step in lifted] == ["source", "free_code"]
     assert lifted[1]["code"] == statement
 
 
-_STEP_SHAPES = json.loads(
-    (
-        REPO_ROOT / "frontend/src/panels/editors/polarsSteps/__tests__/fixtures/stepShapes.json"
-    ).read_text(encoding="utf-8")
-)["cases"]
 #: What no step's reader expects where a number, a name or a setting stands.
 _MALFORMED_LITERALS: tuple[object, ...] = ("abc", "", "1e5", 10**30, -0.0, True, None)
 
 
-@pytest.mark.parametrize("case", _STEP_SHAPES, ids=[case["id"] for case in _STEP_SHAPES])
+@pytest.mark.parametrize(
+    "case", _STEP_SHAPES_CASES, ids=[case["id"] for case in _STEP_SHAPES_CASES]
+)
 def test_no_step_reader_raises_out_of_the_lift_on_a_malformed_literal(
     case: dict[str, Any],
 ) -> None:
@@ -1068,7 +1125,7 @@ def test_no_step_reader_raises_out_of_the_lift_on_a_malformed_literal(
         constants[index].value = _MALFORMED_LITERALS[index % len(_MALFORMED_LITERALS)]
         mutated = ast.unparse(tree)
         try:
-            lift_steps(NodeType.POLARS, mutated)
+            lift_steps(NodeType.POLARS, mutated, inputs=INPUTS)
         except StepLiftError:
             pass
 
@@ -1083,7 +1140,7 @@ def test_a_reader_that_fails_costs_its_statement_the_step_and_not_the_read(
         raise RuntimeError("a reader's defect")
 
     monkeypatch.setattr(_polars_steps_lift._Reader, "_limit", broken)
-    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)")
+    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)", inputs=INPUTS)
     assert [step["kind"] for step in lifted] == ["source", "free_code"]
 
 
@@ -1112,7 +1169,7 @@ def test_a_hand_edit_to_one_statement_keeps_the_other_steps_and_comments() -> No
     ]
     code = render_node_steps(NodeType.POLARS, numbered(steps)).code
     edited = code.replace("df = df.head(5)", "df = df.head(5).with_row_index()")
-    lifted = lift_steps(NodeType.POLARS, edited)
+    lifted = lift_steps(NodeType.POLARS, edited, inputs=INPUTS)
     assert [{k: v for k, v in s.items() if k != "id"} for s in lifted] == [
         SOURCE,
         {"kind": "free_code", "code": "# keep five\ndf = df.head(5).with_row_index()"},
@@ -1159,12 +1216,12 @@ def test_a_comment_that_is_not_ruff_s_stays_code() -> None:
     """A comment line ending in whitespace is no step's comment; its statement stays code."""
     code = "df = quotes\n# trailing space \ndf = df.head(5)"
     with pytest.raises(StepLiftError, match="do not render the code exactly"):
-        lift_steps(NodeType.POLARS, code)
+        lift_steps(NodeType.POLARS, code, inputs=INPUTS)
 
 
 def test_a_variable_whose_statement_stays_code_defines_nothing_after_it() -> None:
     code = 'df = quotes\nrate = 2  # two\ndf = df.with_columns(pl.lit(rate).alias("r"))'
-    lifted = lift_steps(NodeType.POLARS, code)
+    lifted = lift_steps(NodeType.POLARS, code, inputs=INPUTS)
     assert [step["kind"] for step in lifted] == ["source", "free_code"]
 
 
@@ -1175,10 +1232,10 @@ def test_a_variable_the_code_above_already_assigns_is_refused_and_rebuilt_as_cod
         {"kind": "variable", "name": "rate", "value": literal("number", 3)},
     ]
     with pytest.raises(PolarsStepError, match="Variable 'rate' is already assigned"):
-        canonical_steps(NodeType.POLARS, numbered(steps))
+        canonical_steps(NodeType.POLARS, numbered(steps), inputs=INPUTS)
     # Written by hand, the second assignment is code either way.
     for first in ("rate = 2", "rate = round(2.5)", "for rate in range(2):\n    pass"):
-        lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{first}\nrate = 3")
+        lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{first}\nrate = 3", inputs=INPUTS)
         assert lifted[-1] == {
             "id": f"free_code-{len(lifted)}",
             "kind": "free_code",
@@ -1194,7 +1251,7 @@ def test_a_twenty_term_sum_is_one_step_and_round_trips() -> None:
     steps = [SOURCE, {"kind": "with_column", "name": "total", "expr": expr}]
     assert rebuilt(steps)[1] == steps[1]
     code = render_node_steps(NodeType.POLARS, numbered(steps)).code
-    lifted = lift_steps(NodeType.POLARS, code)
+    lifted = lift_steps(NodeType.POLARS, code, inputs=INPUTS)
     assert len(lifted) == 2
     assert render_node_steps(NodeType.POLARS, lifted).code == code
 
@@ -1205,20 +1262,25 @@ def test_a_twenty_deep_mix_of_operators_written_by_hand_stays_code() -> None:
     for index in range(1, 21):
         formula = f'{formula} {"+-"[index % 2]} pl.col("c{index}")'
     code = f'df = quotes\ndf = df.with_columns(({formula}).alias("t"))'
-    assert [step["kind"] for step in lift_steps(NodeType.POLARS, code)] == ["source", "free_code"]
+    assert [step["kind"] for step in lift_steps(NodeType.POLARS, code, inputs=INPUTS)] == [
+        "source",
+        "free_code",
+    ]
 
 
 def test_a_body_ending_in_newlines_rebuilds_as_without_them() -> None:
     code = render_node_steps(NodeType.POLARS, numbered([SOURCE, {"kind": "limit", "n": 2}])).code
-    assert lift_steps(NodeType.POLARS, code + "\n\n") == lift_steps(NodeType.POLARS, code)
-    assert lift_steps(NodeType.DATA_INPUT, "\n") == []
+    assert lift_steps(NodeType.POLARS, code + "\n\n", inputs=INPUTS) == lift_steps(
+        NodeType.POLARS, code, inputs=INPUTS
+    )
+    assert lift_steps(NodeType.DATA_INPUT, "\n", inputs=INPUTS) == []
 
 
 def test_a_frame_surface_rebuilds_its_start_as_code() -> None:
     """A frame surface has no start step, so ``df = <name>`` there is code."""
     steps: list[Step] = [{"kind": "free_code", "code": "df = quotes"}, {"kind": "limit", "n": 2}]
     assert rebuilt(steps, NodeType.EXTERNAL_FILE) == steps
-    assert lift_steps(NodeType.DATA_INPUT, "") == []
+    assert lift_steps(NodeType.DATA_INPUT, "", inputs=INPUTS) == []
 
 
 @pytest.mark.parametrize(
@@ -1235,4 +1297,4 @@ def test_code_that_does_not_render_back_is_refused(
     node_type: NodeType, code: str, fragment: str
 ) -> None:
     with pytest.raises(StepLiftError, match=fragment):
-        lift_steps(node_type, code)
+        lift_steps(node_type, code, inputs=INPUTS)

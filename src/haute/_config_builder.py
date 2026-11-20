@@ -451,14 +451,16 @@ def _validate_node_function(
 def _with_lifted_steps(
     config: dict[str, Any],
     func_name: str,
-    node_type: NodeType = DEFAULT_NODE_TYPE,
+    node_type: NodeType,
     *,
+    inputs: Sequence[str],
     declaration: bool = False,
 ) -> dict[str, Any]:
-    """*config* of a stepped node with the steps rebuilt from its code (READ-22, READ-44).
+    """*config* of a stepped node with the steps rebuilt from its code (READ-22, READ-44),
+    *inputs* the names its function's positional parameters give its incoming edges.
 
-    Each statement a step renders exactly becomes that step and each run of
-    other statements one code step (``lift_steps``), so a hand edit or a
+    Each statement a step renders exactly, against those names, becomes that step and
+    each run of other statements one code step (``lift_steps``), so a hand edit or a
     comment keeps the rest. A node that maps its inputs, which a stepped node
     never does, and one whose lines do not split into statements stay
     code-only, as does one with no code: an empty transform, or the placeholder
@@ -472,12 +474,12 @@ def _with_lifted_steps(
     if not code:
         return {**config, "steps": []} if declaration else config
     try:
-        steps = lift_steps(node_type, code)
+        steps = lift_steps(node_type, code, inputs=inputs)
     except StepLiftError:
         # Spaces ending a line, outside a string, are what ``ruff format`` takes off and a
         # rendering never holds: without them the statements are what they were.
         try:
-            steps = lift_steps(node_type, _without_line_end_spaces(code))
+            steps = lift_steps(node_type, _without_line_end_spaces(code), inputs=inputs)
         except StepLiftError as exc:
             logger.info("polars_steps_not_rebuilt", func_name=func_name, reason=str(exc))
             return config
@@ -606,6 +608,9 @@ def _resolve_node_config(
         list(edge_param_names if edge_param_names is not None else param_names),
         func_name,
     )
+    # Only positional parameters are inputs: an External File hook's keyword-only obj is
+    # never the input its generated binding names.
+    inputs = list(edge_param_names if edge_param_names is not None else param_names)
     # Strip the ``contract=`` kwarg before delegating to the per-type
     # config builders — those builders would otherwise flag it as
     # unrecognised.  We re-attach it to the config afterwards (see
@@ -678,20 +683,13 @@ def _resolve_node_config(
                 func_name=func_name,
                 base_dir=str(base),
             ) from exc
-        # Code lives in the .py function body, not in the JSON file. Only
-        # positional parameters are inputs: an External File hook's keyword-only
-        # obj is never the input its generated binding names.
-        config = _attach_code_from_body(
-            loaded,
-            node_type,
-            body,
-            list(edge_param_names if edge_param_names is not None else param_names),
-        )
+        # Code lives in the .py function body, not in the JSON file.
+        config = _attach_code_from_body(loaded, node_type, body, inputs)
         if node_type in STEPPED_NODE_TYPES:
             # Its code is the only copy of its steps (READ-44); its sidecar holds none. A
             # declaration has none yet; a hook with no code is the unfinished placeholder.
             config = _with_lifted_steps(
-                config, func_name, node_type, declaration=is_declaration_body(body)
+                config, func_name, node_type, inputs=inputs, declaration=is_declaration_body(body)
             )
     elif has_config_folder(node_type):
         raise _sidecar_required_error(node_type, func_name, list(decorator_kwargs))
@@ -700,7 +698,7 @@ def _resolve_node_config(
             node_type, decorator_kwargs, body, param_names, func_name=func_name
         )
         if node_type in STEPPED_NODE_TYPES:
-            config = _with_lifted_steps(config, func_name, node_type)
+            config = _with_lifted_steps(config, func_name, node_type, inputs=inputs)
 
     finish = _AFTER_PARSE[node_type]
     if finish is not None:
