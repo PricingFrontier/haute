@@ -548,14 +548,24 @@ def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
     return remap.get(f"{node_id}__{CONTRACT_FILENAME}")
 
 
-def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) -> None:
-    """Reject a deploy modelScore that would become an identity passthrough."""
+def _refuse_unbundled_artifacts(node: GraphNode, remap: Mapping[str, str]) -> None:
+    """Refuse a node that would read a model or optimiser result its bundle does not carry.
+
+    A deployed pipeline scores only the model and applies only the optimiser result
+    its bundle carries: nothing is loaded from MLflow or the project when served.
+    """
+    _refuse_unbundled_model_score(node, remap)
+    _refuse_unbundled_optimiser_result(node, remap)
+
+
+def _refuse_unbundled_model_score(node: GraphNode, remap: Mapping[str, str]) -> None:
+    """A Model Scoring node without its bundled model, or one no source configures."""
     if DEPLOY_ARTIFACTS[node.data.nodeType] != "model":
         return
     config = node.data.config
     if (
         _remap_artifact(node.id, config, remap, model_artifact_field(config)) is not None
-        or _bundled_contract_path(node.id, remap) is not None
+        or _bundled_contract_path(node.id, dict(remap)) is not None
     ):
         return
 
@@ -575,6 +585,41 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
         raise DeployError(f"{message} {exc}", node_id=node.id) from exc
     if model_source is None:
         raise DeployError(message, node_id=node.id)
+    raise DeployError(
+        f"Model Scoring node {node.id!r} has no bundled model. A deployed pipeline scores "
+        "only the model its bundle carries and never loads one from MLflow or the project "
+        "when served; deploy it with haute deploy, which resolves and bundles the model.",
+        node_id=node.id,
+    )
+
+
+def _refuse_unbundled_optimiser_result(node: GraphNode, remap: Mapping[str, str]) -> None:
+    """An Optimiser Apply whose chosen result its bundle does not carry.
+
+    One with no source, or whose source the editor has not filled in, passes
+    through, as the builder's does.
+    """
+    if DEPLOY_ARTIFACTS[node.data.nodeType] != "optimiser_result":
+        return
+    from haute._node_apply import optimiser_apply_source
+
+    config = node.data.config
+    source = optimiser_apply_source(config)
+    if source is None or not source.identifier:
+        return
+    if (
+        source.source_type == "file"
+        and _remap_artifact(node.id, config, remap, "artifact_path") is not None
+    ):
+        return
+    from haute.errors import DeployError
+
+    raise DeployError(
+        f"Optimiser Apply node {node.id!r} has no bundled optimiser result. A deployed "
+        "pipeline applies only the result its bundle carries and never loads one from "
+        "MLflow or the project when served; deploy it with haute deploy, which bundles it.",
+        node_id=node.id,
+    )
 
 
 def _assert_runtime_contract_matches(
@@ -809,10 +854,10 @@ def _score_graph_lazy(
     _require_request_input_edge_names(graph, relevant_node_ids)
     for node in graph.nodes:
         if node.id in relevant_node_ids:
-            # Strategy planning now precedes function construction. Preserve
-            # deploy's purpose-built passthrough rejection before a malformed
-            # dynamic model contract can fail with a lower-level config error.
-            _validate_deploy_model_score_source(node, remap)
+            # Strategy planning now precedes function construction. Refuse a node
+            # its bundle cannot serve before a malformed dynamic model contract can
+            # fail with a lower-level config error.
+            _refuse_unbundled_artifacts(node, remap)
     input_set = set(input_node_ids)
     # A Workbench Input's quote, and a Quote Input's quotes, are read once, here, into a
     # frame per port, as the editor reads them: the walk hands each edge its table, and
@@ -968,8 +1013,8 @@ def _score_graph_lazy(
                 )
 
         # Intercept: a file-sourced Optimiser Apply loads its bundled copy, then applies it
-        # through the body every Optimiser Apply runs. One sourced from MLflow loads at
-        # request time from its own destination, exactly as the builder does.
+        # through the body every Optimiser Apply runs. One chosen from MLflow was bundled
+        # and is served as a file source; one without its bundle was refused above.
         if artifact == "optimiser_result" and config.get("source_type") == "file" and remap:
             remapped_path = _remap_artifact(nid, config, remap, "artifact_path")
             if remapped_path is not None:
@@ -1079,15 +1124,11 @@ def _score_graph_lazy(
 
                 return func_name, model_score_missing_artifact, False
 
-            # Neither a bundled model artifact nor a bundled contract exists
-            # for this modelScore node.  If the node also lacks a usable model
-            # source it would fall through to the base builder, which returns a
-            # silent identity passthrough for unconfigured/misconfigured
-            # modelScore nodes.  A deployed pricing endpoint must never serve a
-            # modelScore as a passthrough — the served quote would silently omit
-            # the model.  Fail loud at build/validate time instead of shipping a
-            # container that quietly returns unscored inputs.
-            _validate_deploy_model_score_source(node, remap)
+            # Neither a bundled model artifact nor a bundled contract exists for
+            # this modelScore node: the base builder would load it from MLflow or
+            # the project, or pass its input through unscored. A deployed pipeline
+            # does neither; refuse it naming the node.
+            _refuse_unbundled_artifacts(node, remap)
 
         return None  # fall through to base builder
 

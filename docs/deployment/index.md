@@ -246,7 +246,7 @@ Every deployment answers such a request, in one of two ways. When you deploy, Ha
 | **Unpivot to rows**, **Append inputs**, a full join, or an [Expander](../building-models/nodes/scenario-expander.md) | It can repeat a quote or add rows |
 | A join that starts from another input instead of the quotes | It answers with that input's rows |
 | **Group and aggregate**, **Pivot to columns**, a **Fill missing values** strategy that reads other rows, or a formula that does (a total, an average, a rank, a running total, the previous row's value) | One quote's answer would depend on the others |
-| An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode, or one that loads its result from MLflow | Online mode answers in quote-id order; an MLflow result can't be checked before it is loaded |
+| An [Apply Optimisation](../building-models/nodes/optimiser-apply.md) node in online mode | Online mode answers in quote-id order |
 | A [Quote Response](../building-models/nodes/output.md) that nests a quote's own rows, such as its drivers, under it | Run together, each driver would go under every quote holding its key, so two quotes sharing a key would share drivers |
 | Code the check can't follow | It can't be checked yet |
 

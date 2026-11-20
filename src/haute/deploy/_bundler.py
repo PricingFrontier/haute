@@ -157,6 +157,20 @@ def _collect_artifacts(
 
             source = optimiser_apply_source(config)
             raw_path = config.get("artifact_path", "")
+            if source is not None and source.source_type != "file" and not raw_path:
+                # Chosen from MLflow: bundled, so the deployed pipeline never reads MLflow.
+                # One the editor has not filled in passes through, as the builder's does.
+                if source.identifier:
+                    _bundle_mlflow_optimiser_result(
+                        nid,
+                        config,
+                        source.source_type,
+                        artifacts,
+                        resources=resources,
+                        served_configs=served_configs,
+                        model_sources=model_sources,
+                    )
+                continue
             if not raw_path:
                 continue
             # Only a file source's artifact is bundled. The runtime tolerates, and
@@ -324,6 +338,74 @@ def _collect_model_file(
         ) from exc
     if sibling is not None:
         artifacts.add(node_id, f"{node_id}__{CONTRACT_FILENAME}", sibling)
+
+
+#: The config keys that choose an MLflow source, which a bundled result no longer reads.
+_MLFLOW_SOURCE_KEYS = frozenset(
+    {
+        "run_id",
+        "run_name",
+        "experiment_id",
+        "experiment_name",
+        "registered_model",
+        "version",
+        "alias",
+        "mlflow_destination",
+    }
+)
+
+
+def _bundle_mlflow_optimiser_result(
+    nid: str,
+    config: Mapping[str, Any],
+    source_type: str,
+    artifacts: ArtifactKeys,
+    *,
+    resources: ExitStack | None,
+    served_configs: dict[str, dict[str, Any]] | None,
+    model_sources: dict[str, dict[str, Any]] | None,
+) -> None:
+    """Download an MLflow-sourced Optimiser Apply's result once and bundle it.
+
+    The copy lives in a folder the resolution's *resources* own, until the bundle
+    is built. The node is served as a file source naming the bundled result, and a
+    registered source's resolution is recorded in *model_sources*, as a Model
+    Scoring node's is.
+    """
+    import tempfile
+
+    from haute._mlflow_utils import resolve_backend
+    from haute._optimiser_io import _MLFLOW_ARTIFACT_NAME, download_mlflow_optimiser_result
+
+    if resources is None:
+        raise ValueError(
+            "Bundling an optimiser result from MLflow needs the resolution's resources, "
+            "which own the downloaded copy until the bundle is built."
+        )
+    folder = Path(resources.enter_context(tempfile.TemporaryDirectory(prefix="haute_opt_")))
+    local, run_id, version = download_mlflow_optimiser_result(
+        source_type=source_type,
+        run_id=str(config.get("run_id") or ""),
+        registered_model=str(config.get("registered_model") or ""),
+        version=str(config.get("version") or ""),
+        alias=str(config.get("alias") or ""),
+        backend=resolve_backend(str(config.get("mlflow_destination") or "")),
+        dst=folder,
+    )
+    artifacts.add(nid, f"{nid}__{_MLFLOW_ARTIFACT_NAME}", local)
+    if served_configs is not None:
+        served_configs[nid] = {
+            **{key: value for key, value in config.items() if key not in _MLFLOW_SOURCE_KEYS},
+            "source_type": "file",
+            "artifact_path": _MLFLOW_ARTIFACT_NAME,
+        }
+    if source_type == "registered" and model_sources is not None:
+        model_sources[nid] = {
+            "registered_model": str(config.get("registered_model") or ""),
+            "alias": str(config.get("alias") or ""),
+            "version": version,
+            "run_id": run_id,
+        }
 
 
 def _resolve_bundled_model(

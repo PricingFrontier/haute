@@ -24,7 +24,6 @@ from haute._project_imports import UTILITY_SKIPPED_DIRS
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._lock import DOCKER_PLATFORM, TARGET_PLATFORM, lock_requirements
 from haute.deploy._mlflow import DeployResult
-from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
@@ -71,7 +70,7 @@ _SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
 #: runtime policy (specs/deploy, Scoring runtime): the editor, assistant, training,
 #: tuning, workbench-store, workbench-export and registry stacks, and each model engine,
 #: which the image installs only when a bundled artefact needs it
-#: (``_extra_deps_by_artifact``) or the graph loads from MLflow. The image's runtime check
+#: (``_extra_deps_by_artifact``); a served graph never loads from MLflow. The image's runtime check
 #: accepts haute's requirement on one of these being absent, and no other: a requirement
 #: haute adds is reviewed here first.
 HAUTE_SCORING_OMISSIONS: frozenset[str] = frozenset(
@@ -1153,7 +1152,6 @@ def _pinned_dockerfile_deps(
             else _pinned_dockerfile_dependency(distribution_name, install_name)
             for distribution_name, install_name in _SCORING_RUNTIME_DEPENDENCIES
         ),
-        *_pinned_graph_dockerfile_deps(resolved),
         *_pinned_extra_dockerfile_deps(resolved),
     ]
 
@@ -1169,28 +1167,9 @@ def runtime_versions(resolved: ResolvedDeploy) -> list[str]:
                 _pinned_dockerfile_dependency(distribution_name, distribution_name)
                 for distribution_name, _ in _SCORING_RUNTIME_DEPENDENCIES
             ),
-            *_pinned_graph_dockerfile_deps(resolved),
             *_pinned_extra_dockerfile_deps(resolved),
         }
     )
-
-
-def _pinned_graph_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
-    """Pin the runtime the served graph needs beyond the scoring runtime.
-
-    An optimiser apply sourced from an MLflow run or registered model loads its
-    artefact from MLflow when the container runs (such artefacts are not
-    bundled), so the image needs ``mlflow``.
-    """
-    nodes = [
-        node.id
-        for node in resolved.pruned_graph.nodes
-        if DEPLOY_ARTIFACTS[node.data.nodeType] == "optimiser_result"
-        and node.data.config.get("source_type") in {"run", "registered"}
-    ]
-    if not nodes:
-        return []
-    return [_pinned_dockerfile_dependency("mlflow", "mlflow", required_by=sorted(nodes))]
 
 
 def _pinned_extra_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:

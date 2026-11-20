@@ -937,6 +937,122 @@ class TestOneResolutionPerOperation:
 
 
 # ---------------------------------------------------------------------------
+# A deployed pipeline reads only its bundle: an optimiser result from MLflow too
+# ---------------------------------------------------------------------------
+
+
+def _optimiser_graph(config: dict[str, Any]) -> Any:
+    from tests.conftest import make_graph
+
+    return make_graph(
+        {
+            "nodes": [
+                {"id": "src", "data": {"label": "src", "nodeType": "apiInput", "config": {}}},
+                {
+                    "id": "opt",
+                    "data": {"label": "opt", "nodeType": "optimiserApply", "config": config},
+                },
+            ],
+            "edges": [{"id": "e1", "source": "src", "target": "opt", "sourceHandle": "src"}],
+        }
+    )
+
+
+class TestAnOptimiserResultFromMlflowIsBundled:
+    def _logged_result(self, store: _Store, tmp_path: Path) -> tuple[str, bytes]:
+        run_id = store.client.create_run(store.experiment_id).info.run_id
+        result = tmp_path / "logged" / "optimiser_result.json"
+        result.parent.mkdir()
+        result.write_text('{"version": "rb_v7", "mode": "ratebook"}', encoding="utf-8")
+        store.client.log_artifact(run_id, str(result))
+        return run_id, result.read_bytes()
+
+    def test_a_run_source_is_bundled_and_served_as_its_file(
+        self, store: _Store, tmp_path: Path
+    ) -> None:
+        from contextlib import ExitStack
+
+        from haute.deploy._bundler import collect_artifacts
+
+        run_id, logged = self._logged_result(store, tmp_path)
+        config = {
+            "source_type": "run",
+            "run_id": run_id,
+            "experiment_id": store.experiment_id,
+            "optimised_value_column": "selected",
+        }
+        served: dict[str, dict[str, Any]] = {}
+        with ExitStack() as resources:
+            artifacts = collect_artifacts(
+                _optimiser_graph(config),
+                ["src"],
+                store.root,
+                project_root=store.root,
+                resources=resources,
+                served_configs=served,
+            )
+            assert sorted(artifacts) == ["opt__optimiser_result.json"]
+            assert artifacts["opt__optimiser_result.json"].read_bytes() == logged
+        assert served == {
+            "opt": {
+                "source_type": "file",
+                "artifact_path": "optimiser_result.json",
+                "optimised_value_column": "selected",
+            }
+        }
+
+    def test_a_registered_source_records_the_version_it_bundled(
+        self, store: _Store, tmp_path: Path
+    ) -> None:
+        from contextlib import ExitStack
+
+        from haute.deploy._bundler import collect_artifacts
+
+        run_id, logged = self._logged_result(store, tmp_path)
+        store.client.create_registered_model("pricing_opt")
+        location = store.client.get_run(run_id).info.artifact_uri
+        store.client.create_model_version("pricing_opt", location, run_id)
+        store.client.set_registered_model_alias("pricing_opt", "champion", "1")
+        config = {
+            "source_type": "registered",
+            "registered_model": "pricing_opt",
+            "alias": "champion",
+        }
+        sources: dict[str, dict[str, Any]] = {}
+        with ExitStack() as resources:
+            artifacts = collect_artifacts(
+                _optimiser_graph(config),
+                ["src"],
+                store.root,
+                project_root=store.root,
+                resources=resources,
+                model_sources=sources,
+            )
+            assert artifacts["opt__optimiser_result.json"].read_bytes() == logged
+        assert sources == {
+            "opt": {
+                "registered_model": "pricing_opt",
+                "alias": "champion",
+                "version": "1",
+                "run_id": run_id,
+            }
+        }
+
+    def test_an_unfilled_source_bundles_nothing_and_needs_resources_otherwise(
+        self, store: _Store, tmp_path: Path
+    ) -> None:
+        from haute.deploy._bundler import collect_artifacts
+
+        unfilled = _optimiser_graph({"source_type": "run", "run_id": ""})
+        assert collect_artifacts(unfilled, ["src"], store.root, project_root=store.root) == {}
+
+        run_id, _logged = self._logged_result(store, tmp_path)
+        chosen = _optimiser_graph({"source_type": "run", "run_id": run_id})
+        with pytest.raises(ValueError, match="needs the resolution's resources"):
+            collect_artifacts(chosen, ["src"], store.root, project_root=store.root)
+
+
+# ---------------------------------------------------------------------------
 # The guard: only the model resolution lists a run's artifacts for a model
 # ---------------------------------------------------------------------------
 

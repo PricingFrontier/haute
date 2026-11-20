@@ -1125,11 +1125,10 @@ class TestGenerateDockerfile:
         assert names == {name for name, _ in _SCORING_RUNTIME_DEPENDENCIES}
         assert not names & {"anthropic", "openai", "optuna", "libcst", "mlflow", "tomlkit"}
 
-    @pytest.mark.parametrize(("source_type", "needs_mlflow"), [("run", True), ("file", False)])
-    def test_an_mlflow_sourced_optimiser_apply_adds_mlflow(
-        self, source_type: str, needs_mlflow: bool
-    ) -> None:
-        # MLflow-sourced optimiser artefacts are loaded when the container runs.
+    @pytest.mark.parametrize("source_type", ["run", "registered", "file"])
+    def test_no_optimiser_apply_adds_mlflow(self, source_type: str) -> None:
+        # An optimiser result chosen from MLflow is bundled when the bundle is built, so
+        # nothing a served graph reads comes from MLflow and no image installs it.
         resolved = make_resolved_deploy(
             pipeline_file=Path("main.py"),
             target="container",
@@ -1150,7 +1149,7 @@ class TestGenerateDockerfile:
 
         deps, _haute = _runtime_roots(resolved)
 
-        assert (f"mlflow=={version('mlflow')}" in deps) is needs_mlflow
+        assert not any(dep.startswith("mlflow") for dep in deps)
 
     def test_fails_loudly_when_core_dependency_metadata_is_unavailable(
         self,

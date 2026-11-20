@@ -295,7 +295,7 @@ def test_a_registered_source_loads_by_alias(mock_load: Any) -> None:
 
 @pytest.mark.parametrize("source", list(INVALID_SOURCES.values()), ids=list(INVALID_SOURCES))
 def test_the_deploy_passthrough_guard_chains_the_parse_failure(source: dict[str, Any]) -> None:
-    from haute.deploy._scorer import _validate_deploy_model_score_source
+    from haute.deploy._scorer import _refuse_unbundled_artifacts
     from haute.errors import DeployError
     from haute.graph_utils import GraphNode, NodeData
 
@@ -304,7 +304,7 @@ def test_the_deploy_passthrough_guard_chains_the_parse_failure(source: dict[str,
     node = GraphNode(id="score", data=NodeData(label="score", nodeType="modelScore", config=config))
 
     with pytest.raises(DeployError, match="passthrough") as caught:
-        _validate_deploy_model_score_source(node, {})
+        _refuse_unbundled_artifacts(node, {})
 
     _same_error(caught.value.__cause__, expected)  # type: ignore[arg-type]
 

@@ -35,7 +35,7 @@ With **Experiment Run**:
 
 A registered version scores the file it was registered from. A version registered from a logged model, as `runs:/<run>/model` registers under MLflow 3, scores the model file its run holds, which every Haute training run logs beside the logged model.
 
-Each preview, run and deploy asks MLflow what the run holds now, so a model file logged again over the same path is the one that scores. The model is downloaded only when its file changed.
+Each preview, run and deploy asks MLflow what the run holds now, so a model file logged again over the same path is the one that scores. The model is downloaded only when its file changed. A deployment carries the model file itself: the deployed app never reads MLflow.
 
 With **Registered Model**:
 
