@@ -771,7 +771,10 @@ unavailable (or blocked) recovery node while the rest of the canvas stays loaded
 reset and recover actions repair it. A file that is not valid Python has no canvas. Its editor
 document is `source_only`, carrying the Python syntax error's location with the remediation to open
 the source there in an editor and correct it; the editor shows that parse error and the current
-source, never a recovered or earlier canvas. There is no textual recovery of syntax-invalid source.
+source, never a recovered or earlier canvas. Every syntax error Python raises is reported this way,
+an indentation error too (a tab among spaces, a space too far or too few): where Python gives no end
+for the error, or one before its start, its location ends where it starts (CGEN-08). There is no
+textual recovery of syntax-invalid source.
 A file that is not UTF-8 is not valid Python either, since Python refuses to compile it: its
 document is `source_only` with a `source_encoding_invalid` diagnostic at the first byte that
 cannot be decoded, naming the byte, with the remediation to save the file as UTF-8. A registered

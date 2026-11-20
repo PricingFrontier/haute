@@ -239,6 +239,16 @@ def _span(
     )
 
 
+def _syntax_error_span(error: SyntaxError) -> RecoverySourceSpan:
+    """Where Python puts *error*, ending where it starts when Python gives no end, or one
+    before its start: an indentation error's end is -1 (CGEN-08)."""
+    start = (max(1, error.lineno or 1), max(0, (error.offset or 1) - 1))
+    end = (error.end_lineno or start[0], (error.end_offset or 0) - 1)
+    if end < start:
+        end = start
+    return _span(*start, *end)
+
+
 def _diagnostic(
     *,
     code: str,
@@ -2626,12 +2636,7 @@ def _load_readable_pipeline_editor_document(
         try:
             tree = ast.parse(source)
         except SyntaxError as syntax_error:
-            syntax_span = _span(
-                syntax_error.lineno or 1,
-                max(0, (syntax_error.offset or 1) - 1),
-                syntax_error.end_lineno or syntax_error.lineno or 1,
-                max(0, (syntax_error.end_offset or syntax_error.offset or 1) - 1),
-            )
+            syntax_span = _syntax_error_span(syntax_error)
             diagnostics.append(
                 _diagnostic(
                     code="python_syntax_error",
