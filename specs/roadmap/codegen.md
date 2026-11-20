@@ -11,7 +11,7 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-01` to `CGEN-03` are each one valid hand-written file the parser reads
+`CGEN-01` and `CGEN-03` are each one valid hand-written file the parser reads
 wrongly or cannot read; they share no code and can be taken in any order.
 `CGEN-04` is a cost, not a wrong result.
 
@@ -39,7 +39,6 @@ each is a rendering that differs from the code it was read from.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CGEN-01 | Planned | P2 | A pipeline's name and description are read however the constructor gives them, and a constructor the reader cannot read is refused instead of rewritten. |
-| CGEN-02 | Planned | P3 | A decimal membership test with text that is not a number stays code; it no longer makes the whole file unreadable. |
 | CGEN-03 | Planned | P3 | A closing `return` after a semicolon is rewritten correctly when the line holds non-ASCII text. |
 | CGEN-04 | Planned | P3 | Code generation reads each node function's parameters once per save, not once per edge. |
 | CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
@@ -84,34 +83,6 @@ is never saved over.
 and the `description` keyword only; `src/haute/_ast_helpers.py::_constructor_call`
 skips an annotated assignment; `src/haute/pipeline.py::Pipeline` accepts both
 forms; `src/haute/codegen.py::graph_to_code` writes the name it was given.
-
-### CGEN-02 — A decimal membership with text that is not a number stays code
-**Why:** Reproduced. The step lift recognises
-`pl.Series([...]).str.to_decimal(scale=...)` inside an `is_in` and converts
-each string with `int()` or `float()`. A string that is not a number raises a
-bare `ValueError`, which is neither the lift's own "not a step" signal nor the
-`StepLiftError` the config builder catches, so it leaves the parser. A
-transform holding
-`df = df.filter(pl.col("x").is_in(pl.Series(["abc"]).str.to_decimal(scale=2).implode()))`
-makes `parse_pipeline_source` fail with
-`ValueError: invalid literal for int() with base 10: 'abc'`, naming no node,
-file or line; `"1e5"` and an empty string do the same. The module's contract
-is that every statement it does not recognise is kept as code.
-
-**Plan:** `_decimal_value` signals "not a step" for text it cannot convert.
-Make the recogniser treat any failure of a step reader as "not a step", so a
-reader's defect can cost a step its form but never the file.
-
-**Acceptance:** A pipeline holding the statement above parses, the node keeps
-the statement as free code, and generating the graph writes it back unchanged.
-A test drives each step reader with a malformed literal and asserts none of
-them raises out of the lift.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_steps_lift.py::_decimal_value`;
-`src/haute/_polars_steps_lift.py::_attempt` catches the lift's own signal only;
-`src/haute/_config_builder.py::_with_lifted_steps` catches `StepLiftError` only.
 
 ### CGEN-03 — A closing return after a semicolon survives non-ASCII text
 **Why:** Reproduced. The rewrite of a closing `return <expr>` into an

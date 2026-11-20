@@ -36,6 +36,7 @@ from functools import partial
 from typing import Any, Literal
 
 from haute._code_extraction import normalise_user_code
+from haute._logging import get_logger
 from haute._polars_steps import (
     _OPERAND_ARGUMENT_LITERALS,
     _STRING_OPERATORS,
@@ -55,6 +56,8 @@ from haute._types import GLOBAL_CONSTANTS_NAME, NodeType
 __all__ = ["StepLiftError", "canonical_steps", "lift_steps"]
 
 Step = dict[str, Any]
+
+logger = get_logger(component="parser.polars_steps_lift")
 
 
 class StepLiftError(ValueError):
@@ -427,9 +430,13 @@ def _decimal_value(text: str) -> int | float:
     """The number a decimal membership value's text renders from.
 
     A whole number reads as an integer, unless only a float renders its text
-    (``-0``); any other text reads as a float.
+    (``-0``); any other text reads as a float. Text that is not a number is no
+    step's (CGEN-02).
     """
-    choices: list[int | float] = [float(text)] if "." in text else [int(text), float(text)]
+    try:
+        choices: list[int | float] = [float(text)] if "." in text else [int(text), float(text)]
+    except ValueError:
+        raise _NoMatchError from None
     for choice in choices:
         if _decimal_text(choice) == text:
             return choice
@@ -1183,10 +1190,24 @@ class _Context:
 
 
 def _recognised(reader: _Reader, unit: _Unit, context: _Context) -> Step | None:
-    """The step a unit's statement renders from, keeping its comment, or None for code."""
+    """The step a unit's statement renders from, keeping its comment, or None for code.
+
+    Every statement no step renders is kept as code, so a reader that fails on a
+    statement costs that statement its step and never the read (CGEN-02): the
+    failure is logged, for the reader's defect to be found.
+    """
     if unit.node is None:
         return None
-    for candidate in reader.candidates(unit.node):
+    try:
+        candidates = reader.candidates(unit.node)
+    except Exception as exc:  # noqa: BLE001 - a reader's defect keeps the statement as code
+        logger.warning(
+            "polars_step_reader_failed",
+            line=unit.first,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return None
+    for candidate in candidates:
         step = _with_comment(candidate, unit)
         if context.rendering(step) == unit.text:
             return step

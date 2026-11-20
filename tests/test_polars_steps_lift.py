@@ -19,7 +19,9 @@ to its documented step.
 
 from __future__ import annotations
 
+import ast
 import datetime as dt
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -56,6 +58,7 @@ from haute._polars_steps import (
 from haute._polars_steps_lift import StepLiftError, canonical_steps, lift_steps
 from haute._types import NodeType
 from tests._property_budget import pr_budget
+from tests._source_files import REPO_ROOT
 from tests.test_polars_steps_corpus import TRANSLATIONS
 
 Step = dict[str, Any]
@@ -1027,6 +1030,61 @@ def test_membership_numbers_rebuild_as_their_number_type_writes_them() -> None:
     ]
     assert values == [[2, 0], [1.0, 2.5], [1, -0.0, 0.1]]
     assert [type(v) for v in values[0] + values[1]] == [int, int, float, float]
+
+
+@pytest.mark.parametrize("text", ["abc", "1e5", ""])
+def test_a_decimal_membership_of_text_that_is_not_a_number_stays_code(text: str) -> None:
+    """CGEN-02: the statement is kept as code, never a failure of the whole read."""
+    statement = (
+        f'df = df.filter(pl.col("x").is_in(pl.Series([{text!r}]).str.to_decimal(scale=2)'
+        ".implode()))"
+    )
+    lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{statement}")
+    assert [step["kind"] for step in lifted] == ["source", "free_code"]
+    assert lifted[1]["code"] == statement
+
+
+_STEP_SHAPES = json.loads(
+    (
+        REPO_ROOT / "frontend/src/panels/editors/polarsSteps/__tests__/fixtures/stepShapes.json"
+    ).read_text(encoding="utf-8")
+)["cases"]
+#: What no step's reader expects where a number, a name or a setting stands.
+_MALFORMED_LITERALS: tuple[object, ...] = ("abc", "", "1e5", 10**30, -0.0, True, None)
+
+
+@pytest.mark.parametrize("case", _STEP_SHAPES, ids=[case["id"] for case in _STEP_SHAPES])
+def test_no_step_reader_raises_out_of_the_lift_on_a_malformed_literal(
+    case: dict[str, Any],
+) -> None:
+    """CGEN-02: each statement every step renders, with each of its literals replaced by
+    one no reader expects, is read as a step or kept as code; the lift never fails but
+    with :class:`StepLiftError`."""
+    code = render_node_steps(NodeType.POLARS, case["steps"]).code
+    literals = sum(isinstance(node, ast.Constant) for node in ast.walk(ast.parse(code)))
+    for index in range(literals):
+        tree = ast.parse(code)
+        constants = [node for node in ast.walk(tree) if isinstance(node, ast.Constant)]
+        constants[index].value = _MALFORMED_LITERALS[index % len(_MALFORMED_LITERALS)]
+        mutated = ast.unparse(tree)
+        try:
+            lift_steps(NodeType.POLARS, mutated)
+        except StepLiftError:
+            pass
+
+
+def test_a_reader_that_fails_costs_its_statement_the_step_and_not_the_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CGEN-02: a defect in one step reader keeps the statement as code."""
+    from haute import _polars_steps_lift
+
+    def broken(self: object, call: object) -> Step:
+        raise RuntimeError("a reader's defect")
+
+    monkeypatch.setattr(_polars_steps_lift._Reader, "_limit", broken)
+    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)")
+    assert [step["kind"] for step in lifted] == ["source", "free_code"]
 
 
 def test_a_comment_belongs_to_the_step_below_it() -> None:

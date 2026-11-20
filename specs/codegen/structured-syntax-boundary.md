@@ -140,6 +140,10 @@ renders" in [high-level](high-level.md)).
 - **Code.** A statement is code unless a step renders exactly its text where it stands. A
   run of code statements, with the comments and blank lines among them, is one
   `free_code` step, however many statements it holds.
+- **A reader's failure is code.** A statement whose reading fails, for text no step's
+  reader expects (a decimal membership value such as `"abc"`, `"1e5"` or `""`) or for a
+  defect in a reader, is code: the failure costs the statement its step, never the read of
+  the file, and is logged as `polars_step_reader_failed` with its line (CGEN-02).
 - **A step stands only where it renders the same.** A variable whose statement stays code
   defines nothing for the steps after it, so a step that reads it is code too. This
   arises only in hand-written code, such as `rate = 2  # two`, since a step never renders
