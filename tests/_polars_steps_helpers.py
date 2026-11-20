@@ -22,7 +22,6 @@ from haute._polars_steps import (
     render_polars_steps,
 )
 from haute._polars_steps_lift import canonical_steps
-from haute._step_authority import steps_to_render
 from haute._types import (
     GraphNode,
     NodeData,
@@ -333,16 +332,13 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _save(root: Path, graph: PipelineGraph) -> list[str]:
-    """Save *graph*, built from steps: every stepped node is named as edited (CGEN-11)."""
+    """Save *graph*, built from steps: sent with no saved forms, so every stepped node's
+    steps are read (CGEN-11)."""
     req = SavePipelineRequest(
         name="main",
         graph=graph,
         source_file="main.py",
         base_revision=current_source_revision(root / "main.py", root),
-        edited_steps=[
-            {"submodel": scope, "node_id": node_id}
-            for scope, node_id in steps_to_render(graph, PipelineGraph())
-        ],
     )
     return list(SavePipelineService(root).save(req).warnings)
 

@@ -439,7 +439,13 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Server-admitted repairs (19 November 2026): the recovery inspector's repair question
 // (`useRepairOptions`) and its shared `RepairActions` bring the merged initial bundle to
 // 304.0 KiB; 305 KiB (approved) restores ~1 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 305
+// One rule for what the editor edited (CGEN-13, 20 November 2026): the one builder of every
+// request that carries the document (`utils/documentRequest.ts`: each unedited part's saved
+// form from the baseline, the inputs a node's steps render against, the save answer's saved
+// forms put in the next baseline), which the request gateway, the save and the graph
+// store's load use. Nothing lazy became eager. The merged initial bundle is 305.3 KiB;
+// 306 KiB (approved) restores ~0.7 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 306
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

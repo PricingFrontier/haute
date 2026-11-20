@@ -16,6 +16,7 @@ from haute._ast_helpers import _is_pipeline_authored_decorator
 from haute._banding_config import normalise_banding_factors
 from haute._builders import load_external_file_object
 from haute._config_io import collect_node_configs, config_path_for_node, node_emits_sidecar
+from haute._edited_parts import with_saved_forms
 from haute._flatten import flatten_with_form_tables
 from haute._git import commit_parent
 from haute._graph_builders import _extract_decorated_node_skeletons, _resolve_node_skeleton
@@ -37,7 +38,6 @@ from haute._polars_steps import (
 from haute._polars_steps_lift import canonical_steps
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._sandbox import contained_path
-from haute._step_authority import graph_without_unread_steps, steps_to_render
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
 from haute.assistant._catalog import INPUT_NAMING_RULE, new_logic_steps
@@ -93,7 +93,12 @@ from haute.modelling._train_config import (
 from haute.routes._helpers import commit_pipeline_graph, parse_pipeline_to_graph, save_lock
 from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._training_preparation import build_training_feature_selection
-from haute.schemas import AssistantChangeDataCheck, AssistantChangeRecord, AssistantGraphChanges
+from haute.schemas import (
+    AssistantChangeDataCheck,
+    AssistantChangeRecord,
+    AssistantGraphChanges,
+    SavePipelineRequest,
+)
 
 if TYPE_CHECKING:
     from haute.assistant._data_check import DataCheckResult
@@ -876,11 +881,11 @@ def _prove_steps_survive_save(
     if not stepped:
         return
     # What the save writes: only these nodes' steps, and records of unfinished steps,
-    # become code (CGEN-11).
-    named = {*steps_to_render(graph), *((None, node_id) for node_id in stepped)}
-    written = PipelineGraph.model_validate(
-        graph_without_unread_steps(graph.model_dump(mode="python", by_alias=True), named)
-    )
+    # become code, the request read as the save reads it (CGEN-11, CGEN-13).
+    edited = [(None, node_id) for node_id in stepped]
+    written = SavePipelineRequest.model_validate(
+        {"graph": with_saved_forms(graph, graph, edited=edited), "base_revision": None}
+    ).graph
     source = graph_to_code_multi(
         written,
         pipeline_name=graph.pipeline_name or "",
@@ -1325,8 +1330,8 @@ class PipelineApplicationService:
         base_revision: str | None,
         commit_message: str,
     ) -> Any:
-        # Only the steps this change edited, and records of unfinished steps, become code:
-        # every other stepped node keeps the code it was parsed from (CGEN-11).
+        # Only the parts this change edited, and records of unfinished steps, are read: every
+        # other part keeps what it was parsed from (CGEN-11, CGEN-13).
         return self._save_service().save_graph_transactionally(
             graph=graph,
             name=graph.pipeline_name or "",
@@ -1334,7 +1339,7 @@ class PipelineApplicationService:
             preamble=graph.preamble,
             source_file=source_file,
             base_revision=base_revision,
-            edited_steps=steps_to_render(graph, before),
+            before=before,
             commit_message=commit_message,
         )
 

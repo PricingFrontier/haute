@@ -1,5 +1,5 @@
 import type { GraphPayload } from "../api/types"
-import { toCanonicalGraphPayload } from "./graphSnapshot"
+import { documentRequestGraph } from "./documentRequest"
 import { isPlainObject } from "../types/guards"
 import useGraphStore, { documentGraph } from "../stores/useGraphStore"
 import { constantsPayload } from "./globalConstants"
@@ -89,17 +89,19 @@ export function graphForRequestIdentity(
 /**
  * The document the graph store holds, as a request payload: the pipeline's own
  * nodes and edges (also while a submodel is open), every definition, the
- * preamble and the global constants. The store applies every edit before it
- * returns, so a request built from this right after an edit carries it.
+ * preamble and the global constants, each part nobody edited since the saved
+ * baseline sent with its saved form (`documentRequest.documentRequestGraph`). The
+ * store applies every edit before it returns, so a request built from this right
+ * after an edit carries it.
  */
 export function documentGraphPayload() {
   const state = useGraphStore.getState()
   const { nodes, edges } = documentGraph()
-  return toCanonicalGraphPayload({
+  return documentRequestGraph({
     nodes,
     edges,
     submodels: state.submodels,
     preamble: state.preamble,
     ...storeGlobalConstants(),
-  })
+  }, state.lastSavedSnapshot)
 }

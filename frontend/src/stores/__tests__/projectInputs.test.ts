@@ -123,6 +123,7 @@ describe("the browser's readers of a run's inputs", () => {
     const notAnswers: Record<string, string> = {
       "hooks/useNodeHandlers.ts": "the canvas layout's topology, which computes nothing",
       "stores/useGraphStore.ts": "the panel context key, which keeps no computed answer",
+      "utils/documentRequest.ts": "whether a node's inputs are as saved, a set its steps' saved code was rendered against",
       "utils/structuralFingerprint.ts": "a submodel boundary edit's identity, which keeps no computed answer",
     }
     const sorters = files.filter(({ text }) => sortedEdges.test(text)).map(({ file }) => file)

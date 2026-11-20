@@ -173,12 +173,23 @@ class NodeEditorState(BaseModel):
     ``steps_recorded`` is a finding of a parse on the server, never sent or read
     from a request: the node's body is the placeholder an unfinished step list is
     saved with, and its steps are the list its ``.haute.json`` records.
+
+    ``saved_code`` (or, for a node saved with unfinished steps, ``saved_steps``) and
+    ``saved_settings`` are the saved form of the node's steps and of its settings, in a
+    form a browser keeps exactly (``haute._edited_parts``,
+    CGEN-13): an editor document gives them for each of its nodes, and a request that
+    carries the document sends them back for each part its editor did not edit. The
+    request reads them before the node is built, so a built node never carries one.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     steps_error: str | None = None
     steps_discarded: str | None = None
+    # Left out when absent: a built node, and so every graph an answer carries, has none.
+    saved_code: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    saved_steps: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    saved_settings: str | None = Field(default=None, exclude_if=lambda value: value is None)
     _steps_recorded: bool = PrivateAttr(default=False)
 
     @property
@@ -232,6 +243,14 @@ class NodeData(BaseModel):
         from haute._node_specs import STEPPED_NODE_TYPES
         from haute._polars_steps import PolarsStepError, render_node_steps
 
+        saved = (self.editor.saved_code, self.editor.saved_steps, self.editor.saved_settings)
+        if any(form is not None for form in saved):
+            # A request reads a node's saved forms before the node is built
+            # (``haute.schemas.DocumentRequest``); one that reaches a node went round it.
+            raise ValueError(
+                "A node is built with the saved form of its parts: the request that "
+                "carried it did not read them (DocumentRequest)."
+            )
         steps_error: str | None = None
         if "steps" in self.config and self.nodeType in STEPPED_NODE_TYPES:
             steps = self.config["steps"]

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { normalizeEdges } from "../utils/graphHelpers"
-import { serializeSnapshot, toCanonicalGraphPayload } from "../utils/graphSnapshot"
+import { documentRequestGraph } from "../utils/documentRequest"
+import { serializeSnapshot } from "../utils/graphSnapshot"
 import { resolveCanonicalGraphIdentities } from "../utils/editorIdentities"
 import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -184,7 +185,9 @@ export default function useSubmodelNavigation({
 
   const beginTransformRequest = useCallback((): TransformRequestContext => {
     const { nodes, edges, submodels, preamble } = useGraphStore.getState()
-    const canonical = toCanonicalGraphPayload({ nodes, edges, submodels })
+    // No baseline: the server reads every part and hands back what it was sent, which the
+    // editor adopts as an edit; the next save compares it with the baseline (CGEN-13).
+    const canonical = documentRequestGraph({ nodes, edges, submodels }, null)
     return {
       serial: ++transformRequestSerialRef.current,
       graph: {
