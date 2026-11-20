@@ -222,7 +222,8 @@ and a null claim is exactly a defaulted row:
   compare `(type, value)`, so `1` and `"1"` are two levels. Boolean takes
   `true`/`false`, `1`/`0`, and text that is `"true"`/`"false"` or spells
   `1` or `0` (`_text_as_number`: the type's own spelling first, else the text
-  read as a Float64 number, below 2^53, and held to the number rules) only;
+  read as the whole number it spells exactly by `read_typed_whole`, never
+  through a float, and held to the type's range) only;
   an integer dtype reads text the same way, so `"25.0"` is 25 and a
   sidecar's map key for `1.0` reads back as the value it was; an integer dtype refuses a fraction (Polars would truncate
   `1.5` to `1`); a temporal dtype refuses a number or Boolean (its physical

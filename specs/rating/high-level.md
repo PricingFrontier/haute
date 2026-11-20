@@ -183,8 +183,9 @@ Out of scope (owned by neighbouring components):
   first made all text) and as the column's type holds it: `true`/`false`,
   `"true"`/`"false"`, `1`/`0` or `"1"`/`"0"` for a Boolean; a whole number for an integer
   type (`2.5` is no value of one), where text the type does not read as written
-  (`"25.0"`, or `"1.0"` on a Boolean) is read as the number it spells, below
-  2^53, and held to the same rule, so a number and its saved text are one
+  (`"25.0"`, or `"1.0"` on a Boolean) is read as the whole number it spells
+  exactly (the typed-number grammar's `read_typed_whole`, from its digits, so
+  `"25.000000000000001"` is no whole number), and held to the same rule, so a number and its saved text are one
   level; text that parses as a date or time for a temporal type, each level
   parsed alone so its reading never depends on the table's other levels (a
   number, a temporal type's physical count, is not one); and

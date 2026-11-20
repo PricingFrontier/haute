@@ -1188,12 +1188,25 @@ def test_a_whole_number_written_as_text_or_float_is_a_value_of_an_integer_column
     assert normalise_rating_key(level, pl.Int64) == "25"
 
 
-@pytest.mark.parametrize("level", ["25.5", "9007199254740993.0"])
+@pytest.mark.parametrize("level", ["25.5", "25.000000000000001", "1e-400", "1e999"])
 def test_text_that_is_no_exact_whole_number_is_refused_on_an_integer_column(level: str) -> None:
+    """Read from its digits, never through a float, so no fraction rounds onto a whole."""
     with pytest.raises(
         ConfigSettingError, match="which is not a value of its column's type, Int64"
     ):
         normalise_rating_key(level, pl.Int64)
+
+
+@pytest.mark.parametrize("level", ["1.0000000000000001", "1e-400", "2"])
+def test_text_that_is_no_exact_one_or_zero_is_refused_on_a_boolean_column(level: str) -> None:
+    with pytest.raises(
+        ConfigSettingError, match="which is not a value of its column's type, Boolean"
+    ):
+        normalise_rating_key(level, pl.Boolean)
+
+
+def test_a_large_whole_number_written_with_a_point_is_read_exactly() -> None:
+    assert normalise_rating_key("9007199254740993.0", pl.Int64) == "9007199254740993"
 
 
 def test_datetime_levels_read_together_as_each_reads_alone() -> None:

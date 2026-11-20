@@ -37,7 +37,7 @@ from haute._rating_step_config import (
     rating_default_value,
     validate_unique_rating_table_outputs,
 )
-from haute._typed_numbers import read_typed_number, setting_number, trim_typed
+from haute._typed_numbers import read_typed_number, read_typed_whole, setting_number, trim_typed
 from haute._types import NodeType, _Frame
 from haute._validation_error import ConfigSettingError
 from haute.errors import (
@@ -988,9 +988,9 @@ def _duration_key_series(name: str, keys: pl.Series, dtype: pl.Duration) -> pl.S
 # stripped first. Polars 1.44 deprecates the String-to-Date cast, and
 # ``str.to_date`` without a format would infer other spellings.
 _ISO_DATE_FORMAT = "%Y-%m-%d"
-# Whole numbers below this are the only ones a Float64 cannot round onto from a
-# neighbour: text read as a number at or past it is refused rather than rounded.
-_FLOAT_EXACT_INT = 2**53
+# The widest integer range a configured whole number is read through.
+_INT128_MIN = -(2**127)
+_INT128_MAX_EXCL = 2**127
 # How many of a configured level list's misfits a refusal quotes.
 _MISFIT_DISPLAY_CAP = 3
 
@@ -1025,24 +1025,35 @@ def _text_as_number(
     """Text levels of an integer or Boolean column: the type's own spelling, else a number.
 
     *direct* is each level read in the type's own spelling (``25``, ``true``);
-    a level it does not read is read as a number (``25.0``, ``1.0``, the text a
-    sidecar's map key holds for one) and held to the number rules, so text and
-    the number it spells are one level, whichever was written.
+    a level it does not read is read as the whole number it spells exactly, by
+    the one grammar for a typed number (:func:`haute._typed_numbers.read_typed_whole`,
+    from its decimal digits, never through a float, so ``25.000000000000001`` and
+    ``1e-400`` are no whole numbers): ``25.0``, ``1.0``, the text a sidecar's map
+    key holds for one. It must be a value of the type (in its range; 0 or 1 for
+    a Boolean), so text and the number it spells are one level, whichever was
+    written.
     """
     if direct.null_count() == levels.null_count():
         return direct, None
-    numbers, number_misfit = _coerce_levels(levels.cast(pl.Float64, strict=False), dtype)
-    read = numbers.to_list()
-    fraction = [False] * len(read) if number_misfit is None else number_misfit.to_list()
-    typed: list[Any] = []
-    misfit: list[bool] = []
-    for level, own, number, not_whole in zip(
-        levels.to_list(), direct.to_list(), read, fraction, strict=True
-    ):
-        exact = isinstance(number, bool) or (number is not None and abs(number) < _FLOAT_EXACT_INT)
-        value = own if own is not None else (number if exact and not not_whole else None)
-        typed.append(value)
-        misfit.append(level is not None and value is None)
+    wholes: list[int | None] = []
+    for level, own in zip(levels.to_list(), direct.to_list(), strict=True):
+        whole = None if own is not None or level is None else read_typed_whole(level)
+        in_range = whole is not None and _INT128_MIN <= whole < _INT128_MAX_EXCL
+        wholes.append(whole if in_range else None)
+    if dtype == pl.Boolean:
+        numbers = pl.Series(levels.name, wholes, dtype=pl.Int128).replace_strict(
+            {0: False, 1: True}, default=None, return_dtype=pl.Boolean
+        )
+    else:
+        numbers = pl.Series(levels.name, wholes, dtype=pl.Int128).cast(dtype, strict=False)
+    typed = [
+        own if own is not None else number
+        for own, number in zip(direct.to_list(), numbers.to_list(), strict=True)
+    ]
+    misfit = [
+        level is not None and value is None
+        for level, value in zip(levels.to_list(), typed, strict=True)
+    ]
     return pl.Series(levels.name, typed, dtype=dtype), pl.Series(misfit, dtype=pl.Boolean)
 
 
