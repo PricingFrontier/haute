@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from haute._banding_config import normalise_banding_factors
+from haute._banding_config import banding_factor_is_active, normalise_banding_factors
 from haute._expression_parser import (
     AssignmentPhases,
     assignment_phases,
@@ -523,9 +523,10 @@ def enrich_banding(
                 is_default = False
                 matched_rule: dict[str, Any] | None = None
 
-                if banding_type == "categorical":
+                if banding_type == "categorical" and banding_factor_is_active(factor_cfg):
                     # The rule the engine's typed remap gives this value
-                    # (``banding_categorical_claims``), keyed as the column is.
+                    # (``banding_categorical_claims``), keyed as the column is;
+                    # a draft factor bands nothing, as execution skips it.
                     input_dtype = dtype_by_column.get(col)
                     if input_dtype is None:
                         raise ValueError(

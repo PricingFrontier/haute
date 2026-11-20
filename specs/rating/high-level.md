@@ -179,8 +179,9 @@ Out of scope (owned by neighbouring components):
   are Float32/64, signed and unsigned integers, Boolean, String,
   Categorical/Enum, Decimal, Date, Datetime, Time, Duration, and Null.
 - **An entry's level is a value of its factor column's type, or is refused.**
-  A level is read as the column's type holds it: `true`/`false`,
-  `"true"`/`"false"` or `1`/`0` for a Boolean; a whole number for an integer
+  Each level is read as it was written (a list holding `"true"` and `0` is not
+  first made all text) and as the column's type holds it: `true`/`false`,
+  `"true"`/`"false"`, `1`/`0` or `"1"`/`"0"` for a Boolean; a whole number for an integer
   type (`2.5` is no value of one); text that parses as a date or time for a
   temporal type (a number, a temporal type's physical count, is not one); and
   Polars' cast for the rest. A level that is not a value of the type (`"NE"` on

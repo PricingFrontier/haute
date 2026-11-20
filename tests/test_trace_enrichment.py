@@ -2685,6 +2685,32 @@ class TestEnrichBandingRealConfig:
         assert factor["input_column"] == "vehicle_type"
         assert factor["output_column"] == "vehicle_band"
 
+    def test_a_draft_categorical_factor_beside_a_configured_one_is_skipped(self):
+        """Execution skips a draft factor, so the trace never asks for its column's type."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "vehicle_type",
+                    "output_column": "vehicle_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "suv", "assignment": "B"}],
+                },
+                {"banding": "categorical", "column": "", "output_column": "", "rules": []},
+            ]
+        }
+        result = enrich_banding(
+            config,
+            {"vehicle_type": "suv"},
+            {"vehicle_band": "B"},
+            factor_input_dtypes={"vehicle_type": pl.String},
+        )
+
+        assert "error" not in result
+        assert result["factors"][0]["rule_index"] == 0
+        assert result["factors"][1]["status"] == "no_match"
+
     def test_categorical_banding_default(self):
         """Categorical banding falls to default when no rule matches."""
         from haute._trace_enrichment import enrich_banding

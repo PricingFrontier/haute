@@ -546,8 +546,10 @@ def test_a_duration_key_that_names_no_exact_duration_is_refused_on_both_paths(
     with pytest.raises(ConfigSettingError) as traced:
         normalise_rating_key(key, dtype)
 
+    # The same refusal, placed: the run names the table and the factor.
+    assert str(priced.value) == f"Rating table 'rate' factor 'factor': {message}"
+    assert str(traced.value) == f"A rating key: {message}"
     for caught in (priced, traced):
-        assert str(caught.value) == message
         assert (caught.value.setting, caught.value.values, caught.value.fix) == (
             "tables",
             (key,),

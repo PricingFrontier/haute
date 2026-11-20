@@ -22,8 +22,9 @@ import {
   dayNumberToDate,
   calendarSettingsFromBreakpoints,
   bandName,
+  ruleForValue,
 } from "./banding/bandingUtils"
-import { castFamily, isTemporalDtype, type CastFamily } from "../../utils/polarsDtypes"
+import { castFamily, isStringOrCategoricalDtype, isTemporalDtype, type CastFamily } from "../../utils/polarsDtypes"
 import { BandingRulesGrid } from "./banding/BandingRulesGrid"
 import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
@@ -286,7 +287,8 @@ export default function BandingEditor({
     if (factor.banding === "categorical") {
       const complete = stats.distinct_count !== null && stats.values.length >= stats.distinct_count
       const valueCounts = new Map(stats.values.map(({ value, count }) => [value, count]))
-      return categoricalRuleCounts(rules as CategoricalRule[], valueCounts, complete)
+      const exactKeys = columnDtype !== undefined && isStringOrCategoricalDtype(columnDtype)
+      return categoricalRuleCounts(rules as CategoricalRule[], valueCounts, complete, exactKeys)
     }
     return rules.map(() => null)
   })()
@@ -360,13 +362,12 @@ export default function BandingEditor({
   }
 
   const handleAddCategoricalValue = (value: string) => {
-    const newRule: CategoricalRule = { value, assignment: value }
-    updateFactor(safeIdx, { rules: [...(factor.rules || []), newRule] })
+    updateFactor(safeIdx, { rules: [...(factor.rules || []), ruleForValue(value)] })
   }
 
   // A rule mapping each imported value to itself, as a value chip adds one.
   const handleImportValues = (values: string[]) => {
-    const imported: CategoricalRule[] = values.map((value) => ({ value, assignment: value }))
+    const imported: CategoricalRule[] = values.map(ruleForValue)
     updateFactor(safeIdx, { rules: [...(factor.rules || []), ...imported] })
     setShowImport(false)
   }

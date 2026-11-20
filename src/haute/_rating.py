@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import operator
 import re
-from collections.abc import Iterable, Mapping
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from fractions import Fraction
@@ -331,19 +332,19 @@ def banding_categorical_claims(
     if dtype is None:
         raise SchemaMismatchError(f"{subject}: the column is not in the node's input")
     keys = typed_level_keys(
-        pl.Series([value for _index, value, _assignment in usable], strict=False),
+        [value for _index, value, _assignment in usable],
         dtype,
         subject=subject,
         setting="factors",
         noun="rule value",
-    ).to_list()
+    )
     claims: dict[str, tuple[int, str]] = {}
     # A rule whose key is null (a Null column) claims nothing, but two rules
     # written alike are still two rules for one value.
-    unmatchable: dict[str, tuple[int, str]] = {}
+    unmatchable: dict[tuple[type, Any], tuple[int, str]] = {}
     for key, (index, value, assignment) in zip(keys, usable, strict=True):
-        held = claims if key is not None else unmatchable
-        ident = key if key is not None else repr(value)
+        held: dict[Any, tuple[int, str]] = claims if key is not None else unmatchable
+        ident: Any = key if key is not None else _written(value)
         if ident in held:
             earlier = held[ident][0]
             raise ConfigSettingError(
@@ -781,8 +782,7 @@ def apply_banding_from_config(
 _LOOKUP_VAL = "__haute_lookup_val__"
 _SUPPORTED_COMBINE_OPERATIONS = frozenset({"multiply", "add", "min", "max"})
 _MISS_KEY_DISPLAY_CAP = 10
-# Int-like floats collapse to integer digit strings only inside the Int64
-# range, where the cast on the engine side is exact and lossless.
+# The Int64 range a Duration key's physical count must lie in.
 _INT64_MIN = -(2**63)
 _INT64_MAX_EXCL = 2**63
 _DURATION_KEY_RE = re.compile(
@@ -997,14 +997,35 @@ def _is_time_kind(dtype: pl.DataType) -> bool:
     return dtype in (pl.Date, pl.Time) or isinstance(dtype, pl.Datetime | pl.Duration)
 
 
+def _parsed_text(
+    levels: pl.Series, dtype: pl.DataType, parse: Callable[[pl.Series], pl.Series]
+) -> pl.Series:
+    """*levels* parsed as times by *parse*, a level no format reads coming back null.
+
+    Polars infers one format from the first value and refuses the whole column
+    when it finds none; each level is then read alone, so only the levels that
+    are no time are marked rather than the list refused in Polars' words.
+    """
+    try:
+        return parse(levels)
+    except pl.exceptions.PolarsError:
+        parsed: list[pl.Series] = []
+        for value in levels.to_list():
+            try:
+                parsed.append(parse(pl.Series(levels.name, [value], dtype=pl.String)))
+            except pl.exceptions.PolarsError:
+                parsed.append(pl.Series(levels.name, [None], dtype=dtype))
+        return pl.concat(parsed)
+
+
 def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl.Series | None]:
     """Configured *levels* read as values of a column of *dtype*, and which of them are not one.
 
     The one reading of a configured level (a rating entry's key, a categorical
     banding rule's value, a value traced through either) as a value of its
     column's type. A level is a value of the type when the type holds it as
-    written: ``true``/``false`` (or ``"true"``/``"false"``, ``1``/``0``) for a
-    Boolean, a whole number for an integer, text a date or time parses from
+    written: ``true``/``false`` (or ``"true"``/``"false"``, ``1``/``0``,
+    ``"1"``/``"0"``) for a Boolean, a whole number for an integer, text a date or time parses from
     for a temporal type, and whatever Polars' cast reads for the rest. A level
     that is not one comes back null and is marked in the second series (``None``
     when nothing can misfit). A Null column holds no value, so every level reads
@@ -1020,18 +1041,28 @@ def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl
         return _duration_key_series(levels.name, levels, dtype), None
     numeric_source = source.is_numeric() or source == pl.Boolean
     if dtype == pl.Boolean and source == pl.String:
+        # The text a sidecar map key holds for true and false, or for 1 and 0.
         typed = levels.replace_strict(
-            {"true": True, "false": False}, default=None, return_dtype=pl.Boolean
+            {"true": True, "false": False, "1": True, "0": False},
+            default=None,
+            return_dtype=pl.Boolean,
         )
     elif dtype == pl.Boolean and source.is_numeric():
         typed = levels.replace_strict({0: False, 1: True}, default=None, return_dtype=pl.Boolean)
     elif dtype == pl.Date and source == pl.String:
         typed = levels.str.strip_chars().str.to_date(_ISO_DATE_FORMAT, strict=False)
     elif dtype == pl.Time and source == pl.String:
-        typed = levels.str.to_time(strict=False)
+        typed = _parsed_text(levels, dtype, lambda text: text.str.to_time(strict=False))
     elif isinstance(dtype, pl.Datetime) and source == pl.String:
-        typed = levels.str.to_datetime(
-            time_unit=dtype.time_unit, time_zone=dtype.time_zone, strict=False
+        datetime_dtype = dtype
+        typed = _parsed_text(
+            levels,
+            dtype,
+            lambda text: text.str.to_datetime(
+                time_unit=datetime_dtype.time_unit,
+                time_zone=datetime_dtype.time_zone,
+                strict=False,
+            ),
         )
     elif (_is_time_kind(dtype) and numeric_source) or (dtype.is_numeric() and source == pl.Boolean):
         # A number is a temporal type's physical count, and a Boolean is no number:
@@ -1050,22 +1081,30 @@ def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl
     return typed, misfit
 
 
+def _written(value: Any) -> tuple[type, Any]:
+    """A configured level's identity as written: ``1``, ``"1"`` and ``True`` stay distinct."""
+    return type(value), value
+
+
 def typed_level_keys(
-    levels: pl.Series,
+    levels: Sequence[Any],
     dtype: pl.DataType,
     *,
     subject: str,
     setting: str,
     noun: str = "level",
-) -> pl.Series:
+) -> list[str | None]:
     """The canonical key of each configured level of a column of *dtype*.
 
     The one path from a configured level to the key a column's values are
     matched on (:func:`rating_key_of`): a rating entry's key, a categorical
     banding rule's value and the scalar :func:`normalise_rating_key` all take
-    it. A level that is not a value of the column's type is refused, naming
-    *subject*, the first such levels and the type, never matched as something
-    else or left to Polars' own words. A Null column's keys are all null.
+    it. Each level is read as it was written: levels are grouped by their
+    Python type before Polars sees them, so a list holding ``"true"`` and ``0``
+    is not first made all text. A level that is not a value of the column's
+    type is refused, naming *subject*, the first such levels and the type,
+    never matched as something else or left to Polars' own words. A Null
+    column's keys are all null.
     """
     if _is_unsupported_factor_dtype(dtype):
         raise ConfigSettingError(
@@ -1073,9 +1112,27 @@ def typed_level_keys(
             "cast it upstream to a scalar type.",
             setting=setting,
         )
-    typed, misfit = _coerce_levels(levels, dtype)
-    if misfit is not None and misfit.any():
-        wrong = levels.filter(misfit).unique(maintain_order=True).to_list()
+    keys: list[str | None] = [None] * len(levels)
+    by_type: dict[type, list[int]] = {}
+    for index, level in enumerate(levels):
+        if level is not None:
+            by_type.setdefault(type(level), []).append(index)
+    misfits: list[int] = []
+    for indices in by_type.values():
+        written = pl.Series("level", [levels[index] for index in indices])
+        try:
+            typed, misfit = _coerce_levels(written, dtype)
+        except ConfigSettingError as exc:
+            # A Duration level's own refusal (_duration_key_to_physical), placed.
+            raise ConfigSettingError(
+                f"{subject}: {exc}", setting=setting, fix=exc.fix, values=exc.values
+            ) from exc
+        if misfit is not None:
+            misfits.extend(index for index, wrong in zip(indices, misfit, strict=True) if wrong)
+        for index, key in zip(indices, _typed_keys(typed, dtype), strict=True):
+            keys[index] = key
+    if misfits:
+        wrong = list({_written(levels[index]): levels[index] for index in sorted(misfits)}.values())
         shown = ", ".join(repr(value) for value in wrong[:_MISFIT_DISPLAY_CAP])
         if len(wrong) > _MISFIT_DISPLAY_CAP:
             shown += f" and {len(wrong) - _MISFIT_DISPLAY_CAP} more"
@@ -1090,10 +1147,27 @@ def typed_level_keys(
             ),
             values=tuple(wrong[:_MISFIT_DISPLAY_CAP]),
         )
+    return keys
+
+
+def _typed_keys(typed: pl.Series, dtype: pl.DataType) -> list[str | None]:
+    """The keys of values already of *dtype*, step for step as :func:`rating_key_of`.
+
+    Each step is a native Series operation (a cast, a comparison), so a scalar
+    costs no frame; a Time or Duration takes the expression's one string format.
+    """
     if _key_is_text(dtype):
-        return typed.cast(pl.String)
-    # One select of the frame side's own key expression, so both sides agree by construction.
-    return typed.to_frame().select(rating_key_of(pl.col(typed.name), dtype)).to_series()
+        return typed.cast(pl.String).to_list()
+    if column_kind(dtype) == "float":
+        whole = typed.cast(pl.Int64, strict=False)
+        exact = (whole.cast(typed.dtype) == typed).to_list()
+        return [
+            whole_text if is_whole else text
+            for whole_text, is_whole, text in zip(
+                whole.cast(pl.String).to_list(), exact, typed.cast(pl.String).to_list(), strict=True
+            )
+        ]
+    return typed.dt.to_string().to_list()
 
 
 def normalise_rating_key(
@@ -1108,15 +1182,10 @@ def normalise_rating_key(
     *dtype* is refused, as a table holding it is.
     """
     rating_dtype_descriptor(dtype)
-    keys = typed_level_keys(
-        pl.Series("__haute_rating_key__", [value]),
-        dtype,
-        subject="A rating key",
-        setting="tables",
-        noun="value",
+    (key,) = typed_level_keys(
+        [value], dtype, subject="A rating key", setting="tables", noun="value"
     )
-    key = keys.item()
-    return None if key is None else str(key)
+    return key
 
 
 def _key_is_text(dtype: pl.DataType) -> bool:
@@ -1141,19 +1210,12 @@ def rating_key_of(col: pl.Expr, dtype: pl.DataType) -> pl.Expr:
     """
     rating_dtype_descriptor(dtype)
     if column_kind(dtype) == "float":
-        int_like = (
-            col.is_finite()
-            & (col == col.round())
-            & (col >= float(_INT64_MIN))
-            & (col < float(_INT64_MAX_EXCL))
-        )
-        # strict=False: when/then evaluates the cast on every row, including
-        # rows routed to otherwise (e.g. 1e300); the condition guarantees the
-        # nulled overflows are never selected.
+        # A finite whole value inside the Int64 range keys as its digits: the
+        # non-strict cast nulls NaN, infinity and anything out of range, truncates
+        # a fraction, and the cast back equals the value only when it was whole.
+        whole = col.cast(pl.Int64, strict=False)
         return (
-            pl.when(int_like)
-            .then(col.cast(pl.Int64, strict=False).cast(pl.Utf8))
-            .otherwise(col.cast(pl.Utf8))
+            pl.when(whole.cast(dtype) == col).then(whole.cast(pl.Utf8)).otherwise(col.cast(pl.Utf8))
         )
     if not _key_is_text(dtype):
         return col.dt.to_string()
@@ -1416,14 +1478,12 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     # codec validated it (``1,000.5`` is a number), never by Polars' own cast.
     # A table with a Default and no entries has an empty lookup: every row
     # misses, and the Default prices it.
-    lookup = (
-        pl.DataFrame(
-            [_entry_with_rate(entry, output_col) for entry in entries], infer_schema_length=None
-        )
-        if entries
-        else pl.DataFrame(schema={**original_dtypes, "value": pl.Float64})
-    )
-    lookup = lookup.with_columns(pl.col("value").cast(pl.Float64, strict=True))
+    # Levels stay the Python values written (typed_level_keys reads each as written);
+    # only the rates are a frame.
+    rated = [_entry_with_rate(entry, output_col) for entry in entries]
+    lookup = pl.DataFrame(
+        {"value": pl.Series("value", [entry.get("value") for entry in rated], strict=False)}
+    ).with_columns(pl.col("value").cast(pl.Float64, strict=True))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
     _bad_count = lookup.filter(pl.col("value").is_nan() | pl.col("value").is_infinite()).height
@@ -1445,9 +1505,9 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
             setting="tables",
         )
 
-    # B15: Select only factor columns + "value" to avoid polluting the main
-    # frame with extra keys that may be present in the entries dicts.
-    lookup = lookup.select([*factors, "value"])
+    # B15: only each factor's level and the rate are read, so stray keys an entry
+    # holds (leftover UI state) never reach the frame.
+    written = {factor: [entry.get(factor) for entry in entries] for factor in factors}
 
     occupied = existing_cols | entry_cols | {output_col}
     key_columns = [
@@ -1462,12 +1522,16 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     # refused naming the table, the factor and the level.
     keyed_entries = pl.DataFrame(
         [
-            typed_level_keys(
-                lookup.get_column(factor),
-                original_dtypes[factor],
-                subject=f"Rating table {table_label!r} factor {factor!r}",
-                setting="tables",
-            ).alias(key_column)
+            pl.Series(
+                key_column,
+                typed_level_keys(
+                    written[factor],
+                    original_dtypes[factor],
+                    subject=f"Rating table {table_label!r} factor {factor!r}",
+                    setting="tables",
+                ),
+                dtype=pl.String,
+            )
             for factor, key_column in zip(factors, key_columns, strict=True)
         ]
         + [lookup.get_column("value")]
@@ -1483,17 +1547,24 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     # with nothing; entries identical as written are still two entries for one
     # level. "value" is renamed to an internal name to avoid collision with
     # any input "value" column in the input frame (Bug #1/#2).
-    duplicated = (
-        keyed_entries.select(
-            pl.struct(key_columns).is_duplicated()
-            & pl.all_horizontal(pl.col(key_columns).is_not_null())
-        ).to_series()
-        | lookup.select(pl.struct(factors).is_duplicated()).to_series()
+    as_written = Counter(
+        tuple(_written(written[factor][row]) for factor in factors) for row in range(len(entries))
+    )
+    duplicated = keyed_entries.select(
+        pl.struct(key_columns).is_duplicated()
+        & pl.all_horizontal(pl.col(key_columns).is_not_null())
+    ).to_series() | pl.Series(
+        [
+            as_written[tuple(_written(written[factor][row]) for factor in factors)] > 1
+            for row in range(len(entries))
+        ],
+        dtype=pl.Boolean,
     )
     if duplicated.any():
         levels = [
-            {factor: row[factor] for factor in factors}
-            for row in lookup.filter(duplicated).select(factors).to_dicts()
+            {factor: written[factor][row] for factor in factors}
+            for row, is_duplicate in enumerate(duplicated)
+            if is_duplicate
         ]
         raise RatingDuplicateEntriesError(table, levels)
     deduplicated = keyed_entries.rename({"value": lookup_value_column})

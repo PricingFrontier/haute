@@ -2045,3 +2045,26 @@ def test_a_numeric_zero_boundary_is_a_boundary_not_an_open_end() -> None:
     }
     banded = apply_banding_from_config(pl.LazyFrame({"x": [0, 3]}), {"factors": [factor]})
     assert banded.collect()["b"].to_list() == ["none", "some"]
+
+
+@pytest.mark.parametrize(("true_value", "false_value"), [(True, False), (1, 0), ("true", "false")])
+def test_a_categorical_rule_on_a_boolean_column_bands_the_same_after_a_save(
+    true_value: object, false_value: object
+) -> None:
+    """The sidecar's map keys are text; a Boolean or a number keeps its meaning through them."""
+    factor = {
+        "banding": "categorical",
+        "column": "flag",
+        "output_column": "flag_band",
+        "rules": [
+            {"value": true_value, "assignment": "Yes"},
+            {"value": false_value, "assignment": "No"},
+        ],
+    }
+    frame = pl.LazyFrame({"flag": [True, False, None]})
+    before = apply_banding_from_config(frame, {"factors": [factor]}).collect()
+    saved = compact_banding_config_for_sidecar({"factors": [factor]})
+    reloaded = normalise_banding_factors(saved)
+    after = apply_banding_from_config(frame, {"factors": reloaded}).collect()
+    assert before["flag_band"].to_list() == ["Yes", "No", None]
+    assert after["flag_band"].to_list() == ["Yes", "No", None]

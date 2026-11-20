@@ -25,6 +25,18 @@ def _is_json_scalar(value: Any) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
+def _rule_key_text(raw_key: Any) -> str:
+    """A rule's value or boundary as a sidecar map key, which JSON holds only as text.
+
+    A number or a Boolean is written in its JSON spelling (``true``, ``1``,
+    ``1.5``), which the engine reads back as the same value of the column's type
+    (specs/rating, "An entry's level is a value of its factor column's type").
+    """
+    if isinstance(raw_key, bool | int | float):
+        return json.dumps(raw_key)
+    return str(raw_key)
+
+
 def _validate_map_value(value: Any, kind: str, key: str) -> None:
     """Refuse a compact rule map's empty or non-scalar value; *key* is configuration."""
 
@@ -45,7 +57,7 @@ def _expand_rule_map(
     expanded: list[dict[str, Any]] = []
     if banding_type == "categorical":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             if key == "":
                 raise ConfigSettingError(
                     "categorical rule key must not be empty", setting="factors"
@@ -55,7 +67,7 @@ def _expand_rule_map(
         return expanded
     if banding_type == "breakpoints":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             _validate_map_value(value, "breakpoint", key)
             expanded.append({"boundary": key, "label": value})
         return expanded
@@ -216,7 +228,7 @@ def _compact_rule_map(rules: dict[Any, Any], banding_type: str) -> dict[str, Any
     compact: dict[str, Any] = {}
     if banding_type == "categorical":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             if key == "":
                 raise ConfigSettingError(
                     "categorical rule key must not be empty", setting="factors"
@@ -230,7 +242,7 @@ def _compact_rule_map(rules: dict[Any, Any], banding_type: str) -> dict[str, Any
         return compact
     if banding_type == "breakpoints":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             _validate_map_value(value, "breakpoint", key)
             if key in compact:
                 raise ConfigSettingError(
@@ -269,7 +281,7 @@ def _compact_rule_rows(
                 )
             key = ""
         else:
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
         if raw_value is None or raw_value == "":
             raise ConfigSettingError(
                 f"{duplicate_label} rule {key!r} requires {value_field} (rules[{index}])",

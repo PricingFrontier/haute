@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -1098,3 +1098,77 @@ def test_a_real_duplicate_is_refused_whatever_the_factor_columns_type(dtype: pl.
     # The engine's own check, as a table built in code reaches it.
     with pytest.raises(RatingDuplicateEntriesError, match="territory='NW', zone='A'"):
         _apply_rating_table(frame, table)
+
+
+# ---------------------------------------------------------------------------
+# Levels are read as written, whatever else the list holds
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_level_types_are_each_read_as_written() -> None:
+    """'true' and 0 are both Booleans as written; Polars would first make 0 the text '0'."""
+    frame = pl.DataFrame({"flag": [True, False]}).lazy()
+    table = {
+        "factors": ["flag"],
+        "output_column": "rate",
+        "entries": [{"flag": "true", "value": 2.0}, {"flag": 0, "value": 3.0}],
+    }
+    assert _apply_rating_table(frame, table).collect()["rate"].to_list() == [2.0, 3.0]
+
+
+def test_a_boolean_level_on_an_integer_column_is_refused_on_every_path() -> None:
+    """Polars would first make True the integer 1, so the run and the trace disagreed."""
+    frame = pl.DataFrame({"n": [1, 2]}).lazy()
+    table = {
+        "factors": ["n"],
+        "output_column": "rate",
+        "entries": [{"n": True, "value": 2.0}, {"n": 2, "value": 3.0}],
+    }
+    with pytest.raises(ConfigSettingError, match="has the level True, which is not a value"):
+        _apply_rating_table(frame, table)
+    with pytest.raises(ConfigSettingError, match="has the value True, which is not a value"):
+        normalise_rating_key(True, pl.Int64)
+
+
+def test_distinct_levels_written_alike_only_as_text_are_not_duplicates_on_a_null_column() -> None:
+    frame = pl.DataFrame({"id": [1]}).with_columns(pl.lit(None).alias("territory")).lazy()
+    table = {
+        "factors": ["territory"],
+        "output_column": "rate",
+        "entries": [{"territory": 1, "value": 1.1}, {"territory": "1", "value": 1.2}],
+        "default_value": 1.0,
+    }
+    assert _apply_rating_table(frame, table).collect()["rate"].to_list() == [1.0]
+
+
+@pytest.mark.parametrize(
+    "entries", [["NE"], ["NE", "2024-01-31 10:00"], ["2024-01-31 10:00", "NE"]]
+)
+def test_a_datetime_level_no_format_reads_is_refused_by_name(entries: list[str]) -> None:
+    """Polars refuses a whole column whose first value has no format it can infer."""
+    frame = pl.DataFrame({"at": [datetime(2024, 1, 31, 10)]}).lazy()
+    table = {
+        "factors": ["at"],
+        "output_column": "rate",
+        "entries": [{"at": entry, "value": 1.0 + i} for i, entry in enumerate(entries)],
+    }
+    with pytest.raises(ConfigSettingError) as refused:
+        _apply_rating_table(frame, table)
+    assert str(refused.value).startswith(
+        "Rating table 'rate' factor 'at' has the level 'NE', which is not a value of its "
+        "column's type, Datetime"
+    )
+
+
+def test_a_duration_refusal_names_the_banding_factor_and_its_setting() -> None:
+    frame = pl.DataFrame({"wait": pl.Series([timedelta(seconds=1)], dtype=pl.Duration("ms"))})
+    factor = {
+        "banding": "categorical",
+        "column": "wait",
+        "output_column": "wait_band",
+        "rules": [{"value": "1 second", "assignment": "short"}],
+    }
+    with pytest.raises(ConfigSettingError) as refused:
+        apply_banding_from_config(frame.lazy(), {"factors": [factor]})
+    assert str(refused.value).startswith("Banding output 'wait_band' of column 'wait': ")
+    assert refused.value.setting == "factors"

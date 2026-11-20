@@ -200,27 +200,38 @@ and a null claim is exactly a defaulted row:
 - **Float width is part of the key contract:** `rating_key_of` formats a
   Float32 in Float32 and a Float64 in Float64. The configured side
   (`typed_level_keys`, and `normalise_rating_key` through it) reads the value
-  through the required originating dtype and then keys it with the same
-  expression (a plain text cast, natively, where `_key_is_text` says the key is
-  one), so JSON/Python widening cannot change the trace key. `normalise_rating_key` has no dtype-inference default; trace,
+  through the required originating dtype and then keys it step for step as the
+  expression does (`_typed_keys`: a text cast where `_key_is_text` says the key
+  is one; for a float, the non-strict cast to Int64, the cast back and the
+  comparison that make `rating_key_of`'s whole-number test; a Time or Duration's
+  string format), so JSON/Python widening cannot change the trace key. `normalise_rating_key` has no dtype-inference default; trace,
   persistence, and optimiser helpers must resolve and pass a concrete dtype
   before calling it.
 - **Scalar mirror cost is bounded:** `normalise_rating_key` uses eager
   Polars Series coercion, detects a level that does not fit by comparing native
-  null counts, and evaluates at most one key expression per scalar (none where
-  the key is a text cast); it must not construct a one-row DataFrame and
+  null counts, and keys it with native Series casts and comparisons (one string
+  format for a Time or Duration); it must not construct a one-row DataFrame and
   evaluate multiple expressions per scalar. A representative performance regression compares it with that
   historical DataFrame-expression reference while the shared dtype matrix
   remains the semantic oracle.
 - **Int-like float collapse is range-bounded:** `normalise_rating_key`/`_rating_key_expr` only collapse a finite int-like float to its integer digit string when it is inside `[-(2**63), 2**63)` (the `Int64` range), because the cast to `Int64` on the engine side (`strict=False`) is only exact/lossless there. Outside that range (e.g. `1e300`), both sides fall through to Polars' `Utf8` cast instead, deliberately consistently.
 - **A configured level is a value of its column's dtype or is refused**
-  (`_coerce_levels`): Boolean takes `true`/`false`, `"true"`/`"false"` and
-  `1`/`0` only; an integer dtype refuses a fraction (Polars would truncate
+  (`_coerce_levels`): `typed_level_keys` first groups the levels by their
+  Python type, so a list holding `"true"` and `0`, or `True` and `2`, is not
+  made one Polars supertype before each is read, and duplicates as written
+  compare `(type, value)`, so `1` and `"1"` are two levels. Boolean takes
+  `true`/`false`, `"true"`/`"false"`, `1`/`0` and `"1"`/`"0"` (the text a
+  sidecar's map key holds for them) only; an integer dtype refuses a fraction (Polars would truncate
   `1.5` to `1`); a temporal dtype refuses a number or Boolean (its physical
   count) and parses text non-strictly, a level it cannot parse refused by
-  name; a numeric dtype refuses a Boolean; the rest take Polars' non-strict
+  name (where Polars finds no format to infer from the first value and refuses
+  the whole list, `_parsed_text` reads each level alone); a Duration level's own
+  refusal is raised again with the subject and setting in front; a numeric dtype refuses a Boolean; the rest take Polars' non-strict
   cast, a level it nulls refused by name. A Null dtype reads every level as
   null and refuses none.
+- **A categorical rule's value survives the sidecar:** the compact writer turns a
+  non-text value into its JSON spelling (`_rule_key_text`: `true`, `1`, `1.5`),
+  which reads back as the same value of the column's dtype.
 - **`Decimal` factor columns** are strictly cast through the column's declared
   precision/scale before key generation. Equivalent authored forms such as
   `"25.5"` and `"25.50"` therefore become the same scale-2 value and key;
