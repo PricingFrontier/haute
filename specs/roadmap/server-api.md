@@ -175,7 +175,8 @@ of an empty canvas and "HTTP <status>".
 **Acceptance:** With the pipeline file deleted while the editor runs, the
 page says the file's name and the remedy.
 
-**Dependencies:** `DPL-03` covers the deploy dry run's same resolver error.
+**Dependencies:** None. The deploy dry run's same resolver error is one
+line and a hint since 20 November 2026.
 
 **Evidence:** `frontend/src/api/client.ts`; the page's pipeline load in
 `frontend/src`.

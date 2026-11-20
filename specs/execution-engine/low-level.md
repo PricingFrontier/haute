@@ -1024,7 +1024,17 @@ policy — admission computes `usable = available_ram_bytes() - os_reserve` then
 captures a join needs, so no preview is admitted with less. `os_reserve` is the settings'
 `kept_free_gb` exactly when set, else `min(2 GiB, available/2)`; no environment variable
 sets it. Both `fixed` and `strict_server` select the fixed
-defaults; an unknown `HAUTE_EXECUTION_MEMORY_POLICY` value raises `RuntimeError`.
+defaults; an unknown `HAUTE_EXECUTION_MEMORY_POLICY` value raises `RuntimeError`. A
+profile in `_IN_FLIGHT_PROFILE_SET` reserves its budget whole against
+`available - os_reserve` below, so under a fixed policy its default is clamped to that
+usable memory from one availability sample, which the budget keeps
+(`available_ram_bytes`, `os_reserve_bytes`) for the reservation to check against
+(`_fixed_default_memory_limit`): a container of 2 GiB gives `DEPLOY_BATCH` what it can
+rather than refusing a 4 GiB reservation that could never fit with nothing else running.
+An environment override is never clamped; one larger than the usable memory is refused
+as `in_flight_memory_budget_exceeded` with nothing reserved. `memory_limit_setting(profile)`
+names the setting that sizes a profile's budget (the variable in force, else the
+profile's own variable in MiB), as `process_rss_limit_setting` names the cap's.
 Admission then samples current RSS; refuses
 (`ExecutionAdmissionError`) if the sampler is unavailable or RSS already exceeds any
 configured process-RSS cap. For profiles in `_IN_FLIGHT_PROFILE_SET` (the "heavy"
@@ -1582,7 +1592,17 @@ override to the parent's environment under a module-wide spawn lock and restores
 touched variable before releasing it. The one-shot isolated worker starts through the
 same helper with an empty mapping, so no worker of either kind can inherit another's
 override. The cap is interactive-only: sink, training and optimiser workers and the
-server itself keep full parallelism. `thread` mode cannot cap at all, because it shares
+server itself keep full parallelism. Every child the helper starts runs a pool of at
+least `MIN_POLARS_THREADS` (2) threads (`haute._polars_environment.spawned_polars_threads`):
+a requested or inherited `POLARS_MAX_THREADS` below it is raised to it, and with none the
+child is given it only when this process's own pool (`pl.thread_pool_size()`) is smaller,
+so it sizes its pool as the parent did otherwise. A streaming sink run in the background
+(`collect(background=True)`, as every cancellable sink is) holds one pool thread until it
+ends, and a Python scan in its plan (the OUTPUT node's assembly, a model's scoring)
+collects on another: in a pool of one, which Polars sizes for a one-CPU container, the
+sink waits for itself until the worker's timeout. A process Haute does not spawn (the
+server, the container's service) keeps the pool Polars gives it: Polars sizes it when it
+is imported, before Haute runs. `thread` mode cannot cap at all, because it shares
 the server process's already-initialised Polars pool.
 
 ### Assistant interaction

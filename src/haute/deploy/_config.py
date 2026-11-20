@@ -48,6 +48,11 @@ logger = get_logger(component="deploy.config")
 _CONTAINER_BASED_TARGETS: frozenset[str] = frozenset(
     {"container", "azure-container-apps", "aws-ecs", "gcp-run"}
 )
+_SUPPORTED_TARGETS: frozenset[str] = frozenset({"databricks", "container"})
+_CONTAINER_PLATFORM_TARGETS: frozenset[str] = _CONTAINER_BASED_TARGETS - {"container"}
+_PLANNED_TARGETS: frozenset[str] = frozenset({"sagemaker", "azure-ml"})
+#: The compute sizes a Databricks serving endpoint takes.
+DATABRICKS_WORKLOAD_SIZES: tuple[str, ...] = ("Small", "Medium", "Large")
 
 
 # Deployed containers must start from a deterministic base image.  Floating
@@ -691,6 +696,61 @@ def _validate_python_versions(config: DeployConfig, project_root: Path) -> None:
         )
 
 
+def check_deploy_settings(config: DeployConfig) -> None:
+    """Refuse a setting no deploy of *config* could use, naming the setting.
+
+    Resolution's first step, so a dry run refuses what a deploy would, before any
+    other work: an unknown or unimplemented target, an empty model name, a negative
+    number of approvers, and the target's own settings (a container's base image and
+    port, a Databricks endpoint's workload size). Settings a CI job may supply from
+    its environment, such as a registry, are left to the deploy that reads them.
+    """
+    implemented = _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS
+    target = config.target
+    if target in _PLANNED_TARGETS:
+        raise DeployError(
+            f"[deploy] target {target!r} is planned but not yet implemented. "
+            f"Supported targets: {', '.join(sorted(implemented))}.",
+            target=target,
+        )
+    if target not in implemented:
+        raise DeployError(
+            f"[deploy] target {target!r} is not a deploy target. "
+            f"Targets: {', '.join(sorted(implemented))}.",
+            target=target,
+        )
+    if not config.model_name.strip():
+        raise DeployError(
+            "The model name is empty: set [deploy] model_name in haute.toml, "
+            "or pass --model-name with a name.",
+            model_name=config.model_name,
+        )
+    if config.safety.min_approvers < 0:
+        raise DeployError(
+            "[safety.approval] min_approvers must be 0 or more; "
+            f"got {config.safety.min_approvers}.",
+            min_approvers=config.safety.min_approvers,
+        )
+    if target in _CONTAINER_BASED_TARGETS:
+        _validate_base_image_pinning(config.container.base_image)
+        if not 1 <= config.container.port <= 65535:
+            raise DeployError(
+                "[deploy.container] port must be a port number from 1 to 65535; "
+                f"got {config.container.port}.",
+                port=config.container.port,
+            )
+    if (
+        target == "databricks"
+        and config.databricks.serving_workload_size not in DATABRICKS_WORKLOAD_SIZES
+    ):
+        raise DeployError(
+            "[deploy.databricks] serving_workload_size must be one of "
+            f"{', '.join(DATABRICKS_WORKLOAD_SIZES)}; "
+            f"got {config.databricks.serving_workload_size!r}.",
+            serving_workload_size=config.databricks.serving_workload_size,
+        )
+
+
 def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) -> ResolvedDeploy:
     """Parse pipeline, prune graph, detect I/O nodes, collect artifacts, infer schemas.
 
@@ -704,7 +764,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     from haute.deploy._bundler import (
         check_local_input_paths,
         collect_artifacts,
-        prepare_shipped_snapshots,
+        prepare_deploy_snapshots,
         refuse_data_outside_pipeline_folder,
         with_served_configs,
     )
@@ -718,15 +778,10 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
     )
     from haute.parser import parse_pipeline_file
 
-    # Re-run base-image pinning validation here.  ``__post_init__`` ran at
-    # construction time, but ``target`` and ``container.base_image`` can be
-    # mutated later via env overrides, ``override(target="container")``, or
-    # direct attribute writes — all of which bypass ``__post_init__``.
-    # Any container-based deploy (container / azure-container-apps / aws-ecs /
-    # gcp-run) funnels through ``resolve_config``, so this is the last
-    # chokepoint before we commit to a build.
-    if config.target in _CONTAINER_BASED_TARGETS:
-        _validate_base_image_pinning(config.container.base_image)
+    # Every deploy and dry run funnels through here, after env overrides,
+    # ``override()`` and attribute writes that bypass ``__post_init__``: the
+    # settings are checked before any other work.
+    check_deploy_settings(config)
 
     # Ensure .env is loaded (idempotent — also called in from_settings, but
     # needed here for programmatic DeployConfig construction).
@@ -827,7 +882,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
             refuse_data_outside_pipeline_folder(
                 pruned_graph, deploy_inputs, pipeline_dir, project_root
             )
-            prepare_shipped_snapshots(pruned_graph, deploy_inputs, pipeline_dir, project_root)
+            prepare_deploy_snapshots(pruned_graph, deploy_inputs, pipeline_dir, project_root)
             served_configs: dict[str, dict[str, Any]] = {}
             artifacts = collect_artifacts(
                 pruned_graph,

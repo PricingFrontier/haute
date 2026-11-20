@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -582,6 +584,9 @@ class TestGeneratedAppBatchPath:
         if status == 500:
             assert body.pop("request_id") == response.headers["X-Request-ID"]
             assert "boom" not in body.pop("error")
+        if status == 507:
+            # The limit and the setting that changes it, in words (DPL-11).
+            assert "HAUTE_DEPLOY_BATCH_MEMORY_LIMIT_MB" in body.pop("message")
         assert body == expected
         harness.assert_cleaned_up()
 
@@ -915,6 +920,26 @@ class TestRealSpawn:
             assert result.execution_metrics["admission"]["profile"] == "deploy_batch"
         finally:
             plan.cleanup()
+
+    def test_a_server_with_one_polars_thread_scores_a_batch_in_a_worker(self) -> None:
+        """The real-worker batch above, from a server whose Polars pool is one thread, as
+        a one-CPU container sizes it: the worker's background sink waited for itself
+        until the five-minute timeout (DPL-12). A pool is sized when Polars is imported,
+        so the server is a process of its own."""
+        case = f"{Path(__file__).as_posix()}::TestRealSpawn::"
+        case += "test_batch_scores_end_to_end_in_a_real_worker"
+        try:
+            ran = subprocess.run(
+                [sys.executable, "-m", "pytest", case, "-q", "-p", "no:cacheprovider"],
+                env={**os.environ, "POLARS_MAX_THREADS": "1"},
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail("A batch from a one-thread server did not finish in 180 seconds.")
+        assert ran.returncode == 0, ran.stdout[-4000:] + ran.stderr[-4000:]
+        assert "1 passed" in ran.stdout
 
     def test_unprovable_group_by_runs_conservatively_under_the_worker_cap(
         self,

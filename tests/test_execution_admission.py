@@ -1056,7 +1056,8 @@ def test_fixed_memory_policy_uses_profile_defaults(
     )
     assert budget.config_key == "default:explore_analysis"
     assert budget.budget_policy == "fixed_default"
-    assert budget.available_ram_bytes is None
+    # A heavy profile's fixed budget is reserved against the sample it was sized by.
+    assert budget.available_ram_bytes == 64 * 1024**3
 
 
 def test_strict_server_memory_policy_uses_profile_defaults(
@@ -1076,7 +1077,38 @@ def test_strict_server_memory_policy_uses_profile_defaults(
     )
     assert budget.config_key == "default:explore_analysis"
     assert budget.budget_policy == "fixed_default"
-    assert budget.available_ram_bytes is None
+    # A heavy profile's fixed budget is reserved against the sample it was sized by.
+    assert budget.available_ram_bytes == 64 * 1024**3
+
+
+@pytest.mark.parametrize("policy", ["fixed", "strict_server"])
+def test_a_fixed_budget_is_no_more_than_a_small_server_can_admit(
+    monkeypatch: pytest.MonkeyPatch, policy: str
+) -> None:
+    """A deployed container of 2 GiB refused every request of several quotes: its fixed
+    4 GiB batch budget could never fit, with nothing else running (DPL-11)."""
+    from haute import _execution_admission as admission_mod
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 3 * 1024**3)
+    monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", policy)
+
+    budget = admission_mod.execution_budget_for_profile(ExecutionProfile.DEPLOY_BATCH)
+    # 3 GiB free, less the 1.5 GiB kept for the system.
+    assert budget.memory_limit_bytes == 3 * 1024**3 // 2
+    assert budget.budget_policy == "fixed_default"
+
+    context = admission_mod.create_admitted_execution_context(
+        operation="deploy_quote", profile=ExecutionProfile.DEPLOY_BATCH
+    )
+    try:
+        assert context.admission is not None
+        assert context.admission.memory_limit_bytes == 3 * 1024**3 // 2
+    finally:
+        context.release_admission()
+    # A live quote's budget is not reserved, and keeps its fixed size.
+    live = admission_mod.execution_budget_for_profile(ExecutionProfile.DEPLOY_LIVE)
+    assert live.memory_limit_bytes == 1024**3
 
 
 def test_adaptive_budget_still_respects_process_rss_cap(

@@ -26,6 +26,7 @@ import json
 import os
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import polars as pl
@@ -505,6 +506,40 @@ class TestSnapshotGenerationLease:
             assert artifacts["drivers__snapshot.meta.json"] == generation.metadata_path
         finally:
             resources.close()
+
+    def test_inline_inputs_are_prepared_from_an_unpublished_store(self, tmp_path: Path) -> None:
+        """An inline Data Input is snapshot-backed: deploy builds its snapshot on a clean
+        checkout, as the request input's sample and as a shipped lookup alike (DPL-05)."""
+        from haute._input_providers import source_cache_identity
+        from haute._source_cache import SourceCacheStore
+        from haute.deploy._bundler import prepare_deploy_snapshots
+
+        def inline(records: list[dict[str, str]]) -> dict[str, Any]:
+            return {
+                "input_type": "inline",
+                "format": "records",
+                "mode": "read",
+                "records": records,
+                "arguments": {},
+            }
+
+        quotes, drivers = inline([{"driver": "Ada"}]), inline([{"driver": "Bob"}])
+        graph = _g(
+            {
+                "nodes": [
+                    {"id": "quotes", "data": {"nodeType": "dataInput", "config": quotes}},
+                    {"id": "drivers", "data": {"nodeType": "dataInput", "config": drivers}},
+                ]
+            }
+        )
+        use_project(tmp_path)
+
+        prepare_deploy_snapshots(graph, ["quotes"], tmp_path, tmp_path)
+
+        store = SourceCacheStore(tmp_path)
+        for config in (quotes, drivers):
+            identity = source_cache_identity(config, base_dir=tmp_path)
+            assert store.status(identity).state == "ready"
 
     def test_refresh_cannot_retire_generation_before_deploy_releases_it(
         self,

@@ -4,8 +4,8 @@ Covers:
   - target="databricks" → calls deploy_to_mlflow
   - target="container" → calls deploy_to_container
   - target="azure-container-apps" → calls deploy_to_platform_container
-  - target="sagemaker" → NotImplementedError (planned but unimplemented)
-  - target="unknown" → ValueError (unrecognised target)
+  - target="sagemaker" → DeployError (planned but unimplemented), before resolution
+  - target="unknown" → DeployError (unrecognised target), before resolution
 """
 
 from __future__ import annotations
@@ -160,27 +160,38 @@ class TestDeployDispatchPlatformContainer:
 
 
 class TestDeployDispatchPlanned:
-    """Planned but unimplemented targets raise NotImplementedError."""
+    """Planned but unimplemented targets are refused before the pipeline is read."""
 
-    def test_sagemaker_raises_not_implemented(self) -> None:
+    def test_sagemaker_is_refused_as_planned(self) -> None:
         from haute.deploy import deploy
+        from haute.errors import DeployError
 
         config = _make_config("sagemaker")
 
-        with pytest.raises(NotImplementedError, match="planned but not yet implemented"):
+        with (
+            patch("haute.parser.parse_pipeline_file") as parse,
+            pytest.raises(DeployError, match="planned but not yet implemented"),
+        ):
             deploy(config)
+        parse.assert_not_called()
 
 
 class TestDeployDispatchUnknown:
-    """Completely unknown targets raise ValueError."""
+    """Completely unknown targets are refused before the pipeline is read."""
 
-    def test_unknown_target_raises_value_error(self) -> None:
+    def test_unknown_target_is_refused_naming_the_targets(self) -> None:
         from haute.deploy import deploy
+        from haute.errors import DeployError
 
         config = _make_config("unknown-target")
 
-        with pytest.raises(ValueError, match="Unknown deploy target"):
+        with (
+            patch("haute.parser.parse_pipeline_file") as parse,
+            pytest.raises(DeployError, match="'unknown-target' is not a deploy target") as caught,
+        ):
             deploy(config)
+        parse.assert_not_called()
+        assert "aws-ecs, azure-container-apps, container, databricks, gcp-run" in str(caught.value)
 
 
 class TestDeployDispatchReturnValue:

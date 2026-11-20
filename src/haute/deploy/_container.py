@@ -450,8 +450,11 @@ from starlette.concurrency import run_in_threadpool
 from haute._execution_admission import (
     ExecutionAdmissionError,
 )
-from haute._execution_context import ExecutionCancelledError, ExecutionMemoryLimitExceededError
-from haute._output_assembler import render_output_document
+from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
 from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute._types import PipelineGraph
 from haute.errors import HauteError, BoundedMemoryUnsupportedError, is_public_contract_error
@@ -481,9 +484,10 @@ from haute.deploy._batch_scoring import (
     prepare_batch_scoring,
     score_batch_worker,
 )
+from haute.deploy._memory_answers import memory_answer
 from haute.deploy._request_frame import RequestReader
 from haute.deploy._request_rows import RequestRows
-from haute.deploy._response_json import ndjson_rows, response_json
+from haute.deploy._response_json import ndjson_rows, response_json, response_rows
 from haute.deploy._scorer import (
     QuoteRequest,
     admit_deploy_execution,
@@ -637,6 +641,11 @@ def health() -> dict:
     }}
 
 
+def _memory_refused(payload, profile) -> JSONResponse:
+    """A 507: the memory payload, with the limit that refused it and its setting in words."""
+    return JSONResponse(status_code=507, content=memory_answer(payload, profile=profile))
+
+
 class _DocumentResponse(JSONResponse):
     """The JSON envelope, its rows encoded as NDJSON encodes them (``response_json``)."""
 
@@ -649,9 +658,10 @@ def _quote_response_content(result: pl.DataFrame, execution_context):
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
     # ``result`` is the OUTPUT node's assembled document (struct columns,
     # ragged → null-filled). Render it as the pruned JSON so the deployed API
-    # returns the real response shape; a no-op for a flat OUTPUT.
+    # returns the real response shape; a no-op for a flat OUTPUT. Every row
+    # answers the one quote sent.
     return {{
-        "rows": render_output_document(result.head(returned_rows)),
+        "rows": response_rows(result.head(returned_rows), first_quote=None),
         "row_count": row_count,
         "returned_rows": returned_rows,
         "truncated": row_count > _QUOTE_RESPONSE_ROW_LIMIT,
@@ -681,8 +691,8 @@ def _materialize_quote_ndjson(plan):
             node_id=_output_node_id,
         ):
             # The rows the JSON envelope renders, one line each: the same document
-            # whichever the client asks for.
-            spool.write(ndjson_rows(batch))
+            # whichever the client asks for. Every row answers the one quote sent.
+            spool.write(ndjson_rows(batch, first_quote=None))
         spool.seek(0)
         return spool
     except BaseException:
@@ -706,7 +716,7 @@ def _batch_response_content(result):
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
     frame = streaming_collect(pl.scan_parquet(result.result_path).head(returned_rows))
     return {{
-        "rows": render_output_document(frame),
+        "rows": response_rows(frame),
         "row_count": row_count,
         "returned_rows": returned_rows,
         "truncated": row_count > _QUOTE_RESPONSE_ROW_LIMIT,
@@ -721,6 +731,7 @@ def _materialize_batch_ndjson(plan, result):
         mode="w+b",
     )
     try:
+        written = 0
         for batch in bounded_collect_batches(
             pl.scan_parquet(result.result_path),
             chunk_size=_DEPLOY_STREAM_CHUNK_SIZE,
@@ -730,8 +741,9 @@ def _materialize_batch_ndjson(plan, result):
             node_id=_output_node_id,
         ):
             # The rows the JSON envelope renders, one line each: the same document
-            # whichever the client asks for.
-            spool.write(ndjson_rows(batch))
+            # whichever the client asks for. Row i answers quote i.
+            spool.write(ndjson_rows(batch, first_quote=written))
+            written += batch.height
         spool.seek(0)
         return spool
     except BaseException:
@@ -752,7 +764,7 @@ def _batch_error_response(request, exc):
             }},
         )
     if exc.kind == "memory":
-        return JSONResponse(status_code=507, content=exc.payload)
+        return _memory_refused(exc.payload, ExecutionProfile.DEPLOY_BATCH)
     if exc.kind == "cancelled":
         return JSONResponse(
             status_code=499,
@@ -807,7 +819,7 @@ async def _quote_batch(request: Request, rows: list):
                 content=await run_in_threadpool(_batch_response_content, result)
             )
     except ExecutionAdmissionError as exc:
-        response = JSONResponse(status_code=507, content=exc.to_payload())
+        response = _memory_refused(exc.to_payload(), exc.profile)
     except ExecutionCancelledError as exc:
         response = JSONResponse(
             status_code=499,
@@ -819,7 +831,7 @@ async def _quote_batch(request: Request, rows: list):
             }},
         )
     except ExecutionMemoryLimitExceededError as exc:
-        response = JSONResponse(status_code=507, content=exc.to_payload())
+        response = _memory_refused(exc.to_payload(), ExecutionProfile.DEPLOY_BATCH)
     except BoundedMemoryUnsupportedError as exc:
         if is_public_contract_error(exc):
             response = JSONResponse(status_code=422, content=exc.to_payload())
@@ -843,13 +855,13 @@ async def _quote_batch(request: Request, rows: list):
         WorkerMemoryLimitError,
         WorkerMemoryLimitUnsupportedError,
     ) as exc:
-        response = JSONResponse(
-            status_code=507,
-            content=worker_memory_detail(
+        response = _memory_refused(
+            worker_memory_detail(
                 exc,
                 operation="deploy_quote",
                 memory_limit_bytes=plan.budget.memory_limit_bytes,
             ),
+            ExecutionProfile.DEPLOY_BATCH,
         )
     except WorkerTimeoutError:
         logger.exception("deploy_quote_batch_timed_out")
@@ -863,13 +875,13 @@ async def _quote_batch(request: Request, rows: list):
         )
     except (WorkerCrashedError, WorkerRemoteError) as exc:
         if worker_failure_is_memory(exc):
-            response = JSONResponse(
-                status_code=507,
-                content=worker_memory_detail(
+            response = _memory_refused(
+                worker_memory_detail(
                     exc,
                     operation="deploy_quote",
                     memory_limit_bytes=plan.budget.memory_limit_bytes,
                 ),
+                ExecutionProfile.DEPLOY_BATCH,
             )
         else:
             response = _internal_error(request, "deploy_quote_batch_failed")
@@ -921,7 +933,10 @@ async def quote(request: Request) -> JSONResponse:
     else:
         return JSONResponse(
             status_code=400,
-            content={{"error": "Expected a JSON object or array of objects."}},
+            content={{
+                "error_code": "quote_request_not_records",
+                "error": "Expected a JSON object or array of objects.",
+            }},
         )
 
     # Multi-row batches are the only request shape that can materialise, so
@@ -972,7 +987,7 @@ async def quote(request: Request) -> JSONResponse:
         )
         return _DocumentResponse(content=_quote_response_content(result, execution_context))
     except ExecutionAdmissionError as exc:
-        return JSONResponse(status_code=507, content=exc.to_payload())
+        return _memory_refused(exc.to_payload(), exc.profile)
     except ExecutionCancelledError as exc:
         return JSONResponse(
             status_code=499,
@@ -984,7 +999,7 @@ async def quote(request: Request) -> JSONResponse:
             }},
         )
     except ExecutionMemoryLimitExceededError as exc:
-        return JSONResponse(status_code=507, content=exc.to_payload())
+        return _memory_refused(exc.to_payload(), ExecutionProfile.DEPLOY_LIVE)
     except BoundedMemoryUnsupportedError as exc:
         if is_public_contract_error(exc):
             return JSONResponse(status_code=422, content=exc.to_payload())

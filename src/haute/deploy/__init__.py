@@ -42,29 +42,14 @@ __all__ = [
     "deploy_to_mlflow",
     "get_deploy_status",
     "resolve_config",
+    "_SUPPORTED_TARGETS",
 ]
 
 
-from haute.deploy._config import _CONTAINER_BASED_TARGETS
-
-_SUPPORTED_TARGETS = {"databricks", "container"}
-_CONTAINER_PLATFORM_TARGETS = _CONTAINER_BASED_TARGETS - {"container"}
-_PLANNED_TARGETS = {"sagemaker", "azure-ml"}
-
-
-def _validate_target(target: str) -> None:
-    """Reject unknown or planned deploy targets before backend dispatch."""
-    all_known = _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS | _PLANNED_TARGETS
-    if target not in all_known:
-        raise ValueError(
-            f"Unknown deploy target '{target}'. Known targets: {', '.join(sorted(all_known))}."
-        )
-    if target in _PLANNED_TARGETS:
-        raise NotImplementedError(
-            f"Target '{target}' is planned but not yet implemented. "
-            f"Supported targets: "
-            f"{', '.join(sorted(_SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS))}."
-        )
+from haute.deploy._config import (
+    _CONTAINER_PLATFORM_TARGETS,
+    _SUPPORTED_TARGETS,
+)
 
 
 def check_credentials(config: DeployConfig) -> None:
@@ -112,18 +97,17 @@ def deploy_resolved(resolved: ResolvedDeploy, *, keep_build: bool = False) -> De
     shipped, unless *keep_build*.
     """
     try:
-        _validate_target(resolved.config.target)
         return _dispatch_resolved(resolved, keep_build=keep_build)
     finally:
         resolved.close()
 
 
 def deploy(config: DeployConfig, *, keep_build: bool = False) -> DeployResult:
-    """Resolve config, validate the resolved deployment, and deploy it."""
-    # Validate target *before* resolve_config() so bad targets don't trigger
-    # unrelated errors (e.g. "No output node found") from config resolution.
-    _validate_target(config.target)
+    """Resolve config, validate the resolved deployment, and deploy it.
 
+    Resolution checks the settings first (``check_deploy_settings``), so a bad target
+    is refused before an unrelated error from the pipeline could be.
+    """
     resolved = resolve_config(config)
 
     try:

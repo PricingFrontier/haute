@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from haute._execution_admission import (
     IsolatedExecutionBudget,
+    create_admitted_execution_context,
     create_isolated_execution_context,
     isolated_execution_budget,
 )
@@ -737,6 +738,38 @@ def prepare_input_snapshots(
         records.append(record)
         execution_context.record_input_preparation(record)
     return tuple(records)
+
+
+def prepare_snapshots_before_reading(
+    node_map: Mapping[str, Any],
+    *,
+    operation: str,
+    base_dir: str | Path | None,
+) -> tuple[InputPreparationRecord, ...]:
+    """Prepare the snapshot of every input in *node_map* for a read outside an execution.
+
+    A caller that reads a snapshot-backed input without running the graph executor
+    (``Pipeline.run()`` or ``score()``, deploy's resolution) prepares it as an execution
+    prepares its inputs: a missing snapshot is built, a stale one refreshed, inside a hard
+    memory cap, admitted on its own and released once preparation ends. A clean checkout
+    holds no snapshot, so without this such a caller could only refuse.
+    """
+    if not snapshot_backed_inputs(node_map, node_map):
+        return ()
+    context = create_admitted_execution_context(
+        operation=operation, profile=ExecutionProfile.LAZY_SINK
+    )
+    try:
+        return prepare_input_snapshots(
+            list(node_map),
+            node_map,
+            profile=ExecutionProfile.LAZY_SINK,
+            execution_context=context,
+            base_dir=base_dir,
+            schema_only=False,
+        )
+    finally:
+        context.release_admission(preserve_primary_error=True)
 
 
 def _open_cache_store(

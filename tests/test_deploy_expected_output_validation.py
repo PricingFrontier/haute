@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -558,4 +559,54 @@ def test_validate_deploy_blocks_expected_output_drift(tmp_path: Path) -> None:
         and "expected=100.0" in err
         and "actual=102.25" in err
         for err in exc_info.value.context["test_quote_errors"]
+    )
+
+
+_VALID_UNTIL = {
+    "valid_until": [date(2026, 12, 31)],
+    "priced_at": [datetime(2026, 11, 20, 8, 30)],
+}
+
+
+@pytest.mark.parametrize(
+    ("expected", "status"),
+    [
+        ({"valid_until": "2026-12-31", "priced_at": "2026-11-20T08:30:00"}, "ok"),
+        ({"valid_until": "2026-12-30"}, "error"),
+    ],
+)
+def test_score_test_quotes_holds_a_date_output_as_the_response_writes_it(
+    tmp_path: Path, expected: dict[str, str], status: str
+) -> None:
+    """A date and a date-time are expected as their ISO text, the response's (DPL-04)."""
+    quotes_dir = tmp_path / "quotes"
+    quotes_dir.mkdir()
+    _write_json(
+        quotes_dir / "golden.json",
+        [{"input": {"VehPower": 7, "Area": "C"}, "expected": expected}],
+    )
+    resolved = _resolved_with_quotes(
+        quotes_dir, output_schema={"valid_until": "Date", "priced_at": "Datetime"}
+    )
+
+    with patch("haute.deploy._validators.score_graph") as score_graph:
+        score_graph.return_value = pl.DataFrame(_VALID_UNTIL)
+        [result] = score_test_quotes(resolved)
+
+    assert result["status"] == status, result
+    if status == "error":
+        assert "expected='2026-12-30' actual='2026-12-31'" in result["error"]
+
+
+def test_an_accepted_response_with_an_equal_date_is_unchanged() -> None:
+    """A priced response's date, an object, against the accepted one's text (DPL-04)."""
+    from haute.deploy._validators import response_changes
+
+    priced = {"valid_until": date(2026, 12, 31), "premium": 100.0}
+    assert response_changes(priced, {"valid_until": "2026-12-31", "premium": 100.0}, 0.0) == []
+    [change] = response_changes(priced, {"valid_until": "2027-01-01", "premium": 100.0}, 0.0)
+    assert (change.path, change.accepted, change.priced) == (
+        "valid_until",
+        "2027-01-01",
+        "2026-12-31",
     )

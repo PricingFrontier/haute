@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 
@@ -26,6 +27,10 @@ from haute.cli._helpers import (
     command_settings,
 )
 from haute.errors import DeployError
+
+if TYPE_CHECKING:
+    from haute._project_settings import ProjectSettings
+    from haute.deploy._config import DeployConfig
 
 # Map of provider-name → env var set by that provider when a job is running.
 # Each provider is recognised explicitly so detection is obvious to anyone
@@ -76,6 +81,59 @@ class DeployCliConfig:
     keep_build: bool = False
 
 
+def _loaded_config(config: DeployCliConfig, settings: ProjectSettings | None) -> DeployConfig:
+    """The deployment ``haute.toml`` describes, else the command line's alone (whose
+    pipeline file is resolved here, as it names the model)."""
+    from haute.deploy._config import DeployConfig
+
+    if settings is not None:
+        return DeployConfig.from_settings(settings)
+    resolved = resolve_pipeline_file(
+        Path(config.pipeline_file) if config.pipeline_file else current_project().root,
+    )
+    return DeployConfig.from_cli_args(
+        pipeline_file=resolved,
+        model_name=resolved.stem if config.model_name is None else config.model_name,
+    )
+
+
+def _with_cli_overrides(config: DeployCliConfig, deploy_config: DeployConfig) -> DeployConfig:
+    """*deploy_config* with the command line's values applied and its pipeline file resolved.
+
+    A model name the command line gives empty (``--model-name ""``) is applied too, for
+    resolution to refuse by name, never replaced by the file's.
+    """
+    deploy_config = deploy_config.override(
+        pipeline_file=Path(config.pipeline_file) if config.pipeline_file else None,
+        model_name=config.model_name,
+        endpoint_suffix=config.endpoint_suffix or None,
+    )
+    pipeline_candidate = (
+        Path(config.pipeline_file)
+        if config.pipeline_file
+        else deploy_config.project_dir or current_project().root
+    )
+    deploy_config.pipeline_file = resolve_pipeline_file(pipeline_candidate)
+    return deploy_config
+
+
+def _config_failed(exc: Exception, settings: ProjectSettings | None) -> NoReturn:
+    """Say a configuration that cannot be loaded in one error line and a hint, and exit 1."""
+    click.echo(f"Error: {exc}", err=True)
+    if settings is None:
+        click.echo(
+            "  Run inside a Haute project (cd to one, or run 'haute init'), "
+            "or pass --model-name and a pipeline file explicitly.",
+            err=True,
+        )
+    else:
+        click.echo(
+            f"  Correct {settings.path.name}, or pass the pipeline file explicitly.",
+            err=True,
+        )
+    raise SystemExit(1) from exc
+
+
 def handle_deploy(config: DeployCliConfig) -> None:
     """Execute ``haute deploy`` with parsed CLI inputs.
 
@@ -89,7 +147,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
     import os
 
     from haute._workbench_config import WorkbenchConfigError, read_workbench_config
-    from haute.deploy._config import DeployConfig, resolve_config
+    from haute.deploy._config import resolve_config
     from haute.deploy._validators import validate_deploy
 
     # 0. A workbench project hosts no scoring API: what it releases is the underwriter app.
@@ -106,28 +164,15 @@ def handle_deploy(config: DeployCliConfig) -> None:
         )
         raise SystemExit(1)
 
-    # 1. Load config — prefer haute.toml when present, else build from CLI.
+    # 1. Load config — prefer haute.toml when present, else build from CLI. A pipeline
+    # file that is not there, or a setting of the wrong type, is one error and a hint.
     settings = command_settings()
+    try:
+        deploy_config = _loaded_config(config, settings)
+    except EXPECTED_FAILURES as exc:
+        _config_failed(exc, settings)
     if settings is not None:
-        deploy_config = DeployConfig.from_settings(settings)
         click.echo("  \u2713 Loaded config from haute.toml")
-    else:
-        try:
-            resolved = resolve_pipeline_file(
-                Path(config.pipeline_file) if config.pipeline_file else current_project().root,
-            )
-            deploy_config = DeployConfig.from_cli_args(
-                pipeline_file=resolved,
-                model_name=config.model_name or resolved.stem,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            click.echo(f"Error: {exc}", err=True)
-            click.echo(
-                "  Run inside a Haute project (cd to one, or run 'haute init'), "
-                "or pass --model-name and a pipeline file explicitly.",
-                err=True,
-            )
-            raise SystemExit(1) from exc
 
     # Block local deploys - production changes must go through CI/CD.
     is_ci = _detect_ci_env(os.environ)
@@ -149,21 +194,11 @@ def handle_deploy(config: DeployCliConfig) -> None:
             click.echo(f"  ✗ {exc}", err=True)
             raise SystemExit(1) from exc
 
-    # Apply CLI overrides on top of the loaded config.
-    overrides: dict[str, str | Path | None] = {}
-    if config.pipeline_file:
-        overrides["pipeline_file"] = Path(config.pipeline_file)
-    if config.model_name:
-        overrides["model_name"] = config.model_name
-    if config.endpoint_suffix:
-        overrides["endpoint_suffix"] = config.endpoint_suffix
-    deploy_config = deploy_config.override(**overrides)
-    pipeline_candidate = (
-        Path(config.pipeline_file)
-        if config.pipeline_file
-        else deploy_config.project_dir or current_project().root
-    )
-    deploy_config.pipeline_file = resolve_pipeline_file(pipeline_candidate)
+    # Apply CLI overrides on top of the loaded config, and resolve its pipeline file.
+    try:
+        deploy_config = _with_cli_overrides(config, deploy_config)
+    except EXPECTED_FAILURES as exc:
+        _config_failed(exc, settings)
 
     click.echo(f"\nDeploying pipeline: {deploy_config.model_name}")
     click.echo(f"  Pipeline: {deploy_config.pipeline_file}")

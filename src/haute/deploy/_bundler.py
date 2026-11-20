@@ -697,54 +697,64 @@ def refuse_data_outside_pipeline_folder(
         )
 
 
-def prepare_shipped_snapshots(
+def prepare_deploy_snapshots(
     graph: PipelineGraph, input_node_ids: list[str], pipeline_dir: Path, project_root: Path
 ) -> None:
-    """Build or refresh the snapshot of every file-based Data Input deploy ships.
+    """Build or refresh the snapshot of every file-based or inline Data Input deploy reads.
 
-    A clean checkout (CI) holds no input snapshot, and an edited file leaves its
-    snapshot stale, so deploy prepares them itself, as an execution's automatic
-    preparation does: a missing snapshot is built, a stale one refreshed, inside a
-    hard memory cap. A snapshot preparation could only reuse, its file gone or no cap
-    to refresh it in, is refused rather than shipped. A lakehouse table's changes
-    cannot be detected, so its snapshot ships as last imported, and database and
-    Databricks inputs, and the request input's sample, are left alone.
+    Those deploy ships, and a request input's, whose first rows are the sample the
+    schemas are inferred from. A clean checkout (CI) holds no input snapshot, and an
+    edited file leaves its snapshot stale, so deploy prepares them itself, as an
+    execution's automatic preparation does: a missing snapshot is built, a stale one
+    refreshed, inside a hard memory cap. A shipped snapshot preparation could only
+    reuse, its file gone or no cap to refresh it in, is refused rather than shipped. A
+    lakehouse table's changes cannot be detected, so its snapshot ships as last
+    imported, and database and Databricks inputs are left alone.
     """
-    from haute._execution_admission import create_admitted_execution_context
-    from haute._execution_context import ExecutionProfile
-    from haute._input_preparation import prepare_input_snapshots
+    from haute._input_preparation import prepare_snapshots_before_reading
+    from haute._polars_io_registry import data_input_is_direct, validate_data_input_config
 
-    shipped: dict[str, dict[str, Any]] = {}
+    prepared: dict[str, dict[str, Any]] = {}
     configured: dict[str, str] = {}
     for node_id, validated in _shipped_file_inputs(graph, input_node_ids):
         snapshot_config = shipped_snapshot_config(node_id, validated, pipeline_dir, project_root)
         if snapshot_config is not None:
             # The path as deploy resolves it, so the snapshot prepared is the one bundled.
             source = _resolve_path(validated["path"], pipeline_dir, project_root, node_id, "path")
-            shipped[node_id] = {**snapshot_config, "path": str(source)}
+            prepared[node_id] = {**snapshot_config, "path": str(source)}
             configured[node_id] = validated["path"]
-    if not shipped:
+    for node in graph.nodes:
+        # A config naming no provider is not a resolvable Data Input; the node builder
+        # owns that refusal, as it does for an execution's preparation.
+        if DEPLOY_ARTIFACTS[node.data.nodeType] != "dataset" or not node.data.config.get(
+            "input_type"
+        ):
+            continue
+        validated = validate_data_input_config(node.data.config)
+        if validated["input_type"] == "inline":
+            # Its records are its source: shipped or read as the sample, its snapshot is
+            # built from them, with no file to resolve.
+            prepared[node.id] = validated
+        elif (
+            node.id in input_node_ids
+            and validated["input_type"] in _FILE_INPUT_TYPES
+            and not data_input_is_direct(validated)
+        ):
+            source = _resolve_path(validated["path"], pipeline_dir, project_root, node.id, "path")
+            prepared[node.id] = {**validated, "path": str(source)}
+    if not prepared:
         return
-    node_map = {
-        node_id: graph.node_map[node_id].with_config(config) for node_id, config in shipped.items()
-    }
-    context = create_admitted_execution_context(
-        operation="deploy_input_snapshots", profile=ExecutionProfile.LAZY_SINK
+    records = prepare_snapshots_before_reading(
+        {
+            node_id: graph.node_map[node_id].with_config(config)
+            for node_id, config in prepared.items()
+        },
+        operation="deploy_input_snapshots",
+        base_dir=pipeline_dir,
     )
-    try:
-        records = prepare_input_snapshots(
-            list(shipped),
-            node_map,
-            profile=ExecutionProfile.LAZY_SINK,
-            execution_context=context,
-            base_dir=pipeline_dir,
-            schema_only=False,
-        )
-    finally:
-        context.release_admission(preserve_primary_error=True)
     for record in records:
         reason = _UNSHIPPABLE_REUSE.get(record.warning_code or "")
-        if reason is not None:
+        if reason is not None and record.node_id in configured:
             raw_path = configured[record.node_id]
             raise DeployError(
                 f"Data Input node {record.node_id!r} reads {raw_path!r}, which {reason}, so "

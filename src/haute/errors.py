@@ -447,6 +447,30 @@ class QuoteInputError(HauteError):
         super().__init__(message, column=column, quote=quote)
 
 
+class NonFiniteOutputError(DeployError):
+    """A deployed pipeline's answer holds a NaN or an infinity, which JSON cannot carry.
+
+    ``column`` is the output column, a path into it when the value is nested
+    (``pricing.premium``, ``items[1].value``); ``quote`` the quote's index in the request,
+    from zero. A public contract error: the quote is answered with it, never a 500.
+    """
+
+    error_code = "output_not_finite"
+    public_fields = ("column", "quote", "value")
+
+    def __init__(self, *, column: str, quote: int, value: str) -> None:
+        self.column = column
+        self.quote = quote
+        self.value = value
+        super().__init__(
+            f"Output {column!r} is {value} for the quote at index {quote}, and a response "
+            "can carry only finite numbers: the pipeline divided by zero or overflowed "
+            "for this quote's inputs.",
+            column=column,
+            quote=quote,
+        )
+
+
 class QuoteAnswerRowsError(DeployError):
     """A quote of a batch answered quote by quote gave no row or several.
 

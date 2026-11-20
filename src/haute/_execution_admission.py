@@ -472,7 +472,12 @@ def _resolve_required_budget(
             )
 
     if _uses_fixed_default(profile):
-        return _fixed_default_memory_limit(profile)
+        if profile not in _IN_FLIGHT_PROFILE_SET:
+            return _fixed_default_memory_limit(profile)
+        available = _host_memory.require_positive_available_ram(available_ram_bytes())
+        return _fixed_default_memory_limit(
+            profile, available=available, os_reserve=_os_reserve_bytes(available, settings)
+        )
 
     limit, available, os_reserve_bytes = _adaptive_default_memory_limit_bytes(profile, settings)
     return _ResolvedMemoryLimit(
@@ -492,11 +497,28 @@ def _uses_fixed_default(profile: ExecutionProfile) -> bool:
     )
 
 
-def _fixed_default_memory_limit(profile: ExecutionProfile) -> _ResolvedMemoryLimit:
+def _fixed_default_memory_limit(
+    profile: ExecutionProfile,
+    *,
+    available: int | None = None,
+    os_reserve: int | None = None,
+) -> _ResolvedMemoryLimit:
+    """*profile*'s fixed default; given a memory sample, no more than it leaves usable.
+
+    A heavy profile's budget is reserved whole against the usable memory, so a default
+    larger than a small server's usable memory could never be admitted, with no other
+    work running: given the sample, the default is clamped to it, as an adaptive budget
+    is, and the sample is kept for the reservation to check against.
+    """
+    limit = _DEFAULT_MEMORY_LIMIT_BYTES[profile]
+    if available is not None and os_reserve is not None:
+        limit = min(limit, max(available - os_reserve, 1))
     return _ResolvedMemoryLimit(
-        memory_limit_bytes=_DEFAULT_MEMORY_LIMIT_BYTES[profile],
+        memory_limit_bytes=limit,
         config_key=f"default:{profile.value}",
         budget_policy="fixed_default",
+        available_ram_bytes=available,
+        os_reserve_bytes=os_reserve,
     )
 
 
@@ -578,6 +600,17 @@ def _resolve_optional_rss_limit(profile: ExecutionProfile) -> tuple[int | None, 
             continue
         return value * multiplier, key
     return None, None
+
+
+def memory_limit_setting(profile: ExecutionProfile) -> str:
+    """The setting that sizes *profile*'s memory budget: the variable in force, else the
+    profile's own variable in MiB (a preview's, the pipeline settings' preview memory)."""
+    if profile == ExecutionProfile.PREVIEW_EAGER:
+        return "preview_memory_gb"
+    for key, _multiplier in _memory_env_candidates(profile):
+        if optional_int_env(key) is not None:
+            return key
+    return _PROFILE_MEMORY_ENV[profile][1]
 
 
 def process_rss_limit_setting(profile: ExecutionProfile) -> str:
@@ -965,7 +998,11 @@ def _profile_limit_from_sample(
                 budget_policy="explicit_env",
             )
     if _uses_fixed_default(profile):
-        return _fixed_default_memory_limit(profile)
+        if profile not in _IN_FLIGHT_PROFILE_SET:
+            return _fixed_default_memory_limit(profile)
+        return _fixed_default_memory_limit(
+            profile, available=available, os_reserve=available - usable
+        )
     return _ResolvedMemoryLimit(
         memory_limit_bytes=_adaptive_limit(profile, usable),
         config_key=f"adaptive:{profile.value}",

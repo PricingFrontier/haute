@@ -328,30 +328,16 @@ def _graph(project: Project) -> Any:
     return graph
 
 
-def _prepare_inputs(project: Project) -> None:
-    """Build each Data Input's snapshot, so every way reads the same rows.
+def _forget_snapshots(project: Project) -> None:
+    """Unpublish every input snapshot under *project*, as a clean checkout holds none.
 
-    A preview builds a snapshot it needs; plain Python and the dry run read one already
-    built (``test_a_clean_checkout_runs_every_way`` holds that difference).
+    Each snapshot's pointer is removed, as ``SourceCacheStore.clear`` removes it; the
+    store's own files (its process locks among them) stay where its owners hold them.
     """
-    from haute._execution_context import ExecutionProfile
-    from haute._input_providers import build_input_snapshot
-    from haute._polars_io_registry import data_input_is_direct
     from haute._source_cache import SourceCacheStore
 
-    store = SourceCacheStore(project.root)
-    for node in _graph(project).nodes:
-        if node.data.nodeType != NodeType.DATA_INPUT:
-            continue
-        config = {key: value for key, value in node.data.config.items() if key != "code"}
-        if data_input_is_direct(config):
-            continue
-        path = config.get("path")
-        if isinstance(path, str) and not Path(path).is_absolute():
-            config["path"] = str((project.root / path).resolve())
-        build_input_snapshot(
-            config, store=store, base_dir=project.root, profile=ExecutionProfile.PREVIEW_EAGER
-        )
+    for pointer in SourceCacheStore(project.root).inputs_root.glob("*/current.json"):
+        pointer.unlink()
 
 
 def _preview(project: Project, target: Target, row_limit: int | None = None) -> Answer:
@@ -423,9 +409,10 @@ def _imported(path: Path) -> Iterator[dict[str, Any]]:
                 del sys.modules[name]
 
 
-def _python(project: Project, target: Target) -> Answer:
+def _python(project: Project, target: Target, *, clean: bool = False) -> Answer:
     """``pipeline.run()``, and, at a deployment's response, ``pipeline.score()`` of the
-    quotes as the service frames them: one answer, or the two shown."""
+    quotes as the service frames them: one answer, or the two shown. *clean* runs
+    ``score()`` too with no input snapshot built, as ``run()`` was."""
     from haute.errors import HauteError
 
     path = project.pipeline if target.leaf is None else project.root / target.leaf
@@ -439,6 +426,8 @@ def _python(project: Project, target: Target) -> Answer:
         scored_frame = _scored_request(project) if target.leaf is None else None
         if scored_frame is None or target.source != "live":
             return ran
+        if clean:
+            _forget_snapshots(project)
         try:
             scored = Answer.of_frame(pipeline.score(scored_frame))
         except refused as exc:
@@ -579,18 +568,26 @@ def _answers(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     without: frozenset[Way] = frozenset(),
+    clean: bool = False,
 ) -> dict[Way, Answer]:
     """*target*'s answer from each way that answers at it (``MEANT["deployment answers"]``),
-    but the ways *without*."""
+    but the ways *without*. *clean* runs each way as a clean checkout runs it, with no
+    input snapshot built: each way prepares the inputs it reads itself."""
     deployed = (
         project.request is not None and target.node == project.response and target.source == "live"
     )
+
+    def _answered(run: Callable[[], Answer]) -> Answer:
+        if clean:
+            _forget_snapshots(project)
+        return _answer_of(run)
+
     preview = _answered(lambda: _preview(project, target))
     runs: dict[Way, Callable[[], Answer]] = {
         Way.PREVIEW: lambda: preview,
         Way.TRACE: lambda: _trace(project, target, len(preview.rows)),
         Way.HAUTE_RUN: lambda: _haute_run(project, target, capsys),
-        Way.PYTHON: lambda: _python(project, target),
+        Way.PYTHON: lambda: _python(project, target, clean=clean),
     }
     if deployed:
         runs[Way.DRY_RUN] = lambda: _dry_run(project, capsys)
@@ -598,7 +595,7 @@ def _answers(
     return {way: _answered(run) for way, run in runs.items() if way not in without}
 
 
-def _answered(run: Callable[[], Answer]) -> Answer:
+def _answer_of(run: Callable[[], Answer]) -> Answer:
     """*run*'s answer, or the exception it raised as an internal error."""
     try:
         return run()
@@ -651,7 +648,6 @@ def _example_project(tmp_path: Path, name: str) -> Project:
         # Nothing to prepare or send: the pipeline is refused before it reads a quote.
         project.request = []
         return project
-    _prepare_inputs(project)
     project.request = _request_rows(project, graph)
     return project
 
@@ -720,7 +716,7 @@ def test_a_shipped_example_gives_one_answer_every_way(
 ) -> None:
     project = _example_project(tmp_path, name)
     (target,) = project.targets
-    answers = _answers(project, target, capsys, monkeypatch)
+    answers = _answers(project, target, capsys, monkeypatch, clean=True)
     if name in _EXAMPLES_NOT_DEPLOYED:
         meant = MEANT[_EXAMPLES_NOT_DEPLOYED[name]]
         for way in DEPLOY_WAYS:
@@ -968,7 +964,6 @@ def _generated_project(tmp_path: Path, case: Generated) -> Project:
         targets=targets,
         request=written.request if written.request is not None else _QUOTES,
     )
-    _prepare_inputs(project)
     return project
 
 
@@ -1830,42 +1825,6 @@ def test_a_quote_input_on_a_csv_answers_every_way(
         answers,
         {Way.HAUTE_RUN: lambda answer: _refuses(answer, "CSV sources require declared dtypes")},
     )
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="DPL-05: plain Python and the dry run read a Data Input only from a snapshot a "
-    "preview or haute run built",
-)
-def test_a_clean_checkout_runs_every_way(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute.assistant._assets import materialize_example_bundle
-
-    root = tmp_path.parent / _short_name(tmp_path, "clean")
-
-    _fresh(root)
-    root.rmdir()
-    materialize_example_bundle("minimal_batch", root)
-    _finish_project(root)
-    project = Project(
-        root=root,
-        pipeline=root / "pipeline.py",
-        targets=[Target("quote_response")],
-        request=[{"fixture_value": 10}, {"fixture_value": 20}],
-    )
-    # Nothing has built the input's snapshot: run as a clean checkout runs.
-    ran = _python(project, project.targets[0])
-    dry = _dry_run(project, capsys)
-    preview = _preview(project, project.targets[0])
-
-    answers = {Way.PREVIEW: preview, Way.PYTHON: ran, Way.DRY_RUN: dry}
-
-    def unbuilt(answer: Answer) -> bool:
-        return _refuses(answer, "input_snapshot_missing")
-
-    _owned("DPL-05", answers, {Way.PYTHON: unbuilt, Way.DRY_RUN: unbuilt})
 
 
 #: The node types a test above runs, by the case that holds it.

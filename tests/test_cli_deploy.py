@@ -588,3 +588,78 @@ class TestResolutionFailures:
         assert result.exit_code == 1
         assert "does not recognise (incident " in result.output
         assert "Resolution failed" not in result.output
+
+
+class TestDryRunSettings:
+    """A dry run refuses a setting no deploy can use, as a deploy would, naming it (DPL-03).
+
+    Nothing is patched: the check is resolution's first step, so the trivial pipeline
+    file is never parsed.
+    """
+
+    @pytest.mark.parametrize(
+        ("toml", "args", "named"),
+        [
+            ('[deploy]\ntarget = "nowhere"\n', [], "'nowhere' is not a deploy target"),
+            ('[deploy]\ntarget = "sagemaker"\n', [], "planned but not yet implemented"),
+            ('[deploy]\nmodel_name = ""\n', [], "[deploy] model_name"),
+            ("", ["--model-name", ""], "--model-name"),
+            ("[safety.approval]\nmin_approvers = -1\n", [], "min_approvers must be 0 or more"),
+            (
+                '[deploy.databricks]\nserving_workload_size = "Enormous"\n',
+                [],
+                "serving_workload_size must be one of Small, Medium, Large; got 'Enormous'",
+            ),
+            (
+                '[deploy]\ntarget = "container"\n[deploy.container]\n'
+                'base_image = "python:3.11.9-slim"\nport = 0\n',
+                [],
+                "port must be a port number from 1 to 65535",
+            ),
+        ],
+    )
+    def test_an_unusable_setting_is_refused_by_name(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        toml: str,
+        args: list[str],
+        named: str,
+    ) -> None:
+        use_project(tmp_path)
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "t"\npipeline = "main.py"\n' + toml, encoding="utf-8"
+        )
+        (tmp_path / "main.py").write_text(
+            'import haute\n\npipeline = haute.Pipeline("t")\n', encoding="utf-8"
+        )
+
+        result = runner.invoke(cli, ["deploy", "--dry-run", *args])
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        assert named in result.output
+        assert "Dry run complete" not in result.output
+        if "deploy target" in named or "planned" in named:
+            assert "aws-ecs, azure-container-apps, container, databricks, gcp-run" in result.output
+
+    def test_a_missing_pipeline_file_is_one_line_and_the_hint(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        use_project(tmp_path)
+        (tmp_path / "haute.toml").write_text(
+            '[project]\nname = "t"\npipeline = "gone.py"\n', encoding="utf-8"
+        )
+
+        result = runner.invoke(cli, ["deploy", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Traceback" not in result.output
+        # The command's own lines, not the log's.
+        lines = [
+            line for line in result.output.splitlines() if line.strip() and "[info" not in line
+        ]
+        assert lines[-2].startswith("Error: ") and "gone.py" in lines[-2], result.output
+        assert lines[-1] == "  Correct haute.toml, or pass the pipeline file explicitly."
+        assert [line for line in lines if line.startswith("Error")] == [lines[-2]]

@@ -135,6 +135,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
             return self._predict(model_input)
 
     def _predict(self, model_input: pd.DataFrame) -> pd.DataFrame:
+        from haute.deploy._response_json import refuse_non_finite
         from haute.deploy._scorer import admit_deploy_execution, score_graph
 
         execution_context = admit_deploy_execution(
@@ -157,6 +158,9 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
                 retain_admission_on_success=True,
                 request_rows=self._request_rows,
             )
+            # Serving encodes the answer as JSON, which holds no NaN or infinity: one is
+            # refused naming its column and quote, as a container's /quote refuses it.
+            refuse_non_finite(result, first_quote=None if len(model_input) == 1 else 0)
             with execution_context.stage("deploy_to_pandas"):
                 pandas_result = result.to_pandas()
             execution_context.checkpoint(label="after_deploy_to_pandas")
