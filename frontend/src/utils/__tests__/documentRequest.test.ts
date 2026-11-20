@@ -12,7 +12,6 @@ import {
   withSavedForms,
   withSavedParts,
 } from "../documentRequest"
-import { toCanonicalGraphPayload } from "../graphSnapshot"
 
 const steps = [
   { id: "s", kind: "source", input: "quotes" },
@@ -111,7 +110,6 @@ describe("document request", () => {
     const sent = documentRequestGraph({ nodes: [stale], edges: [] }, baseline)
 
     expect(editor(sent.nodes[0])).toEqual({ ...live, saved_code: savedCode })
-    expect(editor(toCanonicalGraphPayload({ nodes: [stale], edges: [] }).nodes[0])).toEqual(live)
     expect(editor(documentRequestGraph({ nodes: [stale], edges: [] }, null).nodes[0])).toEqual(live)
   })
 

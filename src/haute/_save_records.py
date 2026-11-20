@@ -58,12 +58,14 @@ def save_request_digest(body: SavePipelineRequest) -> str:
     one the request reads (CGEN-13), so the parts it read from the request are named
     beside it: two requests that send the same values, one with a part's saved form and
     one without, are two saves."""
+    from haute._cache import canonical_json
+
     payload = body.model_dump_json(exclude={"operation", "connection_id"})
 
     def refs(parts: frozenset[tuple[str | None, str]]) -> list[list[str | None]]:
         return [list(ref) for ref in sorted(parts, key=lambda ref: (ref[0] or "", ref[1]))]
 
-    read = json.dumps([refs(body.edited_steps), refs(body.edited_settings)])
+    read = canonical_json([refs(body.edited_steps), refs(body.edited_settings)])
     return hashlib.sha256(f"{payload}\n{read}".encode()).hexdigest()
 
 

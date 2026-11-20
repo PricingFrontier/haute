@@ -243,6 +243,28 @@ def test_saved_settings_that_are_not_settings_are_refused(saved: str) -> None:
         SavePipelineRequest.model_validate({**payload, "base_revision": None})
 
 
+@pytest.mark.parametrize(
+    ("editor", "message"),
+    [
+        pytest.param({"saved_code": "x", "saved_steps": "[]"}, "both a saved code", id="both"),
+        pytest.param(
+            {"saved_steps": '{"id": "s"}'},
+            "saved steps of node 't' are not a list",
+            id="steps-list",
+        ),
+        pytest.param(
+            {"saved_steps": "[not json"}, "saved steps of node 't' are not JSON", id="steps-json"
+        ),
+    ],
+)
+def test_saved_steps_that_are_not_one_list_are_refused(
+    editor: dict[str, str], message: str
+) -> None:
+    steps = [{"id": "s", "kind": "source", "input": "a"}]
+    with pytest.raises(ValueError, match=message):
+        graph_as_read({"nodes": [_node({"steps": steps, "code": ""}, **editor)]})
+
+
 def test_a_node_is_never_built_with_a_saved_form() -> None:
     """A request model that went round ``DocumentRequest`` fails: the node refuses it."""
     from pydantic import ValidationError
@@ -268,6 +290,7 @@ def test_an_empty_saved_code_leaves_the_steps_their_only_copy() -> None:
         pytest.param(
             {"nodes": [{"id": "t", "data": {"editor": {"saved_code": 3}}}]}, id="saved-form"
         ),
+        pytest.param({"nodes": [{"id": "t", "data": {"config": "not a config"}}]}, id="config"),
         pytest.param({"nodes": [], "submodels": {"s": {"graph": "not a graph"}}}, id="definition"),
     ],
 )

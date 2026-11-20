@@ -80,7 +80,7 @@ function inputsOf(document: Document, submodel: string | null, nodeId: string): 
   let ports: string[] = []
   if (submodel !== null) {
     const definition = document.submodels?.[submodel]
-    if (!isSubmodelDefinition(definition, submodel)) return canonicalJson(null)
+    if (!isSubmodelDefinition(definition, submodel)) return ""
     edges = definition.graph.edges as readonly Edge[]
     ports = definition.inputPorts
       .filter((port) => port.targets.some((target) => target.nodeId === nodeId))
@@ -89,9 +89,9 @@ function inputsOf(document: Document, submodel: string | null, nodeId: string): 
   }
   const incoming = edges
     .filter((edge) => edge.target === nodeId)
-    .map((edge) => [edge.source, edge.sourceHandle ?? "", edge.targetHandle ?? ""])
-    .sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)))
-  return canonicalJson([incoming, ports])
+    .map((edge) => JSON.stringify([edge.source, edge.sourceHandle ?? "", edge.targetHandle ?? ""]))
+    .sort()
+  return JSON.stringify([incoming, ports])
 }
 
 /**
@@ -209,21 +209,14 @@ export function withSavedParts<T extends Document>(document: T, saved: readonly 
   return mapNodes(document, (submodel, node) => {
     const entry = written.get(canonicalJson([submodel, node.id]))
     if (entry === undefined) return node
-    const forms: SavedForms = {}
-    const kept = editorState(node)
-    if (typeof kept.saved_code === "string") forms.saved_code = kept.saved_code
-    if (typeof kept.saved_steps === "string") forms.saved_steps = kept.saved_steps
-    if (typeof kept.saved_settings === "string") forms.saved_settings = kept.saved_settings
+    const kept = editorState(node) as SavedForms
     // A node's steps have one saved form: its code, or the list it was saved unfinished with.
-    if (typeof entry.code === "string") {
-      forms.saved_code = entry.code
-      delete forms.saved_steps
-    }
-    if (typeof entry.steps === "string") {
-      forms.saved_steps = entry.steps
-      delete forms.saved_code
-    }
-    if (typeof entry.settings === "string") forms.saved_settings = entry.settings
-    return withForms(node, forms)
+    const steps: SavedForms = typeof entry.code === "string"
+      ? { saved_code: entry.code }
+      : typeof entry.steps === "string"
+        ? { saved_steps: entry.steps }
+        : { saved_code: kept.saved_code, saved_steps: kept.saved_steps }
+    const forms: SavedForms = { ...steps, saved_settings: entry.settings ?? kept.saved_settings }
+    return withForms(node, Object.fromEntries(Object.entries(forms).filter(([, form]) => typeof form === "string")))
   })
 }
