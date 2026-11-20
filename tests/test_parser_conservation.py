@@ -467,7 +467,8 @@ class TestPreambleAliasAware:
             """
         )
         preamble = _extract_preamble(source)
-        assert preamble == "CONST = 1"
+        # The alias is no import a save writes, so it stays in the preamble (CGEN-06).
+        assert preamble == "import haute as ht\n\nCONST = 1"
         assert "Pipeline" not in preamble
 
     def test_from_import_alias_and_multiline_constructor_use_ast_boundaries(self) -> None:

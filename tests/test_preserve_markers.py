@@ -389,6 +389,48 @@ class TestUnkeptModuleStatements:
 
         assert unkept_module_statements(source) == [(1, 1), (3, 3), (6, 6)]
 
+    @pytest.mark.parametrize(
+        "statement",
+        ["import polars", "import polars as plr", "from polars import col", "import haute as hte"],
+    )
+    @pytest.mark.parametrize("above", [True, False], ids=["above-import-haute", "below"])
+    def test_an_import_the_generated_header_does_not_bind_is_kept_or_reported(
+        self, statement: str, above: bool
+    ):
+        """CGEN-06: the header a save writes binds ``haute`` and ``pl`` alone, so any other
+        import is kept as preamble below the standard imports, and reported above them."""
+        standard = "import haute\nimport polars as pl\n"
+        head = f"{statement}\n{standard}" if above else f"{standard}{statement}\n"
+        source = f'{head}\npipeline = haute.Pipeline("p")\n'
+
+        if above:
+            assert unkept_module_statements(source) == [(1, 1)]
+        else:
+            assert unkept_module_statements(source) == []
+            assert parse_pipeline_source(source).preamble == statement
+
+    def test_a_node_that_reads_polars_by_another_name_runs_and_keeps_its_import(self):
+        """CGEN-06: it failed with "name 'plr' is not defined", and a save wrote the import
+        back as ``import polars as pl``."""
+        from haute.codegen import graph_to_code
+        from haute.executor import execute_graph
+
+        source = (
+            "import haute\nimport polars as pl\n\nimport polars as plr\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def made() -> pl.LazyFrame:\n"
+            '    df = plr.LazyFrame({"a": [1, 2]}).with_columns(b=plr.col("a") * 2)\n'
+            "    return df\n"
+        )
+        graph = parse_pipeline_source(source)
+        result = execute_graph(graph, target_node_id="made")["made"]
+        assert result.status == "ok", result.error
+        assert [row["b"] for row in result.preview] == [2, 4]
+        saved = graph_to_code(graph, pipeline_name="p", preamble=graph.preamble)
+        assert "import polars as plr" in saved
+        assert unkept_module_statements(saved) == []
+
     def test_a_haute_import_after_import_haute_stays_in_the_preamble(self):
         source = 'import haute\nfrom haute import HauteError\n\npipeline = haute.Pipeline("p")\n'
 

@@ -11,9 +11,8 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-06` and `CGEN-07` were reproduced on 10 November 2026 through the
-parser, the preview and `haute run`. `CGEN-06` is a hand-written form the
-parser accepts and then drops; `CGEN-07` is one the naming check cannot see.
+`CGEN-07` was reproduced on 10 November 2026 through the parser, the
+preview and `haute run`: a hand-written form the naming check cannot see.
 
 `CGEN-09` and `CGEN-10` come from phase 5 of
 [the codebase review plan](codebase-review-plan.md): a reader from a second
@@ -30,50 +29,11 @@ each is a rendering that differs from the code it was read from.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
 | CGEN-09 | Planned | P1 | A step list or a node's settings read after a browser held them keep the numbers they were read with: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
 | CGEN-10 | Planned | P3 | A Transform that rebinds its input's name loads that statement as code, so its steps render against its input names. |
 
 ## Planned improvements
-
-### CGEN-06 — Polars imported under another name is kept, or refused by name
-**Why:** Reproduced on 10 November 2026. A pipeline file that starts
-`import polars` or `import polars as plr`, and whose nodes use that name, is
-valid Python and imports under plain Python. Haute parses it with no
-diagnostic, then every node that uses the name fails: the preview shows
-"name 'plr' is not defined", and `haute run` and the deploy dry run exit 1
-on the same `NameError`. A save from the editor writes the header back as
-`import polars as pl` and leaves the nodes using a name nothing binds. The
-reader treats any `import polars`, whatever its alias, as the standard
-import that the generated `import polars as pl` stands in for, so the alias
-is dropped and the check for statements a save would drop does not report
-it. The specification's rule works for the neighbouring case:
-`from polars import col` above `import haute` is reported as a statement a
-save would drop, naming its lines and the two fixes, and the same line below
-`import haute` is kept as preamble and runs. The 28 October audit recorded
-the `pl`-only recognisers as a lead; a data type spelt
-`pl.datatypes.String` gave the same rows everywhere and only cost the
-deployment its one-frame proof, which the specification allows.
-
-**Plan:** Count only `import polars as pl` as the standard import. Keep any
-other import of Polars as preamble where it sits below the standard imports,
-and report it as a statement a save would drop where it sits above, as the
-`from` form is.
-
-**Acceptance:** A file starting `import polars as plr` either runs in the
-editor's preview and from `haute run` with the rows plain Python gives, and
-keeps its import through a save, or is reported when it is opened, naming
-the line and the fix. A test holds `import polars`, `import polars as plr`
-and `from polars import col`, above and below `import haute`, to one of
-those two outcomes each.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_ast_helpers.py::_is_standard_import`;
-`src/haute/_ast_helpers.py::unkept_module_statements`;
-`src/haute/_user_exec.py::_exec_user_code`;
-`src/haute/_polars_call_shapes.py::is_pl_dtype_reference`.
 
 ### CGEN-07 — A dynamic binding in support code is refused by name
 **Why:** Reproduced on 10 November 2026. The naming check refuses two

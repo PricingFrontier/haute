@@ -371,13 +371,18 @@ Out of scope (owned by neighbouring components):
   save overwrites). `haute init` scaffolds `main.py` with codegen's docstring, so a new
   project's first save leaves it as it is.
 
-  Regeneration keeps only the docstring, the `haute`/`polars` imports (and `from haute import
+  Regeneration keeps only the docstring, the imports it writes itself, `import haute` and
+  `import polars as pl` as exactly those (and `from haute import
   <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
   and from the constructor on the constructor, the `global_constants` binding, node functions,
   `pipeline.submodel(...)` registrations and `connect` chains. Any other module statement (an
   import above `import haute`, a constant, helper or trailing code after the constructor) would
   be dropped, and so would any other `from haute import ...` outside the preamble, since
-  the regenerated `import haute` does not bind its names. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
+  the regenerated `import haute` does not bind its names. An import of either module under
+  another name (`import polars`, `import polars as plr`, `import haute as ht`) binds a name
+  the regenerated imports do not, so it is no standard import: below them it is preamble,
+  which a save keeps and every run executes, and above them it is reported like any other
+  statement a save would drop (CGEN-06). `_ast_helpers.unkept_module_statements` finds each one, and the editor document
   reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
   it between the imports and the constructor, or wrap it in preserve markers), which degrades
   the document, so the file is never regenerated without it. A save regenerates each
