@@ -12,7 +12,6 @@ Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
 `CGEN-01` is a valid hand-written file the parser reads wrongly.
-`CGEN-04` is a cost, not a wrong result.
 
 `CGEN-05` to `CGEN-07` were reproduced on 10 November 2026 through the
 parser, the preview and `haute run`. `CGEN-05` and `CGEN-06` are each a
@@ -38,7 +37,6 @@ each is a rendering that differs from the code it was read from.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CGEN-01 | Planned | P2 | A pipeline's name and description are read however the constructor gives them, and a constructor the reader cannot read is refused instead of rewritten. |
-| CGEN-04 | Planned | P3 | Code generation reads each node function's parameters once per save, not once per edge. |
 | CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
@@ -81,27 +79,6 @@ is never saved over.
 and the `description` keyword only; `src/haute/_ast_helpers.py::_constructor_call`
 skips an annotated assignment; `src/haute/pipeline.py::Pipeline` accepts both
 forms; `src/haute/codegen.py::graph_to_code` writes the name it was given.
-
-### CGEN-04 — Code generation reads each function's parameters once
-**Why:** Measured. The module renderer builds its `connect` lines in a
-comprehension that calls `_positional_parameters(functions)` for every edge,
-and that call parses every node function again. On a chain of four-line
-transforms, generating 25, 50, 100 and 200 nodes took 0.03, 0.16, 0.41 and
-1.37 seconds, 1.30 of the last in that comprehension (40,002 `ast.parse`
-calls). The cost grows with nodes times edges times body size and is paid on
-every save.
-
-**Plan:** Compute the parameter table once before the comprehension and index
-it per edge.
-
-**Acceptance:** Generating the 200-node chain parses each function a fixed
-number of times, asserted by counting `ast.parse` calls, and the generated
-text is byte-identical to today's for the existing golden pipelines.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/codegen.py::_render_module`;
-`src/haute/codegen.py::_positional_parameters`.
 
 ### CGEN-05 — A Transform's decorator refuses a keyword it does not know
 **Why:** Reproduced on 10 November 2026. `@pipeline.polars(selected_colums=["k"])`,
