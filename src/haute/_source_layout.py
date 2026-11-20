@@ -230,6 +230,12 @@ def float_literal(value: float) -> str:
 _PYTHON_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
 
 
+def text_column(line: str, ast_column: int) -> int:
+    """The index in *line* of a column ``ast`` reports, which it counts in UTF-8 bytes:
+    the two differ once the line holds text outside ASCII before the column (CGEN-03)."""
+    return len(line.encode("utf-8")[:ast_column].decode("utf-8"))
+
+
 def python_lines(text: str, *, keepends: bool = False) -> list[str]:
     """Split *text* into lines where Python ends a line: at ``\\n``, ``\\r\\n`` and ``\\r``.
 

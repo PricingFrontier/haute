@@ -341,6 +341,25 @@ class TestSemicolonJoinedClosingReturn:
         assert box2 == box1
         assert "df = up.head(1)" in _node_block(regen1, "clean")
 
+    @pytest.mark.parametrize(
+        ("lines", "kept"),
+        [
+            (['s = "é"; return up.head(1)'], 's = "é"; df = up.head(1)'),
+            (
+                ["s = 1  # Prämie €", "t = 2; return up.head(1)"],
+                "s = 1  # Prämie €\nt = 2; df = up.head(1)",
+            ),
+        ],
+    )
+    def test_non_ascii_text_before_the_return_keeps_its_statements_through_a_save(
+        self, tmp_path: Path, lines: list[str], kept: str
+    ) -> None:
+        """CGEN-03: the return's column is counted in characters, not in UTF-8 bytes."""
+        box1, regen1, box2, _regen2 = _roundtrip_node_code(_POLARS_NODE, lines, "clean", tmp_path)
+        assert box1 == kept
+        assert box2 == box1
+        assert kept.split("\n")[-1] in _node_block(regen1, "clean")
+
     def test_a_hook_keeps_its_signature_and_statement_through_a_save(self, tmp_path: Path) -> None:
         _write_sidecars(tmp_path)
         write_data_input_config(tmp_path, "hooked", "data.parquet")

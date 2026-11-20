@@ -187,6 +187,24 @@ class TestStripOuterTrailingReturn:
             "df = quotes.head(1)"
         )
 
+    @pytest.mark.parametrize(
+        ("body", "code"),
+        [
+            # CGEN-03: ast counts the return's column in UTF-8 bytes.
+            ('    s = "é"; return df.head(1)\n', 's = "é"; df = df.head(1)'),
+            ('    s = "Prämie €"; return df.select("a")\n', 's = "Prämie €"; df = df.select("a")'),
+            (
+                "    s = 1  # é\n    t = 2; return df.head(1)\n",
+                "s = 1  # é\nt = 2; df = df.head(1)",
+            ),
+            # Python needs no space after ``return``.
+            ("    return(df.head(1))\n", "df = (df.head(1))"),
+            ("    return  df.head(1)\n", "df =  df.head(1)"),
+        ],
+    )
+    def test_a_closing_return_is_rewritten_at_its_own_column(self, body: str, code: str) -> None:
+        assert extract_user_code(body, kind="polars") == code
+
 
 # ---------------------------------------------------------------------------
 # _df_alias_target — non-alias / unparseable lines

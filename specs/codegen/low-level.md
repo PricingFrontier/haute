@@ -286,7 +286,10 @@ and hooks honest, belong to [pipeline-config](../pipeline-config/low-level.md).
    end, so the statement stays and only the `;` and the return go.
 5. Finalise through `_finalise_polars`, with the parameter names for `polars`
    and none for the other kinds. A closing outer-scope `return <expr>` becomes
-   `df = <expr>`; any other outer-scope `return` (inside an `if` or loop, or
+   `df = <expr>`, `return(<expr>)` too, cut at the return's own column, which `ast`
+   counts in UTF-8 bytes and `_source_layout.text_column` turns into the line's
+   index, so text outside ASCII before it on the line (`s = "é"; return df`) moves
+   nothing (CGEN-03); any other outer-scope `return` (inside an `if` or loop, or
    followed by more statements) raises `ParseError` naming its line within the
    code (`_reject_early_returns`), because an early return cannot become an
    assignment without changing the node's result.
@@ -507,7 +510,6 @@ empty code.
 | Extraction engine given an unknown `kind` | `KeyError` | `_code_extraction.extract_user_code` |
 | User code text fails to parse during extraction | `_UserCodeParseError` (`ParseError` + `ValueError`, chains original `SyntaxError`) | `_code_extraction._parse_user_code` |
 | Node code returns early: an outer-scope `return` that is not the code's last statement | `ParseError` naming the line within the code; the parser adds the node as `node_id` | `_code_extraction._reject_early_returns`, `_graph_builders._resolve_node_skeleton` |
-| `_rewrite_outer_returns_as_assignment` hits a `return` fragment matching neither `return <expr>` nor bare `return` | `AssertionError` (`# pragma: no cover`, defensive) | `_code_extraction._rewrite_outer_returns_as_assignment` |
 
 All of the `ParseError`/`ConfigError`/`HauteError` types are Haute's
 canonical error hierarchy (`haute.errors`); the save-pipeline HTTP route

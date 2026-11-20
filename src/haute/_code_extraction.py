@@ -35,7 +35,7 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from haute._ast_helpers import _dedent, _strip_docstring
-from haute._source_layout import python_lines
+from haute._source_layout import python_lines, text_column
 from haute.errors import ParseError
 
 __all__ = [
@@ -160,18 +160,18 @@ def _rewrite_outer_returns_as_assignment(source: str, target: str) -> str:
     for node in sorted(returns, key=lambda r: (r.lineno, r.col_offset), reverse=True):
         line_idx = node.lineno - 1
         line = lines[line_idx]
-        col = node.col_offset
-        before = line[:col]
+        col = text_column(line, node.col_offset)
         rest = line[col:]
-        if rest.startswith("return "):
-            new_rest = f"{target} = " + rest[len("return ") :]
-        elif rest.startswith("return\n") or rest.rstrip() == "return":
+        assert rest.startswith("return"), (node.lineno, line)
+        after = rest[len("return") :]
+        if node.value is None:
             # Bare ``return`` — replace with ``<target> = None`` so the
             # extracted snippet remains syntactically well-formed.
-            new_rest = f"{target} = None" + rest[len("return") :]
-        else:  # pragma: no cover — defensive; ast placed the node here
-            raise AssertionError(f"expected 'return' at line {node.lineno} col {col}, got {line!r}")
-        lines[line_idx] = before + new_rest
+            assigned = f"{target} = None{after}"
+        else:
+            # ``return x`` and ``return(x)``: Python needs no space after the keyword.
+            assigned = f"{target} =" + (after if after[:1] in (" ", "\t") else f" {after}")
+        lines[line_idx] = line[:col] + assigned
 
     return "".join(lines)
 
@@ -227,8 +227,11 @@ def _strip_outer_trailing_return(source: str, return_var: str) -> str:
         # statement ends, never at the start of the return's line.
         previous = body[-2]
         assert previous.end_lineno is not None and previous.end_col_offset is not None
-        last_kept = lines[previous.end_lineno - 1].encode("utf-8")[: previous.end_col_offset]
-        kept = [*lines[: previous.end_lineno - 1], last_kept.decode("utf-8")]
+        line = lines[previous.end_lineno - 1]
+        kept = [
+            *lines[: previous.end_lineno - 1],
+            line[: text_column(line, previous.end_col_offset)],
+        ]
     else:
         # Drop the return's source span (lineno..end_lineno inclusive, 1-based).
         kept = lines[: last.lineno - 1]
@@ -243,7 +246,7 @@ _TOKENS_BETWEEN_STATEMENTS = frozenset(
 def _follows_a_semicolon(source: str, statement: ast.stmt) -> bool:
     """Whether *statement* follows the one before it on one logical line, after a ``;``."""
     line = python_lines(source, keepends=True)[statement.lineno - 1]
-    start = (statement.lineno, len(line.encode("utf-8")[: statement.col_offset].decode("utf-8")))
+    start = (statement.lineno, text_column(line, statement.col_offset))
     previous: tokenize.TokenInfo | None = None
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.start == start:

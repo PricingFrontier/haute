@@ -11,8 +11,7 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-01` and `CGEN-03` are each one valid hand-written file the parser reads
-wrongly or cannot read; they share no code and can be taken in any order.
+`CGEN-01` is a valid hand-written file the parser reads wrongly.
 `CGEN-04` is a cost, not a wrong result.
 
 `CGEN-05` to `CGEN-07` were reproduced on 10 November 2026 through the
@@ -39,7 +38,6 @@ each is a rendering that differs from the code it was read from.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CGEN-01 | Planned | P2 | A pipeline's name and description are read however the constructor gives them, and a constructor the reader cannot read is refused instead of rewritten. |
-| CGEN-03 | Planned | P3 | A closing `return` after a semicolon is rewritten correctly when the line holds non-ASCII text. |
 | CGEN-04 | Planned | P3 | Code generation reads each node function's parameters once per save, not once per edge. |
 | CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
@@ -83,30 +81,6 @@ is never saved over.
 and the `description` keyword only; `src/haute/_ast_helpers.py::_constructor_call`
 skips an annotated assignment; `src/haute/pipeline.py::Pipeline` accepts both
 forms; `src/haute/codegen.py::graph_to_code` writes the name it was given.
-
-### CGEN-03 — A closing return after a semicolon survives non-ASCII text
-**Why:** Reproduced. The rewrite of a closing `return <expr>` into an
-assignment slices the source line at `node.col_offset`, which Python counts in
-UTF-8 bytes, as if it were a character index. A node body ending
-`s = "é"; return df.head(1)` raises
-`AssertionError: expected 'return' at line 1 col 10` from inside the parser.
-The two neighbouring helpers convert the byte offset before slicing. The line
-is marked as not needing coverage, so no test reaches it.
-
-**Plan:** Slice the encoded line at the byte offset, as
-`_follows_a_semicolon` and `_strip_outer_trailing_return` do, and remove the
-coverage exemption with a test of the line.
-
-**Acceptance:** The body above parses, and the node's code reads
-`s = "é"` then the assignment of `df.head(1)`. A non-ASCII comment or string
-before a semicolon-joined `return` round-trips through parse and generate.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_code_extraction.py::_rewrite_outer_returns_as_assignment`;
-`src/haute/_code_extraction.py::_follows_a_semicolon` and
-`src/haute/_code_extraction.py::_strip_outer_trailing_return` slice the
-encoded line; `src/haute/_ast_helpers.py::_function_body_source` does too.
 
 ### CGEN-04 — Code generation reads each function's parameters once
 **Why:** Measured. The module renderer builds its `connect` lines in a
