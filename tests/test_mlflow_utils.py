@@ -157,6 +157,7 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
     from mlflow.tracking import MlflowClient
 
     from haute._mlflow_io import _resolve_artifact_local
+    from haute._mlflow_model import StoredArtifact
     from haute._mlflow_utils import resolve_mlflow_source
     from haute.modelling._mlflow_settings import MlflowSettings, save_mlflow_settings
 
@@ -197,7 +198,9 @@ def test_source_resolution_uses_selected_registry_without_changing_globals(
         )
         assert run_id == records["b"][1]
         assert client.get_run(run_id).info.run_id == run_id
-        artifact_path = _resolve_artifact_local(mlflow, backend, run_id, "model.cbm")
+        # The file the store holds for destination "b" is one byte: the text "b".
+        stored = StoredArtifact("model.cbm", "size:1")
+        artifact_path = _resolve_artifact_local(mlflow, backend, run_id, stored)
         assert Path(artifact_path).read_text(encoding="utf-8") == "b"
         assert mlflow.get_tracking_uri() == records["a"][0]
         assert mlflow.get_registry_uri() == records["a"][0]

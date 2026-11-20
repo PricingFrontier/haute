@@ -9,6 +9,7 @@ import {
   breakpointLabelIssues,
   categoricalRuleIssues,
   categoricalRuleCounts,
+  ruleForValue,
   generateEvenBreakpoints,
   generateSettingsFromBreakpoints,
   suggestOutputColumn,
@@ -108,6 +109,19 @@ describe("categoricalRuleCounts", () => {
       { value: "east", assignment: "E" },
     ]
     expect(categoricalRuleCounts(rules, counts, false)).toEqual([900, null])
+  })
+
+  it("leaves a value the counts do not list unknown on a column not keyed by its text", () => {
+    // A Float64 column's 1.0 is counted under the key "1"; a rule written "1.0" claims it too.
+    const keyed = new Map([["1", 100]])
+    const rules = [{ value: "1.0", assignment: "One" }, { value: "1", assignment: "One" }]
+    expect(categoricalRuleCounts(rules, keyed, true, false)).toEqual([null, 100])
+  })
+})
+
+describe("ruleForValue", () => {
+  it("keeps the value as it is matched and names its band without edge spaces", () => {
+    expect(ruleForValue("Standard ")).toEqual({ value: "Standard ", assignment: "Standard" })
   })
 })
 

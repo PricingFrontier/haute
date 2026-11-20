@@ -306,19 +306,14 @@ class TestRatingStepExecutor:
         else:
             assert str(executor_error.value) == str(generated_error.value)
 
-    def test_incomplete_table_not_registered_for_combined_output(self):
-        """F082: an incomplete table is a passthrough (no output column), so it
-        must NOT be registered for a combined output — otherwise the combine
-        references a phantom column that never materialised (crash or silent
-        mispricing).  The combined output uses only the base value plus the
-        columns that actually exist."""
+    def test_a_table_with_no_entries_and_no_default_is_refused_saying_what_it_lacks(self):
+        """RTG-04: a table with an output column and nothing to price it with is refused
+        by name, rather than left out of a combined output its node's contract promises."""
         from haute._rating import apply_rating_step_from_config
 
         config = {
             "tables": [
-                # Incomplete: empty entries -> passthrough, no "phantom" column.
                 {"factors": ["b"], "output_column": "phantom", "entries": []},
-                # Real table producing "factor".
                 {
                     "factors": ["b"],
                     "output_column": "factor",
@@ -329,26 +324,33 @@ class TestRatingStepExecutor:
                 {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         }
-        out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
-        assert "phantom" not in out.columns
-        # premium = base 100 * real factor 2.0 (phantom excluded, no crash).
-        assert out["premium"].to_list() == [200.0]
+        with pytest.raises(ConfigSettingError) as refused:
+            apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config)
+        assert str(refused.value) == "Rating table 'phantom' has no entries and no Default"
+        assert refused.value.fix is not None and "Use default" in refused.value.fix
 
-    def test_incomplete_table_skip_is_logged_not_silent(self):
-        """F082 fail-loud: an incomplete table configured with an output_column
-        is a passthrough, so it is omitted from combined outputs — but the
-        omission must be OBSERVABLE, not silent.  A WARNING names the table,
-        its output column, and the reason; the real table that materialised is
-        not warned about."""
-        import structlog
+    def test_a_table_with_no_factors_is_refused_saying_so(self):
+        from haute._rating import apply_rating_step_from_config
 
+        config = {"tables": [{"factors": [], "output_column": "phantom", "entries": []}]}
+        with pytest.raises(ConfigSettingError, match="'phantom' has no factors"):
+            apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config)
+
+    @pytest.mark.parametrize("default", [1.0, 15, "1.5"])
+    def test_a_table_with_a_default_and_no_entries_prices_every_row_at_the_default(
+        self, default: object
+    ):
+        """RTG-04: with no entries every row misses, and the Default fills every miss."""
         from haute._rating import apply_rating_step_from_config
 
         config = {
             "tables": [
-                # Incomplete: empty entries -> passthrough, no output column.
-                {"factors": ["b"], "output_column": "phantom", "entries": []},
-                # Real table producing "factor".
+                {
+                    "factors": ["b"],
+                    "output_column": "relativity",
+                    "entries": [],
+                    "default_value": default,
+                },
                 {
                     "factors": ["b"],
                     "output_column": "factor",
@@ -359,22 +361,16 @@ class TestRatingStepExecutor:
                 {"output_column": "premium", "operation": "multiply", "base_value": 100}
             ],
         }
-        with structlog.testing.capture_logs() as logs:
-            out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
-        assert out["premium"].to_list() == [200.0]
+        out = apply_rating_step_from_config(
+            pl.DataFrame({"b": ["A", "B"]}).lazy(), config
+        ).collect()
+        expected = float(default)  # type: ignore[arg-type]
+        assert out["relativity"].to_list() == [expected, expected]
+        assert out["premium"].to_list() == [100 * expected * 2.0, 100 * expected]
 
-        skips = [log for log in logs if log["event"] == "rating_table_skipped_incomplete"]
-        assert len(skips) == 1
-        assert skips[0]["log_level"] == "warning"
-        assert skips[0]["table"] == "phantom"
-        assert skips[0]["output_column"] == "phantom"
-        assert "entries" in skips[0]["reason"]
-
-    def test_disabled_table_without_output_column_is_not_warned(self):
+    def test_disabled_table_without_output_column_passes_the_frame_through(self):
         """A table with no output_column is a deliberately disabled node, not an
-        incomplete one — it must NOT emit the incomplete-skip warning."""
-        import structlog
-
+        incomplete one: it is neither refused nor writes a column."""
         from haute._rating import apply_rating_step_from_config
 
         config = {
@@ -387,9 +383,8 @@ class TestRatingStepExecutor:
                 },
             ],
         }
-        with structlog.testing.capture_logs() as logs:
-            apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
-        assert [log for log in logs if log["event"] == "rating_table_skipped_incomplete"] == []
+        out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
+        assert out.columns == ["b", "factor"]
 
     @pytest.mark.parametrize(
         "operation, col_name, base_value, expected",

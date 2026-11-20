@@ -184,7 +184,7 @@ class TestConfigErrors:
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("schema_unresolvable", True)
         assert error["where"] == {"op_index": 0, "node": "bands", "field": "factors"}
-        assert "has number breakpoints, but its column is Date" in error["message"]
+        assert "has number breakpoints, but the column is Date" in error["message"]
         assert "2024-12-31" in error["fix"]
 
     async def test_a_rating_row_without_its_factor_is_a_located_config_error(

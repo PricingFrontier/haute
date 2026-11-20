@@ -679,7 +679,7 @@ class _FakeGLM:
         ]
 
 
-def _load_fake_glm(**_: Any) -> Any:
+def _load_fake_glm(*_args: Any, **_: Any) -> Any:
     from haute._mlflow_io import ScoringModel
 
     return ScoringModel(model=_FakeGLM(), feature_names=["x"], flavor="rustystats")

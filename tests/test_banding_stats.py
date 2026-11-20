@@ -309,9 +309,8 @@ def test_categorical_values_are_the_text_execution_matches_on(
 
     stats = _stats(client, graph, factor)
 
-    # A Float64 1.0 is "1.0" — the value a categorical rule must be written
-    # against — and never "1".
-    assert [(v["value"], v["count"]) for v in stats["values"]] == [("1.0", 2), ("2.0", 1)]
+    # The key execution matches a Float64 on, as a Rating Step does: 1.0 is "1".
+    assert [(v["value"], v["count"]) for v in stats["values"]] == [("1", 2), ("2", 1)]
     assert stats["distinct_count"] == 2
     assert stats["null_count"] == 1
     assert stats["other_count"] == 0
@@ -345,7 +344,7 @@ def test_nan_and_infinity_are_ordinary_categorical_values(
 
     stats = _stats(client, graph, factor)
 
-    assert {v["value"] for v in stats["values"]} == {"NaN", "inf", "1.0"}
+    assert {v["value"] for v in stats["values"]} == {"NaN", "inf", "1"}
     assert stats["null_count"] == 1
     assert stats["distinct_count"] == 3
 
@@ -635,6 +634,17 @@ def test_a_numeric_mode_on_a_column_it_cannot_compare_is_unprocessable(
 
     assert response.status_code == 422
     assert "cannot compare" in response.json()["detail"]
+
+
+def test_categorical_values_of_a_nested_column_are_unprocessable(
+    client: TestClient, project: Path
+) -> None:
+    _write_source(project, pl.DataFrame({"premium": [["a"], ["b"]]}))
+    graph = _graph(project, [_factor(banding="categorical")])
+
+    response = _stats_response(client, graph, _factor(banding="categorical"))
+
+    assert response.status_code == 422
 
 
 def test_a_date_column_is_measured_in_days_since_1970(client: TestClient, project: Path) -> None:

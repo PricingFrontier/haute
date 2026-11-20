@@ -6,14 +6,14 @@
 |---|---|
 | `src/haute/_binning.py` | Equal-width bins over a numeric column (`equal_width_bins`), the one definition of "the histogram of this column" every surface that shows one uses. |
 | `src/haute/routes/_banding_stats.py` | Whole-dataset statistics for the factor being edited, over the shared data point its node reads, as a `PointAnalysisService`; owned by [server-api](../server-api/low-level.md#banding-statistics). |
-| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_comparison_expr`, `banding_temporal_ordinal_expr`, `parse_breakpoint_boundary`, `breakpoints_kind`, `banding_categorical_claims`, `banding_interval_claims`, `require_banding_type`, `banding_rule_claim_expr`) and the banding-factor loop (`apply_banding_factors`), rating-table lookup (`_apply_rating_table`, composed of `rating_table_lookup`, which builds a table's canonical lookup and its authored keyed entries, and `apply_rating_table_lookup`, which joins it with or without the miss guard; the assistant's data check measures lookups through the same two), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`; a descriptor is the shared dtype codec's spec with rating's key names, restricted to the dtypes a rating factor supports), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
+| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_comparison_expr`, `banding_temporal_ordinal_expr`, `parse_breakpoint_boundary`, `breakpoints_kind`, `banding_categorical_claims`, `banding_interval_claims`, `require_banding_type`, `banding_rule_claim_expr`) and the banding-factor loop (`apply_banding_factors`), rating-table lookup (`_apply_rating_table`, composed of `rating_table_lookup`, which builds a table's canonical lookup and its authored keyed entries, and `apply_rating_table_lookup`, which joins it with or without the miss guard; the assistant's data check measures lookups through the same two), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`; `rating_key_of`, the key of a column of a dtype, with `_rating_key_expr` for a named column; `typed_level_keys`, the one reading of configured levels (a rating entry's key, a categorical banding rule's value, a traced value through `normalise_rating_key`) as values of the column's dtype and their keys, refusing a level the dtype cannot hold; a descriptor is the shared dtype codec's spec with rating's key names, restricted to the dtypes a rating factor supports), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
 | `src/haute/_rating_step_config.py` | Rating-table config normalisation: canonical ordered row-array validation and optional `"factor_dtypes"` descriptor validation/preservation. |
 | `src/haute/_banding_config.py` | Banding config normalisation: compact key/value-map ⟷ canonical row-array conversion for `categorical`/`breakpoints` rules (`expand_banding_config_from_sidecar`, `compact_banding_config_for_sidecar`, `normalise_banding_rules`, `normalise_banding_factors`). |
 
 ## Key types and data structures
 
 - **Banding factor** (`dict`): `{"banding": "breakpoints"|"categorical", "column": str, "output_column": str, "rules": [...] | {...}, "default": str|null, "right_closed"?: bool}`. `rules` is a list of row dicts in the canonical in-memory shape; sidecars persist it as a `{key: value}` map instead.
-  - `categorical` rule row: `{"value": str, "assignment": str}` (sidecar map: `{value: assignment}`).
+  - `categorical` rule row: `{"value": scalar, "assignment": str}` (sidecar map: `{value: assignment}`); the value is read as a value of the banded column's dtype (`typed_level_keys`).
   - `breakpoints` rule row: `{"boundary": str, "label": str}` — empty `boundary` marks the open-ended tail (sidecar map: `{boundary: label}`). `parse_breakpoint_boundary` reads a boundary as a finite number, a `date` (`YYYY-MM-DD`) or a naive `datetime` (`YYYY-MM-DD[T ]HH:MM[:SS[.ffffff]]`), rejecting anything else, including a UTC offset; `breakpoints_kind` names the one kind (`"number"`, `"date"`, `"datetime"`) a factor's bounded breakpoints share and rejects a mix.
   Every factor, draft or configured, names one of those two types; there is no
   default type, and any other value (the removed `continuous`, a pseudo-type such
@@ -85,9 +85,15 @@ and a null claim is exactly a defaulted row:
   now carries each interval's source breakpoint. Execution evaluates the intervals sorted by
   boundary with the open-ended one last, so a claim names the breakpoint the user wrote rather than
   its position in the chain.
-- `banding_categorical_claims` builds the same last-wins remap on the column cast to text, so a
-  Float64 `1.0` is claimed by a `"1.0"` rule and never by a `"1"` rule, a repeated value is claimed
-  by its last rule, and a rule missing either its value or its assignment claims nothing.
+- `banding_categorical_claims(rules, dtype, *, output_column, column)` builds the one remap: each
+  usable rule's value keyed by `typed_level_keys` through the column's dtype, the column matched on
+  `rating_key_of`, so a Float64 `1.0` is claimed by a `"1"`, `"1.0"` or `1` rule alike. A value the
+  dtype cannot hold is refused (`ConfigSettingError`, setting `factors`, naming the output column,
+  the column and the value); two rules with one key, or written alike where the key is null, are
+  refused naming both rules; a rule missing either its value or its assignment claims nothing, and
+  rules none of which has both are refused as "no usable categorical rule". On a Null column every
+  key is null, so there are no claims and every row takes the default. A column absent from the
+  frame is a `SchemaMismatchError` naming the output and the column.
 - Breakpoints read the column through `banding_comparison_expr`, so NaN and infinity are
   unclaimed exactly as they are defaulted.
 - A rule with no assignment is skipped by both, so the row it would have covered is unclaimed
@@ -102,7 +108,8 @@ and a null claim is exactly a defaulted row:
    shared parser and therefore cannot interpret a broader rule set. A non-empty
    authored rule list that produces no usable categorical mapping or breakpoint
    interval raises `ValueError` rather than returning the input frame unchanged.
-6. `categorical` bypasses the when/then chain entirely and uses `col.cast(Utf8).replace_strict(remap, default=...)`.
+6. `categorical` bypasses the when/then chain entirely and uses `rating_key_of(col, dtype).replace_strict(remap, default=...)` over `banding_categorical_claims`, so `_apply_banding` resolves (or reads from *schema*) the column's dtype for both banding types; `apply_banding_factors` therefore resolves the schema once for the first active factor of either type.
+7. Band names go through `_banding_config.band_name` wherever rules are normalised (`normalise_banding_rules(..., output_column=...)`, which every load, save, lint, claim and run path calls) and a factor's default through `banding_default`: a name is text, `None` or `""` is no name, and a number, a Boolean, or text with a space at either end is refused (`ConfigSettingError`, setting `factors`) naming the band (`band 2 of banding output 'x'`, `rule 1 of ...`, `the default band of ...`) with a fix. A breakpoint's boundary is read by `_boundary_text`: only `None` or `""` is open-ended, so a boundary of `0` is a boundary.
 
 **Rating** — `apply_rating_step_from_config(lf, config, base_dir=None)`:
 1. Resolve `config` (dict or sidecar path), same pattern as banding.
@@ -113,36 +120,46 @@ and a null claim is exactly a defaulted row:
 4. `_apply_rating_step_outputs(lf, tables, combined_outputs)`:
    a. Coerce `pl.DataFrame` input to `.lazy()`.
    b. Collect the frame schema **once** up front into a local `dict`, then thread it through every table call (`input_schema=schema`) instead of re-collecting after each table — this keeps schema resolution `O(n)` instead of `O(n²)` in the number of tables, since each `_apply_rating_table` call would otherwise re-run `collect_schema()` on a lazy plan that has grown by one join.
-   c. For each table: call `_apply_rating_table`; if it actually materialised an output column (`_rating_table_skip_reason(table) is None`), register the output column name and its `Float64` dtype in the local schema dict for subsequent tables/combines to see; otherwise log `rating_table_skipped_incomplete` at WARNING with the specific skip reason and omit it from combining.
+   c. For each table: call `_apply_rating_table`, which produces the table's output column or raises; register every non-empty output column name and its `Float64` dtype in the local schema dict for subsequent tables/combines to see. A table with no output column passes through and is not registered.
    d. For each combined output: call `_combine_rating_output(lf, out_cols, operation, output_col, base_value)`.
 5. `_apply_rating_table(lf, table, input_schema=...)` (per table):
    a. Validate the collection shapes before any passthrough guard: missing or
       `None` `factors`/`entries` become empty draft collections; non-list values
       raise `ValueError`; and a populated entry list with no factors raises
-      `ValueError`. Return `lf` unchanged for a completely empty draft or an
-      empty `output_column`. Otherwise validate every declared factor against
-      the once-resolved input schema before treating empty entries as a
-      documented no-op.
-   b. Return unchanged for an empty `entries` list only after that factor
-      validation; return unchanged if no entry has a `"value"` key, or no
-      entry has some factor's key. This union of entry keys is the only
-      passthrough check on keys.
-   c. Parse `default_value`: tolerate non-numeric/non-finite strings (treated as
-      "no usable default", noted in the eventual miss error rather than silently ignored).
+      `ValueError`. Return `lf` unchanged for an empty `output_column`. Otherwise
+      validate every declared factor against the once-resolved input schema
+      before any other guard, so an entry-less table still names a mistyped
+      factor.
+   b. Parse `default_value` (`rating_default_value`: blank is none, anything else
+      must be a finite number, or `ConfigSettingError` naming the table). Then
+      `_rating_table_gap` decides whether the table can price: it needs factors,
+      and an entry or a Default. A table with an output column that lacks either
+      is refused (`ConfigSettingError`, setting `tables`: `Rating table 'x' has
+      no factors` or `... has no entries and no Default`, each with a fix); the
+      lookup builder returns `None` for it and `_apply_rating_table` raises.
+   c. A populated entry list where no entry has `"value"`, or no entry has some
+      factor's key, is refused naming the table (and the factor).
    d. Resolve and validate each originating input dtype (`_validate_supported_factor_dtypes`).
    e. Build `pl.DataFrame(entries, infer_schema_length=None)`, which reads every
       entry rather than the first hundred Polars infers from by default, so every
-      key step b found is a column wherever its first entry sits. An entry without
+      key step c found is a column wherever its first entry sits. An entry without
       `value` therefore holds a null value. Reject (raise `ConfigSettingError`,
       setting `tables`) any NaN/Infinity or null `value` entries, naming the count.
-   f. Select only `[*factors, "value"]` from entries (drops extra keys). Parse a
-      Duration factor's String keys in Python with `_duration_key_series` (see
-      Edge cases), before any expression runs.
-   g. Coerce lookup-entry columns to originating input dtypes, then evaluate `_rating_key_expr`
-      into a collision-free temporary key column on both lookup and input sides.
-   h. Refuse the table when two entries share the temporary canonical keys
-      (`RatingDuplicateEntriesError`, naming the table and the entries' levels as
-      written), and rename `value` to a collision-free internal value name.
+      A table with a Default and no entries has an empty frame of the factors'
+      dtypes and a `Float64` value: every row misses, and the Default fills it.
+   f. Select only `[*factors, "value"]` from entries (drops extra keys).
+   g. Key each factor's levels with `typed_level_keys(levels, dtype, subject=...)`
+      into a collision-free temporary key column (the frame side takes
+      `rating_key_of` into the same name). `typed_level_keys` reads the levels
+      through `_coerce_levels` (a Duration factor's String keys through
+      `_duration_key_series`, in Python, before any expression runs) and refuses
+      a level the dtype cannot hold, naming the table, the factor, up to three
+      such levels (with how many more) and the dtype, with a fix.
+   h. Refuse the table when two entries share the temporary canonical keys, all
+      of them non-null, or are identical as written (`RatingDuplicateEntriesError`,
+      naming the table and the entries' levels as written), and rename `value` to
+      a collision-free internal value name. An entry with a null key (every entry
+      of a Null factor) matches no row, so its key collides with nothing.
    i. Left join on the temporary keys (`how="left", maintain_order="left"`).
       Source factor columns are untouched throughout.
    j. If no usable default, wire in `_apply_rating_miss_guard` over the temporary
@@ -180,20 +197,45 @@ and a null claim is exactly a defaulted row:
   `_rating_step_config` refuses levels identical as written wherever a config is
   read, and `refuse_levels_equal_under_factor_dtypes` (the sidecar write
   boundary) runs the same lookup against a table's `factor_dtypes`.
-- **Float width is part of the key contract:** `_rating_key_expr` formats a
-  Float32 in Float32 and a Float64 in Float64. The Python mirror reconstructs
-  the scalar through the required originating dtype and applies the same
-  coercion/formatting rules, so JSON/Python widening cannot change the trace
-  key. `normalise_rating_key` has no dtype-inference default; trace,
+- **Float width is part of the key contract:** `rating_key_of` formats a
+  Float32 in Float32 and a Float64 in Float64. The configured side
+  (`typed_level_keys`, and `normalise_rating_key` through it) reads the value
+  through the required originating dtype and then keys it step for step as the
+  expression does (`_typed_keys`: a text cast where `_key_is_text` says the key
+  is one; for a float, the non-strict cast to Int64, the cast back and the
+  comparison that make `rating_key_of`'s whole-number test; a Time or Duration's
+  string format), so JSON/Python widening cannot change the trace key. `normalise_rating_key` has no dtype-inference default; trace,
   persistence, and optimiser helpers must resolve and pass a concrete dtype
   before calling it.
-- **Scalar mirror cost is bounded:** `normalise_rating_key` may use eager
-  Polars Series coercion/string formatting to retain exact engine semantics,
-  but must not construct a one-row DataFrame and evaluate multiple expressions
-  per scalar. A representative performance regression compares it with that
+- **Scalar mirror cost is bounded:** `normalise_rating_key` uses eager
+  Polars Series coercion, detects a level that does not fit by comparing native
+  null counts, and keys it with native Series casts and comparisons (one string
+  format for a Time or Duration); it must not construct a one-row DataFrame and
+  evaluate multiple expressions per scalar. A representative performance regression compares it with that
   historical DataFrame-expression reference while the shared dtype matrix
   remains the semantic oracle.
 - **Int-like float collapse is range-bounded:** `normalise_rating_key`/`_rating_key_expr` only collapse a finite int-like float to its integer digit string when it is inside `[-(2**63), 2**63)` (the `Int64` range), because the cast to `Int64` on the engine side (`strict=False`) is only exact/lossless there. Outside that range (e.g. `1e300`), both sides fall through to Polars' `Utf8` cast instead, deliberately consistently.
+- **A configured level is a value of its column's dtype or is refused**
+  (`_coerce_levels`): `typed_level_keys` first groups the levels by their
+  Python type, so a list holding `"true"` and `0`, or `True` and `2`, is not
+  made one Polars supertype before each is read, and duplicates as written
+  compare `(type, value)`, so `1` and `"1"` are two levels. Boolean takes
+  `true`/`false`, `1`/`0`, and text that is `"true"`/`"false"` or spells
+  `1` or `0` (`_text_as_number`: the type's own spelling first, else the text
+  read as the whole number it spells exactly by `read_typed_whole`, never
+  through a float, and held to the type's range) only;
+  an integer dtype reads text the same way, so `"25.0"` is 25 and a
+  sidecar's map key for `1.0` reads back as the value it was; an integer dtype refuses a fraction (Polars would truncate
+  `1.5` to `1`); a temporal dtype refuses a number or Boolean (its physical
+  count) and parses text non-strictly, a level it cannot parse refused by
+  name (`_parsed_text` parses each Time or Datetime level alone, as the scalar
+  path does, since Polars infers one format from a list's first value); a Duration level's own
+  refusal is raised again with the subject and setting in front; a numeric dtype refuses a Boolean; the rest take Polars' non-strict
+  cast, a level it nulls refused by name. A Null dtype reads every level as
+  null and refuses none.
+- **A categorical rule's value survives the sidecar:** the compact writer turns a
+  non-text value into its JSON spelling (`_rule_key_text`: `true`, `1`, `1.5`),
+  which reads back as the same value of the column's dtype.
 - **`Decimal` factor columns** are strictly cast through the column's declared
   precision/scale before key generation. Equivalent authored forms such as
   `"25.5"` and `"25.50"` therefore become the same scale-2 value and key;
@@ -251,7 +293,7 @@ and a null claim is exactly a defaulted row:
 - **B15 entry-column pollution guard:** `_apply_rating_table` selects only `[*factors, "value"]` from the entries `DataFrame` before joining, so stray extra keys left in an entry dict (e.g. leftover UI state) never leak into the main frame as spurious columns.
 - **B14 fan-out guard:** a lookup whose final typed temporary keys repeat is refused before the join (READ-06), so aliases in the originating factor dtype can never fan out (multiply) rows in the output, and no entry silently wins over another.
 - **Bug #1/#2 (naming collision):** lookup keys and values use internal names reserved against every input, entry, and output column (starting from `__haute_rating_key_{n}__` and `__haute_lookup_val__`, then prefixing `_` until free), so user columns named `"value"` or like an internal stem remain untouched.
-- **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`output_column`/`rules`, or a completely empty rating-table draft / rating table with an empty entry list or no `output_column`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
+- **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`output_column`/`rules`, or a rating table with no `output_column`, is a *documented* passthrough, and a rating table with an output column produces it (from its Default alone when it has no entries) or is refused naming what it lacks (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
 - **Malformed collection shapes never become empty configs.**
   `normalise_banding_factors` raises `ValueError("banding factors must be a list")`
   for any non-`None`, non-list value, matching sidecar expansion. Rating-table
@@ -280,14 +322,18 @@ and a null claim is exactly a defaulted row:
 | Banding `factors` (or a compact rule map) not structurally valid; duplicate categorical/breakpoint rule key; empty categorical rule key | `ValueError` | `_banding_config.py` various | Eagerly, at config expand/compact |
 | Two active banding factors with one `output_column` | `ConfigSettingError` (`ValueError`), setting `factors`, naming the column and both factors | `require_distinct_banding_outputs`, from `validate_banding_config` and `apply_banding_factors` | Eagerly, at config validation and before the frame is touched |
 | Lower rating-table `factors`/`entries` is not a list, or populated entries have no factors | `ValueError` | `_apply_rating_table` | Eagerly, before inspecting the frame |
+| A rating table with an output column has no factors, or no entries and no Default; or its entries hold no rate, or no level for some factor | `ConfigSettingError` (`ValueError`), setting `tables`, naming the table and what it lacks, with a fix | `_apply_rating_table` (through `_rating_table_gap`), `rating_table_lookup` | Eagerly, before the join |
+| A rating entry's level, a categorical banding rule's value, or a traced value is not a value of its column's dtype | `ConfigSettingError` (`ValueError`), setting `tables` or `factors`, naming the table and factor (or the banding output and column), up to three levels and the dtype, with a fix | `typed_level_keys`, from `rating_table_lookup`, `banding_categorical_claims` and `normalise_rating_key` | Eagerly, before the join or remap, and on the trace path alike |
+| Two categorical banding rules for one value of the column's dtype | `ConfigSettingError` naming the output, the column, both rules and their values | `banding_categorical_claims` | Eagerly, before the remap |
+| A band name (label, assignment, default) that is a number or Boolean, or begins or ends with a space | `ConfigSettingError` (`ValueError`), setting `factors`, naming the band and the output column, with a fix | `_banding_config.band_name`, through `normalise_banding_rules` and `banding_default` | When the settings are loaded, validated (save, lint) and run |
+| A banding factor's column is absent from its input | `SchemaMismatchError` naming the output and the column | `_apply_banding`, `banding_categorical_claims` | Eagerly, before the frame is touched |
 | Non-empty banding rule list has no usable mapping/condition and assignment | `ValueError` | `_apply_banding` | Eagerly, before publishing an output expression |
 | Every participating `min`/`max` value is null for any row | `RatingExtremaUndefinedError` (`ExecutionError`) with output/operation fields | `_rating_extrema_expr`, at materialisation | Public adapters map to HTTP 422 or background `contract_error`; the batch publishes no partial output |
 | Declared rating factor absent from the input schema, including an entry-less table | `RatingFactorMissingError` (`SchemaMismatchError`) with table/factor fields | `_apply_rating_table`, before lookup construction | Public adapters map to HTTP 422 or background `contract_error` |
 
 No exception raised by these helpers is caught and swallowed internally: every
-raise propagates to the caller. Rating misses and intentionally incomplete
-tables use the `rating_table_lookup_misses` /
-`rating_table_skipped_incomplete` WARNING-level logs.
+raise propagates to the caller. Rating misses use the
+`rating_table_lookup_misses` WARNING-level log.
 
 ## Testing
 
@@ -298,9 +344,11 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   trace path, reproduces premiums calculated by hand in the test body: a boundary age on the
   first threshold, a null falling to the default band, a table miss resolved as neutral, and a
   multiplicative combine over a base value, with the trace's rating detail naming the matched
-  entries and agreeing with the preview premium row by row.
+  entries and agreeing with the preview premium row by row; and, through the same executor, a
+  table with a Default and no entries pricing every row at it, and a factor column of Null type
+  (a Transform's `pl.lit(None)`) pricing every row at the default.
 - **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, an entry without `value` counted past the first hundred entries, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
-- **`tests/test_banding.py`** — breakpoints/categorical `_apply_banding`, date and date-and-time breakpoints on Date and time-zoned Datetime columns (calendar-day inclusion, wall-clock time, both closures), unreadable and mixed boundaries, and every mismatched kind/column pairing, the rejection of any other or missing type (including the removed `continuous`), `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, two active factors with one output column refused at validation, in the executor and in a standalone run (a draft sharing it accepted), hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
+- **`tests/test_banding.py`** — breakpoints/categorical `_apply_banding`, date and date-and-time breakpoints on Date and time-zoned Datetime columns (calendar-day inclusion, wall-clock time, both closures), unreadable and mixed boundaries, and every mismatched kind/column pairing, the rejection of any other or missing type (including the removed `continuous`), `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, two active factors with one output column refused at validation, in the executor and in a standalone run (a draft sharing it accepted), hardening/adversarial inputs, the full `breakpoints` mode (ordering, closures, open-ended boundary, a boundary of `0`), and band names: a label, group or default that is a number, a Boolean or has an edge space refused by name when loaded, validated and run, and a label of the text `"0"` banding rows.
 - **`tests/test_banding_stats.py`** — `POST /api/banding/stats` through a cached point: the bin
   edges with the last closed, a constant column, values no bin can hold, a column with no finite
   value, the text each dtype casts to, categorical ordering, cap, `distinct_count` and
@@ -309,7 +357,8 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   mode on text, rules execution refuses, and invalid wiring.
 - **`tests/test_banding_claims.py`** — `banding_rule_claim_expr` against hand-calculated vectors:
   breakpoint claims following the user's rule order under both closures, a repeated label and a
-  default equal to it keeping their own counts, the last-wins categorical remap on the text each
+  default equal to it keeping their own counts, the typed categorical remap (two rules for one value
+  refused) on the key each
   dtype casts to, a rule with no assignment claiming nothing, an unconfigured factor claiming
   nothing rather than raising, and the rejections execution shares. A property test over 120
   generated frames and rule sets asserts the invariant the counts rest on: every claimed row gets
@@ -322,7 +371,7 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
 - **`tests/test_banding.py`** — targeted coverage of `_banding_config.py`: map-value validation, compact rule map/row conversion, and malformed shape rejections.
 - **`tests/test_rating_dtype_contract.py`** and
   **`tests/fixtures/rating_key_cases.py`** — the shared real-Polars matrix for
-  `normalise_rating_key(value, dtype)` and `_rating_key_expr` across every
+  `normalise_rating_key(value, dtype)` and `rating_key_of` across every
   supported primitive/categorical/decimal/temporal dtype, runtime lookup,
   trace enrichment, ratebook persistence/apply, null/non-finite values,
   malformed metadata, and exact dtype mismatch. Date and Duration entry
@@ -332,7 +381,12 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   `ConfigSettingError` on both.
 - **`tests/test_rating_key_agreement.py`** — focused historical and
   adversarial key regressions, including typed alias deduplication and source
-  factor-column preservation.
+  factor-column preservation; one table of column types and level spellings
+  run through a categorical Banding and a Rating Step expecting the same rows
+  matched, and levels each refuses alike (`"maybe"`, `"True"` or `2` on a
+  Boolean, `"abc"` or `25.5` on an integer, a number on a Date); a Null factor
+  column priced at the default by both nodes; and a real duplicate refused
+  whatever the factor column's type.
 - **`tests/test_optimiser_ratebook_apply_agreement.py`** — engine/explainer and
   real-solver save/apply agreement, including composite factors and
   price-contour-emitted level canonicalisation.

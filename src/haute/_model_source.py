@@ -54,14 +54,17 @@ class RunModelSource:
 
 @dataclass(frozen=True, slots=True)
 class RegisteredModelSource:
-    """A version of an MLflow registered model, by number, ``latest`` or alias."""
+    """A version of an MLflow registered model, by number, ``latest`` or alias.
+
+    The version's source names the file it scores, so it reads no
+    ``artifact_path``.
+    """
 
     source_type: ClassVar[Literal["registered"]] = "registered"
 
     registered_model: str
     version: str
     alias: str
-    artifact_path: str
     mlflow_destination: str
 
 
@@ -139,12 +142,11 @@ def parse_model_source(config: Mapping[str, Any]) -> ModelSource | None:
     if source_type == "file":
         # A file source never consults MLflow.
         return FileModelSource(model_path=_identifier(config, "model_path", source_type))
-    artifact_path = _optional_string(config, "artifact_path")
     destination = str(config.get("mlflow_destination") or "")
     if source_type == "run":
         return RunModelSource(
             run_id=_identifier(config, "run_id", source_type),
-            artifact_path=artifact_path,
+            artifact_path=_optional_string(config, "artifact_path"),
             mlflow_destination=destination,
         )
 
@@ -159,7 +161,6 @@ def parse_model_source(config: Mapping[str, Any]) -> ModelSource | None:
         registered_model=registered_model,
         version=version,
         alias=alias,
-        artifact_path=artifact_path,
         mlflow_destination=destination,
     )
 
@@ -357,25 +358,7 @@ def _load_mlflow_source(
 ) -> ScoringModel:
     from haute import _mlflow_io
 
-    if isinstance(source, RunModelSource):
-        return _mlflow_io.load_mlflow_model(
-            source_type=source.source_type,
-            run_id=source.run_id,
-            artifact_path=source.artifact_path,
-            task=task,
-            destination=source.mlflow_destination,
-            backend=backend,
-        )
-    return _mlflow_io.load_mlflow_model(
-        source_type=source.source_type,
-        registered_model=source.registered_model,
-        version=source.version,
-        alias=source.alias,
-        artifact_path=source.artifact_path,
-        task=task,
-        destination=source.mlflow_destination,
-        backend=backend,
-    )
+    return _mlflow_io.load_mlflow_model(source, task=task, backend=backend)
 
 
 @dataclass(frozen=True, slots=True)

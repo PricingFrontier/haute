@@ -75,6 +75,7 @@ from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
+from haute._mlflow_model import model_resolution_scope
 from haute._node_addresses import node_display_name
 from haute._node_apply import shape_node_output
 from haute._node_specs import node_spec, node_type_table
@@ -521,6 +522,7 @@ class _Walk:
 
     # ------------------------------------------------------------------ run
 
+    @model_resolution_scope()
     def run(self) -> WalkResult:
         # What the walk raises names its nodes from the graph it walks.
         with naming_nodes_from(self.request.graph):

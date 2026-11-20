@@ -21,11 +21,14 @@ import copy
 import functools
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from haute._hashing import content_hash
 from haute._logging import get_logger
 from haute._mlflow_utils import resolve_mlflow_source
+
+if TYPE_CHECKING:
+    from haute._mlflow_utils import ResolvedBackend
 
 logger = get_logger(component="optimiser_io")
 
@@ -124,6 +127,43 @@ def _load_mlflow_cached(
         mode=artifact.get("mode"),
     )
     return artifact
+
+
+def download_mlflow_optimiser_result(
+    *,
+    source_type: str,
+    run_id: str = "",
+    registered_model: str = "",
+    version: str = "",
+    alias: str = "",
+    backend: ResolvedBackend,
+    dst: Path,
+) -> tuple[Path, str, str]:
+    """Download the optimiser result an MLflow source names into *dst*, for a bundle.
+
+    A deployed pipeline applies only the result its bundle carries, so the
+    bundler resolves an MLflow source once, at bundle time, on the node's one
+    backend. Returns the local file, the run it came from and the concrete
+    version a registered source resolved to (``""`` for a run).
+    """
+    resolved_run_id, resolved_version, mlflow_mod, _client, _backend = resolve_mlflow_source(
+        source_type=source_type,
+        run_id=run_id,
+        registered_model=registered_model,
+        version=version,
+        backend=backend,
+        alias=alias,
+    )
+    local = Path(
+        mlflow_mod.artifacts.download_artifacts(
+            f"runs:/{resolved_run_id}/{_MLFLOW_ARTIFACT_NAME}",
+            dst_path=str(dst),
+            tracking_uri=backend.tracking_uri,
+        )
+    )
+    if not local.is_file():
+        raise FileNotFoundError(f"Download completed but the optimiser result is not at {local}")
+    return local, resolved_run_id, resolved_version if source_type == "registered" else ""
 
 
 def load_mlflow_optimiser_artifact(

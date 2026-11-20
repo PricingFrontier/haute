@@ -1079,8 +1079,8 @@ describe("BandingEditor", () => {
   it.each(["Float64", "Decimal(precision=10, scale=2)", "Date", "Datetime(time_unit='us', time_zone=None)"])(
     "offers no preview values for a %s column, whose text the preview cannot give",
     (dtype) => {
-      // A Float64 1.0 arrives in the preview as the number 1, while execution matches
-      // the text Polars casts it to, "1.0": a chip written from the preview never matches.
+      // A float, decimal or temporal value's preview form need not be the key execution
+      // matches it on (a Float32 widened, a decimal without its scale): no chip from it.
       const config = { factors: [{ banding: "categorical", column: "band", output_column: "g", rules: [] }] }
       renderEditor(
         <BandingEditor

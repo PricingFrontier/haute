@@ -1807,10 +1807,11 @@ offending node of the lineage in topological order, ties broken by node id:
    or an Apply Optimisation node whose artifact is not a local file. A Model
    Scoring node is local when it names an MLflow run (`source_type` `run`) with a
    `run_id` and an `artifact_path` whose flavor loads from one file (not a
-   `pyfunc` directory), and that file, with the contract its run logged (or the record
-   that it logged none), exists in the disk model cache for the node's resolved destination: the files the preview's
-   fast path in `src/haute/_mlflow_io.py` loads with no tracking-server,
-   registry or download call. A registered model (a `version` or `alias` the
+   `pyfunc` directory), and the copies the last resolved load of that artifact
+   recorded (the model, and the contract its run logged beside it when it logged
+   one) exist in the disk model cache for the node's resolved destination: the
+   files a disk-cache-only load in `src/haute/_mlflow_io.py` reads with no
+   tracking-server, registry or download call. A registered model (a `version` or `alias` the
    registry resolves on every load) and a `pyfunc` artifact are never local; a
    run artifact not yet cached is not local, with the remedy to preview the
    Model Scoring node in the editor, which fills the cache. The worker loads a

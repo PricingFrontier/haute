@@ -68,6 +68,7 @@ from haute._input_preparation import preparation_base_dir, prepare_input_snapsho
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._mlflow_model import model_resolution_scope
 from haute._node_addresses import node_display_name
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES, node_type_table
 from haute._polars_selectors import preamble_selector_aliases
@@ -397,6 +398,7 @@ def request_row_identity(
     return None, None
 
 
+@model_resolution_scope()
 def execute_trace(
     graph: PipelineGraph,
     row_index: int = 0,

@@ -149,6 +149,9 @@ class _RuntimeInputs:
     #: A ``run`` or ``registered`` source resolves through an MLflow backend,
     #: whose resolved identity is signed too.
     mlflow_sourced: bool = False
+    #: That source names a scoring model, signed by the identity of the model the
+    #: model resolution answers it with rather than by its backend and version.
+    scoring_model: bool = False
 
 
 def _path_field(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -207,6 +210,7 @@ _RUNTIME_INPUTS: Mapping[NodeType, _RuntimeInputs | None] = node_type_table(
             local_paths=_model_score_paths,
             identifier_paths=("artifact_path",),
             mlflow_sourced=True,
+            scoring_model=True,
         ),
         NodeType.BANDING: None,
         NodeType.RATING_STEP: None,
@@ -1048,6 +1052,40 @@ def _mlflow_registered_version_signature(config: Mapping[str, object]) -> object
     return resolved_version
 
 
+def _scoring_model_signature(config: Mapping[str, object]) -> object:
+    """The identity of the model a run or registered Model Scoring node scores now.
+
+    The model resolution's :meth:`~haute._mlflow_model.ResolvedModel.identity_record`
+    for the node's source (the backend, the run, the artifact and its contract, and
+    what identifies each one's bytes), read through the operation's
+    ``model_resolution_scope`` and, inside a disk-cache-only load, from the disk
+    cache's record, so the identity a result is stored under is the model the
+    execution scores. A destination that does not resolve returns
+    ``{"unresolved": <reason>}``; any other failure ``{"unresolved": <exception
+    type>, "backend": <backend identity>}``, never the message, which can carry a
+    server URL, so a failure at one destination is never another's. The scope keeps the
+    failure, so the operation's load raises it and nothing is stored under the
+    marker, while a store that stays unreachable reads the same identity at a
+    plan's start and in its walk.
+    """
+    from haute._mlflow_io import model_resolution
+    from haute._mlflow_utils import resolve_backend
+    from haute._model_source import FileModelSource, parse_model_source
+    from haute.errors import MlflowConfigError
+
+    try:
+        backend = resolve_backend(str(config.get("mlflow_destination", "") or ""))
+    except MlflowConfigError as exc:
+        return {"unresolved": str(exc)}
+    try:
+        source = parse_model_source(config)
+        if source is None or isinstance(source, FileModelSource):
+            raise ValueError("not an MLflow source")
+        return model_resolution(source, backend=backend).identity_record()
+    except Exception as exc:
+        return {"unresolved": type(exc).__name__, "backend": backend.identity}
+
+
 def _runtime_input_fingerprint_entry(
     graph: PipelineGraph,
     node: GraphNode,
@@ -1055,12 +1093,13 @@ def _runtime_input_fingerprint_entry(
     """Identity material for one node's runtime inputs.
 
     Beyond the signed files and the node's runtime-input config fields, an
-    MLflow-sourced ``MODEL_SCORE`` or ``OPTIMISER_APPLY`` node records the
-    *resolved* backend identity, because its stored config (``run_id``,
-    ``version``, ``source_type``, ``mlflow_destination``) stays identical when
-    the server URL, the local folder, or the node's destination changes
-    underneath it. A registered source also records the version its alias or
-    ``latest`` reference currently targets.
+    MLflow-sourced ``MODEL_SCORE`` node records the identity of the model its
+    reference resolves to (:func:`_scoring_model_signature`), because its stored
+    config stays identical when a file is logged again over its path, an alias
+    moves, or the server URL, the local folder or the node's destination changes
+    underneath it. An MLflow-sourced ``OPTIMISER_APPLY`` node records the
+    *resolved* backend identity and, for a registered source, the version its
+    alias or ``latest`` reference currently targets.
     """
     config = node.data.config
     files: dict[str, object] = {
@@ -1079,9 +1118,12 @@ def _runtime_input_fingerprint_entry(
         and inputs.mlflow_sourced
         and config.get("source_type") in ("run", "registered")
     ):
-        files["mlflow_backend"] = mlflow_backend_signature(config)
-        if config.get("source_type") == "registered":
-            files["registered_version"] = _mlflow_registered_version_signature(config)
+        if inputs.scoring_model:
+            files["model"] = _scoring_model_signature(config)
+        else:
+            files["mlflow_backend"] = mlflow_backend_signature(config)
+            if config.get("source_type") == "registered":
+                files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
         CacheIdentityRecord.RUNTIME_INPUT_ENTRY,
         {

@@ -412,7 +412,8 @@ class _Walk:
         request_in = any(facts.rows is _Rows.REQUEST for facts in inputs)
         source_type = config.get("source_type", "")
         if source_type in {"run", "registered"}:
-            # Its result is loaded from MLflow when a request is scored.
+            # Not bundled (never a shipped graph's, whose MLflow results are bundled):
+            # nothing about its rows can be read before a request is scored.
             if request_in:
                 return self.refuse(node, "Apply Optimisation from MLflow", "unproven")
             return _FrameFacts(_Rows.OTHER, any(f.from_request for f in inputs), carried=False)
@@ -605,7 +606,7 @@ class _Walk:
             # no declaration proves it.
             return self.refuse(node, operation, "mixes")
         if not lookup:
-            # Read when a request is scored (an Optimiser Apply from MLflow, say).
+            # Not readable before a request is scored, so nothing about its rows is known.
             return self.refuse(node, operation, "unproven")
         if how == "cross":
             # Exactly one row answers each quote once; another count only repeats (or

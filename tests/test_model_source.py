@@ -229,7 +229,6 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
                 registered_model="pricing",
                 version="latest",
                 alias="",
-                artifact_path="",
                 mlflow_destination="",
             ),
         ),
@@ -239,7 +238,6 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
                 registered_model="pricing",
                 version="",
                 alias="champion",
-                artifact_path="",
                 mlflow_destination="",
             ),
         ),
@@ -249,7 +247,6 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
                 registered_model="pricing",
                 version="4",
                 alias="",
-                artifact_path="",
                 mlflow_destination="",
             ),
         ),
@@ -272,19 +269,10 @@ def test_the_parser_owns_the_source_defaults(config: dict[str, Any], expected: o
 
 @patch("haute._mlflow_io.load_mlflow_model", return_value=MagicMock(run_contract_path=None))
 def test_a_run_source_loads_without_registry_fields(mock_load: Any) -> None:
-    load_scoring_model(
-        RunModelSource(run_id="abc", artifact_path="model.cbm", mlflow_destination="local"),
-        "classification",
-    )
+    source = RunModelSource(run_id="abc", artifact_path="model.cbm", mlflow_destination="local")
+    load_scoring_model(source, "classification")
 
-    mock_load.assert_called_once_with(
-        source_type="run",
-        run_id="abc",
-        artifact_path="model.cbm",
-        task="classification",
-        destination="local",
-        backend=ANY,
-    )
+    mock_load.assert_called_once_with(source, task="classification", backend=ANY)
 
 
 @patch("haute._mlflow_io.load_mlflow_model", return_value=MagicMock(run_contract_path=None))
@@ -297,20 +285,17 @@ def test_a_registered_source_loads_by_alias(mock_load: Any) -> None:
     )
 
     mock_load.assert_called_once_with(
-        source_type="registered",
-        registered_model="pricing",
-        version="",
-        alias="champion",
-        artifact_path="",
+        RegisteredModelSource(
+            registered_model="pricing", version="", alias="champion", mlflow_destination=""
+        ),
         task="regression",
-        destination="",
         backend=ANY,
     )
 
 
 @pytest.mark.parametrize("source", list(INVALID_SOURCES.values()), ids=list(INVALID_SOURCES))
 def test_the_deploy_passthrough_guard_chains_the_parse_failure(source: dict[str, Any]) -> None:
-    from haute.deploy._scorer import _validate_deploy_model_score_source
+    from haute.deploy._scorer import _refuse_unbundled_artifacts
     from haute.errors import DeployError
     from haute.graph_utils import GraphNode, NodeData
 
@@ -319,7 +304,7 @@ def test_the_deploy_passthrough_guard_chains_the_parse_failure(source: dict[str,
     node = GraphNode(id="score", data=NodeData(label="score", nodeType="modelScore", config=config))
 
     with pytest.raises(DeployError, match="passthrough") as caught:
-        _validate_deploy_model_score_source(node, {})
+        _refuse_unbundled_artifacts(node, {})
 
     _same_error(caught.value.__cause__, expected)  # type: ignore[arg-type]
 

@@ -117,25 +117,20 @@ def _run_summaries(
     artifact_filter: str,
     measurement: _RunDiscoveryMeasurement,
 ) -> list[MlflowRunSummary]:
-    """Build filtered summaries while updating only aggregate work counters."""
-    model_extensions = model_file_suffixes()
+    """Build filtered summaries while updating only aggregate work counters.
 
-    def _match(path: str) -> bool:
-        if artifact_filter == "optimiser":
-            return path == "optimiser_result.json"
-        return any(path.endswith(ext) for ext in model_extensions)
-
+    With the ``model`` filter a run's artifacts are the models the discovery rule
+    finds in it (``run_model_candidates``), the rule the loader resolves a run with
+    no artifact path by, so a run is listed exactly when it holds a model the
+    loader can load.
+    """
     results: list[MlflowRunSummary] = []
     for run in runs:
         measurement.runs_scanned += 1
         run_id = run.info.run_id
         # Check for matching artifacts (N+1 — unavoidable without batch API)
-        artifact_started_at = perf_counter()
         try:
-            artifacts = client.list_artifacts(run_id)
-            matched = [a.path for a in artifacts if _match(a.path)]
-            if not matched:
-                continue
+            matched = _run_artifacts(client, run_id, artifact_filter, measurement)
         except Exception as exc:
             measurement.artifact_failures += 1
             # Never str(exc): tracking errors can echo credential-bearing URIs.
@@ -146,8 +141,8 @@ def _run_summaries(
                 error_type=type(exc).__name__,
             )
             continue
-        finally:
-            measurement.record_artifact_call(artifact_started_at, perf_counter())
+        if not matched:
+            continue
 
         results.append(
             MlflowRunSummary(
@@ -162,6 +157,35 @@ def _run_summaries(
         )
         measurement.runs_returned += 1
     return results
+
+
+def _run_artifacts(
+    client: MlflowClient,
+    run_id: str,
+    artifact_filter: str,
+    measurement: _RunDiscoveryMeasurement,
+) -> list[str]:
+    """The artifacts a run is listed with: its optimiser result, or its models."""
+    if artifact_filter == "optimiser":
+        return _optimiser_result_listed(client, run_id, measurement)
+    from haute._mlflow_model import run_model_candidates
+
+    return list(run_model_candidates(client, run_id, on_listing=measurement.record_artifact_call))
+
+
+def _optimiser_result_listed(
+    client: MlflowClient, run_id: str, measurement: _RunDiscoveryMeasurement
+) -> list[str]:
+    """The optimiser result's own lookup: the run's top-level ``optimiser_result.json``.
+
+    Not a search for a scoring model, which is the model resolution's alone.
+    """
+    started_at = perf_counter()
+    try:
+        listed = client.list_artifacts(run_id)
+    finally:
+        measurement.record_artifact_call(started_at, perf_counter())
+    return [str(item.path) for item in listed if item.path == "optimiser_result.json"]
 
 
 def _ensure_tracking(destination: str = "") -> tuple[_types.ModuleType, MlflowClient]:

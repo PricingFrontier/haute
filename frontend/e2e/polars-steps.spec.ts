@@ -418,27 +418,8 @@ test.describe("Transform step builder journey", () => {
     await seedGraph(page, (nodes) => {
       const rating = nodes.find((node) => node.id === "browser_rating")
       if (!rating) throw new Error("browser_rating missing from the fixture")
-      const config = rating.data.config as { tables: Array<Record<string, unknown>> }
-      // The fixture table carries no entries, and a table without one produces
-      // no output column at all, so its preview would fail its own contract
-      // for reasons unrelated to steps. One entry is enough: unmatched rows
-      // take the table default.
-      const tables = config.tables.map((table, index) =>
-        index === 0
-          ? {
-              ...table,
-              entries: [
-                {
-                  proposer_age_band: "unmatched",
-                  channel_band: "unmatched",
-                  vehicle_age_band: "unmatched",
-                  value: "2.5",
-                },
-              ],
-            }
-          : table,
-      )
-      rating.data.config = { ...config, tables, steps: [] }
+      // The fixture table carries no entries yet: its Default prices every row.
+      rating.data.config = { ...(rating.data.config as Record<string, unknown>), steps: [] }
     })
 
     // The Rating Step's Polars tab is the same step builder in frame mode: the rated frame is df.
@@ -484,15 +465,8 @@ test.describe("Transform step builder journey", () => {
     test.slow()
     await openApp(page)
 
-    // One table entry makes the table write browser_relativity (see the journey above); its input has no such column.
-    await seedGraph(page, (nodes) => {
-      const rating = nodes.find((node) => node.id === "browser_rating")
-      if (!rating) throw new Error("browser_rating missing from the fixture")
-      const config = rating.data.config as { tables: Array<Record<string, unknown>> }
-      const entry = { proposer_age_band: "unmatched", channel_band: "unmatched", vehicle_age_band: "unmatched", value: "2.5" }
-      rating.data.config = { ...config, tables: config.tables.map((table) => ({ ...table, entries: [entry] })) }
-    })
-
+    // The fixture table writes browser_relativity from its Default, with no entries yet; its
+    // input has no such column.
     const recorded = page.waitForResponse(async (response) => {
       if (response.request().method() !== "POST" || !response.url().includes("/api/pipeline/preview")) return false
       if (previewTargetNode(response.request().postDataJSON()) !== "browser_rating" || !response.ok()) return false

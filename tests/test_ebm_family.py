@@ -17,6 +17,7 @@ from interpret.glassbox import ExplainableBoostingClassifier, ExplainableBoostin
 from haute._mlflow_io import load_local_model
 from haute._model_explainability import explain_native_prediction
 from haute._model_scorer import score_frame
+from haute._model_source import RunModelSource
 from haute._sandbox import ArtifactVersionMismatchError
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._descriptors import EBM
@@ -612,7 +613,10 @@ def test_an_mlflow_run_artifact_loads_with_the_contract_logged_beside_it(
         with mlflow.start_run() as run:
             mlflow.log_artifact(str(model_path))
             mlflow.log_artifact(str(model_path.parent / model_contract_filename("ebm")))
-    scoring = load_mlflow_model(source_type="run", run_id=run.info.run_id, task="regression")
+    scoring = load_mlflow_model(
+        RunModelSource(run_id=run.info.run_id, artifact_path="", mlflow_destination=""),
+        task="regression",
+    )
     assert scoring.flavor == "ebm"
     assert scoring.run_contract_path is not None
     assert np.array_equal(
@@ -640,7 +644,8 @@ def test_an_mlflow_run_artifact_loads_without_a_contract(
             mlflow.log_artifact(str(model_path))
 
     scoring = load_mlflow_model(
-        source_type="run", run_id=run.info.run_id, artifact_path="ebm.ebm", task="regression"
+        RunModelSource(run_id=run.info.run_id, artifact_path="ebm.ebm", mlflow_destination=""),
+        task="regression",
     )
 
     assert scoring.run_contract_path is None
@@ -686,15 +691,35 @@ def test_deploy_bundles_an_ebm_run_contract_when_logged(tmp_path: Path) -> None:
             ]
         }
     )
+    from haute._mlflow_io import FetchedFiles
+    from haute._mlflow_model import ResolvedModel, StoredArtifact
+    from haute._mlflow_utils import resolve_backend
+    from haute._model_flavors import family_for_artifact
+    from haute._model_source import RunModelSource
+
+    # The run logged the contract beside the model, so the resolution names it.
+    resolved = ResolvedModel(
+        backend=resolve_backend(""),
+        run_id="run",
+        artifact=StoredArtifact("ebm.ebm", "size:5"),
+        family=family_for_artifact("ebm.ebm"),
+        contract=StoredArtifact(model_contract_filename("ebm"), "size:2"),
+        version="",
+        reference="MLflow run 'run'",
+    )
     with (
-        patch("haute.deploy._bundler._download_model_artifact", return_value=model),
-        patch("haute._mlflow_io._run_contract_if_logged", return_value=str(contract)) as fetch,
+        patch("haute._mlflow_model.resolve_model", return_value=resolved) as resolve,
+        patch(
+            "haute._mlflow_io.fetch_resolved_files",
+            return_value=FetchedFiles(model, contract),
+        ) as fetch,
     ):
         artifacts = collect_artifacts(graph, [], tmp_path)
-    # (mlflow, client, backend, run_id, artifact)
-    assert fetch.call_args.args[3:] == ("run", "ebm.ebm")
-    assert artifacts["score__feature_contract.json"] == contract
-    assert artifacts["score__ebm.ebm"] == model
+    assert resolve.call_args.args[0] == RunModelSource(
+        run_id="run", artifact_path="ebm.ebm", mlflow_destination=""
+    )
+    assert fetch.call_args.args[1] is resolved
+    assert artifacts == {"score__ebm.ebm": model, "score__feature_contract.json": contract}
 
 
 def test_a_deployed_ebm_binds_its_bundled_contract_and_loads_without_one(
@@ -796,17 +821,8 @@ def test_a_run_contract_change_rebinds_without_reloading_the_model(
 ) -> None:
     import mlflow
 
-    from haute._mlflow_io import (
-        _artifact_cache_path,
-        _disk_cache_root,
-        _model_cache,
-        load_mlflow_model,
-    )
-    from haute._mlflow_utils import (
-        mlflow_fluent_operation,
-        resolve_backend,
-        set_tracking_uri_preserving_env,
-    )
+    from haute._mlflow_io import _model_cache, disk_cached_run_model, load_mlflow_model
+    from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
@@ -831,29 +847,25 @@ def test_a_run_contract_change_rebinds_without_reloading_the_model(
 
     def load(artifact_path: str = "") -> object:
         return load_mlflow_model(
-            source_type="run", run_id=run_id, artifact_path=artifact_path, task="regression"
+            RunModelSource(run_id=run_id, artifact_path=artifact_path, mlflow_destination=""),
+            task="regression",
         )
 
-    # Auto-discovered loads always take the full path: the first entry is reused.
     discovered = load()
     assert load() is discovered and load() is discovered
     assert len(loads) == 1
-    # Explicit-artifact loads use the disk-cache fast path, which keys the same identity.
+    # A named path that resolves to the same file and contract is the same entry.
     explicit = load("ebm.ebm")
-    assert load("ebm.ebm") is explicit
-    assert len(loads) <= 2
-    cached_contract = _artifact_cache_path(
-        _disk_cache_root(),
-        resolve_backend("").digest,
-        run_id,
-        model_contract_filename("ebm"),
-    )
-    assert cached_contract.is_file()
-    _replace_sidecar(cached_contract, _another_loss(contract_of(result)))
+    assert explicit is discovered
+    assert len(loads) == 1
+    cached = disk_cached_run_model(run_id=run_id, artifact_path="ebm.ebm", destination="")
+    assert cached is not None and cached.contract_path is not None
+    assert cached.contract_path.is_file()
+    _replace_sidecar(cached.contract_path, _another_loss(contract_of(result)))
     # The model does not depend on its contract, so it is not reloaded...
     assert load("ebm.ebm") is explicit
     # ...but binding reads the replaced contract and refuses it.
-    from haute._model_source import RunModelSource, load_bound_model
+    from haute._model_source import load_bound_model
 
     source = RunModelSource(run_id=run_id, artifact_path="ebm.ebm", mlflow_destination="")
     with pytest.raises(ConfigError, match="describes a Gamma model"):

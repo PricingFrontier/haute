@@ -212,7 +212,9 @@ export default function ModelScoreEditor({
           mlflow={mlflow}
           showArtifactPath
           onRunSelected={(run) => ({
-            artifact_path: run.artifacts[0] || "",
+            // A run that holds several models leaves the path empty: the node
+            // is refused naming them until one is chosen, never given the first.
+            artifact_path: run.artifacts.length === 1 ? run.artifacts[0] : "",
             ...taskUpdate(run.params),
           })}
         />

@@ -30,8 +30,10 @@ In scope:
 - Pruning the full pipeline graph to the ancestors of the declared output node, and
   collapsing `liveSwitch` nodes onto their live branch.
 - Discovering and bundling supported local artefacts (model files, file-backed optimiser
-  artefacts, static data sources, feature contracts) the pruned graph needs. MLflow-sourced
-  optimiser applies remain runtime MLflow dependencies.
+  artefacts, static data sources, feature contracts) the pruned graph needs. A Model Scoring
+  node's model and an Optimiser Apply's result chosen from an MLflow run or registered model
+  are resolved and bundled when the bundle is built, so a deployed pipeline never reads
+  MLflow.
 - Inferring the input schema from the configured source (a Workbench Input's from its
   tables) and the output schema by an at-most-one-row dry-run through the pruned graph.
 - Runtime scoring of the pruned graph against live-injected data, shared identically by
@@ -202,9 +204,12 @@ operator sees the whole picture in one pass, not a fix-rerun-fix cycle.
 
 **Scoring.** The runtime scorer (`score_graph` / `score_graph_lazy`) executes the pruned
 graph with a live-injected input `DataFrame` in place of the API input node's file read.
-File-backed external/static/optimiser/model artefacts and explicit feature contracts are redirected to bundled local
-copies; `optimiserApply` nodes configured from an MLflow run or registered model resolve
-that artefact at request time. This is the same
+Every external, static, optimiser and model artefact and every explicit feature contract is
+read from its bundled local copy. A Model Scoring or Optimiser Apply node chosen from an
+MLflow run or registered model was resolved when the bundle was built and is served from
+the file bundled for it, and the scorer refuses, naming the node, a configured Model
+Scoring node without its bundled model and an Optimiser Apply without its bundled result:
+nothing is loaded from MLflow or the project when served. This is the same
 scoring path used by pre-deploy dry-runs, golden test-quote validation, the generated
 FastAPI container, and the MLflow `pyfunc` model — deploy has exactly one scoring engine,
 not one per target. Retained snapshot-backed `dataInput` nodes scan the exact immutable
@@ -291,8 +296,9 @@ a Scenario Expander can repeat one; a join driven by another input answers with 
 input's rows; a group-by, an expression that reads other rows (an aggregate, a window, a
 shift, a rank) or an online Optimiser Apply (which answers in quote-id order) makes one
 quote's answer depend on the others, and so can a join with another part of the request;
-and a response nesting rows derived from the request, code the proof cannot follow, an
-Optimiser Apply that loads its result from MLflow when served cannot be proved. A declined quote is a flag column
+and a response nesting rows derived from the request and code the proof cannot follow
+cannot be proved; an Optimiser Apply's result is bundled, whatever its source, so its mode is
+read from the bundled file. A declined quote is a flag column
 on its answer rather than a filtered-out row, so a batch keeps one row per quote. A
 Workbench Input reads one quote per request and its response is the workbench's tables,
 which hold no row per quote, so its deployment answers one quote per request and its reader
@@ -515,8 +521,9 @@ never because it could not be reached.
   execution cache, and execution-context/admission machinery
   (`haute._execution_admission`, `haute._execution_context`).
 - **[mlflow-model-registry](../mlflow-model-registry/high-level.md)** — `_bundler.py`
-  downloads `modelScore` model artefacts and feature contracts from MLflow at bundle
-  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`) and copies a
+  bundles the model and feature contract the model resolution answers for a run or
+  registered `modelScore` node, at bundle time (`_mlflow_model.resolve_model`,
+  `_mlflow_io.fetch_resolved_files`), refuses one that resolves to a pyfunc folder, and copies a
   file-sourced node's model file and contract from the project; `_mlflow.py`
   registers the deployed pipeline itself as a new MLflow model version. `_scorer.py`
   loads bundled models via `haute._mlflow_io.load_local_model_cached`, which binds each
@@ -525,9 +532,9 @@ never because it could not be reached.
   depend on `haute.modelling._feature_contract` (contract loading, matching, and
   categorical-level declarations) to detect train-vs-score drift.
 - **[optimiser](../optimiser/high-level.md)** — `_scorer.py` intercepts
-  `optimiserApply` nodes and dispatches to `haute._optimiser_io` /
-  `haute._builders._dispatch_apply` for both file-based and MLflow-sourced ratebook
-  artefacts.
+  `optimiserApply` nodes and applies the bundled result through `haute._optimiser_io` and
+  `haute._node_apply.apply_optimiser_artifact`; `_bundler.py` downloads a result chosen
+  from MLflow at bundle time (`_optimiser_io.download_mlflow_optimiser_result`).
 - **[io-layer](../io-layer/high-level.md)** — `_bundler.py` validates retained Data
   Inputs through the canonical provider registry and snapshot cache. `deploy/_schema.py` uses
   that path for `dataInput`; it reads a non-JSON `apiInput` source through
@@ -625,8 +632,9 @@ most: a silent wrong answer here mis-prices real policies.
   JSON static sources are not batch-deployable; a project-local import other than the
   `utility` package is refused when the deploy is resolved; bundled local `modelScore` serving supports
   every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
-  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
-  directory cannot currently be bundled and served by this path.
+  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a Model
+  Scoring node whose MLflow reference resolves to a pyfunc model folder is refused for a
+  bundle, naming the node, the run and the folder.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite or missing values
   (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`). A quote production prices
@@ -644,9 +652,11 @@ MLflow stacks. A container image installs only what scoring imports (decided
 `pyarrow`, `numpy`, `pydantic`, `fastapi`, `uvicorn[standard]`, `structlog`, `xxhash`,
 `psutil`, `orjson`, `msgspec`, `joblib`, `packaging` (the price-contour guard's version check)
 and `price-contour` — then `haute` itself with
-`--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
-`mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
-at run time. Every one of these roots is pinned to the version installed in the deploying
+`--no-deps`. To that it adds each bundled artefact's model runtime by file suffix. A Model
+Scoring node or an Optimiser Apply chosen by run or registered model is resolved when the
+bundle is built, a run with no artifact path included, so its file is bundled and a model's
+engine follows from the file the resolution named; nothing a served graph reads comes from
+MLflow, and no container image installs `mlflow`. Every one of these roots is pinned to the version installed in the deploying
 environment, and their whole closure is locked for the image (see **Dependency locks**),
 bounded by haute's own requirement ranges, since haute is installed beside it.
 `price-contour` is pinned to the version haute's compatibility guard verified

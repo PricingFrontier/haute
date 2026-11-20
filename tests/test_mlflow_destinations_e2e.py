@@ -572,13 +572,42 @@ class TestDeployedOptimiserApplyFromExplicitLocal:
             }
         )
 
-        with _databricks_resolution_forbidden():
-            scored = score_graph(
-                graph=graph,
-                input_df=input_df,
-                input_node_ids=["src"],
-                output_node_id="out",
-            )
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        from haute.deploy._bundler import collect_artifacts, with_served_configs
+
+        # The result is resolved from Local and bundled when the bundle is built ...
+        served: dict[str, dict[str, Any]] = {}
+        with ExitStack() as resources:
+            with _databricks_resolution_forbidden():
+                artifacts = collect_artifacts(
+                    graph,
+                    ["src"],
+                    project,
+                    project_root=project,
+                    resources=resources,
+                    served_configs=served,
+                )
+            assert sorted(artifacts) == ["opt__optimiser_result.json"]
+            assert served["opt"]["source_type"] == "file"
+            assert "run_id" not in served["opt"]
+
+            # ... and the deployed pipeline applies the bundled copy, never asking MLflow.
+            with (
+                _databricks_resolution_forbidden(),
+                patch(
+                    "haute._optimiser_io.load_mlflow_optimiser_artifact",
+                    side_effect=AssertionError("a served graph asked MLflow"),
+                ),
+            ):
+                scored = score_graph(
+                    graph=with_served_configs(graph, served),
+                    input_df=input_df,
+                    input_node_ids=["src"],
+                    output_node_id="out",
+                    artifact_paths={name: str(path) for name, path in artifacts.items()},
+                )
 
         assert scored["quote_id"].to_list() == ["q1", "q2"]
         assert scored["__optimiser_version__"].to_list() == [logged["version"]] * 2

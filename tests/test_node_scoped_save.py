@@ -74,6 +74,7 @@ def _save_request(root: Path, authored_id: str, config: dict, *, steps_edited: b
         target_recovery_id=target.recovery_id,
         config=config,
         saved_code=None if steps_edited else target.editor.saved_code,
+        saved_steps=None if steps_edited else target.editor.saved_steps,
     )
 
 

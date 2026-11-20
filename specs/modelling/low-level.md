@@ -1212,7 +1212,7 @@ packaged with its feature contract and logged through the shared pyfunc
 after the package has loaded once, so `mlflow.pyfunc.load_model` and a Model Score node
 predict the same values. Any other suffix raises. **Every** flavor also logs the native file at the run root:
 mlflow 3.x stores logged models as LoggedModel entities outside the run's artifact listing, so
-Haute's run-artifact discovery (`_find_model_artifact`, which probes the registered suffixes) would otherwise
+Haute's run-artifact discovery (`run_model_candidates` in `_mlflow_model.py`, which finds the files a registered family loads) would otherwise
 never see a freshly logged model. Model-card generation failure does not fail the log: it logs
 `model_card_generation_failed` with the error type and sets the tag `haute.model_card=unavailable`.
 Scripted runs log only when the script passes `mlflow_experiment` to `TrainingJob` (a visible

@@ -23,6 +23,8 @@ Once the chosen result is known to be a ratebook, **RATEBOOK INPUT** comes next:
 | **Registered** | Production  - loads from the MLflow model registry |
 | **Experiment Run** | Loads a result logged to a specific MLflow run |
 
+With **Registered** or **Experiment Run**, a deployment downloads the result when it is built and carries it: the deployed app never reads MLflow.
+
 With **File Path**:
 
 | Field | What it does |

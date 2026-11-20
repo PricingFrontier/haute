@@ -157,10 +157,11 @@ backend API modules own validation and persistence.
   while they are being counted and are absent otherwise, and there is no histogram or "x of N
   rows". A server answer that the data needs caching, which can come for a point that looked
   current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts,
-  only where the preview gives the text a rule matches (the column cast to text): a text, categorical,
-  integer or boolean column's values, a column of unknown type's text values only, and none for a float,
-  decimal or temporal column (a Float64 `1.0` previews as `1` while execution matches `"1.0"`), which
-  waits for the whole dataset's values. Generate may start from the preview's range. Editing Banding's rules does not drop the whole
+  only where the preview gives the key a rule matches (specs/rating, the dtype-faithful key form): a
+  text, categorical, integer or boolean column's values, a column of unknown type's text values only,
+  and none for a float, decimal or temporal column, whose previewed form need not be that key (a
+  Float32 previews widened, a decimal without its scale), which waits for the whole dataset's
+  values, listed in the key form. Generate may start from the preview's range. Editing Banding's rules does not drop the whole
   dataset's answer while the new counts are asked: its total, values and distribution stay,
   categorical counts follow the edit at once from the data's value counts, and a count not yet
   known shows as pending.

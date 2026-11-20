@@ -17,7 +17,6 @@ from haute._rating import (
     _banding_condition,
     _combine_rating_columns,
     _normalise_banding_factors,
-    _rating_table_skip_reason,
     apply_rating_step_from_config,
     normalise_rating_key,
 )
@@ -178,17 +177,17 @@ class TestApplyRatingTable:
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"][1] is None
 
-    def test_empty_factors_passthrough(self) -> None:
+    def test_a_table_with_no_factors_is_refused(self) -> None:
         lf = pl.DataFrame({"x": [1]}).lazy()
         table: dict[str, Any] = {"factors": [], "output_column": "y", "entries": []}
-        result = _apply_rating_table(lf, table).collect()
-        assert "y" not in result.columns
+        with pytest.raises(ConfigSettingError, match="'y' has no factors"):
+            _apply_rating_table(lf, table)
 
-    def test_empty_entries_passthrough(self) -> None:
+    def test_a_table_with_no_entries_and_no_default_is_refused(self) -> None:
         lf = pl.DataFrame({"x": [1]}).lazy()
         table: dict[str, Any] = {"factors": ["x"], "output_column": "y", "entries": []}
-        result = _apply_rating_table(lf, table).collect()
-        assert "y" not in result.columns
+        with pytest.raises(ConfigSettingError, match="'y' has no entries and no Default"):
+            _apply_rating_table(lf, table)
 
     def test_missing_output_column_passthrough(self) -> None:
         lf = pl.DataFrame({"x": [1]}).lazy()
@@ -1488,8 +1487,8 @@ class TestApplyRatingTableEdgeCases:
             "output_column": "factor",
             "entries": [{"region": "North", "score": 1.5}],
         }
-        result = _apply_rating_table(lf, table).collect()
-        assert "factor" not in result.columns
+        with pytest.raises(ConfigSettingError, match=r"'factor' has entries with no rate"):
+            _apply_rating_table(lf, table)
 
     def test_null_factor_values_in_entries(self) -> None:
         # "South" has no entry (the null-keyed entry never matches): a miss, left null.
@@ -1564,16 +1563,17 @@ class TestApplyRatingTableEdgeCases:
         result = _apply_rating_table(lf, table).collect()
         assert result["factor"].to_list() == [1.5]
 
-    def test_empty_factors_list_passthrough(self) -> None:
-        lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
+    def test_an_entry_list_missing_a_factor_is_refused_naming_it(self) -> None:
+        lf = pl.DataFrame({"x": [1], "y": [2]}).lazy()
         table: dict[str, Any] = {
-            "factors": [],
+            "factors": ["x", "y"],
             "output_column": "out",
-            "entries": [],
+            "entries": [{"x": 1, "value": 1.5}],
         }
-        result = _apply_rating_table(lf, table).collect()
-        assert "out" not in result.columns
-        assert result["x"].to_list() == [1, 2, 3]
+        with pytest.raises(
+            ConfigSettingError, match="'out' has entries with no level for factor 'y'"
+        ):
+            _apply_rating_table(lf, table)
 
     @pytest.mark.parametrize(
         "table, message",
@@ -2041,9 +2041,10 @@ class TestWs11RatingHardening:
         assert streaming_collect(_apply_rating_table(lf, guarded))["factor"].to_list() == [2.0]
 
 
-def test_a_table_without_its_output_column_is_skipped_saying_so() -> None:
+def test_a_table_without_its_output_column_passes_the_frame_through() -> None:
     table = {"factors": ["region"], "entries": [{"region": "north", "value": 1.0}]}
-    assert _rating_table_skip_reason(table) == "no output_column"
+    frame = pl.DataFrame({"region": ["north"]})
+    assert _apply_rating_table(frame, table).columns == ["region"]
 
 
 def test_a_combined_output_with_no_base_and_no_table_adds_no_column() -> None:

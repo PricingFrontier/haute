@@ -565,17 +565,19 @@ class TestResolveArtifactLocal:
     def test_disk_cache_hit(self, tmp_path, monkeypatch):
         """Returns cached path without calling download_artifacts."""
         from haute._mlflow_io import _resolve_artifact_local
+        from haute._mlflow_model import StoredArtifact
 
         use_project(tmp_path)
         backend = _fake_backend()
+        stored = StoredArtifact("model.cbm", "size:10")
         cached_file = _artifact_cache_path(
-            tmp_path / ".cache" / "models", backend.digest, "run123", "model.cbm"
+            tmp_path / ".cache" / "models", backend.digest, "run123", "model.cbm", stored.token
         )
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"fake model")
 
         mock_mlflow = MagicMock()
-        result = _resolve_artifact_local(mock_mlflow, backend, "run123", "model.cbm")
+        result = _resolve_artifact_local(mock_mlflow, backend, "run123", stored)
 
         assert result == str(cached_file)
         mock_mlflow.artifacts.download_artifacts.assert_not_called()
@@ -585,6 +587,7 @@ class TestResolveArtifactLocal:
         from pathlib import Path
 
         from haute._mlflow_io import _resolve_artifact_local
+        from haute._mlflow_model import StoredArtifact
 
         use_project(tmp_path)
 
@@ -602,10 +605,11 @@ class TestResolveArtifactLocal:
             mock_mlflow,
             _fake_backend(),
             "run456",
-            "model.cbm",
+            StoredArtifact("model.cbm", f"size:{len(b'downloaded model')}"),
         )
 
         assert Path(result).is_file()
+        assert Path(result).read_bytes() == b"downloaded model"
         mock_mlflow.artifacts.download_artifacts.assert_called_once_with(
             "runs:/run456/model.cbm",
             dst_path=ANY,

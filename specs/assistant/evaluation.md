@@ -204,14 +204,13 @@ accident: `smoke_rating_step` rates the driver ages its project holds (25 and
 recovery from a pipeline that runs but is wrong. In each, the request leads to a
 natural plan whose data check reports the seeded bug as an advisory finding,
 and each declares that finding in `data_findings`. A model may also avoid the
-mistake from the start (live runs banded the Boolean column on `true` and
-`false`, filtered with `is_in`, and joined on `region` and `cover_type`); its
+mistake from the start (live runs filtered with `is_in`, and joined on `region` and `cover_type`); its
 case then passes on its saved graph, and the recovery metric counts it as
 avoided:
 
 | Case | Split | Request | Seeded bug, as the check reports it | Expected recovery |
 |---|---|---|---|---|
-| `recovery_boolean_banding` | development | Band `has_prior_claim` into `claims_group`: claimant with a prior claim, clean without. | Categorical rules written `True` and `False` on a Boolean column, whose text is `true` and `false`: `banding_all_default` on `claims_band`. | Rules on `true` and `false`. |
+| `recovery_banding_casing` | development | Band `cover_type` into `cover_group`: full for comp quotes, partial for tpft. | Categorical rules written `Comp` and `TPFT` on a text column whose values are `comp` and `tpft` (text matches exactly as written): `banding_all_default` on `cover_band`. | Rules on `comp` and `tpft`. |
 | `recovery_emptied_filter` | development | A Transform keeping only the quotes in the north and south regions. | Both regions required of one row: `rows_emptied` on `north_south_quotes`. | A filter keeping either region. |
 | `recovery_mistyped_join_key` | holdout | Left join the vehicle factors onto quotes by vehicle group, many-to-one. | A join on the same-named `vehicle_group`, which describes the group on the factors' side: `join_unmatched` on `vehicle_rated_quotes`. | The quotes' `vehicle_group` joined to the factors' `group_code`. |
 | `recovery_rating_casing` | development | A rating table on region: North 1.2, South 0.95, East 1.05, default 1.0. | The stated keys miss the data's lower-case regions: `rating_misses` on `region_rating`. | The stated keys kept, the finding kept and shown on the change card, and the analyst told. |

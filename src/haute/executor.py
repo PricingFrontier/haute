@@ -48,6 +48,7 @@ from haute._input_preparation import preparation_base_dir, prepare_input_snapsho
 from haute._input_providers import recording_schema_tiers
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._mlflow_model import model_resolution_scope
 from haute._node_addresses import node_display_name
 from haute._node_specs import REQUEST_INPUT_KINDS, node_spec, node_type_table
 from haute._output_assembler import render_output_document
@@ -1049,6 +1050,7 @@ def _submodel_schema_warnings(
     return warnings
 
 
+@model_resolution_scope()
 def execute_graph(
     graph: PipelineGraph,
     target_node_id: str | None = None,  # pragma: no mutate

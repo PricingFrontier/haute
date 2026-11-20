@@ -2638,6 +2638,15 @@ class TestMatchIntervalRule:
         assert _match_interval_rule("5", {"op1": "<", "val1": 10}) is True
 
 
+# The consumed column types the trace resolves from a banding node's parent frame.
+_BANDING_DTYPES = {
+    "vehicle_type": pl.String,
+    "region": pl.String,
+    "fuel_type": pl.String,
+    "age": pl.Int64,
+}
+
+
 class TestEnrichBandingRealConfig:
     """Tests for enrich_banding with real Haute config format."""
 
@@ -2663,7 +2672,7 @@ class TestEnrichBandingRealConfig:
         input_row = {"vehicle_type": "suv"}
         output_row = {"vehicle_band": "B"}
 
-        result = enrich_banding(config, input_row, output_row)
+        result = enrich_banding(config, input_row, output_row, factor_input_dtypes=_BANDING_DTYPES)
 
         assert result["detail_type"] == "banding"
         assert result["matched_band"] == "B"
@@ -2675,6 +2684,50 @@ class TestEnrichBandingRealConfig:
         assert factor["banding_type"] == "categorical"
         assert factor["input_column"] == "vehicle_type"
         assert factor["output_column"] == "vehicle_band"
+
+    def test_a_draft_categorical_factor_beside_a_configured_one_is_skipped(self):
+        """Execution skips a draft factor, so the trace never asks for its column's type."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "vehicle_type",
+                    "output_column": "vehicle_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "suv", "assignment": "B"}],
+                },
+                {"banding": "categorical", "column": "", "output_column": "", "rules": []},
+            ]
+        }
+        result = enrich_banding(
+            config,
+            {"vehicle_type": "suv"},
+            {"vehicle_band": "B"},
+            factor_input_dtypes={"vehicle_type": pl.String},
+        )
+
+        assert "error" not in result
+        assert result["factors"][0]["rule_index"] == 0
+        assert result["factors"][1]["status"] == "no_match"
+
+    def test_a_categorical_factor_without_its_columns_type_reports_an_error(self):
+        """No typed key without the column's type: the detail says so, never guesses."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "vehicle_type",
+                    "output_column": "vehicle_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "suv", "assignment": "B"}],
+                }
+            ]
+        }
+        result = enrich_banding(config, {"vehicle_type": "suv"}, {"vehicle_band": "B"})
+
+        assert "without its originating dtype" in result["error"]
 
     def test_categorical_banding_default(self):
         """Categorical banding falls to default when no rule matches."""
@@ -2696,12 +2749,13 @@ class TestEnrichBandingRealConfig:
         input_row = {"vehicle_type": "motorcycle"}
         output_row = {"vehicle_band": "X"}
 
-        result = enrich_banding(config, input_row, output_row)
+        result = enrich_banding(config, input_row, output_row, factor_input_dtypes=_BANDING_DTYPES)
         assert result["is_default"] is True
         assert result["rule_index"] == -1
 
-    def test_categorical_banding_matches_runtime_string_key_semantics(self):
-        """Categorical enrichment mirrors runtime remap keys instead of Python equality."""
+    def test_categorical_banding_matches_runtime_typed_key_semantics(self):
+        """Categorical enrichment mirrors the runtime's typed keys, not Python equality:
+        a rule written 1 claims a Float64 column's 1.0, as a Rating Step entry would."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2716,11 +2770,13 @@ class TestEnrichBandingRealConfig:
             ]
         }
 
-        result = enrich_banding(config, {"score": 1.0}, {"score_band": "one"})
+        result = enrich_banding(
+            config, {"score": 1.0}, {"score_band": "one"}, factor_input_dtypes={"score": pl.Float64}
+        )
 
         assert result["matched_band"] == "one"
-        assert result["is_default"] is True
-        assert result["rule_index"] == -1
+        assert result["is_default"] is False
+        assert result["rule_index"] == 0
 
     def test_left_closed_breakpoint_banding_match(self):
         """A left-closed breakpoint factor reports its [lower, upper) interval."""
@@ -2827,7 +2883,12 @@ class TestEnrichBandingRealConfig:
             ]
         }
 
-        result = enrich_banding(config, {"fuel_type": "Petrol"}, {"fuel_band": "Standard"})
+        result = enrich_banding(
+            config,
+            {"fuel_type": "Petrol"},
+            {"fuel_band": "Standard"},
+            factor_input_dtypes=_BANDING_DTYPES,
+        )
 
         assert result["input_column"] == "fuel_type"
         assert result["input_value"] == "Petrol"
@@ -2884,6 +2945,7 @@ class TestEnrichBandingRealConfig:
             {"age": 40, "region": "north"},
             {"age_band": None, "region_band": "N"},
             traced_column="region_band",
+            factor_input_dtypes=_BANDING_DTYPES,
         )
 
         assert result["input_column"] == "region"
@@ -2917,6 +2979,7 @@ class TestEnrichBandingRealConfig:
             {"age": 20, "region": "north"},
             {"age_band": "young", "region_band": "N"},
             traced_column="passed_through_column",
+            factor_input_dtypes=_BANDING_DTYPES,
         )
 
         assert len(result["factors"]) == 2
@@ -2973,7 +3036,7 @@ class TestEnrichBandingRealConfig:
         input_row = {"age": 20, "region": "north"}
         output_row = {"age_band": "young", "region_band": "N"}
 
-        result = enrich_banding(config, input_row, output_row)
+        result = enrich_banding(config, input_row, output_row, factor_input_dtypes=_BANDING_DTYPES)
         assert len(result["factors"]) == 2
         # Top-level convenience uses first factor
         assert result["matched_band"] == "young"
@@ -3442,7 +3505,7 @@ def _loads_a_model_without_explanation(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "haute._mlflow_io.load_mlflow_model",
-        lambda **_: ScoringModel(model=object(), feature_names=[], flavor="pyfunc"),
+        lambda *_args, **_: ScoringModel(model=object(), feature_names=[], flavor="pyfunc"),
     )
 
 

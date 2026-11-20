@@ -201,9 +201,9 @@ def test_model_score_registered_source_is_read_from_the_sidecar(tmp_path: Path) 
         result = module.pipeline.run(source="batch")
 
     assert result["score"].to_list() == [0.25]
-    assert load_model.call_args.kwargs["source_type"] == "registered"
-    assert load_model.call_args.kwargs["registered_model"] == "catalog.schema.pricing_model"
-    assert load_model.call_args.kwargs["version"] == "7"
+    assert load_model.call_args.args[0].source_type == "registered"
+    assert load_model.call_args.args[0].registered_model == "catalog.schema.pricing_model"
+    assert load_model.call_args.args[0].version == "7"
 
 
 # ── A13: Dispatch table parity ─────────────────────────────────────

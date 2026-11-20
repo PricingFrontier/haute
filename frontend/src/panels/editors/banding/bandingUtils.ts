@@ -75,6 +75,19 @@ export function categoricalRuleIssues(
   return issues
 }
 
+/**
+ * A band's name as it is entered: its text without spaces at either end, as the
+ * engine requires it and the Rating Step lists it (specs/rating, "Band names").
+ */
+export function bandName(text: string): string {
+  return text.trim()
+}
+
+/** A categorical rule giving *value* its own band: the value as it is matched, its name as a band name. */
+export function ruleForValue(value: string): CategoricalRule {
+  return { value, assignment: bandName(value) }
+}
+
 /** The breakpoints the save refuses for want of a band name, keyed by index. */
 export function breakpointLabelIssues(breakpoints: ReadonlyArray<{ boundary: string; label: string }>): Map<number, string> {
   const issues = new Map<number, string>()
@@ -87,15 +100,19 @@ export function breakpointLabelIssues(breakpoints: ReadonlyArray<{ boundary: str
 /**
  * Each categorical rule's row count, from how many rows hold each value.
  *
- * Execution builds one remap in rule order, so a value named by several rules
- * is claimed by the *last* of them, and a rule missing its value or its
- * assignment claims nothing. A claimed value absent from `valueCounts` counts
- * 0 when those counts cover every value, and is unknown (null) otherwise.
+ * The counts are keyed as execution matches the column (specs/rating, the
+ * dtype-faithful key form). A rule's value names a key exactly only on a text
+ * column (`exactKeys`); on any other, `1.0` may be the key `1`, so a value absent
+ * from `valueCounts` is unknown (null) until the server counts it. On a text
+ * column such a value counts 0 when the counts cover every value. A value named
+ * by several rules is counted for the last of them (a save refuses the repeat),
+ * and a rule missing its value or its assignment claims nothing.
  */
 export function categoricalRuleCounts(
   rules: CategoricalRule[],
   valueCounts: ReadonlyMap<string, number>,
   complete: boolean,
+  exactKeys = true,
 ): (number | null)[] {
   const claimant = new Map<string, number>()
   rules.forEach(({ value, assignment }, index) => {
@@ -103,7 +120,7 @@ export function categoricalRuleCounts(
   })
   return rules.map(({ value }, index) => {
     if (!value || claimant.get(value) !== index) return 0
-    return valueCounts.get(value) ?? (complete ? 0 : null)
+    return valueCounts.get(value) ?? (complete && exactKeys ? 0 : null)
   })
 }
 

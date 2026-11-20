@@ -14,6 +14,7 @@ from t_boost import TBoostClassifier, TBoostRegressor
 from haute._mlflow_io import load_local_model
 from haute._model_explainability import explain_native_prediction
 from haute._model_scorer import score_frame
+from haute._model_source import RunModelSource
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._descriptors import TBOOST
 from haute.modelling._feature_contract import load_contract
@@ -1006,12 +1007,18 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
         served = mlflow.pyfunc.load_model(f"runs:/{run.info.run_id}/model").predict(
             data.to_pandas()
         )
-    scoring = load_mlflow_model(source_type="run", run_id=run.info.run_id, task="regression")
+    scoring = load_mlflow_model(
+        RunModelSource(run_id=run.info.run_id, artifact_path="", mlflow_destination=""),
+        task="regression",
+    )
     assert scoring.flavor == "tboost"
     assert np.array_equal(scoring.raw_model.predict(data), expected)
     np.testing.assert_allclose(served, expected, rtol=1e-12)
     with pytest.raises(ConfigError, match="'log' offset under the identity link"):
-        load_mlflow_model(source_type="run", run_id=broken_run.info.run_id, task="regression")
+        load_mlflow_model(
+            RunModelSource(run_id=broken_run.info.run_id, artifact_path="", mlflow_destination=""),
+            task="regression",
+        )
 
 
 @pytest.mark.parametrize(
