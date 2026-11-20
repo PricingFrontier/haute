@@ -407,6 +407,55 @@ class TestScoreGraphOptimiserApplyRemap:
             )
         load.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "config", [{}, {"source_type": "run", "run_id": ""}], ids=["no-source", "unfilled"]
+    )
+    def test_an_optimiser_apply_with_no_source_passes_through_when_served(self, config):
+        """No result is chosen, so none is bundled or refused: the quotes pass through,
+        as the builder passes them."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {"label": "opt", "nodeType": "optimiserApply", "config": config},
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "opt", "sourceHandle": "src"},
+                    {"id": "e2", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={},
+        )
+
+        assert result["x"].to_list() == [1.0, 2.0]
+
 
 class TestScoreGraphModelScoreRemap:
     """Tests for modelScore remapping in score_graph."""

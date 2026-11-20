@@ -1125,10 +1125,9 @@ def _score_graph_lazy(
                 return func_name, model_score_missing_artifact, False
 
             # Neither a bundled model artifact nor a bundled contract exists for
-            # this modelScore node: the base builder would load it from MLflow or
-            # the project, or pass its input through unscored. A deployed pipeline
-            # does neither; refuse it naming the node.
-            _refuse_unbundled_artifacts(node, remap)
+            # this modelScore node: ``_refuse_unbundled_artifacts`` refused it
+            # before any node was built, so it never reaches the base builder's
+            # load from MLflow or the project, nor an unscored passthrough.
 
         return None  # fall through to base builder
 
