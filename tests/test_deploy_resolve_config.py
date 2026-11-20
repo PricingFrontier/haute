@@ -157,6 +157,7 @@ class TestResolveConfigEdgeCases:
             patch("haute.deploy._config.prune_for_deploy", return_value=(mock_graph, ["out"], [])),
             patch("haute.deploy._config.find_deploy_input_nodes", return_value=[]),
             patch("haute.deploy._config.find_source_nodes", return_value=["single_src"]),
+            patch("haute.deploy._bundler.prepare_deploy_snapshots"),
             patch("haute.deploy._bundler.collect_artifacts", return_value={}),
             patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
             patch(

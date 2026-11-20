@@ -348,8 +348,9 @@ class TestHauteModelPredict:
         model._request_rows = RequestRows("in_request_order")
         model._reader = RequestReader(records=False, schema={"x": pl.Float64()})
 
-        class Result:
-            def to_pandas(self):
+        class Result(pl.DataFrame):
+            # The answer predict checks for values JSON cannot carry, then converts.
+            def to_pandas(self, *args: object, **kwargs: object) -> pd.DataFrame:
                 timeline.append("to_pandas")
                 return pd.DataFrame({"score": [0.5]})
 
@@ -358,7 +359,9 @@ class TestHauteModelPredict:
                 "haute.deploy._scorer.admit_deploy_execution",
                 return_value=execution_context,
             ),
-            patch("haute.deploy._scorer.score_graph", return_value=Result()) as score,
+            patch(
+                "haute.deploy._scorer.score_graph", return_value=Result({"score": [0.5]})
+            ) as score,
         ):
             result = model.predict(MagicMock(), pd.DataFrame({"x": [1.0]}))
 

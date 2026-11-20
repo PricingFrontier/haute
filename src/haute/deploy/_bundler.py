@@ -724,7 +724,11 @@ def prepare_deploy_snapshots(
             prepared[node_id] = {**snapshot_config, "path": str(source)}
             configured[node_id] = validated["path"]
     for node in graph.nodes:
-        if DEPLOY_ARTIFACTS[node.data.nodeType] != "dataset":
+        # A config naming no provider is not a resolvable Data Input; the node builder
+        # owns that refusal, as it does for an execution's preparation.
+        if DEPLOY_ARTIFACTS[node.data.nodeType] != "dataset" or not node.data.config.get(
+            "input_type"
+        ):
             continue
         validated = validate_data_input_config(node.data.config)
         if validated["input_type"] == "inline":

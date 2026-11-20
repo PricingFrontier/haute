@@ -571,6 +571,33 @@ def test_the_assistant_profiles_a_column_of_every_kind_as_its_kind(dtype: pl.Dat
         assert profile.get("values_withheld") == "unsupported_dtype"
 
 
+def _non_finite_in(value: object) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_non_finite_in(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_non_finite_in(item) for item in value)
+    return False
+
+
+@pytest.mark.parametrize("dtype", SAMPLES, ids=str)
+def test_a_deployed_answer_refuses_a_non_finite_value_in_a_column_of_every_kind(
+    dtype: pl.DataType,
+) -> None:
+    """A float's NaN, flat or nested, is refused by its column; any other kind passes."""
+    from haute.deploy._response_json import refuse_non_finite
+    from haute.errors import NonFiniteOutputError
+
+    frame = pl.DataFrame([sample_column(dtype)])
+    if any(_non_finite_in(value) for value in frame.get_column("x").to_list()):
+        with pytest.raises(NonFiniteOutputError) as caught:
+            refuse_non_finite(frame)
+        assert caught.value.column.startswith("x")
+    else:
+        refuse_non_finite(frame)
+
+
 # ---------------------------------------------------------------------------
 # Every reader is found from the code
 # ---------------------------------------------------------------------------
@@ -642,6 +669,9 @@ _DRIVEN: dict[str, tuple[str, ...]] = {
     ),
     "src/haute/assistant/_tools.py": (
         "test_the_assistant_profiles_a_column_of_every_kind_as_its_kind",
+    ),
+    "src/haute/deploy/_response_json.py": (
+        "test_a_deployed_answer_refuses_a_non_finite_value_in_a_column_of_every_kind",
     ),
     # The editor's column lists mirror these, and the shared cases hold both sides to
     # them for every type: the cast table, the GLM classes and a Workbench column's fit.

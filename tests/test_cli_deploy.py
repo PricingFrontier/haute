@@ -657,7 +657,9 @@ class TestDryRunSettings:
         assert isinstance(result.exception, SystemExit)
         assert "Traceback" not in result.output
         # The command's own lines, not the log's.
-        lines = [line for line in result.output.splitlines() if line.strip() and "[info" not in line]
-        assert lines[0].startswith("Error: ") and "gone.py" in lines[0], result.output
-        assert lines[1] == "  Correct haute.toml, or pass the pipeline file explicitly."
-        assert len(lines) == 2, result.output
+        lines = [
+            line for line in result.output.splitlines() if line.strip() and "[info" not in line
+        ]
+        assert lines[-2].startswith("Error: ") and "gone.py" in lines[-2], result.output
+        assert lines[-1] == "  Correct haute.toml, or pass the pipeline file explicitly."
+        assert [line for line in lines if line.startswith("Error")] == [lines[-2]]

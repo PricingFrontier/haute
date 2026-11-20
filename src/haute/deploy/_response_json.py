@@ -18,10 +18,10 @@ from decimal import Decimal
 from typing import Any
 
 import polars as pl
-from polars.datatypes import DataTypeClass
 
 from haute._logging import get_logger
 from haute._output_assembler import render_output_document
+from haute._polars_dtypes import column_kind
 from haute.errors import NonFiniteOutputError
 
 logger = get_logger(component="deploy.response")
@@ -89,32 +89,23 @@ def ndjson_rows(frame: pl.DataFrame, *, first_quote: int | None = 0) -> bytes:
     )
 
 
-def _holds_float(dtype: pl.DataType | DataTypeClass) -> bool:
-    if dtype.is_float():
-        return True
-    if isinstance(dtype, pl.Struct):
-        return any(_holds_float(field.dtype) for field in dtype.fields)
-    if isinstance(dtype, pl.List | pl.Array):
-        return _holds_float(dtype.inner)
-    return False
-
-
 def first_non_finite(frame: pl.DataFrame) -> tuple[int, str, str] | None:
     """The first row holding a NaN or an infinity, its column's path to it, and the value.
 
-    A flat float column is checked by Polars; a struct or a list holding floats is walked.
+    A float column is checked by Polars; a nested one (a struct, a list) is walked.
     """
     first: tuple[int, str, str] | None = None
     for name, dtype in frame.schema.items():
-        if not _holds_float(dtype):
-            continue
+        kind = column_kind(dtype)
         column = frame.get_column(name)
         found: tuple[int, str, str] | None
-        if dtype.is_float():
+        if kind == "float":
             bad = (column.is_nan() | column.is_infinite()).fill_null(False).arg_true()
             found = None if bad.is_empty() else (int(bad[0]), name, str(column[int(bad[0])]))
-        else:
+        elif kind == "nested":
             found = _first_nested_non_finite(column.to_list(), name)
+        else:
+            continue
         if found is not None and (first is None or found[0] < first[0]):
             first = found
     return first
