@@ -14644,7 +14644,7 @@
           "type": "string"
         },
         "artifact_path": {
-          "description": "For an MLflow source, the model's path inside the run's artifacts, such as `model.cbm`.",
+          "description": "For a run source, the model's path inside the run's artifacts, such as `model.cbm`; empty for\nthe run's one model. A registered version's source names its file.",
           "title": "Artifact Path",
           "type": "string"
         },

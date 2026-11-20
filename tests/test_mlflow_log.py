@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from haute._model_source import RegisteredModelSource
 from haute._project_context import context_thread
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 from tests._project import use_project
@@ -580,9 +581,9 @@ class TestLocalRegistrationEndToEnd:
             from haute._mlflow_io import load_mlflow_model
 
             scoring = load_mlflow_model(
-                source_type="registered",
-                registered_model="e2e-model",
-                version="latest",
+                RegisteredModelSource(
+                    registered_model="e2e-model", version="latest", alias="", mlflow_destination=""
+                ),
                 task="regression",
             )
             predictions = scoring.raw_model.predict(frame)

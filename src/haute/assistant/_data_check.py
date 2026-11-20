@@ -75,7 +75,11 @@ from haute._json_shred._snapshots import (
     api_input_table_statuses,
 )
 from haute._logging import get_logger
-from haute._mlflow_io import DiskCachedRunModel, disk_cached_run_model
+from haute._mlflow_io import (
+    DiskCachedRunModel,
+    disk_cache_only_model_loads,
+    disk_cached_run_model,
+)
 from haute._node_specs import SINK_ONLY_NODE_TYPES, STRUCTURAL_NODE_TYPES
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._rating import (
@@ -112,7 +116,7 @@ from haute.assistant._tools import (
     _json_size,
     execution_error_record,
 )
-from haute.errors import MlflowConfigError, PreambleError
+from haute.errors import ConfigError, MlflowConfigError, PreambleError
 from haute.execution import (
     dataframe_graph_input_identity,
     mlflow_backend_signature,
@@ -1090,10 +1094,10 @@ def _artifact_exclusion(node: GraphNode) -> _Exclusion | None:
     if artifact != "scoring_model" or not config.get("source_type"):
         # An unconfigured Model Score passes its input through and loads nothing.
         return None
-    cached = _cached_run_model(config)
-    if cached is None:
+    if not _cacheable_run_model(config):
         return _Exclusion("artifact_not_local", node.id)
-    if cached.present():
+    cached = _cached_run_model(config)
+    if cached is not None and cached.present():
         return None
     return _Exclusion(
         "artifact_not_local",
@@ -1103,12 +1107,36 @@ def _artifact_exclusion(node: GraphNode) -> _Exclusion | None:
     )
 
 
-def _cached_run_model(config: Mapping[str, Any]) -> DiskCachedRunModel | None:
-    """The disk-cache files a run-sourced, single-file model loads from, or ``None``.
+def _cacheable_run_model(config: Mapping[str, Any]) -> bool:
+    """Whether the node names one file of an MLflow run, which a preview caches on disk.
 
-    ``None`` for a registered model (resolved by the registry on every load),
-    a run without an artifact path (discovered through the tracking server),
-    a ``pyfunc`` directory, and a destination that does not resolve.
+    Not a registered model (resolved by the registry on every load), a run
+    without an artifact path (found through the tracking server), a ``pyfunc``
+    directory, an artifact path no family loads, or a destination that does not
+    resolve: none of them can be local, and a preview would not make them so.
+    """
+    from haute._mlflow_model import validate_artifact_path
+    from haute._mlflow_utils import resolve_backend
+    from haute._model_flavors import family_for_artifact
+
+    run_id = str(config.get("run_id") or "")
+    artifact_path = str(config.get("artifact_path") or "")
+    if config.get("source_type") != "run" or not run_id or not artifact_path:
+        return False
+    try:
+        validate_artifact_path(artifact_path)
+        loads_from_file = family_for_artifact(artifact_path).load_file is not None
+        resolve_backend(str(config.get("mlflow_destination") or ""))
+    except (ConfigError, ValueError):
+        return False
+    return loads_from_file
+
+
+def _cached_run_model(config: Mapping[str, Any]) -> DiskCachedRunModel | None:
+    """The copies the last resolved load of a run artifact recorded, or ``None``.
+
+    ``None`` for a source :func:`_cacheable_run_model` refuses and for a run
+    artifact no preview has loaded yet.
     """
     run_id = str(config.get("run_id") or "")
     artifact_path = str(config.get("artifact_path") or "")
@@ -1396,14 +1424,17 @@ def read_binding(lineage: PipelineGraph, scenario: str) -> BindingRead:
     """Read a lineage's source generation, freshness tokens and identity components.
 
     The source generation digests the runtime input identity execution caches
-    sign together with each local Model Scoring node's cached model and the
-    contract (or absence marker) every load binds, which that identity does not
-    sign. It hashes inputs, so it is read only in the worker.
+    sign together with the bytes of each local Model Scoring node's cached model,
+    the contract beside it and their resolution record, which that identity does
+    not sign. It hashes inputs, so it is read only in the worker.
     """
     components = identity_components(lineage)
     paths: list[str] = components["paths"]
     tokens = {path: _freshness_token(path) for path in paths}
-    inputs = dataframe_graph_input_identity(lineage, target_node_id=None, source=scenario)
+    # A Model Scoring node's identity is the disk cache's record of its model,
+    # never a question to the store, as the measuring walk's loads are.
+    with disk_cache_only_model_loads():
+        inputs = dataframe_graph_input_identity(lineage, target_node_id=None, source=scenario)
     models = {node_id: cached.identity() for node_id, cached in _cached_models(lineage).items()}
     generation = content_hash_bytes(
         canonical_json({"inputs": inputs.digest, "models": models}).encode("utf-8")

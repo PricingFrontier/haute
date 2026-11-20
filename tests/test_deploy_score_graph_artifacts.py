@@ -321,13 +321,16 @@ class TestScoreGraphOptimiserApplyRemap:
             ),
         )
 
-    def test_an_unbundled_file_apply_is_the_builders_reading_its_configured_path(
+    def test_an_unbundled_file_apply_is_refused_naming_the_node(
         self, tmp_path, _widen_sandbox_root
     ):
-        """With no bundled copy, the Optimiser Apply builder runs: it reads the configured
-        artifact and applies it, never passing the quotes through unpriced."""
-        result = self._ratebook_apply_remap_score(tmp_path, bundled=False)
-        assert result["selected_factor"].to_list() == [0.95, 1.05]
+        """With no bundled copy the scorer refuses the node: a deployed pipeline applies
+        only the result its bundle carries, never the project file it was configured with,
+        and never passes the quotes through unpriced."""
+        from haute.errors import DeployError
+
+        with pytest.raises(DeployError, match="Optimiser Apply node 'opt' has no bundled"):
+            self._ratebook_apply_remap_score(tmp_path, bundled=False)
 
     def test_ratebook_apply_file_remap_routes_through_configured_input(self, tmp_path):
         """The configured ``ratebook_input`` is used for the factor-table lookup."""
@@ -344,10 +347,19 @@ class TestScoreGraphOptimiserApplyRemap:
         result = self._ratebook_apply_remap_score(tmp_path)
         assert result["__opt_v__"].to_list() == ["rb_v1", "rb_v1"]
 
-    def test_optimiser_apply_mlflow_source(self):
-        """optimiserApply with MLflow source downloads at runtime."""
+    @pytest.mark.parametrize("destination", ["", "server"])
+    def test_an_optimiser_apply_from_mlflow_is_never_loaded_when_served(self, destination):
+        """The bundler serves a result chosen from MLflow as its bundled file; one that
+        reaches the scorer still naming MLflow is refused, and MLflow is never asked."""
         from haute.deploy._scorer import score_graph
+        from haute.errors import DeployError
 
+        config = {
+            "source_type": "run",
+            "run_id": "run_abc",
+            "version_column": "__opt_v__",
+            "optimised_value_column": "selected_factor",
+        } | ({"mlflow_destination": destination} if destination else {})
         graph = _g(
             {
                 "nodes": [
@@ -361,16 +373,7 @@ class TestScoreGraphOptimiserApplyRemap:
                     },
                     {
                         "id": "opt",
-                        "data": {
-                            "label": "opt",
-                            "nodeType": "optimiserApply",
-                            "config": {
-                                "source_type": "run",
-                                "run_id": "run_abc",
-                                "version_column": "__opt_v__",
-                                "optimised_value_column": "selected_factor",
-                            },
-                        },
+                        "data": {"label": "opt", "nodeType": "optimiserApply", "config": config},
                     },
                     {
                         "id": "out",
@@ -382,110 +385,76 @@ class TestScoreGraphOptimiserApplyRemap:
                     },
                 ],
                 "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "opt",
-                        "sourceHandle": "src",
-                    },
+                    {"id": "e1", "source": "src", "target": "opt", "sourceHandle": "src"},
                     {"id": "e2", "source": "opt", "target": "out"},
                 ],
             }
         )
-
-        input_df = pl.DataFrame({"x": [1.0]})
-        mock_artifact = MagicMock()
-        mock_dispatch_result = pl.DataFrame(
-            {"x": [1.0], "selected_factor": [1.1], "__opt_v__": ["v1"]}
-        ).lazy()
-
-        with (
-            patch("haute._optimiser_io.load_mlflow_optimiser_artifact", return_value=mock_artifact),
-            patch(
-                "haute._builders._dispatch_apply",
-                return_value=mock_dispatch_result,
-            ) as mock_dispatch,
-        ):
-            result = score_graph(
-                graph=graph,
-                input_df=input_df,
-                input_node_ids=["src"],
-                output_node_id="out",
-            )
-
-        assert isinstance(result, pl.DataFrame)
-        mock_dispatch.assert_called_once()
-        assert mock_dispatch.call_args.args[3] == "selected_factor"
-
-    def test_optimiser_apply_mlflow_forwards_destination(self):
-        """The node's ``mlflow_destination`` reaches the request-time loader."""
-        from haute.deploy._scorer import score_graph
-
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "src",
-                        "data": {
-                            "label": "src",
-                            "nodeType": "apiInput",
-                            "config": _single_frame_api_input_config("x", "float", label="src"),
-                        },
-                    },
-                    {
-                        "id": "opt",
-                        "data": {
-                            "label": "opt",
-                            "nodeType": "optimiserApply",
-                            "config": {
-                                "source_type": "run",
-                                "run_id": "run_abc",
-                                "version_column": "__opt_v__",
-                                "optimised_value_column": "selected_factor",
-                                "mlflow_destination": "server",
-                            },
-                        },
-                    },
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": make_output_config(["x", "selected_factor", "__opt_v__"]),
-                        },
-                    },
-                ],
-                "edges": [
-                    {
-                        "id": "e1",
-                        "source": "src",
-                        "target": "opt",
-                        "sourceHandle": "src",
-                    },
-                    {"id": "e2", "source": "opt", "target": "out"},
-                ],
-            }
-        )
-
-        mock_dispatch_result = pl.DataFrame(
-            {"x": [1.0], "selected_factor": [1.1], "__opt_v__": ["v1"]}
-        ).lazy()
 
         with (
             patch(
                 "haute._optimiser_io.load_mlflow_optimiser_artifact",
-                return_value=MagicMock(),
-            ) as mock_load,
-            patch("haute._builders._dispatch_apply", return_value=mock_dispatch_result),
+                side_effect=AssertionError("a served graph asked MLflow"),
+            ) as load,
+            pytest.raises(DeployError, match="Optimiser Apply node 'opt' has no bundled"),
         ):
             score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"x": [1.0]}),
                 input_node_ids=["src"],
                 output_node_id="out",
+                artifact_paths={},
             )
+        load.assert_not_called()
 
-        assert mock_load.call_args.kwargs["destination"] == "server"
+    @pytest.mark.parametrize(
+        "config", [{}, {"source_type": "run", "run_id": ""}], ids=["no-source", "unfilled"]
+    )
+    def test_an_optimiser_apply_with_no_source_passes_through_when_served(self, config):
+        """No result is chosen, so none is bundled or refused: the quotes pass through,
+        as the builder passes them."""
+        from haute.deploy._scorer import score_graph
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": _single_frame_api_input_config("x", "float", label="src"),
+                        },
+                    },
+                    {
+                        "id": "opt",
+                        "data": {"label": "opt", "nodeType": "optimiserApply", "config": config},
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x"]),
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "opt", "sourceHandle": "src"},
+                    {"id": "e2", "source": "opt", "target": "out"},
+                ],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={},
+        )
+
+        assert result["x"].to_list() == [1.0, 2.0]
 
 
 class TestScoreGraphModelScoreRemap:
@@ -1329,16 +1298,11 @@ class TestScoreGraphModelScoreRemap:
         assert isinstance(extra_dfs, tuple)
         assert len(extra_dfs) == 1
 
-    def test_multi_row_unbundled_model_score_scores_in_memory(self):
-        """Configured non-bundled deploy modelScore scores eagerly in memory."""
+    def test_a_configured_unbundled_model_score_is_refused_never_loaded(self):
+        """A run-sourced Model Scoring node without its bundled model is refused naming
+        it: a deployed pipeline scores only the model its bundle carries."""
         from haute.deploy._scorer import score_graph
-
-        scoring_model = MagicMock(offset_column=None, offset_link=None, run_contract_path=None)
-        captured: dict[str, object] = {}
-
-        def fake_run_score_pipeline(*_args, **kwargs):
-            captured.update(kwargs)
-            return pl.DataFrame({"pred": [10.0, 20.0]}).lazy()
+        from haute.errors import DeployError
 
         graph = _g(
             {
@@ -1387,21 +1351,20 @@ class TestScoreGraphModelScoreRemap:
         )
 
         with (
-            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
             patch(
-                "haute._model_scorer._run_score_pipeline",
-                side_effect=fake_run_score_pipeline,
-            ),
+                "haute._mlflow_io.load_mlflow_model",
+                side_effect=AssertionError("a served graph loaded a model from MLflow"),
+            ) as load,
+            pytest.raises(DeployError, match="Model Scoring node 'ms' has no bundled model"),
         ):
-            result = score_graph(
+            score_graph(
                 graph=graph,
                 input_df=pl.DataFrame({"x": [1.0, 2.0]}),
                 input_node_ids=["src"],
                 output_node_id="out",
+                artifact_paths={},
             )
-
-        assert result["pred"].to_list() == [10.0, 20.0]
-        assert captured["source"] == "live"
+        load.assert_not_called()
 
     def test_multi_row_model_score_writes_no_temp_parquet(
         self,

@@ -3505,7 +3505,7 @@ def _loads_a_model_without_explanation(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "haute._mlflow_io.load_mlflow_model",
-        lambda **_: ScoringModel(model=object(), feature_names=[], flavor="pyfunc"),
+        lambda *_args, **_: ScoringModel(model=object(), feature_names=[], flavor="pyfunc"),
     )
 
 

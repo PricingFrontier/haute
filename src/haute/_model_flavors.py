@@ -205,7 +205,8 @@ def family_for_suffix(suffix: str) -> ModelFamily | None:
     return next((f for f in _FAMILIES.values() if suffix in f.suffixes), None)
 
 
-def _directory_family() -> ModelFamily:
+def directory_family() -> ModelFamily:
+    """The family a model stored as a folder loads as: MLflow pyfunc."""
     return next(f for f in _FAMILIES.values() if not f.suffixes)
 
 
@@ -228,7 +229,7 @@ def family_for_artifact(path: str) -> ModelFamily:
     """
     suffix = PurePosixPath(re.split(r"[\\/]", path.rstrip("/\\"))[-1]).suffix.lower()
     if not suffix:
-        return _directory_family()
+        return directory_family()
     family = family_for_suffix(suffix)
     if family is None:
         from haute.errors import ConfigError

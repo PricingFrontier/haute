@@ -23,11 +23,18 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 import structlog.testing
+from mlflow.entities import FileInfo
 from mlflow.store.entities.paged_list import PagedList
 
 from haute.errors import RequestRefusedError
 from tests._failure_assertions import assert_unnamed
+from tests._mlflow_fakes import FakeArtifactClient
 from tests._project import use_project
+
+
+def _file(path: str, size: int = 1) -> FileInfo:
+    """A file entry of a run's artifact listing, as the store reports one."""
+    return FileInfo(path, False, size)
 
 
 def _mock_tracking(mlflow=None, client=None):
@@ -302,7 +309,7 @@ class TestListRuns:
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = runs
-        mock_client.list_artifacts.return_value = [MagicMock(path="secret-model.cbm")]
+        mock_client.list_artifacts.return_value = [_file("secret-model.cbm")]
 
         with (
             _mock_tracking(mlflow=mock_mlflow, client=mock_client),
@@ -345,7 +352,7 @@ class TestListRuns:
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [good_run, broken_run]
         mock_client.list_artifacts.side_effect = [
-            [MagicMock(path="secret-good-model.cbm")],
+            [_file("secret-good-model.cbm")],
             RuntimeError("secret artifact failure"),
         ]
 
@@ -387,6 +394,27 @@ class TestListRuns:
                 "secret artifact failure",
             },
         )
+
+    def test_run_discovery_measurement_counts_the_listing_of_each_top_level_folder(self, client):
+        """A run whose model sits one folder down costs one more listing per top-level folder."""
+        store = FakeArtifactClient(
+            {"nested": {"model/model.cbm": 10, "evaluation/plan.json": 2, "notes.txt": 1}}
+        )
+        mock_client = MagicMock()
+        mock_client.search_runs.return_value = [_make_run(run_id="nested")]
+        mock_client.list_artifacts.side_effect = store.list_artifacts
+
+        with (
+            _mock_tracking(client=mock_client),
+            structlog.testing.capture_logs() as logs,
+        ):
+            resp = client.get("/api/mlflow/runs?experiment_id=1")
+
+        assert resp.status_code == 200
+        assert [run["artifacts"] for run in resp.json()] == [["model/model.cbm"]]
+        assert store.listings == [("nested", ""), ("nested", "model"), ("nested", "evaluation")]
+        measurement = self._discovery_measurement(logs)
+        assert (measurement["artifact_calls"], measurement["runs_returned"]) == (3, 1)
 
     def test_run_discovery_measurement_emitted_after_search_failure(self, client):
         """A failed search still emits exactly one safe measurement."""
@@ -445,7 +473,7 @@ class TestListRuns:
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [broken_run]
-        mock_client.list_artifacts.return_value = [MagicMock(path="secret-model.cbm")]
+        mock_client.list_artifacts.return_value = [_file("secret-model.cbm")]
 
         from haute.routes.mlflow import list_runs
 
@@ -476,7 +504,7 @@ class TestListRuns:
         """Only returns runs with .cbm artifacts."""
         run1 = _make_run(metrics={"rmse": 0.5}, params={"lr": "0.05"})
 
-        cbm_art = MagicMock(path="model.cbm")
+        cbm_art = _file("model.cbm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run1]
@@ -495,7 +523,7 @@ class TestListRuns:
         """Runs without .cbm artifacts are excluded."""
         run1 = _make_run(run_name="no-model")
 
-        txt_art = MagicMock(path="readme.txt")
+        txt_art = _file("readme.txt")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run1]
@@ -511,7 +539,7 @@ class TestListRuns:
         """artifact_filter=optimiser matches optimiser_result.json."""
         run1 = _make_run(run_id="opt_run", run_name="opt-run")
 
-        opt_art = MagicMock(path="optimiser_result.json")
+        opt_art = _file("optimiser_result.json")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run1]
@@ -532,7 +560,7 @@ class TestListRuns:
         """When artifact_filter=optimiser, .cbm files are not matched."""
         run1 = _make_run()
 
-        cbm_art = MagicMock(path="model.cbm")
+        cbm_art = _file("model.cbm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run1]
@@ -563,7 +591,7 @@ class TestListRuns:
         run1 = _make_run(run_id="good")
         run2 = _make_run(run_id="broken")
 
-        cbm_art = MagicMock(path="model.cbm")
+        cbm_art = _file("model.cbm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run1, run2]
@@ -610,7 +638,7 @@ class TestListRuns:
             metrics={"rmse": 0.1, "mae": 0.05},
             params={"epochs": "100", "lr": "0.01"},
         )
-        cbm = MagicMock(path="best.cbm")
+        cbm = _file("best.cbm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run]
@@ -632,7 +660,7 @@ class TestListRuns:
         """Runs with .rsglm artifacts are included (regression: was .cbm only)."""
         run = _make_run(run_id="glm_run", run_name="glm-run")
 
-        rsglm_art = MagicMock(path="fitted.rsglm")
+        rsglm_art = _file("fitted.rsglm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run]
@@ -661,9 +689,9 @@ class TestListRuns:
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run_cbm, run_rsglm, run_txt]
         mock_client.list_artifacts.side_effect = [
-            [MagicMock(path="model.cbm")],
-            [MagicMock(path="model.rsglm")],
-            [MagicMock(path="notes.txt")],
+            [_file("model.cbm")],
+            [_file("model.rsglm")],
+            [_file("notes.txt")],
         ]
 
         with _mock_tracking(mlflow=mock_mlflow, client=mock_client):
@@ -1105,7 +1133,7 @@ class TestListRunsAdditional:
         run = _make_run(run_id="nameless")
         run.info.run_name = None
 
-        cbm = MagicMock(path="model.cbm")
+        cbm = _file("model.cbm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run]
@@ -1122,9 +1150,9 @@ class TestListRunsAdditional:
     def test_run_with_multiple_model_artifacts(self, client):
         """A run with both .cbm and .rsglm returns both in artifacts."""
         run = _make_run(run_id="multi")
-        cbm = MagicMock(path="model.cbm")
-        rsglm = MagicMock(path="glm.rsglm")
-        txt = MagicMock(path="readme.txt")
+        cbm = _file("model.cbm")
+        rsglm = _file("glm.rsglm")
+        txt = _file("readme.txt")
 
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
@@ -1145,7 +1173,7 @@ class TestListRunsAdditional:
         run.data.metrics = None
         run.data.params = None
 
-        cbm = MagicMock(path="model.cbm")
+        cbm = _file("model.cbm")
         mock_mlflow = MagicMock()
         mock_client = MagicMock()
         mock_client.search_runs.return_value = [run]
@@ -1162,7 +1190,7 @@ class TestListRunsAdditional:
     def test_optimiser_filter_does_not_match_non_exact(self, client):
         """artifact_filter=optimiser does NOT match similar-but-wrong filenames."""
         run = _make_run(run_id="wrong")
-        wrong = MagicMock(path="optimiser_result.json.bak")
+        wrong = _file("optimiser_result.json.bak")
 
         mock_mlflow = MagicMock()
         mock_client = MagicMock()

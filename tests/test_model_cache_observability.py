@@ -26,7 +26,8 @@ sibling commit by the developer agent.
 
 from __future__ import annotations
 
-import sys
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,45 +59,48 @@ def _clear_mlflow_model_cache():
 
 
 @pytest.fixture()
-def mock_mlflow_env():
-    """Mock mlflow modules + resolve helpers shared across tests."""
-    mock_mlflow = MagicMock()
-    mock_mlflow.artifacts.download_artifacts.return_value = "/tmp/model.cbm"
+def fetched_model(tmp_path: Path) -> Path:
+    """The local copy every run's model file is fetched to."""
+    model_file = tmp_path / "model.cbm"
+    model_file.write_bytes(b"model bytes")
+    return model_file
 
-    mock_client_instance = MagicMock()
-    mock_mlflow_tracking = MagicMock()
-    mock_mlflow_tracking.MlflowClient.return_value = mock_client_instance
 
-    modules_patch = patch.dict(
-        sys.modules,
-        {"mlflow": mock_mlflow, "mlflow.tracking": mock_mlflow_tracking},
+def _resolution(source: Any, *, backend: Any) -> Any:
+    """The store's answer for a run source: its one CatBoost file, at the named path."""
+    from haute._mlflow_model import ResolvedModel, StoredArtifact
+    from haute._model_flavors import family_for_artifact
+
+    return ResolvedModel(
+        backend=backend,
+        run_id=source.run_id,
+        artifact=StoredArtifact(source.artifact_path, f"size:{len(b'model bytes')}"),
+        family=family_for_artifact(source.artifact_path),
+        contract=None,
+        version="",
+        reference=f"MLflow run {source.run_id!r}",
     )
-    resolve_patch = patch(
-        "haute.modelling._mlflow_log.resolve_tracking_backend",
-        return_value=("file:///mlruns", "local"),
-    )
-    return mock_mlflow, mock_client_instance, modules_patch, resolve_patch
 
 
-def _primed_load(mock_env, *, run_id: str = "abc123", artifact: str = "model.cbm"):
+def _primed_load(model_file: Path, *, run_id: str = "abc123", artifact: str = "model.cbm"):
     """Call ``load_mlflow_model`` once with all the standard patches."""
-    from haute._mlflow_io import load_mlflow_model
+    from haute._mlflow_io import FetchedFiles, load_mlflow_model
+    from haute._model_source import RunModelSource
 
-    _, _, modules_patch, resolve_patch = mock_env
     fake_model = MagicMock()
     fake_model.feature_names_ = ["a", "b"]
     fake_model.get_cat_feature_indices.return_value = []
 
     with (
-        modules_patch,
-        resolve_patch,
+        patch("haute._mlflow_io.model_resolution", side_effect=_resolution),
+        patch(
+            "haute._mlflow_io.fetch_resolved_files",
+            return_value=FetchedFiles(model_file, None),
+        ),
         patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
-        patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
     ):
         return load_mlflow_model(
-            source_type="run",
-            run_id=run_id,
-            artifact_path=artifact,
+            RunModelSource(run_id=run_id, artifact_path=artifact, mlflow_destination=""),
             task="regression",
         )
 
@@ -115,9 +119,9 @@ class TestCacheMissLogging:
     """On a cold load, a ``model_cache_miss`` event must fire with the
     triple (run_id, artifact_path, flavor) as structured fields."""
 
-    def test_first_load_emits_cache_miss_event(self, mock_mlflow_env):
+    def test_first_load_emits_cache_miss_event(self, fetched_model):
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="miss_run_1", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="miss_run_1", artifact="model.cbm")
 
         miss = _events(captured, "model_cache_miss")
         assert len(miss) >= 1, (
@@ -125,9 +129,9 @@ class TestCacheMissLogging:
             "so we can measure cache effectiveness in production."
         )
 
-    def test_cache_miss_event_carries_run_id(self, mock_mlflow_env):
+    def test_cache_miss_event_carries_run_id(self, fetched_model):
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="miss_run_rid", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="miss_run_rid", artifact="model.cbm")
 
         miss = _events(captured, "model_cache_miss")
         assert miss, "model_cache_miss event is required on first load"
@@ -135,9 +139,9 @@ class TestCacheMissLogging:
             "model_cache_miss event must include run_id as a structured field"
         )
 
-    def test_cache_miss_event_carries_artifact_path(self, mock_mlflow_env):
+    def test_cache_miss_event_carries_artifact_path(self, fetched_model):
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="rid", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="rid", artifact="model.cbm")
 
         miss = _events(captured, "model_cache_miss")
         assert miss, "model_cache_miss event is required on first load"
@@ -150,9 +154,9 @@ class TestCacheMissLogging:
             "misses to specific models."
         )
 
-    def test_cache_miss_event_carries_flavor(self, mock_mlflow_env):
+    def test_cache_miss_event_carries_flavor(self, fetched_model):
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="rid", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="rid", artifact="model.cbm")
 
         miss = _events(captured, "model_cache_miss")
         assert miss, "model_cache_miss event is required on first load"
@@ -171,12 +175,12 @@ class TestCacheHitLogging:
     """Second load of the same (run_id, artifact_path, task) must emit a
     ``model_cache_hit`` event with matching structured fields."""
 
-    def test_second_load_emits_cache_hit_event(self, mock_mlflow_env):
+    def test_second_load_emits_cache_hit_event(self, fetched_model):
         # Prime the cache.
-        _primed_load(mock_mlflow_env, run_id="hit_run_1", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="hit_run_1", artifact="model.cbm")
 
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="hit_run_1", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="hit_run_1", artifact="model.cbm")
 
         hits = _events(captured, "model_cache_hit")
         assert len(hits) >= 1, (
@@ -184,11 +188,11 @@ class TestCacheHitLogging:
             "with the same field vocabulary as model_cache_miss."
         )
 
-    def test_cache_hit_event_carries_run_id(self, mock_mlflow_env):
-        _primed_load(mock_mlflow_env, run_id="hit_rid", artifact="model.cbm")
+    def test_cache_hit_event_carries_run_id(self, fetched_model):
+        _primed_load(fetched_model, run_id="hit_rid", artifact="model.cbm")
 
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="hit_rid", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="hit_rid", artifact="model.cbm")
 
         hits = _events(captured, "model_cache_hit")
         assert hits, "cache_hit event expected on repeat load"
@@ -197,11 +201,11 @@ class TestCacheHitLogging:
             "(stringified cache keys are not queryable in log aggregators)."
         )
 
-    def test_cache_hit_event_carries_artifact_path(self, mock_mlflow_env):
-        _primed_load(mock_mlflow_env, run_id="rid2", artifact="model.cbm")
+    def test_cache_hit_event_carries_artifact_path(self, fetched_model):
+        _primed_load(fetched_model, run_id="rid2", artifact="model.cbm")
 
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="rid2", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="rid2", artifact="model.cbm")
 
         hits = _events(captured, "model_cache_hit")
         assert hits, "cache_hit event expected on repeat load"
@@ -211,11 +215,11 @@ class TestCacheHitLogging:
             "bucket hit-rate per model."
         )
 
-    def test_cache_hit_event_carries_flavor(self, mock_mlflow_env):
-        _primed_load(mock_mlflow_env, run_id="rid3", artifact="model.cbm")
+    def test_cache_hit_event_carries_flavor(self, fetched_model):
+        _primed_load(fetched_model, run_id="rid3", artifact="model.cbm")
 
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="rid3", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="rid3", artifact="model.cbm")
 
         hits = _events(captured, "model_cache_hit")
         assert hits, "cache_hit event expected on repeat load"
@@ -281,11 +285,11 @@ class TestCounterMonotonicity:
     """Counters must increment in the obvious direction: hits on repeat,
     misses on novel loads."""
 
-    def test_miss_counter_increments_on_first_load(self, mock_mlflow_env):
+    def test_miss_counter_increments_on_first_load(self, fetched_model):
         from haute._mlflow_io import get_model_cache_stats
 
         before = get_model_cache_stats()["misses"]
-        _primed_load(mock_mlflow_env, run_id="novel_a", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="novel_a", artifact="model.cbm")
         after = get_model_cache_stats()["misses"]
 
         assert after == before + 1, (
@@ -293,12 +297,12 @@ class TestCounterMonotonicity:
             f"(before={before}, after={after})."
         )
 
-    def test_hit_counter_increments_on_repeat_load(self, mock_mlflow_env):
+    def test_hit_counter_increments_on_repeat_load(self, fetched_model):
         from haute._mlflow_io import get_model_cache_stats
 
-        _primed_load(mock_mlflow_env, run_id="repeat_a", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="repeat_a", artifact="model.cbm")
         before = get_model_cache_stats()["hits"]
-        _primed_load(mock_mlflow_env, run_id="repeat_a", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="repeat_a", artifact="model.cbm")
         after = get_model_cache_stats()["hits"]
 
         assert after == before + 1, (
@@ -306,15 +310,15 @@ class TestCounterMonotonicity:
             f"(before={before}, after={after})."
         )
 
-    def test_hits_monotonic_over_repeated_loads(self, mock_mlflow_env):
+    def test_hits_monotonic_over_repeated_loads(self, fetched_model):
         """Hit counter is strictly non-decreasing across N repeats."""
         from haute._mlflow_io import get_model_cache_stats
 
-        _primed_load(mock_mlflow_env, run_id="mono", artifact="model.cbm")  # prime
+        _primed_load(fetched_model, run_id="mono", artifact="model.cbm")  # prime
 
         observations: list[int] = [get_model_cache_stats()["hits"]]
         for _ in range(4):
-            _primed_load(mock_mlflow_env, run_id="mono", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="mono", artifact="model.cbm")
             observations.append(get_model_cache_stats()["hits"])
 
         # Must strictly increase (one hit per repeat).
@@ -328,26 +332,26 @@ class TestCounterMonotonicity:
                 f"Hit counter went backwards: {prev} -> {nxt}. Full trace: {observations}"
             )
 
-    def test_misses_monotonic_over_distinct_loads(self, mock_mlflow_env):
+    def test_misses_monotonic_over_distinct_loads(self, fetched_model):
         """Miss counter grows by 1 per distinct model key."""
         from haute._mlflow_io import get_model_cache_stats
 
         baseline = get_model_cache_stats()["misses"]
         for i in range(5):
-            _primed_load(mock_mlflow_env, run_id=f"distinct_{i}", artifact="model.cbm")
+            _primed_load(fetched_model, run_id=f"distinct_{i}", artifact="model.cbm")
 
         final = get_model_cache_stats()["misses"]
         assert final == baseline + 5, (
             f"5 distinct loads should produce 5 misses (baseline={baseline}, final={final})."
         )
 
-    def test_hits_and_misses_independent(self, mock_mlflow_env):
+    def test_hits_and_misses_independent(self, fetched_model):
         """A hit does not increment misses; a miss does not increment hits."""
         from haute._mlflow_io import get_model_cache_stats
 
         # Miss: novel key — misses++ hits unchanged
         hits0 = get_model_cache_stats()["hits"]
-        _primed_load(mock_mlflow_env, run_id="ind_a", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="ind_a", artifact="model.cbm")
         hits1 = get_model_cache_stats()["hits"]
         assert hits1 == hits0, (
             f"A miss must not increment the hit counter (hits before={hits0}, after={hits1})."
@@ -355,7 +359,7 @@ class TestCounterMonotonicity:
 
         # Hit: same key — hits++ misses unchanged
         misses0 = get_model_cache_stats()["misses"]
-        _primed_load(mock_mlflow_env, run_id="ind_a", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="ind_a", artifact="model.cbm")
         misses1 = get_model_cache_stats()["misses"]
         assert misses1 == misses0, (
             f"A hit must not increment the miss counter (misses before={misses0}, after={misses1})."
@@ -377,11 +381,11 @@ class TestResetSemantics:
     the new choice), not silently flip the behaviour.
     """
 
-    def test_clear_model_cache_resets_hits(self, mock_mlflow_env):
+    def test_clear_model_cache_resets_hits(self, fetched_model):
         from haute._mlflow_io import clear_model_cache, get_model_cache_stats
 
-        _primed_load(mock_mlflow_env, run_id="clr_a", artifact="model.cbm")
-        _primed_load(mock_mlflow_env, run_id="clr_a", artifact="model.cbm")  # hit
+        _primed_load(fetched_model, run_id="clr_a", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="clr_a", artifact="model.cbm")  # hit
         assert get_model_cache_stats()["hits"] > 0
 
         clear_model_cache()
@@ -393,10 +397,10 @@ class TestResetSemantics:
             "clear'), update this test and document the rationale."
         )
 
-    def test_clear_model_cache_resets_misses(self, mock_mlflow_env):
+    def test_clear_model_cache_resets_misses(self, fetched_model):
         from haute._mlflow_io import clear_model_cache, get_model_cache_stats
 
-        _primed_load(mock_mlflow_env, run_id="clr_b", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="clr_b", artifact="model.cbm")
         assert get_model_cache_stats()["misses"] > 0
 
         clear_model_cache()
@@ -404,16 +408,16 @@ class TestResetSemantics:
         stats = get_model_cache_stats()
         assert stats["misses"] == 0, "clear_model_cache() should reset the 'misses' counter to 0."
 
-    def test_post_clear_next_load_is_a_miss(self, mock_mlflow_env):
+    def test_post_clear_next_load_is_a_miss(self, fetched_model):
         """After clear, the same key is a miss again — not an orphan hit."""
         from haute._mlflow_io import clear_model_cache, get_model_cache_stats
 
-        _primed_load(mock_mlflow_env, run_id="clr_c", artifact="model.cbm")
-        _primed_load(mock_mlflow_env, run_id="clr_c", artifact="model.cbm")  # hit
+        _primed_load(fetched_model, run_id="clr_c", artifact="model.cbm")
+        _primed_load(fetched_model, run_id="clr_c", artifact="model.cbm")  # hit
         clear_model_cache()
 
         with structlog.testing.capture_logs() as captured:
-            _primed_load(mock_mlflow_env, run_id="clr_c", artifact="model.cbm")
+            _primed_load(fetched_model, run_id="clr_c", artifact="model.cbm")
 
         assert _events(captured, "model_cache_miss"), (
             "After clear_model_cache(), a repeat load of the same key must "

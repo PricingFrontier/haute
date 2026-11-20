@@ -1,9 +1,19 @@
-"""Tests for haute._mlflow_io — MLflow model loading and caching."""
+"""Tests for haute._mlflow_io — MLflow model loading and caching.
+
+A load asks the model resolution which model a reference means, then loads
+that answer. The loading tests serve the resolution a fake tracking store
+(``tests._mlflow_fakes.FakeArtifactClient``, listing each run's files with their
+sizes) and serve the downloads the bytes it lists; the helper tests build the
+resolution's answer, a ``ResolvedModel``, by hand.
+"""
 
 from __future__ import annotations
 
+import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -16,10 +26,7 @@ from haute._mlflow_io import (
     _append_classification_proba,
     _artifact_cache_path,
     _disk_cache_root,
-    _find_artifact_by_extension,
-    _find_model_artifact,
     _load_rustystats_model,
-    _local_artifact_fingerprint,
     _model_cache,
     _model_cache_key,
     _prepare_predict_frame,
@@ -28,8 +35,12 @@ from haute._mlflow_io import (
     load_local_model,
     load_mlflow_model,
 )
-from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute._mlflow_model import ResolvedModel, StoredArtifact, resolve_model
+from haute._mlflow_utils import ResolvedBackend
+from haute._model_flavors import family_for_artifact, model_families
 from haute._model_scorer import _cleanup_registered_temp_files
+from haute._model_source import RegisteredModelSource, RunModelSource
+from tests._mlflow_fakes import FakeArtifactClient
 from tests._project import use_project
 
 
@@ -41,8 +52,8 @@ def _signature(*names: str) -> object:
     return ModelSignature(inputs=Schema([ColSpec("double", name) for name in names]))
 
 
-# The backend ``mock_mlflow_env`` pins, and the one the destination-free
-# helper tests below thread through explicitly.
+# The backend ``serve_runs`` pins, and the one the destination-free helper
+# tests below thread through explicitly.
 _FAKE_BACKEND = ResolvedBackend(
     mode="local",
     tracking_uri="file:///mlruns",
@@ -60,28 +71,116 @@ def _clear_cache():
     _model_cache.clear()
 
 
+class _RunStore:
+    """A tracking store's runs: listed by a fake client, downloaded as the bytes it lists.
+
+    ``files`` holds each run's files; the client lists their sizes as they were
+    when the store was made, so a test can serve other bytes than it lists.
+    """
+
+    def __init__(self, runs: dict[str, dict[str, bytes]]) -> None:
+        self.files = {run_id: dict(files) for run_id, files in runs.items()}
+        self.client = FakeArtifactClient(
+            {
+                run_id: {path: len(payload) for path, payload in files.items()}
+                for run_id, files in runs.items()
+            }
+        )
+        self.downloads: list[str] = []
+
+    def download_artifacts(
+        self,
+        artifact_uri: str,
+        dst_path: str | None = None,
+        *,
+        tracking_uri: str | None = None,
+        **_kwargs: Any,
+    ) -> str:
+        assert tracking_uri == _FAKE_BACKEND.tracking_uri
+        assert dst_path is not None
+        self.downloads.append(artifact_uri)
+        run_id, _, path = artifact_uri.removeprefix("runs:/").partition("/")
+        out = Path(dst_path) / PurePosixPath(path).name
+        out.write_bytes(self.files[run_id][path])
+        return str(out)
+
+
 @pytest.fixture()
-def mock_mlflow_env():
-    """Set up mock mlflow modules and common patches for load_mlflow_model tests."""
-    mock_mlflow = MagicMock()
-    mock_mlflow.artifacts.download_artifacts.return_value = "/tmp/model.cbm"
+def serve_runs(monkeypatch: pytest.MonkeyPatch):
+    """Make a store holding the given runs the one every load in the test resolves against."""
 
-    mock_client_instance = MagicMock()
-    mock_mlflow_tracking = MagicMock()
-    mock_mlflow_tracking.MlflowClient.return_value = mock_client_instance
+    def serve(runs: dict[str, dict[str, bytes]]) -> _RunStore:
+        store = _RunStore(runs)
+        monkeypatch.setattr(
+            "haute._mlflow_utils.resolve_backend",
+            lambda destination="", project_root=None: _FAKE_BACKEND,
+        )
+        monkeypatch.setattr("haute._mlflow_utils.pinned_client", lambda backend: store.client)
+        monkeypatch.setattr("mlflow.artifacts.download_artifacts", store.download_artifacts)
+        return store
 
-    modules_patch = patch.dict(
-        sys.modules,
-        {
-            "mlflow": mock_mlflow,
-            "mlflow.tracking": mock_mlflow_tracking,
-        },
+    return serve
+
+
+class _FakeRegistry:
+    """A store's client with registered versions, each ``(run_id, source)``."""
+
+    def __init__(self, client: Any, versions: dict[str, tuple[str, str]]) -> None:
+        self.client = client
+        self.versions = versions
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.client, name)
+
+    def get_model_version(self, name: str, version: str) -> Any:
+        run_id, source = self.versions[version]
+        return SimpleNamespace(run_id=run_id, source=source)
+
+
+def _run_source(run_id: str, artifact_path: str = "") -> RunModelSource:
+    return RunModelSource(run_id=run_id, artifact_path=artifact_path, mlflow_destination="")
+
+
+def _resolved(
+    run_id: str,
+    path: str,
+    payload: bytes = b"",
+    *,
+    contract: StoredArtifact | None = None,
+) -> ResolvedModel:
+    """The resolution's answer for *path* of a run, its bytes being *payload*."""
+    return ResolvedModel(
+        backend=_FAKE_BACKEND,
+        run_id=run_id,
+        artifact=StoredArtifact(path, f"size:{len(payload)}"),
+        family=family_for_artifact(path),
+        contract=contract,
+        version="",
+        reference=f"MLflow run {run_id!r}",
     )
-    resolve_patch = patch(
-        "haute._mlflow_utils.resolve_backend",
-        return_value=_FAKE_BACKEND,
-    )
-    return mock_mlflow, mock_client_instance, modules_patch, resolve_patch
+
+
+def _transport(files: dict[str, bytes | BaseException], downloads: list[str]) -> Any:
+    """An ``mlflow`` module whose downloads serve *files* by run-relative path."""
+
+    def download(artifact_uri: str, dst_path: str, *, tracking_uri: str) -> str:
+        downloads.append(artifact_uri)
+        path = artifact_uri.removeprefix("runs:/").partition("/")[2]
+        payload = files[path]
+        if isinstance(payload, BaseException):
+            raise payload
+        out = Path(dst_path) / PurePosixPath(path).name
+        out.write_bytes(payload)
+        return str(out)
+
+    return SimpleNamespace(artifacts=SimpleNamespace(download_artifacts=download))
+
+
+def _fake_catboost(*features: str) -> MagicMock:
+    fake_model = MagicMock()
+    fake_model.feature_names_ = list(features)
+    fake_model.get_cat_feature_indices.return_value = []
+    return fake_model
 
 
 # ---------------------------------------------------------------------------
@@ -90,53 +189,32 @@ def mock_mlflow_env():
 
 
 class TestLoadRunBasedModel:
-    def test_load_run_based_model(self, mock_mlflow_env):
+    def test_load_run_based_model(self, serve_runs):
         """Run-based loading downloads artifacts and returns ScoringModel."""
-        fake_model = MagicMock()
-        fake_model.feature_names_ = ["a", "b"]
-        fake_model.get_cat_feature_indices.return_value = []
-        _mock_mlflow, _mock_client, modules_patch, resolve_patch = mock_mlflow_env
+        store = serve_runs({"abc123": {"model.cbm": b"model bytes"}})
+        fake_model = _fake_catboost("a", "b")
 
-        with (
-            modules_patch,
-            resolve_patch,
-            patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
-            patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="model.cbm",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_catboost_model", return_value=fake_model) as load:
+            result = load_mlflow_model(_run_source("abc123", "model.cbm"), task="regression")
 
         assert isinstance(result, ScoringModel)
         assert result.raw_model is fake_model
         assert result.flavor == "catboost"
         assert result.feature_names == ["a", "b"]
+        assert store.downloads == ["runs:/abc123/model.cbm"]
+        # The loader read the bytes the run holds.
+        assert Path(load.call_args.args[0]).read_bytes() == b"model bytes"
 
-    def test_run_based_missing_run_id(self, mock_mlflow_env):
-        """Raises ValueError when run_id is empty for source_type=run."""
-        _, _, modules_patch, resolve_patch = mock_mlflow_env
-
-        with modules_patch, resolve_patch:
-            with pytest.raises(ValueError, match="run_id is required"):
-                load_mlflow_model(source_type="run", run_id="", task="regression")
-
-    def test_run_artifact_identifier_rejects_traversal_before_resolution(self):
+    def test_run_artifact_identifier_rejects_traversal_before_resolution(self, serve_runs):
         """MLflow identifiers stay external but cannot contain traversal."""
-        with (
-            patch("haute._mlflow_io.resolve_mlflow_source") as resolve,
-            pytest.raises(ValueError, match="Invalid artifact_path"),
-        ):
-            load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="../model",
-                task="regression",
-            )
+        store = serve_runs({"abc123": {"model.cbm": b"model bytes"}})
 
-        resolve.assert_not_called()
+        with pytest.raises(ValueError, match="Invalid artifact_path"):
+            load_mlflow_model(_run_source("abc123", "../model"), task="regression")
+
+        # Refused before the store was asked anything.
+        assert store.client.listings == []
+        assert store.downloads == []
 
 
 # ---------------------------------------------------------------------------
@@ -145,111 +223,75 @@ class TestLoadRunBasedModel:
 
 
 class TestLoadRegisteredModel:
-    def test_registered_missing_model_name(self, mock_mlflow_env):
-        """Raises ValueError when registered_model is empty."""
-        _, _, modules_patch, resolve_patch = mock_mlflow_env
+    def test_load_registered_model(self, serve_runs, monkeypatch):
+        """A registered version loads the file its source names in its run."""
+        store = serve_runs(
+            {"resolved_run_id": {"model.cbm": b"model bytes", "other.cbm": b"other bytes"}}
+        )
+        registry = _FakeRegistry(
+            store.client, {"2": ("resolved_run_id", "runs:/resolved_run_id/model.cbm")}
+        )
+        monkeypatch.setattr("haute._mlflow_utils.pinned_client", lambda backend: registry)
+        fake_model = _fake_catboost("x")
 
-        with modules_patch, resolve_patch:
-            with pytest.raises(ValueError, match="registered_model is required"):
-                load_mlflow_model(
-                    source_type="registered",
-                    registered_model="",
-                    task="regression",
-                )
-
-    def test_load_registered_model(self, mock_mlflow_env):
-        """Registered model loading resolves version and returns ScoringModel."""
-        fake_model = MagicMock()
-        fake_model.feature_names_ = ["x"]
-        fake_model.get_cat_feature_indices.return_value = []
-        _, mock_client, modules_patch, resolve_patch = mock_mlflow_env
-
-        mv = MagicMock(run_id="resolved_run_id")
-        mock_client.get_model_version.return_value = mv
-
-        with (
-            modules_patch,
-            resolve_patch,
-            patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
-            patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
-            patch("haute._mlflow_utils.resolve_version", return_value="2"),
-            patch("haute._mlflow_io._find_model_artifact", return_value=("model.cbm", "catboost")),
-        ):
+        with patch("haute._mlflow_io._load_catboost_model", return_value=fake_model):
             result = load_mlflow_model(
-                source_type="registered",
-                registered_model="my-model",
-                version="2",
+                RegisteredModelSource(
+                    registered_model="my-model", version="2", alias="", mlflow_destination=""
+                ),
                 task="regression",
             )
 
         assert isinstance(result, ScoringModel)
         assert result.raw_model is fake_model
+        assert store.downloads == ["runs:/resolved_run_id/model.cbm"]
 
 
 # ---------------------------------------------------------------------------
 # load_mlflow_model — pyfunc auto-detection
 # ---------------------------------------------------------------------------
 
+_PYFUNC_FOLDER = {"model/MLmodel": b"flavors: {}", "model/python_model.pkl": b"pickle"}
+
 
 class TestPyfuncAutoDetect:
-    def test_non_cbm_artifact_uses_pyfunc(self, mock_mlflow_env):
-        """Artifact path not ending in .cbm loads via pyfunc."""
+    def test_non_cbm_artifact_uses_pyfunc(self, serve_runs):
+        """An artifact path naming a folder with an MLmodel file loads via pyfunc."""
         fake_pyfunc = MagicMock()
         fake_pyfunc.metadata.signature = _signature("f1", "f2")
-        _, _, modules_patch, resolve_patch = mock_mlflow_env
+        store = serve_runs({"abc123": _PYFUNC_FOLDER})
 
-        with (
-            modules_patch,
-            resolve_patch,
-            patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc),
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="model",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc) as load:
+            result = load_mlflow_model(_run_source("abc123", "model"), task="regression")
 
         assert isinstance(result, ScoringModel)
         assert result.flavor == "pyfunc"
         assert result.feature_names == ["f1", "f2"]
         assert result.cat_feature_names == frozenset()
+        assert load.call_args.args[1:] == ("abc123", "model")
+        assert load.call_args.kwargs == {"backend": _FAKE_BACKEND}
+        # A pyfunc folder loads through MLflow; nothing is copied into the disk cache.
+        assert store.downloads == []
 
-    def test_auto_discover_falls_back_to_pyfunc(self, mock_mlflow_env):
-        """When no .cbm found and no artifact_path, falls back to pyfunc 'model'."""
+    def test_auto_discover_falls_back_to_pyfunc(self, serve_runs):
+        """With no model file and no artifact_path, the run's pyfunc folder is found."""
         fake_pyfunc = MagicMock()
         fake_pyfunc.metadata.signature = _signature("a")
-        _, _, modules_patch, resolve_patch = mock_mlflow_env
+        serve_runs(
+            {
+                "abc123": {
+                    "custom_model/MLmodel": b"flavors: {}",
+                    "custom_model/python_model.pkl": b"pickle",
+                    "notes.txt": b"notes",
+                }
+            }
+        )
 
-        with (
-            modules_patch,
-            resolve_patch,
-            patch("haute._mlflow_io._find_model_artifact", return_value=("model", "pyfunc")),
-            patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc),
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="model",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc) as load:
+            result = load_mlflow_model(_run_source("abc123"), task="regression")
 
         assert result.flavor == "pyfunc"
-
-
-# ---------------------------------------------------------------------------
-# Invalid source type
-# ---------------------------------------------------------------------------
-
-
-class TestInvalidSourceType:
-    def test_invalid_source_type(self, mock_mlflow_env):
-        """Raises ValueError for unknown source_type."""
-        _, _, modules_patch, resolve_patch = mock_mlflow_env
-
-        with modules_patch, resolve_patch:
-            with pytest.raises(ValueError, match="Invalid source_type"):
-                load_mlflow_model(source_type="invalid", task="regression")
+        assert load.call_args.args[1:] == ("abc123", "custom_model")
 
 
 # ---------------------------------------------------------------------------
@@ -258,81 +300,57 @@ class TestInvalidSourceType:
 
 
 class TestModelCache:
-    def test_cache_hit(self, mock_mlflow_env, tmp_path, monkeypatch):
-        """Second call with same args returns cached model without re-download."""
-        use_project(tmp_path)
-        cached_file = _artifact_cache_path(
-            tmp_path / ".cache" / "models",
-            _FAKE_BACKEND.digest,
-            "abc123",
-            "model.cbm",
-        )
-        cached_file.parent.mkdir(parents=True)
-        cached_file.write_bytes(b"model bytes")
+    def test_cache_hit(self, serve_runs):
+        """A hit whose copies are on disk returns the cached model without a download.
+
+        A hit whose copies are gone fetches them once (the cached model names its
+        contract's copy, and a disk-cache-only load reads the record), and loads nothing.
+        """
+        import mlflow
+
+        from haute._mlflow_io import fetch_resolved_files
+
+        store = serve_runs({"abc123": {"model.cbm": b"model bytes"}})
+        source = _run_source("abc123", "model.cbm")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        cache_key = _model_cache_key(
-            source_type="run",
-            run_id="abc123",
-            version="",
-            artifact_path="model.cbm",
-            task="regression",
-            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached_file)),
-            backend_identity=_FAKE_BACKEND.identity,
-        )
-        _model_cache.put(cache_key, fake_sm)
+        resolved = resolve_model(source, backend=_FAKE_BACKEND)
+        _model_cache.put(_model_cache_key(resolved, "regression"), fake_sm)
 
-        mock_mlflow, _, modules_patch, resolve_patch = mock_mlflow_env
+        with patch("haute._mlflow_io._load_catboost_file") as load:
+            assert load_mlflow_model(source, task="regression") is fake_sm
+            assert store.downloads == ["runs:/abc123/model.cbm"]
+            fetch_resolved_files(mlflow, resolved)
+            assert load_mlflow_model(source, task="regression") is fake_sm
+        assert store.downloads == ["runs:/abc123/model.cbm"]
+        load.assert_not_called()
 
-        with (
-            modules_patch,
-            resolve_patch,
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="model.cbm",
-                task="regression",
-            )
-
-        assert result is fake_sm
-        # download_artifacts should NOT be called (cache hit)
-        mock_mlflow.artifacts.download_artifacts.assert_not_called()
-
-    def test_cache_lru_eviction(self, mock_mlflow_env, tmp_path):
+    def test_cache_lru_eviction(self, serve_runs):
         """Exceeding max cache size evicts oldest entry."""
         for i in range(_MODEL_CACHE_MAX_SIZE + 2):
             _model_cache.put(("run", f"run_{i}", f"art_{i}", "regression", ""), MagicMock())
 
-        local_file = tmp_path / "model.cbm"
-        local_file.write_bytes(b"model bytes")
-        fake_model = MagicMock()
-        fake_model.feature_names_ = ["a"]
-        fake_model.get_cat_feature_indices.return_value = []
-        _, _, modules_patch, resolve_patch = mock_mlflow_env
+        serve_runs({"new_run": {"model.cbm": b"model bytes"}})
+        source = _run_source("new_run", "model.cbm")
 
-        with (
-            modules_patch,
-            resolve_patch,
-            patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
-            patch("haute._mlflow_io._resolve_artifact_local", return_value=str(local_file)),
-        ):
-            load_mlflow_model(
-                source_type="run",
-                run_id="new_run",
-                artifact_path="model.cbm",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_catboost_model", return_value=_fake_catboost("a")):
+            load_mlflow_model(source, task="regression")
 
-        expected_key = _model_cache_key(
-            source_type="run",
-            run_id="new_run",
-            version="",
-            artifact_path="model.cbm",
-            task="regression",
-            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
-            backend_identity=_FAKE_BACKEND.identity,
-        )
+        expected_key = _model_cache_key(resolve_model(source, backend=_FAKE_BACKEND), "regression")
         assert expected_key in _model_cache
+        assert ("run", "run_0", "art_0", "regression", "") not in _model_cache
+
+    def test_a_warm_entry_is_served_after_one_listing(self, serve_runs):
+        """Every load asks the store which model the reference means, once."""
+        store = serve_runs({"abc123": {"model.cbm": b"model bytes"}})
+        source = _run_source("abc123", "model.cbm")
+
+        with patch("haute._mlflow_io._load_catboost_model", return_value=_fake_catboost("a")):
+            first = load_mlflow_model(source, task="regression")
+            second = load_mlflow_model(source, task="regression")
+
+        assert second is first
+        assert store.client.listings == [("abc123", ""), ("abc123", "")]
+        assert store.downloads == ["runs:/abc123/model.cbm"]
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +430,7 @@ class TestMlflowNotInstalled:
     def test_import_error_message(self, monkeypatch):
         """Raises ImportError with pip install instruction when mlflow missing."""
         # Destination resolution runs first; keep it on Local (which needs no
-        # mlflow import) so the friendly error from the loader is what surfaces.
+        # mlflow import) so the friendly error from the resolution is what surfaces.
         for var in (
             "MLFLOW_TRACKING_URI",
             "DATABRICKS_HOST",
@@ -421,9 +439,10 @@ class TestMlflowNotInstalled:
             "DATABRICKS_MLFLOW_TOKEN",
         ):
             monkeypatch.delenv(var, raising=False)
-        with patch.dict(sys.modules, {"mlflow": None}):
+        # Both entries, so an ``mlflow.tracking`` an earlier test imported is gone too.
+        with patch.dict(sys.modules, {"mlflow": None, "mlflow.tracking": None}):
             with pytest.raises(ImportError, match="pip install mlflow"):
-                load_mlflow_model(source_type="run", run_id="x", task="regression")
+                load_mlflow_model(_run_source("x"), task="regression")
 
 
 # ---------------------------------------------------------------------------
@@ -434,13 +453,21 @@ class TestMlflowNotInstalled:
 class TestTaskValidation:
     def test_invalid_task_raises(self):
         """Invalid task value raises ValueError before any MLflow calls."""
-        with pytest.raises(ValueError, match="Invalid task"):
-            load_mlflow_model(source_type="run", run_id="x", task="clustering")
+        with patch("haute._mlflow_utils.pinned_client") as client:
+            with pytest.raises(ValueError, match="Invalid task"):
+                load_mlflow_model(_run_source("x"), task="clustering")
+        client.assert_not_called()
 
     def test_empty_task_raises(self):
         """Empty task string raises ValueError."""
         with pytest.raises(ValueError, match="Invalid task"):
-            load_mlflow_model(source_type="run", run_id="x", task="")
+            load_mlflow_model(_run_source("x"), task="")
+
+    def test_a_resolved_model_is_loaded_only_for_a_valid_task(self):
+        from haute._mlflow_io import load_resolved_model
+
+        with pytest.raises(ValueError, match="Invalid task"):
+            load_resolved_model(_resolved("x", "model.cbm", b"m"), "clustering")
 
 
 # ---------------------------------------------------------------------------
@@ -601,87 +628,115 @@ class TestPreparePredictFrame:
 
 
 # ---------------------------------------------------------------------------
-# _find_artifact_by_extension (D8 refactor)
+# Which model a run means — the model resolution's discovery rule
 # ---------------------------------------------------------------------------
+# tests/test_model_resolution.py pins the rule's levels and refusals; these pin
+# each family's file, a file one folder down, a native file over a pyfunc
+# folder, the refusal's wording and that a store failure is never read as
+# "no model".
+
+_FILE_FAMILIES = [family for family in model_families() if family.suffixes]
 
 
-class TestFindArtifactByExtension:
-    """Tests for the unified artifact discovery helper."""
+class _FailingClient(FakeArtifactClient):
+    """A store whose listings fail, as an expired credential or a missing root does."""
 
-    def test_finds_top_level_cbm(self):
-        """Finds .cbm at the root level."""
-        client = MagicMock()
-        art = MagicMock(path="my_model.cbm", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        assert _find_artifact_by_extension(client, "run1", ".cbm", "CatBoost") == "my_model.cbm"
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__({})
+        self.failure = failure
 
-    def test_finds_top_level_rsglm(self):
-        """Finds .rsglm at the root level."""
-        client = MagicMock()
-        art = MagicMock(path="glm_model.rsglm", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        assert (
-            _find_artifact_by_extension(client, "run1", ".rsglm", "RustyStats") == "glm_model.rsglm"
+    def list_artifacts(self, run_id: str, path: str | None = None) -> list[Any]:
+        raise self.failure
+
+
+def _resolve(monkeypatch, client: Any, source: RunModelSource) -> ResolvedModel:
+    monkeypatch.setattr("haute._mlflow_utils.pinned_client", lambda backend: client)
+    return resolve_model(source, backend=_FAKE_BACKEND)
+
+
+class TestTheRunDiscoveryRule:
+    @pytest.mark.parametrize("family", _FILE_FAMILIES, ids=lambda family: family.flavor)
+    def test_each_family_file_at_the_top_resolves_to_its_family(self, family, monkeypatch):
+        path = f"model{family.suffixes[0]}"
+        client = FakeArtifactClient({"run1": {path: 3, "notes.txt": 2}})
+
+        resolved = _resolve(monkeypatch, client, _run_source("run1"))
+
+        assert (resolved.artifact.path, resolved.family.flavor) == (path, family.flavor)
+        assert resolved.artifact.identity == "size:3"
+
+    def test_a_file_one_folder_down_is_found(self, monkeypatch):
+        client = FakeArtifactClient({"run1": {"artifacts/glm.rsglm": 4, "notes.txt": 2}})
+
+        resolved = _resolve(monkeypatch, client, _run_source("run1"))
+
+        assert (resolved.artifact.path, resolved.family.flavor) == (
+            "artifacts/glm.rsglm",
+            "rustystats",
         )
 
-    def test_finds_cbm_in_subdirectory(self):
-        """Finds .cbm one level deep in a subdirectory."""
-        client = MagicMock()
-        dir_art = MagicMock(path="models", is_dir=True)
-        client.list_artifacts.side_effect = [
-            [dir_art],
-            [MagicMock(path="models/trained.cbm", is_dir=False)],
-        ]
-        assert (
-            _find_artifact_by_extension(client, "run1", ".cbm", "CatBoost") == "models/trained.cbm"
+    def test_a_native_file_beats_a_pyfunc_folder_in_one_listing(self, monkeypatch):
+        """Runs with both native .rsglm and MLflow model/ load via RustyStats."""
+        client = FakeArtifactClient(
+            {"run1": {"model/MLmodel": 1, "model/model.pkl": 2, "conversion.rsglm": 3}}
         )
 
-    def test_finds_rsglm_in_subdirectory(self):
-        """Finds .rsglm one level deep in a subdirectory."""
-        client = MagicMock()
-        dir_art = MagicMock(path="artifacts", is_dir=True)
-        client.list_artifacts.side_effect = [
-            [dir_art],
-            [MagicMock(path="artifacts/glm.rsglm", is_dir=False)],
-        ]
-        assert (
-            _find_artifact_by_extension(client, "run1", ".rsglm", "RustyStats")
-            == "artifacts/glm.rsglm"
+        resolved = _resolve(monkeypatch, client, _run_source("run1"))
+
+        assert (resolved.artifact.path, resolved.family.flavor) == (
+            "conversion.rsglm",
+            "rustystats",
+        )
+        assert client.listings == [("run1", "")]
+
+    def test_a_pyfunc_folder_of_any_name_is_found_by_its_mlmodel_file(self, monkeypatch):
+        client = FakeArtifactClient({"run1": {"custom_model/MLmodel": 1, "readme.txt": 2}})
+
+        resolved = _resolve(monkeypatch, client, _run_source("run1"))
+
+        assert (resolved.artifact.path, resolved.family.flavor) == ("custom_model", "pyfunc")
+        assert resolved.contract is None
+
+    def test_no_model_is_refused_naming_every_file_haute_scores(self, monkeypatch):
+        from haute.errors import ConfigError, ModelResolutionError
+
+        client = FakeArtifactClient({"run1": {"readme.txt": 1}})
+
+        with pytest.raises(ModelResolutionError, match="holds no model Haute can score") as exc:
+            _resolve(monkeypatch, client, _run_source("run1"))
+
+        # A refusal of the configuration, which callers handle as any ConfigError.
+        assert isinstance(exc.value, ConfigError)
+        for family in _FILE_FAMILIES:
+            for suffix in family.suffixes:
+                assert suffix in str(exc.value)
+        assert "MLflow pyfunc model directory" in str(exc.value)
+        assert exc.value.context["candidates"] == []
+
+    @pytest.mark.parametrize("artifact_path", ["", "model.cbm"], ids=["discovered", "named"])
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param("mlflow", id="mlflow-exception"),
+            pytest.param("filesystem", id="bare-file-not-found"),
+        ],
+    )
+    def test_a_store_failure_propagates_rather_than_reading_as_no_model(
+        self, monkeypatch, artifact_path, failure
+    ):
+        """A credential / network failure, or a bare ``FileNotFoundError`` from a
+        local-fs shim, must surface as itself, never as "no model in this run" or
+        "no contract beside the model"."""
+        from mlflow.exceptions import MlflowException
+
+        error: BaseException = (
+            MlflowException("PERMISSION_DENIED: Invalid credentials")
+            if failure == "mlflow"
+            else FileNotFoundError("Artifact root /mnt/nonexistent/runs/abc does not exist")
         )
 
-    def test_missing_cbm_raises_with_label(self):
-        """FileNotFoundError includes the extension and label."""
-        client = MagicMock()
-        art = MagicMock(path="readme.txt", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        with pytest.raises(FileNotFoundError, match=r"No \.cbm artifact.*CatBoost"):
-            _find_artifact_by_extension(client, "run1", ".cbm", "CatBoost")
-
-    def test_missing_rsglm_raises_with_label(self):
-        """FileNotFoundError includes the extension and label."""
-        client = MagicMock()
-        art = MagicMock(path="readme.txt", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        with pytest.raises(FileNotFoundError, match=r"No \.rsglm artifact.*RustyStats"):
-            _find_artifact_by_extension(client, "run1", ".rsglm", "RustyStats")
-
-    def test_arbitrary_extension(self):
-        """Works for any extension, not just .cbm and .rsglm."""
-        client = MagicMock()
-        art = MagicMock(path="weights.pt", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        assert _find_artifact_by_extension(client, "run1", ".pt", "PyTorch") == "weights.pt"
-
-    def test_prefers_top_level_over_subdirectory(self):
-        """Top-level match is returned even if subdirectory also contains a match."""
-        client = MagicMock()
-        top_art = MagicMock(path="model.cbm", is_dir=False)
-        dir_art = MagicMock(path="subdir", is_dir=True)
-        client.list_artifacts.return_value = [top_art, dir_art]
-        # list_artifacts should only be called once (top level)
-        result = _find_artifact_by_extension(client, "run1", ".cbm", "CatBoost")
-        assert result == "model.cbm"
-        client.list_artifacts.assert_called_once_with("run1")
+        with pytest.raises(type(error), match=r"PERMISSION_DENIED|Artifact root"):
+            _resolve(monkeypatch, _FailingClient(error), _run_source("run1", artifact_path))
 
 
 # ---------------------------------------------------------------------------
@@ -1319,144 +1374,6 @@ class TestPreparePredictFrameRustystats:
 
 
 # ---------------------------------------------------------------------------
-# T9: _find_model_artifact — auto-detection
-# ---------------------------------------------------------------------------
-
-
-class TestFindModelArtifact:
-    """Tests for _find_model_artifact auto-detection logic."""
-
-    def test_finds_cbm_first(self):
-        """CatBoost .cbm is preferred over other formats."""
-        client = MagicMock()
-        art = MagicMock(path="model.cbm", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        path, flavor = _find_model_artifact(client, "run1")
-        assert path == "model.cbm"
-        assert flavor == "catboost"
-
-    def test_finds_rsglm_when_no_cbm(self):
-        """RustyStats .rsglm is found when no .cbm exists."""
-        client = MagicMock()
-        rsglm_art = MagicMock(path="model.rsglm", is_dir=False)
-        client.list_artifacts.return_value = [rsglm_art]
-        path, flavor = _find_model_artifact(client, "run1")
-        assert path == "model.rsglm"
-        assert flavor == "rustystats"
-
-    def test_prefers_rsglm_over_pyfunc_model_directory(self):
-        """Runs with both native .rsglm and MLflow model/ load via RustyStats."""
-        client = MagicMock()
-        rsglm_art = MagicMock(path="conversion.rsglm", is_dir=False)
-        pyfunc_dir = MagicMock(path="model", is_dir=True)
-        client.list_artifacts.return_value = [pyfunc_dir, rsglm_art]
-
-        path, flavor = _find_model_artifact(client, "run1")
-
-        assert path == "conversion.rsglm"
-        assert flavor == "rustystats"
-
-    def test_finds_pyfunc_when_no_native(self):
-        """Falls back to pyfunc 'model' directory."""
-        client = MagicMock()
-        model_dir = MagicMock(path="model", is_dir=True)
-        client.list_artifacts.return_value = [model_dir]
-        path, flavor = _find_model_artifact(client, "run1")
-        assert path == "model"
-        assert flavor == "pyfunc"
-
-    def test_no_artifact_raises(self):
-        """Raises FileNotFoundError when no model artifact found."""
-        client = MagicMock()
-        txt_art = MagicMock(path="readme.txt", is_dir=False)
-        client.list_artifacts.return_value = [txt_art]
-        with pytest.raises(FileNotFoundError, match="No model artifact") as exc:
-            _find_model_artifact(client, "run1")
-        for suffix in (".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"):
-            assert suffix in str(exc.value)
-        assert "pyfunc model directory" in str(exc.value)
-
-    def test_finds_pyfunc_in_subdirectory_via_mlmodel(self):
-        """Finds pyfunc model in subdirectory by detecting MLmodel file."""
-        client = MagicMock()
-        # Top level: no .cbm, no .rsglm, no "model" dir — just a custom subdir
-        subdir = MagicMock(path="custom_model", is_dir=True)
-        sub_contents = [MagicMock(path="custom_model/MLmodel", is_dir=False)]
-        # _find_artifact_by_extension(.cbm): list_artifacts(run_id) → [subdir],
-        #   then list_artifacts(run_id, "custom_model") → sub_contents (no .cbm) → raises
-        # _find_artifact_by_extension(.rsglm): same 2 calls → raises
-        # _find_artifact_by_extension(.ubj): same 2 calls → raises
-        # _find_artifact_by_extension(.lgbm): same 2 calls → raises
-        # _find_artifact_by_extension(.ebm): same 2 calls → raises
-        # _find_artifact_by_extension(.tboost): same 2 calls → raises
-        # _find_model_artifact pyfunc check: list_artifacts(run_id) → [subdir] (not "model")
-        #   then iterate dirs: list_artifacts(run_id, "custom_model") → sub_contents (has MLmodel)
-        client.list_artifacts.side_effect = [
-            [subdir],  # cbm: top level
-            sub_contents,  # cbm: subdir (no .cbm)
-            [subdir],  # rsglm: top level
-            sub_contents,  # rsglm: subdir (no .rsglm)
-            [subdir],  # ubj: top level
-            sub_contents,  # ubj: subdir (no .ubj)
-            [subdir],  # lgbm: top level
-            sub_contents,  # lgbm: subdir (no .lgbm)
-            [subdir],  # ebm: top level
-            sub_contents,  # ebm: subdir (no .ebm)
-            [subdir],  # tboost: top level
-            sub_contents,  # tboost: subdir (no .tboost)
-            [subdir],  # pyfunc: top level "model" dir check
-            sub_contents,  # pyfunc: subdir listing with MLmodel
-        ]
-        path, flavor = _find_model_artifact(client, "run1")
-        assert path == "custom_model"
-        assert flavor == "pyfunc"
-
-    def test_mlflow_exception_from_list_artifacts_propagates(self):
-        """A credential / network failure from ``list_artifacts`` must NOT be
-        swallowed as "no artifact in this probe" — it surfaces so on-call
-        sees the real infrastructure issue.
-        """
-        from mlflow.exceptions import MlflowException
-
-        client = MagicMock()
-        client.list_artifacts.side_effect = MlflowException(
-            "PERMISSION_DENIED: Invalid credentials"
-        )
-        with pytest.raises(MlflowException, match="PERMISSION_DENIED"):
-            _find_model_artifact(client, "run1")
-
-    def test_bare_file_not_found_error_propagates(self):
-        """A bare :class:`FileNotFoundError` from ``list_artifacts`` is not a
-        "probe missed" signal — we only swallow our own internal
-        :class:`_ArtifactNotFoundError` sentinel.  If MLflow's local-fs shim
-        (or a custom artifact repo) raises a plain ``FileNotFoundError``
-        it propagates so the operator sees the real problem.
-        """
-        client = MagicMock()
-        client.list_artifacts.side_effect = FileNotFoundError(
-            "Artifact root /mnt/nonexistent/runs/abc does not exist"
-        )
-        with pytest.raises(FileNotFoundError, match="Artifact root"):
-            _find_model_artifact(client, "run1")
-
-    def test_no_artifact_raises_artifact_not_found_subclass(self):
-        """The internal "no match" sentinel is still a ``FileNotFoundError``
-        so callers coded against the public contract keep working.
-        """
-        from haute._mlflow_io import _ArtifactNotFoundError
-
-        client = MagicMock()
-        txt_art = MagicMock(path="readme.txt", is_dir=False)
-        client.list_artifacts.return_value = [txt_art]
-        with pytest.raises(_ArtifactNotFoundError, match="No model artifact"):
-            _find_model_artifact(client, "run1")
-        # Sanity: the sentinel is still a FileNotFoundError subclass.
-        client.list_artifacts.return_value = [txt_art]
-        with pytest.raises(FileNotFoundError):
-            _find_model_artifact(client, "run1")
-
-
-# ---------------------------------------------------------------------------
 # ScoringModel direct usage
 # ---------------------------------------------------------------------------
 
@@ -1541,7 +1458,7 @@ class TestExtractPyfuncFeatures:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_artifact_local (lines 298-353)
+# _resolve_artifact_local — the disk cache of one stored identity
 # ---------------------------------------------------------------------------
 
 
@@ -1552,20 +1469,22 @@ class TestResolveArtifactLocal:
         """Returns cached file path without downloading when file exists."""
         from haute._mlflow_io import _resolve_artifact_local
 
+        use_project(tmp_path)
+        stored = StoredArtifact("model.cbm", f"size:{len(b'cached_model_data')}")
         # Create the expected cache structure
         cached_file = _artifact_cache_path(
             tmp_path / ".cache" / "models",
             _FAKE_BACKEND.digest,
             "run123",
             "model.cbm",
+            stored.token,
         )
         cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"cached_model_data")
 
         mock_mlflow = MagicMock()
 
-        with patch("haute._mlflow_io.Path.cwd", return_value=tmp_path):
-            result = _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "run123", "model.cbm")
+        result = _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "run123", stored)
 
         assert result == str(cached_file)
         mock_mlflow.artifacts.download_artifacts.assert_not_called()
@@ -1574,19 +1493,12 @@ class TestResolveArtifactLocal:
         """Downloads artifact and caches it on cache miss."""
         from haute._mlflow_io import _resolve_artifact_local
 
-        # No cached file exists
-        mock_mlflow = MagicMock()
+        use_project(tmp_path)
+        downloads: list[str] = []
+        transport = _transport({"model.cbm": b"fresh_model_data"}, downloads)
+        stored = StoredArtifact("model.cbm", f"size:{len(b'fresh_model_data')}")
 
-        # Create a temp directory that simulates download
-        download_dir = tmp_path / "download_staging"
-        download_dir.mkdir()
-        downloaded_file = download_dir / "model.cbm"
-        downloaded_file.write_bytes(b"fresh_model_data")
-
-        mock_mlflow.artifacts.download_artifacts.return_value = str(downloaded_file)
-
-        with patch("haute._mlflow_io.Path.cwd", return_value=tmp_path):
-            result = _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "run456", "model.cbm")
+        result = _resolve_artifact_local(transport, _FAKE_BACKEND, "run456", stored)
 
         # File should be in cache dir now
         expected = _artifact_cache_path(
@@ -1594,22 +1506,39 @@ class TestResolveArtifactLocal:
             _FAKE_BACKEND.digest,
             "run456",
             "model.cbm",
+            stored.token,
         )
         assert result == str(expected)
-        assert expected.is_file()
+        assert expected.read_bytes() == b"fresh_model_data"
+        assert downloads == ["runs:/run456/model.cbm"]
+
+    def test_two_identities_of_one_path_are_two_copies(self, tmp_path):
+        """A file logged again never overwrites the copy of the bytes it replaced."""
+        from haute._mlflow_io import _resolve_artifact_local
+
+        use_project(tmp_path)
+        first = _resolve_artifact_local(
+            _transport({"model.cbm": b"v1"}, []), _FAKE_BACKEND, "run1", _model_file(b"v1")
+        )
+        second = _resolve_artifact_local(
+            _transport({"model.cbm": b"v2-x"}, []), _FAKE_BACKEND, "run1", _model_file(b"v2-x")
+        )
+
+        assert first != second
+        assert Path(first).read_bytes() == b"v1"
+        assert Path(second).read_bytes() == b"v2-x"
 
     def test_download_failure_cleans_up(self, tmp_path):
         """On download failure, partial cache entry is cleaned up."""
         from haute._mlflow_io import _resolve_artifact_local
 
+        use_project(tmp_path)
         mock_mlflow = MagicMock()
         mock_mlflow.artifacts.download_artifacts.side_effect = RuntimeError("network error")
+        stored = StoredArtifact("model.cbm", "size:4")
 
-        with (
-            patch("haute._mlflow_io.Path.cwd", return_value=tmp_path),
-            pytest.raises(RuntimeError, match="network error"),
-        ):
-            _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "run789", "model.cbm")
+        with pytest.raises(RuntimeError, match="network error"):
+            _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "run789", stored)
 
         # No cached file should remain
         cache_path = _artifact_cache_path(
@@ -1617,25 +1546,55 @@ class TestResolveArtifactLocal:
             _FAKE_BACKEND.digest,
             "run789",
             "model.cbm",
+            stored.token,
         )
         assert not cache_path.is_file()
+
+    @pytest.mark.parametrize("kind", ["size", "content"])
+    def test_a_download_that_is_not_the_stored_bytes_is_refused_and_kept_nowhere(
+        self, tmp_path, kind
+    ):
+        """The copy must be the bytes the store described: its size, or on a local
+        store its content. A file logged again after the listing is refused."""
+        from haute._mlflow_io import _resolve_artifact_local
+        from haute._mlflow_model import copy_identity
+        from haute.errors import ModelResolutionError
+
+        use_project(tmp_path)
+        listed = tmp_path / "listed.cbm"
+        listed.write_bytes(b"weights-v1")
+        # The identity the store gave, taken from the bytes it listed.
+        identity = copy_identity(StoredArtifact("model.cbm", f"{kind}:"), listed)
+        stored = StoredArtifact("model.cbm", identity)
+        # Logged again between the listing and the download: same size, or not.
+        served = b"weights-v2" if kind == "content" else b"weights-v2-longer"
+
+        with pytest.raises(ModelResolutionError, match="changed while it was loaded"):
+            _resolve_artifact_local(
+                _transport({"model.cbm": served}, []), _FAKE_BACKEND, "run-r", stored
+            )
+
+        cache_path = _artifact_cache_path(
+            tmp_path / ".cache" / "models", _FAKE_BACKEND.digest, "run-r", "model.cbm", stored.token
+        )
+        assert not cache_path.exists()
+        # The listed bytes themselves are accepted.
+        accepted = _resolve_artifact_local(
+            _transport({"model.cbm": b"weights-v1"}, []), _FAKE_BACKEND, "run-r", stored
+        )
+        assert Path(accepted).read_bytes() == b"weights-v1"
 
     def test_failure_after_cache_write_cleans_partial(self, tmp_path):
         """If an error occurs after the file is moved into cache, the partial file is deleted."""
 
         from haute._mlflow_io import _resolve_artifact_local
 
-        mock_mlflow = MagicMock()
+        use_project(tmp_path)
+        transport = _transport({"model.cbm": b"data"}, [])
+        stored = StoredArtifact("model.cbm", "size:4")
 
         # Simulate: download succeeds, shutil.move succeeds (file lands in cache),
         # but then logger.info raises during the stat call → triggers cleanup
-        download_dir = tmp_path / "dl"
-        download_dir.mkdir()
-        dl_file = download_dir / "model.cbm"
-        dl_file.write_bytes(b"data")
-
-        mock_mlflow.artifacts.download_artifacts.return_value = str(dl_file)
-
         # Patch logger.info to raise on the "mlflow_artifact_cached" call
         # (which happens after shutil.move, so the file exists in cache)
         original_info = __import__("haute._mlflow_io", fromlist=["logger"]).logger.info
@@ -1646,11 +1605,10 @@ class TestResolveArtifactLocal:
             return original_info(msg, **kwargs)
 
         with (
-            patch("haute._mlflow_io.Path.cwd", return_value=tmp_path),
             patch("haute._mlflow_io.logger.info", side_effect=failing_info),
             pytest.raises(OSError, match="simulated stat failure"),
         ):
-            _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "runX", "model.cbm")
+            _resolve_artifact_local(transport, _FAKE_BACKEND, "runX", stored)
 
         # The partial cache file should have been cleaned up
         cache_path = _artifact_cache_path(
@@ -1658,6 +1616,7 @@ class TestResolveArtifactLocal:
             _FAKE_BACKEND.digest,
             "runX",
             "model.cbm",
+            stored.token,
         )
         assert not cache_path.is_file()
 
@@ -1665,17 +1624,21 @@ class TestResolveArtifactLocal:
         """Raises when download returns path that doesn't exist and fallback fails."""
         from haute._mlflow_io import _resolve_artifact_local
 
+        use_project(tmp_path)
         mock_mlflow = MagicMock()
         # Return a path that doesn't exist as a file
         mock_mlflow.artifacts.download_artifacts.return_value = str(
             tmp_path / "nonexistent" / "dir"
         )
 
-        with (
-            patch("haute._mlflow_io.Path.cwd", return_value=tmp_path),
-            pytest.raises(FileNotFoundError, match="artifact not found"),
-        ):
-            _resolve_artifact_local(mock_mlflow, _FAKE_BACKEND, "run_bad", "model.cbm")
+        with pytest.raises(FileNotFoundError, match="artifact not found"):
+            _resolve_artifact_local(
+                mock_mlflow, _FAKE_BACKEND, "run_bad", StoredArtifact("model.cbm", "size:4")
+            )
+
+
+def _model_file(payload: bytes) -> StoredArtifact:
+    return StoredArtifact("model.cbm", f"size:{len(payload)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1761,165 +1724,122 @@ class TestClearModelCache:
 
 
 # ---------------------------------------------------------------------------
-# load_mlflow_model — fast path cache hit (line 436-441)
+# load_mlflow_model — the disk cache
 # ---------------------------------------------------------------------------
 
 
-class TestLoadMlflowModelFastCache:
-    """Tests for the fast-path cache check in load_mlflow_model."""
+class TestLoadMlflowModelDiskCache:
+    """A load reads its copies from the disk cache once the store has answered."""
 
     def test_disk_cache_root_is_relative_to_current_working_directory(self, tmp_path, monkeypatch):
         use_project(tmp_path)
 
         assert _disk_cache_root() == tmp_path / ".cache" / "models"
 
-    def test_fast_path_cache_hit_for_run_with_artifact(self, tmp_path, monkeypatch):
-        """source_type=run with artifact_path hits fast-path cache."""
+    def test_a_load_whose_copies_are_on_disk_downloads_nothing(self, tmp_path, serve_runs):
+        """A new process loads the model and the contract its run logged from disk."""
         use_project(tmp_path)
-        backend = resolve_backend("")
-        cached_file = _artifact_cache_path(
-            tmp_path / ".cache" / "models",
-            backend.digest,
-            "abc123",
-            "model.cbm",
+        store = serve_runs(
+            {"abc123": {"model.cbm": b"cached model", "model.feature_contract.json": b"{}"}}
         )
-        cached_file.parent.mkdir(parents=True)
-        cached_file.write_bytes(b"model bytes")
-        fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        cache_key = _model_cache_key(
-            source_type="run",
-            run_id="abc123",
-            version="",
-            artifact_path="model.cbm",
-            task="regression",
-            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached_file)),
-            backend_identity=backend.identity,
-        )
-        _model_cache.put(cache_key, fake_sm)
-
-        result = load_mlflow_model(
-            source_type="run",
-            run_id="abc123",
-            artifact_path="model.cbm",
-            task="regression",
-        )
-        assert result is fake_sm
-
-    def test_disk_cache_hit_for_native_run_artifact_skips_mlflow_resolution(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        """Run artifacts already cached on disk should load without MLflow setup."""
-        use_project(tmp_path)
-        backend = resolve_backend("")
-        cached = _artifact_cache_path(
-            tmp_path / ".cache" / "models",
-            backend.digest,
-            "abc123",
-            "model.cbm",
-        )
-        cached.parent.mkdir(parents=True)
-        cached.write_bytes(b"cached model")
-        contract = _artifact_cache_path(
-            tmp_path / ".cache" / "models",
-            backend.digest,
-            "abc123",
-            "model.feature_contract.json",
-        )
-        contract.parent.mkdir(parents=True)
-        (tmp_path / contract.relative_to(tmp_path.resolve())).write_bytes(b"{}")
+        source = _run_source("abc123", "model.cbm")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
 
-        with (
-            patch("haute._mlflow_io.load_local_model", return_value=fake_sm) as load_local,
-            patch("haute._mlflow_io.resolve_mlflow_source") as resolve_source,
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="model.cbm",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_catboost_file", return_value=fake_sm) as load_file:
+            load_mlflow_model(source, task="regression")
+            assert len(store.downloads) == 2
+            _model_cache.clear()  # what a new process starts with
+            result = load_mlflow_model(source, task="regression")
 
         assert result is fake_sm
+        assert len(store.downloads) == 2, "a copy on disk was downloaded again"
+        resolved = resolve_model(source, backend=_FAKE_BACKEND)
+        cache_root = tmp_path / ".cache" / "models"
+        model_copy = _artifact_cache_path(
+            cache_root, _FAKE_BACKEND.digest, "abc123", "model.cbm", resolved.artifact.token
+        )
+        assert resolved.contract is not None
+        contract_copy = _artifact_cache_path(
+            cache_root,
+            _FAKE_BACKEND.digest,
+            "abc123",
+            resolved.contract.path,
+            resolved.contract.token,
+        )
         # The model carries the contract its run logged, read from the same cache.
-        assert result.run_contract_path == str(contract)
-        load_local.assert_called_once_with(
-            str(cached),
-            task="regression",
-            contract_path=str(contract),
-            source="MLflow run 'abc123'",
+        assert result.run_contract_path == str(contract_copy)
+        load_file.assert_called_with(
+            str(model_copy),
+            "regression",
+            contract_path=str(contract_copy),
+            source="MLflow run 'abc123', artifact 'model.cbm'",
         )
-        resolve_source.assert_not_called()
+        assert _model_cache.get(_model_cache_key(resolved, "regression")) is fake_sm
 
-        cache_key = _model_cache_key(
-            source_type="run",
-            run_id="abc123",
-            version="",
-            artifact_path="model.cbm",
-            task="regression",
-            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(cached)),
-            backend_identity=backend.identity,
+    def test_a_disk_cache_only_load_answers_from_the_record_without_the_store(
+        self, tmp_path, serve_runs, monkeypatch
+    ):
+        from haute._mlflow_io import disk_cache_only_model_loads, disk_cached_run_model
+        from haute.errors import ModelNotInDiskCacheError
+
+        use_project(tmp_path)
+        store = serve_runs(
+            {"abc123": {"model.cbm": b"cached model", "model.feature_contract.json": b"{}"}}
         )
-        assert _model_cache.get(cache_key) is fake_sm
-
-    def test_post_resolve_cache_hit(self, tmp_path):
-        """Cache hit after resolve_mlflow_source (second cache check, line 469)."""
-        local_file = tmp_path / "model.cbm"
-        local_file.write_bytes(b"model bytes")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
-        # Key uses resolved version "" for run-based; the fingerprint is the
-        # byte identity of the resolved local artifact.
-        cache_key = _model_cache_key(
-            source_type="run",
-            run_id="abc123",
-            version="",
-            artifact_path="model.cbm",
-            task="regression",
-            artifact_fingerprint=_local_artifact_fingerprint("model.cbm", str(local_file)),
-            backend_identity=resolve_backend("").identity,
-        )
-        _model_cache.put(cache_key, fake_sm)
+        with patch("haute._mlflow_io._load_catboost_file", return_value=fake_sm):
+            loaded = load_mlflow_model(_run_source("abc123", "model.cbm"), task="regression")
+        _model_cache.clear()
 
+        cached = disk_cached_run_model(run_id="abc123", artifact_path="model.cbm", destination="")
+        assert cached is not None and cached.present()
+        assert cached.run_contract == loaded.run_contract_path
+
+        monkeypatch.setattr(
+            "haute._mlflow_utils.pinned_client",
+            lambda backend: pytest.fail("a disk-cache-only load asked the store"),
+        )
         with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("abc123", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._find_model_artifact",
-                return_value=("model.cbm", "catboost"),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(local_file),
-            ),
+            disk_cache_only_model_loads(),
+            patch("haute._mlflow_io._load_catboost_file", return_value=fake_sm),
         ):
-            # No artifact_path → forces resolve + auto-discover, then second cache check hits
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="abc123",
-                artifact_path="",
-                task="regression",
-            )
+            result = load_mlflow_model(_run_source("abc123", "model.cbm"), task="regression")
+            # A reference the record cannot answer is refused, not resolved.
+            for unanswerable in (_run_source("abc123"), _run_source("other", "model.cbm")):
+                with pytest.raises(ModelNotInDiskCacheError):
+                    load_mlflow_model(unanswerable, task="regression")
 
         assert result is fake_sm
+        assert result.run_contract_path == loaded.run_contract_path
+        assert len(store.downloads) == 2
+
+    def test_a_discovered_reference_and_a_named_one_share_an_entry(self, serve_runs):
+        """A run by discovery and the same run naming the file are one model."""
+        store = serve_runs({"abc123": {"model.cbm": b"model bytes"}})
+
+        with patch(
+            "haute._mlflow_io._load_catboost_model", return_value=_fake_catboost("a")
+        ) as load:
+            discovered = load_mlflow_model(_run_source("abc123"), task="regression")
+            named = load_mlflow_model(_run_source("abc123", "model.cbm"), task="regression")
+
+        assert named is discovered
+        assert load.call_count == 1
+        assert store.downloads == ["runs:/abc123/model.cbm"]
 
 
 # ---------------------------------------------------------------------------
-# load_mlflow_model — retry on corrupt cache (lines 486-506)
+# load_mlflow_model — retry on a corrupt copy
 # ---------------------------------------------------------------------------
 
 
 class TestLoadMlflowModelRetry:
     """Tests for retry-on-corrupt-cache logic."""
 
-    def test_retry_catboost_on_load_failure(self, tmp_path):
+    def test_retry_catboost_on_load_failure(self, serve_runs):
         """Deletes corrupt file and re-downloads on first load failure."""
-        fake_model = MagicMock()
-        fake_model.feature_names_ = ["a"]
-        fake_model.get_cat_feature_indices.return_value = []
+        store = serve_runs({"run1": {"model.cbm": b"corrupt"}})
+        fake_model = _fake_catboost("a")
 
         call_count = 0
 
@@ -1930,36 +1850,20 @@ class TestLoadMlflowModelRetry:
                 raise RuntimeError("corrupt file")
             return fake_model
 
-        corrupt_file = tmp_path / "corrupt.cbm"
-        corrupt_file.write_bytes(b"corrupt")
-
-        with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(corrupt_file),
-            ),
-            patch(
-                "haute._mlflow_io._load_catboost_model",
-                side_effect=load_catboost_side_effect,
-            ),
+        with patch(
+            "haute._mlflow_io._load_catboost_model",
+            side_effect=load_catboost_side_effect,
         ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="run1",
-                artifact_path="model.cbm",
-                task="regression",
-            )
+            result = load_mlflow_model(_run_source("run1", "model.cbm"), task="regression")
 
         assert isinstance(result, ScoringModel)
         assert result.flavor == "catboost"
         assert call_count == 2
+        assert store.downloads == ["runs:/run1/model.cbm"] * 2
 
-    def test_retry_rustystats_on_load_failure(self, tmp_path):
+    def test_retry_rustystats_on_load_failure(self, serve_runs):
         """Retries RustyStats model loading on first failure."""
+        store = serve_runs({"run2": {"model.rsglm": b"corrupt"}})
         fake_sm = ScoringModel(MagicMock(), ["x"], frozenset(), "rustystats")
 
         call_count = 0
@@ -1971,32 +1875,32 @@ class TestLoadMlflowModelRetry:
                 raise RuntimeError("corrupt binary")
             return fake_sm
 
-        corrupt_file = tmp_path / "corrupt.rsglm"
-        corrupt_file.write_bytes(b"corrupt")
-
-        with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run2", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value=str(corrupt_file),
-            ),
-            patch(
-                "haute._mlflow_io._load_rustystats_model",
-                side_effect=load_rs_side_effect,
-            ),
+        with patch(
+            "haute._mlflow_io._load_rustystats_model",
+            side_effect=load_rs_side_effect,
         ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="run2",
-                artifact_path="model.rsglm",
-                task="regression",
-            )
+            result = load_mlflow_model(_run_source("run2", "model.rsglm"), task="regression")
 
         assert result is fake_sm
         assert call_count == 2
+        assert store.downloads == ["runs:/run2/model.rsglm"] * 2
+
+    def test_a_download_that_is_not_the_listed_file_is_refused_not_retried(self, serve_runs):
+        """A file logged again between the listing and the download is refused at once:
+        downloading again would fetch the new bytes under the old identity."""
+        from haute.errors import ModelResolutionError
+
+        store = serve_runs({"run3": {"model.cbm": b"listed bytes"}})
+        store.files["run3"]["model.cbm"] = b"logged again since the listing"
+
+        with (
+            patch("haute._mlflow_io._load_catboost_model") as load,
+            pytest.raises(ModelResolutionError, match="changed while it was loaded"),
+        ):
+            load_mlflow_model(_run_source("run3", "model.cbm"), task="regression")
+
+        assert store.downloads == ["runs:/run3/model.cbm"]
+        load.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2007,104 +1911,52 @@ class TestLoadMlflowModelRetry:
 class TestLoadMlflowModelPyfunc:
     """Tests for pyfunc model loading through load_mlflow_model."""
 
-    def test_pyfunc_model_loaded_and_wrapped(self):
+    def test_pyfunc_model_loaded_and_wrapped(self, serve_runs):
         """Pyfunc model is loaded and wrapped correctly."""
+        from haute._mlflow_io import disk_cached_run_model
+
         fake_pyfunc = MagicMock()
         fake_pyfunc.metadata.signature = _signature("f1")
+        serve_runs({"run1": _PYFUNC_FOLDER})
 
-        with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), MagicMock(), MagicMock()),
-            ),
-            patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc),
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="run1",
-                artifact_path="model",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc):
+            result = load_mlflow_model(_run_source("run1", "model"), task="regression")
 
         assert result.flavor == "pyfunc"
         assert result.feature_names == ["f1"]
+        assert result.run_contract_path is None
+        # A pyfunc folder is never copied, so the disk cache records nothing for it.
+        assert disk_cached_run_model(run_id="run1", artifact_path="model", destination="") is None
 
 
 # ---------------------------------------------------------------------------
-# load_mlflow_model — auto-discovery with _find_model_artifact
+# load_mlflow_model — a run without an artifact path
 # ---------------------------------------------------------------------------
 
 
 class TestLoadMlflowModelAutoDiscover:
     """Tests for auto-discovery when artifact_path is empty."""
 
-    def test_auto_discovers_rsglm(self):
+    def test_auto_discovers_rsglm(self, serve_runs):
         """Auto-discovers .rsglm when artifact_path is empty."""
         fake_sm = ScoringModel(MagicMock(), ["x"], frozenset(), "rustystats")
+        store = serve_runs({"run1": {"model.rsglm": b"glm", "notes.txt": b"notes"}})
 
-        mock_client = MagicMock()
-
-        with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), mock_client, MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._find_model_artifact",
-                return_value=("model.rsglm", "rustystats"),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value="/tmp/model.rsglm",
-            ),
-            patch(
-                "haute._mlflow_io._load_rustystats_model",
-                return_value=fake_sm,
-            ),
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="run1",
-                artifact_path="",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_rustystats_model", return_value=fake_sm):
+            result = load_mlflow_model(_run_source("run1"), task="regression")
 
         assert result is fake_sm
+        assert store.downloads == ["runs:/run1/model.rsglm"]
 
-    def test_auto_discovers_cbm(self):
-        """Auto-discovers .cbm when artifact_path is empty."""
-        fake_model = MagicMock()
-        fake_model.feature_names_ = ["a"]
-        fake_model.get_cat_feature_indices.return_value = []
+    def test_auto_discovers_cbm(self, serve_runs):
+        """Auto-discovers .cbm when artifact_path is empty, one folder down too."""
+        store = serve_runs({"run1": {"models/model.cbm": b"cbm", "notes.txt": b"notes"}})
 
-        mock_client = MagicMock()
-
-        with (
-            patch(
-                "haute._mlflow_io.resolve_mlflow_source",
-                return_value=("run1", "", MagicMock(), mock_client, MagicMock()),
-            ),
-            patch(
-                "haute._mlflow_io._find_model_artifact",
-                return_value=("model.cbm", "catboost"),
-            ),
-            patch(
-                "haute._mlflow_io._resolve_artifact_local",
-                return_value="/tmp/model.cbm",
-            ),
-            patch(
-                "haute._mlflow_io._load_catboost_model",
-                return_value=fake_model,
-            ),
-        ):
-            result = load_mlflow_model(
-                source_type="run",
-                run_id="run1",
-                artifact_path="",
-                task="regression",
-            )
+        with patch("haute._mlflow_io._load_catboost_model", return_value=_fake_catboost("a")):
+            result = load_mlflow_model(_run_source("run1"), task="regression")
 
         assert result.flavor == "catboost"
+        assert store.downloads == ["runs:/run1/models/model.cbm"]
 
 
 # ---------------------------------------------------------------------------
@@ -2366,25 +2218,24 @@ class TestCatBoostTaskFromTheModelFile:
         path = self._saved(
             tmp_path, CatBoostClassifier(iterations=2, verbose=0, allow_writing_files=False)
         )
-        with (
-            patch("haute._mlflow_io._resolve_artifact_local", return_value=path) as resolve,
-            pytest.raises(ConfigError),
-        ):
-            _load_with_bounded_retry(
-                mlflow_mod=MagicMock(),
-                client=MagicMock(),
-                backend=_FAKE_BACKEND,
-                run_id="r",
-                artifact="model.cbm",
-                flavor="catboost",
-                task="regression",
-            )
+        model_bytes = Path(path).read_bytes()
+        contract = StoredArtifact("model.feature_contract.json", "size:2")
+        resolved = _resolved("r", "model.cbm", model_bytes, contract=contract)
+        downloads: list[str] = []
+        transport = _transport(
+            {"model.cbm": model_bytes, "model.feature_contract.json": b"{}"}, downloads
+        )
+
+        with pytest.raises(ConfigError, match="trained for classification"):
+            _load_with_bounded_retry(mlflow_mod=transport, resolved=resolved, task="regression")
+
         # The model and the contract its run logged, each read once: never retried.
-        assert [call.args[3] for call in resolve.call_args_list] == [
-            "model.cbm",
-            "model.feature_contract.json",
-        ]
-        assert Path(path).is_file()
+        assert downloads == ["runs:/r/model.cbm", "runs:/r/model.feature_contract.json"]
+        # And the readable copy is kept.
+        copy = _artifact_cache_path(
+            tmp_path / "cache", _FAKE_BACKEND.digest, "r", "model.cbm", resolved.artifact.token
+        )
+        assert copy.read_bytes() == model_bytes
 
     def test_a_haute_refusal_is_not_retried_as_a_corrupt_download(self, tmp_path, monkeypatch):
         """A Haute refusal of readable bytes keeps its own type and message."""
@@ -2401,25 +2252,22 @@ class TestCatBoostTaskFromTheModelFile:
             num_boost_round=2,
         )
         # Two Haute records: readable LightGBM text the loader refuses by name.
-        path = tmp_path / "model.lgbm"
-        path.write_text(booster.model_to_string() + "haute:{}\nhaute:{}\n", encoding="utf-8")
-        with (
-            patch("haute._mlflow_io._resolve_artifact_local", return_value=str(path)) as resolve,
-            patch("haute._mlflow_io._run_contract_if_logged", return_value=None),
-            pytest.raises(HauteValidationError, match="holds 2 'haute:' records") as refused,
-        ):
+        model_bytes = (booster.model_to_string() + "haute:{}\nhaute:{}\n").encode("utf-8")
+        resolved = _resolved("r", "model.lgbm", model_bytes)
+        downloads: list[str] = []
+
+        with pytest.raises(HauteValidationError, match="holds 2 'haute:' records") as refused:
             _load_with_bounded_retry(
-                mlflow_mod=MagicMock(),
-                client=MagicMock(),
-                backend=_FAKE_BACKEND,
-                run_id="r",
-                artifact="model.lgbm",
-                flavor="lightgbm",
+                mlflow_mod=_transport({"model.lgbm": model_bytes}, downloads),
+                resolved=resolved,
                 task="regression",
             )
         assert "Persistently corrupt" not in str(refused.value)
-        assert resolve.call_count == 1
-        assert path.is_file()
+        assert downloads == ["runs:/r/model.lgbm"]
+        copy = _artifact_cache_path(
+            tmp_path / "cache", _FAKE_BACKEND.digest, "r", "model.lgbm", resolved.artifact.token
+        )
+        assert copy.is_file()
 
     def test_an_unreadable_class_label_record_is_raised_not_replaced(self, tmp_path, monkeypatch):
         from catboost import CatBoostClassifier
@@ -2437,75 +2285,88 @@ class TestCatBoostTaskFromTheModelFile:
             catboost_class_labels(model)
 
 
-class TestRunContractIfLogged:
-    """A run's contract is optional, but only a completed listing says it is absent."""
+class TestTheContractBesideAModel:
+    """A run's contract is optional, but only the run's own listing says it is absent.
 
-    @pytest.fixture(autouse=True)
-    def _cache_root(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("haute._mlflow_io._disk_cache_root", lambda: tmp_path / "cache")
+    The resolution reads the contract from the listing that holds the model, so
+    an absent contract costs no store call of its own; a failed listing raises
+    (``TestTheRunDiscoveryRule.test_a_store_failure_propagates_rather_than_reading_as_no_model``);
+    and the disk cache records a load's copies only once every one is in place.
+    """
 
-    @staticmethod
-    def _marker(run_id: str, contract_artifact: str) -> Path:
-        from haute import _mlflow_io
+    def test_an_absent_contract_costs_nothing_and_is_recorded_as_none(self, monkeypatch):
+        from haute._mlflow_io import _recorded_resolution, fetch_resolved_files
 
-        # The module's patched root, not the name this test module imported.
-        return _mlflow_io._contract_absent_marker(
-            _artifact_cache_path(
-                _mlflow_io._disk_cache_root(), _FAKE_BACKEND.digest, run_id, contract_artifact
-            )
+        client = FakeArtifactClient({"r3": {"models/m.cbm": 4, "models/notes.txt": 1}})
+        resolved = _resolve(monkeypatch, client, _run_source("r3", "models/m.cbm"))
+
+        assert resolved.contract is None
+        # The model's own folder is listed, once; nothing else is asked.
+        assert client.listings == [("r3", "models")]
+
+        downloads: list[str] = []
+        fetched = fetch_resolved_files(_transport({"models/m.cbm": b"mcbm"}, downloads), resolved)
+        assert fetched.contract is None
+        assert downloads == ["runs:/r3/models/m.cbm"]
+
+        recorded = _recorded_resolution(_FAKE_BACKEND, "r3", "models/m.cbm")
+        assert recorded is not None
+        answer, cached = recorded
+        assert answer.contract is None and cached.contract_path is None
+        assert cached.model_path == fetched.model
+        assert json.loads(cached.record_path.read_text(encoding="utf-8"))["contract"] is None
+
+    def test_a_listed_contract_is_fetched_with_its_model_and_recorded(self, monkeypatch):
+        from haute._mlflow_io import _recorded_resolution, fetch_resolved_files
+
+        client = FakeArtifactClient(
+            {"r4": {"models/m.cbm": 4, "models/m.feature_contract.json": 2}}
+        )
+        resolved = _resolve(monkeypatch, client, _run_source("r4", "models/m.cbm"))
+
+        assert resolved.contract == StoredArtifact("models/m.feature_contract.json", "size:2")
+        assert client.listings == [("r4", "models")]
+
+        downloads: list[str] = []
+        fetched = fetch_resolved_files(
+            _transport(
+                {"models/m.cbm": b"mcbm", "models/m.feature_contract.json": b"{}"}, downloads
+            ),
+            resolved,
+        )
+        assert downloads == ["runs:/r4/models/m.cbm", "runs:/r4/models/m.feature_contract.json"]
+        assert fetched.contract is not None and fetched.contract.read_bytes() == b"{}"
+
+        recorded = _recorded_resolution(_FAKE_BACKEND, "r4", "models/m.cbm")
+        assert recorded is not None
+        answer, cached = recorded
+        assert answer.contract == resolved.contract
+        assert cached.contract_path == fetched.contract
+        assert cached.present()
+
+    def test_a_failed_download_of_a_listed_contract_is_raised_and_records_nothing(self):
+        """A contract that could not be fetched is never read as no contract."""
+        from haute._mlflow_io import (
+            _recorded_resolution,
+            _resolution_record_path,
+            fetch_resolved_files,
         )
 
-    def test_a_failed_download_of_a_listed_contract_is_raised_not_read_as_absence(self):
-        from haute._mlflow_io import _run_contract_if_logged
+        resolved = _resolved(
+            "r1",
+            "m.cbm",
+            b"mcbm",
+            contract=StoredArtifact("m.feature_contract.json", "size:2"),
+        )
+        transport = _transport(
+            {"m.cbm": b"mcbm", "m.feature_contract.json": OSError("connection reset")}, []
+        )
 
-        client = MagicMock()
-        client.list_artifacts.return_value = [MagicMock(path="m.feature_contract.json")]
-        with (
-            patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("reset")),
-            pytest.raises(OSError, match="reset"),
-        ):
-            _run_contract_if_logged(MagicMock(), lambda: client, _FAKE_BACKEND, "r1", "m.cbm")
-        assert not self._marker("r1", "m.feature_contract.json").exists()
+        with pytest.raises(OSError, match="connection reset"):
+            fetch_resolved_files(transport, resolved)
 
-    def test_a_failed_listing_is_raised_not_read_as_absence(self):
-        from mlflow.exceptions import MlflowException
-
-        from haute._mlflow_io import _run_contract_if_logged
-
-        client = MagicMock()
-        client.list_artifacts.side_effect = MlflowException("401 Unauthorized")
-        with (
-            patch("haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")),
-            pytest.raises(MlflowException, match="401"),
-        ):
-            _run_contract_if_logged(MagicMock(), lambda: client, _FAKE_BACKEND, "r2", "m.cbm")
-        assert not self._marker("r2", "m.feature_contract.json").exists()
-
-    def test_an_absent_contract_is_recorded_and_not_fetched_again(self):
-        from haute._mlflow_io import _run_contract_if_logged
-
-        client = MagicMock()
-        client.list_artifacts.return_value = [MagicMock(path="models/m.cbm")]
-        opened: list[object] = []
-
-        def open_client() -> MagicMock:
-            opened.append(client)
-            return client
-
-        with patch(
-            "haute._mlflow_io._resolve_artifact_local", side_effect=OSError("missing")
-        ) as resolve:
-            first = _run_contract_if_logged(
-                MagicMock(), open_client, _FAKE_BACKEND, "r3", "models/m.cbm"
-            )
-            second = _run_contract_if_logged(
-                MagicMock(), open_client, _FAKE_BACKEND, "r3", "models/m.cbm"
-            )
-
-        assert first is None and second is None
-        # The contract's own directory is listed, once; the marker answers the second call
-        # without opening the tracking store.
-        client.list_artifacts.assert_called_once_with("r3", "models")
-        assert len(opened) == 1
-        assert resolve.call_count == 1
-        assert self._marker("r3", "models/m.feature_contract.json").is_file()
+        assert not _resolution_record_path(
+            _disk_cache_root(), _FAKE_BACKEND, "r1", "m.cbm"
+        ).exists()
+        # So a disk-cache-only load refuses it rather than scoring without its contract.
+        assert _recorded_resolution(_FAKE_BACKEND, "r1", "m.cbm") is None
