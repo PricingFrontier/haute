@@ -988,6 +988,9 @@ def _duration_key_series(name: str, keys: pl.Series, dtype: pl.Duration) -> pl.S
 # stripped first. Polars 1.44 deprecates the String-to-Date cast, and
 # ``str.to_date`` without a format would infer other spellings.
 _ISO_DATE_FORMAT = "%Y-%m-%d"
+# Whole numbers below this are the only ones a Float64 cannot round onto from a
+# neighbour: text read as a number at or past it is refused rather than rounded.
+_FLOAT_EXACT_INT = 2**53
 # How many of a configured level list's misfits a refusal quotes.
 _MISFIT_DISPLAY_CAP = 3
 
@@ -1000,22 +1003,47 @@ def _is_time_kind(dtype: pl.DataType) -> bool:
 def _parsed_text(
     levels: pl.Series, dtype: pl.DataType, parse: Callable[[pl.Series], pl.Series]
 ) -> pl.Series:
-    """*levels* parsed as times by *parse*, a level no format reads coming back null.
+    """*levels* parsed as times by *parse*, each alone, a level no format reads coming back null.
 
-    Polars infers one format from the first value and refuses the whole column
-    when it finds none; each level is then read alone, so only the levels that
-    are no time are marked rather than the list refused in Polars' words.
+    Polars infers one format from a column's first value, so read together a
+    level's reading would depend on the other levels of its table, and a first
+    level no format reads refuses the whole list in Polars' words. Read alone,
+    each level parses as the scalar path parses it.
     """
-    try:
-        return parse(levels)
-    except pl.exceptions.PolarsError:
-        parsed: list[pl.Series] = []
-        for value in levels.to_list():
-            try:
-                parsed.append(parse(pl.Series(levels.name, [value], dtype=pl.String)))
-            except pl.exceptions.PolarsError:
-                parsed.append(pl.Series(levels.name, [None], dtype=dtype))
-        return pl.concat(parsed)
+    parsed: list[pl.Series] = []
+    for value in levels.to_list():
+        try:
+            parsed.append(parse(pl.Series(levels.name, [value], dtype=pl.String)))
+        except pl.exceptions.PolarsError:
+            parsed.append(pl.Series(levels.name, [None], dtype=dtype))
+    return pl.concat(parsed) if parsed else pl.Series(levels.name, [], dtype=dtype)
+
+
+def _text_as_number(
+    levels: pl.Series, direct: pl.Series, dtype: pl.DataType
+) -> tuple[pl.Series, pl.Series | None]:
+    """Text levels of an integer or Boolean column: the type's own spelling, else a number.
+
+    *direct* is each level read in the type's own spelling (``25``, ``true``);
+    a level it does not read is read as a number (``25.0``, ``1.0``, the text a
+    sidecar's map key holds for one) and held to the number rules, so text and
+    the number it spells are one level, whichever was written.
+    """
+    if direct.null_count() == levels.null_count():
+        return direct, None
+    numbers, number_misfit = _coerce_levels(levels.cast(pl.Float64, strict=False), dtype)
+    read = numbers.to_list()
+    fraction = [False] * len(read) if number_misfit is None else number_misfit.to_list()
+    typed: list[Any] = []
+    misfit: list[bool] = []
+    for level, own, number, not_whole in zip(
+        levels.to_list(), direct.to_list(), read, fraction, strict=True
+    ):
+        exact = isinstance(number, bool) or (number is not None and abs(number) < _FLOAT_EXACT_INT)
+        value = own if own is not None else (number if exact and not not_whole else None)
+        typed.append(value)
+        misfit.append(level is not None and value is None)
+    return pl.Series(levels.name, typed, dtype=dtype), pl.Series(misfit, dtype=pl.Boolean)
 
 
 def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl.Series | None]:
@@ -1023,14 +1051,15 @@ def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl
 
     The one reading of a configured level (a rating entry's key, a categorical
     banding rule's value, a value traced through either) as a value of its
-    column's type. A level is a value of the type when the type holds it as
-    written: ``true``/``false`` (or ``"true"``/``"false"``, ``1``/``0``,
-    ``"1"``/``"0"``) for a Boolean, a whole number for an integer, text a date or time parses from
-    for a temporal type, and whatever Polars' cast reads for the rest. A level
-    that is not one comes back null and is marked in the second series (``None``
-    when nothing can misfit). A Null column holds no value, so every level reads
-    as null there and none misfits: it can never match. A Duration's text is
-    parsed by :func:`_duration_key_series`, which refuses a misfit itself.
+    column's type. A level is a value of the type when the type holds it:
+    ``true``/``false`` or ``1``/``0`` for a Boolean, a whole number for an
+    integer (text such as ``"25.0"`` read as the number it spells), text a date
+    or time parses from for a temporal type, and whatever Polars' cast reads for
+    the rest. A level that is not one comes back null and is marked in the
+    second series (``None`` when nothing can misfit). A Null column holds no
+    value, so every level reads as null there and none misfits: it can never
+    match. A Duration's text is parsed by :func:`_duration_key_series`, which
+    refuses a misfit itself.
     """
     source = levels.dtype
     if dtype == pl.Null:
@@ -1041,13 +1070,13 @@ def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl
         return _duration_key_series(levels.name, levels, dtype), None
     numeric_source = source.is_numeric() or source == pl.Boolean
     if dtype == pl.Boolean and source == pl.String:
-        # The text a sidecar map key holds for true and false, or for 1 and 0.
-        typed = levels.replace_strict(
-            {"true": True, "false": False, "1": True, "0": False},
-            default=None,
-            return_dtype=pl.Boolean,
+        own = levels.replace_strict(
+            {"true": True, "false": False}, default=None, return_dtype=pl.Boolean
         )
-    elif dtype == pl.Boolean and source.is_numeric():
+        return _text_as_number(levels, own, dtype)
+    if dtype.is_integer() and source == pl.String:
+        return _text_as_number(levels, levels.cast(dtype, strict=False), dtype)
+    if dtype == pl.Boolean and source.is_numeric():
         typed = levels.replace_strict({0: False, 1: True}, default=None, return_dtype=pl.Boolean)
     elif dtype == pl.Date and source == pl.String:
         typed = levels.str.strip_chars().str.to_date(_ISO_DATE_FORMAT, strict=False)

@@ -182,8 +182,12 @@ Out of scope (owned by neighbouring components):
   Each level is read as it was written (a list holding `"true"` and `0` is not
   first made all text) and as the column's type holds it: `true`/`false`,
   `"true"`/`"false"`, `1`/`0` or `"1"`/`"0"` for a Boolean; a whole number for an integer
-  type (`2.5` is no value of one); text that parses as a date or time for a
-  temporal type (a number, a temporal type's physical count, is not one); and
+  type (`2.5` is no value of one), where text the type does not read as written
+  (`"25.0"`, or `"1.0"` on a Boolean) is read as the number it spells, below
+  2^53, and held to the same rule, so a number and its saved text are one
+  level; text that parses as a date or time for a temporal type, each level
+  parsed alone so its reading never depends on the table's other levels (a
+  number, a temporal type's physical count, is not one); and
   Polars' cast for the rest. A level that is not a value of the type (`"NE"` on
   an integer column, `"True"` on a Boolean one, `"x"` on a Datetime one) is
   refused before the lookup is built, naming the table's output column, the

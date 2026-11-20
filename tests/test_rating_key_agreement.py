@@ -1172,3 +1172,42 @@ def test_a_duration_refusal_names_the_banding_factor_and_its_setting() -> None:
         apply_banding_from_config(frame.lazy(), {"factors": [factor]})
     assert str(refused.value).startswith("Banding output 'wait_band' of column 'wait': ")
     assert refused.value.setting == "factors"
+
+
+@pytest.mark.parametrize(
+    ("level", "matches"), [("25", True), ("25.0", True), ("2.5e1", True), (25.0, True)]
+)
+def test_a_whole_number_written_as_text_or_float_is_a_value_of_an_integer_column(
+    level: Any, matches: bool
+) -> None:
+    """The value counts, not how it was typed: on an integer column '25.0' is 25."""
+    frame = pl.DataFrame({"n": [25, 30]}).lazy()
+    table = {"factors": ["n"], "output_column": "rate", "entries": [{"n": level, "value": 2.0}]}
+    out = _apply_rating_table(frame, table).collect()["rate"].to_list()
+    assert out == [2.0, None]
+    assert normalise_rating_key(level, pl.Int64) == "25"
+
+
+@pytest.mark.parametrize("level", ["25.5", "9007199254740993.0"])
+def test_text_that_is_no_exact_whole_number_is_refused_on_an_integer_column(level: str) -> None:
+    with pytest.raises(
+        ConfigSettingError, match="which is not a value of its column's type, Int64"
+    ):
+        normalise_rating_key(level, pl.Int64)
+
+
+def test_datetime_levels_read_together_as_each_reads_alone() -> None:
+    """A level's reading never depends on the other levels of its table."""
+    dtype = pl.Datetime("us")
+    levels = ["2024-01-31 10:00", "31/01/2024 11:00"]
+    alone = [normalise_rating_key(level, dtype) for level in levels]
+    frame = pl.DataFrame(
+        {"at": pl.Series([datetime(2024, 1, 31, 10), datetime(2024, 1, 31, 11)], dtype=dtype)}
+    ).lazy()
+    table = {
+        "factors": ["at"],
+        "output_column": "rate",
+        "entries": [{"at": level, "value": 1.0 + i} for i, level in enumerate(levels)],
+    }
+    assert None not in alone
+    assert _apply_rating_table(frame, table).collect()["rate"].to_list() == [1.0, 2.0]

@@ -2068,3 +2068,28 @@ def test_a_categorical_rule_on_a_boolean_column_bands_the_same_after_a_save(
     after = apply_banding_from_config(frame, {"factors": reloaded}).collect()
     assert before["flag_band"].to_list() == ["Yes", "No", None]
     assert after["flag_band"].to_list() == ["Yes", "No", None]
+
+
+@pytest.mark.parametrize(
+    ("dtype", "values", "rules"),
+    [
+        (pl.Int64, [1, 2, 3], [1.0, 2.0]),
+        (pl.Boolean, [True, False, None], [1.0, 0.0]),
+        (pl.Float64, [1.0, 2.5, 3.0], [1, 2.5]),
+    ],
+)
+def test_a_numeric_rule_value_bands_the_same_after_a_save(
+    dtype: pl.DataType, values: list[object], rules: list[object]
+) -> None:
+    factor = {
+        "banding": "categorical",
+        "column": "x",
+        "output_column": "x_band",
+        "rules": [{"value": value, "assignment": f"r{i}"} for i, value in enumerate(rules)],
+    }
+    frame = pl.LazyFrame({"x": pl.Series(values, dtype=dtype)})
+    before = apply_banding_from_config(frame, {"factors": [factor]}).collect()
+    reloaded = normalise_banding_factors(compact_banding_config_for_sidecar({"factors": [factor]}))
+    after = apply_banding_from_config(frame, {"factors": reloaded}).collect()
+    assert after["x_band"].to_list() == before["x_band"].to_list()
+    assert before["x_band"].to_list()[:2] == ["r0", "r1"]

@@ -220,12 +220,15 @@ and a null claim is exactly a defaulted row:
   Python type, so a list holding `"true"` and `0`, or `True` and `2`, is not
   made one Polars supertype before each is read, and duplicates as written
   compare `(type, value)`, so `1` and `"1"` are two levels. Boolean takes
-  `true`/`false`, `"true"`/`"false"`, `1`/`0` and `"1"`/`"0"` (the text a
-  sidecar's map key holds for them) only; an integer dtype refuses a fraction (Polars would truncate
+  `true`/`false`, `1`/`0`, and text that is `"true"`/`"false"` or spells
+  `1` or `0` (`_text_as_number`: the type's own spelling first, else the text
+  read as a Float64 number, below 2^53, and held to the number rules) only;
+  an integer dtype reads text the same way, so `"25.0"` is 25 and a
+  sidecar's map key for `1.0` reads back as the value it was; an integer dtype refuses a fraction (Polars would truncate
   `1.5` to `1`); a temporal dtype refuses a number or Boolean (its physical
   count) and parses text non-strictly, a level it cannot parse refused by
-  name (where Polars finds no format to infer from the first value and refuses
-  the whole list, `_parsed_text` reads each level alone); a Duration level's own
+  name (`_parsed_text` parses each Time or Datetime level alone, as the scalar
+  path does, since Polars infers one format from a list's first value); a Duration level's own
   refusal is raised again with the subject and setting in front; a numeric dtype refuses a Boolean; the rest take Polars' non-strict
   cast, a level it nulls refused by name. A Null dtype reads every level as
   null and refuses none.

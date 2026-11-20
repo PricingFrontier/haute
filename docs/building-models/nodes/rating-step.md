@@ -107,8 +107,9 @@ If a factor column has no values at all (Polars' Null type, such as a column a T
     Each entry's factor values are first converted to the type of the input
     column, then matched. On a numeric column the value counts, not how it
     was typed: on a float column, entries `25`, `"25"` and `"25.0"` are the
-    same key and all match `25.0`. On a true/false column, `true`, `"true"`
-    and `1` are the same key. An entry that is not a value of the column's
+    same key and all match `25.0`; on an integer column `25`, `"25"` and
+    `"25.0"` all match `25`. On a true/false column, `true`, `"true"` and `1`
+    are the same key. An entry that is not a value of the column's
     type fails the run rather than silently never matching, with a message
     naming the table, the factor, the entry and the type: for example `"NE"`
     or `2.5` on an integer column, `"True"` on a true/false column, or a
