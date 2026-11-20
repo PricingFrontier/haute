@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 import json
 import tokenize
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +25,13 @@ from haute._config_validation import (
     validate_node_config,
 )
 from haute._contracts import Contract, declared_contract_json, get_node_contract
-from haute._edge_join import normalise_edge_join_decorator_kwargs, require_edge_join_order
+from haute._edge_join import (
+    decorator_value_written,
+    normalise_edge_join_decorator_kwargs,
+    require_edge_join_order,
+)
+from haute._keyword_parameters import KEYWORD_PARAMETERS_KEY
 from haute._logging import get_logger
-from haute._node_config_models import COLUMN_CONFIG_KEYS
 from haute._node_specs import (
     CODE_NODE_TYPES,
     DEFAULT_NODE_TYPE,
@@ -46,7 +50,6 @@ from haute._types import NodeEditorState, NodeType
 from haute.errors import ConfigError, ContractMismatchError, HauteError, ParseError
 
 __all__ = [
-    "_copy_config_keys",
     "_build_node_config",
     "_attach_code_from_body",
     "_resolve_node_config",
@@ -54,23 +57,6 @@ __all__ = [
 ]
 
 logger = get_logger(component="parser.config_builder")
-
-
-def _copy_config_keys(
-    config: dict[str, Any],
-    kwargs: dict[str, Any],
-    keys: tuple[str, ...] | list[str],
-) -> None:
-    """Copy matching keys from *kwargs* into *config*.
-
-    Only keys that exist in *kwargs* are copied; missing keys are
-    silently skipped.  This is a convenience helper to eliminate the
-    repeated ``for key in KEYS: if key in kwargs: config[key] = kwargs[key]``
-    pattern in ``_build_node_config``.
-    """
-    for key in keys:
-        if key in kwargs:
-            config[key] = kwargs[key]
 
 
 def _edge_join_decorator_config(
@@ -118,30 +104,49 @@ _DECORATOR_CONFIG: Mapping[NodeType, _DecoratorConfigReader | None] = node_type_
 )
 
 
+#: The settings a node reads from its function, never from a decorator keyword: the
+#: body would win over the keyword, which the next save then deletes.
+_FUNCTION_HELD_KEYS: frozenset[str] = frozenset({"code", "steps", KEYWORD_PARAMETERS_KEY})
+
+
 def _build_node_config(
     node_type: str,
     decorator_kwargs: dict[str, Any],
     body: str,
     param_names: list[str],
+    *,
+    func_name: str = "",
 ) -> dict[str, Any]:
     """Build the config of a node that keeps its settings on its decorator.
 
     Only an Edge Join and a transform do (:data:`_DECORATOR_CONFIG`): every other
     node type keeps them in a JSON sidecar, which ``_resolve_node_config`` loads, or
     refuses the node for lacking, before this runs.
+
+    Every keyword reaches the config, so the node type's model refuses one it does not
+    declare by name, as it refuses any undeclared setting, rather than the parse
+    dropping it and the next save deleting it (CGEN-05). A keyword a save writes as
+    none, an empty value or an Edge Join's default suffix (``decorator_value_written``),
+    is read as none.
     """
     reject_removed_config_keys(node_type, decorator_kwargs)
     read = _DECORATOR_CONFIG.get(NodeType(node_type))
     if read is None:
         raise ValueError(f"{node_type!r} nodes keep their settings in a JSON sidecar.")
-    config = read(decorator_kwargs, body, param_names)
-    _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
-    # ``input_mapping`` is also used by ordinary Polars transforms to retain a
-    # stable logical input name across topology rewrites.  Keep the decorator
-    # metadata on parse so graph -> source -> graph remains a fixpoint.
-    if "input_mapping" in decorator_kwargs:
-        config["input_mapping"] = decorator_kwargs["input_mapping"]
-    return config
+    held = sorted(_FUNCTION_HELD_KEYS.intersection(decorator_kwargs))
+    if held:
+        raise ConfigError(
+            f"Node {func_name!r} takes its {', '.join(held)} from its function, not from "
+            f"decorator keywords: remove {', '.join(repr(key) for key in held)} from its "
+            "decorator.",
+            func_name=func_name,
+            node_type=str(node_type),
+            keywords=held,
+        )
+    written = {
+        key: value for key, value in decorator_kwargs.items() if decorator_value_written(key, value)
+    }
+    return {**written, **read(written, body, param_names)}
 
 
 def _attach_code_from_body(
@@ -310,20 +315,28 @@ def _validate_user_contract(
         )
 
 
-def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
+def _sidecar_required_error(
+    node_type: NodeType, func_name: str, keywords: Sequence[str] = ()
+) -> ConfigError:
     """Build the error for a folder-backed node used without a ``config=`` sidecar.
 
     Names the concrete config folder resolved from ``NODE_TYPE_TO_FOLDER`` (not a
     ``<type>`` placeholder), says the settings belong in that file rather than
-    in decorator keywords, and points at ``haute init`` as a starter-sidecar
-    generator. Raised from the parse path (:func:`_resolve_node_config`), which
-    editor recovery shares, so both surface the same guidance.
+    in decorator keywords, naming the decorator's own *keywords*, and points at
+    ``haute init`` as a starter-sidecar generator. Raised from the parse path
+    (:func:`_resolve_node_config`), which editor recovery shares, so both surface
+    the same guidance.
     """
     folder = NODE_TYPE_TO_FOLDER[node_type]
+    given = (
+        f" (its decorator keywords {', '.join(repr(key) for key in sorted(keywords))} belong there)"
+        if keywords
+        else ""
+    )
     return ConfigError(
         f"Node type {node_type.value!r} stores its config in a JSON sidecar; "
         f'reference it with config="config/{folder}/<name>.json" and put its '
-        f"settings in that file, not in decorator keywords. "
+        f"settings in that file, not in decorator keywords{given}. "
         f"Run `haute init` to scaffold a starter project with example "
         f"sidecars, or create config/{folder}/<name>.json by hand.",
         func_name=func_name,
@@ -681,9 +694,11 @@ def _resolve_node_config(
                 config, func_name, node_type, declaration=is_declaration_body(body)
             )
     elif has_config_folder(node_type):
-        raise _sidecar_required_error(node_type, func_name)
+        raise _sidecar_required_error(node_type, func_name, list(decorator_kwargs))
     else:
-        config = _build_node_config(node_type, decorator_kwargs, body, param_names)
+        config = _build_node_config(
+            node_type, decorator_kwargs, body, param_names, func_name=func_name
+        )
         if node_type in STEPPED_NODE_TYPES:
             config = _with_lifted_steps(config, func_name, node_type)
 

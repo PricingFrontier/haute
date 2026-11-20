@@ -229,6 +229,16 @@ Out of scope (owned by neighbouring components):
   Edge Join and Explore, an Edge Join's `suffix` left out at its default `_right` while
   `how` and `maintain_order` are always written), and the decorator itself performs that behaviour when
   the file runs on its own (see [pipeline-config](../pipeline-config/high-level.md)).
+  A node that keeps its settings on its decorator, an Edge Join or a transform, reads every
+  keyword into its config, so its type's config model refuses one it does not declare by
+  name ("Node 't' has polars config keys the node type does not declare: 'selected_colums'")
+  rather than the parse dropping it and the next save deleting it; a node with a settings
+  file refuses any keyword beside `config=`, and one without it names its keywords in the
+  refusal that asks for the file. What the function holds (`code`, `steps`, the keyword
+  parameters) is never a keyword. One rule, `_edge_join.decorator_value_written`, decides
+  which keyword values a save writes: an empty value (`None`, `""`, `[]`) and an Edge Join's
+  default suffix are the setting's absence, written as no keyword and read as no setting, so
+  parse, save and parse read the same (CGEN-05).
   Codegen therefore emits no loader, scoring, join, switch or assembly call:
   - A configured node without user code is a **declaration**,
     `def <name>(<inputs>): ...`. Its parameters name its inputs, carry no

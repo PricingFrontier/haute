@@ -39,7 +39,13 @@ from haute._code_extraction import (
 )
 from haute._codegen_builders import _func_name, _gen_transform, render_node_source
 from haute._config_builder import _resolve_node_config
-from haute._node_specs import NODE_TYPE_TO_DECORATOR
+from haute._config_io import has_config_folder
+from haute._node_specs import (
+    DECORATOR_TO_NODE_TYPE,
+    NODE_TYPE_TO_DECORATOR,
+    NODE_TYPE_TO_FOLDER,
+    SINGLETON_NODE_NAMES,
+)
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
@@ -93,6 +99,48 @@ class TestItem18ConfigPathFailsLoudly:
                 base_dir=tmp_path,
                 func_name="does_not_exist",
                 explicit_node_type=NodeType.DATA_INPUT,
+            )
+
+    @pytest.mark.parametrize("decorator", sorted(DECORATOR_TO_NODE_TYPE))
+    @pytest.mark.parametrize("with_settings_file", [True, False])
+    def test_every_node_type_refuses_an_unknown_decorator_keyword_by_name(
+        self, tmp_path: Path, decorator: str, with_settings_file: bool
+    ) -> None:
+        """CGEN-05: a keyword a node type does not take is never dropped by the parse and
+        then deleted by the next save; the refusal names it."""
+        node_type = DECORATOR_TO_NODE_TYPE[decorator]
+        kwargs: dict[str, object] = {"colour": "red"}
+        if node_type is NodeType.EDGE_JOIN:
+            kwargs["maintain_order"] = "left"
+        if has_config_folder(node_type):
+            if with_settings_file:
+                kwargs["config"] = f"config/{NODE_TYPE_TO_FOLDER[node_type]}/n.json"
+        elif not with_settings_file:
+            pytest.skip("a node type without a settings file has its keywords alone")
+        body = "    return upstream\n" if node_type is NodeType.POLARS else "..."
+        with pytest.raises(ConfigError, match="'colour'"):
+            _resolve_node_config(
+                kwargs,
+                body=body,
+                param_names=["upstream", "other"],
+                base_dir=tmp_path,
+                func_name=SINGLETON_NODE_NAMES.get(node_type, "n"),
+                explicit_node_type=node_type,
+            )
+
+    @pytest.mark.parametrize("keyword", ["code", "steps", "keyword_parameters"])
+    def test_a_transform_takes_what_its_function_holds_from_no_keyword(
+        self, tmp_path: Path, keyword: str
+    ) -> None:
+        """CGEN-05: the body would win over the keyword, which the next save then deletes."""
+        with pytest.raises(ConfigError, match=f"'{keyword}'"):
+            _resolve_node_config(
+                {keyword: "x"},
+                body="    return upstream\n",
+                param_names=["upstream"],
+                base_dir=tmp_path,
+                func_name="t",
+                explicit_node_type=NodeType.POLARS,
             )
 
     @pytest.mark.parametrize("reference", [1, ["config/banding/b.json"]])

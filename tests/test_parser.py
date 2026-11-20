@@ -184,6 +184,35 @@ pipeline = haute.Pipeline("my_pricing", description="Motor pricing")
         assert "unknown keyword 'colour'" in document.diagnostics[0].message
         assert document.capabilities.can_save is False
 
+    def test_a_misspelt_transform_keyword_is_refused_naming_the_node_and_the_keyword(
+        self,
+    ) -> None:
+        """CGEN-05: it was read without a word, the node passed every column, and the
+        next save deleted the setting from the file."""
+        from haute.parser import parse_pipeline_source
+
+        source = (
+            "import polars as pl\nimport haute\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def src() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"k": [1], "x": [2]})\n\n\n'
+            '@pipeline.polars(selected_colums=["k"])\n'
+            "def t(src: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return src\n"
+        )
+        with pytest.raises(
+            ConfigError, match=r"Node 't' has polars config keys .*'selected_colums'"
+        ):
+            parse_pipeline_source(source)
+        spelt = source.replace("selected_colums", "selected_columns")
+        from haute.codegen import graph_to_code
+
+        graph = parse_pipeline_source(spelt)
+        assert graph.node_map["t"].data.config["selected_columns"] == ["k"]
+        again = parse_pipeline_source(graph_to_code(graph, pipeline_name="p"))
+        assert again.node_map["t"].data.config == graph.node_map["t"].data.config
+
     def test_edges_from_connect_calls(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "a", "data.parquet")
         code = f"""\
@@ -632,7 +661,7 @@ class TestDecoratorsWithoutPipelineConstructor:
 import polars as pl
 import haute
 
-pipeline = object()  # not haute.Pipeline(...)
+pipeline = None  # not haute.Pipeline(...)
 
 
 @pipeline.polars

@@ -670,17 +670,36 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 
 
 def _constructor_call(tree: ast.Module, var_name: str) -> ast.Call | None:
-    """The first module-level construction of *var_name*, annotated or not, by
-    ``haute.<Class>(...)`` or the class imported from ``haute``: the constructor every
-    reader uses, found as the module's boundaries find it."""
+    """The first module-level call assigned to *var_name*, annotated or not: the
+    constructor every reader uses, or None when the module assigns it none.
+
+    The call must be ``haute.<Class>(...)``, or the class imported from ``haute``, as the
+    module's boundaries find it. Any other call (a factory) is a :class:`ParseError`
+    naming its line: a save would write the constructor in its place.
+    """
+    title = var_name.title()
     is_constructor = _module_boundaries(
-        tree, line_count=0, receiver=var_name, constructor_name=var_name.title()
+        tree, line_count=0, receiver=var_name, constructor_name=title
     ).is_constructor
     for node in tree.body:
-        if _is_receiver_construction(node, var_name, is_constructor):
-            assert isinstance(node, ast.Assign | ast.AnnAssign)
-            assert isinstance(node.value, ast.Call)
-            return node.value
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        value = node.value
+        if not isinstance(value, ast.Call) or not any(
+            isinstance(target, ast.Name) and target.id == var_name for target in targets
+        ):
+            continue
+        if not is_constructor(value):
+            raise ParseError(
+                f"{var_name} is assigned {_describe_expr(value)!r}, not haute.{title}(...): "
+                f"a save writes the {var_name} as haute.{title}(...), so assign it that.",
+                line=value.lineno,
+            )
+        return value
     return None
 
 

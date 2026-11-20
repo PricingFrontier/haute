@@ -11,10 +11,9 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-05` to `CGEN-07` were reproduced on 10 November 2026 through the
-parser, the preview and `haute run`. `CGEN-05` and `CGEN-06` are each a
-hand-written form the parser accepts and then drops; `CGEN-07` is one the
-naming check cannot see.
+`CGEN-06` and `CGEN-07` were reproduced on 10 November 2026 through the
+parser, the preview and `haute run`. `CGEN-06` is a hand-written form the
+parser accepts and then drops; `CGEN-07` is one the naming check cannot see.
 
 `CGEN-09` and `CGEN-10` come from phase 5 of
 [the codebase review plan](codebase-review-plan.md): a reader from a second
@@ -31,49 +30,12 @@ each is a rendering that differs from the code it was read from.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
 | CGEN-09 | Planned | P1 | A step list or a node's settings read after a browser held them keep the numbers they were read with: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
 | CGEN-10 | Planned | P3 | A Transform that rebinds its input's name loads that statement as code, so its steps render against its input names. |
 
 ## Planned improvements
-
-### CGEN-05 — A Transform's decorator refuses a keyword it does not know
-**Why:** Reproduced on 10 November 2026. `@pipeline.polars(selected_colums=["k"])`,
-with `selected_columns` misspelt, parses without a word. The node then passes
-every column: its preview showed `k` and `x`, where the correctly spelt
-keyword showed `k`. The next save from the editor writes the decorator back
-as `@pipeline.polars`, so the misspelt setting disappears from the file. Any
-unknown keyword goes the same way, `cache=True` or `description="..."`
-included. Every other node type refuses this by name: an Edge Join answers
-"Node 'j' has edgeJoin config keys the node type does not declare", and a
-node with a settings file refuses extra decorator keywords. A Transform reads
-its code from the function body and copies only `selected_columns` and
-`input_mapping` from the decorator; nothing looks at the rest. Running the
-file on its own keeps the unknown keywords in the node's settings, so the
-two readings of one file differ. One accepted value is lost as well: an Edge
-Join's `suffix=""` parses as an empty suffix and is written back without the
-keyword, which then reads as the default `_right`. The 28 October audit
-recorded the lead without naming a keyword.
-
-**Plan:** Refuse a Transform keyword outside its declared set when the file
-is parsed, naming the node and the keyword, in the words the Edge Join uses.
-Write an Edge Join's empty suffix back as it was given, or refuse it by
-name.
-
-**Acceptance:** The misspelt file is refused naming node `t` and
-`selected_colums`. A file holding only declared keywords parses and
-regenerates to itself. An Edge Join with `suffix=""` reads the same after
-parse, generate and parse, or is refused by name. A test gives every node
-type one unknown decorator keyword and expects a refusal that names it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_builder.py::_build_node_config`;
-`src/haute/_config_builder.py::_transform_decorator_config`;
-`src/haute/_node_config_models.py::COLUMN_CONFIG_KEYS`;
-`src/haute/_edge_join.py::edge_join_config_to_decorator_kwargs`.
 
 ### CGEN-06 — Polars imported under another name is kept, or refused by name
 **Why:** Reproduced on 10 November 2026. A pipeline file that starts
