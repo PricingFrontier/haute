@@ -13,7 +13,6 @@ import { workbenchSampleField } from "./workbenchSample"
 import type { NodeAddressPayload } from "../generated/api-contracts.generated"
 import type { FrameTargetPayload } from "../utils/requestGateway"
 import type { GlobalConstant } from "../utils/globalConstants"
-import type { SteppedNodeRef } from "../utils/editedSteps"
 import { REQUEST_INPUT_TYPES, isRequestInputType } from "../utils/nodeTypes"
 import type {
   ApplyOptimiserRequest,
@@ -918,8 +917,11 @@ export interface ScopedNodeSaveRequest {
   targetSourceFile: string
   targetRecoveryId: string
   config: Record<string, unknown>
-  /** Whether the node's steps were edited since the last save: only then are they written as its code. */
-  stepsEdited: boolean
+  /** The code saved for the node's steps, when they were not edited since the last save:
+   * the node is written from it, its steps not read. */
+  savedCode: string | null
+  /** The node's settings as saved, when they were not edited: the node is written from them. */
+  savedSettings: string | null
 }
 
 /** Save one `scoped_editable` node in isolation while the document stays fenced. */
@@ -933,7 +935,8 @@ export function saveNodeScoped(
     target_source_file: args.targetSourceFile,
     target_recovery_id: args.targetRecoveryId,
     config: args.config,
-    steps_edited: args.stepsEdited,
+    saved_code: args.savedCode,
+    saved_settings: args.savedSettings,
   }, options, parsePipelineEditorDocument, "saveNodeScoped")
 }
 
@@ -1169,8 +1172,6 @@ export function savePipeline(
     connection_id: string | null
     /** Makes a repeat of this save, after its answer was lost, write once. */
     operation: string
-    /** The stepped nodes whose steps were edited: only theirs are written from steps. */
-    edited_steps: SteppedNodeRef[]
   },
   ticket: KeyedTicket,
   options?: MutationOptions,

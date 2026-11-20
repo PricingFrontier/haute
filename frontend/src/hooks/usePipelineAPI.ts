@@ -24,8 +24,7 @@ import {
 import { addressKey, nodeFrame } from "../utils/nodeAddress"
 import { answerTargetKey, keyText, keysOnCanvas, placeAddress } from "../utils/answerAddresses"
 import type { PreparedGraph, PreviewInputsResponse } from "../api/types"
-import { toCanonicalGraphPayload } from "../utils/graphSnapshot"
-import { type SavedStepCode, withEditedSteps, withSavedStepCode } from "../utils/editedSteps"
+import { type SavedNodeParts, documentRequestGraph, withSavedForms, withSavedParts } from "../utils/documentRequest"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { PreviewNodeResponse, SchemaWarning } from "../api/types"
 import useToastStore from "../stores/useToastStore"
@@ -1816,21 +1815,22 @@ export default function usePipelineAPI({
     /** The graph as it is now, saved on the revision the tab holds now, under `operation`. */
     const build = (operation: string): SentSave => {
       const { nodes: n, edges: e } = documentGraph()
-      const { globalConstants: saveConstants, preamble: savePreamble } = useGraphStore.getState()
-      // Only the stepped nodes whose steps were edited since the last save are rendered from
-      // them; every other one is sent with the code that save wrote (CGEN-11).
-      const authored = withEditedSteps(
+      const { globalConstants: saveConstants, preamble: savePreamble, lastSavedSnapshot: baseline } = useGraphStore.getState()
+      // Only the parts edited since the last save are read from the request; every other one
+      // is sent with the saved form the server gave it (CGEN-11, CGEN-13). The snapshot keeps
+      // those forms, and the answer gives the rest, for the baseline it becomes.
+      const authored = withSavedForms(
         { nodes: n, submodels: structuredClone(useGraphStore.getState().submodels) },
-        useGraphStore.getState().lastSavedSnapshot,
+        baseline,
       )
       const snapshot = captureGraphSnapshot({
-        nodes: authored.document.nodes,
+        nodes: authored.nodes,
         edges: e,
         preamble: savePreamble,
-        submodels: authored.document.submodels,
+        submodels: authored.submodels,
         globalConstants: saveConstants,
       })
-      const requestGraph = toCanonicalGraphPayload(snapshot)
+      const requestGraph = documentRequestGraph(snapshot, baseline)
       const baseRevision = sourceRevisionRef.current
       return {
         snapshot,
@@ -1858,7 +1858,6 @@ export default function usePipelineAPI({
           // A repeat under the same operation writes once: the server answers it with
           // what the first request did when that one committed.
           operation,
-          edited_steps: authored.edited,
         },
       }
     }
@@ -1884,12 +1883,13 @@ export default function usePipelineAPI({
         holds: () => saveRequestId > appliedSaveSeq.current && useDocumentStatusStore.getState().sourceFile === saveSourceFile,
         subscribe: (listener) => useDocumentStatusStore.subscribe(() => listener()),
       }
-      const acknowledge = (sourceRevision: string, documentFingerprint: string, stepCode: readonly SavedStepCode[]) => {
+      const acknowledge = (sourceRevision: string, documentFingerprint: string, savedParts: readonly SavedNodeParts[]) => {
         const observedRevision = sourceRevisionRef.current
         if (observedRevision !== save.baseRevision && observedRevision !== sourceRevision) return
-        // The baseline holds the code the server wrote for each edited node: the browser's own
-        // rendering may not have arrived, and the next save sends this code for those steps.
-        useGraphStore.getState().markSaved(withSavedStepCode(save.snapshot, stepCode))
+        // The baseline holds the saved form of each part the server read and wrote: the code
+        // of each edited node's steps (the browser's own rendering may not have arrived) and the
+        // settings it wrote, which the next request sends for those parts.
+        useGraphStore.getState().markSaved(withSavedParts(save.snapshot, savedParts))
         appliedSaveSeq.current = saveRequestId
         sourceRevisionRef.current = sourceRevision
         const status = useDocumentStatusStore.getState()
@@ -1901,7 +1901,7 @@ export default function usePipelineAPI({
       await answer([thisSave], sendHeld(hold, save, (held, ticket) => savePipeline(held.request, ticket)), {
         ok: async (data) => {
           try {
-            acknowledge(data.source_revision, data.document_fingerprint, data.step_code ?? [])
+            acknowledge(data.source_revision, data.document_fingerprint, data.saved_parts ?? [])
             wrote(data)
             saved = true
           } catch (err: unknown) {

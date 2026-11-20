@@ -463,49 +463,70 @@ describe("usePipelineAPI - preview and save requests", () => {
       expect(useDocumentStatusStore.getState().diagnostics).toEqual([])
     })
 
-    describe("of stepped nodes (CGEN-11)", () => {
+    describe("of the parts nobody edited (CGEN-11, CGEN-13)", () => {
       const steps = [
         { id: "s", kind: "source", input: "quotes" },
         { id: "w", kind: "with_column", name: "r", expr: { type: "operand", operand: { kind: "literal", type: "number", value: 1 } } },
       ]
       const saved = 'df = quotes\ndf = df.with_columns(pl.lit(1.0).alias("r"))'
+      // As the document gives the node: its settings held as a browser holds them (`1.0` is
+      // `1`), and the saved form of each part as the server wrote it.
+      const loadedEditor = { steps_error: null, steps_discarded: null, saved_code: saved, saved_settings: '{"rate":1.0}' }
       const withConfig = (config: Record<string, unknown>) => (nodes: Node[]) =>
         nodes.map((node) => ({ ...node, data: { ...node.data, config } }))
       const sent = (call: number) => {
-        const payload = mockSave.mock.calls[call][0]
-        return { edited: payload.edited_steps, code: (payload.graph.nodes[0].data as { config: { code?: unknown } }).config.code }
+        const node = mockSave.mock.calls[call][0].graph.nodes[0].data as {
+          config: { code?: unknown }
+          editor?: { saved_code?: unknown; saved_settings?: unknown }
+        }
+        return { code: node.config.code, savedCode: node.editor?.saved_code, savedSettings: node.editor?.saved_settings }
       }
 
-      it("names only the nodes whose steps were edited, and sends every other one with the code saved for its steps", async () => {
+      it("sends each part as saved with its saved form, and reads every edited one from the request", async () => {
         mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
         const { result } = renderHook(() => usePipelineAPI(makeParams()))
         await waitFor(() => expect(result.current.loading).toBe(false))
         act(() => useGraphStore.getState().loadGraphSnapshot({
-          nodes: [makeNode("t", "polars", { data: { label: "t", nodeType: "polars", config: { steps, code: saved } } })],
+          nodes: [makeNode("t", "polars", { data: { label: "t", nodeType: "polars", config: { steps, code: saved, rate: 1 }, editor: loadedEditor } })],
           edges: [],
           preamble: "",
           submodels: {},
           globalConstants: [],
         }))
+        // The saved forms stay with the baseline: the canvas's copy carries none.
+        expect(useGraphStore.getState().nodes[0].data.editor).toEqual({ steps_error: null, steps_discarded: null })
         // The live code is a cache: a rendering that lost the decimal, or one Undo restored.
-        act(() => useGraphStore.getState().setNodesRaw(withConfig({ steps: structuredClone(steps), code: "df = stale" })))
+        act(() => useGraphStore.getState().setNodesRaw(withConfig({ steps: structuredClone(steps), code: "df = stale", rate: 1 })))
         mockSave.mockResolvedValueOnce(makeSavePipelineResponse())
         await act(async () => { await result.current.handleSave() })
-        expect(sent(0)).toEqual({ edited: [], code: saved })
+        expect(sent(0)).toEqual({ code: saved, savedCode: saved, savedSettings: '{"rate":1.0}' })
+        expect("edited_steps" in mockSave.mock.calls[0][0]).toBe(false)
 
         const edited = [...steps, { id: "l", kind: "limit", n: 5 }]
-        act(() => useGraphStore.getState().setNodes(withConfig({ steps: edited, code: saved })))
+        act(() => useGraphStore.getState().setNodes(withConfig({ steps: edited, code: saved, rate: 1 })))
         mockSave.mockResolvedValueOnce(makeSavePipelineResponse({
           source_revision: "revision-edited",
-          step_code: [{ submodel: null, node_id: "t", code: "df = written" }],
+          saved_parts: [{ submodel: null, node_id: "t", code: "df = written", settings: null }],
         }))
         await act(async () => { await result.current.handleSave() })
-        expect(sent(1).edited).toEqual([{ submodel: null, node_id: "t" }])
+        expect(sent(1)).toEqual({ code: saved, savedCode: undefined, savedSettings: '{"rate":1.0}' })
 
         // Saved again before the browser's own rendering arrived: the code the server wrote.
         mockSave.mockResolvedValueOnce(makeSavePipelineResponse({ source_revision: "revision-again" }))
         await act(async () => { await result.current.handleSave() })
-        expect(sent(2)).toEqual({ edited: [], code: "df = written" })
+        expect(sent(2)).toEqual({ code: "df = written", savedCode: "df = written", savedSettings: '{"rate":1.0}' })
+
+        act(() => useGraphStore.getState().setNodes(withConfig({ steps: edited, code: saved, rate: 2 })))
+        mockSave.mockResolvedValueOnce(makeSavePipelineResponse({
+          source_revision: "revision-setting",
+          saved_parts: [{ submodel: null, node_id: "t", code: null, settings: '{"rate":2}' }],
+        }))
+        await act(async () => { await result.current.handleSave() })
+        expect(sent(3)).toEqual({ code: "df = written", savedCode: "df = written", savedSettings: undefined })
+
+        mockSave.mockResolvedValueOnce(makeSavePipelineResponse({ source_revision: "revision-settled" }))
+        await act(async () => { await result.current.handleSave() })
+        expect(sent(4).savedSettings).toBe('{"rate":2}')
       })
     })
 

@@ -9,7 +9,8 @@ import type { Edge, Node } from "@xyflow/react"
 
 import type { EditorIdentityBatchRequest } from "../api/types"
 import type { PipelineEdge } from "../types/node"
-import { toCanonicalGraphPayload } from "./graphSnapshot"
+import { documentRequestGraph } from "./documentRequest"
+import type { toCanonicalGraphPayload } from "./graphSnapshot"
 import { NODE_TYPES } from "./nodeTypes"
 
 type NamingGraph = NonNullable<EditorIdentityBatchRequest["graph"]>
@@ -34,10 +35,11 @@ export function namingContextGraph({
   if (drilledDefinition === null || !definition || typeof definition !== "object") {
     return { ...graph, preserved_blocks: [...preservedBlocks] }
   }
-  const live = toCanonicalGraphPayload({
+  // Names only: the drilled view's nodes are read as the view holds them.
+  const live = documentRequestGraph({
     nodes: liveNodes.filter((node) => node.type !== NODE_TYPES.SUBMODEL_PORT),
     edges: liveEdges as PipelineEdge[],
-  })
+  }, null)
   const definitionGraph = (definition as { graph: Record<string, unknown> }).graph
   return {
     ...graph,

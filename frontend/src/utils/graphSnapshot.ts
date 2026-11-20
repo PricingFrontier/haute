@@ -51,13 +51,31 @@ const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
 const NO_RETAINED_METADATA = new Set<string>()
 /** A request carries the server's editor state back, so a transform of the graph echoes it. */
 const REQUEST_NODE_METADATA_FIELDS = new Set(["editor"])
+/**
+ * The saved form of a node's parts: only `utils/documentRequest.ts` puts them on a request,
+ * from the saved baseline (CGEN-13).
+ */
+const SAVED_FORM_FIELDS = new Set(["saved_code", "saved_settings"])
+
+function withoutSavedFormFields(data: unknown): unknown {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return data
+  const record = data as Record<string, unknown>
+  const editor = record.editor
+  if (editor === null || typeof editor !== "object" || Array.isArray(editor)) return data
+  return {
+    ...record,
+    editor: Object.fromEntries(Object.entries(editor).filter(([key]) => !SAVED_FORM_FIELDS.has(key))),
+  }
+}
 
 function stripNodeUiFields(n: Node, forFingerprint = false): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(k)) continue
     out[k] = k === "data"
-      ? stripNodeDataMetadataFields(v, forFingerprint ? NO_RETAINED_METADATA : REQUEST_NODE_METADATA_FIELDS)
+      ? withoutSavedFormFields(
+        stripNodeDataMetadataFields(v, forFingerprint ? NO_RETAINED_METADATA : REQUEST_NODE_METADATA_FIELDS),
+      )
       : v
   }
   const data = out.data as Record<string, unknown> | undefined
@@ -238,8 +256,11 @@ function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T 
 
 /**
  * Clone a live editor graph into the strict canonical payload accepted by
- * backend graph schemas. Presentation fields and server-owned editor identity
- * metadata are removed recursively from root and embedded definition graphs.
+ * backend graph schemas. Presentation fields, server-owned editor identity
+ * metadata and the saved form of each node's parts are removed recursively from
+ * root and embedded definition graphs. A request builds its graph with
+ * `utils/documentRequest.documentRequestGraph`, which gives the parts nobody
+ * edited their saved forms again from the baseline.
  */
 export function toCanonicalGraphPayload(input: {
   nodes: readonly Node[]

@@ -1,6 +1,5 @@
 import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
-import { savedCodeForSteps } from "../utils/editedSteps"
-import { isSteppedConfig } from "../utils/polarsStepInputs"
+import { savedFormsFor } from "../utils/documentRequest"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { saveNodeScoped } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -136,14 +135,12 @@ export function useScopedNodeSave({
           result = { ok: false, error: `Save the other edited node first: ${nodeLabel(others[0])}.` }
           return
         }
-        // Steps the node holds as saved are not sent as its program: the code saved for them is
-        // (CGEN-11).
+        // A part the node holds as saved is sent with its saved form, and read from that
+        // (CGEN-11, CGEN-13): steps as saved by the code saved for them, settings as saved by
+        // their saved text.
         const config = (data.config ?? {}) as Record<string, unknown>
         const graph = useGraphStore.getState()
-        const stepped = isSteppedConfig(String(data.nodeType), config)
-        const savedCode = stepped
-          ? savedCodeForSteps(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, target.id, config.steps)
-          : null
+        const saved = savedFormsFor(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, target)
         // A response is adopted only while the document it was computed against, its file and
         // revision, is still the one on screen.
         const sentAgainst = watch(useDocumentStatusStore, (current) => JSON.stringify([current.sourceFile, current.sourceRevision]))
@@ -152,8 +149,9 @@ export function useScopedNodeSave({
           sourceRevision: state.sourceRevision,
           targetSourceFile: data._sourceFile,
           targetRecoveryId: data._recoveryId,
-          config: savedCode === null ? config : { ...config, code: savedCode },
-          stepsEdited: stepped && savedCode === null,
+          config: saved.saved_code === undefined ? config : { ...config, code: saved.saved_code },
+          savedCode: saved.saved_code ?? null,
+          savedSettings: saved.saved_settings ?? null,
         }), {
           ok: ({ value: document, documentFingerprint }) => {
             editedNodeIdsRef.current.delete(target.id)

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import useListReorder from "../../../hooks/useListReorder"
 import useGraphStore from "../../../stores/useGraphStore"
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
-import { savedCodeForSteps } from "../../../utils/editedSteps"
+import { savedCodeForSteps } from "../../../utils/documentRequest"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnUpdateConfig } from "../_shared"

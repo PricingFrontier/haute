@@ -18,6 +18,8 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
     RootModel,
     Strict,
     StrictBool,
@@ -140,6 +142,59 @@ PipelineLoadStatus = Literal["ready", "degraded", "source_only"]
 PipelineElementAvailability = Literal["ready", "unavailable", "blocked"]
 PipelineDiagnosticSeverity = Literal["warning", "error"]
 PipelineDiagnosticScope = Literal["pipeline", "node", "edge", "submodel"]
+
+
+class DocumentRequest(BaseModel):
+    """A request that carries the editor's document in ``graph``: every request model that
+    carries it derives from this one (CGEN-13, codegen high-level "Which parts a request
+    reads").
+
+    Before any node is built, each node's parts are read as the request sends them
+    (``haute._edited_parts.graph_as_read``): a part sent with its saved form, which its
+    editor did not edit, is built from that form, and any other part is read from the
+    request. ``edited_steps`` and ``edited_settings`` are the nodes whose steps, and whose
+    settings, were read from the request. A graph built on the server carries no saved
+    form, so every part of it is read.
+    """
+
+    _edited_steps: frozenset[tuple[str | None, str]] = PrivateAttr(default=frozenset())
+    _edited_settings: frozenset[tuple[str | None, str]] = PrivateAttr(default=frozenset())
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _read_only_edited_parts(
+        cls, data: Any, handler: ModelWrapValidatorHandler[DocumentRequest]
+    ) -> DocumentRequest:
+        from haute._edited_parts import graph_as_read, holds_steps, scoped_nodes
+
+        graph = data.get("graph") if isinstance(data, Mapping) else None
+        if isinstance(graph, Graph):
+            request = handler(data)
+            nodes = scoped_nodes(graph)
+            request._edited_steps = frozenset(
+                ref
+                for ref, node in nodes.items()
+                if holds_steps(node.data.nodeType, node.data.config)
+            )
+            request._edited_settings = frozenset(nodes)
+            return request
+        if not isinstance(graph, Mapping):
+            return handler(data)
+        as_read = graph_as_read(graph)
+        request = handler({**data, "graph": as_read.graph})
+        request._edited_steps = as_read.edited_steps
+        request._edited_settings = as_read.edited_settings
+        return request
+
+    @property
+    def edited_steps(self) -> frozenset[tuple[str | None, str]]:
+        """The nodes holding a step list whose steps were read from the request."""
+        return self._edited_steps
+
+    @property
+    def edited_settings(self) -> frozenset[tuple[str | None, str]]:
+        """The nodes whose settings were read from the request."""
+        return self._edited_settings
 
 
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
@@ -1425,6 +1480,23 @@ class RecoveryPipelineNode(BaseModel):
             raise ValueError("Recovery display_position coordinates must be finite.")
         return position
 
+    @model_validator(mode="after")
+    def _give_saved_forms(self) -> RecoveryPipelineNode:
+        # The saved form of each part of the node, as the document holds it, for a request
+        # to send back for a part its editor does not edit (CGEN-13).
+        if self.config is None:
+            return self
+        from haute._edited_parts import holds_steps, settings_text
+
+        saved_code = str(self.config.get("code") or "")
+        self.editor = self.editor.model_copy(
+            update={
+                "saved_code": saved_code if holds_steps(self.node_type, self.config) else None,
+                "saved_settings": settings_text(self.config),
+            }
+        )
+        return self
+
 
 class RecoveryPipelineEdge(BaseModel):
     """Editor edge shape intentionally incompatible with canonical GraphEdge."""
@@ -1652,7 +1724,7 @@ class EditorIdentityRequestNode(BaseModel):
         return self
 
 
-class EditorIdentitiesRequest(BaseModel):
+class EditorIdentitiesRequest(DocumentRequest):
     model_config = ConfigDict(extra="forbid")
 
     nodes: list[EditorIdentityRequestNode] = Field(min_length=0, max_length=10_000)
@@ -1819,12 +1891,20 @@ class PipelineNodeSaveRequest(BaseModel):
     target_source_file: BoundedPath = Field(min_length=1)
     target_recovery_id: BoundedName = Field(min_length=1)
     config: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
-    steps_edited: bool = Field(
-        default=False,
+    saved_code: BoundedText | None = Field(
+        default=None,
         description=(
-            "Whether the node's steps were edited since the document was saved: only then "
-            "is its code rendered from them; otherwise it is written from the code it "
-            "carries (CGEN-11)."
+            "The code saved for the node's steps, sent when they were not edited since the "
+            "document was saved: the node is written from it and its steps are not read. "
+            "Without it the node's steps are rendered into its code (CGEN-11)."
+        ),
+    )
+    saved_settings: BoundedText | None = Field(
+        default=None,
+        description=(
+            "The node's settings as saved, as the document gave them (JSON text), sent when "
+            "they were not edited: the node is written from them and the settings in "
+            "``config`` are not read (CGEN-13)."
         ),
     )
 
@@ -1892,24 +1972,23 @@ class PipelineRepairApplyResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SteppedNodeRef(BaseModel):
-    """A stepped node by the graph that holds it: the pipeline's own (``submodel`` null)
-    or a submodel definition's, by its id."""
+class SavedNodeParts(BaseModel):
+    """The saved form of each part of a node a save read from its request, as the file it
+    wrote holds it, by the graph that holds the node: the pipeline's own (``submodel``
+    null) or a submodel definition's, by its id. ``code`` is the code a node whose steps it
+    read loads with (its steps' rendering, as a reload builds it, and empty when they do not
+    render); ``settings`` the settings it wrote for a node whose settings it read, as JSON
+    text (CGEN-13)."""
 
     model_config = ConfigDict(extra="forbid")
 
     submodel: str | None = Field(default=None, max_length=512)
     node_id: str = Field(min_length=1, max_length=512)
+    code: str | None = None
+    settings: str | None = None
 
 
-class SavedStepCode(SteppedNodeRef):
-    """The code a node the save rendered from its steps loads with from the file it wrote:
-    the steps' rendering, as a reload builds it, and empty when they do not render."""
-
-    code: str
-
-
-class SavePipelineRequest(BaseModel):
+class SavePipelineRequest(DocumentRequest):
     name: BoundedName = "main"
     description: BoundedText = ""
     graph: Graph = Field(default_factory=Graph)
@@ -1943,40 +2022,6 @@ class SavePipelineRequest(BaseModel):
             "that committed is answered with that save's response."
         ),
     )
-    edited_steps: list[SteppedNodeRef] = Field(
-        default_factory=list,
-        max_length=MAX_REQUEST_ITEMS,
-        description=(
-            "The stepped nodes whose steps were edited since the document was saved: the "
-            "save renders their code from their steps. Every other stepped node is written "
-            "from the code it carries, and the steps it carries are not read (CGEN-11)."
-        ),
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _read_only_edited_steps(cls, data: Any) -> Any:
-        # Before the graph's nodes are built: building one renders its steps into its code.
-        if not isinstance(data, Mapping):
-            return data
-        from haute._step_authority import graph_without_unread_steps
-
-        graph = data.get("graph")
-        if isinstance(graph, Graph):
-            graph = graph.model_dump(mode="python", by_alias=True)
-        if not isinstance(graph, Mapping):
-            return data
-        edited: list[tuple[str | None, str]] = []
-        for ref in data.get("edited_steps") or []:
-            if isinstance(ref, SteppedNodeRef):
-                edited.append((ref.submodel, ref.node_id))
-                continue
-            scope = ref.get("submodel") if isinstance(ref, Mapping) else None
-            node_id = ref.get("node_id") if isinstance(ref, Mapping) else None
-            # A malformed name is the field's own validation error.
-            if isinstance(node_id, str) and (scope is None or isinstance(scope, str)):
-                edited.append((scope, node_id))
-        return {**data, "graph": graph_without_unread_steps(graph, edited)}
 
     @model_validator(mode="after")
     def _active_source_is_a_source(self) -> SavePipelineRequest:
@@ -1998,8 +2043,9 @@ class SavePipelineResponse(SaveCapture):
     source_revision: RevisionToken
     # The saved document's fingerprint, as live sync names it, for the saver to keep.
     document_fingerprint: str
-    # The code of each node named in ``edited_steps``, for the saver's saved baseline.
-    step_code: list[SavedStepCode] = Field(default_factory=list)
+    # The saved form of each part the save read from its request, for the saver's saved
+    # baseline (CGEN-13).
+    saved_parts: list[SavedNodeParts] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -2154,7 +2200,7 @@ class PolarsFreeCodeColumnsResponse(BaseModel):
 PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
 
 
-class PreviewNodeRequest(EditorSampleRequest):
+class PreviewNodeRequest(EditorSampleRequest, DocumentRequest):
     # A field the request does not define (a node id or port beside the target) is refused,
     # never silently dropped.
     model_config = ConfigDict(extra="forbid")
@@ -2297,7 +2343,7 @@ class PreviewNodeResponse(NodeResult):
     seed_plan: list[PreviewSeedPlanEntry] = Field(default_factory=list)
 
 
-class PreviewInputsRequest(EditorSampleRequest):
+class PreviewInputsRequest(EditorSampleRequest, DocumentRequest):
     """Which inputs a preview would read, so the browser prepares only those."""
 
     model_config = ConfigDict(extra="forbid")
@@ -2332,7 +2378,7 @@ class TraceSeedPlanEntry(BaseModel):
     generation_id: BoundedName = Field(min_length=1)
 
 
-class TraceRequest(EditorSampleRequest):
+class TraceRequest(EditorSampleRequest, DocumentRequest):
     # A field the request does not define (a node id or port beside the target) is refused,
     # never silently dropped.
     model_config = ConfigDict(extra="forbid")
@@ -2569,7 +2615,7 @@ class PipelineSettingsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class OutputDestinationRequest(NodeTargetRequest):
+class OutputDestinationRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
 
 
@@ -2579,7 +2625,7 @@ class OutputDestinationResponse(BaseModel):
     suffix_mismatch: bool
 
 
-class WriteOutputRequest(NodeTargetRequest):
+class WriteOutputRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
     source: BoundedName = "live"
     overwrite: StrictBool = False
@@ -2594,7 +2640,7 @@ class WriteOutputResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class OutputAssembleDryRunRequest(EditorSampleRequest, NodeTargetRequest):
+class OutputAssembleDryRunRequest(EditorSampleRequest, NodeTargetRequest, DocumentRequest):
     graph: Graph
     #: The in-progress (volatile, unsaved) output_mapping to preview.
     output_mapping: list[RequestEntry] = Field(default_factory=list, max_length=MAX_REQUEST_ITEMS)
@@ -2841,7 +2887,7 @@ NodeDataPointState = Literal["current", "stale", "partial", "missing", "building
 NodeDataColumns = list[str] | Literal["all"]
 
 
-class NodeDataRequest(EditorSampleRequest, NodeTargetRequest):
+class NodeDataRequest(EditorSampleRequest, NodeTargetRequest, DocumentRequest):
     """Name a consumer node by address; the service resolves the data point it reads."""
 
     graph: Graph
@@ -2950,7 +2996,7 @@ class NodeDataClearResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CacheNodesRequest(EditorSampleRequest):
+class CacheNodesRequest(EditorSampleRequest, DocumentRequest):
     """The graph whose nodes to report on, and the source they are read for."""
 
     model_config = ConfigDict(extra="forbid")
@@ -3170,7 +3216,7 @@ class ExplorePivotResult(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
-class ExplorePivotRunRequest(EditorSampleRequest, NodeTargetRequest):
+class ExplorePivotRunRequest(EditorSampleRequest, NodeTargetRequest, DocumentRequest):
     graph: Graph
     pivot: dict[BoundedName, Any] = Field(max_length=MAX_REQUEST_ITEMS)
     source: BoundedName = "live"
@@ -3200,7 +3246,7 @@ class ExplorePivotStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BandingStatsRequest(EditorSampleRequest, NodeTargetRequest):
+class BandingStatsRequest(EditorSampleRequest, NodeTargetRequest, DocumentRequest):
     """Statistics for one banding factor over the whole dataset its node reads.
 
     The factor is the one in the editor rather than the one in the saved graph,
@@ -3257,7 +3303,7 @@ class BandingStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RatingLevelsRequest(EditorSampleRequest, NodeTargetRequest):
+class RatingLevelsRequest(EditorSampleRequest, NodeTargetRequest, DocumentRequest):
     """The levels of raw rating factor columns over the whole dataset.
 
     The node says which data point to read; the columns are the ones the editor
@@ -3359,7 +3405,7 @@ class ExploreRelationshipsResponse(BaseModel):
     key_check: ExploreKeyCheck | None = None
 
 
-class ExplorePivotMembersRequest(EditorSampleRequest, NodeTargetRequest):
+class ExplorePivotMembersRequest(EditorSampleRequest, NodeTargetRequest, DocumentRequest):
     graph: Graph
     field: BoundedName
     source: BoundedName = "live"
@@ -3635,7 +3681,7 @@ class UtilityDeleteResponse(SaveCapture):
 # ---------------------------------------------------------------------------
 
 
-class CreateSubmodelRequest(BaseModel):
+class CreateSubmodelRequest(DocumentRequest):
     name: BoundedName
     node_ids: list[BoundedName] = Field(max_length=MAX_REQUEST_ITEMS)
     graph: Graph
@@ -3655,7 +3701,7 @@ class CreateSubmodelResponse(BaseModel):
     graph: Graph = Field(default_factory=Graph)
 
 
-class CreateNodeInstanceRequest(BaseModel):
+class CreateNodeInstanceRequest(DocumentRequest):
     node_id: BoundedName = Field(min_length=1)
     graph: Graph
     preamble: BoundedText = ""
@@ -3677,7 +3723,7 @@ class CreateNodeInstanceResponse(BaseModel):
     source_revision: RevisionToken
 
 
-class DissolveSubmodelRequest(BaseModel):
+class DissolveSubmodelRequest(DocumentRequest):
     """Request to dissolve a submodel occurrence back into parent nodes."""
 
     # instance_id is the occurrence's node id, which is its name.
@@ -3724,7 +3770,7 @@ class SubmodelGraphResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TrainRequest(NodeTargetRequest):
+class TrainRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
     source: BoundedName = "live"
 
@@ -4365,7 +4411,7 @@ class TrainStatusResponse(BaseModel):
         return self
 
 
-class TrainEstimateRequest(NodeTargetRequest):
+class TrainEstimateRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
     source: BoundedName = "live"
 
@@ -4563,7 +4609,7 @@ class TrainEstimateResponse(BaseModel):
     node_addresses: dict[str, NodeAddressEntry]
 
 
-class DispersionEstimateRequest(NodeTargetRequest):
+class DispersionEstimateRequest(NodeTargetRequest, DocumentRequest):
     """Estimate a GLM dispersion parameter (NB theta / Tweedie var_power).
 
     The estimate is an explicit user action in the config panel: the resolved
@@ -4595,7 +4641,7 @@ class DispersionEstimateStatusResponse(BaseModel):
     worker_remote_traceback: str | None = None
 
 
-class ExportScriptRequest(NodeTargetRequest):
+class ExportScriptRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
     data_path: BoundedPath = ""
 
@@ -4790,7 +4836,7 @@ class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
 # ---------------------------------------------------------------------------
 
 
-class OptimiserSolveRequest(NodeTargetRequest):
+class OptimiserSolveRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
 
 
@@ -4800,7 +4846,7 @@ class OptimiserSolveResponse(BaseModel):
     error: str | None = None
 
 
-class OptimiserEstimateRequest(NodeTargetRequest):
+class OptimiserEstimateRequest(NodeTargetRequest, DocumentRequest):
     """Body for the optimiser-cost estimate.
 
     Used by the frontend to preview the solver input volume before kicking
@@ -4838,7 +4884,7 @@ class OptimiserEstimateResponse(BaseModel):
     session's native cap enforces; 0 when the machine has none to give."""
 
 
-class OptimiserFrontierAutoRangeRequest(NodeTargetRequest):
+class OptimiserFrontierAutoRangeRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
 
 

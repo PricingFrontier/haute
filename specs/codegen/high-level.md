@@ -434,41 +434,81 @@ parser does not require extraction to be a fixpoint of rendering: it rebuilds a
 surface's steps from the extracted body, and `canonical_steps` models the finaliser
 extraction ends with.
 
-**Which steps a write renders (CGEN-11).** A stepped node's code is its program and its
-steps are a view of that code: the load rebuilds them and accepts each only when it
-renders the statement's own text. A list that has been held anywhere since, a browser
-above all (`1.0` arrives as `1`, an integer past 2^53 as its nearest double), may have
-lost what the code holds, so a write renders a node's code from its steps only when the
-writer names the node as one whose steps were edited, or when the node carries no code,
-its steps then being the only copy. Every other stepped node is written from the code it
-carries, byte for byte, and the list it carries is not read: `haute._step_authority`
-takes it off before the node is built, since building a node renders its steps into its
-code (`NodeData`). The writers and what names their edits:
+**Which parts a request reads (CGEN-11, CGEN-13).** A stepped node's code is its program
+and its steps are a view of that code: the load rebuilds them and accepts each only when it
+renders the statement's own text. A value that has been held in a browser since may have
+lost what the file holds: a browser has one kind of number, so `1.0` arrives as `1` and an
+integer past 2^53 as its nearest double, in a step list and in a node's settings alike. So
+every request that carries the editor's document (a save, a node save, a preview, a trace,
+an estimate and every other run, and a transform of the graph) reads from the request only
+the parts of a node its editor edited. A node has two parts: its **steps**, the step list
+with the code it renders (`steps` and `code`), and its **settings**, every other key of its
+config. For a part its editor did not edit, the request carries the part's *saved form*,
+which the server issued in a form a browser keeps exactly, and the node is built from that;
+a part sent without one is read from the request.
 
-- `POST /api/pipeline/save` names them in `edited_steps`, by scope (the pipeline's own
-  nodes, or a submodel definition's by its id) and node id. The editor names the stepped
-  nodes whose steps differ from the saved baseline's, or that the baseline does not hold,
-  and sends every other one with the code the baseline saved for its steps. A name that
-  is not a node holding a step list in that scope is a 422.
-- `POST /api/pipeline/node/save` says whether its node's steps were edited
-  (`steps_edited`), decided the same way.
-- The assistant's apply and undo name the nodes whose steps the change edited and those
-  whose steps are their file's record of unfinished steps
-  (`_step_authority.steps_to_render`); its check that steps survive a save generates
-  the same source.
+- **Saved forms.** A stepped node's saved code is the code its baseline holds for its
+  steps, a string. A node's saved settings are its settings as JSON text the server wrote
+  (`haute._edited_parts.settings_text`), so `1.0` and a 19-digit integer keep their spelling.
+  Every node of an editor document (a load, a live-sync update, a node save's or a repair's
+  answer) carries its saved settings in `editor.saved_settings`. A save's answer gives, in
+  `saved_parts`, the saved form of each part it read from the request: the code each node
+  whose steps it read loads with from the file it wrote (its steps' rendering, as a reload
+  builds it), and the settings it wrote for each node whose settings it read.
+- **The editor.** The saved forms live in the editor's saved baseline only; its live nodes
+  never carry one (the load takes them off the canvas's copy). One function builds what
+  every request that carries the document sends, from the document and its baseline
+  (`frontend/src/utils/documentRequest.ts`). A node's steps are unedited when its step list
+  equals the one the baseline holds for the same node, by scope (the pipeline's own nodes,
+  or a submodel definition's by its id) and id, and its settings when they equal the
+  baseline's; each unedited part is sent with its saved form, the steps' in
+  `editor.saved_code` (and as the node's `code`), the settings' in `editor.saved_settings`.
+  A node the baseline does not hold, or holds without a saved form for that part, is sent
+  with every such part read. A transform of the graph whose answer the editor adopts as an
+  unsaved edit (create submodel, create instance, dissolve) is built with no baseline, so
+  every part is read and the answer holds the nodes as they were sent; the next save
+  compares them with the baseline as any edit is.
+- **The server.** One base model, `haute.schemas.DocumentRequest`, carries the document and
+  applies the rule before any node is built (`haute._edited_parts.graph_as_read`): a node
+  sent with a saved code is built from that code with its step list taken off, since
+  building a node renders its steps into its code (`NodeData`); a node sent with saved
+  settings is built from them, the settings it carries not read. A saved code of `""` (steps
+  that did not render when saved) leaves the steps read, being then their only copy. A saved
+  code on a node that holds no step list, and saved settings that are not a JSON object or
+  that hold `steps` or `code`, are a 422. Every request model that carries the document
+  derives from it, the save included, and records which parts it read from the request
+  (`steps_read`, `settings_read`). A built node never carries a saved form: `NodeData`
+  refuses one, so a request model that went round the base model fails loudly. `POST
+  /api/pipeline/node/save` applies the same rule to its one node (`haute._edited_parts.
+  config_as_read`). The assistant's apply and undo build their document as the editor does,
+  from the graph they changed and the one they changed it from
+  (`haute._edited_parts.with_saved_forms`), sending no saved code for a node whose steps are
+  its file's record of unfinished steps, so that record is rendered; the check that steps
+  survive a save builds its graph through the same base model.
+- **What a part read gives.** Steps read are rendered into the node's code, for a run and
+  for a write alike; settings read are run as sent and written to the node's settings
+  file. A part not read keeps the file's spelling and meaning: an untouched node's code is
+  written byte for byte and its settings file is left as it was, and a run computes the
+  column types and values the file computes. Within a part read, a number the browser held
+  is still written as the browser held it: carrying it as its kind and its digits is
+  `CGEN-09`'s.
 
 A node saved with unfinished steps has the raising placeholder for a body and its list in
-`.haute.json`. Unless its steps were edited, a save writes it from that record, the
-server's own copy, while its body in the file is still that placeholder (the parse's
-`steps_placeholder`, so a record a hand edit left behind is never read) and the node
+`.haute.json`. Unless its steps are read from the request, a save writes it from that
+record, the server's own copy, while its body in the file is still that placeholder (the
+parse's `steps_placeholder`, so a record a hand edit left behind is never read) and the node
 carries the code the record loads as; a graph that does not descend from the file, such as
-an earlier commit's, carries its own code and is written from it. The save's answer returns, in `step_code`, the code each named node loads
-with from the file it wrote, which the editor puts in its saved baseline, so a node saved
-again before the browser's own rendering arrives is sent with the code the save wrote.
-The steps editor makes a rendering the node's code only once its steps differ from the
-saved ones; steps as saved keep the code saved for them, so opening a panel edits
-nothing. `tests/test_save_code_authority.py` lists the functions that generate a node's or
-a pipeline's code and fails on a new one.
+an earlier commit's, carries its own code and is written from it. The editor puts the save's
+`saved_parts` in its saved baseline, so a node saved again before the browser's own
+rendering arrives is sent with the code the save wrote. The steps editor makes a rendering
+the node's code only once its steps differ from the saved ones; steps as saved keep the
+code saved for them, so opening a panel edits nothing. A repeated save is answered from its
+receipt before anything is rebuilt, as before: the rule needs nothing from the file.
+`tests/test_save_code_authority.py` lists the functions that generate a node's or a
+pipeline's code and fails on a new one, and fails on a request model that carries the
+document and does not derive from `DocumentRequest`; `tests/test_unedited_parts.py` makes
+each request that carries the document, from every shipped example, after a browser has
+held it.
 
 ## Design rationale
 

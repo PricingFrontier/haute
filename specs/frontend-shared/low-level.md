@@ -998,7 +998,9 @@ Workbench's sample and the cached-data list.
    (stores, job polling, the Workbench's pricing) takes `documentRequestScope` itself.
 3. **Prepared requests.** `prepareNodeRequest(scope, address, ports?)` and
    `preparePipelineRequest(scope)` capture, together and once: the document payload (the whole
-   pipeline with every definition, also while a submodel is open), the document's identity
+   pipeline with every definition, also while a submodel is open, each part nobody edited since
+   the saved baseline sent with its saved form, `utils/documentRequest.documentRequestGraph`;
+   [codegen](../codegen/high-level.md), "Which parts a request reads"), the document's identity
    (source file and execution generation), its semantic generation, the target, and the data
    source. A frame read may name several ports of one node, read in one run, as the Workbench
    prices every table of its sample at once. A request sends the source it was prepared with,
@@ -1713,9 +1715,10 @@ repair detail for the confirmation UI. Recover responses additionally parse the
 field-outcome report, completeness entries and previous configuration. Requests
 never carry client-authored replacement source/config. `saveNodeScoped` posts one
 node's proposed configuration to `/api/pipeline/node/save` and parses the
-authoritative document. `useScopedNodeSave` sends a stepped node whose steps are the
-saved baseline's with the code saved for them and `steps_edited: false`, and any other
-stepped node with `steps_edited: true` (`utils/editedSteps.savedCodeForSteps`).
+authoritative document. `useScopedNodeSave` sends each part of the node that is as the
+saved baseline holds it with its saved form (`saved_code`, the code saved for its steps, also
+as the config's `code`, and `saved_settings`), and every other part without one
+(`utils/documentRequest.savedFormsFor`).
 
 ## Recovery surfaces
 

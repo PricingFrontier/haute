@@ -828,17 +828,32 @@ def _holds_unfinished_placeholder(path: Path, name: str) -> bool:
 def _scoped_config_to_write(
     path: Path,
     target: RecoveryPipelineNode,
-    config: dict[str, Any],
-    steps_edited: bool,
+    request: PipelineNodeSaveRequest,
 ) -> dict[str, Any]:
-    """The settings a node-scoped save writes the node from (CGEN-11): unless its steps
-    were edited, the code it carries, its steps not read, or, while its body in the file
-    is the placeholder an unfinished step list is saved with and the node carries the
-    code that list loads as, the list the file's ``.haute.json`` records: the parse's own
-    rule (``steps_placeholder``), so a record a hand edit left behind is never read."""
+    """The config a node-scoped save writes the node from (CGEN-11, CGEN-13): the request's
+    as it reads it (``haute._edited_parts.config_as_read``), each part sent with its saved
+    form taken from that form, so unless its steps were edited the node is written from the
+    code saved for them, its steps not read, and unless its settings were edited from the
+    settings saved for it; or, while its body in the file is the placeholder an unfinished
+    step list is saved with and the node carries the code that list loads as, from the list
+    the file's ``.haute.json`` records: the parse's own rule (``steps_placeholder``), so a
+    record a hand edit left behind is never read."""
+    from haute._edited_parts import config_as_read, with_recorded_unfinished_steps
     from haute._sidecar import read_sidecar_state
-    from haute._step_authority import with_recorded_unfinished_steps, without_unread_steps
 
+    assert target.node_type is not None
+    try:
+        config = config_as_read(
+            target.node_type,
+            request.config,
+            saved_code=request.saved_code,
+            saved_settings=request.saved_settings,
+            node=repr(target.authored_id),
+        )
+    except ValueError as exc:
+        raise PipelineRepairError(
+            "node_saved_form_invalid", f"{exc} Nothing was saved.", status_code=422
+        ) from exc
     if target.node_type not in STEPS_FROM_CODE:
         return config
     recorded = None
@@ -846,11 +861,9 @@ def _scoped_config_to_write(
         held = read_sidecar_state(path)
         recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
     from_record = with_recorded_unfinished_steps(
-        target.node_type, config, recorded, edited=steps_edited
+        target.node_type, config, recorded, edited=request.saved_code is None
     )
-    if from_record is not None:
-        return from_record
-    return without_unread_steps(config, edited=steps_edited)
+    return config if from_record is None else from_record
 
 
 def apply_scoped_node_save(
@@ -882,7 +895,7 @@ def apply_scoped_node_save(
     )
     if not target.scoped_editable or target.node_type is None:
         raise _unsupported("This node cannot be saved in isolation; recover or repair it first.")
-    proposed = _scoped_config_to_write(path, target, request.config, request.steps_edited)
+    proposed = _scoped_config_to_write(path, target, request)
     # Code generation keeps only declared keys and a sidecar write refuses the
     # rest, so an undeclared key is refused first, for every node type, before
     # anything is written. The per-type validators then check the declared keys.

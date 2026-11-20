@@ -69,6 +69,7 @@ import {
   selectIsDirty,
   cloneGraphSnapshot,
 } from "../utils/graphSnapshot"
+import { withoutSavedForms } from "../utils/documentRequest"
 import { inputOrderedEdges } from "../utils/inputOrderedEdges"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 import { isSubmodelDefinition, isSubmodelInstanceConfig, nodeData } from "../types/node"
@@ -1371,8 +1372,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
         // metadata supplied by the load response. Preserve it in live state;
         // only the saved/history clone below crosses the persisted boundary
         // that strips transient fields.
-        const loaded = structuredClone(snapshot)
-        const lastSavedSnapshot = captureGraphSnapshot(loaded)
+        // The saved form of each node's parts stays with the baseline alone: a live copy
+        // would go stale with the first edit (CGEN-13, `utils/documentRequest.ts`).
+        const lastSavedSnapshot = captureGraphSnapshot(structuredClone(snapshot))
+        const loaded = withoutSavedForms(structuredClone(snapshot))
         // A reload keeps the open submodel while the new document holds it; its view's
         // annotations belong to the old document and go with it.
         const open = options?.keepOpenSubmodel ? focusIdentity(state.focus) : null

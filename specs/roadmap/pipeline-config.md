@@ -16,9 +16,6 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
-`PCF-09` was found on 17 November 2026 by the code-authority test's sweep of
-the shipped examples.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -28,7 +25,6 @@ the shipped examples.
 | PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
 | PCF-07 | Planned | P3 | Recover settings rebuilds a Model Score that follows an alias, instead of refusing a version it added itself. |
 | PCF-08 | Planned | P2 | Reset node refuses to replace a settings file that a node inside a submodel shares. |
-| PCF-09 | Planned | P3 | A save of a node nobody edited writes its settings file's numbers as they were written: `1.0` stays `1.0`. |
 
 ## Planned improvements
 
@@ -169,27 +165,3 @@ case gets, and the shared file is unchanged.
 
 **Evidence:** `src/haute/_pipeline_recovery.py`;
 `specs/server-api/node-recovery-actions.md`.
-
-### PCF-09 — A save keeps the spelling of the numbers in a settings file
-**Why:** Reproduced on 17 November 2026 by saving each shipped example's
-document as the editor sends it, after a number round trip as JavaScript
-performs it. The `rating_step` example's `config/rating_step/rated.json`
-holds a table's `default_value` and row values as `1.0`. The editor's
-document carries them as JSON numbers, and a browser has one kind of
-number, so the save writes them back as `1`. No result changes, since a
-Rating Step casts its values to Float64, but a save with nothing edited
-rewrites the file, and the change shows in its history. Any node's
-settings that hold a whole-number decimal take the same path.
-
-**Plan:** Write a setting the request did not change as the file held it:
-compare each settings file's values with what the save would write, and
-keep the file's bytes when they are equal as numbers.
-
-**Acceptance:** The save above leaves `rated.json` byte for byte, and
-`tests/test_save_code_authority.py`'s sweep of the shipped examples
-compares every file, not only the code.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_config_io.py::node_config_json`;
-`src/haute/routes/_save_pipeline.py::_write_config_files`.

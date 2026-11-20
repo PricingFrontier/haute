@@ -29,13 +29,10 @@ model family (Codex) read the lift of code into steps, which is new since
 the 31 October 2026 audit, and the review reproduced both on 13 November
 2026 through the editor's load and save routes, `CGEN-09` in a browser too.
 Each was a save that rewrote code nobody edited. Since 17 November 2026 a
-save renders a node's code from its steps only when they were edited ("Which
-steps a write renders" in the code generation specification), so what is
-left of each is a rendering that differs from the code it was read from.
-
-`CGEN-12` was read on 17 November 2026 beside that change: the other
-requests that run the editor's graph still take a node's code from the steps
-the browser held.
+save, and since 20 November 2026 every request that carries the editor's
+document, reads a node's steps only when they were edited ("Which parts a
+request reads" in the code generation specification), so what is left of
+each is a rendering that differs from the code it was read from.
 
 ## Priorities
 
@@ -49,9 +46,8 @@ the browser held.
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
 | CGEN-08 | Planned | P3 | A line indented with a tab, or a space too far, is reported as a syntax error at its line, not as an internal error with an incident id. |
-| CGEN-09 | Planned | P1 | A step list rendered after a browser held it keeps the numbers it was read with: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
+| CGEN-09 | Planned | P1 | A step list or a node's settings read after a browser held them keep the numbers they were read with: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
 | CGEN-10 | Planned | P3 | A Transform that rebinds its input's name loads that statement as code, so its steps render against its input names. |
-| CGEN-12 | Planned | P2 | A preview, a trace and every other request that runs the editor's graph run a stepped node's code as the file holds it unless its steps were edited. |
 
 ## Planned improvements
 
@@ -309,20 +305,26 @@ loader.
 `src/haute/_pipeline_recovery.py::_span`;
 `src/haute/schemas.py::RecoverySourceSpan`.
 
-### CGEN-09 — A rendered step keeps the numbers it was read with
+### CGEN-09 — A part read from the browser keeps the numbers it was read with
 **Why:** Reproduced on 13 November 2026 in a browser and through the
-editor's routes; what is left of it read again on 17 November 2026. A
+editor's routes; what is left of it read again on 20 November 2026. A
 Transform written by hand holds `pl.lit(1.0).alias("relativity")`,
 `(pl.col("value") * 2.0)`, `pl.col("value").fill_null(0.0)` or a filter
 `pl.col("id") == 9007199254740993`. Its steps carry each number literal as
 a JSON number, and a browser has one kind of number: `1.0` arrives as `1`,
-and an integer above 2^53 as its nearest double. Since 17 November 2026 a
-save of such a node untouched keeps its code ("Which steps a write
-renders" in the code generation specification), but whenever the save
-renders it from the list the browser held, the renderer
-writes an integer for an integer: the analyst edits another step of the
-node, or undoes back to its steps after a save, or a submodel is made
-around it or dissolved, which gives the node a new place. The file then
+and an integer above 2^53 as its nearest double. Since 20 November 2026
+every request that carries the document reads a node's steps and its
+settings from the browser only when they were edited, and takes every other
+part from the saved form the server gave ("Which parts a request reads" in
+the code generation specification). But whenever a request reads the
+steps from the list the browser held, the renderer writes an integer for
+an integer: the analyst edits another step of the node, or undoes back to
+its steps after a save, or renames a node it reads, which rewrites the
+input name in its steps, or a submodel is made around it or dissolved,
+which gives the node a new place. The same holds for a node's settings once
+one of them is edited: the others are written as the browser held them, so
+a Rating Step whose output column is renamed has its `default_value: 1.0`
+written `1`. The file then
 holds `pl.lit(1)`, `* 2`, `fill_null(0)` and `== 9007199254740992`. Run on
 the same rows, the first column is 32-bit integer where it was 64-bit
 float, the second and third are 64-bit integer where they were float, and
@@ -330,16 +332,20 @@ the filter returns the row of another id. The changed type reaches whatever
 reads the column: a deployment's output schema, a Data Output's column
 type, and arithmetic that was written to be decimal.
 
-**Plan:** Carry a step's number across the wire in a form that keeps how it
-was written, its kind and its digits as text, as the Workbench does for
-integers a browser cannot hold, and render from that.
+**Plan:** Carry a number of a step or a setting across the wire in a form
+that keeps how it was written, its kind and its digits as text, as the
+Workbench does for integers a browser cannot hold, and render and write
+from that.
 
 **Acceptance:** A test passes every rebuilt step list through a number
 round trip as JavaScript performs it and requires the rendered code to
 equal the source, for whole-number decimals, exponent forms, negative zero
-and integers of 16 to 19 digits. A browser journey that edits one step of a
-Transform holding the four statements above keeps the other three as they
-were written.
+and integers of 16 to 19 digits, and the same round trip of every shipped
+example's settings requires each settings file a save writes from them to
+equal the file. A browser journey that edits one step of a Transform holding
+the four statements above keeps the other three as they were written, and
+one that renames a Rating Step's output column keeps its `default_value`
+`1.0`.
 
 **Dependencies:** None.
 
@@ -350,16 +356,18 @@ were written.
 `src/haute/_codegen_builders.py::_stepped_body_code`;
 `frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts`;
 `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`;
-`specs/codegen/structured-syntax-boundary.md`.
+`specs/codegen/structured-syntax-boundary.md`;
+`src/haute/_edited_parts.py::graph_as_read`;
+`frontend/src/utils/documentRequest.ts::documentRequestGraph`.
 
 ### CGEN-10 — A Transform that rebinds its input's name loads that statement as code
 **Why:** Reproduced on 13 November 2026 through the editor's load and save
 routes; what is left of it read again on 17 November 2026. A Transform whose
 input is named `exposure` holds `df = exposure`, then `exposure = 365`, then
 `df.with_columns((pl.col("days") / exposure).alias("years"))`. It runs and
-gives 1.0 and 2.0, and since 17 November 2026 a save of it untouched keeps
-its code ("Which steps a write renders" in the code generation
-specification). But the lift reads `exposure = 365` as a
+gives 1.0 and 2.0, and since 20 November 2026 a save or a preview of it
+untouched keeps or runs its code ("Which parts a request reads" in the code
+generation specification). But the lift reads `exposure = 365` as a
 Variable step. It accepts a step when the step, rendered after the steps
 before it, gives the statement's text, and it makes that trial without the
 node's input names. A render with them refuses a variable named after an
@@ -384,34 +392,3 @@ and requires the source back.
 `src/haute/_polars_steps.py::_Renderer`;
 `src/haute/_codegen_builders.py::_stepped_body_code`;
 `src/haute/_config_builder.py::_with_lifted_steps`.
-
-### CGEN-12 — A request that runs the editor's graph runs the code of a node nobody edited
-**Why:** Read on 17 November 2026. Since that day a save writes a stepped
-node from its steps only when they were edited ("Which steps a write
-renders" in the code generation specification). Every other request that
-carries the editor's graph (a preview, a trace, Explore, a training
-estimate) still builds its nodes through `NodeData`, which renders each
-node's steps into its code, and the steps are the ones the browser held.
-A node holding `df = df.with_columns(pl.lit(1.0).alias("relativity"))` is
-built with `pl.lit(1).alias("relativity")`, so its preview shows a 32-bit
-integer column where the file, `haute run` and the deployed service compute
-a 64-bit float, and an integer past 2^53 in a filter picks another row.
-
-**Plan:** Carry the same naming on the requests that run the editor's graph:
-the browser sends a stepped node whose steps are the saved baseline's with
-the code saved for them, as a save does (`utils/editedSteps.withEditedSteps`),
-and the server takes its list off before the node is built
-(`_step_authority.graph_without_unread_steps`). A step's failure is still
-named from the steps for a node that carries them.
-
-**Acceptance:** A preview of the hand-written Transform above, untouched,
-shows `relativity` as Float64, and a test runs each request that carries
-the editor's graph on a list a browser held and requires the column types
-the file computes.
-
-**Dependencies:** `CGEN-09` makes the steps' own rendering keep the
-numbers, after which the two agree for an edited node too.
-
-**Evidence:** `src/haute/_types.py::NodeData._materialise_steps`;
-`frontend/src/utils/graphSnapshot.ts::toCanonicalGraphPayload`;
-`src/haute/_step_authority.py`.
