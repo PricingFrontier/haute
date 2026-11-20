@@ -144,8 +144,12 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Store:
     store.log("contracted", work / "glm.feature_contract.json")
     store.models["contracted"] = contracted
 
-    first = _catboost(frame, 5.0)
-    # A scale and bias of its own, so the retrain below can change only those.
+    # Both this model and its retrain below are copies of one trained model, which
+    # save to one size on every platform (a copy can differ in size from the model
+    # it was copied from), and differ only in their scale and bias.
+    trained = _catboost(frame, 5.0)
+    store.models["relogged_trained"] = trained
+    first = trained.copy()
     first.set_scale_and_bias(1.5, 0.5)
     (work / "first").mkdir()
     first.save_model(str(work / "first" / "model.cbm"))
@@ -163,7 +167,7 @@ def _relog_with_the_same_size(store: _Store) -> Any:
     The same trees under another scale and bias: different bytes and predictions
     in a file of exactly the same size on every platform.
     """
-    retrained = store.models["relogged"].copy()
+    retrained = store.models["relogged_trained"].copy()
     retrained.set_scale_and_bias(15.0, 5.0)
     work = store.root / "work" / "second"
     work.mkdir()
