@@ -514,7 +514,9 @@ pipeline's sources.
   editor, a sync client or a watcher on the folder would read a rewrite as an edit), and
   rollback leaves it alone; it is still one of the save's files, for the ledger's capture. Stale-config
   deletion and git-ledger capture occur only after that transaction succeeds and are not
-  rolled back. Typed git failures become response warnings because the filesystem save is
+  rolled back. A stale file that cannot be removed then leaves the save answered as saved,
+  with a warning naming the file; the save's record keeps it, and the next save of the
+  pipeline removes it and captures the removal. Typed git failures become response warnings because the filesystem save is
   already durable; an unexpected non-`GitError` still propagates. API-input cache mirroring is
   independently idempotent/best-effort: failures are logged and partial cache state is left
   for a later save to repair, outside `_TouchedFile` rollback.
@@ -702,7 +704,22 @@ detail, and the assistant shows the same message.
   (deleting config files
   the new graph no longer references) is deliberately *not* part of the transaction — it only
   runs after every write has succeeded, because those deletions are non-recoverable; a
-  cleanup that never got the chance to run is simply retried on the next successful save.
+  removal that fails, or never got the chance to run, stays in the save's record and is made
+  by the next save of the pipeline.
+- **A save's progress and outcome are on disk.** A save writes a record of itself under
+  `.haute/saves/records/` before it replaces its first file: its operation, the revision it
+  replaces, and every file it will write or remove. The record is marked committed once the
+  files are written and parsed back, and from then the save answers as committed whatever its
+  removals and capture do; it is removed once the removals are made and captured. Each
+  committed save that names an operation leaves a receipt under `.haute/saves/receipts/`, the
+  newest 256 kept, so a repeat of it is answered with its answer after a restart too. A record
+  is settled when the server starts and before the next save of its pipeline: a committed one
+  has its removals finished, its capture made and its receipt written; one that never
+  committed, left by a server that died part-way or a rollback that failed, has its staging
+  files removed, so no Commit takes them, and is reported on the pipeline's document as a
+  warning naming its files until a save of the pipeline lands. It reports the mix of two
+  saves; it does not put the earlier document back, which would need the earlier bytes kept
+  on disk and a rule for a file edited since.
 - **Write serialization is process-local, not optimistic concurrency.** The
   shared `asyncio.Lock` prevents interleaving only inside one server process.
   Routes that accept `base_revision` must compare it under that lock before

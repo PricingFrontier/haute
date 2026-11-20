@@ -26,7 +26,7 @@ After this fix:
     collecting the config files that graph references.  If the file
     doesn't exist or can't be parsed, the result is an empty mapping
     — the safe answer when we genuinely don't know what we own.
-  - ``_remove_stale_config_files`` uses that pre-computed prev to drive
+  - ``_stale_config_files`` uses that pre-computed prev to drive
     a diff-based cleanup (``stale = prev - current``).  The full-scan
     fallback is gone.
   - Unknown config files (hand-added, from another tool, from an older

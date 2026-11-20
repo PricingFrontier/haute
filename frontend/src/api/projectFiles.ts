@@ -14,7 +14,8 @@ import {
   validateProjectFolderResponse,
 } from "../generated/api-contracts.session.validators.mjs"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
-import { ApiError, bootstrapHauteSession, request, throwApiError } from "./client"
+import { bootstrapHauteSession, request, throwApiError } from "./client"
+import { sendUpload, type UploadSend } from "./clientUpload"
 import type {
   ProjectFileDeleteResponse,
   ProjectFilePlace,
@@ -53,10 +54,10 @@ export interface ProjectFileUpload {
 }
 
 /**
- * Send one file to a place as the raw body, through XMLHttpRequest, whose upload reports
- * progress. Never retried: the answer to a write can be lost after the write landed.
- * `replaceRevision` names the revision of the file it replaces; without it an existing
- * file is refused.
+ * Send one file to a place as the raw body, through the client's `sendUpload`, whose
+ * upload reports progress, once, as every write is sent: the answer to a write can be lost
+ * after the write landed. `replaceRevision` names the revision of the file it replaces;
+ * without it an existing file is refused.
  */
 export function uploadProjectFile(
   place: ProjectFilePlace,
@@ -65,33 +66,16 @@ export function uploadProjectFile(
   options: { replaceRevision?: string | null; onProgress?: (loaded: number, total: number) => void } = {},
 ): ProjectFileUpload {
   const extra: Record<string, string> = options.replaceRevision ? { replace_revision: options.replaceRevision } : {}
-  const xhr = new XMLHttpRequest()
+  let sending: UploadSend | null = null
   let aborted = false
-  let sent = false
   const promise = (async () => {
     await bootstrapHauteSession()
-    const response = await new Promise<Response>((resolve, reject) => {
-      xhr.open("PUT", `/api/project-files/content?${projectFileParams(place, path, extra)}`)
-      xhr.setRequestHeader("Content-Type", "application/octet-stream")
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) options.onProgress?.(event.loaded, event.total)
-      }
-      xhr.upload.onload = () => {
-        sent = true
-      }
-      xhr.onload = () => resolve(new Response(xhr.responseText, {
-        status: xhr.status,
-        statusText: xhr.statusText,
-        headers: { "Content-Type": xhr.getResponseHeader("Content-Type") ?? "application/json" },
-      }))
-      xhr.onerror = () => reject(new ApiError("The upload could not reach the server.", 0, "The upload could not reach the server."))
-      xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"))
-      if (aborted) {
-        reject(new DOMException("Aborted", "AbortError"))
-        return
-      }
-      xhr.send(file)
+    if (aborted) throw new DOMException("Aborted", "AbortError")
+    sending = sendUpload("PUT", `/api/project-files/content?${projectFileParams(place, path, extra)}`, file, {
+      contentType: "application/octet-stream",
+      onProgress: options.onProgress,
     })
+    const response = await sending.response
     if (!response.ok) await throwApiError(response)
     const data: unknown = await response.json()
     return expectGeneratedContract("ProjectFileWriteResponse", validateProjectFileWriteResponse, data)
@@ -99,14 +83,13 @@ export function uploadProjectFile(
   return {
     promise,
     abort: () => {
-      if (sent) return
-      aborted = true
-      xhr.abort()
+      if (sending === null) aborted = true
+      else sending.abort()
     },
   }
 }
 
-/** Delete one file if it is still `revision`. Never retried, as a write is not. */
+/** Delete one file if it is still `revision`, once, as every write is sent. */
 export function deleteProjectFile(
   place: ProjectFilePlace,
   path: string,
@@ -114,6 +97,5 @@ export function deleteProjectFile(
 ): Promise<ProjectFileDeleteResponse> {
   return request<unknown>(`/api/project-files/content?${projectFileParams(place, path, { revision })}`, {
     method: "DELETE",
-    retry: { maxRetries: 0, baseDelayMs: 100 },
   }).then((data) => expectGeneratedContract("ProjectFileDeleteResponse", validateProjectFileDeleteResponse, data))
 }

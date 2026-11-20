@@ -40,11 +40,12 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import shutil
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -177,6 +178,35 @@ def _temp_path_for(target: Path) -> Path:
     260-character path limit applies to it too.
     """
     return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
+
+
+_STAGING_NAME = re.compile(r"(?P<stem>.+)\.[0-9a-f]{8}\.tmp")
+
+
+def is_staging_name(name: str) -> bool:
+    """Whether the file name *name* is an atomic write's staging file (:func:`_temp_path_for`):
+    never a project's file to version."""
+    return _STAGING_NAME.fullmatch(name) is not None
+
+
+def staging_files_of(targets: Iterable[Path]) -> list[Path]:
+    """The staging files atomic writes of *targets* left beside them (:func:`_temp_path_for`):
+    a writer killed before its rename leaves one, which nothing else would remove. Each
+    folder is listed once."""
+    stems: dict[Path, set[str]] = {}
+    for target in targets:
+        stems.setdefault(target.parent, set()).add(target.stem)
+    found: list[Path] = []
+    for folder, names in stems.items():
+        try:
+            entries = list(folder.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for entry in entries:
+            match = _STAGING_NAME.fullmatch(entry.name)
+            if match is not None and match["stem"] in names and entry.is_file():
+                found.append(entry)
+    return found
 
 
 def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:

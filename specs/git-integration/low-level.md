@@ -268,9 +268,9 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 (a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
 merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
-current: the `open-ledger` operation, nothing when both are so already) → `git status --porcelain -- <paths>` to check anything in *paths* actually
+current: the `open-ledger` operation, nothing when both are so already) → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion an earlier `git add` staged before the process stopped: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
-never reads as no change) → `git add -- <paths>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
+never reads as no change) → `git add -- <the paths git add takes>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged), the one ref move outside a recorded operation,
 inside `_save_commit()` → returns the new SHA. The `git commit` passes
@@ -434,7 +434,9 @@ unless `allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetc
 only the names `_project_layout.versioned_name` accepts, the rule the Files panels show and
 take: a path with a dot-name part (`.env.local`, `.DS_Store`, an editor's lock file,
 `.ipynb_checkpoints/`, `.haute_build/`) or a `__pycache__` part, or a `*.pyc` file, stays
-out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out. The route passes `pipeline_folder` from
+out even where `.gitignore` lacks it, and a file `.gitignore` ignores stays out. So does an
+atomic write's staging file (`src/haute/_file_ops.py::is_staging_name`, `<stem>.<8 hex>.tmp`),
+which a writer killed before its rename leaves beside its target. The route passes `pipeline_folder` from
 `_project_layout.pipeline_folder`; `None` (no pipeline folder below the root) adds nothing.
 Any swept path inside the pipeline folder that is a file larger than
 `VERSIONED_FILE_LIMIT_BYTES` raises `GitDomainError` naming it, its size and the root's

@@ -144,8 +144,15 @@ consistent formatting and classification contracts.
 `api/client.ts`, which returns typed data or throws `ApiError` (HTTP
 non-2xx, carrying `status`/`detail`/`body`) or `ApiTimeoutError` (the request
 was aborted by its own timeout guard, distinct from a caller-initiated
-abort). Idempotent verbs retry transient failures (network errors, 5xx) with
-exponential backoff and jitter; POST is never auto-retried. Concrete JSON
+abort). A read (GET, HEAD, OPTIONS) retries transient failures (network errors,
+5xx) with exponential backoff and jitter. A write is sent by its kind, and no caller
+chooses: a write that names a revision it replaces, or none, is sent once, since its
+answer can be lost after it landed and a repeat would name a revision that is gone; a
+keyed write, whose body names an operation key the server keeps an answer for, is sent
+through one call (`sendHeld`) that keeps it with its key while its answer has not come,
+or came as a server failure or could not be read, and repeats it before anything newer
+under that hold is sent, until an answer below 500 lets it go. A keyed write's content
+that changes takes a new key. Concrete JSON
 endpoint functions pass successful responses through a runtime parser before
 returning, so backend contract drift raises a descriptive `Error` at the call
 site instead of `undefined` propagating silently into a component. The
@@ -459,11 +466,13 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   than defaulting — per the project's error-handling policy, a wrong
   fallback is worse than a visible crash, because a silent fallback hides
   the bug that produced it.
-- **Retry only what's safe to retry.** GET/HEAD/PUT/DELETE/OPTIONS retry
-  transient failures; POST does not, because retrying a non-idempotent
-  mutation without server-side dedup risks duplicate side effects (e.g.
-  double-triggering a training job). 4xx responses never retry — they mean
-  the request itself is wrong, not that the server was briefly unavailable.
+- **Retry only what's safe to retry.** Reads retry transient failures; a write
+  never does by itself. Retrying a write without server-side dedup risks a duplicate
+  (a second training job), and a write that names the revision it replaces is refused
+  on a repeat once the first landed, its revision gone. A write the server can answer
+  twice carries an operation key, and only the one keyed call repeats it, exactly,
+  while its fate is unknown. 4xx responses never retry — they mean the request itself
+  is wrong, not that the server was briefly unavailable.
 - **Entry-count LRU, not byte-accurate.** `useNodeResultsStore`'s caches
   evict by count rather than measured memory, because preview payloads are
   already bounded by backend row/column limits and byte-accurate browser

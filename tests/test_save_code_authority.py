@@ -609,7 +609,7 @@ def test_a_scoped_save_keeps_unfinished_steps_behind_an_inline_placeholder(
 #: must be listed here, after it reads only the steps its writer names.
 CODE_WRITERS = {
     "assistant/_application.py": {"_prove_steps_survive_save"},
-    "routes/_save_pipeline.py": {"_write_code"},
+    "routes/_save_pipeline.py": {"_generate_code"},
     "_pipeline_repair_actions.py": {"_reset_node"},
 }
 

@@ -39,6 +39,30 @@ describe("pipeline recovery surfaces", () => {
     expect(screen.getByTestId("pipeline-recovery-banner")).toHaveTextContent("3 issues")
   })
 
+  it("says a ready document's warning, a save that stopped part-way, and blocks nothing", () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      load_status: "ready",
+      diagnostics: [{
+        ...diagnostic,
+        diagnostic_id: "save_interrupted:abc",
+        code: "save_interrupted",
+        severity: "warning",
+        source_span: null,
+        message: "A save stopped part-way, so these files may each hold a different save: rating/main.py.",
+        remediation: "Saving the pipeline writes them all again.",
+      }],
+    }))
+
+    render(<PipelineRecoveryBanner />)
+
+    expect(screen.getByTestId("pipeline-warnings-notice")).toHaveTextContent(
+      "A save stopped part-way, so these files may each hold a different save: rating/main.py.",
+    )
+    expect(screen.getByTestId("pipeline-warnings-notice")).toHaveTextContent("Saving the pipeline writes them all again.")
+    expect(screen.queryByTestId("pipeline-recovery-banner")).toBeNull()
+    expect(useDocumentStatusStore.getState().capabilities?.can_save).toBe(true)
+  })
+
   it("navigates from a node diagnostic without hiding document issues", () => {
     const onSelectElement = vi.fn()
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({

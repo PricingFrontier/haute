@@ -281,6 +281,12 @@ _EXPECTED_DEBT_IDS = {
     # See tests/test_config_io.py::TestConfigPathEscapeGuard
     # ::test_escape_guard_triggers_on_resolved_outside.
     "278a3f348cd0f191",
+    # Windows symlink privilege — a save's record is acted on only inside the project:
+    # a removal reached through a link out of it is left, and a .haute/saves folder
+    # reached through a link refuses the save. The tests build directory symlinks,
+    # which need a privilege Windows withholds by default (WinError 1314); Linux CI
+    # runs them. See tests/test_save_record.py::_link.
+    "df00a15d65500007",
     # Windows symlink privilege — the MLflow settings write-containment guard
     # test symlinks haute.toml at an external victim file to prove a save
     # refuses to follow it, but symlink creation needs a privilege Windows

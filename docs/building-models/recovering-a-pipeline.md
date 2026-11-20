@@ -63,3 +63,19 @@ Some problems have nothing in the editor to rebuild, and are fixed in the pipeli
   registration in the file, as the message shows, or remove it in the editor.
 - A chained `connect()` holding a broken connection. Write one `connect()` per line, then
   remove the broken one.
+
+## A save that stopped part-way
+
+A save writes the pipeline file, each node's settings file and the layout file one after
+another. If the server stops in the middle of a save, those files can hold a mix of that
+save and the one before it. The next time the pipeline opens, a notice above the canvas
+names the files the save was writing. Nothing is locked: check those nodes, then save, and
+the save writes all of the files again and the notice goes. Haute removes the half-written
+copies a stopped save leaves, so a Commit never records them.
+
+A save whose answer never reaches the editor, because the connection dropped or a proxy in
+front of a hosted editor answered in Haute's place, may still have been written. The editor
+keeps it, and your next **Save** sends it again first: if it was written, the server answers
+with what it did, and anything you changed since is saved on top. A settings file a save
+could not remove, because another program had it open, is named in a warning after the
+save, and the next save removes it.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
+from haute._file_ops import is_staging_name
 from haute._git_core import (
     NO_HOOKS,
     GitDomainError,
@@ -101,13 +102,31 @@ def commit_save(
     ledger = resolve_ledger(working, cwd=cwd)
 
     # :(literal) so a filename holding glob characters names only itself.
+    literal = [_literal(path) for path in paths]
+    # `git add` takes a path in the index or in the working tree (`--others`, untracked). One
+    # in neither is either a deletion an earlier `git add` staged before the process stopped,
+    # still to commit, or has nothing to record (a file a save's record names that a stopped
+    # save never created), which `git add` and the commit would refuse.
+    present = set(
+        _run_git("ls-files", "-z", "--cached", "--others", "--", *literal, cwd=cwd).split("\0")
+    )
+    addable = [path for path in paths if path in present]
+    staged_since_head = set(
+        _run_git(
+            "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *literal, cwd=cwd
+        ).split("\0")
+    )
+    paths = [path for path in paths if path in addable or path in staged_since_head]
+    if not paths:
+        return None
     pathspecs = [_literal(path) for path in paths]
     if not _run_git("status", "--porcelain", "--", *pathspecs, cwd=cwd):
         return None
 
     # New files must be known to git before a pathspec'd commit can include
     # them; the explicit-path add also stages deletions of tracked paths.
-    _run_git("add", "--", *pathspecs, cwd=cwd)
+    if addable:
+        _run_git("add", "--", *map(_literal, addable), cwd=cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
     # working-tree content already matches HEAD. The add above reconciles that
     # entry; if no net path change remains, there is nothing to commit. The
@@ -143,7 +162,8 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
 
     Only names the Files panels show are swept (``versioned_name``): dot-names, the
     deploy's build folder among them, ``__pycache__`` and bytecode stay out even where
-    ``.gitignore`` lacks them.
+    ``.gitignore`` lacks them. So does an atomic write's staging file (``is_staging_name``),
+    which a writer killed before its rename leaves beside its target.
     """
     if pipeline_folder is None:
         return []
@@ -170,7 +190,7 @@ def _pipeline_folder_new_files(pipeline_folder: str | None, cwd: Path | None = N
     return [
         path
         for path in dict.fromkeys(untracked.split("\0") + staged.split("\0"))
-        if path and versioned_name(path)
+        if path and versioned_name(path) and not is_staging_name(PurePosixPath(path).name)
     ]
 
 

@@ -781,21 +781,6 @@ class TestSaveOperation:
         assert stale.json()["detail"].startswith("stale_document_revision:")
 
 
-def test_save_operations_forget_the_oldest_beyond_their_capacity() -> None:
-    from haute.routes._save_operations import SaveOperations
-    from haute.schemas import SavePipelineResponse
-
-    operations = SaveOperations(capacity=2)
-    answer = SavePipelineResponse(
-        file="main.py", pipeline_name="main", source_revision="r", document_fingerprint="f"
-    )
-    for key in ("op-one", "op-two", "op-three"):
-        operations.record(key, "digest", answer)
-
-    assert operations.replay("op-one", "digest") is None
-    assert operations.replay("op-three", "digest") == answer
-
-
 # ---------------------------------------------------------------------------
 # POST /api/pipeline/output-destination and /api/pipeline/write-output
 # ---------------------------------------------------------------------------

@@ -15,8 +15,10 @@
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. Before anything loads lazily it calls `recordChunkLoadFailures`, so a chunk Vite fails to load surfaces through the error boundary that catches it, not a second UI. It also calls `suppressBrowserContextMenu`, so a right-click in the pipeline editor opens one of its menus or nothing, except in a text field or on a link. |
 | `frontend/src/utils/suppressBrowserContextMenu.ts` | `keepsBrowserContextMenu`: true for a right-click the browser's own menu keeps, one in a text field, a text area or a code editor (`isTypingTarget` from `hooks/keyboardTargets.ts`) or on a link with an address (`a[href]`). `suppressBrowserContextMenu`: a bubble-phase `contextmenu` listener on the document that cancels every other right-click, portalled surfaces included, after the editor's own menu handlers and CodeMirror's, which read `defaultPrevented`, have run; it returns a function that removes it. Only the pipeline editor (`main.tsx`) installs it: the underwriter app (`app/entry.tsx`) and the trace's print window keep the browser's menu. |
 | `frontend/src/utils/chunkLoadError.ts` | `isChunkLoadError`: true only for the `TypeError` a browser raises when a dynamic import cannot be fetched (Chromium's "Failed to fetch dynamically imported module", Firefox's "error loading dynamically imported module", Safari's "Importing a module script failed.") or for an error Vite's preload helper reported through `vite:preloadError`; every other error is false. `recordChunkLoadFailures` listens for that event and records its payload without cancelling it, so the import still rejects. |
-| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. Likewise, a converted response module group's generated validator module is imported dynamically when its first response arrives and checked through `expectGeneratedContract`, so no generated response validator is in the initial bundle. `throwApiError` is exported for split endpoint modules' own transports. |
-| `frontend/src/api/projectFiles.ts` | The Files panel's endpoints, kept out of the initial bundle beside its only (lazy) consumer: `listProjectFiles`, `projectFileDownloadUrl`, `uploadProjectFile`, which sends one file through `XMLHttpRequest` for its upload progress and abort, after `bootstrapHauteSession`, mapping a failure through `throwApiError` and never retrying, since a lost answer can follow a write; its abort does nothing once the last byte is sent (`xhr.upload.onload`), since the server publishes and captures a whole body, so the answer, its capture included, is still reported; and `deleteProjectFile`, not retried either. |
+| `frontend/src/api/client.ts` | Typed `fetch()` wrapper, and the browser's only transport (fetch, XMLHttpRequest): same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff for reads, timeout, abort handling, session-expiry event, and one function per backend endpoint. A write goes by its kind: `request`/`post` send every write once and, with `postRawStream`, throw, before sending, for a write given a `retry` policy or a JSON body naming an operation key (`operation`, `operation_id`); such a keyed write leaves only through `sendKeyed`, which takes only a live ticket from `sendHeld` (`api/keyedWrites.ts`). Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. Likewise, a converted response module group's generated validator module is imported dynamically when its first response arrives and checked through `expectGeneratedContract`, so no generated response validator is in the initial bundle. `throwApiError` is exported for split endpoint modules' own transports. |
+| `frontend/src/api/keyedWrites.ts` | Keyed writes: `KeyedHold`, `memoryHold`, `KeyedTicket`, `ticketIsLive`, `keyedWriteSettled` and `sendHeld`, the one call that sends a keyed write ("Keyed writes" below). Apart from `api/client.ts` so that a test replacing the client's endpoints keeps the hold's rules. |
+| `frontend/src/api/clientUpload.ts` | The client's upload transport, `sendUpload`: a raw body sent through XMLHttpRequest for its upload progress and abort, once, as every write is sent; a module of its own so its code stays out of the initial bundle beside its only (lazy) consumer. |
+| `frontend/src/api/projectFiles.ts` | The Files panel's endpoints, kept out of the initial bundle beside its only (lazy) consumer: `listProjectFiles`, `projectFileDownloadUrl`, `uploadProjectFile`, which sends one file through the client's `sendUpload` for its upload progress and abort, after `bootstrapHauteSession`, mapping a failure through `throwApiError`, once, as every write is sent; its abort does nothing once the last byte is sent, since the server publishes and captures a whole body, so the answer, its capture included, is still reported; and `deleteProjectFile`, sent once. |
 | `frontend/src/api/syncConnection.ts` | The live-sync socket's connection id, as the server's `sync_connection` frame named it (`setSyncConnectionId`, set by the WebSocket client and cleared when its socket closes), which `handleSave` sends with each save (`syncConnectionId`) so the server leaves this tab out of its broadcast of the saved document; `null` while no socket is open. |
 | `frontend/src/api/errors.ts` | Reads structured API error details: `apiErrorRawDetail` returns a detail that is an object, for the fields a refusal carries past its message (the quote a stale save names, the quote holding a reference), `apiErrorCode` returns its `error_code` so callers dispatch on the code rather than the HTTP status, `apiErrorStatus` a failed request's status and `apiErrorRefused` whether the server refused what was sent, a status below 500, so nothing of it was written, `isStaleRevision` whether a save was refused because what it was based on (the pipeline's or the form's document, or a quote) changed since it was read, its code structured or leading a flat detail, which the pipeline's, the form's and the app's saves all read, and `apiErrorMessage` returns the user-facing text (a structured detail's `message`, else the string detail via `executionErrorDetailMessage`, else a 422's list of refusals read as its first error's place and message through `validationMessage`, `form.pages.0.width: ...`, the `body` part of the place and pydantic's "Value error, " prefix left off, else a non-HTTP error's message, else the caller's fallback) so no surface renders `ApiError: HTTP <status>`. It is the one error-text helper: without a fallback, an HTTP error with no detail gives its own message and a non-error value its string form. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post`; its two responses are checked by the generated `modelling` group validators (`DispersionEstimateResponse`, `DispersionEstimateStatusResponse`) rather than routing through `types/guards.ts`. |
@@ -158,7 +160,21 @@
   and `{ signal?, timeout?, retry? }`. `DEFAULT_RETRY_POLICY` is
   `{ maxRetries: 3, baseDelayMs: 100 }`; `resolveRetryPolicy` throws if a
   caller passes a non-integer/negative `maxRetries` or a non-positive
-  `baseDelayMs`.
+  `baseDelayMs`. A policy is a read's: a write given one throws.
+- **Keyed writes** (`api/keyedWrites.ts`). `KeyedHold<W>` is where one kind of keyed write
+  is held while its fate is unknown: `held()`, `hold(write | null)`, `key(write)`,
+  the operation key it is sent under, and `content(write)`, what that key is bound to
+  (`contentWithout` gives a body's content without its key field). The editor's save holds in memory
+  (`memoryHold`); the underwriter app holds its save in the draft it keeps in browser
+  storage and a creation's key in session storage, so a reload repeats them.
+  `sendHeld(hold, write, send)` refuses (throws) a write under another key than the
+  held one's, or other content under its key, so the held write is sent first, exactly; holds `write`; calls `send(write,
+  ticket)`, whose endpoint function sends the body through `sendKeyed(url, body,
+  ticket, options)`, which refuses a ticket that is not that call's own; and lets the
+  write go once `keyedWriteSettled` says its answer settles it: an answer, or an
+  `ApiError` below 500. No answer, a timeout, an answer of 500 or more, or one that
+  does not parse keeps it held. A caller whose content changes asks for a new key
+  (`operationKey`); the same content is sent again under the held key.
 - **`HauteNodeData`** (`types/node.ts`): the typed view of a pipeline
   node's `Record<string, unknown>` data — `label`, `nodeType`, `config`,
   transient `_columns`/`_availableColumns`/`_schemaWarnings`/`_columnsSource`/
@@ -283,7 +299,7 @@ policy, then loops `attempt = 0..maxRetries`. Each attempt calls
 `timeout: null`), and an external caller signal (if any)
 is bridged to the same controller with its listener removed in a `finally`
 so listeners don't accumulate across retries. On failure, `shouldRetry`
-gates continuation: non-idempotent method → no; `AbortError` → no (user
+gates continuation: not a read (GET, HEAD, OPTIONS) → no; `AbortError` → no (user
 cancelled, propagate immediately); `TypeError` (network layer) or 5xx → yes,
 provided attempts remain, in which case `backoffSleep` waits
 `backoffDelayMs(attempt)` (equal-jitter exponential: `[base·2ⁿ/2,
@@ -1155,7 +1171,7 @@ Which result a stored answer is, and whether it is current, are separate questio
   `frontend/src/api/__tests__/projectFiles.test.ts` covers the Files panel's endpoints: the
   raw upload with its progress, a replace naming its revision, a refusal's message, an
   abort, a cancel after the last byte doing nothing so the answer is reported, a listing,
-  a delete never retried, and the same-origin download.
+  a delete sent once, and the same-origin download.
 - `tests/test_frontend_backend_contract.py` verifies frontend/backend node-type and allowed-column-type sets remain identical.
 - `tests/test_sanitize_parity_fixture.py` verifies the retained backend compatibility golden and minimum fixture width; it is not a frontend parity twin.
 
@@ -1213,8 +1229,15 @@ same Vitest config.
   another, a failure passing the turn on. The newest of a kind of request is the late-answer
   helper's (`frontend/src/utils/__tests__/answers.test.tsx`).
 - **API client** (`frontend/src/api/__tests__/client.test.ts`,
-  `frontend/src/api/__tests__/client.retry.test.ts`, `frontend/src/api/__tests__/client.contract.test.ts`): unit tests cover
-  retry/backoff/abort semantics directly; the contract suite covers concrete
+  `frontend/src/api/__tests__/client.retry.test.ts`, `frontend/src/api/__tests__/client.contract.test.ts`,
+  `frontend/src/api/__tests__/writesByKind.test.ts`): unit tests cover
+  retry/backoff/abort semantics directly: a read retried, every write wrapper sent once
+  (a utility save whose answer is lost sends one request and is reported as the
+  transport's failure, with no conflict), a write given a retry policy or a keyed body
+  outside `sendHeld` refused before it is sent, and a held keyed write kept on no
+  answer, a 500 or an unreadable answer, refused while another key or other content under
+  its key is held, and let go by an answer below 500; a scan fails for a transport (`fetch`, `XMLHttpRequest`,
+  `sendBeacon`) outside the client (`api/client.ts`, `api/clientUpload.ts`) in the browser's code. The contract suite covers concrete
   endpoint families with shared fixtures from
   `frontend/src/testSupport/uiContractFixtures.ts` plus explicit request/response
   matrices for the remaining trust-boundary endpoints. The structured-input

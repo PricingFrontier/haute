@@ -20,12 +20,24 @@ from fastapi.testclient import TestClient
 
 from haute._project_context import current_project
 from haute._sandbox import contained_path, is_contained, validate_project_path
+from haute._types import PipelineGraph
 from haute.errors import InvalidPathError, PathOutsideProjectError, RequestRefusedError
+from haute.routes._save_pipeline import SavePipelineService, _remove_saved_away
 from tests._project import project_app, use_project
 from tests._source_files import REPO_ROOT, source_files
 from tests.conftest import current_source_revision
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import make_solved_result
+
+
+def _write_configs(svc: SavePipelineService, graph: PipelineGraph) -> None:
+    """Write *graph*'s config files as a save does."""
+    svc._write_config_files(svc._config_files(graph), [])
+
+
+def _remove_stale(svc: SavePipelineService) -> list[Path]:
+    """Remove the stale config files a save names, as it does once it has committed."""
+    return _remove_saved_away(svc._root, svc._stale_config_files(), [])[0]
 
 
 def _require_links(project: Path) -> None:
@@ -842,14 +854,14 @@ class TestSaveService:
         project, outside = layout
         service = self._service(project)
         service._prev_config_files = {}
-        service._write_config_files(PipelineGraph(nodes=[_data_input("quotes")], edges=[]))
+        _write_configs(service, PipelineGraph(nodes=[_data_input("quotes")], edges=[]))
         assert (project / "config" / "data_input" / "quotes.json").is_file()
 
         _link(project, project / "elsewhere" / "config", outside)
         linked = self._service(project, project / "elsewhere")
         linked._prev_config_files = {}
         with pytest.raises(RequestRefusedError) as refused:
-            linked._write_config_files(PipelineGraph(nodes=[_data_input("quotes")], edges=[]))
+            _write_configs(linked, PipelineGraph(nodes=[_data_input("quotes")], edges=[]))
         assert refused.value.status_code == 400
         assert "resolves outside the pipeline folder" in str(refused.value.detail)
         assert not (outside / "data_input").exists()
@@ -868,9 +880,9 @@ class TestSaveService:
         service = self._service(project)
         service._prev_config_files = {"config/data_input/old.json": "{}", escaping: "{}"}
         graph = PipelineGraph(nodes=[], edges=[])
-        service._write_config_files(graph)
+        _write_configs(service, graph)
 
-        removed = service._remove_stale_config_files(graph)
+        removed = _remove_stale(service)
 
         assert removed == [stale.resolve()]
         assert (outside / "doc.json").read_text(encoding="utf-8") == '{"k": 1}'
