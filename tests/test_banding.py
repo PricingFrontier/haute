@@ -20,11 +20,13 @@ from haute._banding_config import (
     _validate_map_value,
     compact_banding_config_for_sidecar,
     normalise_banding_factors,
+    normalise_banding_rules,
 )
 from haute._rating import (
     _apply_banding,
     _breakpoints_to_rules,
     apply_banding_factors,
+    apply_banding_from_config,
     banding_temporal_ordinal_expr,
     parse_breakpoint_boundary,
     validate_banding_config,
@@ -321,18 +323,23 @@ class TestDateBreakpoints:
     @pytest.mark.parametrize(
         ("frame", "column", "rules", "message"),
         [
-            (DATES, "d", {"25": "x"}, "has number breakpoints, but its column is Date"),
+            (
+                DATES,
+                "d",
+                {"25": "x"},
+                "of column 'd' has number breakpoints, but the column is Date",
+            ),
             (
                 DATES,
                 "d",
                 {"2024-01-01 10:00": "x"},
-                "has date-and-time breakpoints, but its column is Date",
+                "of column 'd' has date-and-time breakpoints, but the column is Date",
             ),
             (
                 pl.DataFrame({"n": [1.0]}),
                 "n",
                 {"2024-01-01": "x"},
-                "has date breakpoints, but its column is Float64",
+                "of column 'n' has date breakpoints, but the column is Float64",
             ),
         ],
         ids=["numbers-on-a-date", "times-on-a-date", "dates-on-a-number"],
@@ -1036,21 +1043,27 @@ class TestMultiFactor:
         monkeypatch.undo()
         plt.assert_frame_equal(banded.collect(), expected)
 
-    def test_categorical_factors_alone_resolve_no_schema(self, monkeypatch: pytest.MonkeyPatch):
-        lf = pl.LazyFrame({"prop": ["House", "Office"]})
-        factor = {
-            "banding": "categorical",
-            "column": "prop",
-            "output_column": "prop_band",
-            "rules": [{"value": "House", "assignment": "Residential"}],
-        }
+    def test_many_categorical_factors_resolve_the_schema_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A categorical rule is keyed through its column's type, read from one schema."""
+        lf = pl.LazyFrame({f"prop{i}": ["House", "Office"] for i in range(6)})
+        factors = [
+            {
+                "banding": "categorical",
+                "column": f"prop{i}",
+                "output_column": f"prop{i}_band",
+                "rules": [{"value": "House", "assignment": "Residential"}],
+            }
+            for i in range(6)
+        ]
         calls = self._count_schema_resolutions(monkeypatch)
 
-        banded = apply_banding_factors(lf, [factor])
+        banded = apply_banding_factors(lf, factors)
 
-        assert calls[0] == 0
+        assert calls[0] == 1
         monkeypatch.undo()
-        assert banded.collect()["prop_band"].to_list() == ["Residential", None]
+        assert banded.collect()["prop5_band"].to_list() == ["Residential", None]
 
     def test_a_factor_reading_an_earlier_output_sees_its_text_dtype(self):
         """The threaded schema keeps each written band, as a fresh resolution would."""
@@ -1071,7 +1084,7 @@ class TestMultiFactor:
         ]
 
         with pytest.raises(
-            ConfigSettingError, match="number breakpoints, but its column is String"
+            ConfigSettingError, match="number breakpoints, but the column is String"
         ):
             apply_banding_factors(lf, factors)
 
@@ -1665,14 +1678,14 @@ def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> Non
             "breakpoint rule '2024-03-31' requires label (rules[0])",
         ),
         ([{"boundary": "", "label": "all"}], "only an open-ended boundary"),
-        # A falsy scalar label passes the writer but bands nothing when executed.
+        # RTG-05: a band name is text; a number or a Boolean is refused by name.
         (
             [{"boundary": "10", "label": 0}],
-            "Banding output 'x_band' has no usable breakpoints rule",
+            "The name of band 1 of banding output 'x_band' is 0, which is not text",
         ),
         (
             [{"boundary": "10", "label": False}],
-            "Banding output 'x_band' has no usable breakpoints rule",
+            "The name of band 1 of banding output 'x_band' is false, which is not text",
         ),
     ],
 )
@@ -1905,11 +1918,11 @@ class TestCompactConfigShapes:
 
 class TestNormaliseSidecarFactors:
     def test_a_compact_categorical_map_expands_to_rule_rows(self):
-        config = {"factors": [{"banding": "categorical", "rules": {"north": "A", "1": 2}}]}
+        config = {"factors": [{"banding": "categorical", "rules": {"north": "A", "1": "B"}}]}
 
         assert normalise_banding_factors(config)[0]["rules"] == [
             {"value": "north", "assignment": "A"},
-            {"value": "1", "assignment": 2},
+            {"value": "1", "assignment": "B"},
         ]
 
     @pytest.mark.parametrize(
@@ -1936,3 +1949,188 @@ class TestNormaliseSidecarFactors:
 
         assert str(caught.value) == message
         assert caught.value.setting == "factors"
+
+
+# ---------------------------------------------------------------------------
+# Band names (RTG-05, RTG-08): text, without spaces at either end
+# ---------------------------------------------------------------------------
+
+
+def _ncd_factor(label: object, *, sidecar: bool = False) -> dict:
+    rules = (
+        [{"upper": 1, "label": label}, {"label": "1"}]
+        if sidecar
+        else [{"boundary": "1", "label": label}, {"boundary": "", "label": "1"}]
+    )
+    return {
+        "banding": "breakpoints",
+        "column": "ncd",
+        "output_column": "ncd_band",
+        "rules": rules,
+        "default": "unmatched",
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        (0, "The name of band 1 of banding output 'ncd_band' is 0, which is not text"),
+        (0.0, "The name of band 1 of banding output 'ncd_band' is 0.0, which is not text"),
+        (False, "The name of band 1 of banding output 'ncd_band' is false, which is not text"),
+        (
+            "Standard ",
+            "The name of band 1 of banding output 'ncd_band', 'Standard ', begins or ends "
+            "with a space",
+        ),
+    ],
+    ids=["zero", "zero-point-zero", "false", "trailing-space"],
+)
+def test_a_band_name_that_is_not_plain_text_is_refused_when_loaded_linted_and_run(
+    tmp_path: Path, label: object, message: str
+) -> None:
+    from haute._config_io import load_node_config
+    from haute._config_validation import validate_node_config
+
+    path = write_node_config(
+        tmp_path, NodeType.BANDING, "ncd", {"factors": [_ncd_factor(label, sidecar=True)]}
+    )
+    with pytest.raises(ConfigSettingError, match=re.escape(message)):
+        load_node_config(path, base_dir=tmp_path)
+    with pytest.raises(ConfigSettingError, match=re.escape(message)):
+        validate_node_config(NodeType.BANDING, {"factors": [_ncd_factor(label)]})
+    with pytest.raises(ConfigSettingError, match=re.escape(message)) as run:
+        apply_banding_from_config(
+            pl.LazyFrame({"ncd": [0, 1, 2, 5]}), {"factors": [_ncd_factor(label)]}
+        )
+    assert run.value.fix is not None
+
+
+def test_a_band_named_with_the_text_zero_is_a_band() -> None:
+    """RTG-05: only a missing or empty name is no name."""
+    banded = apply_banding_from_config(
+        pl.LazyFrame({"ncd": [0, 1, 2, 5]}), {"factors": [_ncd_factor("0")]}
+    ).collect()
+    assert banded["ncd_band"].to_list() == ["0", "0", "1", "1"]
+
+
+@pytest.mark.parametrize("default", [0, " Other"])
+def test_a_default_band_name_follows_the_same_rule(default: object) -> None:
+    factor = {**_ncd_factor("low"), "default": default}
+    with pytest.raises(ConfigSettingError, match="the default band of banding output 'ncd_band'"):
+        apply_banding_from_config(pl.LazyFrame({"ncd": [0]}), {"factors": [factor]})
+
+
+def test_a_categorical_group_follows_the_same_rule() -> None:
+    factor = {
+        "banding": "categorical",
+        "column": "region",
+        "output_column": "region_band",
+        "rules": [{"value": "north", "assignment": 1}],
+    }
+    with pytest.raises(
+        ConfigSettingError,
+        match=re.escape(
+            "The name of rule 1 of banding output 'region_band' is 1, which is not text"
+        ),
+    ):
+        apply_banding_from_config(pl.LazyFrame({"region": ["north"]}), {"factors": [factor]})
+
+
+def test_a_numeric_zero_boundary_is_a_boundary_not_an_open_end() -> None:
+    """The same falsy reading made a boundary of 0 the open-ended band."""
+    factor = {
+        "banding": "breakpoints",
+        "column": "x",
+        "output_column": "b",
+        "rules": [{"boundary": 0, "label": "none"}, {"boundary": "", "label": "some"}],
+    }
+    banded = apply_banding_from_config(pl.LazyFrame({"x": [0, 3]}), {"factors": [factor]})
+    assert banded.collect()["b"].to_list() == ["none", "some"]
+
+
+@pytest.mark.parametrize(("true_value", "false_value"), [(True, False), (1, 0), ("true", "false")])
+def test_a_categorical_rule_on_a_boolean_column_bands_the_same_after_a_save(
+    true_value: object, false_value: object
+) -> None:
+    """The sidecar's map keys are text; a Boolean or a number keeps its meaning through them."""
+    factor = {
+        "banding": "categorical",
+        "column": "flag",
+        "output_column": "flag_band",
+        "rules": [
+            {"value": true_value, "assignment": "Yes"},
+            {"value": false_value, "assignment": "No"},
+        ],
+    }
+    frame = pl.LazyFrame({"flag": [True, False, None]})
+    before = apply_banding_from_config(frame, {"factors": [factor]}).collect()
+    saved = compact_banding_config_for_sidecar({"factors": [factor]})
+    reloaded = normalise_banding_factors(saved)
+    after = apply_banding_from_config(frame, {"factors": reloaded}).collect()
+    assert before["flag_band"].to_list() == ["Yes", "No", None]
+    assert after["flag_band"].to_list() == ["Yes", "No", None]
+
+
+@pytest.mark.parametrize(
+    ("dtype", "values", "rules"),
+    [
+        (pl.Int64, [1, 2, 3], [1.0, 2.0]),
+        (pl.Boolean, [True, False, None], [1.0, 0.0]),
+        (pl.Float64, [1.0, 2.5, 3.0], [1, 2.5]),
+    ],
+)
+def test_a_numeric_rule_value_bands_the_same_after_a_save(
+    dtype: pl.DataType, values: list[object], rules: list[object]
+) -> None:
+    factor = {
+        "banding": "categorical",
+        "column": "x",
+        "output_column": "x_band",
+        "rules": [{"value": value, "assignment": f"r{i}"} for i, value in enumerate(rules)],
+    }
+    frame = pl.LazyFrame({"x": pl.Series(values, dtype=dtype)})
+    before = apply_banding_from_config(frame, {"factors": [factor]}).collect()
+    reloaded = normalise_banding_factors(compact_banding_config_for_sidecar({"factors": [factor]}))
+    after = apply_banding_from_config(frame, {"factors": reloaded}).collect()
+    assert after["x_band"].to_list() == before["x_band"].to_list()
+    assert before["x_band"].to_list()[:2] == ["r0", "r1"]
+
+
+def test_a_banding_factor_whose_column_is_missing_is_refused_naming_it() -> None:
+    from haute.errors import SchemaMismatchError
+
+    for factor in (
+        {
+            "banding": "categorical",
+            "column": "x",
+            "output_column": "b",
+            "rules": [{"value": "a", "assignment": "A"}],
+        },
+        {
+            "banding": "breakpoints",
+            "column": "x",
+            "output_column": "b",
+            "rules": [{"boundary": "1", "label": "low"}],
+        },
+    ):
+        with pytest.raises(SchemaMismatchError, match="'b' of column 'x': the column is not in"):
+            apply_banding_from_config(pl.LazyFrame({"y": [1]}), {"factors": [factor]})
+
+
+def test_a_categorical_banding_of_a_nested_column_is_refused() -> None:
+    factor = {
+        "banding": "categorical",
+        "column": "tags",
+        "output_column": "b",
+        "rules": [{"value": "a", "assignment": "A"}],
+    }
+    frame = pl.LazyFrame({"tags": [["a"]]})
+    with pytest.raises(ConfigSettingError, match="whose values cannot be matched"):
+        apply_banding_from_config(frame, {"factors": [factor]})
+
+
+def test_a_rule_row_that_is_not_an_object_is_refused() -> None:
+    with pytest.raises(
+        ConfigSettingError, match=re.escape("categorical rules[1] must be an object")
+    ):
+        normalise_banding_rules("categorical", [{"value": "a", "assignment": "A"}, "b"])

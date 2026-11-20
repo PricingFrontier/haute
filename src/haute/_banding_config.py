@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from copy import deepcopy
 from typing import Any
@@ -24,6 +25,18 @@ def _is_json_scalar(value: Any) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
+def _rule_key_text(raw_key: Any) -> str:
+    """A rule's value or boundary as a sidecar map key, which JSON holds only as text.
+
+    A number or a Boolean is written in its JSON spelling (``true``, ``1``,
+    ``1.5``), which the engine reads back as the same value of the column's type
+    (specs/rating, "An entry's level is a value of its factor column's type").
+    """
+    if isinstance(raw_key, bool | int | float):
+        return json.dumps(raw_key)
+    return str(raw_key)
+
+
 def _validate_map_value(value: Any, kind: str, key: str) -> None:
     """Refuse a compact rule map's empty or non-scalar value; *key* is configuration."""
 
@@ -44,7 +57,7 @@ def _expand_rule_map(
     expanded: list[dict[str, Any]] = []
     if banding_type == "categorical":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             if key == "":
                 raise ConfigSettingError(
                     "categorical rule key must not be empty", setting="factors"
@@ -54,31 +67,94 @@ def _expand_rule_map(
         return expanded
     if banding_type == "breakpoints":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             _validate_map_value(value, "breakpoint", key)
             expanded.append({"boundary": key, "label": value})
         return expanded
     raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
 
 
+def band_name(value: Any, *, what: str) -> str | None:
+    """A band's name as the engine writes it, or ``None`` when it has none.
+
+    The one rule for a band name (a breakpoint's label, a categorical rule's
+    group, a factor's default): it is text, and only a missing or empty name is
+    no name. A number or a Boolean is refused rather than read as some text, as
+    is a name that begins or ends with a space, which the Rating Step lists
+    trimmed and so never matches. *what* names the band in the refusal.
+    """
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        written = json.dumps(value)
+        raise ConfigSettingError(
+            f"The name of {what} is {written}, which is not text",
+            setting="factors",
+            fix=f'Write the name in quotes: "{written}".',
+            values=(value,),
+        )
+    if value != value.strip():
+        raise ConfigSettingError(
+            f"The name of {what}, {value!r}, begins or ends with a space",
+            setting="factors",
+            fix=f"Write it as {value.strip()!r}.",
+            values=(value,),
+        )
+    return value
+
+
+def _banding_subject(output_column: Any) -> str:
+    return f"banding output {output_column!r}" if output_column else "a banding factor"
+
+
 def normalise_banding_rules(
     banding_type: str,
     rules: list[dict[str, Any]] | dict[Any, Any] | None,
+    *,
+    output_column: str = "",
 ) -> list[dict[str, Any]]:
-    """Return banding rules in the internal row-array shape."""
+    """Return banding rules in the internal row-array shape, every band name text.
+
+    *output_column* names the factor when a band name is refused
+    (:func:`band_name`).
+    """
     if rules is None:
         return []
     if isinstance(rules, dict):
-        return _expand_rule_map(str(banding_type or ""), rules)
-    if isinstance(rules, list):
-        return deepcopy(rules)
-    raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
+        rows = _expand_rule_map(str(banding_type or ""), rules)
+    elif isinstance(rules, list):
+        rows = deepcopy(rules)
+    else:
+        raise ConfigSettingError(f"{banding_type} banding rules must be a list", setting="factors")
+    subject = _banding_subject(output_column)
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ConfigSettingError(
+                f"{banding_type} rules[{index}] must be an object", setting="factors"
+            )
+        for field, kind in (("label", "band"), ("assignment", "rule")):
+            if field in row:
+                band_name(row[field], what=f"{kind} {index + 1} of {subject}")
+    return rows
+
+
+def banding_default(factor: dict[str, Any]) -> str | None:
+    """The band a factor gives a row no rule claims, or ``None`` for no band."""
+    return band_name(
+        factor.get("default"),
+        what=f"the default band of {_banding_subject(factor.get('output_column'))}",
+    )
 
 
 def _expand_banding_factor_from_sidecar(factor: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(factor)
     if "rules" in result:
-        result["rules"] = normalise_banding_rules(_banding_type(result), result.get("rules"))
+        result["rules"] = normalise_banding_rules(
+            _banding_type(result),
+            result.get("rules"),
+            output_column=str(result.get("output_column") or ""),
+        )
+    banding_default(result)
     return result
 
 
@@ -154,7 +230,7 @@ def _compact_rule_map(rules: dict[Any, Any], banding_type: str) -> dict[str, Any
     compact: dict[str, Any] = {}
     if banding_type == "categorical":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             if key == "":
                 raise ConfigSettingError(
                     "categorical rule key must not be empty", setting="factors"
@@ -168,7 +244,7 @@ def _compact_rule_map(rules: dict[Any, Any], banding_type: str) -> dict[str, Any
         return compact
     if banding_type == "breakpoints":
         for raw_key, value in rules.items():
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
             _validate_map_value(value, "breakpoint", key)
             if key in compact:
                 raise ConfigSettingError(
@@ -207,7 +283,7 @@ def _compact_rule_rows(
                 )
             key = ""
         else:
-            key = str(raw_key)
+            key = _rule_key_text(raw_key)
         if raw_value is None or raw_value == "":
             raise ConfigSettingError(
                 f"{duplicate_label} rule {key!r} requires {value_field} (rules[{index}])",

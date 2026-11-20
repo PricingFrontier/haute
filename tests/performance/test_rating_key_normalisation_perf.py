@@ -8,11 +8,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute._rating import (
-    _coerce_rating_lookup_expr,
-    _rating_key_expr,
-    normalise_rating_key,
-)
+from haute._rating import _rating_key_expr, normalise_rating_key
 from tests.fixtures.rating_key_cases import RATING_KEY_CASES
 
 pytestmark = pytest.mark.perf
@@ -22,17 +18,29 @@ _ITERATIONS = 20
 _MAX_REFERENCE_RATIO = 0.5
 
 
+def _coerce_reference_expr(name: str, source: pl.DataType, target: pl.DataType) -> pl.Expr:
+    """The pre-review strict coercion of a configured level, as an expression."""
+    col = pl.col(name)
+    if target == pl.Null:
+        return pl.lit(None, dtype=pl.Null).alias(name)
+    if target == pl.Boolean and source == pl.String:
+        return col.replace_strict({"true": True, "false": False}, return_dtype=pl.Boolean)
+    if target == pl.Date and source == pl.String:
+        return col.str.strip_chars().str.to_date("%Y-%m-%d", strict=True)
+    if target == pl.Time and source == pl.String:
+        return col.str.to_time(strict=True)
+    if isinstance(target, pl.Datetime) and source == pl.String:
+        return col.str.to_datetime(
+            time_unit=target.time_unit, time_zone=target.time_zone, strict=True
+        )
+    return col.cast(target, strict=True)
+
+
 def _dataframe_expression_reference(value: Any, dtype: pl.DataType) -> str | None:
     """The pre-review one-row DataFrame implementation, retained as a control."""
     raw = pl.DataFrame({"__haute_rating_key__": [value]})
     source_dtype = raw.schema["__haute_rating_key__"]
-    typed = raw.select(
-        _coerce_rating_lookup_expr(
-            "__haute_rating_key__",
-            source_dtype,
-            dtype,
-        )
-    )
+    typed = raw.select(_coerce_reference_expr("__haute_rating_key__", source_dtype, dtype))
     key = typed.select(_rating_key_expr("__haute_rating_key__", dtype)).item()
     return None if key is None else str(key)
 

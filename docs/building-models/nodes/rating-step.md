@@ -99,13 +99,23 @@ A row whose factor value has no entry in the table is a miss. A miss never stops
 
 A **DEFAULT** that is not a number, such as one typed into the pipeline file by hand, is refused when the pipeline is loaded or saved, naming the table, rather than being ignored.
 
+A table with a **DEFAULT** and no entries yet gives every row its **DEFAULT**. A table with neither, or with no factors, cannot price: the run is refused with a message naming the table and what it lacks, such as "Rating table 'area_factor' has no entries and no Default".
+
+If a factor column has no values at all (Polars' Null type, such as a column a Transform adds as `pl.lit(None)` before it is filled), no entry can match it, and every row takes the table's **DEFAULT** or stays empty.
+
 !!! warning "How entries match"
     Each entry's factor values are first converted to the type of the input
     column, then matched. On a numeric column the value counts, not how it
     was typed: on a float column, entries `25`, `"25"` and `"25.0"` are the
-    same key and all match `25.0`. An entry that cannot be converted to the
-    column's type fails the run rather than silently never matching, for
-    example `"25.0"` on an integer column or a malformed date on a date column.
+    same key and all match `25.0`; on an integer column `25`, `"25"` and
+    `"25.0"` all match `25`. On a true/false column, `true`, `"true"` and `1`
+    are the same key. An entry that is not a value of the column's
+    type fails the run rather than silently never matching, with a message
+    naming the table, the factor, the entry and the type: for example `"NE"`
+    or `2.5` on an integer column, `"True"` on a true/false column, or a
+    malformed date on a date column. A categorical Banding rule's value is
+    read the same way, so a Banding rule and a table entry written alike match
+    the same rows.
     Two entries that become the same key are refused, naming the table and the
     levels, rather than one of them silently winning.
 

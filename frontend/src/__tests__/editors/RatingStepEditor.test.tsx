@@ -419,7 +419,7 @@ describe("RatingStepEditor", () => {
         section="tables"
         config={{
           tables: [
-            { factors: [], output_column: " ", default_value: "1.0", entries: [] },
+            { factors: [], output_column: " ", entries: [] },
             {
               factors: ["region"],
               output_column: "duplicate_factor",

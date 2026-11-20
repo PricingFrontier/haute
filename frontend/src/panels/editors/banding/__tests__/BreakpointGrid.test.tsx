@@ -167,6 +167,29 @@ describe("BreakpointGrid", () => {
     expect(onUpdate.mock.calls[0][0][0].label).toBe("Very Low")
   })
 
+  it("writes a band name typed or pasted with edge spaces as the Rating Step lists it", () => {
+    const onUpdate = vi.fn()
+    render(
+      <BreakpointGrid
+        breakpoints={[{ boundary: "10", label: "Low" }]}
+        onUpdate={onUpdate}
+        accentColor={ACCENT}
+      />,
+    )
+    const labelInput = screen.getByDisplayValue("Low")
+    fireEvent.change(labelInput, { target: { value: "Standard " } })
+    fireEvent.blur(labelInput)
+    expect(onUpdate.mock.calls.at(-1)?.[0]).toEqual([{ boundary: "10", label: "Standard" }])
+
+    fireEvent.paste(screen.getByLabelText("Breakpoint 1 boundary"), {
+      clipboardData: { getData: () => "20\t Young \n40\tMiddle" },
+    })
+    expect(onUpdate.mock.calls.at(-1)?.[0]).toEqual([
+      { boundary: "20", label: "Young" },
+      { boundary: "40", label: "Middle" },
+    ])
+  })
+
   it("keeps boxed inputs but tightens cell spacing and removes row divider lines", () => {
     const { container } = render(
       <BreakpointGrid

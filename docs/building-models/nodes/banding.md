@@ -51,7 +51,7 @@ After that, **BREAKPOINTS (N)** lists them, with **Generate** to replace them wi
 | Column | What it does |
 |---|---|
 | **Up to** (incl.) | The band's upper boundary. The band includes the boundary itself, so `25` covers everything up to and including 25. Leave the last row's boundary empty for an open-ended final band. |
-| **Band name** | The label rows in this band get. |
+| **Band name** | The label rows in this band get. Spaces at either end are removed as you type it, so it matches the level a Rating Step lists. |
 | **Matches** | How many rows fall in the band, once the data is counted. |
 
 - **Add** adds a breakpoint, and the bin deletes one. A breakpoint without a **Band name** is marked in red until it has one; a save is refused while one remains.
@@ -73,7 +73,7 @@ After that, **RULES (N)** lists the rules, with **Import** to add a rule for eac
 
 | Column | What it does |
 |---|---|
-| **Value** | A value of the input column, matched exactly. |
+| **Value** | A value of the input column. It is read as the column's type, as a Rating Step entry is: on a true/false column `true` and `1` are the same value, on a number column `25` and `25.0` are. A value the column cannot hold, such as `maybe` on a true/false column, is refused when the node runs, naming the factor and the value; so are two rules for the same value. |
 | **Maps To** | The group that value is given. Pressing **Enter** in the last row's **Maps To** adds a new rule. |
 | **Matches** | How many rows have the value, once the data is counted. |
 
@@ -112,6 +112,8 @@ For a rate change from 1 April 2024, band a `start_date` column with **Up to** `
 
 !!! warning "Every rule needs a name"
     Saving refuses a breakpoint without a **Band name**, a categorical rule without a **Value** or **Maps To**, and a boundary or value used twice in one factor, with a message naming the rule.
+
+    A band name is text. In a settings file written by hand, write a band named `0` as `"0"`: a number or `true`/`false` as a **Band name**, **Maps To** or **DEFAULT**, or a name with a space at either end, is refused when the pipeline is loaded, linted or run, naming the factor and the band.
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/banding/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.banding(config="config/banding/<node name>.json")`. The sidecar holds `factors`, a list with one object per factor.

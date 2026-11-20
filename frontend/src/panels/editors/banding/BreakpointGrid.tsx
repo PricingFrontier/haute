@@ -1,7 +1,7 @@
 import { Copy, Plus, Trash } from "lucide-react"
 import { withAlpha } from "../../../utils/color"
 import { useTwoColumnGridClipboard } from "../shared/useTwoColumnGridClipboard"
-import { boundaryDayNumber, boundaryKind, breakpointLabelIssues } from "./bandingUtils"
+import { bandName, boundaryDayNumber, boundaryKind, breakpointLabelIssues } from "./bandingUtils"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
 import { GridCell, type CellRead } from "../shared/GridCell"
@@ -127,9 +127,12 @@ export function BreakpointGrid({
 }: BreakpointGridProps) {
   // Each row's key, so a cell's draft stays with its row; the grid's own writes keep them.
   const rowKeys = useRowKeys(breakpoints)
-  // A paste fills cells from the one pasted into and may add rows below.
-  const paste = (next: Breakpoint[]) =>
+  // A paste fills cells from the one pasted into and may add rows below; each
+  // label it writes is a band name.
+  const paste = (pasted: Breakpoint[]) => {
+    const next = pasted.map((bp) => ({ ...bp, label: bandName(bp.label ?? "") }))
     onUpdate(next.length > breakpoints.length ? rowKeys.add(next) : rowKeys.edit(next))
+  }
   const { handleCellPaste, copyTsv } = useTwoColumnGridClipboard(BREAKPOINT_GRID, breakpoints, paste)
   const showMatches = matchCounts != null
   const boundaryWarnings = temporal ? dateBoundaryWarnings(breakpoints) : boundaryOrderWarnings(breakpoints)
@@ -137,7 +140,7 @@ export function BreakpointGrid({
 
   const updateBreakpoint = (index: number, field: "boundary" | "label", value: string) => {
     const next = breakpoints.map((bp, i) =>
-      i === index ? { ...bp, [field]: value } : bp,
+      i === index ? { ...bp, [field]: field === "label" ? bandName(value) : value } : bp,
     )
     onUpdate(rowKeys.edit(next))
   }
