@@ -2659,8 +2659,8 @@ def _load_readable_pipeline_editor_document(
             try:
                 pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
             except ParseError as exc:
-                # A name or description that is not a literal belongs to the
-                # constructor, not to any node; the rest of the file recovers.
+                # A constructor the parser cannot read in full belongs to no node;
+                # the rest of the file recovers.
                 diagnostics.append(
                     _diagnostic(
                         code="pipeline_constructor_invalid",
@@ -2669,7 +2669,8 @@ def _load_readable_pipeline_editor_document(
                         source_file=source_file,
                         remediation=(
                             "Give haute.Pipeline(...) its name and description as plain "
-                            'strings, such as haute.Pipeline("motor").'
+                            "strings, by position or by keyword, and no argument it does "
+                            'not take, such as haute.Pipeline("motor", description="Motor").'
                         ),
                     )
                 )

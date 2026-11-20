@@ -11,8 +11,6 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-01` is a valid hand-written file the parser reads wrongly.
-
 `CGEN-05` to `CGEN-07` were reproduced on 10 November 2026 through the
 parser, the preview and `haute run`. `CGEN-05` and `CGEN-06` are each a
 hand-written form the parser accepts and then drops; `CGEN-07` is one the
@@ -33,7 +31,6 @@ each is a rendering that differs from the code it was read from.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CGEN-01 | Planned | P2 | A pipeline's name and description are read however the constructor gives them, and a constructor the reader cannot read is refused instead of rewritten. |
 | CGEN-05 | Planned | P2 | A Transform's decorator refuses a keyword it does not know, so a misspelt setting is not ignored and then deleted on save. |
 | CGEN-06 | Planned | P3 | A pipeline file that imports Polars under another name runs as plain Python runs it, or is reported when it is opened. |
 | CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
@@ -41,40 +38,6 @@ each is a rendering that differs from the code it was read from.
 | CGEN-10 | Planned | P3 | A Transform that rebinds its input's name loads that statement as code, so its steps render against its input names. |
 
 ## Planned improvements
-
-### CGEN-01 — The constructor's name and description are read however they are given
-**Why:** Reproduced. `Pipeline.__init__` takes `name` and `description` by
-position or by keyword, but the reader takes the name from the first
-positional argument only and the description from the `description=` keyword
-only. `haute.Pipeline(name="motor", description="Motor pricing")` parses as a
-pipeline called `main`, and the next save writes `haute.Pipeline("main", ...)`
-over it; `haute.Pipeline("motor", "Motor pricing")` parses with no description
-and the next save drops it. `haute.Submodel(...)` goes through the same reader
-and falls back to `unnamed`. A constructor assigned with an annotation
-(`pipeline: haute.Pipeline = haute.Pipeline("motor")`) is counted as the
-constructor when the module's boundaries are found but is not read for its
-name. Every other shape the parser cannot round-trip (a splat, a non-literal
-argument) is refused; these are silently rewritten, and the pipeline's name is
-what a deploy is named after.
-
-**Plan:** Read the name and the description from either position or keyword
-in one place, for `Pipeline` and `Submodel` alike, and from an annotated
-assignment as from a plain one. Refuse, with the file and line, a constructor
-call the reader cannot account for in full: an unknown keyword, a third
-positional argument, or a name that is not a string literal.
-
-**Acceptance:** Parsing then generating each of the four spellings (name by
-position or keyword, description by position or keyword) gives the same name
-and description back; an annotated constructor assignment does too. A
-constructor with an unknown keyword raises a `ParseError` naming the line and
-is never saved over.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_ast_helpers.py::_extract_meta` reads `call.args[0]`
-and the `description` keyword only; `src/haute/_ast_helpers.py::_constructor_call`
-skips an annotated assignment; `src/haute/pipeline.py::Pipeline` accepts both
-forms; `src/haute/codegen.py::graph_to_code` writes the name it was given.
 
 ### CGEN-05 — A Transform's decorator refuses a keyword it does not know
 **Why:** Reproduced on 10 November 2026. `@pipeline.polars(selected_colums=["k"])`,
