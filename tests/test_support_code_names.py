@@ -366,6 +366,64 @@ def test_a_changed_all_in_a_utility_cannot_be_checked(change: str) -> None:
     assert ("support_unsupported", "") in _violations(graph, rates=rates)
 
 
+@pytest.mark.parametrize(
+    ("binding", "line"),
+    [
+        pytest.param('globals()["RATE"] = 2\n', 3, id="globals-item"),
+        pytest.param('exec("RATE = 2")\n', 3, id="exec"),
+        pytest.param('eval("(RATE := 2)")\n', 3, id="eval"),
+        pytest.param("globals().update(RATE=2)\n", 3, id="globals-update"),
+        pytest.param('globals().setdefault("RATE", 2)\n', 3, id="globals-setdefault"),
+        pytest.param('vars()["RATE"] = 2\n', 3, id="vars-item"),
+        pytest.param('locals()["RATE"] = 2\n', 3, id="locals-item"),
+        pytest.param('del globals()["RATE"]\n', 3, id="globals-delete"),
+        pytest.param('if True:\n    globals()["RATE"] = 2\n', 4, id="in-a-block"),
+        pytest.param('def bind():\n    globals()["RATE"] = 2\n\n\nbind()\n', 4, id="in-a-function"),
+        pytest.param('def bind():\n    exec("RATE = 2", globals())\n', 4, id="exec-into-globals"),
+    ],
+)
+def test_a_dynamic_binding_in_support_code_is_refused_naming_its_line(
+    binding: str, line: int
+) -> None:
+    """CGEN-07: the inventory reads bindings without running the code, so a name bound at
+    run time could replace another file's value unseen; the preview computed with 2 where
+    Python running the files gives 3."""
+    graph = _with_submodel_preamble("RATE = 3\n", "import polars as pl\n\n" + binding)
+
+    violations = support_code_violations(graph, _utilities())
+
+    assert [v.kind for v in violations] == ["support_unsupported"]
+    message = violations[0].message()
+    assert f"submodel 'rates''s preamble line {line} " in message
+    assert "ordinary assignment" in message
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [
+        'RATE = globals().get("RATE", 3)\n',
+        "NAMES = sorted(vars())\n",
+        'def rate():\n    return eval("1 + 2")\n',
+        'def scope():\n    locals()["x"] = 1\n',
+    ],
+)
+def test_support_code_that_reads_its_namespace_is_not_refused(reading: str) -> None:
+    graph = PipelineGraph(nodes=[], edges=[], preamble=reading)
+
+    assert _violations(graph) == []
+
+
+def test_a_utility_that_binds_through_globals_is_refused() -> None:
+    graph = PipelineGraph(nodes=[], edges=[], preamble="from utility.rates import *\n")
+
+    violations = support_code_violations(graph, _utilities(rates='globals()["RATE"] = 2\n'))
+
+    assert [v.message() for v in violations] == [
+        "utility/rates.py line 1 writes through `globals()`, which binds names that cannot "
+        "be checked; bind each name with an ordinary assignment."
+    ]
+
+
 def test_a_utility_that_does_not_parse_is_reported_not_raised() -> None:
     graph = PipelineGraph(nodes=[], edges=[], preamble="from utility.rates import *\n")
 

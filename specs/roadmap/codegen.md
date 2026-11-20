@@ -11,9 +11,6 @@ renderer. The packages below come from the 9 November 2026 codebase review.
 Each was reproduced or measured against `HEAD` on that day by running the
 named functions on a small pipeline source; the entry says which.
 
-`CGEN-07` was reproduced on 10 November 2026 through the parser, the
-preview and `haute run`: a hand-written form the naming check cannot see.
-
 `CGEN-09` and `CGEN-10` come from phase 5 of
 [the codebase review plan](codebase-review-plan.md): a reader from a second
 model family (Codex) read the lift of code into steps, which is new since
@@ -29,44 +26,10 @@ each is a rendering that differs from the code it was read from.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CGEN-07 | Planned | P3 | A name bound through `exec` or `globals()` in support code is refused by name, so it cannot silently replace another file's value. |
 | CGEN-09 | Planned | P1 | A step list or a node's settings read after a browser held them keep the numbers they were read with: `1.0` stays a decimal and a 16-digit integer keeps its digits. |
 | CGEN-10 | Planned | P3 | A Transform that rebinds its input's name loads that statement as code, so its steps render against its input names. |
 
 ## Planned improvements
-
-### CGEN-07 — A dynamic binding in support code is refused by name
-**Why:** Reproduced on 10 November 2026. The naming check refuses two
-support-code sources that bind one name to different things, because once a
-submodel's preamble is appended to the root's only the last would be seen.
-It reads the bindings from the source without running it. A submodel
-preamble that binds through `globals()["RATE"] = 2` or `exec("RATE = 2")`,
-beside a root preamble's `RATE = 3`, passes the strict parse, and a root
-node that reads `RATE` then computes with 2: its preview showed 2 on both
-rows, where Python running the two files as modules gives 3. The same
-collision written as an assignment is refused. The specification refuses
-whatever keeps the inventory of names incomplete, naming the statement, and
-lists the `__all__` and star-import cases; a module-level `exec`, or a write
-through `globals()`, `vars()` or `locals()`, is not among them and is not
-refused. Project code is trusted, so this is no hole in a sandbox. It is a
-check for honest mistakes that one unusual but legal line switches off. The
-28 October audit recorded the lead without a witness.
-
-**Plan:** Count a module-level `exec` or `eval` call, and a write through
-`globals()`, `vars()` or `locals()`, in support code as a statement that
-keeps the inventory incomplete. Refuse it naming the statement and the
-file, as a computed `__all__` is refused, and say to bind the name with an
-ordinary assignment.
-
-**Acceptance:** Each of the two submodel preambles above is refused wherever
-the naming rule already runs, naming the line. A preamble that only reads
-`globals()` is not refused. A test holds each dynamic form to the refusal.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_support_code_names.py::support_code_inventory`;
-`src/haute/_support_code_names.py::support_code_violations`;
-`specs/codegen/high-level.md`.
 
 ### CGEN-09 — A part read from the browser keeps the numbers it was read with
 **Why:** Reproduced on 13 November 2026 in a browser and through the

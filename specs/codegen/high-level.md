@@ -170,7 +170,13 @@ Out of scope (owned by neighbouring components):
     or augmented assignment, any binding inside a block), or one naming what the module does
     not bind, a utility file that is not valid Python, a binding inside a block at module level in a
     star-imported utility, a star import of a module outside `utility`, a star import of a
-    utility file that does not exist, or a cycle of utility star imports.
+    utility file that does not exist, a cycle of utility star imports, or a name bound at run
+    time, which the inventory cannot read without running the code (CGEN-07): an `exec` or
+    `eval` call in the module's own scope, one given `globals()` anywhere, or a write through
+    the module's namespace anywhere (`globals()["RATE"] = 2`, `globals().update(...)`, or
+    `vars()` or `locals()` written in the module's own scope). The refusal names the line and
+    says to bind the name with an ordinary assignment; reading the namespace
+    (`globals().get(...)`) binds nothing and is not refused.
 
   Save, the strict parse (so `haute run` and deploy), the editor load (expression-parsing
   and server-api) and the editor identity request apply it, and saving a utility file checks
