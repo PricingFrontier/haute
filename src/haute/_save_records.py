@@ -54,9 +54,17 @@ class SaveRecordsUnavailableError(ConflictError):
 
 def save_request_digest(body: SavePipelineRequest) -> str:
     """The request as a repeat must send it again: without the operation, and without
-    the connection, which a tab may have reconnected before repeating."""
+    the connection, which a tab may have reconnected before repeating. The graph is the
+    one the request reads (CGEN-13), so the parts it read from the request are named
+    beside it: two requests that send the same values, one with a part's saved form and
+    one without, are two saves."""
     payload = body.model_dump_json(exclude={"operation", "connection_id"})
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def refs(parts: frozenset[tuple[str | None, str]]) -> list[list[str | None]]:
+        return [list(ref) for ref in sorted(parts, key=lambda ref: (ref[0] or "", ref[1]))]
+
+    read = json.dumps([refs(body.edited_steps), refs(body.edited_settings)])
+    return hashlib.sha256(f"{payload}\n{read}".encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

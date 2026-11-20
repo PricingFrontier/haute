@@ -7,37 +7,43 @@
  * cannot hold (`1.0` is `1`, an integer past 2^53 its nearest double), so the server reads a
  * part from a request only when the editor edited it. Every part as the saved baseline holds
  * it is sent with the saved form the server gave for it, which the browser keeps exactly: the
- * code saved for the steps (`editor.saved_code`, and as the node's code) and the settings'
- * JSON text (`editor.saved_settings`). The saved forms live in the baseline only: the live
- * nodes never carry one, so no copy goes stale, and only this module puts them on a request.
+ * code saved for the steps (`editor.saved_code`, and as the node's code), or for a node saved
+ * with unfinished steps the list itself (`editor.saved_steps`), and the settings' JSON text
+ * (`editor.saved_settings`). Steps render against their node's inputs, so a node whose steps
+ * name its inputs keeps its steps' saved form only while those inputs are as saved too. The
+ * saved forms live in the baseline only: the live nodes never carry one, so no copy goes
+ * stale, and only this module puts them on a request.
  */
-import type { Node } from "@xyflow/react"
+import type { Edge, Node } from "@xyflow/react"
 import type { GraphPayload } from "../api/types"
 import { isSubmodelDefinition, type SubmodelDefinition } from "../types/node"
 import { canonicalJson } from "./canonicalJson"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
-import { isSteppedConfig } from "./polarsStepInputs"
+import { isSteppedConfig, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 
 /** The saved form of each part a save read from its request, as the server answers it. */
 export interface SavedNodeParts {
   submodel: string | null
   node_id: string
   code?: string | null
+  steps?: string | null
   settings?: string | null
 }
 
 /** The saved form of a node's parts that are as the baseline holds them. */
 export interface SavedForms {
   saved_code?: string
+  saved_steps?: string
   saved_settings?: string
 }
 
 interface Document {
   nodes: readonly Node[]
+  edges?: readonly Edge[]
   submodels?: Record<string, unknown>
 }
 
-const SAVED_FORM_KEYS = ["saved_code", "saved_settings"] as const
+const SAVED_FORM_KEYS = ["saved_code", "saved_steps", "saved_settings"] as const
 
 function nodeConfig(node: Node): Record<string, unknown> {
   const config = (node.data as { config?: unknown } | undefined)?.config
@@ -66,12 +72,42 @@ function heldNode(baseline: Document | null, submodel: string | null, nodeId: st
 }
 
 /**
- * The saved form of each part of `node`, of the graph `submodel` names, that is as `baseline`
- * holds it: none for a node the baseline does not hold, or holds without a saved form.
+ * What the node `nodeId` of the graph `submodel` names in `document` is rendered against: the
+ * edges into it, by source and handles, and in a definition the input ports that reach it.
  */
-export function savedFormsFor(baseline: Document | null, submodel: string | null, node: Node): SavedForms {
+function inputsOf(document: Document, submodel: string | null, nodeId: string): string {
+  let edges: readonly Edge[] = document.edges ?? []
+  let ports: string[] = []
+  if (submodel !== null) {
+    const definition = document.submodels?.[submodel]
+    if (!isSubmodelDefinition(definition, submodel)) return canonicalJson(null)
+    edges = definition.graph.edges as readonly Edge[]
+    ports = definition.inputPorts
+      .filter((port) => port.targets.some((target) => target.nodeId === nodeId))
+      .map((port) => port.name)
+      .sort()
+  }
+  const incoming = edges
+    .filter((edge) => edge.target === nodeId)
+    .map((edge) => [edge.source, edge.sourceHandle ?? "", edge.targetHandle ?? ""])
+    .sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)))
+  return canonicalJson([incoming, ports])
+}
+
+/**
+ * The saved form of each part of `node`, of the graph `submodel` names in `document`, that is
+ * as `baseline` holds it: none for a node the baseline does not hold, or holds without a saved
+ * form. A node whose steps name its inputs keeps its steps' only while those are the
+ * baseline's too: the code saved for its steps was rendered against them.
+ */
+export function savedFormsFor(
+  baseline: Document | null,
+  document: Document,
+  submodel: string | null,
+  node: Node,
+): SavedForms {
   const held = heldNode(baseline, submodel, node.id)
-  if (held === null) return {}
+  if (baseline === null || held === null) return {}
   const config = nodeConfig(node)
   const heldConfig = nodeConfig(held)
   const saved = editorState(held)
@@ -79,10 +115,14 @@ export function savedFormsFor(baseline: Document | null, submodel: string | null
   const nodeType = String((node.data as { nodeType?: unknown }).nodeType)
   if (
     isSteppedConfig(nodeType, config)
-    && typeof saved.saved_code === "string"
     && canonicalJson(config.steps) === canonicalJson(heldConfig.steps)
+    && (
+      !steppedSurfaceAllowsInputReferences(nodeType)
+      || inputsOf(document, submodel, node.id) === inputsOf(baseline, submodel, node.id)
+    )
   ) {
-    forms.saved_code = saved.saved_code
+    if (typeof saved.saved_code === "string") forms.saved_code = saved.saved_code
+    else if (typeof saved.saved_steps === "string") forms.saved_steps = saved.saved_steps
   }
   if (typeof saved.saved_settings === "string" && canonicalJson(settingsOf(config)) === canonicalJson(settingsOf(heldConfig))) {
     forms.saved_settings = saved.saved_settings
@@ -140,7 +180,7 @@ function mapNodes<T extends Document>(document: T, give: (submodel: string | nul
  * it held. What a save sends and keeps as its next baseline.
  */
 export function withSavedForms<T extends Document>(document: T, baseline: Document | null): T {
-  return mapNodes(document, (submodel, node) => withForms(node, savedFormsFor(baseline, submodel, node)))
+  return mapNodes(document, (submodel, node) => withForms(node, savedFormsFor(baseline, document, submodel, node)))
 }
 
 /** `document` with no saved form on any node: the live document's copy. */
@@ -172,8 +212,17 @@ export function withSavedParts<T extends Document>(document: T, saved: readonly 
     const forms: SavedForms = {}
     const kept = editorState(node)
     if (typeof kept.saved_code === "string") forms.saved_code = kept.saved_code
+    if (typeof kept.saved_steps === "string") forms.saved_steps = kept.saved_steps
     if (typeof kept.saved_settings === "string") forms.saved_settings = kept.saved_settings
-    if (typeof entry.code === "string") forms.saved_code = entry.code
+    // A node's steps have one saved form: its code, or the list it was saved unfinished with.
+    if (typeof entry.code === "string") {
+      forms.saved_code = entry.code
+      delete forms.saved_steps
+    }
+    if (typeof entry.steps === "string") {
+      forms.saved_steps = entry.steps
+      delete forms.saved_code
+    }
     if (typeof entry.settings === "string") forms.saved_settings = entry.settings
     return withForms(node, forms)
   })

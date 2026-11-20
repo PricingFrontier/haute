@@ -1820,7 +1820,7 @@ export default function usePipelineAPI({
       // is sent with the saved form the server gave it (CGEN-11, CGEN-13). The snapshot keeps
       // those forms, and the answer gives the rest, for the baseline it becomes.
       const authored = withSavedForms(
-        { nodes: n, submodels: structuredClone(useGraphStore.getState().submodels) },
+        { nodes: n, edges: e, submodels: structuredClone(useGraphStore.getState().submodels) },
         baseline,
       )
       const snapshot = captureGraphSnapshot({

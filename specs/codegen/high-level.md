@@ -448,21 +448,28 @@ which the server issued in a form a browser keeps exactly, and the node is built
 a part sent without one is read from the request.
 
 - **Saved forms.** A stepped node's saved code is the code its baseline holds for its
-  steps, a string. A node's saved settings are its settings as JSON text the server wrote
-  (`haute._edited_parts.settings_text`), so `1.0` and a 19-digit integer keep their spelling.
-  Every node of an editor document (a load, a live-sync update, a node save's or a repair's
-  answer) carries its saved settings in `editor.saved_settings`. A save's answer gives, in
-  `saved_parts`, the saved form of each part it read from the request: the code each node
-  whose steps it read loads with from the file it wrote (its steps' rendering, as a reload
-  builds it), and the settings it wrote for each node whose settings it read.
+  steps, a string. A node saved with unfinished steps holds the raising placeholder in its
+  file and its list in `.haute.json`: its program is that list, not the code the list
+  renders to without the node's inputs, so its steps' saved form is the list itself, as
+  JSON text (saved steps). A node's saved settings are its settings as JSON text the server
+  wrote (`haute._edited_parts.settings_text`), so `1.0` and a 19-digit integer keep their
+  spelling. Every node of an editor document (a load, a live-sync update, a node save's or a
+  repair's answer) carries them in `editor.saved_code` or `editor.saved_steps`, and
+  `editor.saved_settings`. A save's answer gives, in `saved_parts`, the saved form of each
+  part it read from the request: the code each node whose steps it read loads with from the
+  file it wrote (its steps' rendering, as a reload builds it), or the list of one it wrote
+  with the placeholder, and the settings it wrote for each node whose settings it read.
 - **The editor.** The saved forms live in the editor's saved baseline only; its live nodes
   never carry one (the load takes them off the canvas's copy). One function builds what
   every request that carries the document sends, from the document and its baseline
   (`frontend/src/utils/documentRequest.ts`). A node's steps are unedited when its step list
   equals the one the baseline holds for the same node, by scope (the pipeline's own nodes,
-  or a submodel definition's by its id) and id, and its settings when they equal the
-  baseline's; each unedited part is sent with its saved form, the steps' in
-  `editor.saved_code` (and as the node's `code`), the settings' in `editor.saved_settings`.
+  or a submodel definition's by its id) and id, and, for a node whose steps name its inputs
+  (a Transform, an External File), when its inputs are the baseline's too: the edges into
+  it, by source and handles, and in a definition the input ports that reach it, since its
+  steps render against them. Its settings are unedited when they equal the baseline's. Each
+  unedited part is sent with its saved form, the steps' in `editor.saved_code` (and as the
+  node's `code`) or `editor.saved_steps`, the settings' in `editor.saved_settings`.
   A node the baseline does not hold, or holds without a saved form for that part, is sent
   with every such part read. A transform of the graph whose answer the editor adopts as an
   unsaved edit (create submodel, create instance, dissolve) is built with no baseline, so
@@ -471,20 +478,23 @@ a part sent without one is read from the request.
 - **The server.** One base model, `haute.schemas.DocumentRequest`, carries the document and
   applies the rule before any node is built (`haute._edited_parts.graph_as_read`): a node
   sent with a saved code is built from that code with its step list taken off, since
-  building a node renders its steps into its code (`NodeData`); a node sent with saved
-  settings is built from them, the settings it carries not read. A saved code of `""` (steps
-  that did not render when saved) leaves the steps read, being then their only copy. A saved
-  code on a node that holds no step list, and saved settings that are not a JSON object or
-  that hold `steps` or `code`, are a 422. Every request model that carries the document
+  building a node renders its steps into its code (`NodeData`); a node sent with saved steps
+  is built from that list, so a run refuses it as unfinished, naming the step, as the file
+  does; a node sent with saved settings is built from them, the settings it carries not
+  read. A saved code of `""` (steps that did not render when saved) leaves the steps read,
+  being then their only copy. A saved form of the steps on a node that holds no step list,
+  a saved code and saved steps together, saved steps that are not a list, and saved
+  settings that are not a JSON object or that hold `steps` or `code`, are a 422. Every request model that carries the document
   derives from it, the save included, and records which parts it read from the request
   (`steps_read`, `settings_read`). A built node never carries a saved form: `NodeData`
   refuses one, so a request model that went round the base model fails loudly. `POST
   /api/pipeline/node/save` applies the same rule to its one node (`haute._edited_parts.
   config_as_read`). The assistant's apply and undo build their document as the editor does,
   from the graph they changed and the one they changed it from
-  (`haute._edited_parts.with_saved_forms`), sending no saved code for a node whose steps are
-  its file's record of unfinished steps, so that record is rendered; the check that steps
-  survive a save builds its graph through the same base model.
+  (`haute._edited_parts.with_saved_forms`, which compares values as their JSON text, so `1`
+  and `1.0` differ), sending no saved code for a node whose steps are its file's record of
+  unfinished steps, so that record is rendered; the check that steps survive a save builds
+  its graph through the same base model.
 - **What a part read gives.** Steps read are rendered into the node's code, for a run and
   for a write alike; settings read are run as sent and written to the node's settings
   file. A part not read keeps the file's spelling and meaning: an untouched node's code is
@@ -503,7 +513,10 @@ an earlier commit's, carries its own code and is written from it. The editor put
 rendering arrives is sent with the code the save wrote. The steps editor makes a rendering
 the node's code only once its steps differ from the saved ones; steps as saved keep the
 code saved for them, so opening a panel edits nothing. A repeated save is answered from its
-receipt before anything is rebuilt, as before: the rule needs nothing from the file.
+receipt before anything is rebuilt, as before: the rule needs nothing from the file. The
+receipt's digest names the parts the request read beside the graph it read, so a repeat
+that sends the same values with other saved forms is another save
+(`save_operation_reused`).
 `tests/test_save_code_authority.py` lists the functions that generate a node's or a
 pipeline's code and fails on a new one, and fails on a request model that carries the
 document and does not derive from `DocumentRequest`; `tests/test_unedited_parts.py` makes

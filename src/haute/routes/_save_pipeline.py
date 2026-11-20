@@ -1102,28 +1102,39 @@ class SavePipelineService:
         edited_settings: Collection[tuple[str | None, str]],
     ) -> list[SavedNodeParts]:
         """The saved form of each part this save read from its request, as the file it wrote
-        holds it: the code each node in *edited_steps* loads with (its steps' rendering, as
-        a reload builds it, ``NodeData``, and empty when they do not render), and the
-        settings written for each node in *edited_settings* (CGEN-13)."""
-        from haute._edited_parts import settings_text
+        holds it (CGEN-13): for each node in *edited_steps*, the code it loads with (its
+        steps' rendering, as a reload builds it, ``NodeData``, and empty when they do not
+        render), or, for one written with the raising placeholder, the step list its
+        ``.haute.json`` records; and the settings written for each node in
+        *edited_settings*."""
+        from haute._edited_parts import exact_json, settings_text
+        from haute.routes._helpers import unfinished_nodes
 
-        scopes: list[tuple[str | None, PipelineGraph]] = [(None, graph)]
-        scopes.extend((key, d.graph) for key, d in (graph.submodels or {}).items())
-        return [
-            SavedNodeParts(
-                submodel=scope,
-                node_id=node.id,
-                code=str(node.data.config.get("code") or "")
-                if (scope, node.id) in edited_steps
-                else None,
-                settings=settings_text(node.data.config)
-                if (scope, node.id) in edited_settings
-                else None,
-            )
-            for scope, scoped in scopes
-            for node in scoped.nodes
-            if (scope, node.id) in edited_steps or (scope, node.id) in edited_settings
+        scopes: list[tuple[str | None, PipelineGraph, dict[str, list[str]] | None]] = [
+            (None, graph, None)
         ]
+        scopes.extend((key, d.graph, _port_inputs(d)) for key, d in (graph.submodels or {}).items())
+        parts: list[SavedNodeParts] = []
+        for scope, scoped, port_inputs in scopes:
+            unfinished = unfinished_nodes(scoped, port_inputs)
+            for node in scoped.nodes:
+                ref = (scope, node.id)
+                steps, settings = ref in edited_steps, ref in edited_settings
+                if not (steps or settings):
+                    continue
+                recorded = unfinished.get(node.id) if steps else None
+                parts.append(
+                    SavedNodeParts(
+                        submodel=scope,
+                        node_id=node.id,
+                        code=str(node.data.config.get("code") or "")
+                        if steps and recorded is None
+                        else None,
+                        steps=None if recorded is None else exact_json(recorded),
+                        settings=settings_text(node.data.config) if settings else None,
+                    )
+                )
+        return parts
 
     def save_graph_transactionally(
         self,

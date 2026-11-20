@@ -963,8 +963,9 @@ export interface RecoveryPipelineNode {
  * from a request: the node's body is the placeholder an unfinished step list is
  * saved with, and its steps are the list its ``.haute.json`` records.
  *
- * ``saved_code`` and ``saved_settings`` are the saved form of the node's steps and
- * of its settings, in a form a browser keeps exactly (``haute._edited_parts``,
+ * ``saved_code`` (or, for a node saved with unfinished steps, ``saved_steps``) and
+ * ``saved_settings`` are the saved form of the node's steps and of its settings, in a
+ * form a browser keeps exactly (``haute._edited_parts``,
  * CGEN-13): an editor document gives them for each of its nodes, and a request that
  * carries the document sends them back for each part its editor did not edit. The
  * request reads them before the node is built, so a built node never carries one.
@@ -972,6 +973,7 @@ export interface RecoveryPipelineNode {
 export interface NodeEditorState {
   saved_code?: string;
   saved_settings?: string;
+  saved_steps?: string;
   steps_discarded: string | null;
   steps_error: string | null;
 }
@@ -2983,13 +2985,15 @@ export interface SavePipelineResponse {
  * wrote holds it, by the graph that holds the node: the pipeline's own (``submodel``
  * null) or a submodel definition's, by its id. ``code`` is the code a node whose steps it
  * read loads with (its steps' rendering, as a reload builds it, and empty when they do not
- * render); ``settings`` the settings it wrote for a node whose settings it read, as JSON
- * text (CGEN-13).
+ * render); ``steps``, in its place for a node it wrote with the raising placeholder, the
+ * step list its ``.haute.json`` records, as JSON text; ``settings`` the settings it wrote
+ * for a node whose settings it read, as JSON text (CGEN-13).
  */
 export interface SavedNodeParts {
   code: string | null;
   node_id: string;
   settings: string | null;
+  steps: string | null;
   submodel: string | null;
 }
 export interface CreateSubmodelResponse {

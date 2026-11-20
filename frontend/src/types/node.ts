@@ -66,6 +66,7 @@ export interface NodeEditorState {
   steps_error: string | null
   steps_discarded: string | null
   saved_code?: string
+  saved_steps?: string
   saved_settings?: string
 }
 

@@ -1486,12 +1486,18 @@ class RecoveryPipelineNode(BaseModel):
         # to send back for a part its editor does not edit (CGEN-13).
         if self.config is None:
             return self
-        from haute._edited_parts import holds_steps, settings_text
+        from haute._edited_parts import exact_json, holds_steps, settings_text
 
-        saved_code = str(self.config.get("code") or "")
+        stepped = holds_steps(self.node_type, self.config)
+        # A node saved with unfinished steps holds the raising placeholder in its file and the
+        # list in its ``.haute.json``: the list is its program, not the code it renders to.
+        recorded = stepped and self.editor.steps_recorded
         self.editor = self.editor.model_copy(
             update={
-                "saved_code": saved_code if holds_steps(self.node_type, self.config) else None,
+                "saved_code": str(self.config.get("code") or "")
+                if stepped and not recorded
+                else None,
+                "saved_steps": exact_json(self.config["steps"]) if recorded else None,
                 "saved_settings": settings_text(self.config),
             }
         )
@@ -1899,6 +1905,14 @@ class PipelineNodeSaveRequest(BaseModel):
             "Without it the node's steps are rendered into its code (CGEN-11)."
         ),
     )
+    saved_steps: BoundedText | None = Field(
+        default=None,
+        description=(
+            "The node's step list as saved, as the document gave it (JSON text), for a node "
+            "saved with unfinished steps whose steps were not edited: the node is written "
+            "from it in place of the steps in ``config`` (CGEN-13)."
+        ),
+    )
     saved_settings: BoundedText | None = Field(
         default=None,
         description=(
@@ -1977,14 +1991,16 @@ class SavedNodeParts(BaseModel):
     wrote holds it, by the graph that holds the node: the pipeline's own (``submodel``
     null) or a submodel definition's, by its id. ``code`` is the code a node whose steps it
     read loads with (its steps' rendering, as a reload builds it, and empty when they do not
-    render); ``settings`` the settings it wrote for a node whose settings it read, as JSON
-    text (CGEN-13)."""
+    render); ``steps``, in its place for a node it wrote with the raising placeholder, the
+    step list its ``.haute.json`` records, as JSON text; ``settings`` the settings it wrote
+    for a node whose settings it read, as JSON text (CGEN-13)."""
 
     model_config = ConfigDict(extra="forbid")
 
     submodel: str | None = Field(default=None, max_length=512)
     node_id: str = Field(min_length=1, max_length=512)
     code: str | None = None
+    steps: str | None = None
     settings: str | None = None
 
 

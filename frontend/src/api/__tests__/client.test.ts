@@ -2001,6 +2001,7 @@ describe("no request carries streaming_chunk_size", () => {
       targetRecoveryId: "node@10",
       config: { path: "data/quotes.parquet" },
       savedCode: "df = df",
+      savedSteps: null,
       savedSettings: null,
     })
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/node/save")
@@ -2011,6 +2012,7 @@ describe("no request carries streaming_chunk_size", () => {
       target_recovery_id: "node@10",
       config: { path: "data/quotes.parquet" },
       saved_code: "df = df",
+      saved_steps: null,
       saved_settings: null,
     })
     expect(document.document_kind).toBe("haute.pipeline_editor_document")
@@ -2019,7 +2021,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it.each([
     ["saveNodeScoped", () => import("../client").then(({ saveNodeScoped }) => saveNodeScoped({
-      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {}, savedCode: null, savedSettings: null,
+      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {}, savedCode: null, savedSteps: null, savedSettings: null,
     }))],
     ["applyRemoveUnavailableNode", () => applyRemoveUnavailableNode({
       sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false,

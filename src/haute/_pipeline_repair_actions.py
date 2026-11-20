@@ -848,6 +848,7 @@ def _scoped_config_to_write(
             request.config,
             saved_code=request.saved_code,
             saved_settings=request.saved_settings,
+            saved_steps=request.saved_steps,
             node=repr(target.authored_id),
         )
     except ValueError as exc:
@@ -861,7 +862,10 @@ def _scoped_config_to_write(
         held = read_sidecar_state(path)
         recorded = held.data.unfinished_steps.get(target.authored_id) if held.data else None
     from_record = with_recorded_unfinished_steps(
-        target.node_type, config, recorded, edited=request.saved_code is None
+        target.node_type,
+        config,
+        recorded,
+        edited=request.saved_code is None and request.saved_steps is None,
     )
     return config if from_record is None else from_record
 

@@ -920,6 +920,9 @@ export interface ScopedNodeSaveRequest {
   /** The code saved for the node's steps, when they were not edited since the last save:
    * the node is written from it, its steps not read. */
   savedCode: string | null
+  /** The node's step list as saved, for a node saved with unfinished steps that were not
+   * edited: the node is written from it. */
+  savedSteps: string | null
   /** The node's settings as saved, when they were not edited: the node is written from them. */
   savedSettings: string | null
 }
@@ -936,6 +939,7 @@ export function saveNodeScoped(
     target_recovery_id: args.targetRecoveryId,
     config: args.config,
     saved_code: args.savedCode,
+    saved_steps: args.savedSteps,
     saved_settings: args.savedSettings,
   }, options, parsePipelineEditorDocument, "saveNodeScoped")
 }

@@ -10,6 +10,10 @@ server issued in a form a browser keeps exactly, and the node is built from that
 - a stepped node's saved code (``editor.saved_code``), the code its baseline holds for its
   steps: the node is built from it with its step list taken off, since building a node
   renders its steps into its code (``NodeData``);
+- the saved steps (``editor.saved_steps``) of a node saved with an unfinished step list,
+  whose file holds the raising placeholder and the list in its ``.haute.json``: the list is
+  then the node's program, as JSON text, and the node is built from it, so a run refuses it
+  as unfinished as the file does and a save writes the record as it was;
 - a node's saved settings (``editor.saved_settings``), its settings as JSON text the server
   wrote (:func:`settings_text`): the node is built from them, the settings it carries not
   read.
@@ -41,8 +45,10 @@ NodeRef = tuple[str | None, str]
 #: The config keys of a node's steps; every other key is one of its settings.
 STEPS_KEYS: frozenset[str] = frozenset({"steps", "code"})
 
-#: The fields of a node's editor state that carry the saved form of each of its parts.
-SAVED_FORM_KEYS: tuple[str, str] = ("saved_code", "saved_settings")
+#: The fields of a node's editor state that carry the saved form of each of its parts: its
+#: steps' (the code saved for them, or the list itself for a node saved unfinished) and its
+#: settings'.
+SAVED_FORM_KEYS: tuple[str, str, str] = ("saved_code", "saved_steps", "saved_settings")
 
 
 def exact_json(value: Any) -> str:
@@ -66,37 +72,54 @@ def holds_steps(node_type: object, config: Mapping[str, Any]) -> bool:
     return node_type in STEPPED_NODE_TYPES and isinstance(config.get("steps"), list)
 
 
+def _decoded(text: str, what: str, node: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"The {what} of node {node} are not JSON: {exc}") from exc
+
+
 def config_as_read(
     node_type: object,
     config: Mapping[str, Any],
     *,
     saved_code: str | None,
     saved_settings: str | None,
+    saved_steps: str | None = None,
     node: str,
 ) -> dict[str, Any]:
     """*config*, a node's as a request carries it, as the request reads it: its steps from
-    *saved_code* and its settings from *saved_settings*, when it carries them.
+    *saved_code* or *saved_steps* and its settings from *saved_settings*, when it carries
+    them.
 
     A saved code is the node's code and takes its step list off; an empty one (steps that
     did not render when saved) leaves the list, then the only copy of the node's program.
-    Saved settings replace every setting *config* carries. *node* names the node in a
-    refusal (``ValueError``): a saved code on a node holding no step list, or saved settings
-    that are not a JSON object of settings.
+    Saved steps replace the list it carries, and its code, which building the node renders
+    from them. Saved settings replace every setting *config* carries. *node* names the node
+    in a refusal (``ValueError``): a saved form of its steps on a node holding no step list,
+    both of them, saved steps that are not a list, or saved settings that are not a JSON
+    object of settings.
     """
     read = dict(config)
-    if saved_code is not None:
+    if saved_code is not None or saved_steps is not None:
         if not holds_steps(node_type, config):
             raise ValueError(
-                f"Node {node} carries the code saved for its steps but holds no step list."
+                f"Node {node} carries the saved form of its steps but holds no step list."
             )
+        if saved_code is not None and saved_steps is not None:
+            raise ValueError(f"Node {node} carries both a saved code and saved steps.")
+    if saved_code is not None:
         if saved_code.strip():
             del read["steps"]
         read["code"] = saved_code
+    if saved_steps is not None:
+        steps = _decoded(saved_steps, "saved steps", node)
+        if not isinstance(steps, list):
+            raise ValueError(f"The saved steps of node {node} are not a list.")
+        read["steps"] = steps
+        read["code"] = ""
     if saved_settings is not None:
-        try:
-            settings = json.loads(saved_settings)
-        except ValueError as exc:
-            raise ValueError(f"The saved settings of node {node} are not JSON: {exc}") from exc
+        settings = _decoded(saved_settings, "saved settings", node)
         if not isinstance(settings, dict) or not STEPS_KEYS.isdisjoint(settings):
             raise ValueError(f"The saved settings of node {node} are not an object of settings.")
         read = {**settings, **{key: value for key, value in read.items() if key in STEPS_KEYS}}
@@ -143,13 +166,15 @@ def graph_as_read(graph: Mapping[str, Any]) -> DocumentAsRead:
             if not isinstance(config, Mapping) or not isinstance(editor, Mapping):
                 out.append(node)
                 continue
-            saved = (saved_code, saved_settings) = tuple(editor.get(key) for key in SAVED_FORM_KEYS)
+            saved = (saved_code, saved_steps, saved_settings) = tuple(
+                editor.get(key) for key in SAVED_FORM_KEYS
+            )
             if any(value is not None and not isinstance(value, str) for value in saved):
                 out.append(node)
                 continue
             ref: NodeRef = (scope, str(node.get("id")))
             node_type = data.get("nodeType", DEFAULT_NODE_TYPE)
-            if saved_code is None and holds_steps(node_type, config):
+            if saved_code is None and saved_steps is None and holds_steps(node_type, config):
                 edited_steps.add(ref)
             if saved_settings is None:
                 edited_settings.add(ref)
@@ -161,6 +186,7 @@ def graph_as_read(graph: Mapping[str, Any]) -> DocumentAsRead:
                 config,
                 saved_code=saved_code,
                 saved_settings=saved_settings,
+                saved_steps=saved_steps,
                 node=_describe(ref),
             )
             state = {key: value for key, value in editor.items() if key not in SAVED_FORM_KEYS}
@@ -191,6 +217,30 @@ def scoped_nodes(graph: PipelineGraph) -> dict[NodeRef, Any]:
     return {(scope, node.id): node for scope, scoped in scopes for node in scoped.nodes}
 
 
+def node_inputs(graph: PipelineGraph) -> dict[NodeRef, str]:
+    """What each node of *graph* and of its definitions is rendered against, by scope and
+    id, as JSON text: the edges into it (by source and handles) and, in a definition, the
+    public input ports that reach it. A node's steps render against its inputs, so steps
+    as saved keep the code saved for them only while their node's inputs are as saved."""
+    scopes: list[tuple[str | None, Any, Any]] = [(None, graph, None)]
+    scopes.extend((key, d.graph, d) for key, d in (graph.submodels or {}).items())
+    held: dict[NodeRef, str] = {}
+    for scope, scoped, definition in scopes:
+        for node in scoped.nodes:
+            edges = sorted(
+                (edge.source, edge.sourceHandle or "", edge.targetHandle or "")
+                for edge in scoped.edges
+                if edge.target == node.id
+            )
+            ports = sorted(
+                port.name
+                for port in (definition.input_ports if definition is not None else ())
+                if any(target.node_id == node.id for target in port.targets)
+            )
+            held[(scope, node.id)] = exact_json([edges, ports])
+    return held
+
+
 def with_saved_forms(
     graph: PipelineGraph, baseline: PipelineGraph, *, edited: Collection[NodeRef] = ()
 ) -> dict[str, Any]:
@@ -199,14 +249,19 @@ def with_saved_forms(
     as *baseline* holds it with its saved form from *baseline*, as the editor sends it.
 
     A node's steps are sent without one, and so rendered, when they differ from the same
-    node's in *baseline*, when *baseline* does not hold the node, when its steps are its
+    node's in *baseline*, when *baseline* does not hold the node, when the node's steps name
+    its inputs and those differ from the ones *baseline* gives it, when its steps are its
     file's record of unfinished steps (``steps_recorded``), for which the steps are the
     program, and when *edited* names it. Values are compared as their JSON text, so ``1``
     and ``1.0`` differ.
     """
+    from haute._polars_steps import stepped_surface_allows_input_references
+
     held = scoped_nodes(baseline)
+    held_inputs = node_inputs(baseline)
     payload = graph.model_dump(mode="python", by_alias=True)
     built = scoped_nodes(graph)
+    inputs = node_inputs(graph)
 
     def given(scope: str | None, nodes: list[dict[str, Any]]) -> None:
         for node in nodes:
@@ -223,6 +278,10 @@ def with_saved_forms(
                 and ref not in edited
                 and not now.editor.steps_recorded
                 and exact_json(now.config["steps"]) == exact_json(config["steps"])
+                and (
+                    not stepped_surface_allows_input_references(now.nodeType)
+                    or inputs[ref] == held_inputs[ref]
+                )
             ):
                 editor["saved_code"] = str(config.get("code") or "")
             if exact_json(settings_of(now.config)) == exact_json(settings_of(config)):

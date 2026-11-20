@@ -289,7 +289,13 @@ class BrowserDocument:
 
     def request_graph(self, live: dict[str, Any] | None = None) -> dict[str, Any]:
         """*live* (the browser's live graph by default) as a request sends it."""
+        from haute._edited_parts import node_inputs
+        from haute._polars_steps import stepped_surface_allows_input_references
+        from haute._types import PipelineGraph
+
         sent = copy.deepcopy(self.live if live is None else live)
+        inputs = node_inputs(PipelineGraph.model_validate(sent))
+        held_inputs = node_inputs(self.graph)
         for ref, node in scoped(sent):
             data = node["data"]
             editor = data.setdefault("editor", {})
@@ -303,11 +309,17 @@ class BrowserDocument:
             steps = config.get("steps")
             if (
                 isinstance(steps, list)
-                and isinstance(saved.get("saved_code"), str)
                 and _canonical(steps) == _canonical(held["config"].get("steps"))
+                and (
+                    not stepped_surface_allows_input_references(data["nodeType"])
+                    or inputs[ref] == held_inputs.get(ref)
+                )
             ):
-                editor["saved_code"] = saved["saved_code"]
-                config["code"] = saved["saved_code"]
+                if isinstance(saved.get("saved_code"), str):
+                    editor["saved_code"] = saved["saved_code"]
+                    config["code"] = saved["saved_code"]
+                elif isinstance(saved.get("saved_steps"), str):
+                    editor["saved_steps"] = saved["saved_steps"]
             settings = {k: v for k, v in config.items() if k not in STEPS_KEYS}
             held_settings = {k: v for k, v in held["config"].items() if k not in STEPS_KEYS}
             if isinstance(saved.get("saved_settings"), str) and _canonical(settings) == _canonical(

@@ -375,3 +375,78 @@ def test_a_new_node_inside_a_submodel_is_saved_and_run_as_sent(client: Any, tmp_
     saved = _functions(module.read_text("utf-8"))
     assert 'pl.lit(1.5).alias("boost")' in saved["boosted"]
     assert saved["enriched"] == enriched
+
+
+def _unfinished_project(tmp_path: Path) -> Path:
+    """The hand-written project with ``relativity`` saved, by the server, starting from an
+    input it is not connected to before its ``pl.lit(1.0)``: an unfinished list, so its
+    file holds the raising placeholder and its ``.haute.json`` the list, decimal and all."""
+    from haute._types import PipelineGraph
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.schemas import SavePipelineRequest
+    from tests.conftest import current_source_revision
+
+    root = make_project(tmp_path)
+    before = BrowserDocument(root, root / "main.py").graph
+    after = PipelineGraph.model_validate(before.model_dump(mode="python", by_alias=True))
+    node = next(n for n in after.nodes if n.id == "relativity")
+    first, *rest = node.data.config["steps"]
+    steps = [{**first, "input": "rates"}, *rest]
+    after.nodes[after.nodes.index(node)] = node.with_config({**node.data.config, "steps": steps})
+    SavePipelineService(root).save(
+        SavePipelineRequest.model_validate(
+            {
+                "name": "main",
+                "graph": with_saved_forms(after, before),
+                "source_file": "main.py",
+                "base_revision": current_source_revision(root / "main.py", root),
+            }
+        )
+    )
+    assert "This node's steps are incomplete" in (root / "main.py").read_text("utf-8")
+    assert '"value": 1.0' in (root / "main.haute.json").read_text("utf-8")
+    return root
+
+
+def test_a_node_saved_unfinished_is_run_and_saved_as_its_file_holds_it(
+    client: Any, tmp_path: Path
+) -> None:
+    """Its program is the list its ``.haute.json`` records, not the code the list renders to
+    without its inputs: a preview refuses it as the file does, naming the step, and an
+    untouched save leaves the record, decimal and all, as it was."""
+    root = _unfinished_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    held = document.baseline[(None, "relativity")]["editor"]
+    assert held.get("saved_code") is None and held.get("saved_steps")
+    before = files(root)
+    sent = document.request_graph()
+
+    answer = _preview(client, sent, "relativity")
+    assert answer == _preview(client, _exact(document), "relativity")
+    assert "rates" in str(answer) and "error" in str(answer)
+    _save(client, document, sent)
+
+    assert files(root) == before
+
+
+def test_a_node_whose_input_was_removed_reads_its_steps(client: Any, tmp_path: Path) -> None:
+    """The code saved for a node's steps was rendered against its inputs: with an input gone
+    its steps are read, and the run names the step that reads it."""
+    from haute._types import PipelineGraph
+
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+
+    def unplug(graph: dict[str, Any]) -> None:
+        graph["edges"] = [e for e in graph["edges"] if e["target"] != "doubled"]
+
+    sent = _edit(document, unplug)
+    assert "saved_code" not in node_at(sent, (None, "doubled"))["data"]["editor"]
+    exact = PipelineGraph.model_validate(document.graph.model_dump(mode="python", by_alias=True))
+    unplug_exact = exact.model_dump(mode="python", by_alias=True)
+    unplug(unplug_exact)
+    reference = with_saved_forms(PipelineGraph.model_validate(unplug_exact), document.graph)
+
+    status, error, _columns, _rows = _preview(client, sent, "doubled")
+    assert (status, error) == _preview(client, reference, "doubled")[:2]
+    assert status == "error" and "relativity" in str(error)

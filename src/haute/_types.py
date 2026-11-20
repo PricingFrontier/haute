@@ -174,8 +174,9 @@ class NodeEditorState(BaseModel):
     from a request: the node's body is the placeholder an unfinished step list is
     saved with, and its steps are the list its ``.haute.json`` records.
 
-    ``saved_code`` and ``saved_settings`` are the saved form of the node's steps and
-    of its settings, in a form a browser keeps exactly (``haute._edited_parts``,
+    ``saved_code`` (or, for a node saved with unfinished steps, ``saved_steps``) and
+    ``saved_settings`` are the saved form of the node's steps and of its settings, in a
+    form a browser keeps exactly (``haute._edited_parts``,
     CGEN-13): an editor document gives them for each of its nodes, and a request that
     carries the document sends them back for each part its editor did not edit. The
     request reads them before the node is built, so a built node never carries one.
@@ -187,6 +188,7 @@ class NodeEditorState(BaseModel):
     steps_discarded: str | None = None
     # Left out when absent: a built node, and so every graph an answer carries, has none.
     saved_code: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    saved_steps: str | None = Field(default=None, exclude_if=lambda value: value is None)
     saved_settings: str | None = Field(default=None, exclude_if=lambda value: value is None)
     _steps_recorded: bool = PrivateAttr(default=False)
 
@@ -241,7 +243,8 @@ class NodeData(BaseModel):
         from haute._node_specs import STEPPED_NODE_TYPES
         from haute._polars_steps import PolarsStepError, render_node_steps
 
-        if self.editor.saved_code is not None or self.editor.saved_settings is not None:
+        saved = (self.editor.saved_code, self.editor.saved_steps, self.editor.saved_settings)
+        if any(form is not None for form in saved):
             # A request reads a node's saved forms before the node is built
             # (``haute.schemas.DocumentRequest``); one that reaches a node went round it.
             raise ValueError(

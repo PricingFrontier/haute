@@ -55,7 +55,7 @@ const REQUEST_NODE_METADATA_FIELDS = new Set(["editor"])
  * The saved form of a node's parts: only `utils/documentRequest.ts` puts them on a request,
  * from the saved baseline (CGEN-13).
  */
-const SAVED_FORM_FIELDS = new Set(["saved_code", "saved_settings"])
+const SAVED_FORM_FIELDS = new Set(["saved_code", "saved_steps", "saved_settings"])
 
 function withoutSavedFormFields(data: unknown): unknown {
   if (data === null || typeof data !== "object" || Array.isArray(data)) return data

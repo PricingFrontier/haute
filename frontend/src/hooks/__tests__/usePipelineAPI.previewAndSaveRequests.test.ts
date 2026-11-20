@@ -506,7 +506,7 @@ describe("usePipelineAPI - preview and save requests", () => {
         act(() => useGraphStore.getState().setNodes(withConfig({ steps: edited, code: saved, rate: 1 })))
         mockSave.mockResolvedValueOnce(makeSavePipelineResponse({
           source_revision: "revision-edited",
-          saved_parts: [{ submodel: null, node_id: "t", code: "df = written", settings: null }],
+          saved_parts: [{ submodel: null, node_id: "t", code: "df = written", steps: null, settings: null }],
         }))
         await act(async () => { await result.current.handleSave() })
         expect(sent(1)).toEqual({ code: saved, savedCode: undefined, savedSettings: '{"rate":1.0}' })
@@ -519,7 +519,7 @@ describe("usePipelineAPI - preview and save requests", () => {
         act(() => useGraphStore.getState().setNodes(withConfig({ steps: edited, code: saved, rate: 2 })))
         mockSave.mockResolvedValueOnce(makeSavePipelineResponse({
           source_revision: "revision-setting",
-          saved_parts: [{ submodel: null, node_id: "t", code: null, settings: '{"rate":2}' }],
+          saved_parts: [{ submodel: null, node_id: "t", code: null, steps: null, settings: '{"rate":2}' }],
         }))
         await act(async () => { await result.current.handleSave() })
         expect(sent(3)).toEqual({ code: "df = written", savedCode: "df = written", savedSettings: undefined })

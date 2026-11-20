@@ -674,3 +674,34 @@ def test_the_guard_finds_a_request_that_goes_round_the_rule() -> None:
     def _round(body: _RoundTheRule) -> None: ...
 
     assert _requests_round_the_rule(app) == ["/round: _RoundTheRule.graph"]
+
+
+def test_a_repeat_that_reads_other_parts_is_another_save(tmp_path: Path) -> None:
+    """Two requests that read the same graph, one sending a node's steps with an empty saved
+    code (its steps kept as their only copy, not edited) and one without (its steps read),
+    are two saves: a repeat under one's operation with the other's parts is refused."""
+    import copy
+
+    from haute._save_records import SaveOperationReusedError, save_request_digest
+
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    kept = document.request_graph()
+    relativity = node_at(kept, (None, "relativity"))["data"]
+    relativity["config"]["code"] = ""
+    relativity["editor"]["saved_code"] = ""
+    read = copy.deepcopy(kept)
+    del node_at(read, (None, "relativity"))["data"]["editor"]["saved_code"]
+    first = SavePipelineRequest.model_validate(
+        {**document.save_request(kept), "operation": "operation-1"}
+    )
+    repeat = SavePipelineRequest.model_validate(
+        {**document.save_request(read), "operation": "operation-1"}
+    )
+    assert first.model_dump_json() == repeat.model_dump_json()
+    assert (None, "relativity") in repeat.edited_steps - first.edited_steps
+    assert save_request_digest(first) != save_request_digest(repeat)
+
+    SavePipelineService(root).save(first)
+    with pytest.raises(SaveOperationReusedError):
+        SavePipelineService(root).save(repeat)

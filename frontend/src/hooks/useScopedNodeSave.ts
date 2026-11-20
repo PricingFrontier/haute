@@ -1,4 +1,4 @@
-import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
+import useGraphStore, { canvasGraph, documentGraph } from "../stores/useGraphStore"
 import { savedFormsFor } from "../utils/documentRequest"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { saveNodeScoped } from "../api/client"
@@ -140,7 +140,13 @@ export function useScopedNodeSave({
         // their saved text.
         const config = (data.config ?? {}) as Record<string, unknown>
         const graph = useGraphStore.getState()
-        const saved = savedFormsFor(graph.lastSavedSnapshot, graph.focus?.definitionId ?? null, target)
+        const { nodes, edges } = documentGraph()
+        const saved = savedFormsFor(
+          graph.lastSavedSnapshot,
+          { nodes, edges, submodels: graph.submodels },
+          graph.focus?.definitionId ?? null,
+          target,
+        )
         // A response is adopted only while the document it was computed against, its file and
         // revision, is still the one on screen.
         const sentAgainst = watch(useDocumentStatusStore, (current) => JSON.stringify([current.sourceFile, current.sourceRevision]))
@@ -151,6 +157,7 @@ export function useScopedNodeSave({
           targetRecoveryId: data._recoveryId,
           config: saved.saved_code === undefined ? config : { ...config, code: saved.saved_code },
           savedCode: saved.saved_code ?? null,
+          savedSteps: saved.saved_steps ?? null,
           savedSettings: saved.saved_settings ?? null,
         }), {
           ok: ({ value: document, documentFingerprint }) => {

@@ -81,11 +81,11 @@ describe("document request", () => {
       submodels: { sub: definition([transform("t", { steps: changed, code: "df = inner" })]) },
     }
 
-    expect(savedFormsFor(baseline, null, document.nodes[0])).toEqual({ saved_settings: '{"rate":1.0}' })
-    expect(savedFormsFor(baseline, null, document.nodes[1])).toEqual({})
-    expect(savedFormsFor(baseline, null, document.nodes[2])).toEqual({})
-    expect(savedFormsFor(baseline, "sub", document.submodels.sub.graph.nodes[0])).toEqual({ saved_settings: "{}" })
-    expect(document.nodes.map((node) => savedFormsFor(null, null, node))).toEqual([{}, {}, {}])
+    expect(savedFormsFor(baseline, document, null, document.nodes[0])).toEqual({ saved_settings: '{"rate":1.0}' })
+    expect(savedFormsFor(baseline, document, null, document.nodes[1])).toEqual({})
+    expect(savedFormsFor(baseline, document, null, document.nodes[2])).toEqual({})
+    expect(savedFormsFor(baseline, document, "sub", document.submodels.sub.graph.nodes[0])).toEqual({ saved_settings: "{}" })
+    expect(document.nodes.map((node) => savedFormsFor(null, document, null, node))).toEqual([{}, {}, {}])
   })
 
   it("compares a part by its content, not its key order", () => {
@@ -100,7 +100,7 @@ describe("document request", () => {
     // A baseline the canvas was marked saved with (a discarded edit before the document is asked again).
     const bare = { nodes: [transform("t", { steps, code: savedCode, rate: 1 }, live)], submodels: {} }
 
-    expect(savedFormsFor(bare, null, bare.nodes[0])).toEqual({})
+    expect(savedFormsFor(bare, bare, null, bare.nodes[0])).toEqual({})
     expect(savedCodeForSteps(bare, null, "t", steps)).toBeNull()
   })
 
@@ -118,8 +118,8 @@ describe("document request", () => {
   it("puts the saved form of each part the server wrote in the baseline it becomes, and keeps the rest", () => {
     const sent = withSavedForms(baseline, baseline)
     const saved = withSavedParts(sent, [
-      { submodel: "sub", node_id: "t", code: "df = written", settings: null },
-      { submodel: null, node_id: "plain", code: null, settings: '{"rate":2}' },
+      { submodel: "sub", node_id: "t", code: "df = written", steps: null, settings: null },
+      { submodel: null, node_id: "plain", code: null, steps: null, settings: '{"rate":2}' },
     ])
 
     const inner = (saved.submodels.sub as ReturnType<typeof definition>).graph.nodes[0]
@@ -127,6 +127,43 @@ describe("document request", () => {
     expect(editor(inner)).toEqual({ ...live, saved_code: "df = written", saved_settings: "{}" })
     expect(editor(saved.nodes[1])?.saved_settings).toBe('{"rate":2}')
     expect(editor(saved.nodes[0])).toEqual(editor(baseline.nodes[0]))
+  })
+
+  it("reads the steps of a node whose inputs changed: its saved code was rendered against them", () => {
+    const edge = { id: "e", source: "quotes", target: "t", sourceHandle: null, targetHandle: null }
+    const held = { ...baseline, edges: [edge] }
+    const node = transform("t", { steps, code: savedCode, rate: 1 })
+    const rate = { saved_settings: '{"rate":1.0}' }
+
+    expect(savedFormsFor(held, { nodes: [node], edges: [edge] }, null, node)).toEqual({ saved_code: savedCode, ...rate })
+    expect(savedFormsFor(held, { nodes: [node], edges: [] }, null, node)).toEqual(rate)
+    const moved = { ...edge, source: "rates" }
+    expect(savedFormsFor(held, { nodes: [node], edges: [moved] }, null, node)).toEqual(rate)
+    // A Data Input's steps name no input: its edges are not its steps'.
+    const hook = { ...node, data: { ...node.data, nodeType: "dataInput" } }
+    const heldHook = { nodes: [{ ...held.nodes[0], data: { ...held.nodes[0].data, nodeType: "dataInput" } }], edges: [edge] }
+    expect(savedFormsFor(heldHook, { nodes: [hook], edges: [] }, null, hook).saved_code).toBe(savedCode)
+  })
+
+  it("sends a node saved with unfinished steps with the list itself, and keeps one saved form for its steps", () => {
+    const record = '[{"id":"s","kind":"source","input":"quotes"}]'
+    const unfinished = {
+      nodes: [transform("t", { steps, code: savedCode }, { ...live, saved_steps: record, saved_settings: "{}" })],
+      submodels: {},
+    }
+    const document = { nodes: [transform("t", { steps: structuredClone(steps), code: "df = stale" }, live)], submodels: {} }
+
+    const sent = withSavedForms(document, unfinished)
+    expect(editor(sent.nodes[0])).toEqual({ ...live, saved_steps: record, saved_settings: "{}" })
+    // Its code is the live cache's: the list is its program.
+    expect(config(sent.nodes[0]).code).toBe("df = stale")
+
+    const written = withSavedParts(withSavedForms(baseline, baseline), [
+      { submodel: null, node_id: "t", code: null, steps: record, settings: null },
+    ])
+    expect(editor(written.nodes[0])).toEqual({ ...live, saved_steps: record, saved_settings: '{"rate":1.0}' })
+    const rendered = withSavedParts(written, [{ submodel: null, node_id: "t", code: "df = done", steps: null, settings: null }])
+    expect(editor(rendered.nodes[0])).toEqual({ ...live, saved_code: "df = done", saved_settings: '{"rate":1.0}' })
   })
 
   it("takes every saved form off a document", () => {
