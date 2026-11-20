@@ -36,6 +36,10 @@ def test_init_scaffolds_blank_pipeline(tmp_path: Path) -> None:
 
 def test_scaffolded_starter_test_passes_for_blank_pipeline(tmp_path: Path) -> None:
     _scaffold_project(tmp_path)
+    # A project is a haute.toml inside a git repository, as the one CI checks out is: the
+    # starter test parses the pipeline with no project installed, which the finder refuses
+    # outside one.
+    (tmp_path / ".git").mkdir()
     starter_test = tmp_path / "tests" / "test_pipeline.py"
 
     result = subprocess.run(

@@ -9,9 +9,9 @@ from unittest.mock import ANY, patch
 
 import pytest
 
+from haute._project_settings import _schema, read_project_settings
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.deploy._config import (
-    _VALID_TOML_SCHEMA,
     AwsEcsConfig,
     AzureContainerAppsConfig,
     CIConfig,
@@ -22,11 +22,11 @@ from haute.deploy._config import (
     ResolvedDeploy,
     SafetyConfig,
     _apply_env_overrides,
-    _validate_toml_keys,
 )
 from haute.deploy._project_modules import ProjectModules
 from haute.deploy._request_rows import RequestRows
 from haute.deploy._validators import _TestQuoteCase, validate_deploy
+from haute.errors import ConfigError
 from tests._deploy_helpers import artifact_digests, resolved_paths
 from tests._project import use_project
 
@@ -88,7 +88,7 @@ endpoint_suffix = "-stg"
 
 class TestFromToml:
     def test_accepts_server_host_used_by_cli(self, tmp_path: Path) -> None:
-        from haute.cli._serve import _load_toml_server_host
+        from haute.cli._serve import _settings_server_host
 
         path = tmp_path / "haute.toml"
         path.write_text(
@@ -103,23 +103,25 @@ host = "localhost"
             encoding="utf-8",
         )
 
-        config = DeployConfig.from_toml(path)
+        config = DeployConfig.from_project(path.parent)
 
         assert config.model_name == "simple"
-        assert _load_toml_server_host(tmp_path) == "localhost"
+        settings = read_project_settings(tmp_path)
+        assert settings is not None
+        assert _settings_server_host(settings) == "localhost"
 
     def test_loads_safety_section(self, toml_file: Path) -> None:
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.safety.impact_dataset == "data/portfolio.parquet"
         assert config.safety.min_approvers == 3
 
     def test_loads_ci_section(self, toml_file: Path) -> None:
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.ci.provider == "github"
         assert config.ci.staging_endpoint_suffix == "-stg"
 
     def test_loads_target(self, toml_file: Path) -> None:
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.target == "databricks"
 
     def test_defaults_when_sections_missing(self, tmp_path: Path) -> None:
@@ -137,7 +139,7 @@ model_name = "simple"
             "import haute\npipeline = haute.Pipeline('main')\n",
             encoding="utf-8",
         )
-        config = DeployConfig.from_toml(p)
+        config = DeployConfig.from_project(p.parent)
         assert config.safety.min_approvers == 2
         assert config.ci.provider == "github"
 
@@ -156,7 +158,7 @@ model_name = "simple"
             encoding="utf-8",
         )
 
-        config = DeployConfig.from_toml(tmp_path / "haute.toml")
+        config = DeployConfig.from_project(tmp_path)
         assert config.pipeline_file == Path("configured.py")
 
     def test_resolution_leaves_the_callers_config_unchanged(
@@ -171,7 +173,7 @@ model_name = "simple"
         project = tmp_path / "project"
         shutil.copytree(_MINIMAL_LIVE_QUOTE, project)
         use_project(tmp_path)
-        config = DeployConfig.from_toml(project / "haute.toml")
+        config = DeployConfig.from_project(project)
         before = dataclasses.replace(config)
 
         with resolve_config(config) as resolved:
@@ -184,7 +186,7 @@ model_name = "simple"
     def test_output_fields_toml_preserves_explicit_arrays(self, tmp_path: Path, value: str) -> None:
         path = tmp_path / "haute.toml"
         path.write_text(f'[project]\nname = "x"\n[deploy]\noutput_fields = {value}\n')
-        config = DeployConfig.from_toml(path)
+        config = DeployConfig.from_project(path.parent)
         assert config.output_fields == ([] if value == "[]" else ["premium", "age"])
 
     def test_reads_the_test_quotes_from_tests_quotes_when_none_is_named(
@@ -195,21 +197,21 @@ model_name = "simple"
         quotes = tmp_path / "tests" / "quotes"
 
         # haute.toml names no folder: tests/quotes, once it holds test quotes.
-        assert DeployConfig.from_toml(path).test_quotes_dir is None
+        assert DeployConfig.from_project(path.parent).test_quotes_dir is None
         quotes.mkdir(parents=True)
-        assert DeployConfig.from_toml(path).test_quotes_dir is None
+        assert DeployConfig.from_project(path.parent).test_quotes_dir is None
         (quotes / "golden.json").write_text("[]", encoding="utf-8")
-        assert DeployConfig.from_toml(path).test_quotes_dir == quotes.resolve()
+        assert DeployConfig.from_project(path.parent).test_quotes_dir == quotes.resolve()
 
         path.write_text('[project]\nname = "x"\n[test_quotes]\ndir = "../outside"\n')
         with pytest.raises(ValueError, match="inside the project"):
-            DeployConfig.from_toml(path)
+            DeployConfig.from_project(path.parent)
 
     def test_output_fields_toml_rejects_non_array(self, tmp_path: Path) -> None:
         path = tmp_path / "haute.toml"
         path.write_text('[project]\nname = "x"\n[deploy]\noutput_fields = "premium"\n')
         with pytest.raises(ValueError, match="output_fields.*array"):
-            DeployConfig.from_toml(path)
+            DeployConfig.from_project(path.parent)
 
     @pytest.mark.parametrize(
         ("toml", "key"),
@@ -236,8 +238,8 @@ model_name = "simple"
         # back to tests/quotes (and so to no gate at all).
         path = tmp_path / "haute.toml"
         path.write_text(f'{toml}[project]\nname = "x"\n', encoding="utf-8")
-        with pytest.raises(ValueError, match=key):
-            DeployConfig.from_toml(path)
+        with pytest.raises((ValueError, ConfigError), match=key):
+            DeployConfig.from_project(path.parent)
 
 
 class TestEffectiveEndpointName:
@@ -283,7 +285,7 @@ class TestEnvOverrides:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_MODEL_NAME", "overridden-name")
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.model_name == "overridden-name"
 
     def test_haute_target_override(
@@ -292,7 +294,7 @@ class TestEnvOverrides:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_TARGET", "container")
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.target == "container"
 
     def test_haute_nested_override(
@@ -301,7 +303,7 @@ class TestEnvOverrides:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_SERVING_WORKLOAD_SIZE", "Large")
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.databricks.serving_workload_size == "Large"
 
     def test_haute_bool_override(
@@ -310,14 +312,14 @@ class TestEnvOverrides:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("HAUTE_SERVING_SCALE_TO_ZERO", "false")
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.databricks.serving_scale_to_zero is False
 
     def test_no_env_no_override(self, toml_file: Path) -> None:
         # Ensure HAUTE_ vars are not set
         for key in ("HAUTE_MODEL_NAME", "HAUTE_TARGET"):
             os.environ.pop(key, None)
-        config = DeployConfig.from_toml(toml_file)
+        config = DeployConfig.from_project(toml_file.parent)
         assert config.model_name == "motor-pricing"
         assert config.target == "databricks"
 
@@ -328,158 +330,55 @@ class TestEnvOverrides:
 
 
 class TestTomlSchemaSyncWithDataclasses:
-    """Guard against _VALID_TOML_SCHEMA drifting from config dataclass fields.
+    """Guard against the settings parse's schema drifting from config dataclass fields.
 
-    If someone adds a field to a config dataclass but forgets to add it to
-    _VALID_TOML_SCHEMA, the TOML validator will reject the new key.  These
+    If someone adds a field to a config dataclass but forgets the key in
+    ``haute._project_settings``, the parse will refuse the new key. These
     tests detect such drift at CI time.
     """
+
+    @staticmethod
+    def _deploy_keys(table: str) -> set[str]:
+        tables = _schema()["deploy"].tables
+        assert tables is not None
+        return set(tables[table].keys)
 
     def test_databricks_fields_in_schema(self) -> None:
         """Every DatabricksConfig field must appear in the TOML schema."""
         dc_fields = {f.name for f in dataclasses.fields(DatabricksConfig)}
-        schema_keys = _VALID_TOML_SCHEMA["deploy"]["databricks"]
-        assert dc_fields == schema_keys, (
-            f"DatabricksConfig fields {dc_fields - schema_keys} missing from "
-            f"TOML schema, or schema has extra keys {schema_keys - dc_fields}"
-        )
+        assert dc_fields == self._deploy_keys("databricks")
 
     def test_container_fields_in_schema(self) -> None:
-        """Every ContainerConfig field must appear in the TOML schema."""
         dc_fields = {f.name for f in dataclasses.fields(ContainerConfig)}
-        schema_keys = _VALID_TOML_SCHEMA["deploy"]["container"]
-        assert dc_fields == schema_keys
+        assert dc_fields == self._deploy_keys("container")
 
     def test_azure_container_apps_fields_in_schema(self) -> None:
-        """Every AzureContainerAppsConfig field must appear in the TOML schema."""
         dc_fields = {f.name for f in dataclasses.fields(AzureContainerAppsConfig)}
-        schema_keys = _VALID_TOML_SCHEMA["deploy"]["azure-container-apps"]
-        assert dc_fields == schema_keys
+        assert dc_fields == self._deploy_keys("azure-container-apps")
 
     def test_aws_ecs_fields_in_schema(self) -> None:
-        """Every AwsEcsConfig field must appear in the TOML schema."""
         dc_fields = {f.name for f in dataclasses.fields(AwsEcsConfig)}
-        schema_keys = _VALID_TOML_SCHEMA["deploy"]["aws-ecs"]
-        assert dc_fields == schema_keys
+        assert dc_fields == self._deploy_keys("aws-ecs")
 
     def test_gcp_run_fields_in_schema(self) -> None:
-        """Every GcpRunConfig field must appear in the TOML schema."""
         dc_fields = {f.name for f in dataclasses.fields(GcpRunConfig)}
-        schema_keys = _VALID_TOML_SCHEMA["deploy"]["gcp-run"]
-        assert dc_fields == schema_keys
+        assert dc_fields == self._deploy_keys("gcp-run")
 
     def test_safety_fields_in_schema(self) -> None:
-        """SafetyConfig fields must appear across the safety TOML schema.
-
-        SafetyConfig has ``impact_dataset`` (in [safety]._self) and
-        ``min_approvers`` (in [safety.approval]).
-        """
-        dc_fields = {f.name for f in dataclasses.fields(SafetyConfig)}
-        # Flatten the safety schema: _self keys + approval sub-keys
-        safety_schema = _VALID_TOML_SCHEMA["safety"]
-        flat_keys = set(safety_schema.get("_self", set()))
-        flat_keys |= set(safety_schema.get("approval", set()))
-        assert dc_fields == flat_keys, (
-            f"SafetyConfig fields {dc_fields - flat_keys} missing from TOML schema, "
-            f"or schema has extra keys {flat_keys - dc_fields}"
-        )
+        """``impact_dataset`` in [safety], ``min_approvers`` in [safety.approval]."""
+        safety = _schema()["safety"]
+        assert safety.tables is not None
+        flat_keys = set(safety.keys) | set(safety.tables["approval"].keys)
+        assert {f.name for f in dataclasses.fields(SafetyConfig)} == flat_keys
 
     def test_ci_fields_in_schema(self) -> None:
-        """CIConfig fields must appear across the ci TOML schema.
-
-        CIConfig has ``provider`` ([ci]._self), ``staging_endpoint_suffix``
-        and ``staging_endpoint_url`` ([ci.staging]), and
-        ``production_endpoint_url`` ([ci.production]).
-        """
-        dc_fields = {f.name for f in dataclasses.fields(CIConfig)}
-        ci_schema = _VALID_TOML_SCHEMA["ci"]
-        # CIConfig field names use underscored prefixes (staging_endpoint_suffix)
-        # but TOML uses nested sections ([ci.staging] endpoint_suffix).
-        # Build the expected mapping:
-        flat_keys: set[str] = set()
-        for k in ci_schema.get("_self", set()):
-            flat_keys.add(k)
-        for k in ci_schema.get("staging", set()):
-            flat_keys.add(f"staging_{k}")
-        for k in ci_schema.get("production", set()):
-            flat_keys.add(f"production_{k}")
-        assert dc_fields == flat_keys, (
-            f"CIConfig fields {dc_fields - flat_keys} missing from TOML schema, "
-            f"or schema has extra keys {flat_keys - dc_fields}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# _validate_toml_keys tests
-# ---------------------------------------------------------------------------
-
-
-class TestValidateTomlKeys:
-    def test_valid_data_no_error(self, tmp_path: Path) -> None:
-        data = {
-            "project": {"name": "foo", "pipeline": "main.py"},
-            "deploy": {
-                "target": "databricks",
-                "model_name": "foo",
-                "databricks": {"catalog": "main"},
-            },
-        }
-        _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_unknown_top_level_section(self, tmp_path: Path) -> None:
-        data = {"project": {"name": "foo"}, "bogus": {"x": 1}}
-        with pytest.raises(ValueError, match=r"unknown top-level section \[bogus\]"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_mlflow_section_is_recognised(self, tmp_path: Path) -> None:
-        # [mlflow] is owned by the MLflow settings endpoint, not deploy, but
-        # deploy's whole-file validation must accept the file it writes.
-        data = {
-            "project": {"name": "foo"},
-            "mlflow": {"tracking_uri": "http://localhost:5000", "folder": "team-runs"},
-        }
-        _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_unknown_key_in_mlflow_section_is_rejected(self, tmp_path: Path) -> None:
-        data = {"mlflow": {"folder": "mlruns", "experiment": "nope"}}
-        with pytest.raises(ValueError, match=r"\[mlflow\] unknown key 'experiment'"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_retired_mlflow_mode_key_is_rejected(self, tmp_path: Path) -> None:
-        # The [mlflow] table is a destination inventory; the old single-mode key
-        # must fail loudly rather than be accepted and ignored.
-        data = {"mlflow": {"mode": "local", "folder": "mlruns"}}
-        with pytest.raises(ValueError, match=r"\[mlflow\] unknown key 'mode'"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_unknown_key_in_project(self, tmp_path: Path) -> None:
-        data = {"project": {"name": "foo", "unknown_key": "bar"}}
-        with pytest.raises(ValueError, match=r"\[project\] unknown key 'unknown_key'"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_unknown_key_in_deploy_databricks(self, tmp_path: Path) -> None:
-        data = {"deploy": {"databricks": {"catalog": "main", "typo_key": "x"}}}
-        with pytest.raises(ValueError, match=r"\[deploy\.databricks\] unknown key 'typo_key'"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_unknown_subsection_in_deploy(self, tmp_path: Path) -> None:
-        data = {"deploy": {"unknown": {"x": 1}}}
-        with pytest.raises(ValueError, match=r"\[deploy\] unknown key 'unknown'"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_typo_in_section_name(self, tmp_path: Path) -> None:
-        data = {"deploy": {"databrick": {"catalog": "main"}}}
-        with pytest.raises(ValueError, match=r"\[deploy\] unknown key 'databrick'"):
-            _validate_toml_keys(data, tmp_path / "haute.toml")
-
-    def test_empty_data_no_error(self, tmp_path: Path) -> None:
-        _validate_toml_keys({}, tmp_path / "haute.toml")
-
-    def test_non_dict_value_for_expected_section(self, tmp_path: Path) -> None:
-        data = {"project": "not_a_dict"}
-        # Non-dict value for a section that expects a dict should be silently skipped
-        # (the isinstance check in the loop guards this)
-        _validate_toml_keys(data, tmp_path / "haute.toml")
+        """``provider`` in [ci]; [ci.staging] and [ci.production] keys by their prefix."""
+        ci = _schema()["ci"]
+        assert ci.tables is not None
+        flat_keys = set(ci.keys)
+        flat_keys |= {f"staging_{k}" for k in ci.tables["staging"].keys}
+        flat_keys |= {f"production_{k}" for k in ci.tables["production"].keys}
+        assert {f.name for f in dataclasses.fields(CIConfig)} == flat_keys
 
 
 # ---------------------------------------------------------------------------

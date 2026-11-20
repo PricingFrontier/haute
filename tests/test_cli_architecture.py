@@ -38,6 +38,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from haute._project_settings import read_project_settings
 from haute.cli import cli
 from tests._project import use_project
 
@@ -141,14 +142,16 @@ class TestResolveModelNameHelper:
         from haute.cli._helpers import resolve_model_name
 
         toml = _write_toml(tmp_path, model_name="toml_model")
-        assert resolve_model_name("cli_override", toml) == "cli_override"
+        assert (
+            resolve_model_name("cli_override", read_project_settings(toml.parent)) == "cli_override"
+        )
 
     def test_toml_used_when_cli_arg_none(self, tmp_path: Path) -> None:
         """A ``None`` CLI arg means 'fall back to TOML'."""
         from haute.cli._helpers import resolve_model_name
 
         toml = _write_toml(tmp_path, model_name="from_toml")
-        assert resolve_model_name(None, toml) == "from_toml"
+        assert resolve_model_name(None, read_project_settings(toml.parent)) == "from_toml"
 
     def test_no_cli_no_toml_raises(self, tmp_path: Path) -> None:
         """No CLI arg AND no TOML path → clear error instructing the user."""
@@ -162,14 +165,6 @@ class TestResolveModelNameHelper:
             f"Error message must explain how to fix it — got {excinfo.value!r}"
         )
 
-    def test_toml_path_points_to_missing_file_raises(self, tmp_path: Path) -> None:
-        """A toml_path that doesn't exist is a programmer bug, not a fallback."""
-        from haute.cli._helpers import resolve_model_name
-
-        bogus = tmp_path / "does-not-exist.toml"
-        with pytest.raises((FileNotFoundError, SystemExit, ValueError)):
-            resolve_model_name(None, bogus)
-
     def test_toml_missing_deploy_section_raises(self, tmp_path: Path) -> None:
         """A haute.toml without a ``[deploy]`` block cannot supply model_name."""
         from haute.cli._helpers import resolve_model_name
@@ -177,7 +172,7 @@ class TestResolveModelNameHelper:
         toml = tmp_path / "haute.toml"
         toml.write_text("[project]\nname = 'demo'\n", encoding="utf-8")
         with pytest.raises((SystemExit, ValueError, RuntimeError, KeyError)):
-            resolve_model_name(None, toml)
+            resolve_model_name(None, read_project_settings(toml.parent))
 
 
 class TestDeployModelNameOptional:
@@ -1409,23 +1404,24 @@ def _find_click_command_function(tree: ast.Module, cmd: str) -> ast.FunctionDef 
 
 
 class TestDeployConfigFromToml:
-    """``DeployConfig.from_toml(path)`` loads a validated config."""
+    """``DeployConfig.from_project(path.parent)`` loads a validated config."""
 
     def test_valid_file_loaded(self, tmp_path: Path) -> None:
         """A well-formed haute.toml produces a populated DeployConfig."""
         from haute.deploy._config import DeployConfig
 
         toml = _write_toml(tmp_path, model_name="m_toml", pipeline="main.py")
-        config = DeployConfig.from_toml(toml)
+        config = DeployConfig.from_project(toml.parent)
         assert config.model_name == "m_toml"
         assert config.pipeline_file == Path("main.py")
 
-    def test_missing_file_raises_filenotfound(self, tmp_path: Path) -> None:
-        """A non-existent toml path raises FileNotFoundError (not a silent fallback)."""
+    def test_missing_file_is_refused_naming_the_folder(self, tmp_path: Path) -> None:
+        """A folder without a haute.toml is refused, not read as defaults."""
         from haute.deploy._config import DeployConfig
+        from haute.errors import ConfigError
 
-        with pytest.raises(FileNotFoundError):
-            DeployConfig.from_toml(tmp_path / "missing.toml")
+        with pytest.raises(ConfigError, match="No haute.toml in"):
+            DeployConfig.from_project(tmp_path)
 
     def test_malformed_toml_raises_validation_error(self, tmp_path: Path) -> None:
         """Broken TOML syntax surfaces as a clear error — never a partial config."""
@@ -1434,7 +1430,7 @@ class TestDeployConfigFromToml:
         bad = tmp_path / "haute.toml"
         bad.write_text("[project\nname = no_closing_bracket", encoding="utf-8")
         with pytest.raises((ValueError, Exception)) as excinfo:
-            DeployConfig.from_toml(bad)
+            DeployConfig.from_project(bad.parent)
         # tomllib raises TOMLDecodeError which is a ValueError subclass.
         # Make sure the error message actually mentions the file so
         # users can find it.
@@ -1455,9 +1451,11 @@ class TestDeployConfigFromToml:
             '[deploy]\nmodel_name = "m"\nendpont_name = "typo"\n',  # typo: endpont
             encoding="utf-8",
         )
-        with pytest.raises(ValueError) as excinfo:
-            DeployConfig.from_toml(bad)
-        assert "endpont_name" in str(excinfo.value) or "unknown" in str(excinfo.value).lower()
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError) as excinfo:
+            DeployConfig.from_project(bad.parent)
+        assert "[deploy] unknown key 'endpont_name'" in str(excinfo.value)
 
 
 class TestDeployConfigFromCliArgs:

@@ -270,9 +270,10 @@ def _canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
     root = current_project().root
     pipeline_dir = graph_pipeline_dir(graph)
     if pipeline_dir is None:
-        from haute._project import _toml_configured_pipeline
+        from haute._project_settings import read_project_settings
 
-        configured_pipeline = _toml_configured_pipeline(root)
+        settings = read_project_settings(root)
+        configured_pipeline = None if settings is None else settings.configured_pipeline
         pipeline_dir = configured_pipeline.parent if configured_pipeline is not None else None
     nodes: list[GraphNode] = []
     changed = False

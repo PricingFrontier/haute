@@ -1571,7 +1571,7 @@ class TestConfig:
     def test_from_toml(self) -> None:
         from haute.deploy._config import DeployConfig
 
-        config = DeployConfig.from_toml(Path("haute.toml"))
+        config = DeployConfig.from_project(REPO_ROOT)
         assert config.model_name == "motor-pricing"
         assert config.pipeline_file == Path("examples/reference/main.py")
         assert config.databricks.experiment_name == "/Shared/haute/motor-pricing"
@@ -1580,13 +1580,14 @@ class TestConfig:
     def test_override(self) -> None:
         from haute.deploy._config import DeployConfig
 
-        config = DeployConfig.from_toml(Path("haute.toml"))
+        config = DeployConfig.from_project(REPO_ROOT)
         overridden = config.override(model_name="custom-name")
         assert overridden.model_name == "custom-name"
         assert config.model_name == "motor-pricing"  # original unchanged
 
     def test_assistant_tables_share_the_closed_project_schema(self, tmp_path: Path) -> None:
         from haute.deploy._config import DeployConfig
+        from haute.errors import ConfigError
 
         path = tmp_path / "haute.toml"
         path.write_text(
@@ -1609,7 +1610,7 @@ allow_aggregate_statistics = false
             encoding="utf-8",
         )
 
-        assert DeployConfig.from_toml(path).model_name == "test"
+        assert DeployConfig.from_project(path.parent).model_name == "test"
 
         path.write_text(
             path.read_text(encoding="utf-8").replace(
@@ -1618,8 +1619,8 @@ allow_aggregate_statistics = false
             ),
             encoding="utf-8",
         )
-        with pytest.raises(ValueError, match=r"\[assistant\.egress\] unknown key 'allow_rows'"):
-            DeployConfig.from_toml(path)
+        with pytest.raises(ConfigError, match=r"\[assistant\.egress\] unknown key 'allow_rows'"):
+            DeployConfig.from_project(path.parent)
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_a_resolved_deployment_validates_in_its_own_project_with_none_installed(

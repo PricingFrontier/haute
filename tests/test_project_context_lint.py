@@ -56,8 +56,8 @@ ALLOWED_SOURCE_CWD_READS: dict[tuple[str, str], str] = {
     ("src/haute/_workbench_app.py", "_check_output"): (
         "a release build never replaces the working directory itself"
     ),
-    ("src/haute/cli/__init__.py", "cli"): (
-        "the CLI is an entry point: a command works in the shell's working directory"
+    ("src/haute/cli/_helpers.py", "HauteCommand.invoke"): (
+        "the CLI is an entry point: a command finds its project from the shell's working directory"
     ),
     ("src/haute/cli/_polars_startup.py", ""): (
         "Polars' spill folder is fixed when Polars is imported, before any command runs"

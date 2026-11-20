@@ -72,6 +72,7 @@ from haute._parser_submodels import (
 )
 from haute._pipeline_revision import pipeline_recovery_revision
 from haute._polars_steps import STEPS_FROM_CODE
+from haute._project_settings import ProjectSettingsError
 from haute._sandbox import is_contained
 from haute._sidecar import (
     SidecarReadResult,
@@ -2438,6 +2439,55 @@ def _node_completeness(
 
     visit(nodes, submodels)
     return entries
+
+
+def project_settings_editor_document(
+    root: Path, failure: ProjectSettingsError
+) -> PipelineEditorDocument:
+    """The source-only document of a ``haute.toml`` the settings parse refuses.
+
+    The editor shows the file with the parse's words as its issue, where it shows a pipeline
+    file's own faults, instead of an empty canvas: the refusal can hide every pipeline
+    (``pipline`` for ``pipeline``). The text is the one the parse read; nothing can be saved
+    from it.
+    """
+    source_file = _wire_path(failure.path, root)
+    span = (
+        None
+        if failure.line is None
+        else _span(
+            failure.line, max(0, (failure.column or 1) - 1), failure.line, failure.column or 1
+        )
+    )
+    return PipelineEditorDocument(
+        load_status="source_only",
+        pipeline_name=failure.path.name,
+        pipeline_description="",
+        source_file=source_file,
+        # The revision of the bytes the parse refused, as a pipeline file's document carries
+        # its own: the editor's client takes no document without one.
+        source_revision=pipeline_recovery_revision(
+            project_root=root,
+            artifacts=[("project_settings", failure.path)],
+            known_bytes={failure.path: failure.raw},
+        ),
+        source_text=failure.text.replace("\r\n", "\n").replace("\r", "\n"),
+        sources=[],
+        active_source=None,
+        source_selection_trusted=False,
+        has_authored_content=True,
+        diagnostics=[
+            _diagnostic(
+                code="project_settings_invalid",
+                scope="pipeline",
+                message=failure.message,
+                source_file=source_file,
+                source_span=span,
+                remediation="Correct haute.toml as the message says, then reload the editor.",
+            )
+        ],
+        capabilities=_capabilities("source_only", source_selection_trusted=False),
+    )
 
 
 def empty_pipeline_editor_document() -> PipelineEditorDocument:

@@ -45,8 +45,9 @@ reached through a link refused through `ordinary_path_problem`; the `[mlflow]` t
   pinning whenever `target` is one of the container-based targets. `effective_endpoint_name`
   is a computed property: `None` when no endpoint name or suffix was set (meaning "create
   no serving endpoint"), otherwise `(endpoint_name or model_name) + endpoint_suffix`.
-  Constructed via `from_toml()` (parses + validates `haute.toml`, every value typed by
-  key; applies `.env` and the `HAUTE_*` env-var overrides of `_ENV_OVERRIDES`, a boolean
+  Constructed via `from_settings(settings)` (the settings parse's `ProjectSettings`,
+  which has checked every table and key, each value typed by key; `from_project(folder)`
+  reads them first; applies `.env` and the `HAUTE_*` env-var overrides of `_ENV_OVERRIDES`, a boolean
   one read by `_env_bool` from `true`/`false`, `1`/`0` or `yes`/`no` in any case and any
   other value a `ValueError` naming the variable), `from_cli_args()` (no-TOML path,
   requires `pipeline_file` + `model_name`), or `override()` (returns a deep copy with
@@ -1102,7 +1103,7 @@ what they cover:
   `TestConfig`, MLflow helpers (`TestBuildUcModelName`, `TestBuildExperimentName`,
   `TestDatabricksTracking`, `TestServingEndpoint`, `TestModelsFromCode`,
   `TestHauteModel`).
-- **`test_deploy_config.py`** — `DeployConfig.from_toml` behaviour, `effective_endpoint_name`,
+- **`test_deploy_config.py`** — `DeployConfig.from_settings` behaviour, `effective_endpoint_name`,
   env-var override precedence and the boolean vocabulary (`ture` refused),
   TOML-schema-vs-dataclass-field sync (guards against a dataclass field silently missing
   from the TOML allowlist or vice versa), unknown-key rejection, every wrong-typed value

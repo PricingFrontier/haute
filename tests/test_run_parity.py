@@ -490,7 +490,7 @@ def _test_quotes(project: Project) -> Path:
 def _resolved(project: Project) -> Any:
     from haute.deploy._config import DeployConfig, resolve_config
 
-    return resolve_config(DeployConfig.from_toml(project.root / "haute.toml"))
+    return resolve_config(DeployConfig.from_project(project.root))
 
 
 def _dry_run(project: Project, capsys: pytest.CaptureFixture[str]) -> Answer:

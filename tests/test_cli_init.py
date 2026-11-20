@@ -1269,7 +1269,7 @@ class TestInitWorkbench:
         ]
         role = {"username_env": "HAUTE_STORE_USERNAME"} if store == "postgresql" else {}
         assert all(dict(env.variables) == role for env in config.store)
-        DeployConfig.from_toml(project_dir / "haute.toml")
+        DeployConfig.from_project(project_dir)
         # The analyst's sign-in in connections.toml, each environment naming its own variables,
         # which .env.example names beside the host's credentials.
         connections = read_connections(project_dir)
@@ -1729,7 +1729,7 @@ class TestInitQuestions:
         refused = runner.invoke(cli, ["init"], input="2\n")
 
         assert refused.exit_code == 1
-        assert "haute.toml is not valid TOML" in refused.output
+        assert "is malformed and could not be parsed" in refused.output
         assert "How will this project" not in refused.output
         assert _files(tmp_path) == before
 

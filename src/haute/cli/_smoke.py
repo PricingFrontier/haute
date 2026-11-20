@@ -17,7 +17,12 @@ from typing import Any
 import click
 
 from haute._project_context import current_project
-from haute.cli._helpers import ENDPOINT_SUFFIX_HELP, resolve_transport
+from haute.cli._helpers import (
+    ENDPOINT_SUFFIX_HELP,
+    HauteCommand,
+    require_command_settings,
+    resolve_transport,
+)
 
 
 @dataclass
@@ -36,12 +41,7 @@ def handle_smoke(config: SmokeConfig) -> None:
     """
     from haute.deploy._config import DeployConfig
 
-    toml_path = current_project().root / "haute.toml"
-    if not toml_path.exists():
-        click.echo("Error: No haute.toml found.", err=True)
-        raise SystemExit(1)
-
-    deploy_config = DeployConfig.from_toml(toml_path)
+    deploy_config = DeployConfig.from_settings(require_command_settings())
     if config.endpoint_suffix and deploy_config.target != "databricks":
         click.echo(
             "Error: --endpoint-suffix is only supported for Databricks. "
@@ -99,7 +99,7 @@ def handle_smoke(config: SmokeConfig) -> None:
     click.echo("\n  \u2713 All smoke tests passed.")
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="project")
 @click.option(
     "--endpoint-suffix",
     default=None,

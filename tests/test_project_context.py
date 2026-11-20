@@ -75,7 +75,7 @@ def test_resolve_project_walks_up_to_the_first_haute_toml_inside_git(tmp_path: P
 
 
 def test_resolve_project_refuses_a_folder_in_no_project(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="not inside a Haute project"):
+    with pytest.raises(ConfigError, match="No haute.toml in"):
         resolve_project(tmp_path)
 
 
@@ -260,8 +260,8 @@ def test_haute_serve_refuses_to_start_outside_a_project(tmp_path: Path) -> None:
         check=False,
     )
     assert shown.returncode == 1
-    assert "not inside a Haute project" in shown.stderr
-    assert "Run 'haute serve' inside a Haute project." in shown.stderr
+    assert "No haute.toml in" in shown.stderr
+    assert "run this inside a Haute project, or make one with 'haute init'" in shown.stderr
 
 
 def test_the_server_factory_refuses_without_a_resolved_project(

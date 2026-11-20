@@ -34,6 +34,7 @@ from haute._pipeline_repair import (
     _wire_path,
 )
 from haute._polars_steps import STEPS_FROM_CODE
+from haute._project_settings import write_settings_text
 from haute._python_syntax import (
     SourceNodeReplacement,
     insert_import_after,
@@ -601,9 +602,7 @@ def _preview(
     """Verify proposed bytes in an isolated artifact-only copy; never write the project."""
     with TemporaryDirectory(prefix="haute-repair-preview-") as directory:
         preview_root = Path(directory)
-        (preview_root / "haute.toml").write_text(
-            '[project]\nname = "repair-preview"\n', encoding="utf-8"
-        )
+        write_settings_text(preview_root, '[project]\nname = "repair-preview"\n')
         paths = {path for _role, path in _recovery_artifacts(root_path, root)}
         for path in paths:
             if path.is_file():

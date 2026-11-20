@@ -791,12 +791,16 @@ def _load_bundle(bundle: Traversable, manifest: dict[str, object]) -> dict[str, 
     source_path = _safe_relative_path(manifest["source"])
     source = _read_resource(bundle.joinpath(*source_path.split("/")))
     notes = _module_notes(source, resource_name=source_path)
+    from haute._project_context import ProjectContext, project_scope
     from haute.routes._helpers import parse_pipeline_to_graph
 
     with TemporaryDirectory(prefix="haute-assistant-example-") as temp_dir:
         destination = Path(temp_dir) / bundle.name
         _materialize_resource_tree(bundle, destination)
-        graph = parse_pipeline_to_graph(destination / source_path, project_root=destination)
+        # A bundle is its own installed project, as it is when executed: its haute.toml is
+        # not inside a git repository, which only an installed project may parse beside.
+        with project_scope(ProjectContext.at(destination)):
+            graph = parse_pipeline_to_graph(destination / source_path, project_root=destination)
 
     return {
         "name": manifest["id"],

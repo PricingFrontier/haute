@@ -7,12 +7,10 @@ import haute.cli._polars_startup  # noqa: F401
 # isort: split
 
 import errno
-from pathlib import Path
 
 import click
 
 from haute._cpu_performance import configure_process_high_qos
-from haute._project_context import ProjectContext, installed_project, project_scope
 from haute.cli._app import app
 from haute.cli._ci import ci
 from haute.cli._deploy import deploy
@@ -58,13 +56,8 @@ def cli(ctx: click.Context) -> None:
     """Haute - Open-source pricing engine for insurance teams"""
     utf8_output()
     configure_process_high_qos()
-    # The CLI is an entry point: a command works in the shell's working directory, read
-    # once here, unless its caller installed a project already. A command given a
-    # pipeline file runs in that file's project instead.
-    installed = installed_project()
-    ctx.with_resource(
-        project_scope(installed if installed is not None else ProjectContext.at(Path.cwd()))
-    )
+    # Each command finds its project from the shell's folder, by what it needs
+    # (``haute.cli._helpers.HauteCommand``).
 
 
 cli.add_command(app)

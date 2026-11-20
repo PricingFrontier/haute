@@ -476,7 +476,7 @@ def test_one_node_instance_cross_path_proof(
         )
         assert standalone.returncode == 0, standalone.stderr
         assert json.loads(standalone_rows.read_text()) == response_rows
-        deployed = resolve_config(DeployConfig.from_toml(tmp_path / "haute.toml"))
+        deployed = resolve_config(DeployConfig.from_project(tmp_path))
         request_rows = json.loads((tmp_path / "quote.json").read_text())
         assert _score_bundle(deployed, tmp_path / "bundle", request_rows) == response_rows
         if kind in {NodeType.MODELLING, NodeType.OPTIMISER}:

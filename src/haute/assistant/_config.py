@@ -13,7 +13,6 @@ import importlib.util
 import ipaddress
 import json
 import os
-import tomllib
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -55,7 +54,6 @@ ASSISTANT_EGRESS_TOML_KEYS = frozenset(
         "allow_aggregate_statistics",
     }
 )
-_ASSISTANT_TABLE_KEYS = ASSISTANT_TOML_KEYS
 _EGRESS_TABLE_KEYS = ASSISTANT_EGRESS_TOML_KEYS
 _TRUST_VALUES = frozenset({"local", "organization", "external"})
 _PUBLIC_POLICY_REASON = (
@@ -188,32 +186,11 @@ def mutations_readiness(
 def _read_assistant_table(project_root: Path) -> dict[str, object] | None:
     """Read the optional ``[assistant]`` table from the project TOML."""
 
-    toml_path = project_root / "haute.toml"
-    if not toml_path.exists():
-        return None
+    from haute._project_settings import read_project_settings
 
-    try:
-        with toml_path.open("rb") as handle:
-            data = tomllib.load(handle)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(
-            "haute.toml is malformed and could not be parsed",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-    except OSError as exc:
-        raise ConfigError(
-            "haute.toml could not be read",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-
-    raw_table = data.get("assistant")
-    if raw_table is None:
-        return None
-    if not isinstance(raw_table, dict):
-        raise ConfigError("[assistant] must be a TOML table", path=str(toml_path))
-    return cast(dict[str, object], raw_table)
+    # The parse has checked the table's keys (``ASSISTANT_TOML_KEYS``) and its egress table's.
+    settings = read_project_settings(project_root)
+    return None if settings is None else settings.table("assistant")
 
 
 def _max_output_tokens() -> tuple[int | None, str | None]:
@@ -362,10 +339,7 @@ def _validate_egress(
 ) -> EgressPolicy:
     if not isinstance(raw, dict):
         raise ConfigError("[assistant].egress must be a TOML table")
-    unknown = sorted(set(raw).difference(_EGRESS_TABLE_KEYS))
-    if unknown:
-        paths = ", ".join(f"[assistant].egress.{key}" for key in unknown)
-        raise ConfigError(f"Unknown [assistant].egress configuration key(s): {paths}.")
+    # The settings parse has refused an unknown key; a missing one is this reader's to name.
     missing = sorted(_EGRESS_TABLE_KEYS.difference(raw))
     if missing:
         paths = ", ".join(f"[assistant].egress.{key}" for key in missing)
@@ -428,13 +402,6 @@ class _UnresolvedConfigError(Exception):
         self.reason = reason
         self.fatal = fatal
         super().__init__(reason)
-
-
-def _validate_table_keys(table: dict[str, object]) -> None:
-    unknown_keys = sorted(set(table).difference(_ASSISTANT_TABLE_KEYS))
-    if unknown_keys:
-        paths = ", ".join(f"[assistant].{key}" for key in unknown_keys)
-        raise ConfigError(f"Unknown [assistant] configuration key(s): {paths}.")
 
 
 def _resolve_provider(raw_provider: object) -> ProviderId:
@@ -501,8 +468,6 @@ def _resolve_config(
     table: dict[str, object],
 ) -> AssistantConfig | tuple[str, str | None, str | None]:
     """Resolve provider settings, returning one readiness reason on failure."""
-
-    _validate_table_keys(table)
 
     raw_provider = table.get("provider")
     provider_echo = raw_provider if isinstance(raw_provider, str) else None
@@ -659,7 +624,6 @@ def resolve_egress_policy(project_root: Path | None = None) -> EgressPolicy:
     table = _read_assistant_table(root)
     if table is None:
         raise ConfigError("No [assistant] table is configured in haute.toml.")
-    _validate_table_keys(table)
     try:
         provider = _resolve_provider(table.get("provider"))
         base_url = _resolve_base_url(table, provider)

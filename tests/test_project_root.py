@@ -29,13 +29,22 @@ from unittest.mock import patch
 import pytest
 
 from haute._project import (
+    PipelineFileError,
+    ProjectOutsideGitError,
     _looks_like_pipeline_file,
-    _toml_configured_pipeline,
     get_project_root,
     is_haute_project,
     resolve_pipeline_file,
 )
+from haute._project_settings import read_project_settings
 from haute.errors import ConfigError
+
+
+def _toml_configured_pipeline(root: Path) -> Path | None:
+    """``[project].pipeline`` as the settings parse reads it."""
+    settings = read_project_settings(root)
+    return None if settings is None else settings.configured_pipeline
+
 
 # ---------------------------------------------------------------------------
 # Filesystem builders — small helpers keep each test focused on its
@@ -439,12 +448,12 @@ class TestTomlConfiguredPipeline:
     def test_malformed_toml_raises_config_error(self, tmp_path: Path) -> None:
         """Malformed tier-one config must not silently fall through to discovery."""
         _make_haute_toml(tmp_path, "this is = = not valid toml [[[\n")
-        with pytest.raises(ConfigError, match="Could not read haute.toml"):
+        with pytest.raises(ConfigError, match="is malformed and could not be parsed"):
             _toml_configured_pipeline(tmp_path)
 
     def test_returns_none_when_no_project_table(self, tmp_path: Path) -> None:
         """Line 128/131: well-formed TOML with no ``[project].pipeline``."""
-        _make_haute_toml(tmp_path, '[other]\nname = "x"\n')
+        _make_haute_toml(tmp_path, '[server]\nhost = "localhost"\n')
         assert _toml_configured_pipeline(tmp_path) is None
 
     def test_returns_none_when_pipeline_missing(self, tmp_path: Path) -> None:
@@ -461,7 +470,7 @@ class TestTomlConfiguredPipeline:
         """A configured value that is not a path is a broken tier one: it must
         not fall through to discovery and bind a different pipeline."""
         _make_haute_toml(tmp_path, "[project]\npipeline = 42\n")
-        with pytest.raises(ConfigError, match="must be a path string"):
+        with pytest.raises(ConfigError, match="must be a path written as a string"):
             _toml_configured_pipeline(tmp_path)
 
 
@@ -555,3 +564,63 @@ class TestResolvePipelineFile:
     def test_directory_empty_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             resolve_pipeline_file(tmp_path)
+
+
+# ===========================================================================
+# The configured pipeline file is run or refused for its real cause (PCF-03)
+# ===========================================================================
+
+
+class TestConfiguredPipelineCause:
+    def test_an_upper_case_extension_is_a_python_file(self, tmp_path: Path) -> None:
+        _make_haute_toml(tmp_path, '[project]\npipeline = "rating/main.PY"\n')
+        (tmp_path / "rating").mkdir()
+        _make_pipeline_file(tmp_path / "rating", "main.PY")
+
+        assert resolve_pipeline_file(tmp_path).name == "main.PY"
+
+    def test_a_trailing_space_is_named_not_called_not_a_pipeline(self, tmp_path: Path) -> None:
+        _make_haute_toml(tmp_path, '[project]\npipeline = "main.py "\n')
+        _make_pipeline_file(tmp_path)
+
+        with pytest.raises(ConfigError, match="starts or ends with a space") as caught:
+            resolve_pipeline_file(tmp_path)
+        assert "does not look like a Haute pipeline" not in str(caught.value)
+
+    def test_a_file_held_open_is_named_with_the_system_s_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _make_haute_toml(tmp_path, '[project]\npipeline = "main.py"\n')
+        held = _make_pipeline_file(tmp_path)
+        real_read_text = Path.read_text
+
+        def locked(path: Path, *args: object, **kwargs: object) -> str:
+            if path == held:
+                raise PermissionError(13, "The process cannot access the file", str(path))
+            return real_read_text(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", locked)
+
+        with pytest.raises(PipelineFileError) as caught:
+            resolve_pipeline_file(tmp_path)
+        assert caught.value.reason == "unreadable"
+        assert "could not be read" in str(caught.value)
+        assert "The process cannot access the file" in str(caught.value)
+        assert "does not look like a Haute pipeline" not in str(caught.value)
+
+    def test_only_a_file_read_without_a_pipeline_is_not_a_pipeline(self, tmp_path: Path) -> None:
+        _make_haute_toml(tmp_path, '[project]\npipeline = "main.py"\n')
+        (tmp_path / "main.py").write_text("x = 1\n", encoding="utf-8")
+
+        with pytest.raises(PipelineFileError, match="does not look like a Haute pipeline"):
+            resolve_pipeline_file(tmp_path)
+
+
+def test_a_haute_toml_outside_git_names_the_folder_and_git_init(tmp_path: Path) -> None:
+    _make_haute_toml(tmp_path, "[project]\n")
+    inside = tmp_path / "rating"
+    inside.mkdir()
+
+    with pytest.raises(ProjectOutsideGitError, match="run 'git init' there") as caught:
+        get_project_root(inside)
+    assert str(tmp_path.resolve()) in str(caught.value)

@@ -267,7 +267,7 @@ class TestModelLoadedOncePerArtifact:
 
         with (
             patch.object(mlflow_io, "load_local_model", side_effect=counting_load),
-            resolve_config(DeployConfig.from_toml(project / "haute.toml")) as resolved,
+            resolve_config(DeployConfig.from_project(project)) as resolved,
         ):
             assert set(resolved.artifacts) == {"scored__model.cbm", "scored__feature_contract.json"}
             assert resolved.output_schema == {"prediction": "Float64"}

@@ -183,7 +183,6 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
 # One shared cause each, taken before the packages it lists. They stand alone: no row in
 # the index and no priorities table.
 _ROADMAP_ROOT_CAUSES: tuple[str, ...] = (
-    "root-cause-project-settings.md",
     "root-cause-save-record.md",
     "root-cause-unedited-values.md",
 )
@@ -2337,7 +2336,7 @@ def test_the_documented_production_environment_gates_the_production_job(
     (tmp_path / "rating" / "main.py").write_text("", encoding="utf-8")
     toml = haute_toml("motor-pricing", "databricks", provider) + "\n" + shown.group(1)
     (tmp_path / "haute.toml").write_text(toml, encoding="utf-8")
-    environment = DeployConfig.from_toml(tmp_path / "haute.toml").ci.production_environment
+    environment = DeployConfig.from_project(tmp_path).ci.production_environment
 
     assert environment
     generated = "\n".join(

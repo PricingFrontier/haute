@@ -103,15 +103,17 @@ class TestEnsureSourceFile:
         _ensure_source_file(graph)
         assert graph.source_file is None
 
-    def test_handles_malformed_toml_gracefully(self, tmp_path, monkeypatch):
-        """Should not crash on malformed haute.toml."""
+    def test_a_malformed_haute_toml_is_refused_in_the_parse_s_words(self, tmp_path, monkeypatch):
+        """A haute.toml the settings parse refuses is never read as naming no pipeline."""
+        from haute.errors import ConfigError
         from haute.routes.pipeline import _ensure_source_file
 
         use_project(tmp_path)
         (tmp_path / "haute.toml").write_text("this is not valid toml {{{{")
 
         graph = PipelineGraph()
-        _ensure_source_file(graph)
+        with pytest.raises(ConfigError, match="is malformed and could not be parsed"):
+            _ensure_source_file(graph)
         assert graph.source_file is None
 
     def test_fills_empty_string_source_file(self, tmp_path, monkeypatch):

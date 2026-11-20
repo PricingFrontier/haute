@@ -310,13 +310,17 @@ def test_deployment_preflight_and_unpinned_container_rejection(
 
     destination, _graph = _bundle(tmp_path, "deployment_safety")
     use_project(destination)
-    safe = DeployConfig.from_toml(destination / "haute.toml")
+    safe = DeployConfig.from_project(destination)
     with resolve_config(safe) as resolved:
         validate_deploy(resolved)
         assert resolved.output_schema == {"fixture_value": "Int64"}
 
+    # The example's unsafe settings, read as a project's own haute.toml.
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir()
+    (unsafe / "haute.toml").write_bytes((destination / "unsafe_deploy.toml").read_bytes())
     with pytest.raises(DeployError, match="not pinned"):
-        DeployConfig.from_toml(destination / "unsafe_deploy.toml")
+        DeployConfig.from_project(unsafe)
 
 
 def test_adversarial_cases_reject_before_writes_and_keep_data_inert(tmp_path: Path):

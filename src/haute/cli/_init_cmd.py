@@ -25,7 +25,9 @@ from packaging.utils import canonicalize_name
 from haute._gitignore_guard import ensure_gitignore_guards
 from haute._io import read_user_text
 from haute._project_context import current_project
+from haute._project_settings import ProjectSettingsError, read_project_settings, write_settings_text
 from haute._scaffold_files import ensure_gitattributes, lf_bytes, write_lf
+from haute.cli._helpers import HauteCommand
 
 if TYPE_CHECKING:
     from haute._connections import Connection
@@ -453,16 +455,17 @@ NEW_PROJECT_DEFAULTS = _Defaults(
 )
 
 
-def _read_haute_toml(path: Path) -> dict[str, Any]:
-    """An existing project's ``haute.toml``, parsed; a file that does not read as TOML is
-    refused, since a re-run takes its answers from it."""
+def _read_haute_toml(project_dir: Path) -> dict[str, Any] | None:
+    """An existing project's ``haute.toml``, by the one settings parse; ``None`` without one.
+    A file the parse refuses is refused, since a re-run takes its answers from it."""
     try:
-        return tomllib.loads(read_user_text(path))
-    except tomllib.TOMLDecodeError as exc:
+        settings = read_project_settings(project_dir)
+    except ProjectSettingsError as exc:
         raise click.ClickException(
-            f"haute.toml is not valid TOML ({exc}): haute init reads the project's current "
-            "answers from it, so fix it first."
+            f"{exc.message} haute init reads the project's current answers from it, so fix "
+            "it first."
         ) from exc
+    return None if settings is None else settings.document()
 
 
 def _table(document: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -807,7 +810,6 @@ def handle_init(config: InitConfig) -> None:
     # Default is team mode; user sets min_approvers = 0 for solo.
 
     project_dir = current_project().root
-    haute_toml_path = project_dir / "haute.toml"
     connections_path = project_dir / CONNECTIONS_FILE
 
     # -- The project as it is, read before any question ------------------------
@@ -817,7 +819,7 @@ def handle_init(config: InitConfig) -> None:
         connections = read_connections(project_dir) if connections_path.exists() else None
     except ConnectionsError as exc:
         raise click.ClickException(str(exc)) from exc
-    previous = _read_haute_toml(haute_toml_path) if haute_toml_path.exists() else None
+    previous = _read_haute_toml(project_dir)
     rerun = previous is not None
     defaults = (
         NEW_PROJECT_DEFAULTS if previous is None else _current_answers(previous, connections or {})
@@ -945,7 +947,7 @@ def handle_init(config: InitConfig) -> None:
     else:
         assert answers.target is not None
         toml_text = haute_toml(name, answers.target, ci, python_version=python_version)
-    write_lf(haute_toml_path, toml_text)
+    write_settings_text(project_dir, toml_text)
 
     # -- rating/workbench/ - the workbench's blank form folder ------------------
     if form_files:
@@ -1097,7 +1099,7 @@ def handle_init(config: InitConfig) -> None:
             click.echo("Set them from .env with: haute ci secrets")
 
 
-@click.command()
+@click.command(cls=HauteCommand, need="none")
 @click.option(
     "--workbench/--automated",
     "workbench",

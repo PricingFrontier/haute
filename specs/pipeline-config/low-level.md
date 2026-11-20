@@ -32,10 +32,11 @@
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml` (`haute_toml` for an automated project, `workbench_haute_toml` for a workbench one), `.env.example` (`env_example`, `app_env_example`), `connections.toml` (`connections_toml`), CI YAML for 3 providers × 7 deploy targets (`ci_files`, which `haute ci update` also writes) and a workbench project's for 3 providers (`workbench_ci_files`, likewise), the CI secrets a target or an app host needs and their `.env.example` placeholders (`ci_secret_names`, `env_example_placeholders`), whose of the two a project's CI reads (`ci_credentials`), starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_scaffold_files.py` | How `haute init` writes a project's files (READ-03): `lf_bytes` and `write_lf` write UTF-8 text with LF line endings whatever the platform, and `ensure_gitattributes` adds to the project's `.gitattributes` each of `GITATTRIBUTES_ENTRIES` it lacks (LF for the Python, JSON, TOML, YAML and Markdown files and the pre-commit hook Haute writes, CSV left out, `uv.lock` marked generated), answering what it added. |
 | `src/haute/_project_python.py` | The project's Python, one version for local development, CI and the deployed model: `.python-version`'s pin or the lowest release `requires-python` admits, at minor precision only when it admits the whole minor (`project_python_version`, which `haute init` writes and pins CI and container base images to), the deployed model's Python (`deployed_python_version`), the checks deploy runs on the interpreter and a container's base image (`deploy_python_mismatch`, `admits`, `base_image_python_version`), and `ProjectPythonError` for a declaration it cannot read or that contradicts the other. |
-| `src/haute/_project.py` | Project-root discovery from an explicit start (`get_project_root(start)`, the walk-up `src/haute/_project_context.py::resolve_project` uses; `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file(path)`, 4-tier fallback in a folder; the CLI passes the shell's working directory when no path is given). |
-| `src/haute/_project_context.py` | The project a call works in. `ProjectContext` (frozen, slotted, picklable: the absolute, resolved `root`; `ProjectContext.at(root)` takes the root as given; the `pipeline_dir` property reads the root's `haute.toml` when used: the folder of `[project].pipeline`, or the root without one, a malformed file or a pipeline outside the root raising `ConfigError`), `resolve_project(start)` (the one resolver: `get_project_root(start)` then `at`), `project_scope(context)` (a context manager over one `ContextVar`, the one accessor's installer) and `current_project()` (the installed context, `NoProjectContextError` when none; `installed_project()`, for an entry point that installs its own, reports that nothing is installed instead of raising), `standalone_project_scope(source_file)` and `project_holding(folder)` (a standalone run's or a file-given CLI command's project: an installed one, else the project holding the file's folder, else that folder; no file: the working directory, the one entry-point read of it), `graph_pipeline_dir(graph)` (the folder of `graph.source_file`, a relative one under the project root), `context_thread` (a `threading.Thread` running its target in a copy of the starting context) and `ProjectContextMiddleware` (ASGI, installs an app's context for every HTTP request, websocket and lifespan). |
+| `src/haute/_project_settings.py` | The one parse of `haute.toml`: `read_project_settings(folder)` (the file read now, none without one) returns `ProjectSettings` (`path`, `text` with a leading byte-order mark taken off, `table(name)` a copy of a top-level table, `document()`, `path_setting(table, key)` a path setting by the node-path rule (`PATH_SETTINGS`: `[project].pipeline`, `[test_quotes].dir`, `[mlflow].folder`; a backslash a separator), `configured_pipeline`); a file that is not UTF-8 (named by byte position), malformed TOML (TOML's line and column), an unknown table or key across the whole file (`_schema`, the assistant's and the workbench's key sets imported from their readers, a sub-table the project names, a workbench environment's, checked against one schema, a key refused in its reader's own words), a table that is not one, a path that is not text or starts or ends with a space, or a configured pipeline outside the project raises `ProjectSettingsError` (a `ConfigError` carrying `path`, `text`, `line`, `column`). `settings_path`/`has_settings` name the file; `write_settings_text` (a whole file, checked) and `write_settings_table` (one table replaced through tomlkit, the rest kept) are its writers. Nothing is cached: each call reads the file. |
+| `src/haute/_project.py` | The one finder (`find_project_root(start)`: the first folder at or above *start* holding a `haute.toml`, none without one, `ProjectOutsideGitError` for one outside a git repository; `get_project_root(start)`, which raises `NoProjectError` where none is found; `is_haute_project`), the configured pipeline checked (`configured_pipeline_file(root)`: `PipelineFileError` for a file missing, unreadable (with the system's reason), or, only for a file read without `haute.Pipeline`, not a pipeline; the extension in any letter case) and pipeline-file resolution (`resolve_pipeline_file(path)`, 4-tier fallback in a folder; the CLI passes the shell's working directory when no path is given). |
+| `src/haute/_project_context.py` | The project a call works in. `ProjectContext` (frozen, slotted, picklable: the absolute, resolved `root`; `ProjectContext.at(root)` takes the root as given; the `pipeline_dir` property reads the root's `haute.toml` through the settings parse when used: the folder of `[project].pipeline`, or the root without one, a file the parse refuses raising the parse's refusal), `find_project(start)` (the finder's project, or none without a `haute.toml`), `resolve_project(start)` (the finder for a caller that needs a project, raising where none is found), `project_scope(context)` (a context manager over one `ContextVar`, the one accessor's installer) and `current_project()` (the installed context, `NoProjectContextError` when none; `installed_project()`, for an entry point that installs its own, reports that nothing is installed instead of raising), `standalone_project_scope(source_file)` and `project_holding(folder)` (a standalone run's or a file-given CLI command's project: an installed one, else the project holding the file's folder, else that folder when no `haute.toml` is above it, a `haute.toml` outside git refused; no file: the working directory, the one entry-point read of it), `graph_pipeline_dir(graph)` (the folder of `graph.source_file`, a relative one under the project root), `context_thread` (a `threading.Thread` running its target in a copy of the starting context) and `ProjectContextMiddleware` (ASGI, installs an app's context for every HTTP request, websocket and lifespan). |
 | `src/haute/_project_layout.py` | The project's folder layout: `PIPELINE_FILES_FOLDER` and `PIPELINE_FILES_SUBFOLDERS` (the pipeline folder's `files/` with `data/`, `models/` and `params/`), `LOCAL_FOLDERS` (the root's unversioned `data/` and `outputs/`), `VERSIONED_FILE_LIMIT_BYTES`, `versioned_name` (whether a path names a file the project versions through Haute), `pipeline_folder` (the configured pipeline folder when it lies below the project root), `pipeline_files_folder` and `default_model_folder`. |
-| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding and `src/haute/_project_context.py::ProjectContext.pipeline_dir`. |
+| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`, read by `src/haute/_project_settings.py::read_project_settings`, the one parse behind pipeline binding, `src/haute/_project_context.py::ProjectContext.pipeline_dir` and every table's reader. |
 
 ## Key types and data structures
 
@@ -769,8 +770,8 @@ project through this helper immediately before binding a pipeline. The plural GU
 shares the configured-path checks but additionally lists valid sibling pipelines.
 
 **Project layout (`_project_layout.py`).** `pipeline_folder(project_root)` reads
-`[project].pipeline` through `_toml_configured_pipeline` (so malformed TOML, or a pipeline
-named outside the root, raises `ConfigError`) and returns the parent folder, relative to the root in POSIX form, when that
+`[project].pipeline` through the settings parse (so a file it refuses, a pipeline
+named outside the root among them, raises `ProjectSettingsError`) and returns the parent folder, relative to the root in POSIX form, when that
 folder lies strictly below the root. It returns `None` when nothing is configured or the
 pipeline sits at the root, because then there is no folder to version as a whole.
 `pipeline_files_folder(project_root)` is that folder's `files/` (`PIPELINE_FILES_FOLDER`), or
@@ -817,9 +818,10 @@ smoke and impact steps pass it (`_verification_suffix_option`); every staging de
 folder's files, path to text, under the pipeline folder's `workbench/`
 ([workbench](../workbench/low-level.md)). `[server].host`, the optional
 closed `[assistant]` plus `[assistant.egress]` tables and the optional `[workbench]` table are
-part of the shared TOML schema consumed by `DeployConfig.from_toml`, even though none is a
-deploy setting. The assistant key sets are owned by `haute.assistant._config` and the
-workbench's by `haute._workbench_config`, so deployment parsing and each reader cannot drift.
+part of the whole-file schema the settings parse (`haute._project_settings._schema`) checks,
+which every reader shares. The assistant key sets are owned by `haute.assistant._config` and the
+workbench's (with its retired keys) by `haute._workbench_config`, so the parse and each reader
+cannot drift.
 `env_example()`, `app_env_example()` and the CI-YAML generators (`github_ci_yml`/
 `github_deploy_yml`/`github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`, and the
 workbench's `github_app_ci_yml`/`github_release_yml`/`github_release_production_yml`,
@@ -1223,10 +1225,14 @@ it on the reading node instead of aborting the walk, and every other run propaga
   are matched on the stem before the first dot, casefolded, with trailing dots/spaces
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
   on Linux/macOS stays loadable on a Windows checkout.
-- `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, a
+- `parser._infer_parse_base_dir` finds a file's project by the finder: a `haute.toml` outside a
+  git repository is refused unless an entry point installed a project (a release or deployed
+  bundle carries its `haute.toml` without a repository and parses from the file's folder).
+- The settings parse raises `ProjectSettingsError` for malformed TOML, a
   `[project]` that is not a table, a `pipeline` value that is not a string (an empty
-  string counts as absent), or one naming a path outside the project root, absolute or
-  through `..` or a link (checked by `src/haute/_sandbox.py::contained_path`), so
+  string counts as absent), one that starts or ends with a space, or one naming a path
+  outside the project root, absolute or through `..` or a link (checked by
+  `src/haute/_sandbox.py::contained_path`), so
   `resolve_pipeline_file` cannot silently discard the configured tier, bind another file,
   or bind a file outside the project.
 - Ambiguous auto-discovery (2+ root `.py` files matching, no `main.py`, no configured TOML
@@ -1262,9 +1268,13 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - **`NoProjectContextError`** (`haute._project_context`, a `HauteError`) — a call that needs
   the project made with none installed: it names `project_scope` and the CLI and server as
   the ways to install one, and is never answered from the working directory.
-- **`ConfigError`** from `resolve_project` — no `haute.toml` at or above the start, or one
-  outside a git repository (`haute serve` prints it and exits 1), or a malformed
-  `haute.toml`.
+- **`NoProjectError`** (a `ConfigError`) from `resolve_project` — no `haute.toml` at or above
+  the start (a `project` command ends in its sentence, exit 1); **`ProjectOutsideGitError`**
+  (a `ConfigError`) from the finder — a `haute.toml` outside a git repository, refused by
+  every caller, naming the folder and `git init`.
+- **`ProjectSettingsError`** (a `ConfigError`) from the settings parse — a `haute.toml` it
+  refuses, in its own words; the editor's load answers it as the source-only document of
+  `haute.toml` (`project_settings_editor_document`, diagnostic `project_settings_invalid`).
 - **`ConfigError`** (`haute.errors`) — missing/unreadable/invalid-JSON sidecar; a sidecar
   that is not UTF-8, naming the file and the first byte that is not; a decorator keyword
   beside `config=` and `contract=` on a sidecar-backed node, naming the node and the
@@ -1391,6 +1401,23 @@ it on the reading node instead of aborting the walk, and every other run propaga
       disagreement.
   - The bundled deploy scorer is unchanged, held by its existing tests.
 
+- `tests/test_project_settings.py` verifies the settings parse: a byte-order mark read through,
+  a byte that is not UTF-8 named by position, malformed TOML by line and column, every unknown
+  table or key named where it is with what that place takes, a retired key in its words, a
+  table that is not one, a backslash read as a separator, a path ending in a space and one
+  outside the project refused, each call reading the file afresh, a reader's copy not
+  reaching another's, every table `haute init` writes read, and the writers keeping the rest
+  of the file and refusing what the parse refuses.
+- `tests/test_project_settings_lint.py` fails when a module other than the parse names
+  `haute.toml` as a path or parses TOML, apart from the readers of other TOML files it lists,
+  or takes `settings_path` beside the listed uses.
+- `tests/test_project_finding.py` runs every command, and the editor's load, on a table of
+  projects (from a folder inside the project, a byte-order mark, a misspelt key, a misspelt
+  table, a backslash in a path, no git repository, no `haute.toml`, a second pipeline beside
+  the configured one): one reading or one refusal in the same words for every command with
+  the same need, `run` and `lint` on a file in a bare folder, a setting edited between two
+  calls to a running server read by the second, `haute serve` ending in one line for a
+  missing pipeline file; a command without a row fails it.
 - `tests/test_project_context.py` verifies the project context: `resolve_project` walking up
   to the first `haute.toml` inside git and its `ConfigError` outside one, the pipeline folder
   from `[project].pipeline` and the root without it, `current_project()` raising
@@ -1568,7 +1595,9 @@ API and real JSON round-trips rather than mocks:
   imports, target secrets, and configured pipeline path, plus negative drift fixtures.
 - **`test_project_root.py`** + **`test_project_root.py`** — `get_project_root` walk-up
   behaviour, `is_haute_project`, and the full `resolve_pipeline_file` four-tier fallback
-  (`TestResolvePipelineFile`, `TestTomlConfiguredPipeline`, `TestLooksLikePipelineFile`).
+  (`TestResolvePipelineFile`, `TestTomlConfiguredPipeline`, `TestLooksLikePipelineFile`), and
+  the configured pipeline's real cause (`TestConfiguredPipelineCause`: `.PY`, a trailing space,
+  a file held open, a file read without a pipeline).
 - **`test_project_layout.py`** — the pipeline folder for a nested, a root-level and an
   unconfigured pipeline, a malformed `haute.toml` refused, and the default model folder in
   each case.

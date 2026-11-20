@@ -32,10 +32,15 @@ from urllib.parse import SplitResult, unquote, urlsplit, urlunsplit
 
 from haute._mlflow_utils import tracking_uri_from_environment
 from haute._project_context import current_project
+from haute._project_settings import (
+    ProjectSettings,
+    ProjectSettingsError,
+    read_project_settings,
+    write_settings_table,
+)
 from haute.errors import MlflowConfigError
 
 DESTINATION_KEYS: tuple[str, ...] = ("databricks", "server", "local")
-_ALLOWED_KEYS = frozenset({"tracking_uri", "folder"})
 _DEFAULT_FOLDER = "mlruns"
 _TRUTHY_ENV = frozenset({"true", "1"})
 
@@ -93,8 +98,17 @@ def node_destination_key(value: str) -> str:
     return validate_destination_key(value) or "local"
 
 
-def _toml_path(project_root: Path | None) -> Path:
-    return (project_root if project_root is not None else current_project().root) / "haute.toml"
+def _project_root(project_root: Path | None) -> Path:
+    return project_root if project_root is not None else current_project().root
+
+
+def _read_settings(project_root: Path | None) -> ProjectSettings | None:
+    """The project's settings by the one parse; a refusal is an MLflow configuration error,
+    in the parse's words, so every MLflow edge answers it as it answers its own."""
+    try:
+        return read_project_settings(_project_root(project_root))
+    except ProjectSettingsError as exc:
+        raise MlflowConfigError(str(exc)) from exc
 
 
 def _split_uri(value: str, *, source: str) -> SplitResult:
@@ -194,32 +208,20 @@ def _validate_settings(settings: MlflowSettings) -> None:
 
 
 def load_mlflow_settings(project_root: Path | None = None) -> MlflowSettings | None:
-    """Read and validate the ``[mlflow]`` table; ``None`` when absent."""
-    import tomllib
+    """Read and validate the ``[mlflow]`` table; ``None`` when absent.
 
-    toml_path = _toml_path(project_root)
-    if not toml_path.exists():
+    The settings parse has checked the table's keys and read ``folder`` by the node-path rule.
+    """
+    project = _read_settings(project_root)
+    section = None if project is None else project.table("mlflow")
+    if section is None or project is None:
         return None
-    try:
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as exc:
-        raise MlflowConfigError(f"haute.toml is not valid TOML: {exc}") from exc
-    section = data.get("mlflow")
-    if section is None:
-        return None
-    if not isinstance(section, dict):
-        raise MlflowConfigError("[mlflow] must be a table.")
-    unknown = sorted(set(section) - _ALLOWED_KEYS)
-    if unknown:
-        raise MlflowConfigError(
-            f"[mlflow] has unknown key(s) {unknown}; allowed keys are {sorted(_ALLOWED_KEYS)}."
-        )
     for key, value in section.items():
         if not isinstance(value, str):
             raise MlflowConfigError(f"[mlflow] {key} must be a string.")
     settings = MlflowSettings(
         tracking_uri=str(section.get("tracking_uri", "")),
-        folder=str(section.get("folder", "")),
+        folder=project.path_setting("mlflow", "folder") or "",
     )
     _validate_settings(settings)
     return settings
@@ -232,28 +234,22 @@ def save_mlflow_settings(settings: MlflowSettings, project_root: Path | None = N
     An empty ``folder`` persists the currently *resolved* local folder, so a
     bare save of an env-derived folder keeps it.
     """
-    import tomlkit
-    from tomlkit.exceptions import TOMLKitError
-
     from haute._file_ops import atomic_write_text
 
     effective = _effective_settings(settings, project_root)
-    toml_path = _toml_path(project_root)
-    write_target = _project_write_target(toml_path, project_root)
-    try:
-        document = (
-            tomlkit.parse(toml_path.read_text(encoding="utf-8"))
-            if toml_path.exists()
-            else tomlkit.document()
-        )
-    except TOMLKitError as exc:
-        raise MlflowConfigError(f"haute.toml is not valid TOML: {exc}") from exc
-    table = tomlkit.table()
+    root = _project_root(project_root)
+    table: dict[str, str] = {}
     if effective.tracking_uri:
         table["tracking_uri"] = effective.tracking_uri
     table["folder"] = effective.folder
-    document["mlflow"] = table
-    atomic_write_text(write_target, tomlkit.dumps(document))
+
+    def write(path: Path, text: str) -> None:
+        atomic_write_text(_project_write_target(path, project_root), text)
+
+    try:
+        write_settings_table(root, "mlflow", table, write=write)
+    except ProjectSettingsError as exc:
+        raise MlflowConfigError(str(exc)) from exc
 
 
 def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
@@ -266,9 +262,8 @@ def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
     from haute._sandbox import contained_path
     from haute.errors import PathOutsideProjectError
 
-    root = project_root if project_root is not None else current_project().root
     try:
-        return contained_path(root, toml_path.resolve())
+        return contained_path(_project_root(project_root), toml_path.resolve())
     except PathOutsideProjectError:
         raise MlflowConfigError(
             "Refusing to write MLflow settings: haute.toml resolves outside the project root."
