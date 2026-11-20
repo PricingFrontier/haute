@@ -176,7 +176,8 @@ export function ratingTableStatus(
   }
 
   if (table.factors.length === 0) issues.push("Add at least one factor")
-  if ((table.entries || []).length === 0) issues.push("Add at least one rating entry")
+  // A table with a default prices every row with it until it has entries.
+  if ((table.entries || []).length === 0 && !tableUsesDefault(table)) issues.push("Add at least one rating entry")
 
   return {
     state: issues.length > 0 ? "problem" : "healthy",

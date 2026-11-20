@@ -139,6 +139,20 @@ describe("BandingRulesGrid", () => {
     expect(lastCall.rules[0].assignment).toBe("Vehicle")
   })
 
+  it("writes a group name typed or pasted with edge spaces as the Rating Step lists it", () => {
+    const onUpdate = vi.fn()
+    const rules: CategoricalRule[] = [{ value: "Car", assignment: "Vehicle" }]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    fireEvent.change(screen.getByLabelText("Rule 1 group name"), { target: { value: "Standard " } })
+    fireEvent.blur(screen.getByLabelText("Rule 1 group name"))
+    expect(onUpdate.mock.calls.at(-1)?.[0].rules).toEqual([{ value: "Car", assignment: "Standard" }])
+
+    fireEvent.paste(screen.getByLabelText("Rule 1 match value"), {
+      clipboardData: { getData: () => "Van\t Commercial " },
+    })
+    expect(onUpdate.mock.calls.at(-1)?.[0].rules).toEqual([{ value: "Van", assignment: "Commercial" }])
+  })
+
   it("updating the group name calls onUpdateFactor with new value", () => {
     const onUpdate = vi.fn()
     const rules = [

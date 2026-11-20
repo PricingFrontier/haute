@@ -4,7 +4,7 @@ import { CHART_COLORS } from "../../../theme/colors"
 import { parsePastedGrid } from "../shared/tableClipboard"
 import { isGridHeaderRow, useTwoColumnGridClipboard } from "../shared/useTwoColumnGridClipboard"
 import type { BandingFactor, CategoricalRule } from "../../../types/banding"
-import { categoricalRuleIssues } from "./bandingUtils"
+import { bandName, categoricalRuleIssues } from "./bandingUtils"
 import { useRowKeys } from "../shared/useRowKeys"
 import { CellIssueMark } from "../shared/CellIssueMark"
 import { cellIssueStyle } from "../shared/cellIssueStyle"
@@ -86,8 +86,10 @@ export function BandingRulesGrid({
 
   // A rule is its value and mapping: any editor-only key (an `_id` an earlier
   // editor kept on the rule) is dropped from what is written, before the row keys
-  // see the write, so the rules that come back are the ones they expect.
-  const written = (r: CategoricalRule[]): CategoricalRule[] => r.map(({ value, assignment }) => ({ value, assignment }))
+  // see the write, so the rules that come back are the ones they expect. Every
+  // write (a cell, Enter, a paste) gives the mapping as a band name.
+  const written = (r: CategoricalRule[]): CategoricalRule[] =>
+    r.map(({ value, assignment }) => ({ value, assignment: bandName(String(assignment ?? "")) }))
   const setRules = (r: CategoricalRule[]) => onUpdateFactor({ rules: r })
   // A paste fills cells from the one pasted into and may add rows below.
   const pasteRules = (next: CategoricalRule[]) =>

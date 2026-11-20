@@ -54,6 +54,7 @@ from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
     _breakpoints_to_rules,
+    banding_categorical_claims,
     normalise_combined_outputs,
     normalise_rating_key,
 )
@@ -330,21 +331,6 @@ def _values_equivalent(left: Any, right: Any) -> bool:
     return str(left) == str(right)
 
 
-def _categorical_rule_matches(
-    input_value: Any,
-    selected_band: Any,
-    rule: dict[str, Any],
-) -> bool:
-    """Mirror categorical banding's Utf8 remap semantics for one rule."""
-    rule_val = rule.get("value", "")
-    rule_assignment = rule.get("assignment", "")
-    if rule_val is None or rule_val == "":
-        return False
-    if rule_assignment is None or rule_assignment == "":
-        return False
-    return str(input_value) == str(rule_val) and str(selected_band) == str(rule_assignment)
-
-
 def _interval_rule_bounds(rule: dict[str, Any]) -> dict[str, Any]:
     """Extract range metadata from a breakpoint's interval rule for trace display."""
     result: dict[str, Any] = {
@@ -538,11 +524,22 @@ def enrich_banding(
                 matched_rule: dict[str, Any] | None = None
 
                 if banding_type == "categorical":
-                    for i, rule in enumerate(raw_rules):
-                        if _categorical_rule_matches(input_value, selected_band, rule):
-                            rule_index = i
-                            matched_rule = dict(rule)
-                            break
+                    # The rule the engine's typed remap gives this value
+                    # (``banding_categorical_claims``), keyed as the column is.
+                    input_dtype = dtype_by_column.get(col)
+                    if input_dtype is None:
+                        raise ValueError(
+                            f"Cannot match categorical banding of column {col!r} "
+                            "without its originating dtype"
+                        )
+                    claims = banding_categorical_claims(
+                        raw_rules, input_dtype, output_column=out_col, column=col
+                    )
+                    input_key = normalise_rating_key(input_value, input_dtype)
+                    claim = None if input_key is None else claims.get(input_key)
+                    if claim is not None and _values_equivalent(claim[1], selected_band):
+                        rule_index = claim[0]
+                        matched_rule = dict(raw_rules[rule_index])
                 elif banding_type == "breakpoints":
                     # Evaluate each interval against the input value, comparing
                     # in the source column's own dtype so a Float32-banded value
@@ -1073,10 +1070,9 @@ def input_source_entry(
     config = node.data.config if node is not None and isinstance(node.data.config, dict) else {}
     try:
         factor = None
-        if _step_enrichment(step.node_type).banding_factors:
-            detail = enrich_banding(
-                config, step.input_values, step.output_values, traced_column=column
-            )
+        detail = step.node_detail
+        if _step_enrichment(step.node_type).banding_factors and isinstance(detail, dict):
+            # The step's own banding detail, enriched with its factors' column types.
             factor = _banding_factor_for_column(detail, column)
         if factor is not None:
             # The banding factor is the column's lineage; code the node also

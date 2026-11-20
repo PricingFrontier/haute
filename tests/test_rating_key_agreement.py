@@ -43,6 +43,7 @@ from haute._rating import (
     RatingDuplicateEntriesError,
     _apply_rating_table,
     _rating_key_expr,
+    apply_banding_from_config,
     apply_rating_step_from_config,
     normalise_rating_key,
 )
@@ -51,6 +52,7 @@ from haute._rating_step_config import (
 )
 from haute._trace_correlation import _jsonify_row
 from haute._trace_enrichment import _enrich_single_table
+from haute.errors import ConfigSettingError
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -924,3 +926,175 @@ class TestTraceEndToEndAgreement:
         table_detail = step.node_detail["tables"][0]
         assert table_detail["status"] == "no_match"
         assert table_detail["matched"] is False
+
+
+# ---------------------------------------------------------------------------
+# RTG-01: a categorical Banding rule and a Rating Step entry match alike
+# ---------------------------------------------------------------------------
+
+# (column values, column type, a level as written, the rows it matches).
+_LEVEL_SPELLINGS: list[tuple[list[Any], pl.DataType, Any, list[bool]]] = [
+    ([True, False, None], pl.Boolean(), True, [True, False, False]),
+    ([True, False, None], pl.Boolean(), "true", [True, False, False]),
+    ([True, False, None], pl.Boolean(), 1, [True, False, False]),
+    ([True, False, None], pl.Boolean(), False, [False, True, False]),
+    ([True, False, None], pl.Boolean(), "false", [False, True, False]),
+    ([True, False, None], pl.Boolean(), 0, [False, True, False]),
+    ([25, 30, None], pl.Int64(), 25, [True, False, False]),
+    ([25, 30, None], pl.Int64(), "25", [True, False, False]),
+    ([25.0, 30.5, None], pl.Float64(), 25, [True, False, False]),
+    ([25.0, 30.5, None], pl.Float64(), "25.0", [True, False, False]),
+    ([25.0, 30.5, None], pl.Float64(), "30.5", [False, True, False]),
+    (["NE", "SW", None], pl.String(), "NE", [True, False, False]),
+    ([date(2024, 1, 31), date(2024, 2, 1), None], pl.Date(), "2024-01-31", [True, False, False]),
+]
+
+
+def _band_and_rate(
+    values: list[Any], dtype: pl.DataType, level: Any
+) -> tuple[list[bool], list[bool]]:
+    """Which rows a categorical Banding rule and a Rating Step entry for *level* match."""
+    frame = pl.DataFrame({"factor": pl.Series(values, dtype=dtype)}).lazy()
+    banded = apply_banding_from_config(
+        frame,
+        {
+            "factors": [
+                {
+                    "banding": "categorical",
+                    "column": "factor",
+                    "output_column": "band",
+                    "rules": [{"value": level, "assignment": "hit"}],
+                    "default": "miss",
+                }
+            ]
+        },
+    ).collect()
+    rated = apply_rating_step_from_config(
+        frame,
+        {
+            "tables": [
+                {
+                    "factors": ["factor"],
+                    "output_column": "rate",
+                    "entries": [{"factor": level, "value": 2.0}],
+                    "default_value": 1.0,
+                }
+            ]
+        },
+    ).collect()
+    return (
+        [band == "hit" for band in banded["band"].to_list()],
+        [rate == 2.0 for rate in rated["rate"].to_list()],
+    )
+
+
+@pytest.mark.parametrize(("values", "dtype", "level", "matches"), _LEVEL_SPELLINGS)
+def test_banding_rules_and_rating_entries_match_the_same_rows(
+    values: list[Any], dtype: pl.DataType, level: Any, matches: list[bool]
+) -> None:
+    banded, rated = _band_and_rate(values, dtype, level)
+    assert banded == matches
+    assert rated == matches
+
+
+@pytest.mark.parametrize(
+    ("values", "dtype", "level"),
+    [
+        ([True, False], pl.Boolean(), "maybe"),
+        ([True, False], pl.Boolean(), "True"),
+        ([True, False], pl.Boolean(), 2),
+        ([25, 30], pl.Int64(), "abc"),
+        ([25, 30], pl.Int64(), 25.5),
+        ([date(2024, 1, 31)], pl.Date(), 20240131),
+    ],
+)
+def test_a_level_its_column_cannot_hold_is_refused_by_both_nodes(
+    values: list[Any], dtype: pl.DataType, level: Any
+) -> None:
+    """RTG-01/RTG-02: refused naming the node's output, the value and the type."""
+    frame = pl.DataFrame({"factor": pl.Series(values, dtype=dtype)})
+    banding = {
+        "banding": "categorical",
+        "column": "factor",
+        "output_column": "band",
+        "rules": [{"value": level, "assignment": "hit"}],
+    }
+    with pytest.raises(ConfigSettingError) as banded:
+        apply_banding_from_config(frame.lazy(), {"factors": [banding]})
+    assert str(banded.value) == (
+        f"Banding output 'band' of column 'factor' has the rule value {level!r}, "
+        f"which is not a value of its column's type, {dtype}"
+    )
+
+    table = {
+        "factors": ["factor"],
+        "output_column": "rate",
+        "entries": [{"factor": level, "value": 2.0}],
+    }
+    with pytest.raises(ConfigSettingError) as rated:
+        apply_rating_step_from_config(frame.lazy(), {"tables": [table]})
+    assert str(rated.value) == (
+        f"Rating table 'rate' factor 'factor' has the level {level!r}, "
+        f"which is not a value of its column's type, {dtype}"
+    )
+    assert "strict_cast" not in str(rated.value) and "Hint" not in str(rated.value)
+
+
+def test_a_refusal_quotes_the_first_levels_that_do_not_fit() -> None:
+    frame = pl.DataFrame({"area": [1, 2]}).lazy()
+    entries = [{"area": level, "value": 1.0} for level in ["NE", "1", "SE", "NW", "SW"]]
+    table = {"factors": ["area"], "output_column": "rate", "entries": entries}
+    with pytest.raises(ConfigSettingError) as refused:
+        apply_rating_step_from_config(frame, {"tables": [table]})
+    assert str(refused.value) == (
+        "Rating table 'rate' factor 'area' has the levels 'NE', 'SE', 'NW' and 1 more, "
+        "which are not values of its column's type, Int64"
+    )
+    assert refused.value.values == ("NE", "SE", "NW")
+
+
+# ---------------------------------------------------------------------------
+# RTG-06: a factor column of Null type takes the default
+# ---------------------------------------------------------------------------
+
+
+def test_a_null_factor_column_prices_every_row_at_the_default() -> None:
+    frame = pl.DataFrame({"id": [1, 2]}).with_columns(pl.lit(None).alias("territory")).lazy()
+    table = {
+        "factors": ["territory"],
+        "output_column": "territory_factor",
+        "entries": [{"territory": "NW", "value": 1.1}, {"territory": "SE", "value": 1.2}],
+        "default_value": 1.0,
+    }
+    out = apply_rating_step_from_config(frame, {"tables": [table]}).collect()
+    assert out["territory_factor"].to_list() == [1.0, 1.0]
+
+
+def test_a_categorical_banding_of_a_null_column_bands_every_row_to_the_default() -> None:
+    frame = pl.DataFrame({"id": [1, 2]}).with_columns(pl.lit(None).alias("territory")).lazy()
+    factor = {
+        "banding": "categorical",
+        "column": "territory",
+        "output_column": "band",
+        "rules": [{"value": "NW", "assignment": "North"}, {"value": "SE", "assignment": "South"}],
+        "default": "Other",
+    }
+    out = apply_banding_from_config(frame, {"factors": [factor]}).collect()
+    assert out["band"].to_list() == ["Other", "Other"]
+
+
+@pytest.mark.parametrize("dtype", [pl.Null(), pl.String()])
+def test_a_real_duplicate_is_refused_whatever_the_factor_columns_type(dtype: pl.DataType) -> None:
+    frame = pl.DataFrame({"territory": pl.Series([None], dtype=dtype), "zone": ["A"]}).lazy()
+    table = {
+        "factors": ["territory", "zone"],
+        "output_column": "territory_factor",
+        "entries": [
+            {"territory": "NW", "zone": "A", "value": 1.1},
+            {"territory": "NW", "zone": "A", "value": 1.2},
+        ],
+        "default_value": 1.0,
+    }
+    # The engine's own check, as a table built in code reaches it.
+    with pytest.raises(RatingDuplicateEntriesError, match="territory='NW', zone='A'"):
+        _apply_rating_table(frame, table)

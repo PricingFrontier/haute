@@ -23,6 +23,7 @@ from haute._polars_utils import cancellable_streaming_collect
 from haute._rating import (
     banding_rule_claim_expr,
     banding_temporal_ordinal_expr,
+    rating_key_of,
     require_banding_type,
 )
 from haute.routes._point_analysis import (
@@ -176,7 +177,7 @@ class BandingStatsService(PointAnalysisService):
             )
             stats = self._numeric(stats, body, measured, column, context)
         else:
-            stats = self._categorical(stats, body, frame, column, context)
+            stats = self._categorical(stats, body, frame, column, dtype, context)
         return self._with_rule_counts(stats, body, frame, column, dtype, context)
 
     def _numeric(
@@ -208,12 +209,17 @@ class BandingStatsService(PointAnalysisService):
         body: BandingStatsRequest,
         frame: pl.LazyFrame,
         column: str,
+        dtype: Any,
         context: ExecutionContext,
     ) -> _BandingStats:
-        # The text execution matches on, so every value shown is a value a
+        # The key execution matches on, so every value shown is a value a
         # categorical rule can be written against.
+        try:
+            key = rating_key_of(pl.col(column), dtype)
+        except ValueError as exc:
+            raise unprocessable(str(exc)) from exc
         counted, distinct_count = most_common_values(
-            frame, pl.col(column).cast(pl.Utf8), limit=body.value_limit, context=context
+            frame, key, limit=body.value_limit, context=context
         )
         values = tuple(BandingValueCount(value=value, count=count) for value, count in counted)
         shown = sum(item.count for item in values)

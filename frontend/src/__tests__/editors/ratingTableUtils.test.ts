@@ -258,7 +258,6 @@ describe("ratingTableStatus", () => {
     const tables = [{
       factors: [],
       output_column: " ",
-      default_value: 1.0,
       entries: [],
     }]
 
@@ -270,6 +269,12 @@ describe("ratingTableStatus", () => {
         "Add at least one rating entry",
       ],
     })
+  })
+
+  it("marks a table with a default and no entries as healthy: the default prices every row", () => {
+    const tables = [{ factors: ["region"], output_column: "region_factor", default_value: 1.0, entries: [] }]
+
+    expect(ratingTableStatus(tables[0], 0, tables)).toEqual({ state: "healthy", issues: [] })
   })
 
   it("reports duplicate output column names across tables", () => {

@@ -75,6 +75,14 @@ export function categoricalRuleIssues(
   return issues
 }
 
+/**
+ * A band's name as it is entered: its text without spaces at either end, as the
+ * engine requires it and the Rating Step lists it (specs/rating, "Band names").
+ */
+export function bandName(text: string): string {
+  return text.trim()
+}
+
 /** The breakpoints the save refuses for want of a band name, keyed by index. */
 export function breakpointLabelIssues(breakpoints: ReadonlyArray<{ boundary: string; label: string }>): Map<number, string> {
   const issues = new Map<number, string>()

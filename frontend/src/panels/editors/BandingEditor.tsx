@@ -21,6 +21,7 @@ import {
   previewValueDayNumber,
   dayNumberToDate,
   calendarSettingsFromBreakpoints,
+  bandName,
 } from "./banding/bandingUtils"
 import { castFamily, isTemporalDtype, type CastFamily } from "../../utils/polarsDtypes"
 import { BandingRulesGrid } from "./banding/BandingRulesGrid"
@@ -706,7 +707,10 @@ export default function BandingEditor({
         <CommittedTextField
           key={`def-${safeIdx}`}
           type="text" value={factor.default ?? ""}
-          onCommit={(v) => updateFactor(safeIdx, { default: v !== "" ? v : null })}
+          onCommit={(v) => {
+            const name = bandName(v)
+            updateFactor(safeIdx, { default: name !== "" ? name : null })
+          }}
           className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
           style={INPUT_STYLE} />
       </div>

@@ -17,6 +17,7 @@ import polars as pl
 import pytest
 
 from haute._rating import _apply_banding, banding_rule_claim_expr
+from haute.errors import ConfigSettingError
 
 
 def _claims(
@@ -73,19 +74,27 @@ def test_a_repeated_label_and_a_default_equal_to_it_keep_their_own_counts() -> N
     assert unmatched == 3
 
 
-def test_categorical_claims_are_last_wins_on_the_column_cast_to_text() -> None:
+def test_categorical_claims_key_each_rule_value_through_the_columns_type() -> None:
     rules = [
-        {"value": "1.0", "assignment": "A"},
-        {"value": "NaN", "assignment": "B"},
         {"value": "1", "assignment": "A"},
-        {"value": "1.0", "assignment": "C"},
+        {"value": "NaN", "assignment": "B"},
         {"value": "inf", "assignment": ""},
     ]
-    # A Float64 1.0 is "1.0", never "1"; the repeated "1.0" is claimed by its
-    # last rule; a rule with no assignment claims nothing.
+    # A rule's value is read as a Float64, as a Rating Step entry's level is: "1"
+    # claims the column's 1.0; a rule with no assignment claims nothing.
     assert _claims([1.0, 2.0, math.nan, None, 1.0, math.inf], pl.Float64, "categorical", rules) == (
-        [0, 1, 0, 2, 0],
+        [2, 1, 0],
         3,
+    )
+
+
+def test_two_categorical_rules_for_one_value_of_the_columns_type_are_refused() -> None:
+    rules = [{"value": "1.0", "assignment": "A"}, {"value": "1", "assignment": "C"}]
+    with pytest.raises(ConfigSettingError) as refused:
+        banding_rule_claim_expr(pl.col("x"), pl.Float64, "categorical", rules, output_column="b")
+    assert str(refused.value) == (
+        "Banding output 'b' of column 'x' has rules 1 and 2 for one value ('1.0' and '1') "
+        "of its column's type, Float64"
     )
 
 

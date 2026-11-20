@@ -89,12 +89,32 @@ Out of scope (owned by neighbouring components):
   trace enrichment consume the same interval-eligibility parser and the same
   immutable supported-operator contract, so a trace cannot credit a band the
   engine skipped.
-- `categorical` rules are an exact-match remap from input value to assignment.
+- `categorical` rules remap a value of the column to its assignment. A rule's
+  value is read as a value of the column's type and matched in the one
+  dtype-faithful key form a Rating Step entry's level is (below), so on a
+  Boolean column `true`, `"true"` and `1` all band the column's `true`, and a
+  categorical rule and a rating entry written alike match the same rows. A
+  rule's value the column cannot hold (`"maybe"` on a Boolean column, `"abc"`
+  or `2.5` on an integer one) is refused when the node runs, naming the output
+  column, the column and the value. Two rules for one value of the column's
+  type (`"1"` and `"1.0"` on a Float64 column) are refused, never resolved by
+  one of them. On a column of Null type no rule can match, and every row takes
+  the default.
+- **Band names.** A band's name (a breakpoint's label, a categorical rule's
+  assignment, a factor's `default`) is text, and only a missing or empty name is
+  no name. A number or a Boolean given as a band name (`0`, `0.0`, `false` in a
+  settings file written by hand) is refused, as is a name that begins or ends
+  with a space, which the Rating Step's level list shows trimmed and so would
+  never match; each refusal names the factor's output column and the band, when
+  the settings are loaded, linted, saved and run. The Banding editor trims a band
+  name as it is entered (typed, pasted or set as the default), so a name it
+  saves is the name the Rating Step lists.
 - Float columns of every width (`Float16`, `Float32`, `Float64`: the `float` column
   kind) have NaN/Infinity sanitised to null before rule matching, so they always
   fall to the default rather than matching an arbitrary rule.
 - A draft factor with no column, no output column, or no rules is a documented
-  no-op (the frame passes through unchanged for that factor). The node's column
+  no-op (the frame passes through unchanged for that factor). A breakpoint's
+  boundary of `0` is a boundary: only a missing or empty boundary is open-ended. The node's column
   contract leaves a draft factor out too, so a factor that has its columns but no
   rules yet previews as a pass-through rather than failing the output-column
   check for a column it does not create. Once a non-empty
@@ -154,13 +174,29 @@ Out of scope (owned by neighbouring components):
   string, decimal, and temporal values use Polars' cast for their declared
   dtype. A Duration entry string is the ISO-8601 duration Polars displays
   (`PT1.5S`, `-P1DT2H`), read exactly into the column's time unit and never
-  rounded. Null stays null and therefore never matches. Supported factor dtypes
+  rounded. Null stays null and therefore never matches; a factor column of Null
+  type matches no entry, so every row takes the default. Supported factor dtypes
   are Float32/64, signed and unsigned integers, Boolean, String,
   Categorical/Enum, Decimal, Date, Datetime, Time, Duration, and Null.
+- **An entry's level is a value of its factor column's type, or is refused.**
+  A level is read as the column's type holds it: `true`/`false`,
+  `"true"`/`"false"` or `1`/`0` for a Boolean; a whole number for an integer
+  type (`2.5` is no value of one); text that parses as a date or time for a
+  temporal type (a number, a temporal type's physical count, is not one); and
+  Polars' cast for the rest. A level that is not a value of the type (`"NE"` on
+  an integer column, `"True"` on a Boolean one, `"x"` on a Datetime one) is
+  refused before the lookup is built, naming the table's output column, the
+  factor, the first such levels and the column's type, in Haute's words with no
+  Polars expression or hint. The same reading is the one categorical banding,
+  trace enrichment and the optimiser's ratebook keys take
+  (`typed_level_keys`), so no surface matches a level another refuses.
 - Lookup keys are materialised into collision-free temporary columns for the
   join. The source factor columns are never overwritten and therefore never
   need a lossy string-to-original-dtype revert.
-- Multiple entries sharing the same factor key are refused (below).
+- Multiple entries sharing the same factor key are refused (below). An entry
+  whose key is null (a factor column of Null type) can match no row and so
+  collides with no other; entries identical as written are refused whatever the
+  column's type.
 - After the table stage, `combined_outputs` combine every materialised table
   output column of the step with a required fixed finite numeric `base_value`
   using `multiply`, `add`, `min`, or `max`. A table that never materialised its
@@ -289,7 +325,10 @@ Out of scope (owned by neighbouring components):
   to build the structured `rating_step`/`banding` trace detail payloads shown
   in the Calculation and Nodes tabs. Rating enrichment also receives the exact
   factor dtypes from the consumed parent frame; it does not reimplement lookup
-  or rule matching.
+  or rule matching. Banding enrichment reads a categorical factor's claims from
+  the engine's own `banding_categorical_claims` with the consumed column's
+  dtype, and a column's lineage reuses the step's enriched banding detail
+  rather than matching again without the dtypes.
 - **[server-api](../server-api/high-level.md)** — `routes/_rating_levels.py`
   publishes the levels of a Rating Step's raw factor columns over the node's
   shared data point, keyed by the same `_rating_key_expr` the lookup joins on,
@@ -343,15 +382,18 @@ Out of scope (owned by neighbouring components):
   absence), and apply dtype. Legacy ratebook artifacts without
   `factor_dtypes` must be re-solved and re-saved; they are not applied with
   guesswork.
-- **Incomplete table or factor** (a completely empty rating-table draft, an
-  empty entry list, no output column, or an entirely empty banding rule list):
-  this is a *documented no-op*, not a failure — the frame passes through
-  unchanged for that table/factor. An entry list may omit factors only while it
-  is empty; a populated entry list with no declared factors is malformed and
-  raises `ValueError`. When a rating table has an
-  `output_column` configured but is otherwise incomplete, the skip is logged at
-  WARNING (`rating_table_skipped_incomplete`) so the gap is observable instead
-  of a silently-missing column reaching a combined output.
+- **Incomplete table or factor.** A rating table with no `output_column`, and a
+  banding factor with no column, output column or rules, is a *documented
+  no-op*: the frame passes through unchanged for it. A rating table with an
+  output column produces it or is refused: one with a Default and no entries
+  produces it from the Default (every row misses, and the Default fills every
+  miss); one with no factors, or with no entries and no Default, is refused
+  (`ConfigSettingError`, setting `tables`) naming the table and what it lacks,
+  with a fix, rather than left out of a column its node's contract promises.
+  The editor marks a table with no entries only when it has no default. An
+  entry list may omit factors only while it is empty; a populated entry list
+  with no declared factors, with no entry holding a rate, or with no entry
+  holding some factor's level is malformed and raises `ValueError`.
   A non-empty banding rule list whose rules are all unusable is malformed and
   raises instead of taking this no-op path.
 - **Malformed collection shape:** a non-list banding `factors` value, a

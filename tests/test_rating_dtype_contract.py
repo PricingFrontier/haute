@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -17,7 +18,7 @@ from haute._rating import (
     rating_dtype_from_descriptor,
 )
 from haute._trace_enrichment import _enrich_single_table
-from haute.errors import RatingFactorDtypeContractError
+from haute.errors import ConfigSettingError, RatingFactorDtypeContractError
 from haute.routes._optimiser_solver import (
     _ratebook_factor_dtypes,
     _ratebook_factor_level_counts,
@@ -444,9 +445,16 @@ def test_date_entries_reject_other_spellings_on_both_paths(entry: str) -> None:
 
     source = pl.DataFrame({"factor": [datetime.date(2024, 1, 31)]}).lazy()
 
-    with pytest.raises(pl.exceptions.InvalidOperationError):
+    # RTG-02: refused in Haute's words, naming the table, the factor, the level and the type.
+    with pytest.raises(
+        ConfigSettingError,
+        match=re.escape(
+            f"Rating table 'rate' factor 'factor' has the level {entry!r}, "
+            "which is not a value of its column's type, Date"
+        ),
+    ):
         _apply_rating_table(source, _date_entry_table(entry)).collect()
-    with pytest.raises(pl.exceptions.InvalidOperationError):
+    with pytest.raises(ConfigSettingError, match="not a value of its column's type, Date"):
         _enrich_single_table(
             _date_entry_table(entry),
             {"factor": datetime.date(2024, 1, 31)},
