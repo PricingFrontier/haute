@@ -27,6 +27,7 @@ import polars as pl
 import pytest
 
 from tests._project import use_project
+from tests._source_files import source_files
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -144,6 +145,8 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Store:
     store.models["contracted"] = contracted
 
     first = _catboost(frame, 5.0)
+    # A scale and bias of its own, so the retrain below can change only those.
+    first.set_scale_and_bias(1.5, 0.5)
     (work / "first").mkdir()
     first.save_model(str(work / "first" / "model.cbm"))
     store.log("relogged", work / "first" / "model.cbm")
@@ -155,8 +158,13 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Store:
 
 
 def _relog_with_the_same_size(store: _Store) -> Any:
-    """Log a retrained model over ``model.cbm`` of the relogged run, byte count unchanged."""
-    retrained = _catboost(store.frame, 50.0)
+    """Log a retrained model over ``model.cbm`` of the relogged run, byte count unchanged.
+
+    The same trees under another scale and bias: different bytes and predictions
+    in a file of exactly the same size on every platform.
+    """
+    retrained = store.models["relogged"].copy()
+    retrained.set_scale_and_bias(15.0, 5.0)
     work = store.root / "work" / "second"
     work.mkdir()
     retrained.save_model(str(work / "model.cbm"))
@@ -970,7 +978,7 @@ def _artifact_listings(path: Path) -> list[tuple[str, int]]:
 def test_only_the_model_resolution_lists_a_runs_artifacts() -> None:
     outside = [
         f"{path.relative_to(_SRC).as_posix()}:{line} in {function}"
-        for path in sorted(_SRC.rglob("*.py"))
+        for path in source_files(_SRC)
         if path != _RESOLUTION
         for function, line in _artifact_listings(path)
         if (path.relative_to(_SRC).as_posix(), function) not in _NOT_A_MODEL_SEARCH
