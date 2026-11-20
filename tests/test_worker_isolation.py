@@ -2299,6 +2299,43 @@ def test_start_process_with_environment_deletes_an_absent_value_when_start_raise
     assert "POLARS_MAX_THREADS" not in os.environ
 
 
+@pytest.mark.parametrize(
+    ("inherited", "requested", "pool", "observed"),
+    [
+        (None, "1", 8, "2"),
+        ("1", None, 1, "2"),
+        (None, None, 1, "2"),
+        (None, None, 8, None),
+        (None, "6", 1, "6"),
+    ],
+    ids=["asked-for-one", "inherited-one", "pool-of-one", "pool-of-eight", "asked-for-six"],
+)
+def test_a_spawned_worker_runs_at_least_two_polars_threads(
+    monkeypatch: pytest.MonkeyPatch,
+    inherited: str | None,
+    requested: str | None,
+    pool: int,
+    observed: str | None,
+) -> None:
+    """A background sink holds a pool thread while its Python scan collects on another:
+    a worker with a pool of one waits for itself (DPL-12)."""
+    import polars as pl
+
+    if inherited is None:
+        monkeypatch.delenv("POLARS_MAX_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("POLARS_MAX_THREADS", inherited)
+    monkeypatch.setattr(pl, "thread_pool_size", lambda: pool)
+    process = _EnvironmentProbeProcess()
+
+    start_process_with_environment(
+        process, {} if requested is None else {"POLARS_MAX_THREADS": requested}
+    )
+
+    assert process.observed == observed
+    assert os.environ.get("POLARS_MAX_THREADS") == inherited
+
+
 @pytest.mark.meta
 def test_every_multiprocessing_spawn_goes_through_the_environment_helper() -> None:
     """A bare ``process.start()`` could inherit another spawn's environment overrides.

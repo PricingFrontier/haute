@@ -209,9 +209,17 @@ platforms, and on Windows with long paths on, nothing is renamed.
    callable scan-plan token. A structured API Input's tables are read through the same
    helper (see [JSON shredding](../json-shredding/low-level.md)).
 7. `resolve_data_input_from_config()` is the standalone-run sidecar entry point: a Data
-   Input decorator calls it when a saved pipeline file runs on its own.
+   Input decorator calls it when a saved pipeline file runs on its own. It prepares the
+   input's snapshot first (`prepare_snapshots_before_reading`, below), since a standalone
+   run has no execution to prepare it.
 
 ### Automatic preparation
+
+`prepare_snapshots_before_reading(node_map, *, operation, base_dir)` is preparation for a
+read outside an execution: when *node_map* holds a snapshot-backed input it admits a
+`LAZY_SINK` context for *operation*, runs `prepare_input_snapshots()` over every node in it,
+and releases the admission, returning the records. Deploy's resolution
+(`prepare_deploy_snapshots`) and the standalone Data Input read call it.
 
 1. `prepare_input_snapshots()` runs once per execution, after `_prepare_execution()` has
    pruned the graph to the target lineage and before strategy planning and before runtime

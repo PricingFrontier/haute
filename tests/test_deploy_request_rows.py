@@ -237,30 +237,39 @@ def test_the_batch_worker_answers_in_request_order_and_counts(tmp_path, remap):
     _assert_expected(pl.read_parquet(tmp_path / "result.parquet").to_dicts())
 
 
-def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_path, remap):
+def _databricks_model(
+    tmp_path: Path, remap: dict[str, str], graph: PipelineGraph, rows: RequestRows
+) -> Any:
+    """The Databricks model of *graph*, loaded as Model Serving loads it."""
     from unittest.mock import MagicMock
 
     from haute.deploy._model_code import HauteModel
 
-    def load(graph: PipelineGraph, rows: RequestRows) -> HauteModel:
-        manifest = {
-            "polars_version": pl.__version__,
-            "pruned_graph": graph.model_dump(mode="json"),
-            "input_node_ids": ["quotes"],
-            "output_node_id": "out",
-            "input_schema": QUOTE_SCHEMA,
-            "omittable_inputs": [],
-            "output_fields": None,
-            "request_rows": rows.to_manifest(),
-            "artifacts": dict.fromkeys(remap, ""),
-        }
-        manifest_path = tmp_path / "deploy_manifest.json"
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        context = MagicMock()
-        context.artifacts = {"deploy_manifest": str(manifest_path), **remap}
-        model = HauteModel()
-        model.load_context(context)
-        return model
+    manifest = {
+        "polars_version": pl.__version__,
+        "pruned_graph": graph.model_dump(mode="json"),
+        "input_node_ids": ["quotes"],
+        "output_node_id": "out",
+        "input_schema": QUOTE_SCHEMA,
+        "omittable_inputs": [],
+        "output_fields": None,
+        "request_rows": rows.to_manifest(),
+        "artifacts": dict.fromkeys(remap, ""),
+    }
+    manifest_path = tmp_path / "deploy_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    context = MagicMock()
+    context.artifacts = {"deploy_manifest": str(manifest_path), **remap}
+    model = HauteModel()
+    model.load_context(context)
+    return model
+
+
+def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_path, remap):
+    from unittest.mock import MagicMock
+
+    def load(graph: PipelineGraph, rows: RequestRows) -> Any:
+        return _databricks_model(tmp_path, remap, graph, rows)
 
     graph = _two_join_graph(remap)
     covered = load(graph, request_rows(graph, ["quotes"], "out", remap))
@@ -276,6 +285,27 @@ def test_the_databricks_model_answers_in_request_order_or_quote_by_quote(tmp_pat
     assert answers["quote_id"].to_list() == QUOTES["quote_id"].to_list()
     one = uncovered.predict(MagicMock(), pd.DataFrame(QUOTES.head(1).to_dicts()))
     assert len(one) == 1
+
+
+def test_the_databricks_model_refuses_an_infinite_answer_naming_its_quote(tmp_path, remap):
+    """Serving encodes the answer as JSON: an infinity is refused by column and quote, as a
+    container's ``/quote`` refuses it (DPL-02)."""
+    from unittest.mock import MagicMock
+
+    from haute.errors import NonFiniteOutputError
+
+    # Quote 3, the second sent, divides by zero.
+    graph = _priced_graph(
+        ORDERED_LEFT,
+        remap,
+        after="df = priced.with_columns(rate=pl.col('rate') / (pl.col('quote_id') - 3))",
+    )
+    model = _databricks_model(tmp_path, remap, graph, request_rows(graph, ["quotes"], "out", remap))
+
+    with pytest.raises(NonFiniteOutputError) as caught:
+        model.predict(MagicMock(), QUOTES.to_pandas())
+
+    assert (caught.value.column, caught.value.quote) == ("rate", 1)
 
 
 # ---------------------------------------------------------------------------

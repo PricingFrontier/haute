@@ -206,11 +206,18 @@ def _impact_records(
         if not dataset_file.exists():
             click.echo(f"Error: Impact dataset not found: {dataset_file}", err=True)
             raise SystemExit(1)
+        from haute.deploy._impact import dataset_records
+
         df = pl.read_parquet(dataset_file)
         total_rows = len(df)
         if sample > 0 and total_rows > sample:
             df = df.sample(n=sample, seed=42)
-        return df.to_dicts(), df, total_rows, impact_path
+        try:
+            records = dataset_records(df)
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
+        return records, df, total_rows, impact_path
 
     from haute.deploy._validators import test_quote_requests
 

@@ -117,9 +117,12 @@ execution's own budget. That cap is native and mandatory for preparation whateve
 process-memory enforcement policy says, and is never replaced by RSS sampling: a host that
 cannot install the cap reuses a ready-but-stale generation with warning code
 `cap_unavailable_stale_reused`; only a missing generation is refused typed
-(`cap_unavailable`). A
-schema-only execution, or one without an admitted execution context, never builds;
-resolution then reports the typed `input_snapshot_missing` rejection as before. The
+(`cap_unavailable`). A caller that reads a snapshot-backed input outside an
+execution (a standalone `Pipeline.run()` or `score()`, and deploy's resolution, the request
+input's sample included) prepares it the same way first, under an admission of its own held
+for the preparation alone (`prepare_snapshots_before_reading`), so a clean checkout runs
+every way without a preview or `haute run` before it. A schema-only execution never
+builds; resolution then reports the typed `input_snapshot_missing` rejection as before. The
 exception is the inferred schema tier, open only to a schema-only caller that records
 it (the assistant's plan verification): a local file input whose format has a lazy
 scanner, and whose configuration that scanner accepts by argument name and value,

@@ -28,7 +28,11 @@ from haute._native_memory_limit import (
     start_polars_thread_pools,
 )
 from haute._parent_watch import PARENT_PID_ENV, exit_with_parent
-from haute._polars_environment import release_polars_spill_dir
+from haute._polars_environment import (
+    POLARS_THREADS_ENV,
+    release_polars_spill_dir,
+    spawned_polars_threads,
+)
 from haute._process_memory import (
     current_process_rss_bytes,
     current_process_thread_count,
@@ -540,16 +544,22 @@ def start_process_with_environment(process: BaseProcess, environment: Mapping[st
     Callers with nothing to override pass an empty mapping so that every spawn
     takes the same serialised path. A streaming chunk-size cap active in this
     process stays in force here; the child is handed the setting it caps and
-    applies it at entry (``apply_spawned_streaming_chunk_size``).
+    applies it at entry (``apply_spawned_streaming_chunk_size``). Every child runs
+    a Polars pool of at least ``MIN_POLARS_THREADS`` threads
+    (``spawned_polars_threads``).
     """
     from haute._polars_utils import streaming_chunk_size_for_spawn
 
     with _SPAWN_ENVIRONMENT_LOCK, streaming_chunk_size_for_spawn() as chunk_environment:
+        threads = spawned_polars_threads(
+            environment.get(POLARS_THREADS_ENV, os.environ.get(POLARS_THREADS_ENV))
+        )
         # Every worker learns its server's pid, so it can end when the server
         # does (see ``haute._parent_watch``).
         environment = {
             **chunk_environment,
             **environment,
+            **({} if threads is None else {POLARS_THREADS_ENV: threads}),
             PARENT_PID_ENV: str(os.getpid()),
         }
         previous: dict[str, str | None] = {name: os.environ.get(name) for name in environment}

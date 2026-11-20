@@ -103,11 +103,13 @@ under `src/haute`, and the gate runs `RUF100`.
 **Why:** Four of the review's findings (`MLR-04`, `DPL-03`, `IOL-01` and
 `IOL-02`) came from running `haute lint`, `haute run` and
 `haute deploy --dry-run` on the sixteen shipped example projects, as they
-are and then with wrong inputs. No test does either. Every test that takes
-`haute deploy --dry-run` past the command's own argument checks replaces the
-resolution with a mock, a `MagicMock` standing for the resolved deploy, so
-the check a scaffolded project's CI runs before a deploy is never run whole
-by Haute's own suite. The workflow coverage ledger gives the deploy workflow
+are and then with wrong inputs. Since 20 November 2026
+`tests/test_run_parity.py::test_a_shipped_example_gives_one_answer_every_way`
+runs the dry run whole on every shipped example, each way from a clean
+checkout, and `tests/test_cli_deploy.py::TestDryRunSettings` runs it unpatched
+on the settings no deploy can use (the deploy roadmap's `DPL-03` and `DPL-05`,
+delivered then); neither holds what the command prints, and no test runs
+`haute lint` or `haute run` on the examples. The workflow coverage ledger gives the deploy workflow
 the entry points `cli` and `scoring`, and both of its scenarios enter
 through `scoring`. `haute run` is run whole on hand-built fixtures and on
 the three-node reference example. The example projects are parsed and
@@ -133,13 +135,13 @@ target node, with the trained run's id in place of the placeholder. Record
 the scenario in the workflow coverage ledger under the `cli` entry point.
 
 **Acceptance:** Run at `HEAD`, the test reports the `model_lifecycle`
-traceback and the unknown target the dry run accepts. It passes once
-`MLR-04` and `DPL-03` land, and the wrong-input table holds the lines
-`IOL-01` and `IOL-02` settle. The backend job's time before and after is
+traceback. It passes once `MLR-04` lands, and the wrong-input table holds the
+lines `IOL-01` and `IOL-02` settle, and the unknown target and the missing
+pipeline file the dry run now refuses in one line. The backend job's time before and after is
 recorded in the pull request.
 
-**Dependencies:** None to write the test. `MLR-04`, `DPL-03`, `IOL-01` and
-`IOL-02` decide the lines it holds.
+**Dependencies:** None to write the test. `MLR-04`, `IOL-01` and `IOL-02`
+decide the lines it holds.
 
 **Evidence:** `tests/test_cli_deploy.py::_mock_resolved` and
 `tests/test_cli_architecture.py` hold the patched dry runs;

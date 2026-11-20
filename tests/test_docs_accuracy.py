@@ -153,7 +153,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "caching",
     "cli",
     "codegen",
-    "deploy",
     "engineering-quality",
     "execution-engine",
     "explore-eda",

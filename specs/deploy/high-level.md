@@ -191,7 +191,11 @@ than silently disabling the gate. Every quote is scored through the resolved gra
 test-quote row wraps its request as `input`, with an optional `expected` output and
 `tolerance_pct` and any `_`-prefixed notes; a row without `input`, or with any other
 top-level key, is refused naming the row, and any row whose actual output falls outside
-tolerance fails the deploy. Each file is read once, and every row that leaves out a column
+tolerance fails the deploy. An expected value is compared with the output as the response
+serves it: a date, a date-time or a time by its ISO 8601 text, the only form a JSON file
+holds one in, and a number, a decimal included, as a number within the tolerance; a
+mismatch names both values as the response writes them. Comparing a priced response with
+an accepted one follows the same rule. Each file is read once, and every row that leaves out a column
 the request requires is named in the report, not only the first. A `test_quotes.dir` that is not a string, or is an empty one,
 is refused when `haute.toml` loads, never read as the default folder. The starter JSON quote `haute init` writes takes the row shape,
 so a new project's test quotes parse before the analyst replaces them. A workbench
@@ -237,8 +241,10 @@ the dry run and the deployment compute every node from the data and models deplo
 A snapshot preparation could only reuse, its file gone or no
 memory cap to rebuild it in, is refused rather than shipped. A lakehouse table's changes
 cannot be detected (the Data Input's Import picks them up), so its snapshot ships as last
-imported. The request input's sample, Load File nodes and model files
-are outside this rule.
+imported. A request input that is a Data Input is not shipped, but its first rows are the
+sample the schemas are inferred from, so resolution prepares its snapshot too, a missing one
+built and a stale one refreshed; a dry run on a clean checkout, as a CI job runs it, needs
+no `haute run` before it. Load File nodes and model files are outside this rule.
 `dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
 output's ancestry are pruned.
@@ -388,7 +394,12 @@ definition file's own preamble, would be refused like any other unbundled projec
   container can never serve batches under weaker guarantees than its manifest
   advertises.
   Generated images select the fixed application admission policy
-  `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`; `/health` reports
+  `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`, under which a request of several quotes
+  is given the fixed 4 GiB batch budget or, in a container with less usable memory, what
+  it can give (see [execution-engine](../execution-engine/high-level.md)), so a container
+  of 2 GiB answers a batch rather than refusing every one; its batch worker, like every
+  worker Haute spawns, runs a Polars pool of at least two threads, so a one-CPU container
+  answers it in seconds; `/health` reports
   `memory_enforcement="admission_rss_best_effort"` for in-process live scoring, plus
   `batch_memory_enforcement` (whether the batch worker's hard cap is `required` or
   `best_effort` on this host), the bundle's `execution_policy` record and its
@@ -492,9 +503,9 @@ never because it could not be reached.
   platform's compute pricing — and it lets the implemented container-platform targets
   share one build instead of requiring a bespoke packaging pipeline per platform.
   SageMaker and Azure ML (`sagemaker`, `azure-ml`) are named future targets only:
-  `haute init` does not offer them, and a `haute.toml` naming one is rejected by
-  `_validate_target` with `NotImplementedError` before resolution, which makes no promise
-  about their eventual packaging design. `haute init` labels Azure Container Apps, AWS
+  `haute init` does not offer them, and a `haute.toml` naming one is refused by
+  resolution's settings check (`check_deploy_settings`), a dry run included, which makes no
+  promise about their eventual packaging design. `haute init` labels Azure Container Apps, AWS
   ECS and GCP Cloud Run build and push only in its generated files and `--target` help,
   because their service update is not implemented. Databricks remains
   first-class for teams already on that platform, with a documented pandas bridge
@@ -594,6 +605,17 @@ most: a silent wrong answer here mis-prices real policies.
   alone, it is answered with every row it gives. A deployment answering a batch as one
   frame whose answer has another row count fails that request with both counts (HTTP 500
   `deploy_internal_error` from a container).
+- **Settings no deploy can use** are refused by resolution's first step
+  (`check_deploy_settings`), before the pipeline is parsed, so `haute deploy --dry-run`
+  refuses what a deploy would, exiting 1 and naming the setting: a target that is not one
+  (naming the targets) or is only planned, an empty model name (in `haute.toml`, or
+  `--model-name ""`, which is applied rather than replaced by the file's), a negative
+  `[safety.approval] min_approvers`, and the target's own settings: a container target's
+  unpinned `base_image` or a `port` outside 1 to 65535, and a Databricks
+  `serving_workload_size` other than `Small`, `Medium` or `Large`. A setting a CI job may
+  supply from its environment, such as a registry, is checked by the deploy that reads it.
+  A `haute.toml` naming a pipeline file that is not there, or a setting of the wrong
+  type, is one `Error:` line and a hint, never a traceback.
 - **Pre-deploy validation failures** (structural checks and test-quote
   scoring/expected-output mismatches) are all collected
   and raised together as a single `DeployError`
@@ -606,9 +628,18 @@ most: a silent wrong answer here mis-prices real policies.
   implementation defect remains diagnosable.
 - **Runtime request errors** in the generated container usually surface as structured JSON
   error envelopes: oversized bodies → 413, malformed `Content-Length` → 400, JSON syntax
-  errors → 422, admission/memory-limit rejection → 507, cancelled execution →
-  499, bounded-streaming-unsupported → 422, and other caught runtime failures → 500 with
-  `error_code: "deploy_internal_error"` for anything else. A 500 never carries the
+  errors → 422, a body that is neither a quote nor an array of quotes → 400
+  `quote_request_not_records`, admission/memory-limit rejection → 507, cancelled
+  execution → 499, bounded-streaming-unsupported → 422, and other caught runtime failures
+  → 500 with `error_code: "deploy_internal_error"` for anything else. Every 507 carries,
+  beside its `memory_limit` payload, a `message` naming in words the limit that refused or
+  stopped the request and the setting that changes it (for a batch,
+  `HAUTE_DEPLOY_BATCH_MEMORY_LIMIT_MB`, or the variable in force), and the service logs
+  it. An answer holding a NaN or an infinity, which JSON cannot carry (a division by a
+  zero exposure, say), is refused before any byte is encoded as 422 `output_not_finite`
+  naming the output column (a path into it when nested), the quote's index in the request
+  and the value, in the JSON and the NDJSON modes alike, and logged with the same; the
+  Databricks model's `predict` raises the same `NonFiniteOutputError`. A 500 never carries the
   exception's text, which can hold file paths and internal names: it gives a fixed message
   and the request's `request_id`, and the failure is logged via `logger.exception` with that
   id, so an operator finds the detail from the id a client reports. Every response carries
@@ -637,7 +668,14 @@ most: a silent wrong answer here mis-prices real policies.
   bundle, naming the node, the run and the folder.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite or missing values
-  (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`). A quote production prices
+  (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`). The outputs compared
+  are every numeric output production answers: one staging leaves out, answers null on
+  any quote, or answers as other than a number fails the command naming it, so a premium
+  staging lost is never left out of the report as an output it does not compare. The
+  quotes of an impact dataset are sent as the deployment writes JSON (`dataset_records`): a
+  date, a date-time or a time as its ISO text, as a served request takes one, whichever
+  transport sends them; a NaN or an infinity in the dataset, which no request carries, is
+  refused naming its column. A quote production prices
   at zero and staging does not has no percentage either, but it is an ordinary release event (a
   newly priced cover, a reversed decline), so it is reported, not refused (decided
   2 November 2026): counted as priced from zero beside each output's statistics and left out of

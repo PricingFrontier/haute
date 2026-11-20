@@ -196,8 +196,8 @@ packages in the component roadmaps.
 
 - **Containers.** The sweep was stopped part-way. The underwriter app's
   image and the deploy image for ten examples were built; only the deploy
-  image's answers under memory and CPU limits were run (`DPL-11`,
-  `DPL-12`).
+  image's answers under memory and CPU limits were run (their two findings
+  were fixed on 20 November 2026).
 - **Database servers under failure.** The sweep of amendment conflicts,
   failed migrations and dropped connections was stopped part-way; its
   findings are `WB-70` to `WB-74`, and what else it planned was not

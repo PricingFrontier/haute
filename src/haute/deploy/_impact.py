@@ -103,6 +103,29 @@ _QUOTE_ENVELOPE_REQUIRED_KEYS = frozenset(
 )
 
 
+def dataset_records(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    """An impact dataset's rows as the requests carry them: JSON values, written as the
+    deployment writes JSON (``response_json``), so a date or a time is its ISO text, the
+    form a served request takes one in, whichever transport sends them.
+
+    Raises:
+        ValueError: A NaN or an infinity, which no request can carry, naming its column.
+    """
+    import json
+
+    from haute.deploy._response_json import first_non_finite, response_json
+
+    found = first_non_finite(frame)
+    if found is not None:
+        row, column, value = found
+        raise ValueError(
+            f"The impact dataset's column {column!r} is {value} on row {row}, which no "
+            "request can carry: write it as null, or drop that row."
+        )
+    records: list[dict[str, Any]] = json.loads(response_json(frame.to_dicts()))
+    return records
+
+
 def _run_batched(
     records: list[dict],
     score_fn: Callable[[list[dict]], object],
@@ -474,6 +497,30 @@ def _segment_breakdown(
     return result
 
 
+def _compared_outputs(stg_df: pl.DataFrame, prd_df: pl.DataFrame) -> list[str]:
+    """The numeric outputs production answers, each of which staging must answer too.
+
+    An output staging leaves out, or answers with no number on any quote, is refused
+    naming it, as a missing value is (``_raise_for_non_finite_predictions``): a premium
+    staging lost is the change impact exists to catch, never one left out of the report.
+    An output staging adds is new, and has nothing to compare with.
+    """
+    compared = [c for c in prd_df.columns if column_kind(prd_df[c].dtype) in NUMBER_KINDS]
+    for name in compared:
+        if name not in stg_df.columns:
+            raise ValueError(
+                f"Cannot compute impact: staging predictions do not answer output {name!r}, "
+                "which production answers."
+            )
+        staging = stg_df[name]
+        if staging.dtype != pl.Null and column_kind(staging.dtype) not in NUMBER_KINDS:
+            raise ValueError(
+                f"Cannot compute impact: staging answers output {name!r} as "
+                f"{staging.dtype}, where production answers a number."
+            )
+    return compared
+
+
 def build_report(
     staging_preds: list,
     prod_preds: list,
@@ -504,11 +551,7 @@ def build_report(
     stg_df = _preds_to_df(staging_preds)
     prd_df = _preds_to_df(prod_preds)
 
-    num_cols = [
-        c
-        for c in stg_df.columns
-        if column_kind(stg_df[c].dtype) in NUMBER_KINDS and c in prd_df.columns
-    ]
+    num_cols = _compared_outputs(stg_df, prd_df)
 
     stats = [_column_stats(stg_df[c], prd_df[c], c) for c in num_cols]
 

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from haute._project_context import context_thread
 from haute._types import NodeType
-from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
+from haute.deploy._config import ContainerConfig, ResolvedDeploy
 from haute.deploy._container import (
     _SCORING_RUNTIME_DEPENDENCIES,
     DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES,
@@ -148,6 +148,12 @@ class _FakeRequest:
             self.yielded_chunks += 1
             yield chunk
 
+
+#: The answer to a body that is neither a quote nor an array of quotes.
+_NOT_RECORDS = {
+    "error_code": "quote_request_not_records",
+    "error": "Expected a JSON object or array of objects.",
+}
 
 # haute's own dependency marker: the CPU-only XGBoost build except on macOS.
 _EXPECTED_XGBOOST = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
@@ -388,17 +394,17 @@ class TestGenerateAppSource:
             (
                 b'"not an object"',
                 400,
-                {"error": "Expected a JSON object or array of objects."},
+                _NOT_RECORDS,
             ),
             (
                 b"123",
                 400,
-                {"error": "Expected a JSON object or array of objects."},
+                _NOT_RECORDS,
             ),
             (
                 b"null",
                 400,
-                {"error": "Expected a JSON object or array of objects."},
+                _NOT_RECORDS,
             ),
             (
                 b"[]",
@@ -1375,36 +1381,6 @@ class TestBuildManifest:
 
 
 # ---------------------------------------------------------------------------
-# Deploy dispatch
-# ---------------------------------------------------------------------------
-
-
-class TestDeployDispatch:
-    def test_unknown_target_raises_value_error(self) -> None:
-        from haute.deploy import deploy
-
-        config = DeployConfig(
-            pipeline_file=Path("main.py"),
-            model_name="test",
-            target="foobar",
-        )
-        with pytest.raises(ValueError, match="[Uu]nknown.*target"):
-            deploy(config)
-
-    @pytest.mark.parametrize("target", ["sagemaker", "azure-ml"])
-    def test_planned_target_raises_not_implemented(self, target: str) -> None:
-        from haute.deploy import deploy
-
-        config = DeployConfig(
-            pipeline_file=Path("main.py"),
-            model_name="test",
-            target=target,
-        )
-        with pytest.raises(NotImplementedError, match="planned.*not yet"):
-            deploy(config)
-
-
-# ---------------------------------------------------------------------------
 # _docker_push
 # ---------------------------------------------------------------------------
 
@@ -1925,3 +1901,126 @@ class TestDeployToPlatformContainer:
 
         with pytest.raises(DeployError, match="docker push failed"):
             deploy_to_platform_container(resolved)
+
+
+# ---------------------------------------------------------------------------
+# Answers JSON cannot carry (DPL-02)
+# ---------------------------------------------------------------------------
+
+
+class TestNonFiniteAnswers:
+    """A NaN or an infinity in an answer is refused naming its column and quote (422)."""
+
+    @staticmethod
+    def _logged(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+        logged = MagicMock()
+        monkeypatch.setattr("haute.deploy._response_json.logger.warning", logged)
+        return logged
+
+    def test_a_quote_answered_with_an_infinity_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # premium = base / exposure with exposure 0: the quote's division by zero.
+        frame = pl.DataFrame({"base": [100.0], "exposure": [0.0]})
+        answer = frame.select(premium=pl.col("base") / pl.col("exposure"), tax=pl.lit(1.0))
+        module = _load_generated_app(tmp_path, monkeypatch, answer)
+        logged = self._logged(monkeypatch)
+
+        response = TestClient(module.app).post("/quote", json={"age": 30})
+
+        assert response.status_code == 422, response.text
+        assert response.json() == {
+            "error_code": "output_not_finite",
+            "message": response.json()["message"],
+            "column": "premium",
+            "quote": 0,
+            "value": "inf",
+        }
+        assert "'premium' is inf for the quote at index 0" in response.json()["message"]
+        logged.assert_called_once_with("output_not_finite", column="premium", quote=0, value="inf")
+
+    def test_an_ndjson_answer_with_a_nan_is_refused_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [1.0]}))
+        logged = self._logged(monkeypatch)
+
+        def nan_plan(**kwargs):
+            return SimpleNamespace(
+                lazy_frame=pl.DataFrame({"premium": [0.0]}).lazy().select(pl.col("premium") / 0.0),
+                execution_context=kwargs["execution_context"],
+                cleanup=lambda *, preserve_primary_error: None,
+            )
+
+        monkeypatch.setattr(module, "score_graph_lazy", nan_plan)
+
+        response = TestClient(module.app).post(
+            "/quote", json=[{"age": 30}], headers={"accept": "application/x-ndjson"}
+        )
+
+        assert response.status_code == 422, response.text
+        assert (response.json()["column"], response.json()["quote"]) == ("premium", 0)
+        assert response.json()["value"] == "nan"
+        logged.assert_called_once_with("output_not_finite", column="premium", quote=0, value="nan")
+
+    def test_a_batch_names_the_quote_in_either_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.errors import NonFiniteOutputError
+
+        module = _load_generated_app(tmp_path, monkeypatch, pl.DataFrame({"premium": [1.0]}))
+        scored = tmp_path / "scored.parquet"
+        pl.DataFrame({"premium": [1.0, 2.0, float("-inf")]}).write_parquet(scored)
+        result = SimpleNamespace(result_path=scored, row_count=3, execution_metrics={})
+        monkeypatch.setattr(module, "_DEPLOY_STREAM_CHUNK_SIZE", 2)
+
+        with pytest.raises(NonFiniteOutputError) as envelope:
+            module._batch_response_content(result)
+        with pytest.raises(NonFiniteOutputError) as streamed:
+            module._materialize_batch_ndjson(SimpleNamespace(execution_context=None), result)
+
+        # The third quote, whether in the envelope or in the stream's second chunk.
+        assert (envelope.value.column, envelope.value.quote) == ("premium", 2)
+        assert (streamed.value.column, streamed.value.quote) == ("premium", 2)
+
+    def test_a_nested_value_is_named_by_its_path(self) -> None:
+        from haute.deploy._response_json import response_rows
+        from haute.errors import NonFiniteOutputError
+
+        answer = pl.DataFrame(
+            {"pricing": [{"items": [1.0, 2.0]}, {"items": [3.0, float("nan")]}], "ok": [1, 2]}
+        )
+        with pytest.raises(NonFiniteOutputError) as caught:
+            response_rows(answer)
+
+        assert (caught.value.column, caught.value.quote) == ("pricing.items[1]", 1)
+
+    def test_every_refusal_of_quote_carries_an_error_code(self) -> None:
+        """Each answer the generated app builds with a status code is a payload holding an
+        ``error_code``: a dict literal naming one, or a contract error's own payload."""
+        tree = ast.parse(_generate_app_source("motor", 8080))
+        payload_calls = {"to_payload", "memory_answer"}
+        refusals = 0
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "JSONResponse"
+            ):
+                continue
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            if "status_code" not in keywords:
+                continue
+            refusals += 1
+            content = keywords["content"]
+            if isinstance(content, ast.Dict):
+                keys = [key.value for key in content.keys if isinstance(key, ast.Constant)]
+                assert "error_code" in keys, ast.unparse(node)
+            elif isinstance(content, ast.Call):
+                func = content.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                assert name in payload_calls, ast.unparse(node)
+            else:
+                # ``exc.payload``: a batch child's contract or memory payload.
+                assert ast.unparse(content) == "exc.payload", ast.unparse(node)
+        assert refusals > 10

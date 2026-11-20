@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import json
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -611,3 +613,123 @@ class TestImpactDatabricksProdScoring:
         assert prod == prod_preds
         # Both staging and production were scored.
         assert mock_score.call_count == 2
+
+
+class TestImpactAgainstStandInEndpoints:
+    """``haute impact`` against two live stand-in endpoints, nothing of its own patched
+    but the release record (DPL-06, DPL-07)."""
+
+    @staticmethod
+    def _serve(
+        answer: Callable[[dict[str, Any]], dict[str, Any]], received: list[Any]
+    ) -> Iterator[str]:
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - the handler's own name
+                quotes = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                received.extend(quotes)
+                body = json.dumps(
+                    {
+                        "rows": [answer(quote) for quote in quotes],
+                        "row_count": len(quotes),
+                        "returned_rows": len(quotes),
+                        "truncated": False,
+                        "limit": 1000,
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: Any) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def _run(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        staging: Callable[[dict[str, Any]], dict[str, Any]],
+        dataset: pl.DataFrame,
+        received: list[Any],
+    ) -> Any:
+        def production(quote: dict[str, Any]) -> dict[str, Any]:
+            return {"premium": 100.0 + quote["VehPower"], "tax": 12.0}
+
+        staged = contextlib.contextmanager(self._serve)(staging, received)
+        produced = contextlib.contextmanager(self._serve)(production, [])
+        with staged as staging_url, produced as prod_url:
+            _setup_impact_project(
+                tmp_path,
+                monkeypatch,
+                target="container",
+                staging_url=staging_url,
+                prod_url=prod_url,
+            )
+            dataset.write_parquet(tmp_path / "data" / "impact.parquet")
+            with patch("haute.cli._impact._production_released", return_value=True):
+                return runner.invoke(cli, ["impact"])
+
+    @pytest.mark.parametrize(
+        "staging",
+        [
+            lambda quote: {"premium": None, "tax": 12.0},
+            lambda quote: {"tax": 12.0},
+        ],
+        ids=["null-premium", "no-premium"],
+    )
+    def test_a_premium_staging_no_longer_answers_fails_naming_it(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        staging: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> None:
+        dataset = pl.DataFrame({"VehPower": [5, 6, 7], "Area": ["A", "B", "C"]})
+
+        result = self._run(runner, tmp_path, monkeypatch, staging, dataset, [])
+
+        assert result.exit_code == 1, result.output
+        assert "'premium'" in result.output
+        assert "Traceback" not in result.output
+        assert not (tmp_path / "impact_report.md").exists()
+
+    def test_a_nested_nan_in_the_dataset_is_refused_naming_its_column(self) -> None:
+        from haute.deploy._impact import dataset_records
+
+        dataset = pl.DataFrame(
+            {"VehPower": [5, 6], "cover": [{"limit": 1.0}, {"limit": float("nan")}]}
+        )
+
+        with pytest.raises(ValueError, match=r"column 'cover\.limit' is nan on row 1"):
+            dataset_records(dataset)
+
+    def test_a_date_column_is_sent_as_its_iso_text(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import datetime as dt
+
+        dataset = pl.DataFrame({"VehPower": [5], "Area": ["A"], "start": [dt.date(2026, 11, 1)]})
+        received: list[Any] = []
+
+        def staging(quote: dict[str, Any]) -> dict[str, Any]:
+            return {"premium": 110.0 + quote["VehPower"], "tax": 12.0}
+
+        result = self._run(runner, tmp_path, monkeypatch, staging, dataset, received)
+
+        assert result.exit_code == 0, result.output
+        assert received == [{"VehPower": 5, "Area": "A", "start": "2026-11-01"}]
+        assert (tmp_path / "impact_report.md").exists()

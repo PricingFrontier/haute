@@ -30,6 +30,7 @@ from haute.deploy._config import (
 )
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS
 from haute.deploy._request_frame import RequestReader
+from haute.deploy._response_json import served_temporal
 from haute.deploy._scorer import reads_one_quote_per_request, score_graph
 from haute.errors import QuoteInputError
 
@@ -196,7 +197,11 @@ def _numeric_comparison(actual: Any, expected: Any, tolerance_pct: float) -> _Nu
 
 
 def _expected_value_matches(actual: Any, expected: Any, tolerance_pct: float) -> bool:
-    """Whether one value matches: a number within the tolerance, a boolean a boolean."""
+    """Whether one leaf matches: a number within the tolerance, a boolean a boolean.
+
+    The walks above it pass each leaf as the response serves it (``served_temporal``),
+    so a date is compared by the text a test quote and an accepted response hold.
+    """
     if _is_numeric(actual) and _is_numeric(expected):
         return _numeric_comparison(actual, expected, tolerance_pct).matched
     if isinstance(actual, bool) or isinstance(expected, bool):
@@ -244,6 +249,7 @@ def _first_mismatch(actual: Any, expected: Any, tolerance_pct: float) -> _Mismat
             if found is not None:
                 return _Mismatch(f"[{index}]{found.path}", found.actual, found.expected)
         return None
+    actual, expected = served_temporal(actual), served_temporal(expected)
     if _expected_value_matches(actual, expected, tolerance_pct):
         return None
     return _Mismatch("", actual, expected)
@@ -304,6 +310,7 @@ def _walk_changes(
             for index, item in enumerate(priced[len(accepted) :], start=len(accepted))
         )
         return
+    priced, accepted = served_temporal(priced), served_temporal(accepted)
     if not _expected_value_matches(priced, accepted, tolerance_pct):
         changes.append(ResponseChange(path, "changed", accepted, priced))
 

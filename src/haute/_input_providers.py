@@ -528,9 +528,14 @@ def resolve_data_input_from_config(
     paths are selected relative to that root. Resolve a configured path once
     before handing it to the direct/snapshot provider so standalone generated
     code uses the same anchor as canvas execution.
+
+    A standalone run executes outside the graph executor, so it prepares the
+    input's snapshot itself first, as an execution does: a clean checkout holds
+    none, and a run from it reads what a preview or ``haute run`` would.
     """
     from haute._config_io import load_node_config
-    from haute._types import NodeType
+    from haute._input_preparation import prepare_snapshots_before_reading
+    from haute._types import GraphNode, NodeData, NodeType
 
     base = _base_path(base_dir)
     config = load_node_config(config_path, base_dir=base, node_type=NodeType.DATA_INPUT)
@@ -542,6 +547,12 @@ def resolve_data_input_from_config(
         config["path"] = str(
             resolve_node_input_path(configured_path, pipeline_dir=base, project_root=project_root)
         )
+    node = GraphNode(
+        id=Path(config_path).stem, data=NodeData(nodeType=NodeType.DATA_INPUT, config=config)
+    )
+    prepare_snapshots_before_reading(
+        {node.id: node}, operation="standalone_input_snapshot", base_dir=base
+    )
     return resolve_data_input(config, base_dir=base, profile=profile)
 
 
