@@ -6,9 +6,12 @@ import { expect, test, type Page } from "@playwright/test"
 import { dispatchAppShortcut } from "./browserInteractions"
 import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
-// A save writes a stepped node's code from its steps only when they were edited (CGEN-11):
-// a list the browser held has lost what JavaScript cannot hold, `1.0` arriving as `1`.
+// A save reads from the browser only the parts of a node that were edited (CGEN-11, CGEN-13):
+// a step list or a setting the browser held has lost what JavaScript cannot hold, `1.0`
+// arriving as `1`.
 const mainPath = resolve(e2eProjectRoot, "rating", "main.py")
+// A Rating Step's settings file, whose default is written `1.0`.
+const ratingPath = resolve(e2eProjectRoot, "rating", "config", "rating_step", "browser_rating.json")
 
 const HAND_WRITTEN = `
 
@@ -28,6 +31,7 @@ def rated_rows(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
 `
 
 const read = () => readFileSync(mainPath, "utf8")
+const readRating = () => readFileSync(ratingPath, "utf8")
 
 /** The text of the node function *name* in *source*, up to the next decorator. */
 function nodeFunction(source: string, name: string): string {
@@ -83,13 +87,13 @@ async function addLimit(page: Page, n: number): Promise<void> {
 
 test.describe.configure({ mode: "serial" })
 
-test.describe("A save writes only the steps that were edited", () => {
+test.describe("A save writes only the parts that were edited", () => {
   test.beforeEach(() => {
     resetE2eProject()
     writeFileSync(mainPath, read().trimEnd() + "\n" + HAND_WRITTEN, "utf8")
   })
 
-  test("keeps hand-written code nobody edited through saves, Undo, Redo and a late rendering", async ({ page }) => {
+  test("keeps hand-written code and settings nobody edited through saves, Undo, Redo and a late rendering", async ({ page }) => {
     test.slow()
     await openApp(page)
 
@@ -99,8 +103,12 @@ test.describe("A save writes only the steps that were edited", () => {
     const handWritten = nodeFunction(first, "hand_written")
     expect(handWritten).toContain('pl.lit(1.0).alias("relativity")')
     expect(handWritten).toContain('pl.col("value") == 9007199254740993')
+    // A setting nobody edited keeps its spelling too.
+    const rating = readRating()
+    expect(rating).toContain('"default_value": 1.0')
     await save(page)
     expect(read()).toBe(first)
+    expect(readRating()).toBe(rating)
 
     // Opening a panel on steps nobody edited edits nothing.
     const opened = await openNode(page, "hand_written")
@@ -161,5 +169,6 @@ test.describe("A save writes only the steps that were edited", () => {
     expect(read()).toBe(rendered)
     await page.unroute("**/api/pipeline/polars-steps/render")
     expect(nodeFunction(read(), "hand_written")).toBe(handWritten)
+    expect(readRating()).toBe(rating)
   })
 })

@@ -58,12 +58,16 @@ export type LoadAvailability = "ready" | "unavailable" | "blocked"
  */
 /**
  * What the server knows about a node for its editor (`NodeData.editor`), carried
- * beside the config and never in it: the steps' render error, and why the parse
- * discarded a stepped node's steps.
+ * beside the config and never in it: the steps' render error, why the parse
+ * discarded a stepped node's steps, and, on the saved baseline's nodes only, the
+ * saved form of each of the node's parts (`utils/documentRequest.ts`, CGEN-13).
  */
 export interface NodeEditorState {
   steps_error: string | null
   steps_discarded: string | null
+  saved_code?: string
+  saved_steps?: string
+  saved_settings?: string
 }
 
 export interface HauteNodeData extends Record<string, unknown> {

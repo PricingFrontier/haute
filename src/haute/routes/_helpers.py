@@ -728,11 +728,11 @@ def _sidecar_position_key(node: GraphNode) -> str:
     return _sanitize_func_name(node.data.label)
 
 
-def _unfinished_steps(
+def unfinished_nodes(
     graph: PipelineGraph, port_inputs: Mapping[str, Sequence[str]] | None = None
 ) -> dict[str, list[dict[str, Any]]]:
     """Each stepped node's step list that its save writes as the raising placeholder, by
-    position key (READ-22, READ-44; :func:`unfinished_step_list`). A node's inputs are its
+    node id (READ-22, READ-44; :func:`unfinished_step_list`). A node's inputs are its
     incoming edges' names, and in a submodel module the public ports that reach it,
     *port_inputs* by node, which its function names after each port."""
     from haute._graph_utils import edge_input_name
@@ -750,8 +750,16 @@ def _unfinished_steps(
         ]
         steps = unfinished_step_list(node, names)
         if steps is not None:
-            held[_sidecar_position_key(node)] = steps
-    return dict(sorted(held.items()))
+            held[node.id] = steps
+    return held
+
+
+def _unfinished_steps(
+    graph: PipelineGraph, port_inputs: Mapping[str, Sequence[str]] | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """:func:`unfinished_nodes` by the position key the sidecar records each under."""
+    held = unfinished_nodes(graph, port_inputs)
+    return dict(sorted((_sidecar_position_key(graph.node_map[i]), s) for i, s in held.items()))
 
 
 def save_sidecar(

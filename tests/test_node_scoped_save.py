@@ -61,6 +61,8 @@ def _recover(root: Path, authored_id: str) -> None:
 
 
 def _save_request(root: Path, authored_id: str, config: dict, *, steps_edited: bool = False):
+    """The node save of *config*: unless *steps_edited*, sent with the code the document saved
+    for its steps, as the editor sends a node whose steps are as saved (CGEN-11)."""
     from haute.schemas import PipelineNodeSaveRequest
 
     document = load_pipeline_editor_document(root / "main.py", project_root=root)
@@ -71,7 +73,8 @@ def _save_request(root: Path, authored_id: str, config: dict, *, steps_edited: b
         target_source_file=target.source_file,
         target_recovery_id=target.recovery_id,
         config=config,
-        steps_edited=steps_edited,
+        saved_code=None if steps_edited else target.editor.saved_code,
+        saved_steps=None if steps_edited else target.editor.saved_steps,
     )
 
 

@@ -225,13 +225,16 @@ def test_parse_keeps_the_steps_of_a_hand_edited_body(tmp_path: Path) -> None:
     # PCFG-R08: the editor state travels beside the config, which holds no editor key.
     assert not any(key.startswith("_") for key in node.data.config)
 
+    from haute._edited_parts import settings_text
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     (tmp_path / "haute.toml").write_text('[project]\nname = "main"\n', encoding="utf-8")
     (tmp_path / "main.py").write_text(edited, encoding="utf-8")
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
     shown = next(item for item in document.nodes if item.authored_id == "t")
-    assert shown.editor == node.data.editor
+    # The document's node also gives the saved form of each of its parts (CGEN-13).
+    saved = {"saved_code": node.data.config["code"], "saved_settings": settings_text(shown.config)}
+    assert shown.editor == node.data.editor.model_copy(update=saved)
     assert not any(key.startswith("_") for key in shown.config or {})
 
 
@@ -723,7 +726,6 @@ def test_node_scoped_save_updates_the_transform_s_code(tmp_path: Path) -> None:
         target_source_file=target.source_file,
         target_recovery_id=target.recovery_id,
         config={**target.config, "steps": new_steps},
-        steps_edited=True,
     )
     apply_scoped_node_save(project_root=tmp_path, request=request)
 

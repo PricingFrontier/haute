@@ -642,7 +642,7 @@ successful render the node's `code` is brought up to date so read-only views sta
 current: the rendered code once the steps differ from the saved baseline's, and the code
 the baseline saved for them while they are its steps, so opening a panel on steps nobody
 edited writes nothing a browser lost into the code ([codegen](../codegen/high-level.md),
-"Which steps a write renders"). This generated cache update creates no undo entry, preserves redo, does
+"Which parts a request reads"). This generated cache update creates no undo entry, preserves redo, does
 not dirty the document, and does not invalidate execution previews. Authored step
 changes still invalidate execution previews. One step edit is one undo action. Undo/redo re-renders the
 restored steps, and an obsolete render must not replace their code. As soon as the

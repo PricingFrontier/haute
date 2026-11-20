@@ -1917,9 +1917,9 @@ class TestKeywordOnlyParametersAtSave:
         from tests.conftest import current_source_revision
 
         use_project(tmp_path)
+        # Sent with no saved forms, as a node the editor's baseline does not hold: its steps
+        # are its program when it has them (CGEN-11).
         config = {"code": "df = source", "keyword_parameters": parameters, **extra}
-        # Steps are the node's program only when the save names them as edited (CGEN-11).
-        edited = [{"submodel": None, "node_id": "scaled"}] if "steps" in extra else []
         response = client.post(
             "/api/pipeline/save",
             json={
@@ -1928,7 +1928,6 @@ class TestKeywordOnlyParametersAtSave:
                 "graph": _transform_graph(config),
                 "source_file": "main.py",
                 "base_revision": current_source_revision(tmp_path / "main.py", tmp_path),
-                "edited_steps": edited,
             },
         )
         assert response.status_code == 400, response.text

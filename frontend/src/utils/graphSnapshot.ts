@@ -51,7 +51,6 @@ const LIVE_HISTORY_EDGE_IDENTITY_FIELDS = new Set(["_inputName"])
 const NO_RETAINED_METADATA = new Set<string>()
 /** A request carries the server's editor state back, so a transform of the graph echoes it. */
 const REQUEST_NODE_METADATA_FIELDS = new Set(["editor"])
-
 function stripNodeUiFields(n: Node, forFingerprint = false): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
@@ -240,6 +239,8 @@ function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T 
  * Clone a live editor graph into the strict canonical payload accepted by
  * backend graph schemas. Presentation fields and server-owned editor identity
  * metadata are removed recursively from root and embedded definition graphs.
+ * A request builds its graph with `utils/documentRequest.documentRequestGraph`,
+ * which gives each node exactly the saved forms its baseline holds for it.
  */
 export function toCanonicalGraphPayload(input: {
   nodes: readonly Node[]

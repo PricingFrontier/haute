@@ -4,7 +4,7 @@
   "pipeline_name": "pricing",
   "source_revision": "revision-save-1",
   "document_fingerprint": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
-  "step_code": [],
+  "saved_parts": [],
   "warnings": [
     "renamed duplicate node"
   ],
