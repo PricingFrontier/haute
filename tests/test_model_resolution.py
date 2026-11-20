@@ -1095,6 +1095,7 @@ def _artifact_listings(path: Path) -> list[tuple[str, int]]:
     return found
 
 
+@pytest.mark.meta
 def test_only_the_model_resolution_lists_a_runs_artifacts() -> None:
     outside = [
         f"{path.relative_to(_SRC).as_posix()}:{line} in {function}"
