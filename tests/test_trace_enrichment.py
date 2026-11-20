@@ -2711,6 +2711,24 @@ class TestEnrichBandingRealConfig:
         assert result["factors"][0]["rule_index"] == 0
         assert result["factors"][1]["status"] == "no_match"
 
+    def test_a_categorical_factor_without_its_columns_type_reports_an_error(self):
+        """No typed key without the column's type: the detail says so, never guesses."""
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "vehicle_type",
+                    "output_column": "vehicle_band",
+                    "banding": "categorical",
+                    "rules": [{"value": "suv", "assignment": "B"}],
+                }
+            ]
+        }
+        result = enrich_banding(config, {"vehicle_type": "suv"}, {"vehicle_band": "B"})
+
+        assert "without its originating dtype" in result["error"]
+
     def test_categorical_banding_default(self):
         """Categorical banding falls to default when no rule matches."""
         from haute._trace_enrichment import enrich_banding

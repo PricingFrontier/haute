@@ -299,3 +299,11 @@ def test_date_breakpoints_claim_the_rows_execution_bands() -> None:
     values = [date(2024, 1, 15), date(2024, 2, 1), date(2024, 5, 1), None]
     # Counts line up with the rules as written, not with the sorted intervals.
     assert _claims(values, pl.Date, "breakpoints", rules) == ([1, 1, 1], 1)
+
+
+def test_a_categorical_claim_on_a_column_missing_from_the_frame_is_refused() -> None:
+    from haute.errors import SchemaMismatchError
+
+    rules = [{"value": "a", "assignment": "A"}]
+    with pytest.raises(SchemaMismatchError, match="the column is not in the node's input"):
+        banding_rule_claim_expr(pl.col("x"), None, "categorical", rules, output_column="b")

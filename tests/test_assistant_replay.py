@@ -245,7 +245,7 @@ async def test_a_data_question_is_answered_from_one_check_in_the_preview_worker(
 
 #: Each seeded recovery case's bug, as the data check reports it: (kind, node).
 SEEDED_BUGS = {
-    "recovery_boolean_banding": ("banding_all_default", "claims_band"),
+    "recovery_banding_casing": ("banding_all_default", "cover_band"),
     "recovery_emptied_filter": ("rows_emptied", "north_south_quotes"),
     "recovery_mistyped_join_key": ("join_unmatched", "vehicle_rated_quotes"),
     "recovery_rating_casing": ("rating_misses", "region_rating"),

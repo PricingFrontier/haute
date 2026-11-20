@@ -20,6 +20,7 @@ from haute._banding_config import (
     _validate_map_value,
     compact_banding_config_for_sidecar,
     normalise_banding_factors,
+    normalise_banding_rules,
 )
 from haute._rating import (
     _apply_banding,
@@ -2093,3 +2094,43 @@ def test_a_numeric_rule_value_bands_the_same_after_a_save(
     after = apply_banding_from_config(frame, {"factors": reloaded}).collect()
     assert after["x_band"].to_list() == before["x_band"].to_list()
     assert before["x_band"].to_list()[:2] == ["r0", "r1"]
+
+
+def test_a_banding_factor_whose_column_is_missing_is_refused_naming_it() -> None:
+    from haute.errors import SchemaMismatchError
+
+    for factor in (
+        {
+            "banding": "categorical",
+            "column": "x",
+            "output_column": "b",
+            "rules": [{"value": "a", "assignment": "A"}],
+        },
+        {
+            "banding": "breakpoints",
+            "column": "x",
+            "output_column": "b",
+            "rules": [{"boundary": "1", "label": "low"}],
+        },
+    ):
+        with pytest.raises(SchemaMismatchError, match="'b' of column 'x': the column is not in"):
+            apply_banding_from_config(pl.LazyFrame({"y": [1]}), {"factors": [factor]})
+
+
+def test_a_categorical_banding_of_a_nested_column_is_refused() -> None:
+    factor = {
+        "banding": "categorical",
+        "column": "tags",
+        "output_column": "b",
+        "rules": [{"value": "a", "assignment": "A"}],
+    }
+    frame = pl.LazyFrame({"tags": [["a"]]})
+    with pytest.raises(ConfigSettingError, match="whose values cannot be matched"):
+        apply_banding_from_config(frame, {"factors": [factor]})
+
+
+def test_a_rule_row_that_is_not_an_object_is_refused() -> None:
+    with pytest.raises(
+        ConfigSettingError, match=re.escape("categorical rules[1] must be an object")
+    ):
+        normalise_banding_rules("categorical", [{"value": "a", "assignment": "A"}, "b"])

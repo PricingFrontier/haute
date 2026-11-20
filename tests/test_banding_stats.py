@@ -636,6 +636,17 @@ def test_a_numeric_mode_on_a_column_it_cannot_compare_is_unprocessable(
     assert "cannot compare" in response.json()["detail"]
 
 
+def test_categorical_values_of_a_nested_column_are_unprocessable(
+    client: TestClient, project: Path
+) -> None:
+    _write_source(project, pl.DataFrame({"premium": [["a"], ["b"]]}))
+    graph = _graph(project, [_factor(banding="categorical")])
+
+    response = _stats_response(client, graph, _factor(banding="categorical"))
+
+    assert response.status_code == 422
+
+
 def test_a_date_column_is_measured_in_days_since_1970(client: TestClient, project: Path) -> None:
     from datetime import date
 

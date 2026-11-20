@@ -31,7 +31,13 @@ from haute._banding_config import (
     require_distinct_banding_outputs,
 )
 from haute._logging import get_logger
-from haute._polars_dtypes import DATE_KINDS, column_kind, dtype_to_spec, parse_dtype
+from haute._polars_dtypes import (
+    DATE_KINDS,
+    ColumnKind,
+    column_kind,
+    dtype_to_spec,
+    parse_dtype,
+)
 from haute._rating_step_config import (
     normalise_rating_tables,
     rating_default_value,
@@ -322,8 +328,6 @@ def banding_categorical_claims(
         for index, rule in enumerate(rules)
         if rule.get("value") not in (None, "") and rule.get("assignment") not in (None, "")
     ]
-    if not rules:
-        return {}
     if not usable:
         raise ConfigSettingError(
             _no_usable_rule_message(output_column, "categorical"), setting="factors"
@@ -995,9 +999,15 @@ _INT128_MAX_EXCL = 2**127
 _MISFIT_DISPLAY_CAP = 3
 
 
+#: The kinds whose values are written as text naming a time, never as a number.
+_TIME_KINDS: frozenset[ColumnKind] = DATE_KINDS | {"time", "duration"}
+#: The kinds :func:`rating_key_of` keys by more than their plain text.
+_FORMATTED_KEY_KINDS: frozenset[ColumnKind] = frozenset({"float", "time", "duration"})
+
+
 def _is_time_kind(dtype: pl.DataType) -> bool:
     """A Date, Datetime, Time or Duration: a value written as text, never as a number."""
-    return dtype in (pl.Date, pl.Time) or isinstance(dtype, pl.Datetime | pl.Duration)
+    return column_kind(dtype) in _TIME_KINDS
 
 
 def _parsed_text(
@@ -1075,8 +1085,6 @@ def _coerce_levels(levels: pl.Series, dtype: pl.DataType) -> tuple[pl.Series, pl
     source = levels.dtype
     if dtype == pl.Null:
         return pl.Series(levels.name, [None] * len(levels), dtype=pl.Null), None
-    if source == pl.Null:
-        return levels.cast(dtype), None
     if isinstance(dtype, pl.Duration) and source == pl.String:
         return _duration_key_series(levels.name, levels, dtype), None
     numeric_source = source.is_numeric() or source == pl.Boolean
@@ -1230,9 +1238,7 @@ def normalise_rating_key(
 
 def _key_is_text(dtype: pl.DataType) -> bool:
     """Whether a column of *dtype* is keyed by its plain text (:func:`rating_key_of`)."""
-    return column_kind(dtype) != "float" and not (
-        dtype == pl.Time or isinstance(dtype, pl.Duration)
-    )
+    return column_kind(dtype) not in _FORMATTED_KEY_KINDS
 
 
 def rating_key_of(col: pl.Expr, dtype: pl.DataType) -> pl.Expr:
@@ -1487,10 +1493,8 @@ def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTable
     if _rating_table_gap(table) is not None:
         return None
 
-    entry_cols: set[str] = set()
-    for entry in entries:
-        if isinstance(entry, dict):
-            entry_cols.update(entry.keys())
+    # The config codec holds every entry to an object; a raw table's is read as one.
+    entry_cols: set[str] = set().union(*entries)
     if entries and "value" not in entry_cols:
         raise ConfigSettingError(
             f"Rating table {table_label!r} has entries with no rate ('value')", setting="tables"

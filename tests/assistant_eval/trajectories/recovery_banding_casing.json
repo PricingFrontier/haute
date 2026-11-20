@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "id": "recovery_boolean_banding",
-  "case": "recovery_boolean_banding",
+  "id": "recovery_banding_casing",
+  "case": "recovery_banding_casing",
   "turns": [
     {
       "rounds": [
@@ -29,26 +29,26 @@
               "id": "seeded",
               "tool": "dry_run_graph_edits",
               "arguments": {
-                "summary": "Band has_prior_claim into claimant and clean in claims_band.",
+                "summary": "Band cover_type into full and partial in cover_band.",
                 "ops": [
                   {
                     "op": "add_node",
                     "node_type": "banding",
-                    "name": "claims_band",
+                    "name": "cover_band",
                     "config": {
                       "factors": [
                         {
                           "banding": "categorical",
-                          "column": "has_prior_claim",
-                          "output_column": "claims_group",
+                          "column": "cover_type",
+                          "output_column": "cover_group",
                           "rules": [
                             {
-                              "value": "True",
-                              "assignment": "claimant"
+                              "value": "Comp",
+                              "assignment": "full"
                             },
                             {
-                              "value": "False",
-                              "assignment": "clean"
+                              "value": "TPFT",
+                              "assignment": "partial"
                             }
                           ],
                           "default": null
@@ -59,7 +59,7 @@
                   {
                     "op": "add_edge",
                     "source": "quotes",
-                    "target": "claims_band"
+                    "target": "cover_band"
                   }
                 ]
               },
@@ -70,32 +70,32 @@
           ]
         },
         {
-          "text": "The data check puts every quote in claims_band's default band: a Boolean column's text is true or false, so the rules match those values.",
+          "text": "The data check puts every quote in cover_band's default band: cover_type's values are written comp and tpft, in lower case, so the rules match those values.",
           "calls": [
             {
               "id": "corrected",
               "tool": "dry_run_graph_edits",
               "arguments": {
-                "summary": "Band has_prior_claim into claimant and clean in claims_band.",
+                "summary": "Band cover_type into full and partial in cover_band.",
                 "ops": [
                   {
                     "op": "add_node",
                     "node_type": "banding",
-                    "name": "claims_band",
+                    "name": "cover_band",
                     "config": {
                       "factors": [
                         {
                           "banding": "categorical",
-                          "column": "has_prior_claim",
-                          "output_column": "claims_group",
+                          "column": "cover_type",
+                          "output_column": "cover_group",
                           "rules": [
                             {
-                              "value": "true",
-                              "assignment": "claimant"
+                              "value": "comp",
+                              "assignment": "full"
                             },
                             {
-                              "value": "false",
-                              "assignment": "clean"
+                              "value": "tpft",
+                              "assignment": "partial"
                             }
                           ],
                           "default": null
@@ -106,7 +106,7 @@
                   {
                     "op": "add_edge",
                     "source": "quotes",
-                    "target": "claims_band"
+                    "target": "cover_band"
                   }
                 ]
               },
@@ -134,7 +134,7 @@
           ]
         },
         {
-          "text": "Saved claims_band: quotes with a prior claim are claimant and the rest clean.",
+          "text": "Saved cover_band: comp quotes are full and tpft quotes partial.",
           "calls": []
         }
       ]

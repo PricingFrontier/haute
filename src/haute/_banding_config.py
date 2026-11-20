@@ -129,7 +129,9 @@ def normalise_banding_rules(
     subject = _banding_subject(output_column)
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
-            continue
+            raise ConfigSettingError(
+                f"{banding_type} rules[{index}] must be an object", setting="factors"
+            )
         for field, kind in (("label", "band"), ("assignment", "rule")):
             if field in row:
                 band_name(row[field], what=f"{kind} {index + 1} of {subject}")
