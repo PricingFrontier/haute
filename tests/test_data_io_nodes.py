@@ -983,6 +983,51 @@ class TestExecuteSinkDataOutput:
         # round-trip suite; this asserts the node-level path preserves values).
         assert_frame_equal(read_back, struct_frame)
 
+    def test_a_write_removes_the_staged_copies_an_earlier_write_cut_short_left(
+        self, haute_scratch: Path, struct_frame: pl.DataFrame
+    ) -> None:
+        """SRV-05: a Write killed as it published its file left its staged copy beside the
+        output; the next Write to that destination removes it. A copy newer than this
+        process's start is a live Write's and stays, as does another destination's."""
+        import os
+
+        from haute import _file_ops
+
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        outputs = haute_scratch / "outputs"
+        outputs.mkdir()
+        before_start = _file_ops.PROCESS_STARTED - 60
+        left = outputs / f".result.haute-stage-{'a' * 32}.parquet"
+        other = outputs / f".other.haute-stage-{'c' * 32}.parquet"
+        for leftover in (left, other):
+            leftover.write_bytes(b"a cut-short Write's copy")
+            os.utime(leftover, (before_start, before_start))
+        live = outputs / f".result.haute-stage-{'b' * 32}.parquet"
+        live.write_bytes(b"a live Write's copy")
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din", {"input_type": "file", "format": "parquet", "path": str(src_path)}
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "output_type": "file",
+                        "format": "parquet",
+                        "path": str(outputs / "result.parquet"),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        write_data_output(graph, "dout")
+
+        assert sorted(path.name for path in outputs.iterdir()) == sorted(
+            ["result.parquet", live.name, other.name]
+        )
+
     def test_eager_write_format_reports_row_count(self, haute_scratch, struct_frame) -> None:
         src_path = haute_scratch / "in.parquet"
         struct_frame.write_parquet(src_path)
@@ -2961,3 +3006,36 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
     if expected_status == 500:
         assert_unnamed(response.json()["detail"])
         assert "private" not in response.text
+
+
+def test_the_write_route_removes_the_staged_copies_an_earlier_write_left(
+    client, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SRV-05: the route's Write removes its destination's leftover staged copies before it
+    stages its own, whatever then becomes of it."""
+    import os
+
+    import haute.routes.pipeline as pipeline_route
+    from haute import _file_ops
+    use_project(haute_scratch)
+    # A bare file name is written under outputs/.
+    (haute_scratch / "outputs").mkdir()
+    left = haute_scratch / "outputs" / f".sink_failure.haute-stage-{'a' * 32}.parquet"
+    left.write_bytes(b"a cut-short Write's copy")
+    before_start = _file_ops.PROCESS_STARTED - 60
+    os.utime(left, (before_start, before_start))
+
+    def _stop(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("stopped after the cleanup")
+
+    monkeypatch.setattr(pipeline_route, "open_seed_plan", _stop)
+    response = client.post(
+        "/api/pipeline/write-output",
+        json={
+            "graph": _sink_route_graph().model_dump(),
+            "target": {"occurrence": None, "node_id": "sink"},
+        },
+    )
+
+    assert response.status_code == 500, response.text
+    assert not left.exists()

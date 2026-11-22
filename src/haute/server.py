@@ -35,6 +35,7 @@ from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_
 from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._failure_answers import answer_failure
+from haute._file_ops import remove_files_left_before_start, staging_files_under
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
@@ -470,6 +471,16 @@ def _settle_saves() -> None:
         logger.error("save_records_unsettled_at_startup", error=str(exc), exc_info=True)
 
 
+def _remove_leftover_staging() -> None:
+    """Remove the atomic writer's staging files under the project's ``.haute`` folder that a
+    process gone before this one started left: a settings write, an undelete or a
+    branch-away killed at its rename leaves one, which nothing else would remove. One that
+    cannot be removed is logged, and tried again at the next start."""
+    leftovers = staging_files_under(current_project().root / ".haute")
+    for path, exc in remove_files_left_before_start(leftovers):
+        logger.warning("leftover_staging_not_removed", file=str(path), error=str(exc))
+
+
 def _follow_pipeline_settings_chunk_rows() -> None:
     """Apply the settings' chunk rows now and follow the file's changes.
 
@@ -501,6 +512,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
     _settle_saves()
+    _remove_leftover_staging()
     global _watcher_task, _artifact_reaper_task, _server_loop
     _watcher_task = None
     _artifact_reaper_task = None

@@ -43,6 +43,7 @@ from haute._execute_lazy import (
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile, naming_nodes_from
+from haute._file_ops import remove_files_left_before_start
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._input_providers import recording_schema_tiers
@@ -1936,6 +1937,31 @@ def new_data_output_staging_path(final_path: str | Path) -> Path:  # pragma: no 
     return final.with_name(f".{final.stem}.haute-stage-{uuid.uuid4().hex}{final.suffix}")
 
 
+def remove_leftover_data_output_staging(final_path: str | Path) -> None:
+    """Remove the staged copies of *final_path* that earlier Writes left behind.
+
+    A Write cut short when its process died, as it published its file, leaves its staged
+    copy (:func:`new_data_output_staging_path`) beside the destination, where nothing
+    else would remove it. Run before a Write stages its own copy, by the process that
+    publishes it: a live Write's copy is newer than this process's start and stays.
+    """
+    final = Path(final_path)
+    prefix = f".{final.stem}.haute-stage-"
+    try:
+        names = [entry for entry in final.parent.iterdir() if entry.name.startswith(prefix)]
+    except FileNotFoundError:
+        return
+    leftovers: list[Path] = []
+    for candidate in names:
+        try:
+            _validate_output_staging_identity(final, candidate)
+        except ValueError:
+            continue
+        leftovers.append(candidate)
+    for path, exc in remove_files_left_before_start(leftovers):
+        logger.warning("data_output_staging_not_removed", file=path.name, error=str(exc))
+
+
 def _validate_output_staging_identity(final_path: Path, staging_path: Path) -> None:
     expected_prefix = f".{final_path.stem}.haute-stage-"
     name_without_suffix = (
@@ -2266,11 +2292,14 @@ def prepare_data_output(
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         if is_file_target:
-            staging_out = (
-                new_data_output_staging_path(out)
-                if staging_path is None
-                else Path(staging_path).resolve()
-            )
+            if staging_path is None:
+                # This process stages and publishes the file itself: it clears what an
+                # earlier Write left first. A parent that hands its worker the staging
+                # path clears them before it does.
+                remove_leftover_data_output_staging(out)
+                staging_out = new_data_output_staging_path(out)
+            else:
+                staging_out = Path(staging_path).resolve()
             _validate_output_publish_paths(out, staging_out, project_root=root)
             _validate_output_staging_identity(out, staging_out)
             if staging_out.exists() or staging_out.is_symlink():

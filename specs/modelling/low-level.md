@@ -1308,8 +1308,10 @@ so a copy that fails part-way leaves nothing behind); each existing target is mo
 its staged copy replaces it (with the same Windows sharing-violation retry as
 `atomic_write_bytes`); a failure at any point restores every backup and removes every staged
 copy and newly published target, so the destinations are either all new or all unchanged.
-Backups are deleted only after every replacement succeeds; a failed post-commit backup deletion
-is logged and does not fail the save. `OSError` is a `500`
+Backups are deleted only after every replacement succeeds, each made writable first, so a model
+saved over a read-only model file leaves no backup beside it (Windows refuses to delete a
+read-only file); a post-commit backup deletion that still fails is logged and does not fail the
+save. `OSError` is a `500`
 with a filesystem-error detail that names no path; anything else is the sanitized internal
 `500`. The response is `SaveModelResponse`: `status="ok"`, the display `path`, and the display
 `feature_contract_path` (the display path's sibling contract name). The route is a synchronous handler, so FastAPI runs the

@@ -729,6 +729,24 @@ class TestWriterEdgeCases:
 class TestAtomicCopyFiles:
     """Tests for ``atomic_copy_files`` (stage-all-then-replace-all copy)."""
 
+    def test_a_read_only_target_leaves_no_backup(self, tmp_path: Path) -> None:
+        """SRV-05: a model saved over a read-only model file leaves the new file alone in
+        its folder, however many times it is saved: Windows refuses to delete a read-only
+        backup, so the backup is made writable first."""
+        import stat
+
+        model = tmp_path / "motor.cbm"
+        model.write_bytes(b"old model")
+        model.chmod(stat.S_IREAD)
+        for save in range(3):
+            source = tmp_path / "trained" / f"model-{save}.cbm"
+            source.parent.mkdir(exist_ok=True)
+            source.write_bytes(f"model {save}".encode())
+            atomic_copy_files([(source, model)])
+
+        assert model.read_bytes() == b"model 2"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["motor.cbm", "trained"]
+
     def test_copies_two_pairs_and_replaces_existing_targets(self, tmp_path: Path) -> None:
         src_a = tmp_path / "a_src.bin"
         src_b = tmp_path / "b_src.bin"
@@ -1073,3 +1091,40 @@ class TestWindowsPathTooLong:
 
         assert raised.value.filename == str(stage)
         assert isinstance(raised.value.__cause__, FileNotFoundError)
+
+
+def test_a_server_start_removes_the_staging_files_left_under_haute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SRV-05: a settings write, an undelete or a branch-away killed at its rename leaves
+    its staging file under .haute; the next start removes it. A staging file newer than
+    the start is a live writer's and stays, as does every other file."""
+    import os
+
+    from haute import _file_ops, server
+    from tests._project import use_project
+
+    use_project(tmp_path)
+    haute_dir = tmp_path / ".haute"
+    (haute_dir / "uploads").mkdir(parents=True)
+    before_start = _file_ops.PROCESS_STARTED - 60
+    left = [
+        haute_dir / "pipeline-settings.3b78e6a0.tmp",
+        haute_dir / "trash.0123abcd.tmp",
+        haute_dir / "uploads" / "state.89abcdef.tmp",
+    ]
+    for path in left:
+        path.write_text("{}")
+        os.utime(path, (before_start, before_start))
+    live = haute_dir / "state.fedcba98.tmp"
+    kept = haute_dir / "state.json"
+    live.write_text("{}")
+    kept.write_text("{}")
+    os.utime(kept, (before_start, before_start))
+
+    server._remove_leftover_staging()
+
+    assert sorted(p.name for p in haute_dir.rglob("*") if p.is_file()) == [
+        "state.fedcba98.tmp",
+        "state.json",
+    ]

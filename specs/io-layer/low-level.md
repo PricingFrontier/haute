@@ -126,6 +126,22 @@ The codes are retried only on Windows; every error on another platform and every
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
 
+A writer killed before its rename leaves its stage, and nothing else would remove it. A stage
+is left by a process that is gone exactly when it was last written before this process started
+(`_file_ops.PROCESS_STARTED`, this module's import): every live writer of this process stages
+after it, and another live process's stage is newer. `remove_files_left_before_start(paths)`
+removes each regular file of `paths` older than that, follows and removes no link, and returns
+the files it could not remove for the caller to log; `staging_files_under(folder)` lists every
+atomic-write stage in a folder tree. The editor's server runs both over the project's `.haute`
+folder when it starts (`server.py::_remove_leftover_staging`, after the save records are
+settled), so a settings write, an undelete or a branch-away killed at its rename leaves nothing
+there after the next start. A Data Output's Write clears its destination's leftover staged
+copies (`.<stem>.haute-stage-<32 hex><suffix>`) the same way before it stages its own
+(`executor.remove_leftover_data_output_staging`): the route's parent does it before it hands
+its worker the staging path, and `prepare_data_output` when it stages the file itself. After a
+Write cut short as it published its file, the next Write to that destination leaves the output
+alone in its folder.
+
 A path Windows refuses for its length is named rather than left a bare "file not found".
 While `LongPathsEnabled` is off, Windows takes a file path of at most `MAX_PATH` less its NUL
 (259 characters) and a folder path of 12 fewer (247): a folder past that fails with

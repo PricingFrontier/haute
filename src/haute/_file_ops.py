@@ -42,6 +42,7 @@ import errno
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -228,6 +229,41 @@ def is_staging_name(name: str) -> bool:
     return _STAGING_NAME.fullmatch(name) is not None
 
 
+#: When this process started (this module's import, early in its start). A writer of this
+#: process stages its file after it, so a staging file last written before it was left by
+#: a writer that is gone: a server or a run killed before its rename.
+PROCESS_STARTED = time.time()
+
+
+def staging_files_under(folder: Path) -> list[Path]:
+    """Every atomic write's staging file (:func:`is_staging_name`) in *folder* and the
+    folders under it; none when *folder* does not exist."""
+    found: list[Path] = []
+    for directory, _folders, names in os.walk(folder):
+        found.extend(Path(directory, name) for name in names if is_staging_name(name))
+    return found
+
+
+def remove_files_left_before_start(paths: Iterable[Path]) -> list[tuple[Path, OSError]]:
+    """Remove each regular file of *paths* last written before this process started
+    (:data:`PROCESS_STARTED`), and leave every other one: a live writer's file is newer.
+
+    Returns the files that could not be removed, each with its error, for the caller to
+    log; a file already gone is no failure. A link is never followed or removed.
+    """
+    failed: list[tuple[Path, OSError]] = []
+    for path in paths:
+        try:
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_mtime < PROCESS_STARTED:
+                path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failed.append((path, exc))
+    return failed
+
+
 def staging_files_of(targets: Iterable[Path]) -> list[Path]:
     """The staging files atomic writes of *targets* left beside them (:func:`_temp_path_for`):
     a writer killed before its rename leaves one, which nothing else would remove. Each
@@ -410,8 +446,9 @@ def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
     ``atomic_write_bytes``). If any step fails, every newly published target is
     removed, every backup is restored, and every remaining staged copy is
     deleted before the error is re-raised. Backups are deleted only after every
-    replacement succeeded; a backup that cannot be deleted then is logged and
-    left as a hidden sibling, because the copy has already committed. As with
+    replacement succeeded, a read-only one made writable first; a backup that still
+    cannot be deleted then is logged and left as a hidden sibling, because the copy
+    has already committed. As with
     ``atomic_write_bytes``, the parent directory of each target must already exist.
     """
     staged: list[tuple[Path, Path]] = []
@@ -450,6 +487,11 @@ def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
         raise
     for backup, _target in backups:
         try:
+            # A read-only target's bytes keep its mode in the backup, and Windows refuses
+            # to delete a read-only file: the backup is made writable first. A link's
+            # target is never touched.
+            if not backup.is_symlink():
+                backup.chmod(backup.stat().st_mode | stat.S_IWRITE)
             backup.unlink()
         except OSError as exc:
             from haute._logging import get_logger

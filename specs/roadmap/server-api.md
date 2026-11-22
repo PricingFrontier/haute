@@ -4,13 +4,8 @@
 
 The local server's routes and live sync, as [the server API
 specification](../server-api/high-level.md) describes them: what a route
-answers when a node of the analyst's own fails, what a save answers when it cannot write its files, and what
-a Data Output's Write and a model save leave when they are cut short.
-`SRV-05` comes from the review
-plan's sweep of failed writes on 10 November, which failed every step of 17
-writing operations in turn, held their files open and killed the server at
-three points, and was reproduced on that day; the main session's run of 11
-November added the read-only file, and `SRV-06`
+answers when a node of the analyst's own fails, and what a save answers when it cannot write its files.
+`SRV-06`
 comes from the main session's own runs of 10 November. `SRV-07`
 comes from the plan's sweep of damaged requests and the main session's
 runs behind it on 11 November. `SRV-19` and `SRV-20` come from the 22 November 2026
@@ -24,66 +19,12 @@ is retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SRV-05 | Planned | P3 | A Data Output's Write and a model save leave no staged copy beside their file, and no other writer's staging file outlives a restart. |
 | SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, not as "HTTP <status>". |
 | SRV-19 | Planned | P1 | An OUTPUT document keeps two objects whose keys differ below a microsecond, in the preview and in the deployed answer, and carries every digit of a nanosecond timestamp. |
 | SRV-20 | Planned | P3 | The node preview, the file preview and the deployed app's answers show a nanosecond value's nine digits, and a request's date-time with more than six digits is read whole or refused, never cut short. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 
 ## Planned improvements
-
-### SRV-05 — A cut-short write and a model save leave no staged copy behind
-**Why:** Reproduced on 10 November 2026. The pipeline save's own leftovers
-are settled by its record (`src/haute/_save_records.py`): a save the server
-died in is reported on its document, its staging files are removed when the
-server starts and before the next save, and its removals are made by the
-next save. Three other writers still leave theirs.
-
-A Data Output's Write, run for CSV and for Parquet with the server killed as
-the Write publishes its file, leaves its staged copy. The output itself stays
-the old, whole file. Its staged copy, a full copy of the new output named
-`.result.haute-stage-` and 32 hex digits, stays in the analyst's output
-folder after a restart and after a later Write that succeeds. Nothing removes
-it, the Files panel hides it as a dot-name, and each Write that is cut short
-adds another.
-
-A model save leaves a second kind, with no crash at all. Saved over a model
-file that is marked read-only, the save succeeds and leaves the old model
-beside the new one, named `.motor.cbm.`, 32 hex digits and `.backup`: one
-more full copy at every save (run three times: three copies). The copy
-step's own note says that "a backup that cannot be deleted then is logged
-and left as a hidden sibling, because the copy has already committed". For
-a read-only file that is every time, and nothing removes them later.
-
-The shared atomic writer leaves a third kind when the server is killed at
-its rename in any writer but the save: the sweep saw
-`.haute/pipeline-settings.3b78e6a0.tmp` from a settings write, and
-`.haute/trash.<hex>.tmp` and `.haute/state.<hex>.tmp` from an undelete and a
-branch-away. Two writers already collect their own leftovers: the upload
-route removes staging files older than the server's start, and the
-assistant's session store prunes its own.
-
-**Plan:** Before a Data Output's Write, remove the staged copies of the same
-destination that an earlier Write left. Make a backup writable before
-deleting it, so that a model save leaves none. When the server starts,
-remove the atomic writer's staging files under `.haute` older than the
-server's start, as the upload route does (`staging_files_of` in
-`src/haute/_file_ops.py` names them for a target).
-
-**Acceptance:** After a Write cut short, the next Write to that destination
-leaves the output file alone in its folder. A model saved three times over a
-read-only model file leaves the model and its contract alone in theirs. A
-settings write killed at its rename leaves no staging file under `.haute`
-after the next start.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_file_ops.py::atomic_path`;
-`src/haute/_file_ops.py::staging_files_of`;
-`src/haute/routes/project_files.py::_remove_stale_staging`;
-`src/haute/executor.py::new_data_output_staging_path`;
-`src/haute/executor.py::commit_prepared_data_output`;
-`src/haute/_file_ops.py::atomic_copy_files`.
 
 ### SRV-06 — A missing pipeline file is shown on the page in the load's words
 **Why:** Reproduced on 10 and 11 November 2026, in two forms. The load route

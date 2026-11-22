@@ -182,6 +182,7 @@ from haute.executor import (
     execute_graph,
     new_data_output_staging_path,
     prepare_data_output,
+    remove_leftover_data_output_staging,
     resolve_data_output_path,
     validate_prepared_data_output_identity,
 )
@@ -2443,6 +2444,8 @@ def _output_write_transaction(
     primary_error: BaseException | None = None
     deadline = time.monotonic() + _pipeline_time_limit()
     try:
+        if final_path is not None and staging_path is not None:
+            remove_leftover_data_output_staging(final_path)
         if cancellation_requested.is_set():
             raise WorkerStoppedError(terminal_reason="cancelled")
         # Preparing inputs here stops with the request.
