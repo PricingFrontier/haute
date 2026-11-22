@@ -1438,13 +1438,18 @@ def _assignment_row(step: TraceStep, column: str, parsed: Any, code: str) -> pl.
     return row if phases is None else _row_before_call(row, step, phases)
 
 
+#: The reasons one row cannot compute a column whose value the trace's own execution gives.
+_EXECUTION_VALUE_REASONS = ("not_row_local:", "branch_dependent:")
+
+
 def _with_execution_value(
     calculation: dict[str, Any], step: TraceStep, column: str
 ) -> dict[str, Any]:
     """Show a formula's full-context value where one row cannot compute it.
 
     A formula that needs other rows (a window, aggregation, shift, or an
-    operation not known to be row-local) is not evaluated on the traced row.
+    operation not known to be row-local) is not evaluated on the traced row,
+    and a column written inside a block has no one formula to evaluate.
     Its value there is the one the trace's own execution computed: the step's
     output for *column*. ``result_source`` marks it as coming from that
     execution, and ``not_computable_reason`` still says why one row could not.
@@ -1452,7 +1457,7 @@ def _with_execution_value(
     reason = calculation.get("not_computable_reason")
     if (
         isinstance(reason, str)
-        and reason.startswith("not_row_local")
+        and reason.startswith(_EXECUTION_VALUE_REASONS)
         and column in step.output_values
     ):
         calculation["result_value"] = step.output_values[column]

@@ -138,6 +138,14 @@ Out of scope (owned by neighbouring components, cross-linked below):
   inside control flow, by an augmented or unpacking assignment — has no value the parser can
   prove: the formula is opaque, and evaluating it reports `unresolved_name: <name>` rather than
   computing with a stale binding or the preamble's value of the same name.
+- **A column written inside a block has no one formula.** When a `with_columns()`/`select()`
+  call inside `if`/`for`/`while`/`try`/`with`/`match` writes `target_column`, which formula gave
+  the column its value depends on what ran, which the code does not show. Every reader that
+  locates the column's formula holds to that: `parse_expression` and the column's entry in
+  `parse_expression_chain` are opaque, carrying the code; `evaluate_expression` computes no
+  result and reports `branch_dependent: <keyword>`, the keyword of the top-level statement the
+  write sits in (`if` for an `elif` or `else` too); and `copied_from` names no column the value
+  was copied from. None of them reads a formula from a block, the `else` branch's or any other.
 - **Every fact comes from the located expression.** `evaluate_expression` types an expression
   `window` when the expression that assigns the column contains an `.over()` call, describes each
   window in words from its syntax tree (`rank of x over g`, or `10.0 / (sum of a over g)` for one
@@ -165,7 +173,8 @@ Out of scope (owned by neighbouring components, cross-linked below):
   that every operation in it is registered row-local. A window, aggregation, shift, rank, diff,
   cumulative or unregistered operation would show a value the pipeline never produced if
   evaluated on one row. So such a result stays `None`, and `not_computable_reason` names why:
-  `not_row_local: <operator>`, `unresolved_name: <name>`, `column_unavailable: <column>`,
+  `not_row_local: <operator>`, `unresolved_name: <name>`, `branch_dependent: <keyword>`,
+  `column_unavailable: <column>`,
   `traced_row_unavailable` (the trace could not recover the typed row), or
   `expression_not_located`. Where one row cannot compute the formula that assigns a step's
   column, the trace shows that column's value from its own execution — the full-context value —

@@ -688,7 +688,8 @@ its public facade.
    `result_value` prefers the fed-forward `combined_values` entry and falls back
    to `step.output_values` only if that is also absent.
    **Execution values** (`_with_execution_value`): when a formula that assigns a step's column is
-   `not_row_local`, the calculation shows that column's `output_values` entry with
+   `not_row_local`, or the column is `branch_dependent` (written inside a block, so no one formula
+   gave it its value), the calculation shows that column's `output_values` entry with
    `result_source: "trace_execution"` and keeps `not_computable_reason`. This applies to the
    step's own assignment, a borrowed one, an input source's derivation, and a chain entry whose
    target the chain assigns once. `execute_trace` passes enrichment the compiled preamble

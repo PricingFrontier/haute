@@ -191,7 +191,10 @@ Out of scope (owned elsewhere, linked where relevant):
   pipeline's own dtypes, and only when the slice is exactly the row the trace shows. Its
   formulas are evaluated on that row with the names the node code ran with (the compiled
   preamble). A formula one row cannot determine (a window, aggregation, shift, or an operation
-  not known to be row-local) is never evaluated on one row. Where it assigns the step's column,
+  not known to be row-local) is never evaluated on one row, and a column written inside a block
+  (`if`, `for`, `while`, `try`, `with` or `match`) has no one formula to evaluate: no branch's
+  formula is shown or computed for it, the one that did not run included. Where either assigns
+  the step's column,
   the step shows that column's value from the trace's own execution, which is the full-context
   value, marked as coming from that execution. Anywhere else the value is shown as not computed
   from this row, with the reason, and never replaced by the row's input value.
