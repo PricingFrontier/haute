@@ -15,6 +15,7 @@ import { canvasTarget, prepareNodeRequest } from "../utils/requestGateway"
 import { answer, watch } from "../utils/answers"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { NodeDataCache } from "./useNodeDataCache"
+import { apiErrorMessage } from "../api/errors"
 
 export interface NodeDataProfileState {
   /** The profile of the data version the consumer currently reads, if any. */
@@ -116,14 +117,14 @@ export default function useNodeDataProfile({
   /** A failed read of the profile, recorded as well as announced: the failure is what the
    *  retry action is offered from, so a failed request is never a silent dead end. */
   const failedRead = useCallback((version: string) => (err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = apiErrorMessage(err)
     if (slotKey) reportProfileFailure(slotKey, version, message)
     addToast("error", `Reading the data profile failed: ${message}`)
   }, [addToast, reportProfileFailure, slotKey])
 
   const cancelFailed = useCallback((err: unknown) => addToast(
     "error",
-    `Cancelling the data profile failed: ${err instanceof Error ? err.message : String(err)}`,
+    `Cancelling the data profile failed: ${apiErrorMessage(err)}`,
   ), [addToast])
 
   const askProfile = useCallback(

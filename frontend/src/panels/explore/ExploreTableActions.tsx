@@ -4,6 +4,7 @@ import { useRequestKind } from "../../hooks/useRequestKind"
 import { answer, under } from "../../utils/answers"
 import { sanitiseLabelForFilesystem } from "../../utils/apiInputPorts"
 import type { TableGrid } from "../editors/FrameTableActions"
+import { apiErrorMessage } from "../../api/errors"
 
 function clipboardWriteAvailable(): boolean {
   if (typeof navigator === "undefined" || !navigator.clipboard) return false
@@ -54,7 +55,7 @@ export default function ExploreTableActions({
       ({ buildTsv, writeClipboardText }) => writeClipboardText(buildTsv([grid.headers, ...grid.rows])),
     ), {
       ok: () => flashAck("Copied"),
-      failed: (reason) => setError(reason instanceof Error ? reason.message : "Copy failed"),
+      failed: (reason) => setError(apiErrorMessage(reason, "Copy failed")),
     })
   }, [flashAck, grid, life])
 
@@ -71,7 +72,7 @@ export default function ExploreTableActions({
       if (downloaded) flashAck("Downloaded")
       else setError("Download is unavailable in this context.")
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Download failed")
+      setError(apiErrorMessage(reason, "Download failed"))
     }
   }, [filename, flashAck, grid])
 

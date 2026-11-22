@@ -5,8 +5,7 @@
 The local server's routes and live sync, as [the server API
 specification](../server-api/high-level.md) describes them: what a route
 answers when a node of the analyst's own fails, and what a save answers when it cannot write its files.
-`SRV-06`
-comes from the main session's own runs of 10 November. `SRV-07`
+`SRV-07`
 comes from the plan's sweep of damaged requests and the main session's
 runs behind it on 11 November. `SRV-19` and `SRV-20` come from the 22 November 2026
 sweep of `src/haute` for the cause `XPL-03` removed from Explore, a temporal
@@ -19,39 +18,11 @@ is retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, not as "HTTP <status>". |
 | SRV-19 | Planned | P1 | An OUTPUT document keeps two objects whose keys differ below a microsecond, in the preview and in the deployed answer, and carries every digit of a nanosecond timestamp. |
 | SRV-20 | Planned | P3 | The node preview, the file preview and the deployed app's answers show a nanosecond value's nine digits, and a request's date-time with more than six digits is read whole or refused, never cut short. |
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 
 ## Planned improvements
-
-### SRV-06 — A missing pipeline file is shown on the page in the load's words
-**Why:** Reproduced on 10 and 11 November 2026, in two forms. The load route
-now answers a pipeline file renamed or deleted while the editor runs, a
-`haute.toml` left half-edited and a pipeline file emptied to nothing in one
-line naming the file and the remedy (404 `pipeline_file_missing`, or the
-configuration's own words). The page does not show it. The client gives
-every failed response the message `HTTP <status>`, with the server's words
-kept beside it, and the page's own load is the one caller that shows the
-message instead of the words: after twelve to fourteen seconds of "Loading
-pipeline..." the screen reads "Haute could not open this pipeline", an
-explanation, and "HTTP 500", under the toast "Failed to load pipeline: HTTP
-500" (seen in a browser on 11 November by the review plan's sweep of failed
-calls, with the failure injected, and by the main session with a
-`haute.toml` left half-edited and with the pipeline file emptied).
-
-**Plan:** Show the load's own words on the page with the file's name instead
-of an empty canvas and "HTTP <status>".
-
-**Acceptance:** With the pipeline file deleted while the editor runs, the
-page says the file's name and the remedy.
-
-**Dependencies:** None. The deploy dry run's same resolver error is one
-line and a hint since 20 November 2026.
-
-**Evidence:** `frontend/src/api/client.ts`; the page's pipeline load in
-`frontend/src`.
 
 ### SRV-07 — A file name Windows cannot hold is refused by name
 **Why:** Reproduced on 11 November 2026 on three paths an analyst types:

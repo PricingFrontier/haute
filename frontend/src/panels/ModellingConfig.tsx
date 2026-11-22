@@ -436,7 +436,7 @@ export default function ModellingConfig({
         reservedParams.help,
       )
     } catch (cause) {
-      const detail = cause instanceof Error ? cause.message : "Invalid JSON"
+      const detail = apiErrorMessage(cause, "Invalid JSON")
       paramDraftIssue = {
         code: "catboost-params",
         message: `Parameters JSON is invalid: ${detail}`,
@@ -448,7 +448,7 @@ export default function ModellingConfig({
     try {
       parseTuningSearchSpace(searchSpaceDraft)
     } catch (cause) {
-      const detail = cause instanceof Error ? cause.message : "Invalid JSON"
+      const detail = apiErrorMessage(cause, "Invalid JSON")
       searchSpaceDraftIssue = {
         code: "tuning-config",
         message: `Search space JSON is invalid: ${detail}`,

@@ -9,6 +9,7 @@ import {
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
 } from "./apiInputPorts"
+import { apiErrorMessage } from "../api/errors"
 
 type ConnectionLike = {
   source: string | null | undefined
@@ -189,7 +190,7 @@ export function validatePipelineConnection(
       ok: false,
       reason: {
         kind: "invalid-connection",
-        message: error instanceof Error ? error.message : String(error),
+        message: apiErrorMessage(error),
       },
     }
   }
@@ -259,7 +260,7 @@ export function validatePipelineConnection(
       ok: false,
       reason: {
         kind: "invalid-connection",
-        message: error instanceof Error ? error.message : String(error),
+        message: apiErrorMessage(error),
       },
     }
   }

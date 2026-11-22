@@ -148,34 +148,6 @@ export default defineConfig([
     files: ['src/types/guards.ts', 'src/utils/objectLiteral.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS),
   },
-  // Exact file/rule debt that predates the blocking severities. New instances
-  // elsewhere fail lint; remove each override with its owning-stream fix.
-  {
-    files: [
-      'src/api/responseValidation.ts',
-      'src/hooks/ensureInputSnapshots.ts',
-      'src/hooks/useDataInputColumns.ts',
-      'src/hooks/useGraphCommitController.ts',
-      'src/hooks/useNodeDataProfile.ts',
-      'src/hooks/usePipelineAPI.ts',
-      'src/hooks/useStaleConfigEstimate.ts',
-      'src/hooks/useSubmodelBoundaryEditing.ts',
-      'src/hooks/useTracing.ts',
-      'src/hooks/useWebSocketSync.ts',
-      'src/panels/ModellingConfig.tsx',
-      'src/panels/explore/ComboChart.tsx',
-      'src/panels/explore/ExploreChartsPane.tsx',
-      'src/panels/explore/ExploreTableActions.tsx',
-      'src/panels/explore/chartConfig.ts',
-      'src/panels/modelling/GpuTrainingToggle.tsx',
-      'src/panels/modelling/HyperparametersConfig.tsx',
-      'src/panels/useNodePanelSession.ts',
-      'src/stores/useSettingsStore.ts',
-      'src/utils/connectionValidation.ts',
-      'src/workbench/ChartBody.tsx',
-    ],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
-  },
   {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],
     rules: {

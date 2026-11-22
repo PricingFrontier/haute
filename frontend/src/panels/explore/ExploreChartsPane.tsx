@@ -31,6 +31,7 @@ import {
 import useAutoUpdateExplorePivots from "./useAutoUpdateExplorePivots"
 import useExplorePivotActions from "./useExplorePivotActions"
 import type { ExploreDataView } from "./exploreDataView"
+import { apiErrorMessage } from "../../api/errors"
 
 type ExploreChartsPaneProps = {
   node: SimpleNode
@@ -71,7 +72,7 @@ function adapterFailureMessage(error: unknown): string {
   if (error instanceof ChartDataError) {
     return `${error.message} ${error.remediation}`
   }
-  return error instanceof Error ? error.message : String(error)
+  return apiErrorMessage(error)
 }
 
 type ChartCardProps = {

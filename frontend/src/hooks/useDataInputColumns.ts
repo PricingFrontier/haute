@@ -10,6 +10,7 @@ import { columnFingerprint } from "../utils/columnFingerprint"
 import { ask, newest } from "../utils/answers"
 import { useRequestKind } from "./useRequestKind"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
+import { apiErrorMessage } from "../api/errors"
 
 type DataInputColumn = { name: string; dtype: string }
 
@@ -176,7 +177,7 @@ export function useDataInputColumns(
         setColumnsCache(inputKey, result.columns, requestStructuralVersion, activeSource)
       },
       failed: (e) => {
-        const detail = e instanceof Error ? e.message : String(e)
+        const detail = apiErrorMessage(e)
         addToast("warning", `Column fetch failed for "${dataInput}": ${detail}`)
         if (!cachedColumnsRef.current) setDataInputColumns([])
       },

@@ -22,6 +22,7 @@ import {
 import { pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 import { isObjectLiteral } from "../../utils/objectLiteral"
+import { apiErrorMessage } from "../../api/errors"
 
 // Combo leads as the general category and default (as in Excel), followed
 // by the three column layouts. Applying Combo seeds columns with the last
@@ -248,7 +249,7 @@ function parseV1Chart(
         identity.column_path,
       )
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error."
+      const message = apiErrorMessage(error, "Unknown error.")
       return `Chart ${position} override series_key is invalid: ${message}`
     }
     if (nestedIds.has(override.id)) {

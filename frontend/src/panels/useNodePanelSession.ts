@@ -4,6 +4,7 @@ import { useRequestKind } from "../hooks/useRequestKind"
 import { answer, newest } from "../utils/answers"
 import { nodeNameIssue } from "../utils/nodeNameValidation"
 import type { OnUpdateConfigResult } from "./editors/_shared"
+import { apiErrorMessage } from "../api/errors"
 
 /** `combined` is a Rating Step's combined outputs, beside its tables on `config`. */
 export type NodePanelTab = "config" | "combined" | "polars" | "columns"
@@ -109,7 +110,7 @@ export function useNodeRenameSession(nodeId: string): NodeRenameSession {
       ok: (result) => dispatch({ type: "settled", error: result.ok ? null : result.error }),
       failed: (error) => dispatch({
         type: "settled",
-        error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
+        error: `Rename failed: ${apiErrorMessage(error)}`,
       }),
     })
   }, [nodeId, renames])

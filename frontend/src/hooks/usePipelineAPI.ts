@@ -877,7 +877,7 @@ export default function usePipelineAPI({
     // The load belongs to this run of the effect: unmounting lets it go, and aborts it.
     const asked = ask([newest(pipelineLoads)])
     const failed = (err: unknown) => {
-      const detail = err instanceof Error ? err.message : String(err)
+      const detail = apiErrorMessage(err)
       setLoadError(detail)
       addToast("error", `Failed to load pipeline: ${detail}`)
       setLoading(false)

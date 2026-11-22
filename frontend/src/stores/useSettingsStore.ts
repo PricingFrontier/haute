@@ -307,7 +307,7 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
           mlflow: {
             ...mlflowPending(),
             status: "error",
-            detail: e instanceof Error ? e.message : "MLflow inventory check failed",
+            detail: apiErrorMessage(e, "MLflow inventory check failed"),
           },
         })
       },

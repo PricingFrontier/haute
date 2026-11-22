@@ -5,6 +5,7 @@ import { hashConfig } from "../utils/configHash"
 import { executionErrorDetailMessage } from "../utils/executionDiagnostics"
 import { ask, newest } from "../utils/answers"
 import { useRequestKind } from "./useRequestKind"
+import { apiErrorMessage } from "../api/errors"
 
 export interface UseStaleConfigEstimateResult<TEstimate> {
   configHash: string
@@ -129,7 +130,7 @@ export function useStaleConfigEstimate<TEstimate>(
     void asked.answer((signal) => endpointRef.current(undefined, { signal }), {
       ok: (result) => dispatch({ type: "resolve", estimate: result }),
       failed: (err) => {
-        const msg = executionErrorDetailMessage(err) ?? (err instanceof Error ? err.message : String(err))
+        const msg = executionErrorDetailMessage(err) ?? apiErrorMessage(err)
         dispatch({ type: "reject", message: msg, code: apiErrorCode(err) })
         useToastStore
           .getState()

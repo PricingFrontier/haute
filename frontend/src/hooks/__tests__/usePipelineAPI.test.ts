@@ -564,6 +564,20 @@ describe("usePipelineAPI", () => {
     })
   })
 
+  it("shows a failed load in the server's words, naming the file, not its status", async () => {
+    // SRV-06: the load route answers a deleted pipeline file in one line naming it.
+    const words =
+      "Pipeline file configured in haute.toml [project].pipeline does not exist: " +
+      "rating/main.py. Fix the path in haute.toml or create the file."
+    mockLoad.mockRejectedValue(new ApiError("HTTP 404", 404, words, { detail: words }, words))
+    const { result } = renderHook(() => usePipelineAPI(makeParams()))
+
+    await waitFor(() => expect(result.current.loadError).toBe(words))
+    expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", text: `Failed to load pipeline: ${words}` }),
+    ]))
+  })
+
   it("rejects a live pipeline load without a committed revision", async () => {
     mockLoad.mockResolvedValue({
       document: {
