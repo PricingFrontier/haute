@@ -914,9 +914,14 @@ class TestRenameDirectory:
             patch.object(Path, "rename", side_effect=error) as rename,
             patch("haute._file_ops.time.sleep") as sleep,
         ):
-            with pytest.raises(PermissionError, match="Access is denied"):
+            with pytest.raises(_file_ops.FolderInUseError, match="Access is denied") as raised:
                 _file_ops.rename_directory(source, tmp_path / "release")
 
+        assert raised.value.__cause__ is error
+        assert (raised.value.filename, raised.value.filename2) == (
+            str(source),
+            str(tmp_path / "release"),
+        )
         assert rename.call_count == 9
         assert sum(item.args[0] for item in sleep.call_args_list) == pytest.approx(3.935)
         assert source.is_dir()
@@ -936,8 +941,9 @@ class TestRenameDirectory:
             patch.object(Path, "rename", side_effect=error) as rename,
             patch("haute._file_ops.time.sleep") as sleep,
         ):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError) as raised:
                 _file_ops.rename_directory(source, tmp_path / "release")
+        assert not isinstance(raised.value, _file_ops.FolderInUseError)
         assert rename.call_count == 1
         sleep.assert_not_called()
 

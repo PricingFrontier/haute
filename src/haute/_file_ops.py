@@ -222,6 +222,12 @@ def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:
             time.sleep(delay)
 
 
+class FolderInUseError(PermissionError):
+    """:func:`rename_directory` waited for a folder another program holds a file in, and the
+    wait ran out. Still a ``PermissionError``, so every handler that catches one keeps doing
+    so; it says the folder was in use, not that permission was refused."""
+
+
 def rename_directory(source: Path, target: Path) -> None:
     """Rename the directory *source* to *target*, which must not exist.
 
@@ -229,15 +235,20 @@ def rename_directory(source: Path, target: Path) -> None:
     antivirus scanner or indexer does for a while after the file is written, with
     ERROR_ACCESS_DENIED or ERROR_SHARING_VIOLATION. A freshly written tree holds many such
     files, so those two codes are retried for longer than one file's replace is, about
-    four seconds in all; any other failure, or one off Windows, is raised at once.
+    four seconds in all, and :class:`FolderInUseError` is raised from the last refusal when
+    the wait runs out; any other failure, or one off Windows, is raised at once.
     """
     for delay in (*_WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS, None):
         try:
             source.rename(target)
             return
         except OSError as exc:
-            if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32} or delay is None:
+            if not _IS_WINDOWS or getattr(exc, "winerror", None) not in {5, 32}:
                 raise
+            if delay is None:
+                raise FolderInUseError(
+                    exc.errno, exc.strerror or str(exc), str(source), None, str(target)
+                ) from exc
             time.sleep(delay)
 
 

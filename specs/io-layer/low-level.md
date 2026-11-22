@@ -17,7 +17,7 @@
 | `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). `parse_rendered_dtype` rebuilds a dtype from polars' own rendering (`str(dtype)`, as a preview reports a column's type) by reading it as a Python expression tree whose names must be Polars dtypes and whose arguments are literals, lists, tuples, dicts or nested dtypes; it never evaluates the text. `is_string_or_categorical` tests for text by base type, and `WIDE_INTEGER_DTYPES`, `holds_wide_integer`, `wide_integer_column` and `wide_integer_message` find and refuse a 128-bit integer; *Polars 2 dtypes* under Edge cases and invariants gives the rules. It is also the one answer to what kind of column a type is: `column_kind` and its groups `NUMBER_KINDS`, `DATE_KINDS` and `TEXT_KINDS`, `base_type_kind` for a type held by its base name, `polars_type_kinds` (the table the browser reads from the generated contract), `integer_range` and `numpy_float_type`; *Column kinds* under Edge cases and invariants gives the rules. |
 | `src/haute/_map_columns.py` | How a map column reaches a pipeline: as a list of `{key, value}` structs holding every entry. `map_entries_table` casts Arrow tables with pyarrow, sharing the map's buffers; `iter_parquet_map_entries` reads a Parquet file through pyarrow one row group at a time; `map_entries_frame` casts a frame Polars read; `parquet_map_column_names` finds a Parquet file's map columns from its footer. |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
-| `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists; `rename_directory` renames a directory, retrying for about four seconds while Windows refuses it because a scanner holds a file just written inside; `remove_tree` removes a tree best-effort with the same retry; `PathTooLongError` and `path_too_long_error`, which name a path Windows refused for its length. |
+| `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists; `rename_directory` renames a directory, retrying for about four seconds while Windows refuses it because a scanner holds a file just written inside, and raising `FolderInUseError`, still a permission error, when the wait runs out; `remove_tree` removes a tree best-effort with the same retry; `PathTooLongError` and `path_too_long_error`, which name a path Windows refused for its length. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
 | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
@@ -394,7 +394,10 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    supersession (a build that
    replaces a named generation publishes only while that generation is current), retires
    unleased superseded generations, atomically renames the staging directory to its
-   generation and atomically replaces `current.json`. The generation it returns is the
+   generation through `_file_ops.rename_directory`, so a scanner or indexer holding one of
+   its new files open is waited out, and atomically replaces `current.json`. A wait that
+   runs out fails the build with `FolderInUseError`, the staging directory removed and the
+   earlier generation still current. The generation it returns is the
    staged validation's, under the published directory.
 6. Old generations with live leases survive until the final lease release. Publication
    has no cache byte/count limit and never evicts another identity's current dataset.
@@ -444,7 +447,7 @@ inventory and consume physical disk space.
 that delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
 Input snapshots and explicit builds have no byte or count budget and no constructor
 limit arguments; they remain until explicit clear or replacement. Automatic node-output
-captures have one budget, applied after each automatic publication:
+captures have one budget, applied once a run's captures are published:
 
 - `automatic_capture_budget(store)` reads the pipeline settings of the store's project
   (`store.root`): `cache_size_gb` as whole bytes when it is set (an invalid settings file
@@ -477,11 +480,19 @@ captures have one budget, applied after each automatic publication:
   remains, so a retirement an open Windows handle defers stays indexed and unpointed,
   where the next publish, Clear or budget check finds it.
 - `publish_node_output` runs the enforcement for an automatic capture after the
-  pointer commits, while the publisher's lease still protects what it published. An
+  pointer commits, while the publisher's lease still protects what it published, unless
+  it is given a `DeferredBudgetCheck`: then the capture only marks the check owed. A
+  graph walk opens one (`NodeSnapshotStore.deferred_budget_check()`) around its nodes
+  (`_PlannedCaptures.budget_check`), so a walk that captures k nodes walks the store once
+  as the block ends, not k times; the walk's seed plan still leases every capture it
+  published, so none of them is evicted by the check. The block ends on a failure too, and
+  the check then runs for whatever the walk did publish. A check given to a store of
+  another root, or used after its block ended, is refused with `ValueError`. An
   `OSError` or `SourceCacheError` from the enforcement is logged
-  (`node_snapshot_automatic_budget_failed`) and the capture succeeds. A misconfigured
-  budget raises and fails the capture after releasing its lease. An explicit
-  publication runs no enforcement.
+  (`node_snapshot_automatic_budget_failed`) and the capture or walk succeeds. A
+  misconfigured budget raises: an immediate check fails the capture after releasing its
+  lease, a deferred one fails the walk, and a walk already failing keeps its own error,
+  the budget's added to it as a note. An explicit publication runs no enforcement.
 
 `usage()` reports the total, the automatic bytes and the budget for
 [`GET /api/cache/usage`](../server-api/low-level.md#cache-usage), which Pipeline settings
@@ -637,7 +648,8 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   cache build: only it may `refresh`, pin the slot, or replace a corrupt latest generation;
   an automatic capture raises the corruption. A superseded outcome returns the artifact.
   Otherwise, under the lease lock, it records the candidate identity and
-  retention in the slot index, renames staging to the generation, seeds the verified memo,
+  retention in the slot index, renames staging to the generation through
+  `_file_ops.rename_directory` (as an input snapshot's publication does), seeds the verified memo,
   creates the publisher's marker and in-process count, then commits the pointer. Indexing
   before exposure keeps interrupted candidates discoverable; an existing slot pin protects
   the previous current data until commit. It then retires every generation of the identity
@@ -678,7 +690,9 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   retired directory. A rename refused by an open Windows handle is logged
   (`source_cache_retirement_deferred`) and the generation is left whole, unpointed and
   selectable by id; the next retirement of its identity (a release, refresh, clear or
-  publication) renames it.
+  publication) renames it. Retirement tries once and does not wait as publication does:
+  it runs under the lease lock, often for many generations in one pass, and a deferred
+  generation is retired by the next pass.
 
 ### Staging reclamation and publication
 

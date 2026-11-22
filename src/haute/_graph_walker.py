@@ -564,8 +564,9 @@ class _Walk:
         self._init_walk_state()
         self._bind_plan_sources()
         self._start_step_progress()
-        for node_id in self.run_order:
-            self._walk_node(node_id)
+        with self.captures.budget_check():
+            for node_id in self.run_order:
+                self._walk_node(node_id)
         if self.display:
             self._replan_target_preview()
         return self._result()

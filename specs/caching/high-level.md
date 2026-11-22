@@ -158,7 +158,8 @@ and are never evicted. Automatic node-output captures share a byte budget: the p
 settings' cache size (`cache_size_gb` in `.haute/pipeline-settings.json`, see the
 [execution engine](../execution-engine/low-level.md#pipeline-settings)), automatically the
 smaller of 20 GiB and a tenth of free disk. The least recently leased unpinned, unleased capture
-is evicted first ([IO layer](../io-layer/high-level.md)). The preview status bar shows the
+is evicted first ([IO layer](../io-layer/high-level.md)). The budget is checked once for
+a run, after its captures, so a preview that captures many nodes walks the store once. The preview status bar shows the
 store's size; users inspect and clear stored datasets through the cache inventory.
 
 Studio also prepares structured Quote Inputs (JSON/JSONL/NDJSON/XML) before

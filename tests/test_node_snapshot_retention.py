@@ -27,6 +27,7 @@ from haute._hashing import content_hash
 from haute._node_config_models import NODE_CONFIG_MODELS, branch_values
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
+    DeferredBudgetCheck,
     NodeSnapshotColumns,
     NodeSnapshotOwner,
     NodeSnapshotPublication,
@@ -76,13 +77,15 @@ def _build_input_snapshot(
     store: NodeSnapshotStore | source_cache_module.SourceCacheStore,
     identity: SourceCacheIdentity,
     frame: pl.DataFrame | None = None,
+    *,
+    refresh: bool = False,
 ) -> None:
     df = frame if frame is not None else pl.DataFrame({"x": [1, 2, 3]})
     context = SourceCacheBuildContext(
         profile=ExecutionProfile.LAZY_SINK,
         build_class="bounded",
     )
-    store.build(identity, _LazyBuilder(df.lazy()), context=context)
+    store.build(identity, _LazyBuilder(df.lazy()), context=context, refresh=refresh)
 
 
 def _slot(tmp_path: Path, node_id: str = "join") -> NodeSnapshotSlot:
@@ -115,6 +118,7 @@ def _publish(
     dependencies: Mapping[str, str] | None = None,
     explicit: bool = False,
     refresh: bool = False,
+    budget_check: DeferredBudgetCheck | None = None,
 ) -> NodeSnapshotPublication:
     artifact = store.stage_node_output(identity)
     frame.write_parquet(artifact.part_path(0))
@@ -127,6 +131,7 @@ def _publish(
         profile=ExecutionProfile.NODE_SNAPSHOT,
         refresh=refresh,
         owner=_owner(identity),
+        budget_check=budget_check,
     )
 
 
@@ -367,6 +372,91 @@ def test_a_cleared_dependency_leaves_its_descendant_current(tmp_path: Path) -> N
     store.clear_slot(upstream_slot)
 
     assert store.slot_status(downstream_slot, "s1").state == "current"
+
+
+def _windows_holding_staging(monkeypatch: pytest.MonkeyPatch, *, refusals: int) -> list[Path]:
+    """Windows refusing to rename each staging folder *refusals* times, as it does while a
+    scanner or an indexer holds one of its new files open; the waits are made instant.
+    Returns the folders refused, one entry per refusal."""
+    from haute import _file_ops
+
+    monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        _file_ops,
+        "_WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS",
+        (0.0,) * len(_file_ops._WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS),
+    )
+    refused: list[Path] = []
+
+    def refusing(real: Any) -> Any:
+        def move(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+            folder = Path(source)
+            if folder.name.startswith(".staging-") and refused.count(folder) < refusals:
+                refused.append(folder)
+                error = PermissionError(errno.EACCES, "Access is denied", str(folder))
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+            real(source, target, *args, **kwargs)
+
+        return move
+
+    # Both of the operating system's renames, so a publication that renames its folder
+    # without waiting, by either, is refused like this too.
+    monkeypatch.setattr(os, "rename", refusing(os.rename))
+    monkeypatch.setattr(os, "replace", refusing(os.replace))
+    return refused
+
+
+def test_a_snapshot_whose_new_files_a_scanner_holds_for_a_moment_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both publications wait the scanner out (``rename_directory``), not one rename."""
+    store = NodeSnapshotStore(tmp_path)
+    source = _input_identity()
+    capture = _slot(tmp_path).identity("s1")
+    refused = _windows_holding_staging(monkeypatch, refusals=3)
+
+    _build_input_snapshot(store, source, pl.DataFrame({"x": [7]}))
+    _published_id(store, capture, pl.DataFrame({"a": [1]}))
+
+    assert len(refused) == 6 and len(set(refused)) == 2
+    with store.lease(source) as generation:
+        assert pl.read_parquet(generation.data_paths[0])["x"].to_list() == [7]
+    assert store.slot_status(_slot(tmp_path), "s1").state == "current"
+    assert not list(store.inputs_root.glob("*/.staging-*"))
+
+
+def test_a_scanner_holding_past_the_wait_fails_the_build_saying_so_and_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._failure_answers import classify_failure
+    from haute._file_ops import FolderInUseError
+
+    store = NodeSnapshotStore(tmp_path)
+    source = _input_identity()
+    _build_input_snapshot(store, source, pl.DataFrame({"x": [1]}))
+    refused = _windows_holding_staging(monkeypatch, refusals=9)
+
+    with pytest.raises(FolderInUseError) as raised:
+        _build_input_snapshot(store, source, pl.DataFrame({"x": [2]}), refresh=True)
+
+    assert len(refused) == 9
+    answer = classify_failure(raised.value)
+    assert answer is not None
+    assert (answer.status, answer.code) == (409, "folder_in_use")
+    assert answer.message == (
+        "Another program, such as an antivirus scanner or an indexer, has files Haute has "
+        "just written open. Try again in a moment."
+    )
+    with store.lease(source) as generation:
+        assert pl.read_parquet(generation.data_paths[0])["x"].to_list() == [1]
+    assert not list(store.inputs_root.glob("*/.staging-*"))
+
+    # Once the files are let go, the same build succeeds.
+    monkeypatch.undo()
+    _build_input_snapshot(store, source, pl.DataFrame({"x": [2]}), refresh=True)
+    with store.lease(source) as generation:
+        assert pl.read_parquet(generation.data_paths[0])["x"].to_list() == [2]
 
 
 def test_retired_directories_are_swept_once_per_process(
@@ -725,6 +815,85 @@ def test_a_misconfigured_budget_fails_the_capture_and_releases_its_lease(
     with pytest.raises(PipelineSettingsError, match="cache_size_gb"):
         _publish(store, identity, pl.DataFrame({"a": [1]}))
 
+    assert not store._leases
+
+
+def _counting_walks(store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """One entry per walk of *store* (``_scan_usage``)."""
+    walks: list[int] = []
+    scan = store._scan_usage
+
+    def counting() -> tuple[int, list[Any]]:
+        walks.append(1)
+        return scan()
+
+    monkeypatch.setattr(store, "_scan_usage", counting)
+    return walks
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["completes", "fails"])
+def test_a_deferred_budget_check_walks_once_as_its_block_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    frame = pl.DataFrame({"a": [1]})
+    old = _slot(tmp_path, "old").identity("s1")
+    _published_id(store, old, frame)
+    _last_used_at(store, old, time.time() - 600)
+    _budget(tmp_path, 2 * generation_bytes(_current_dir(store, old)))
+    walks = _counting_walks(store, monkeypatch)
+
+    with contextlib.ExitStack() as held:
+        with contextlib.suppress(RuntimeError), store.deferred_budget_check() as check:
+            for name in ("n1", "n2"):
+                identity = _slot(tmp_path, name).identity("s1")
+                held.enter_context(_publish(store, identity, frame, budget_check=check))
+            assert walks == []
+            if fails:
+                raise RuntimeError("the walk failed after its captures")
+
+        assert walks == [1]
+        assert store.latest_generation(old) is None
+        with pytest.raises(ValueError, match="after its block ended"):
+            _publish(store, _slot(tmp_path, "n3").identity("s1"), frame, budget_check=check)
+
+
+def test_a_deferred_budget_check_is_refused_for_another_store_or_an_explicit_build(
+    tmp_path: Path,
+) -> None:
+    store = NodeSnapshotStore(tmp_path / "one")
+    other = NodeSnapshotStore(tmp_path / "two")
+    frame = pl.DataFrame({"a": [1]})
+    identity = _slot(tmp_path).identity("s1")
+
+    with store.deferred_budget_check() as check:
+        with pytest.raises(ValueError, match="another root"):
+            _publish(other, identity, frame, budget_check=check)
+        with pytest.raises(ValueError, match="explicit build"):
+            _publish(store, identity, frame, explicit=True, budget_check=check)
+
+    assert store.latest_generation(identity) is None
+    assert other.latest_generation(identity) is None
+
+
+def test_a_misconfigured_budget_fails_a_deferred_check_and_notes_a_walk_already_failing(
+    tmp_path: Path,
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    (tmp_path / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / SETTINGS_PATH).write_text('{"cache_size_gb": "lots"}', encoding="utf-8")
+    frame = pl.DataFrame({"a": [1]})
+
+    with pytest.raises(PipelineSettingsError, match="cache_size_gb"):
+        with store.deferred_budget_check() as check:
+            with _publish(store, _slot(tmp_path, "a").identity("s1"), frame, budget_check=check):
+                pass
+
+    with pytest.raises(RuntimeError, match="the walk's own error") as raised:
+        with store.deferred_budget_check() as check:
+            with _publish(store, _slot(tmp_path, "b").identity("s1"), frame, budget_check=check):
+                raise RuntimeError("the walk's own error")
+    assert any("cache_size_gb" in note for note in raised.value.__notes__)
     assert not store._leases
 
 

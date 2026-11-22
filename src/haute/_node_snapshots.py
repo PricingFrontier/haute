@@ -53,7 +53,12 @@ from haute._cache import (
 from haute._chunked_writes import part_name, part_paths, scan_parts
 from haute._execution_context import ExecutionProfile
 from haute._file_lock import FileLock, UnsafeCachePathError, remove_unheld_lock_file
-from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
+from haute._file_ops import (
+    atomic_write_text,
+    ensure_disk_headroom,
+    remove_tree,
+    rename_directory,
+)
 from haute._logging import get_logger
 from haute._pipeline_settings import automatic_cache_size_bytes, read_pipeline_settings
 from haute._source_cache import (
@@ -864,6 +869,30 @@ class NodeSnapshotPublication:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+class DeferredBudgetCheck:
+    """One check of the automatic captures' budget, owed by the captures published through
+    it and run once as its block ends (`NodeSnapshotStore.deferred_budget_check`).
+
+    A walk that captures k nodes would otherwise walk the whole store after each of them,
+    k walks of a store that holds k captures.
+    """
+
+    def __init__(self, inputs_root: Path) -> None:
+        self._inputs_root = inputs_root
+        self._owed = False
+        self._ended = False
+
+    def _require_for(self, store: NodeSnapshotStore) -> None:
+        if self._ended:
+            raise ValueError("a deferred budget check was used after its block ended")
+        if store.inputs_root != self._inputs_root:
+            raise ValueError("a deferred budget check was given to a store of another root")
+
+    def _owe(self, store: NodeSnapshotStore) -> None:
+        self._require_for(store)
+        self._owed = True
 
 
 def _is_identity_digest(value: str) -> bool:
@@ -1820,6 +1849,31 @@ class NodeSnapshotStore(SourceCacheStore):
         except (OSError, SourceCacheError) as exc:
             logger.warning("node_snapshot_automatic_budget_failed", error=str(exc))
 
+    @contextlib.contextmanager
+    def deferred_budget_check(self) -> Iterator[DeferredBudgetCheck]:
+        """Check the automatic captures' budget once for the captures published inside.
+
+        Each automatic capture given the check (``publish_node_output(budget_check=)``)
+        only marks it owed, and the block's end runs it, on a failure too, for whatever
+        was published. A walk already failing keeps its own error, with the budget's
+        added as a note; an interrupt (a ``BaseException`` that is not an ``Exception``)
+        skips the check, which the next capture's runs.
+        """
+        check = DeferredBudgetCheck(self.inputs_root)
+        try:
+            yield check
+        except Exception as exc:
+            if check._owed:
+                try:
+                    self._enforce_budget_after_capture()
+                except Exception as budget_exc:  # noqa: BLE001 - the walk's own error wins
+                    exc.add_note(f"The automatic-capture budget check also failed: {budget_exc}")
+            raise
+        finally:
+            check._ended = True
+        if check._owed:
+            self._enforce_budget_after_capture()
+
     def publish_node_output(
         self,
         identity: SourceCacheIdentity,
@@ -1833,13 +1887,15 @@ class NodeSnapshotStore(SourceCacheStore):
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
         full_term: Mapping[str, Any] | None = None,
         owner: NodeSnapshotOwner,
+        budget_check: DeferredBudgetCheck | None = None,
     ) -> NodeSnapshotPublication:
         """Publish *artifact* under the publication rule and lease what was published.
 
         ``explicit`` marks an explicit cache build: it pins the slot and may
         replace a corrupt generation; an automatic capture does neither, and
         once it publishes, automatic captures are brought back within their
-        budget (`enforce_automatic_budget`).
+        budget (`enforce_automatic_budget`), at once, or as *budget_check*'s
+        block ends when one is given (`deferred_budget_check`).
         The writer always continues from its own data: on ``superseded`` the
         returned handle owns the artifact. *full_term* is a Model Score's
         full-policy-term facts (`parse_full_term`), recorded beside its output,
@@ -1848,6 +1904,11 @@ class NodeSnapshotStore(SourceCacheStore):
         """
         if refresh and not explicit:
             raise ValueError("only an explicit build can refresh a node-output snapshot")
+        if budget_check is not None:
+            if explicit:
+                raise ValueError("an explicit build runs no budget check to defer")
+            # Refused before anything is published, not after.
+            budget_check._require_for(self)
         self._require_node_output(identity)
         if artifact.identity.digest != identity.digest or artifact.directory.parent != (
             self.identity_path(identity)
@@ -1900,7 +1961,7 @@ class NodeSnapshotStore(SourceCacheStore):
                     key = (identity.digest, generation_id)
                     try:
                         final_dir.parent.mkdir(parents=True, exist_ok=True)
-                        artifact.directory.replace(final_dir)
+                        rename_directory(artifact.directory, final_dir)
                         artifact._mark_published()
                         published_stats = tuple(
                             (final_dir / part.name).stat() for part in metadata.parts
@@ -1952,7 +2013,9 @@ class NodeSnapshotStore(SourceCacheStore):
         try:
             generation = self._metadata_from_path(identity, generation_id)
             described = self.describe_generation(identity, generation)
-            if not explicit:
+            if budget_check is not None:
+                budget_check._owe(self)
+            elif not explicit:
                 # The publisher's lease protects this capture from its own
                 # enforcement; an explicit build adds nothing the budget counts.
                 self._enforce_budget_after_capture()

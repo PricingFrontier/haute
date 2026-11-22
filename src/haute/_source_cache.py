@@ -35,7 +35,7 @@ from haute._file_lock import (
     _release_file_lock,
     remove_unheld_lock_file,
 )
-from haute._file_ops import atomic_write_text, ensure_disk_headroom
+from haute._file_ops import atomic_write_text, ensure_disk_headroom, rename_directory
 from haute._hashing import content_hash
 from haute._logging import get_logger
 from haute._map_columns import (
@@ -1213,7 +1213,7 @@ class SourceCacheStore:
                     if not context.defer_retirement:
                         retired.extend(self._retire_unleased_locked(identity))
                     final_dir = generations_dir / generation_id
-                    staging.replace(final_dir)
+                    rename_directory(staging, final_dir)
                     atomic_write_text(
                         self._pointer_path(identity),
                         canonical_json(
