@@ -625,6 +625,7 @@ def test_a_save_from_a_tab_the_project_moved_away_from_finishes_no_earlier_save(
     stale.write_text("{}\n", encoding="utf-8")
     record = SaveRecord(
         source_file="main.py",
+        branch=WORKING,
         committed=True,
         removes=(Removal("config/stale.json", _artifact_digest(stale)),),
     )
@@ -634,7 +635,7 @@ def test_a_save_from_a_tab_the_project_moved_away_from_finishes_no_earlier_save(
         SavePipelineService(project_root=project).save(request)
 
     assert stale.read_text(encoding="utf-8") == "{}\n"
-    assert read_record(project, "main.py") is not None
+    assert read_record(project, "main.py", WORKING) is not None
 
 
 def test_a_save_refused_though_git_refuses_the_repository_when_another_branch_is_recorded(
@@ -657,3 +658,96 @@ def test_a_save_refused_though_git_refuses_the_repository_when_another_branch_is
     assert _refusal(refused)["error_code"] == "branch_changed"
     after = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
     assert after == on_disk
+
+
+def _left_on(project: Path, branch: str, stale: Path) -> None:
+    """A save on *branch* committed and left *stale* still to remove (a file held open)."""
+    from haute._save_records import Removal, SaveRecord, write_record
+    from haute.routes._save_pipeline import _artifact_digest
+
+    write_record(
+        project,
+        SaveRecord(
+            source_file="main.py",
+            branch=branch,
+            committed=True,
+            removes=(Removal(stale.relative_to(project).as_posix(), _artifact_digest(stale)),),
+        ),
+    )
+
+
+def test_a_save_on_another_branch_neither_finishes_nor_replaces_a_record_left_on_one(
+    project: Path,
+) -> None:
+    """A save on 'pricing' left a file to remove that 'other' needs: a save on 'other' leaves
+    the file and the record alone, and the next save back on 'pricing' finishes it."""
+    from haute._git import create_working_branch
+    from haute._save_records import read_record
+
+    needed = project / "config" / "needed.json"
+    needed.parent.mkdir(parents=True, exist_ok=True)
+    needed.write_text("{}\n", encoding="utf-8")
+    commit_save(["config/needed.json"], WORKING, cwd=project)
+    commit_milestone("Needed", project, cwd=project)
+    create_working_branch("other", project, cwd=project)
+    _left_on(project, WORKING, needed)
+    set_working_branch("other", project, cwd=project)
+
+    on_other = _save_request(project, banding=True).model_copy(update={"working_branch": "other"})
+    SavePipelineService(project_root=project).save(on_other)
+
+    assert needed.read_text(encoding="utf-8") == "{}\n"
+    assert read_record(project, "main.py", WORKING) is not None
+    assert read_record(project, "main.py", "other") is None
+
+    set_working_branch(WORKING, project, cwd=project)
+    on_pricing = _save_request(project, banding=False).model_copy(
+        update={"working_branch": WORKING}
+    )
+    SavePipelineService(project_root=project).save(on_pricing)
+
+    assert not needed.exists()
+    assert read_record(project, "main.py", WORKING) is None
+
+
+def test_the_start_settles_only_the_records_of_the_branch_the_project_is_on(
+    project: Path,
+) -> None:
+    from haute._git import create_working_branch
+    from haute._save_records import read_record
+    from haute.routes._save_pipeline import settle_saves
+
+    stale = project / "config" / "stale.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+    create_working_branch("other", project, cwd=project)
+    _left_on(project, "other", stale)
+
+    settle_saves(project)
+    assert stale.exists() and read_record(project, "main.py", "other") is not None
+
+    _left_on(project, WORKING, stale)
+    settle_saves(project)
+    assert not stale.exists() and read_record(project, "main.py", WORKING) is None
+
+
+def test_a_record_naming_no_branch_is_settled_where_the_project_is(project: Path) -> None:
+    """One written before records named their branch: the start settles it as it did."""
+    from haute._save_records import Removal, SaveRecord, read_record, write_record
+    from haute.routes._save_pipeline import _artifact_digest, settle_saves
+
+    stale = project / "config" / "stale.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+    write_record(
+        project,
+        SaveRecord(
+            source_file="main.py",
+            committed=True,
+            removes=(Removal("config/stale.json", _artifact_digest(stale)),),
+        ),
+    )
+
+    settle_saves(project)
+
+    assert not stale.exists() and read_record(project, "main.py", None) is None

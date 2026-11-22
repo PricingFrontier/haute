@@ -1,12 +1,16 @@
 """A pipeline save's progress and outcome, on disk under the clone's ``.haute/saves/``.
 
-A save writes its record (``records/``, one per pipeline file) before it replaces its first
-file: the operation it names and its request's digest, the revision it replaces, and every
+A save writes its record (``records/``, one per pipeline file and branch) before it replaces
+its first file: the operation it names and its request's digest, the revision it replaces, and every
 file it writes or removes. It marks the record committed once its files are written and
 parsed back, with its answer as it stands, and removes the record once its removals are made
 and captured. A committed save that named an operation leaves a receipt (``receipts/``) of its
 answer, the newest :data:`MAX_SAVE_RECEIPTS` kept, so a repeat of it is answered with what it
 did after a restart too.
+
+A record names the branch the project's checkout was on (:func:`checkout_branch`): its files
+are that checkout's, so only a save or a start on that branch settles it. A save on another
+branch neither finishes its work, which could remove a file that branch needs, nor replaces it.
 
 A record no save of this process is running (:func:`saving`) is one a server died in, or one
 whose rollback failed, or whose removals did not all succeed: the save route and the server's
@@ -93,6 +97,9 @@ class SaveRecord:
     a save that stopped: *readable* is False and it names no files."""
 
     source_file: str
+    # The branch the checkout was on (checkout_branch); None outside a repository, and for a
+    # record written before records named their branch.
+    branch: str | None = None
     operation: str | None = None
     digest: str | None = None
     base_revision: str | None = None
@@ -106,6 +113,7 @@ class SaveRecord:
     def to_json(self) -> dict[str, object]:
         return {
             "source_file": self.source_file,
+            "branch": self.branch,
             "operation": self.operation,
             "digest": self.digest,
             "base_revision": self.base_revision,
@@ -141,6 +149,7 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
         and isinstance(recorded, str)
         # One file, however a case-insensitive file system spells it (the record's key).
         and recorded.casefold() == source_file.casefold()
+        and _optional_str(raw.get("branch"))
         and _optional_str(raw.get("operation"))
         and _optional_str(raw.get("digest"))
         and _optional_str(raw.get("base_revision"))
@@ -159,6 +168,7 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
         return None
     return SaveRecord(
         source_file=recorded,
+        branch=raw.get("branch"),
         operation=raw["operation"],
         digest=raw["digest"],
         base_revision=raw["base_revision"],
@@ -187,21 +197,52 @@ def _key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
-def _record_path(project_root: Path, source_file: str) -> Path:
-    # One case, so the spellings a case-insensitive file system gives one file share it.
-    return _saves_folder(project_root, _RECORDS) / f"{_key(source_file.casefold())}.json"
+def _record_path(project_root: Path, source_file: str, branch: str | None) -> Path:
+    # One case, so the spellings a case-insensitive file system gives one file share it. A
+    # record outside a repository, or written before records named their branch, has none.
+    file = source_file.casefold()
+    key = _key(file) if branch is None else _key(f"{branch}\0{file}")
+    return _saves_folder(project_root, _RECORDS) / f"{key}.json"
+
+
+def checkout_branch(project_root: Path) -> str | None:
+    """The branch a record is kept for: the one the project's checkout is on, a save ledger
+    named as its working branch, ``detached@<commit>`` for a detached HEAD. None without git
+    or outside a repository, and where git refuses to work in it (a folder it does not
+    trust), where the checkout cannot be read."""
+    from haute._git_core import (
+        GitBlockedError,
+        _get_current_branch,
+        _is_git_repo,
+        _rev_parse,
+        git_binary_available,
+        working_name,
+    )
+
+    if not git_binary_available():
+        return None
+    try:
+        if not _is_git_repo(project_root):
+            return None
+        current = _get_current_branch(project_root)
+        if current == "HEAD":
+            commit = _rev_parse("HEAD", cwd=project_root)
+            return None if commit is None else f"detached@{commit}"
+    except GitBlockedError:
+        return None
+    return working_name(current) or current
 
 
 def write_record(project_root: Path, record: SaveRecord) -> None:
-    """Write *record*, replacing the one its pipeline file had."""
-    path = _record_path(project_root, record.source_file)
+    """Write *record*, replacing the one its pipeline file had on its branch."""
+    path = _record_path(project_root, record.source_file, record.branch)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(record.to_json(), indent=2) + "\n")
 
 
-def read_record(project_root: Path, source_file: str) -> SaveRecord | None:
-    """The record of a save of *source_file*, or None when there is none."""
-    path = _record_path(project_root, source_file)
+def read_record(project_root: Path, source_file: str, branch: str | None) -> SaveRecord | None:
+    """The record of a save of *source_file* on *branch*, or None when there is none."""
+    path = _record_path(project_root, source_file, branch)
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -212,13 +253,13 @@ def read_record(project_root: Path, source_file: str) -> SaveRecord | None:
         record = None
     if record is None:
         logger.warning("save_record_unreadable", path=str(path))
-        return SaveRecord(source_file=source_file, readable=False)
+        return SaveRecord(source_file=source_file, branch=branch, readable=False)
     return record
 
 
-def clear_record(project_root: Path, source_file: str) -> None:
-    """Forget the record of a save of *source_file*: it finished, or was put back."""
-    _record_path(project_root, source_file).unlink(missing_ok=True)
+def clear_record(project_root: Path, source_file: str, branch: str | None) -> None:
+    """Forget the record of a save of *source_file* on *branch*: it finished, or was put back."""
+    _record_path(project_root, source_file, branch).unlink(missing_ok=True)
 
 
 def saved_records(project_root: Path) -> list[SaveRecord]:
@@ -242,7 +283,7 @@ def saved_records(project_root: Path) -> list[SaveRecord]:
             if isinstance(source_file, str) and _project_file(source_file)
             else None
         )
-        if record is None or _record_path(project_root, record.source_file) != path:
+        if record is None or _record_path(project_root, record.source_file, record.branch) != path:
             logger.warning("save_record_unreadable", path=str(path))
             continue
         records.append(record)
@@ -280,11 +321,15 @@ def is_running(project_root: Path, source_file: str) -> bool:
 
 
 def interrupted_save(project_root: Path, source_file: str) -> SaveRecord | None:
-    """The record of a save of *source_file* that stopped before it committed, or None."""
+    """The record of a save of *source_file* on the branch the project is on that stopped
+    before it committed, or None. Git is asked for the branch only while some record is kept."""
     if is_running(project_root, source_file):
         return None
     try:
-        record = read_record(project_root, source_file)
+        folder = _saves_folder(project_root, _RECORDS)
+        if not any(folder.glob("*.json")):
+            return None
+        record = read_record(project_root, source_file, checkout_branch(project_root))
     except SaveRecordsUnavailableError:
         # A folder reached through a link holds no record a save of Haute's wrote: the load
         # reports none, and the next Save refuses with the link named.

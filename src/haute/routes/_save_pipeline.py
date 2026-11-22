@@ -61,6 +61,7 @@ from haute._sandbox import contained_path, is_contained
 from haute._save_records import (
     Removal,
     SaveRecord,
+    checkout_branch,
     clear_record,
     is_running,
     keep_receipt,
@@ -652,13 +653,14 @@ def _finish_committed(
             root,
             SaveRecord(
                 source_file=record.source_file,
+                branch=record.branch,
                 leftover=tuple(staging_left),
                 removes=tuple(removals.remaining),
                 committed=True,
             ),
         )
     else:
-        clear_record(root, record.source_file)
+        clear_record(root, record.source_file, record.branch)
     return FinishedSave(response, removals.removed, payload)
 
 
@@ -672,13 +674,14 @@ class _Settled(NamedTuple):
 
 
 def _settle_record(root: Path, record: SaveRecord | None) -> _Settled:
-    """Settle *record*, left by a save before this one: finish a committed one, and remove
-    the staging files of one that never committed, so no Commit takes them."""
+    """Settle *record*, left by a save before this one on the branch the project is on:
+    finish a committed one, and remove the staging files of one that never committed, so no
+    Commit takes them."""
     if record is None or is_running(root, record.source_file):
         return _Settled(None, None)
     if record.committed:
         finished = _finish_committed(root, record)
-        return _Settled(read_record(root, record.source_file), finished)
+        return _Settled(read_record(root, record.source_file, record.branch), finished)
     _remove_staging(root, [*record.writes, *record.leftover])
     return _Settled(record, None)
 
@@ -689,7 +692,18 @@ def settle_saves(project_root: Path) -> None:
     any request or Commit meets it. No canvas is open yet to be sent what it finishes."""
     root = project_root.resolve()
     with repository_mutation(root):
+        branch = checkout_branch(root)
         for record in saved_records(root):
+            # Its files are its branch's: one left on another waits for a start or a save
+            # there. One that names none (outside a repository, or written before records
+            # named their branch) is settled where the project is.
+            if record.branch is not None and record.branch != branch:
+                logger.info(
+                    "save_record_on_another_branch",
+                    source_file=record.source_file,
+                    branch=record.branch,
+                )
+                continue
             _settle_record(root, record)
 
 
@@ -892,7 +906,10 @@ class SavePipelineService:
                 return replayed
             if body.working_branch is not None:
                 refuse_another_branch(self._root, body.working_branch)
-            left = read_record(self._root, source_file)
+            # The records this save reads, settles and writes are this checkout's branch's:
+            # one left on another is neither finished here nor replaced.
+            branch = checkout_branch(self._root)
+            left = read_record(self._root, source_file, branch)
             settled = _settle_record(self._root, left)
             if left is not None and settled.finished is not None and left.answer is not None:
                 self.recovered = self._recovered_document(py_path, left, settled.finished)
@@ -907,6 +924,7 @@ class SavePipelineService:
                     source_file=source_file,
                     digest=digest,
                     carried=carried,
+                    branch=branch,
                 )
 
     def _recovered_document(
@@ -935,6 +953,7 @@ class SavePipelineService:
         source_file: str,
         digest: str | None,
         carried: SaveRecord | None,
+        branch: str | None,
     ) -> SavePipelineResponse:
         graph = body.graph
 
@@ -1029,6 +1048,7 @@ class SavePipelineService:
         leftover = () if carried is None else carried.leftover
         record = SaveRecord(
             source_file=source_file,
+            branch=branch,
             operation=body.operation,
             digest=digest,
             base_revision=body.base_revision,
@@ -1100,7 +1120,7 @@ class SavePipelineService:
             if not _rollback_artifacts(touched):
                 # Nothing of this save is left on disk: the record before it stands again.
                 if carried is None:
-                    clear_record(self._root, source_file)
+                    clear_record(self._root, source_file, branch)
                 else:
                     write_record(self._root, carried)
             raise

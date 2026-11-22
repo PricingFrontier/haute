@@ -713,7 +713,11 @@ detail, and the assistant shows the same message.
   removals and capture do; it is removed once the removals are made and captured. Each
   committed save that names an operation leaves a receipt under `.haute/saves/receipts/`, the
   newest 256 kept, so a repeat of it is answered with its answer after a restart too. A record
-  is settled when the server starts and before the next save of its pipeline: a committed one
+  names the branch the project's checkout was on, and is settled when the server starts on
+  that branch and before the next save of its pipeline there, since its files are that
+  branch's: a save on another branch neither finishes one, which could remove a file that
+  branch needs, nor replaces it (one naming no branch, outside a repository or written before
+  records named theirs, is settled where the project is). A committed one
   has its removals finished, its capture made and its receipt written; one that never
   committed, left by a server that died part-way or a rollback that failed, has its staging
   files removed, so no Commit takes them, and is reported on the pipeline's document as a
