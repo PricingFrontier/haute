@@ -52,6 +52,10 @@ _EXPECTED_DEBT_IDS = {
     # unsupported filesystems are covered separately by cache-bypass tests.
     "b37a0e4332ab67a7",
     "d60cb6e25d9d0a46",
+    # Two files whose names differ only in letter case exist only on a disk that keeps
+    # case apart; on Windows and macOS (CI's platform smoke) the same module renames the
+    # folders for real. See tests/test_git_letter_case.py.
+    "926269bfd5231f6c",
     # A file held open with open() blocks its replacement only on Windows, where
     # the git tree fence's real case lives; other platforms run the same fence
     # through a faked half-swap (tests/test_git_working_tree.py::TestTreeFence).

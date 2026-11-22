@@ -21,6 +21,7 @@ import {
   retryGitStorageSync,
 } from "../api/client"
 import type { GitBindStorageResponse, GitDeletedBranch, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
+import type { ReplacingFilesOptions } from "../api/client"
 import { answer, newest, requestKind, under, type Part, type Settled } from "../utils/answers"
 import { createSingleFlight } from "./singleFlight"
 
@@ -30,6 +31,8 @@ const statusFlight = createSingleFlight<GitWorkingBranchResponse | null>()
 const statusAsked = requestKind()
 /** What the store's own writes are asked under: a reset (tests) ends it. */
 const storeAsked = requestKind()
+/** Reads of the branch after a change told of it: only the newest opens the dialog. */
+const branchReads = requestKind()
 
 /** The git store as it is, as an answer's part: a git write's follow-ups that belong to no
  *  component (a repair's toast, the readiness read again) hold until the store is reset. */
@@ -164,7 +167,9 @@ interface GitActions {
   checkUpstream: () => Promise<GitUpstreamStatus>
   /** Catch this fork up to its parent, then refresh readiness (the catch-up
    *  publishes to the fork's own location, so the sync state moves). */
-  pullUpstream: () => Promise<GitFastForwardResponse>
+  /** The catch-up; its caller answers a refusal over files changed outside Haute
+   *  (`clearingTheWay`), and asks again with the choice. */
+  pullUpstream: (...settled: [] | [ReplacingFilesOptions]) => Promise<GitFastForwardResponse>
   /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
   retrySync: () => Promise<GitWorkingBranchResponse | null>
   /** Restore every `GitData` field to its initial value (test isolation only). */
@@ -319,9 +324,9 @@ const useGitStore = create<GitState>()((set, get) => ({
     return forkGitStorage(sourceUrl, targetUrl)
   },
   checkUpstream: async () => checkGitUpstream(),
-  pullUpstream: async () => {
+  pullUpstream: async (...settled) => {
     let pulled!: GitFastForwardResponse
-    await answer([gitStorePart()], pullGitUpstream(), {
+    await answer([gitStorePart()], pullGitUpstream(...settled), {
       ok: async (result) => {
         pulled = result
         // refresh: same pre-mutation-join hazard as bindStorage.
@@ -358,6 +363,29 @@ const useGitStore = create<GitState>()((set, get) => ({
  *  branch loader's). Async because the loader import must stay dynamic, like
  *  `loadBranches`' — a static import would fold the split chunk back into the
  *  main bundle. */
+/** The working branch this tab shows, which each of the project save's writes names so that
+ *  none lands on a branch the project has moved to since (`branch_changed`). */
+export function shownBranch(): string | null {
+  return useGitStore.getState().status?.working_branch ?? null
+}
+
+/**
+ * The project's branch may have moved, whoever moved it: live sync's `git_branch_changed`
+ * (another tab, a terminal) or a save refused as `branch_changed`. The readiness is read
+ * again as after this tab's own git actions, so the toolbar follows; a project moved off its
+ * working branch opens the dialog that asks what to do, unless another dialog is open; and
+ * the history and the branch list are read again.
+ */
+export function gitBranchMayHaveChanged(): Promise<unknown> {
+  return answer([newest(branchReads), gitStorePart()], useGitStore.getState().loadStatus({ refresh: true }), {
+    ok: (status) => {
+      const store = useGitStore.getState()
+      if (status?.state === "divergent" && store.modal === null) store.openModal("divergence")
+      store.notifyHistoryChanged()
+    },
+  })
+}
+
 export const resetGitStoreForTests = async (): Promise<void> => {
   resetGitStatusRequestForTests()
   const { resetGitBranchLoaderForTests } = await import("./gitBranchLoader")

@@ -13,7 +13,9 @@ from haute._git_core import (
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _assert_way_clear,
     _clear_content_caches,
+    _commit_tree,
     _get_current_branch,
     _is_ancestor,
     _ledger_or_branch_sha,
@@ -97,7 +99,7 @@ def _crystallize_milestone(anchor: str, save: str, name: str, cwd: Path | None =
     save's tree, so the new branch opens at a clean milestone capturing that state."""
     tree = _tree_of(save, cwd=cwd)
     msg = f"Start {name} from save {save[:8]}"
-    return _run_git("commit-tree", tree, "-p", anchor, "-p", save, "-m", msg, cwd=cwd)
+    return _commit_tree(tree, anchor, save, message=msg, cwd=cwd)
 
 
 def _folding_anchor(working_tip: str, save: str, cwd: Path | None = None) -> str:
@@ -148,6 +150,11 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
 
     Lazy spawn: the ledger is created at the working branch's current tip on
     first use. Returns the ledger branch name.
+
+    Only from the working branch itself, where the ledger's checkout changes no file: a
+    checkout anywhere else (another branch, a detached HEAD) is one the analyst moved the
+    project to, in a terminal or through another tab, and a save never checks out a branch
+    they left, so it is refused naming where the project is.
     """
     _assert_git_repo(cwd)
     _validate_ref_name(working)
@@ -155,11 +162,23 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
 
     if _rev_parse(working, cwd=cwd) is None:
         raise GitDomainError(f"Working branch '{working}' does not exist.")
+    current = _get_current_branch(cwd)
+    if current not in (working, ledger_name(working)):
+        raise GitDomainError(_checkout_elsewhere(current, working))
 
     opening = Operation("open-ledger", cwd or current_project().root, cwd)
     ledger = _open_ledger(opening, working)
     opening.run()
     return ledger
+
+
+def _checkout_elsewhere(current: str, working: str) -> str:
+    """Where the project is checked out, when it is on neither *working* nor its ledger."""
+    where = "an earlier version (a detached HEAD)" if current == "HEAD" else f"'{current}'"
+    return (
+        f"The project is checked out on {where}, not on '{working}', so nothing was recorded "
+        f"on '{working}'. Go back to '{working}', or make {where} the working branch."
+    )
 
 
 def _open_ledger(operation: Operation, working: str) -> str:
@@ -310,7 +329,7 @@ def set_working_branch(
             # a save is: the project's hooks run at a milestone.
             tree = _run_git("write-tree", cwd=cwd)
             try:
-                root = _run_git("commit-tree", tree, "-m", "Initial commit", cwd=cwd)
+                root = _commit_tree(tree, message="Initial commit", cwd=cwd)
             except GitError as exc:
                 stderr = str(exc)
                 if any(
@@ -345,8 +364,14 @@ def set_working_branch(
         creation.working_branch(branch)
         creation.run()
     else:
-        if not exists:
+        tip = _rev_parse(branch, cwd=cwd)
+        if tip is None:
             raise GitDomainError(f"Branch '{branch}' does not exist.")
+        # The checkout of the branch's ledger (its working tip before it spawns) replaces
+        # the files; adopting the branch the project is already on replaces none.
+        destination = _rev_parse(ledger_name(branch), cwd=cwd) or tip
+        on = _get_current_branch(cwd) in (branch, ledger_name(branch))
+        _assert_way_clear(f"switching to '{branch}'", destination, cwd, leaving=not on)
         # One operation: the ledger spawned if there is none, its checkout and the
         # recorded working branch, put back whole on any failure.
         selection = Operation("select-branch", project_root, cwd)

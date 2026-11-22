@@ -51,20 +51,38 @@ class TestGitArchive:
 # ---------------------------------------------------------------------------
 
 
+# A branch as no listing showed it, for a delete refused before the branch is read.
+_UNSEEN = {"tip": "0" * 40, "ledger_tip": None, "is_current": False, "is_checked_out": False}
+
+
+def _seen(client: TestClient, branch: str) -> dict[str, object]:
+    """*branch* as the branch manager lists it now: what a delete's confirmation names."""
+    listed = client.get("/api/git/working-branches").json()["branches"]
+    row = next(b for b in listed if b["name"] == branch)
+    return {key: row[key] for key in ("tip", "ledger_tip", "is_current", "is_checked_out")}
+
+
 class TestGitDeleteBranch:
     def test_deletes(self, client: TestClient, tmp_path: Path) -> None:
         _git(tmp_path, "checkout", "-b", "pricing/test-user/old")
         _git(tmp_path, "checkout", "main")
 
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": "pricing/test-user/old"}
+            "DELETE",
+            "/api/git/branches",
+            json={
+                "branch": "pricing/test-user/old",
+                "seen": _seen(client, "pricing/test-user/old"),
+            },
         )
         assert res.status_code == 200
         branches = _git(tmp_path, "branch")
         assert "old" not in branches
 
     def test_blocked_on_protected(self, client: TestClient) -> None:
-        res = client.request("DELETE", "/api/git/branches", json={"branch": "main"})
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "main", "seen": _UNSEEN}
+        )
         assert res.status_code == 403
 
 
@@ -113,10 +131,16 @@ class TestGitUndelete:
         branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         ledger_tip = _git(tmp_path, "rev-parse", ledger)
 
-        refused = client.request("DELETE", "/api/git/branches", json={"branch": self._FORK})
+        refused = client.request(
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "seen": _seen(client, self._FORK)},
+        )
         assert refused.status_code == 403  # the pending save still gates deletion
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         )
         assert res.status_code == 200
         entry_id = res.json()["trash_id"]
@@ -158,7 +182,9 @@ class TestGitUndelete:
         self._seed_fork_with_history(tmp_path)
         branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         )
         entry_id = res.json()["trash_id"]
         _git(tmp_path, "branch", self._FORK)  # a NEW branch reclaims the name
@@ -190,11 +216,15 @@ class TestGitUndelete:
         self._seed_fork_with_history(tmp_path)
         first_tip = _git(tmp_path, "rev-parse", self._FORK)
         first = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         ).json()["trash_id"]
         _git(tmp_path, "branch", self._FORK, "main")  # made again, elsewhere
         second = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         ).json()["trash_id"]
 
         assert first != second
@@ -243,7 +273,9 @@ class TestGitUndelete:
         ledger_tip = _git(tmp_path, "rev-parse", f"{archived}-save")
 
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": archived, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": archived, "confirm": True, "seen": _seen(client, archived)},
         )
         assert res.status_code == 200
         entry_id = res.json()["trash_id"]
@@ -281,7 +313,9 @@ class TestGitUndelete:
         _git(tmp_path, "branch", self._FORK)
 
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         )
 
         assert res.status_code == 200
@@ -408,7 +442,7 @@ class TestGeneralExceptionHandling:
     # Map of (endpoint_function_to_patch, request_method, path, body)
     _ENDPOINTS: list[tuple[str, str, str, dict | None]] = [
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
-        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x", "seen": _UNSEEN}),
         ("push_with_ci_secrets", "POST", "/api/git/push", {"remote": "origin"}),
         ("set_missing_ci_secrets", "POST", "/api/git/ci-secrets", {"remote": "origin"}),
         ("list_remotes", "GET", "/api/git/remotes", None),
@@ -868,7 +902,7 @@ class TestGitErrorEndpointResponses:
 
     _ENDPOINTS_FOR_GIT_ERROR: list[tuple[str, str, str, dict | None]] = [
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
-        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x", "seen": _UNSEEN}),
     ]
 
     @pytest.mark.parametrize(
@@ -1238,10 +1272,16 @@ class TestBranchManagerRoutes:
     ) -> None:
         self._set_branch(client)
         self._save(tmp_path)  # unmerged ledger save
-        refused = client.request("DELETE", "/api/git/branches", json={"branch": "pricing-dev"})
+        refused = client.request(
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": "pricing-dev", "seen": _seen(client, "pricing-dev")},
+        )
         assert refused.status_code == 403  # guardrail refusal
         confirmed = client.request(
-            "DELETE", "/api/git/branches", json={"branch": "pricing-dev", "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": "pricing-dev", "confirm": True, "seen": _seen(client, "pricing-dev")},
         )
         assert confirmed.status_code == 200
         assert "pricing-dev" not in _git(tmp_path, "branch")
@@ -1288,7 +1328,7 @@ class TestRefMoversPauseWatcher:
             ),
             ("post", "/api/git/working-branches", {"name": "pricing/test-user/y"}),
             ("post", "/api/git/archive", {"branch": "pricing/test-user/z"}),
-            ("delete", "/api/git/branches", {"branch": "pricing/test-user/z"}),
+            ("delete", "/api/git/branches", {"branch": "pricing/test-user/z", "seen": _UNSEEN}),
         ],
     )
     def test_ref_mover_pauses_watcher(
@@ -1429,7 +1469,7 @@ class TestTreeChangesAreAnnounced:
             (
                 "delete",
                 "/api/git/branches",
-                {"branch": "b"},
+                {"branch": "b", "seen": _UNSEEN},
                 "delete_working_pair",
                 {"status": "deleted", "branch": "b", "trash_id": "b@20261027T000000Z"},
             ),
@@ -1483,3 +1523,245 @@ class TestTreeChangesAreAnnounced:
 
         assert res.status_code == 200, res.text
         assert [set(payload) for payload in announced] == [{"pipelines_before"}]
+
+
+# ---------------------------------------------------------------------------
+# A file edited by hand in the way of a switch: 409 naming it, then asked again
+# ---------------------------------------------------------------------------
+
+
+class TestFilesChangedOutsideHaute:
+    _DEV = "pricing/test-user/dev"
+    _OTHER = "pricing/test-user/other"
+
+    def _hand_edited(self, tmp_path: Path) -> None:
+        from haute._git import commit_save, create_working_branch, set_working_branch
+
+        set_working_branch(self._DEV, tmp_path, create=True, cwd=tmp_path)
+        (tmp_path / "rates.csv").write_text("rate\n1\n")
+        commit_save(["rates.csv"], self._DEV, cwd=tmp_path)
+        create_working_branch(self._OTHER, tmp_path, cwd=tmp_path)
+        (tmp_path / "rates.csv").write_text("rate\n9\n")  # saved in Excel
+
+    def test_a_switch_names_the_file_and_switches_once_it_is_recorded(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._hand_edited(tmp_path)
+
+        refused = client.post("/api/git/working-branch", json={"branch": self._OTHER})
+        assert refused.status_code == 409
+        detail = refused.json()["detail"]
+        assert detail["error_code"] == "unrecorded_files"
+        assert detail["files"] == ["rates.csv"]
+        assert detail["message"].startswith("rates.csv has changed on disk outside Haute")
+
+        settle = {"choice": "record", "files": detail["files"], "token": detail["token"]}
+        done = client.post(
+            "/api/git/working-branch", json={"branch": self._OTHER, "settle": settle}
+        )
+        assert done.status_code == 200, done.text
+        assert _git(tmp_path, "show", f"{self._DEV}-save:rates.csv") == "rate\n9"
+        assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == f"{self._OTHER}-save"
+
+    def test_files_put_back_are_announced_although_the_operation_after_them_fails(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Put back lands, then Catch up fails (no such remote): the files changed with the
+        watcher paused, so the tree change is announced all the same."""
+        from haute._event_bus import default_bus
+        from haute._git_core import _unrecorded_token
+
+        self._hand_edited(tmp_path)
+        settle = {
+            "choice": "put-back",
+            "files": ["rates.csv"],
+            "token": _unrecorded_token(["rates.csv"], tmp_path),
+        }
+        announced: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("git.tree.changed", announced.append)
+        try:
+            failed = client.post(
+                "/api/git/fast-forward", json={"remote": "nowhere", "settle": settle}
+            )
+        finally:
+            unsubscribe()
+
+        assert failed.status_code == 400, failed.text
+        assert (tmp_path / "rates.csv").read_text() == "rate\n1\n"
+        assert len(announced) == 1
+
+    def test_the_parent_catch_up_settles_the_files_first(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _project_storage
+        from haute._git_core import _unrecorded_token
+        from haute.schemas import GitFastForwardResponse
+
+        self._hand_edited(tmp_path)
+        seen_on_disk: list[str] = []
+
+        def caught_up(root: Path) -> GitFastForwardResponse:
+            seen_on_disk.append((root / "rates.csv").read_text())
+            return GitFastForwardResponse(
+                remote="upstream", working_branch=self._DEV, fast_forwarded=[], labels_added=[]
+            )
+
+        monkeypatch.setattr(_project_storage, "pull_upstream", caught_up)
+        settle = {
+            "choice": "put-back",
+            "files": ["rates.csv"],
+            "token": _unrecorded_token(["rates.csv"], tmp_path),
+        }
+
+        pulled = client.post("/api/git/storage/upstream/pull", json={"settle": settle})
+
+        assert pulled.status_code == 200, pulled.text
+        assert seen_on_disk == ["rate\n1\n"]
+
+    def test_a_settled_path_outside_the_project_is_refused_before_anything_changes(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._hand_edited(tmp_path)
+        settle = {"choice": "put-back", "files": ["../elsewhere.csv"], "token": "t"}
+
+        refused = client.post(
+            "/api/git/working-branch", json={"branch": self._OTHER, "settle": settle}
+        )
+
+        assert refused.status_code == 400
+        assert (tmp_path / "rates.csv").read_text() == "rate\n9\n"
+
+
+# ---------------------------------------------------------------------------
+# Open tabs learn when the project changes branch, whoever changed it
+# ---------------------------------------------------------------------------
+
+
+class TestOpenTabsLearnTheBranch:
+    _DEV = "pricing/test-user/dev"
+    _OTHER = "pricing/test-user/other"
+
+    def test_a_switch_through_a_route_tells_the_open_tabs(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute._git import create_working_branch, set_working_branch
+
+        set_working_branch(self._DEV, tmp_path, create=True, cwd=tmp_path)
+        create_working_branch(self._OTHER, tmp_path, cwd=tmp_path)
+        monkeypatch.setattr(server, "_branch_told", None)
+        server._tell_branch_change()  # the baseline the branch watcher reads at startup
+        told: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("git.branch.changed", told.append)
+        try:
+            switched = client.post("/api/git/working-branch", json={"branch": self._OTHER})
+            assert switched.status_code == 200, switched.text
+            server._tell_branch_change()  # nothing more has changed: nothing more is told
+        finally:
+            unsubscribe()
+
+        assert told == [
+            {"checkout": f"refs/heads/{self._OTHER}-save", "working_branch": self._OTHER}
+        ]
+
+    def test_a_checkout_in_a_terminal_tells_the_open_tabs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`git switch -c` changes no file the file watcher sees: the branch watcher reads
+        the git directory's HEAD."""
+        import asyncio
+
+        from haute import server
+        from haute._event_bus import default_bus
+
+        monkeypatch.setattr(server, "_branch_told", None)
+        told: list[dict[str, object]] = []
+
+        async def watch_while_switching() -> None:
+            watcher = asyncio.create_task(server._branch_watcher())
+            try:
+                while server._branch_told is None:
+                    await asyncio.sleep(0.02)
+                # The watch starts after the baseline: switch until it has seen one.
+                for attempt in range(40):
+                    if told:
+                        return
+                    if attempt == 0:
+                        _git(tmp_path, "switch", "-q", "-c", "mine")
+                    else:
+                        _git(tmp_path, "switch", "-q", "main" if attempt % 2 else "mine")
+                    await asyncio.sleep(0.25)
+            finally:
+                watcher.cancel()
+
+        unsubscribe = default_bus.subscribe("git.branch.changed", told.append)
+        try:
+            asyncio.run(watch_while_switching())
+        finally:
+            unsubscribe()
+
+        assert told, "no branch change was told"
+        assert told[0]["checkout"] in ("refs/heads/mine", "refs/heads/main")
+
+
+class TestBranchWatcherQuietCases:
+    def test_a_branch_that_cannot_be_read_tells_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute._git_core import GitError
+
+        def unreadable(_root: Path) -> tuple[str, str | None]:
+            raise GitError("unreadable")
+
+        monkeypatch.setattr(server, "_branch_told", ("refs/heads/a", "a"))
+        monkeypatch.setattr(server, "_branch_now", unreadable)
+        told: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("git.branch.changed", told.append)
+        try:
+            server._tell_branch_change()
+        finally:
+            unsubscribe()
+
+        assert told == []
+        assert server._branch_told == ("refs/heads/a", "a")
+
+    def test_outside_a_repository_nothing_is_watched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from haute import server
+
+        outside = tmp_path / "no-repository"
+        outside.mkdir()
+        # The module's own repository is the folder above: git looks no further up.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        use_project(outside)
+
+        assert server._git_dir(outside) is None
+        asyncio.run(asyncio.wait_for(server._branch_watcher(), timeout=5))
+
+    def test_a_change_while_a_git_route_holds_the_pause_is_left_to_the_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        import watchfiles
+
+        from haute import server
+
+        calls: list[str] = []
+
+        async def one_change(*_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+            yield {(watchfiles.Change.modified, str(tmp_path / ".git" / "HEAD"))}
+
+        monkeypatch.setattr(watchfiles, "awatch", one_change)
+        monkeypatch.setattr(server, "watcher_is_paused", lambda: True)
+        monkeypatch.setattr(server, "_tell_branch_change", lambda: calls.append("told"))
+
+        asyncio.run(asyncio.wait_for(server._branch_watcher(), timeout=5))
+
+        assert calls == ["told"]  # the baseline only: the paused change is the route's

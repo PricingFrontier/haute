@@ -11,8 +11,10 @@ from typing import Literal
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
     _ARCHIVE_PREFIX,
+    GitBlockedError,
     _assert_git_repo,
     _branch_name_problem,
+    _get_current_branch,
     _get_default_branch,
     _is_git_repo,
     _is_protected,
@@ -131,6 +133,9 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
                       git); distinct from "no-repository" so the UI can say
                       "git is not available here" instead of offering init
       - "no-repository" — the project has no Git repository
+      - "blocked"   — a repository is there, but git refuses to work in it for a
+                      cause outside Haute (a folder it does not trust, settings it
+                      cannot read); ``errors`` says which and what to do
       - "interrupted" — an operation stopped part-way and its record is still
                       there; ``errors`` names it and its files
       - "unset"     — no working branch recorded
@@ -140,14 +145,25 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
                       ledger (user moved the repo outside haute)
       - "ready"     — recorded branch is the current lineage and healthy
     """
-    from haute._git_state import interruption_message, read_operation, read_working_branch
-
     if not git_binary_available():
         return GitWorkingBranchResponse(
             state="git-unavailable",
             current_branch="",
             identity_set=False,
         )
+
+    try:
+        return _repository_status(project_root, cwd)
+    except GitBlockedError as blocked:
+        # Not "no-repository": the history is there, and `git init` repairs nothing.
+        return GitWorkingBranchResponse(
+            state="blocked", current_branch="", identity_set=False, errors=[str(blocked)]
+        )
+
+
+def _repository_status(project_root: Path, cwd: Path | None) -> GitWorkingBranchResponse:
+    """The readiness of a clone with git available, every state but ``blocked``."""
+    from haute._git_state import interruption_message, read_operation, read_working_branch
 
     if not _is_git_repo(cwd):
         return GitWorkingBranchResponse(
@@ -292,6 +308,7 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
     # delete of the *current* pair needs. Compute once.
     ok_dirty, dirty_status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
     tree_dirty = ok_dirty and bool(dirty_status.strip())
+    checked_out = _get_current_branch(cwd)
 
     entries: list[GitManagedBranch] = []
     # Working AND ledger tips come from the single for-each-ref enumeration
@@ -306,6 +323,7 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
         if branch_category(b.name) != "working" or b.name == default:
             continue
         is_current = b.name == current
+        is_checked_out = checked_out in (b.name, ledger_name(b.name))
         entries.append(
             GitManagedBranch(
                 name=b.name,
@@ -314,7 +332,10 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                 has_unmerged_saves=_has_unmerged_saves(
                     tips.get(b.name), tips.get(ledger_name(b.name)), cwd=cwd
                 ),
-                has_uncommitted_changes=is_current and tree_dirty,
+                has_uncommitted_changes=(is_current or is_checked_out) and tree_dirty,
+                tip=tips[b.name],
+                ledger_tip=tips.get(ledger_name(b.name)),
+                is_checked_out=is_checked_out,
             )
         )
     from haute._git_state import read_trash, trash_entry_branch

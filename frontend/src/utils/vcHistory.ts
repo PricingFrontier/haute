@@ -13,6 +13,7 @@
  */
 
 import {
+  type GitBranchSeen,
   gitArchiveBranch,
   gitDeleteBranch,
   restoreBranch,
@@ -27,6 +28,7 @@ import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import { documentPart } from "../stores/useDocumentStatusStore"
 import { answer } from "./answers"
+import { clearingTheWay } from "./clearingTheWay"
 
 /** Re-sync git state everywhere after an inverse ran: status (toolbar,
  *  branch manager) + the history nonce (Git panel refetch). The status is the git store's,
@@ -89,7 +91,7 @@ async function switchLeg(
   await answer([documentPart()], leaveUnsavedEdits(question, onSave), {
     ok: async (leave) => {
       if (!leave) cancelled()
-      await leg(() => answer(chosenOverParts(), setWorkingBranch(branch, false), {
+      await leg(() => answer(chosenOverParts(), clearingTheWay((...settled) => setWorkingBranch(branch, false, ...settled)), {
         ok: async (_switched, asked) => {
           discardCanvasEdits()
           await asked.answer(discardFormEdits(), {})
@@ -119,7 +121,7 @@ export function recordArchive(branch: string, archivedAs: string): void {
   useGraphStore.getState().pushVcEntry({
     label: `archive ${branch}`,
     undo: () => leg(() => restoreBranch(archivedAs), `Restored ${branch}`),
-    redo: () => leg(() => gitArchiveBranch(branch), `Archived ${branch}`),
+    redo: () => leg(() => clearingTheWay((...settled) => gitArchiveBranch(branch, ...settled)), `Archived ${branch}`),
   })
 }
 
@@ -128,21 +130,23 @@ export function recordArchive(branch: string, archivedAs: string): void {
 export function recordRestore(archivedName: string, restoredAs: string): void {
   useGraphStore.getState().pushVcEntry({
     label: `restore ${restoredAs}`,
-    undo: () => leg(() => gitArchiveBranch(restoredAs), `Archived ${restoredAs}`),
+    undo: () => leg(() => clearingTheWay((...settled) => gitArchiveBranch(restoredAs, ...settled)), `Archived ${restoredAs}`),
     redo: () => leg(() => restoreBranch(archivedName), `Restored ${restoredAs}`),
   })
 }
 
 /** Each delete is its own trash entry: undo restores the entry the delete
- *  made, and a redo's delete makes a new one, which the next undo restores. */
-export function recordDelete(branch: string, trashId: string): void {
+ *  made, and a redo's delete makes a new one, which the next undo restores.
+ *  An undo brings the branch back exactly, so the redo names it as the delete
+ *  saw it, and is refused if the branch moved in between. */
+export function recordDelete(branch: string, trashId: string, seen: GitBranchSeen): void {
   let entry = trashId
   useGraphStore.getState().pushVcEntry({
     label: `delete ${branch}`,
     undo: () => leg(() => undeleteBranch(entry), `Restored ${branch} from trash`),
     redo: () =>
       leg(async () => {
-        entry = (await gitDeleteBranch(branch, true)).trash_id
+        entry = (await gitDeleteBranch(branch, seen, true)).trash_id
       }, `Deleted ${branch}`),
   })
 }

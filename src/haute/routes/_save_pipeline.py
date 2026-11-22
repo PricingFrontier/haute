@@ -59,11 +59,16 @@ from haute._pipeline_recovery import (
 )
 from haute._sandbox import contained_path, is_contained
 from haute._save_records import (
+    Held,
     Removal,
     SaveRecord,
     clear_record,
+    file_digest,
+    held_records,
+    holds_here,
     is_running,
     keep_receipt,
+    put_records,
     read_record,
     replay_receipt,
     save_request_digest,
@@ -224,9 +229,12 @@ class _DefinitionFile(NamedTuple):
 
 def _artifact_digest(path: Path) -> str | None:
     """sha256 of *path*'s bytes, or ``None`` when it does not exist as a file."""
-    if not path.is_file():
-        return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return file_digest(path)
+
+
+def _bytes_digest(text: str) -> str:
+    """The digest :func:`_artifact_digest` gives a file once *text* is written to it."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _recorded_digest_for_same_file(
@@ -376,6 +384,57 @@ def resolve_definition_file(
         raise ForbiddenError("Cannot access paths outside the project root") from None
 
 
+def refuse_another_branch(root: Path, shown: str) -> None:
+    """Refuse, before anything is written, a save from a tab showing the working branch
+    *shown* when the project has moved on: another tab or a terminal switched it, so the
+    save would land on another branch than the tab names, or the checkout is on neither the
+    branch nor its ledger, where the capture would have to check out a branch the analyst
+    left. The unsaved work stays in the tab. Each of the project save's three writes runs
+    it under the repository lock: the uncaptured files' capture, the workbench form and the
+    pipeline.
+
+    The working branch Haute records is read without git, so another one recorded refuses
+    the save even where git refuses to work in the repository (``GitBlockedError``); the
+    checkout, which only git can tell, is then not checked, and the save lands on disk with
+    its capture's warning giving the cause."""
+    from haute._git_core import GitBlockedError, _get_current_branch, _is_git_repo, ledger_name
+    from haute._git_state import read_working_branch
+
+    def moved(now: str) -> ConflictError:
+        return ConflictError(
+            {
+                "error_code": "branch_changed",
+                "message": (
+                    f"This tab shows the branch '{shown}', but the project {now} now, so "
+                    "nothing was saved. Your changes are still here."
+                ),
+            }
+        )
+
+    recorded = read_working_branch(root)
+    if recorded is not None and recorded != shown:
+        raise moved(f"is on '{recorded}'")
+    try:
+        if recorded is None:
+            if _is_git_repo(root):
+                raise moved("has no working branch")
+            return
+        current = _get_current_branch(root)
+    except GitBlockedError:
+        return
+    if current not in (recorded, ledger_name(recorded)):
+        where = "an earlier version (a detached HEAD)" if current == "HEAD" else f"'{current}'"
+        raise ConflictError(
+            {
+                "error_code": "branch_changed",
+                "message": (
+                    f"The project is checked out on {where}, not on '{recorded}', so nothing "
+                    "was saved. Your changes are still here."
+                ),
+            }
+        )
+
+
 def capture_save_in_ledger(
     root: Path, rel_paths: list[str], warnings: list[str], message: str | None = None
 ) -> LedgerCapture:
@@ -398,36 +457,41 @@ def capture_save_in_ledger(
     ``uncaptured``: the commit is pathspec-scoped, so no later save's capture
     takes them, and the editor keeps them for ``POST /api/git/capture``.
     """
+    from haute import _git
     from haute._git_core import _is_git_repo
     from haute._git_state import read_working_branch
 
     if not rel_paths:
         return LedgerCapture(None, False, [])
-    working = read_working_branch(root)
-    if working is None:
-        if not _is_git_repo(root):
-            return LedgerCapture(None, False, [])
-        warnings.append(
-            "Changes saved, but no working branch is chosen, so version history doesn't "
-            "have them yet. Choose a working branch to keep them."
-        )
-        return LedgerCapture(None, False, list(rel_paths))
-
-    from haute import _git
-
-    # Same source of truth as the working-branch response's `identity_set`.
-    # Checked BEFORE committing so a missing identity costs no failing
-    # subprocess and yields a specific, actionable message instead of the
-    # generic git-error fallback.
-    name, email = _git.get_identity(root)
-    if name is None or email is None:
-        warnings.append(
-            "Changes saved, but version capture needs a git identity. "
-            "Set your name and email to keep version history."
-        )
-        return LedgerCapture(None, True, list(rel_paths))
-
     try:
+        # Inside the try: a folder git does not trust, or settings it cannot read, refuses
+        # these probes in words (GitBlockedError) rather than reading as no repository or
+        # no identity.
+        working = read_working_branch(root)
+        # The repository first: in a folder git does not trust it reads none of the
+        # repository's own settings, so an identity set there would read as missing.
+        in_repository = _is_git_repo(root)
+        if working is None:
+            if not in_repository:
+                return LedgerCapture(None, False, [])
+            warnings.append(
+                "Changes saved, but no working branch is chosen, so version history doesn't "
+                "have them yet. Choose a working branch to keep them."
+            )
+            return LedgerCapture(None, False, list(rel_paths))
+
+        # Same source of truth as the working-branch response's `identity_set`.
+        # Checked BEFORE committing so a missing identity costs no failing
+        # subprocess and yields a specific, actionable message instead of the
+        # generic git-error fallback.
+        name, email = _git.get_identity(root)
+        if name is None or email is None:
+            warnings.append(
+                "Changes saved, but version capture needs a git identity. "
+                "Set your name and email to keep version history."
+            )
+            return LedgerCapture(None, True, list(rel_paths))
+
         sha = _git.commit_save(rel_paths, working, cwd=root, message=message)
         if sha is not None:
             # Publish to durable storage when bound; no-op otherwise.
@@ -436,7 +500,8 @@ def capture_save_in_ledger(
             _project_storage.enqueue_push()
         return LedgerCapture(sha, False, [])
     except _git.GitDomainError as exc:
-        # Hand-authored messages (incl. guardrails) are safe verbatim.
+        # Hand-authored messages (incl. guardrails and the causes git names) are safe
+        # verbatim.
         warnings.append(f"Changes saved; version capture failed: {exc}")
     except _git.GitError as exc:
         # Raw git stderr may leak paths/remotes: it is recorded under the incident the
@@ -548,6 +613,15 @@ def _remove_staging(root: Path, writes: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(left))
 
 
+def _holding_now(root: Path, holds: Sequence[Held]) -> tuple[Held, ...]:
+    """*holds*, each file named by the bytes it holds now: what a save left in its code."""
+    return tuple(
+        Held(held.file, (_artifact_digest(path),))
+        for held in holds
+        if (path := _recorded_path(root, held.file)) is not None
+    )
+
+
 def _finish_committed(
     root: Path, record: SaveRecord, *, commit_message: str | None = None
 ) -> FinishedSave:
@@ -591,17 +665,21 @@ def _finish_committed(
         if record.operation is not None and record.digest is not None:
             keep_receipt(root, record.operation, record.digest, response)
     if removals.remaining or staging_left:
+        # What is still to do waits for the code the save left, as it stands after the
+        # capture (a commit hook may have rewritten it).
         write_record(
             root,
             SaveRecord(
                 source_file=record.source_file,
+                id=record.id,
+                holds=_holding_now(root, record.holds),
                 leftover=tuple(staging_left),
                 removes=tuple(removals.remaining),
                 committed=True,
             ),
         )
     else:
-        clear_record(root, record.source_file)
+        clear_record(root, record.source_file, record.id)
     return FinishedSave(response, removals.removed, payload)
 
 
@@ -615,25 +693,31 @@ class _Settled(NamedTuple):
 
 
 def _settle_record(root: Path, record: SaveRecord | None) -> _Settled:
-    """Settle *record*, left by a save before this one: finish a committed one, and remove
-    the staging files of one that never committed, so no Commit takes them."""
+    """Settle *record*, left by a save before this one, which the checkout holds: finish a
+    committed one, and remove the staging files of one that never committed, so no Commit
+    takes them."""
     if record is None or is_running(root, record.source_file):
         return _Settled(None, None)
     if record.committed:
         finished = _finish_committed(root, record)
-        return _Settled(read_record(root, record.source_file), finished)
+        return _Settled(read_record(root, record.source_file, record.id), finished)
     _remove_staging(root, [*record.writes, *record.leftover])
     return _Settled(record, None)
 
 
 def settle_saves(project_root: Path) -> None:
-    """Settle every record a save left in the project: the server runs it as it starts, so
-    a save it died in is finished, or its staging files are gone and it is reported, before
-    any request or Commit meets it. No canvas is open yet to be sent what it finishes."""
+    """Settle every record a save left in the project that the checkout holds: the server
+    runs it as it starts, so a save it died in is finished, or its staging files are gone and
+    it is reported, before any request or Commit meets it. No canvas is open yet to be sent
+    what it finishes. A record whose code is not checked out (a save on another branch, say)
+    waits for a start or a save where it is."""
     root = project_root.resolve()
     with repository_mutation(root):
         for record in saved_records(root):
-            _settle_record(root, record)
+            if holds_here(root, record):
+                _settle_record(root, record)
+            else:
+                logger.info("save_record_not_checked_out", source_file=record.source_file)
 
 
 class SavePipelineService:
@@ -807,10 +891,14 @@ class SavePipelineService:
         *commit_message* is the ledger commit's message; without one the
         commit names the changed files.
 
-        Under the lock, the save first settles its pipeline's record left by a save
-        before it (:func:`_settle_record`). A request naming an operation that has a
-        receipt is then answered with it, writing nothing (``replayed``), before the
-        file is read: a repeat of a committed save returns what that save did.
+        Under the lock, a request naming an operation that has a receipt is first
+        answered with it, writing nothing (``replayed``): a repeat of a committed save
+        returns what that save did, wherever the project has moved since. A save naming
+        the branch its tab shows is then refused when the project has moved
+        (:func:`refuse_another_branch`), before anything changes a file. Only then is the
+        pipeline's record left by a save before it settled (:func:`_settle_record`), which
+        removes and captures files, and the receipt looked for again, since the settle may
+        have finished this very save.
         """
         self.committed = None
         self.replayed = False
@@ -818,25 +906,38 @@ class SavePipelineService:
         with repository_mutation(self._root):
             py_path = self._resolve_source_file(body.source_file)
             source_file = py_path.relative_to(self._root).as_posix()
-            left = read_record(self._root, source_file)
-            settled = _settle_record(self._root, left)
-            if left is not None and settled.finished is not None and left.answer is not None:
-                self.recovered = self._recovered_document(py_path, left, settled.finished)
-            carried = settled.remaining
             # The digest serializes the whole request: made only for one a repeat can name.
             digest = None if body.operation is None else save_request_digest(body)
-            if body.operation is not None and digest is not None:
-                replayed = replay_receipt(self._root, body.operation, digest)
-                if replayed is not None:
-                    self.replayed = True
-                    return replayed
+
+            def receipt() -> SavePipelineResponse | None:
+                if body.operation is None or digest is None:
+                    return None
+                return replay_receipt(self._root, body.operation, digest)
+
+            if (replayed := receipt()) is not None:
+                self.replayed = True
+                return replayed
+            if body.working_branch is not None:
+                refuse_another_branch(self._root, body.working_branch)
+            # The records this save settles and carries are those whose code is checked out:
+            # one left where other code is (another branch's) is neither finished nor replaced.
+            carried: list[SaveRecord] = []
+            for left in held_records(self._root, source_file):
+                settled = _settle_record(self._root, left)
+                if settled.finished is not None and left.answer is not None:
+                    self.recovered = self._recovered_document(py_path, left, settled.finished)
+                if settled.remaining is not None:
+                    carried.append(settled.remaining)
+            if (replayed := receipt()) is not None:
+                self.replayed = True
+                return replayed
             with saving(self._root, source_file):
                 return self._save(
                     body,
                     commit_message=commit_message,
                     source_file=source_file,
                     digest=digest,
-                    carried=carried,
+                    carried=tuple(carried),
                 )
 
     def _recovered_document(
@@ -864,7 +965,7 @@ class SavePipelineService:
         commit_message: str | None,
         source_file: str,
         digest: str | None,
-        carried: SaveRecord | None,
+        carried: tuple[SaveRecord, ...],
     ) -> SavePipelineResponse:
         graph = body.graph
 
@@ -948,17 +1049,26 @@ class SavePipelineService:
         # the file.
         planned_folded = {self._project_file(path).casefold() for path in [*planned, *deletes]}
         removes = {removal.file.casefold(): removal for removal in self._stale_config_files()}
-        if carried is not None:
-            for removal in carried.removes:
-                if removal.file.casefold() not in planned_folded:
-                    removes.setdefault(removal.file.casefold(), removal)
+        for removal in (removal for left in carried for removal in left.removes):
+            if removal.file.casefold() not in planned_folded:
+                removes.setdefault(removal.file.casefold(), removal)
         # A record left before: the files of a save that never committed, which may hold
         # either save until this one commits and are captured with it (a deletion it made is
         # still to record), and those whose staging is still to remove, never captured.
-        carried_writes = () if carried is None else carried.writes
-        leftover = () if carried is None else carried.leftover
+        carried_writes = [rel for left in carried for rel in left.writes]
+        leftover = [rel for left in carried for rel in left.leftover]
+        # Until it commits, the code holds what it held before or what this save writes.
+        holds = {
+            rel.casefold(): Held(rel, (_artifact_digest(path), _bytes_digest(code)))
+            for path, code in code_files
+            if (rel := self._project_file(path))
+        }
+        for target in deletes:
+            rel = self._project_file(target)
+            holds.setdefault(rel.casefold(), Held(rel, (_artifact_digest(target), None)))
         record = SaveRecord(
             source_file=source_file,
+            holds=tuple(holds.values()),
             operation=body.operation,
             digest=digest,
             base_revision=body.base_revision,
@@ -974,7 +1084,8 @@ class SavePipelineService:
             leftover=tuple(dict.fromkeys(leftover)),
             removes=tuple(removes.values()),
         )
-        write_record(self._root, record)
+        # The records carried are this save's now: they go in the one write that puts it.
+        write_record(self._root, record, replacing=[left.id for left in carried])
 
         touched: list[_TouchedFile] = []
         try:
@@ -1024,15 +1135,18 @@ class SavePipelineService:
                 warnings=warnings,
                 saved_parts=self._saved_parts(graph, edited, body.edited_settings),
             )
-            record = replace(record, committed=True, answer=answer.model_dump(mode="json"))
+            record = replace(
+                record,
+                committed=True,
+                answer=answer.model_dump(mode="json"),
+                holds=_holding_now(self._root, record.holds),
+            )
             write_record(self._root, record)
         except BaseException:
             if not _rollback_artifacts(touched):
-                # Nothing of this save is left on disk: the record before it stands again.
-                if carried is None:
-                    clear_record(self._root, source_file)
-                else:
-                    write_record(self._root, carried)
+                # Nothing of this save is left on disk: the records before it stand again,
+                # in the one write that forgets this save's.
+                put_records(self._root, source_file, carried, dropping=[record.id])
             raise
 
         # The file-watcher skips self-written paths before invalidating the

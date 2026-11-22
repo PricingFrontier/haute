@@ -58,12 +58,12 @@ const WRITE_WRAPPERS: Record<string, () => Promise<unknown>> = {
   updateUtilityFile: () => updateUtilityFile("helpers", "x = 1\n", "rev-1"),
   deleteUtilityFile: () => deleteUtilityFile("helpers", "rev-1"),
   deleteProjectFile: () => deleteProjectFile("pipeline", "data/a.csv", "rev-1"),
-  saveWorkbenchForm: () => saveWorkbenchForm({ pages: [] } as unknown as FormSpec, "rev-1"),
+  saveWorkbenchForm: () => saveWorkbenchForm({ pages: [] } as unknown as FormSpec, "rev-1", null),
   deleteTestQuote: () => deleteTestQuote("quote.json", "rev-1", "main"),
   patchPipelineSettings: () => patchPipelineSettings({ chunk_rows: 1000 } as never),
   putMlflowSettings: () => putMlflowSettings({} as never),
   cancelInputCacheJob: () => cancelInputCacheJob("job-1"),
-  gitDeleteBranch: () => gitDeleteBranch("feature"),
+  gitDeleteBranch: () => gitDeleteBranch("feature", { tip: "a".repeat(40), ledger_tip: null, is_current: false, is_checked_out: false }),
 }
 
 describe("every write is sent once", () => {

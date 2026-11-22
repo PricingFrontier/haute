@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from haute._file_ops import is_staging_name
 from haute._git_core import (
@@ -16,8 +17,10 @@ from haute._git_core import (
     _assert_git_repo,
     _assert_new_branch_name,
     _assert_no_git_op_in_progress,
+    _assert_way_clear,
     _canonical_remote,
     _commit_parents,
+    _commit_tree,
     _generate_commit_message,
     _git_env,
     _GitProcessTimeoutError,
@@ -35,6 +38,7 @@ from haute._git_core import (
     _serialized_mutation,
     _serialized_while_interrupted,
     _tree_of,
+    _unrecorded_token,
     _validate_ref_name,
     divergence_state,
     ledger_name,
@@ -72,6 +76,7 @@ __all__ = [
     "commit_milestone",
     "restore_version",
     "retry_interrupted",
+    "settle_unrecorded",
 ]
 
 # How many of the files in a restore's way its refusal names.
@@ -100,7 +105,29 @@ def commit_save(
     _assert_no_git_op_in_progress(cwd)
 
     ledger = resolve_ledger(working, cwd=cwd)
+    # Every command below names a path as git spells it, which a folder renamed to other
+    # letter case on Windows or macOS no longer matches.
+    spelled = _git_spelling(paths, cwd)
+    sha: str | None = None
+    staged = _stage_save(spelled, cwd)
+    if staged is not None:
+        pathspecs, changed = staged
+        msg = message if message is not None else _generate_commit_message(changed)
+        # `git commit -- <paths>` commits the working-tree state of exactly those
+        # paths, bypassing unrelated index content the user may have pre-staged. It is
+        # the one ref move outside a recorded operation: one commit, all or nothing.
+        with _save_commit():
+            _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
+        sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
+        logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
+    _refuse_unrecorded(spelled, cwd)
+    return sha
 
+
+def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str]] | None:
+    """Stage a save of *paths*, as git spells them: the pathspecs its commit takes and the
+    paths that changed, which name the files in its default message; None when nothing in
+    *paths* changed."""
     # :(literal) so a filename holding glob characters names only itself.
     literal = [_literal(path) for path in paths]
     # `git add` takes a path in the index or in the working tree (`--others`, untracked). One
@@ -123,8 +150,10 @@ def commit_save(
     if not _run_git("status", "--porcelain", "--", *pathspecs, cwd=cwd):
         return None
 
-    # New files must be known to git before a pathspec'd commit can include
-    # them; the explicit-path add also stages deletions of tracked paths.
+    # New files must be known to git before a pathspec'd commit can include them, and the add
+    # stages the deletion of a tracked file removed from disk. A deletion or a rename's old
+    # name already staged (`git rm`, `git mv`, an editor's git panel) is in neither the folder
+    # nor the index, so it is not added: the path-scoped commit records it as staged.
     if addable:
         _run_git("add", "--", *map(_literal, addable), cwd=cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
@@ -136,22 +165,99 @@ def commit_save(
         "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *pathspecs, cwd=cwd
     )
     changed = staged.splitlines()
-    if not changed:
-        return None
-    msg = message if message is not None else _generate_commit_message(changed)
-    # `git commit -- <paths>` commits the working-tree state of exactly those
-    # paths, bypassing unrelated index content the user may have pre-staged. It is
-    # the one ref move outside a recorded operation: one commit, all or nothing.
-    with _save_commit():
-        _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
-
-    sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
-    logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
-    return sha
+    return (pathspecs, changed) if changed else None
 
 
 def _literal(path: str) -> str:
     return f":(literal){path}"
+
+
+def _git_spelling(paths: list[str], cwd: Path | None) -> list[str]:
+    """Each of *paths* as git spells it.
+
+    Git on Windows and macOS ignores letter case on disk but compares a path letter for
+    letter, so after a folder is renamed from ``rating`` to ``Rating`` git keeps ``rating``
+    and finds nothing under ``Rating/main.py``: the save would record nothing. A path is
+    given git's spelling when git tracks it, or its nearest folder, under other letter case
+    and both spellings name one place on disk; on a disk that keeps case apart they never
+    do, so two files whose names differ only in case stay two."""
+    root = cwd or current_project().root
+    tops = dict.fromkeys(f":(icase,literal){PurePosixPath(path).parts[0]}" for path in paths)
+    tracked = [
+        name
+        for name in _run_git("ls-files", "-z", "--cached", "--", *tops, cwd=cwd).split("\0")
+        if name
+    ]
+    exact = set(tracked)
+    files: dict[str, list[str]] = {}
+    folders: dict[str, list[str]] = {}
+    for name in tracked:
+        files.setdefault(name.casefold(), []).append(name)
+        parts = name.split("/")
+        for depth in range(1, len(parts)):
+            folder = "/".join(parts[:depth])
+            known = folders.setdefault(folder.casefold(), [])
+            if folder not in known:
+                known.append(folder)
+
+    def spelled(path: str) -> str:
+        if path in exact:
+            return path
+        for known in files.get(path.casefold(), ()):
+            if _same_place(root, path, known):
+                return known
+        parts = path.split("/")
+        for depth in range(len(parts) - 1, 0, -1):
+            folder = "/".join(parts[:depth])
+            for known in folders.get(folder.casefold(), ()):
+                if known == folder:
+                    return path
+                if _same_place(root, folder, known):
+                    return "/".join([known, *parts[depth:]])
+        return path
+
+    return [spelled(path) for path in paths]
+
+
+def _same_place(root: Path, one: str, other: str) -> bool:
+    """Whether *one* and *other*, relative to *root*, name the same file or folder on disk;
+    for two that are both gone (a deleted file), whether their folders are the same."""
+    first, second = root / one, root / other
+    if first.exists() or second.exists():
+        try:
+            return os.path.samefile(first, second)
+        except OSError:  # one of them is not there
+            return False
+    up_one, up_other = PurePosixPath(one).parent, PurePosixPath(other).parent
+    if up_one == PurePosixPath() or up_other == PurePosixPath():
+        return up_one == up_other
+    return _same_place(root, up_one.as_posix(), up_other.as_posix())
+
+
+def _refuse_unrecorded(paths: list[str], cwd: Path | None) -> None:
+    """Refuse a save whose files on disk differ from the ledger's copy once it is made.
+
+    A net under every way a path can fail to match git's, the letter case of a folder among
+    them: the capture would otherwise answer a save that recorded nothing as one that
+    changed nothing, and the editor would keep nothing for the next capture."""
+    root = cwd or current_project().root
+    on_disk = [path for path in paths if (root / path).is_file()]
+    hashed = _run_git("hash-object", "--", *on_disk, cwd=cwd).split() if on_disk else []
+    disk = dict(zip(on_disk, hashed, strict=True))
+    ledger: dict[str, str] = {}
+    listing = _run_git("ls-tree", "-z", "HEAD", "--", *map(_literal, paths), cwd=cwd)
+    for entry in filter(None, listing.split("\0")):
+        meta, _, name = entry.partition("\t")
+        ledger[name] = meta.split()[2]
+    differ = [path for path in paths if disk.get(path) != ledger.get(path)]
+    if differ:
+        named = ", ".join(differ[:_IN_THE_WAY_NAMED])
+        more = len(differ) - _IN_THE_WAY_NAMED
+        if more > 0:
+            named += f" and {more} more"
+        raise GitDomainError(
+            f"Version history did not take the change to {named}; the next save tries again."
+        )
 
 
 # Never versioned from the pipeline folder, whatever the project's .gitignore says.
@@ -350,9 +456,7 @@ def merge_to_working(
         raise GitDomainError("No new saves to commit — the working branch is up to date.")
 
     tree = _tree_of(ledger_tip, cwd=cwd)
-    sha = _run_git(
-        "commit-tree", tree, "-p", working_tip, "-p", ledger_tip, "-m", message, cwd=cwd
-    ).strip()
+    sha = _commit_tree(tree, working_tip, ledger_tip, message=message, cwd=cwd)
     # The branch moves by CAS, and a label is created with it in the same ref
     # transaction: if either precondition loses a race, git applies neither.
     updates: dict[str, str | None] = {f"refs/heads/{working}": sha}
@@ -412,7 +516,7 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
             "GIT_COMMITTER_EMAIL": ce,
             "GIT_COMMITTER_DATE": cd,
         }
-        tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd, env=env)
+        tip = _commit_tree(tree, tip, message=msg, cwd=cwd, env=env)
     return tip
 
 
@@ -491,19 +595,20 @@ def create_working_branch(
         )
 
     if switch:
-        # Opening the new branch replaces the files: what is on disk must be saved.
         _assert_no_git_op_in_progress(cwd)
-        ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-        if ok_status and status.strip():
-            raise GitDomainError(
-                "You have unsaved changes. Save or discard them before opening the new branch."
-            )
+        if is_milestone:
+            # Opening the new branch replaces the files: none may be off version history.
+            _assert_way_clear(f"opening '{name}'", point, cwd, leaving=True)
 
     if is_milestone:
         base = point
     else:
         anchor = working_tip if is_pending else _folding_anchor(working_tip, point, cwd=cwd)
         base = _crystallize_milestone(anchor, point, name, cwd=cwd)
+        if switch:
+            # The anchoring milestone holds the save's tree: the files it replaces are the
+            # same as the save's, so it is checked once it exists.
+            _assert_way_clear(f"opening '{name}'", base, cwd, leaving=True)
 
     if not move:
         # Two fresh refs at the base; with *switch* the new ledger is then checked
@@ -831,9 +936,7 @@ def restore_version(
     subject = _run_git("log", "-1", "--format=%s", target, cwd=cwd).strip()
     title = f"Restored {target[:8]}: {subject}" if subject else f"Restored {target[:8]}"
     message = f"{title}\n\nRestored-from: {target}"
-    restored = _run_git(
-        "commit-tree", target_tree, "-p", ledger_tip, "-m", message, cwd=cwd
-    ).strip()
+    restored = _commit_tree(target_tree, ledger_tip, message=message, cwd=cwd)
 
     # The ledger's advance is the commit point: history holds the restore from
     # then on. HEAD is the ledger, so the files are then brought to it: paths
@@ -868,3 +971,65 @@ def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
         return
     _assert_no_git_op_in_progress(cwd)
     recover(project_root, cwd)
+
+
+@_serialized_mutation
+def settle_unrecorded(
+    choice: Literal["record", "put-back"],
+    files: list[str],
+    token: str,
+    project_root: Path,
+    cwd: Path | None = None,
+) -> None:
+    """Settle the files an operation that replaces the project's files was refused over
+    (:class:`GitUnrecordedFilesError`), as the analyst chose: record them as one save on the
+    working branch, with the sweep's message, or put them back as HEAD has them, which
+    removes one HEAD does not have (a file copied in where the destination has one).
+
+    Only *files* are touched, and only while they are as they were when the analyst was
+    asked (*token*, from the refusal): a choice made after another tab recorded them,
+    switched branch or edited them again is refused, nothing touched. The operation asked
+    again checks the way once more and names any other file. The route holds the repository
+    lock across this and the operation, so nothing lands between them."""
+    root = cwd or project_root
+    if _unrecorded_token(files, cwd) != token:
+        one = len(files) == 1
+        raise GitDomainError(
+            f"{', '.join(files[:5])}{' and more' if len(files) > 5 else ''} "
+            f"{'has' if one else 'have'} changed since you were asked about "
+            f"{'it' if one else 'them'}, so nothing was recorded or put back. Look again, "
+            "then retry."
+        )
+    if choice == "record":
+        from haute._git_state import read_working_branch
+
+        working = read_working_branch(project_root)
+        if working is None:
+            raise GitDomainError("No working branch is chosen to record them on.")
+        name, email = get_identity(cwd)
+        if name is None or email is None:
+            raise GitDomainError(
+                "Recording them needs a git identity. Set your name and email first."
+            )
+        _refuse_too_large_for_history(files, root, "try again")
+        commit_save(files, working, cwd=cwd, message="Updated project files")
+        return
+    literal = [_literal(path) for path in files]
+    held = _run_git("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", *literal, cwd=cwd)
+    in_head = set(filter(None, held.split("\0")))
+    tracked = [path for path in files if path in in_head]
+    if tracked:
+        _run_git(
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            *map(_literal, tracked),
+            cwd=cwd,
+        )
+    for path in (path for path in files if path not in in_head):
+        # Version history has no such file: a staged addition is unstaged, and the file goes.
+        _run_git("rm", "--cached", "-q", "--ignore-unmatch", "--", _literal(path), cwd=cwd)
+        (root / path).unlink(missing_ok=True)
+    logger.info("unrecorded_files_put_back", files=len(files))

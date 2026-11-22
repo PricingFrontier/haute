@@ -19,6 +19,7 @@ from haute.modelling._candidate_run import (
 )
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.modelling._result_types import ModelDiagnostics
+from tests._git_helpers import untrusted_folder
 
 _TRAINED_AT = datetime(2026, 9, 13, 8, 30, 45, tzinfo=UTC)
 
@@ -327,6 +328,17 @@ class TestProvenance:
         assert inside.trained_at.tzinfo is not None
 
     def test_git_state_is_unknown_outside_a_repository(self, tmp_path: Path) -> None:
+        provenance = capture_provenance(
+            job_id="j", node_label="n", training_identity_sha256="a" * 64, project_root=tmp_path
+        )
+        assert (provenance.git_commit, provenance.git_dirty) == (None, None)
+
+    def test_git_state_is_unknown_where_git_refuses_the_repository(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A folder git does not trust records no commit, and the training goes on."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        untrusted_folder(monkeypatch, tmp_path)
         provenance = capture_provenance(
             job_id="j", node_label="n", training_identity_sha256="a" * 64, project_root=tmp_path
         )

@@ -9,12 +9,12 @@
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `useGitHistory`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
-| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/restore targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. |
+| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/restore targets, the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`), and `uncaptured`, the files writes reported left off the ledger, kept for a capture. `gitBranchMayHaveChanged()`: the project's branch may have moved: a `git_branch_changed` frame (`useWebSocketSync`, and each reconnect after the first open, since a change while no socket was open went untold) or a save refused `branch_changed` (`usePipelineAPI`). It reads the readiness with a fresh request (`loadStatus({ refresh: true })`), opens the divergence dialog for a `divergent` project while no other dialog is open, and bumps the history nonce, so the branch list and history are read again. The project Save reads the branch the tab shows once, when Save is pressed and before it waits its turn behind a Save under way (`shownBranch()`), and names it in each of its three writes: the uncaptured files' capture (`captureUncaptured(branch)`, through `captureFiles`), the workbench form's save (`flush(branch)`, through `saveWorkbenchForm`) and the canvas save (`handleSave(branch)`), so a save made before the tab learned is refused before anything is written and a branch learned while it runs never takes the rest of it; a capture refused `branch_changed` answers false and ends the Save, and each refusal reads the readiness again. |
 | `frontend/src/stores/saveCapture.ts` | `reportSaveCapture`: what a write answered about its version capture, reported the same way for every write (the pipeline's save, the form's save, a Pipeline file written or deleted) — the ledger commit onto the status for the branch indicator through `setLastSaveSha` (left as it is when the answer has no commit field), `notifyHistoryChanged` so an open panel refetches, the answer's `uncaptured` files added, each once, to the git store's `uncaptured`, each warning in a toast of its own, and the identity modal opened on `identity_required` unless it was dismissed this session (`isIdentityPromptDismissed`) or is already open. `captureUncaptured`: nothing while nothing is kept; else the kept files taken off the store, sent to `POST /api/git/capture` (`captureFiles`) and the answer reported, so a file still uncaptured is kept again, while a request that fails keeps them all and toasts "Version capture failed: <reason>"; the identity prompt calls it once an identity is recorded and the project save at its start. |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It publishes results into `useGitStore` while delegating the in-flight/queued-refresh bookkeeping to `singleFlight.ts`, keeping branch-only client code out of the initial editor bundle. |
 | `frontend/src/stores/singleFlight.ts` | Shared resettable single-flight utility: request joining, the trailing-refresh queue (exactly one follow-up per active request, generation-anchored), and the stalled-request watchdog. Consumed by `useGitStore.ts` (working-branch status) and `gitBranchLoader.ts` (branch list). Test seam: both stores' `reset…ForTests` exports delegate to its `reset()`. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry (an `interrupted` clone's Retry calls `retryInterruptedGit` and reloads readiness), plus a ready branch-name button that opens the panel on the current branch. Truncated errors use the shared `Tooltip` to expose the full diagnostic on error hover or Retry focus; its function child places `aria-describedby` on Retry. |
-| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs, its dirty-navigation guard (`useDirtyNavigation`) and its row context menu (`BackdropMenu`). Its Deleted section lists `deleted` from the branch listing with Restore (`undeleteBranch(id)`), and a "Restore as" name box when a live branch has the name. A "don't ask again" that `setGitPrefs` fails to save is reported in an error toast. The delete dialog's wording comes from `deleteOutcome`: the branch goes to Deleted and can be restored from there, with its saves not yet in a milestone when it has some, and on the current branch the project's changes since the last save are lost. |
+| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs, its dirty-navigation guard (`useDirtyNavigation`) and its row context menu (`BackdropMenu`). Its Deleted section lists `deleted` from the branch listing with Restore (`undeleteBranch(id)`), and a "Restore as" name box when a live branch has the name. A "don't ask again" that `setGitPrefs` fails to save is reported in an error toast. The delete dialog's wording comes from `deleteOutcome`: the branch goes to Deleted and can be restored from there, with its saves not yet in a milestone when it has some, and on the current branch the project's changes since the last save are lost. Its delete sends `gitDeleteBranch(name, seen, true)`, *seen* the `tip`, `ledger_tip`, `is_current` and `is_checked_out` of the row the dialog opened on; a refusal closes the dialog and calls `notifyHistoryChanged`, so the listing is read again. |
 | `frontend/src/hooks/useProjectDirty.ts` | `useProjectDirty`: whether the project holds unsaved edits, the canvas's (`useGraphStore`) or the workbench's form's (`useWorkbenchStore`'s `formDirty`, mirrored by the form store, a lazy chunk); what every navigation guard asks about; `isProjectDirty`, the same read outside a component (a toolbar undo's switch). `discardFormEdits`: after a switch chosen over the form's unsaved edits has succeeded, the form read again (the form store imported then), so the destination's form shows; nothing while the form is as saved. `discardCanvasEdits`: after a switch chosen over the canvas's unsaved edits has succeeded, the canvas's edits dropped (`markSaved`, the sync banner cleared, `setGraphSynchronized(false)` so the answer applies even when the destination's document is the one last accepted) and a resync requested (`requestResync`), so the destination's pipeline shows; nothing while the canvas is as saved. `chosenOverParts()` are the parts the answer of an action that replaces the project's files (a switch, a catch-up, a spin-off) belongs to: no edit made on the canvas or in the form since it was asked, and no text being typed (frontend-shared, "Late answers"), so it drops only the edits chosen over. |
 | `frontend/src/hooks/useDirtyNavigation.ts` | `useDirtyNavigation(onSave)`: the one dirty-navigation guard of the git panel, the branch manager and the push control. `guard(proceed, question)` runs `proceed` at once while the project is clean (`useProjectDirty`), else opens the question, `question` naming what the action changes (`CHANGING_BRANCHES`, "Save them before changing branches?", unless the caller names another): `confirm` is then the props each caller renders `GitNavigationConfirm` with (null while none is open), whose Cancel drops the action, Discard runs it, and Save first runs it only once `onSave()` has answered true and the question it was asked from is still the open one; a save that answers false or throws keeps the question open, and a Cancel, another question or the surface unmounting while the save runs ends the question, so the save's answer runs nothing. `leaveUnsavedEdits(title, onSave)` is the same guard for an action no component runs, a toolbar undo's or redo's switch: on a dirty project (`isProjectDirty`) it asks the page's question (`useQuestionStore`) under `title`, with Cancel, Save first (offered when there is a save) and Discard (the danger yes), and answers true to go ahead (clean, Discard, or a save that answered true) or false for Cancel; a save that fails asks again. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | The question `useDirtyNavigation` opens before a navigation would replace unsaved edits, "You have unsaved changes." and the guard's `question`, placed by each caller (the git panel above its branch manager, the branch manager in its own section, the push control on its row or inside the rejection dialog): Cancel, Discard, and Save first. |
@@ -28,6 +28,7 @@
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), the deploy's-secrets toasts and `CiSecretsMissing` line with its Set from .env button, catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. Catch up (`doCatchUp`) and Spin off a copy (`doBranchAway`), from the standalone button or the rejection dialog, pass its `useDirtyNavigation` guard (the panel's `onSave` for Save first) with a question naming the remote whose files replace the project's; on success they drop the edits chosen over (`discardCanvasEdits`, `discardFormEdits`) and read the readiness, branch list and history again. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
 | `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
+| `frontend/src/utils/clearingTheWay.ts` | `clearingTheWay(operation)`, the one answer to an operation that replaces the project's files refused over files changed outside Haute (409 `unrecorded_files`): it asks the page's question (`useQuestionStore`), titled "Files changed outside Haute", with the server's message and the files listed, Record or Put back, and asks for the operation again with `{settle: {choice, files, token}}`, the refusal's token, so the server settles none of the files that changed while the question was open; Cancel leaves the refusal standing for the caller, and any other failure passes through unasked. Every call of `setWorkingBranch`, `createWorkingBranch`, `gitArchiveBranch`, `gitFastForward`, `gitBranchAway` and `pullGitUpstream` (the hosted parent catch-up, through the git store's pullUpstream) outside the API client goes through it, the first ask with the caller's own arguments. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. A switch's legs (`switchLeg`) ask `leaveUnsavedEdits` first and drop the edits chosen over once the checkout succeeds, unless an edit was made while it ran (`chosenOverParts`); a document replaced while the question was open puts the entry back, as Cancel does. A leg is the history's, run after the panel that pushed it may be gone: what it did is said either way. |
 
 ## Key types and data structures
@@ -245,7 +246,9 @@ success and toasts + rethrows on failure so the store keeps the entry available 
 retry rather than dropping it. Because the closures only touch stores (never component
 state), an entry keeps working after the panel that pushed it unmounts. Delete's inverse
 is `undeleteBranch` with the delete's `trash_id` rather than a full re-create, since deletes
-are trash-preserving server-side.
+are trash-preserving server-side. Its redo deletes again naming the branch as the delete saw
+it (`recordDelete(branch, trashId, seen)`): an undelete restores both tips exactly, so the
+redo is refused only when the branch moved in between.
 
 A switch's two legs replace the canvas and the workbench's form as the switch did, so each
 (`switchLeg`) first awaits `leaveUnsavedEdits` with the `onSave` the recording surface
@@ -380,9 +383,9 @@ readiness as before, and keeps the edits.
   "Move the later saves to a new branch": it is true for the newest milestone and pending saves, and
   false for older milestones and saves already folded inside a milestone. Start a branch
   and New branch from here are available on every row of the user's own history.
-- **`BranchManager`'s archive-vs-delete asymmetry.** Archive on the *current* branch with
-  uncommitted tracked project changes redirects to a "commit a milestone first" prompt
-  instead of proceeding. Before either current-branch archive or confirmed delete reaches
+- **`BranchManager`'s archive and delete of the current branch.** Archive sends the request
+  whatever the listing says of changes on disk: files off version history are the server's to
+  name, and `clearingTheWay` asks to record or put them back. Before either current-branch archive or confirmed delete reaches
   its API call/reload, its `useDirtyNavigation` guard separately protects unsaved in-memory
   edits, the canvas's or the workbench's form's,
   with Cancel/Discard/Save-first. Delete remains enabled because its own dialog says what
@@ -549,13 +552,32 @@ Library component/unit tests (no e2e for this surface).
   dismiss), a "don't ask again" whose save fails toasting while the switch goes ahead, and
   the delete dialog's wording: the branch goes to Deleted and can be restored from there
   (with its saves not yet in a milestone when it has some), never "Permanently", and on the
-  current branch with changes since the last save, those named as lost.
+  current branch with changes since the last save, those named as lost; the delete naming
+  the row as listed, and one refused because the branch moved closing its dialog and
+  listing the branches again with no history entry.
+- **`frontend/e2e/git-branches.spec.ts`** also drives two pages on one project: a delete
+  confirmed on one before the other switched the project onto the branch is refused naming
+  the change, and the branch and the checkout stay as they are.
+- **`frontend/src/__tests__/hooks/useWebSocketSync.test.ts`** also holds a `git_branch_changed`
+  frame reading the readiness again and opening the divergence dialog only for a divergent
+  project, and a reconnect reading it again where the first open does not;
+  **`frontend/src/hooks/__tests__/usePipelineAPI.test.ts`** a save naming the branch the tab
+  shows and one refused `branch_changed` keeping the edit and reading the readiness again;
+  **`frontend/e2e/git-open-tabs.spec.ts`** two tabs, a switch in one moving the other's toolbar
+  without a reload, a save from a tab that has not heard of the switch refused naming both
+  with nothing written, and a `git switch -c` in a terminal opening the branch dialog.
+- **`frontend/src/utils/__tests__/clearingTheWay.test.ts`** — a refusal over files changed
+  outside Haute asking with the message and the files and, answered Record or Put back,
+  asking for the operation again with that choice; Cancel leaving the refusal standing; any
+  other failure passing through with no question; and every call of the five operations
+  outside the API client going through it (a call that goes round it fails).
 - **`frontend/src/components/__tests__/BranchManager.test.tsx`** — the `reloadOnDone` matrix:
   which mutations reload the page and which don't, keyed on `switched`/`is_current`, plus
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
   states, full error tooltip on hover and Retry focus with an accessible description,
-  no-repository/unset/detached/invalid/divergent/ready rendering, an interrupted clone
+  no-repository/unset/detached/invalid/divergent/ready rendering, a blocked repository
+  reading "Git refused" with its cause in the tooltip and no `git init`, an interrupted clone
   reading "Unfinished" and naming the operation and its files, with a Retry that reloads
   readiness on success and toasts the files still held on refusal, the branch-name
   click's panel/store side effects, and that the ready state stays branch-only — carrying no
@@ -650,7 +672,7 @@ Library component/unit tests (no e2e for this surface).
   both it and `gitPush` still answer after five minutes, where the default deadline would
   have ended them.
   The guard suite also accepts exactly
-  the eight working-branch readiness states, preserves detached `head_sha`, and rejects an
+  the nine working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.
 - **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current

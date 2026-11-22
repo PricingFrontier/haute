@@ -508,6 +508,8 @@ class WorkbenchFormSaveRequest(BaseModel):
 
     form: FormSpec
     base_revision: BoundedName
+    # The working branch the saving tab shows, as the pipeline save names it.
+    working_branch: BoundedName | None = None
 
 
 class WorkbenchFormSaveResponse(WorkbenchFormFile, SaveCapture):
@@ -2044,6 +2046,14 @@ class SavePipelineRequest(DocumentRequest):
         description=(
             "Makes a repeated save write once: a save repeated with the operation of one "
             "that committed is answered with that save's response."
+        ),
+    )
+    working_branch: BoundedName | None = Field(
+        default=None,
+        description=(
+            "The working branch the saving tab shows. A save naming one is refused before "
+            "anything is written when the project records another, or is checked out on "
+            "neither it nor its ledger; a save from no tab (the assistant's) names none."
         ),
     )
 
@@ -5896,6 +5906,7 @@ class OptimiserMlflowLogResponse(MlflowLogResponse):
 GitWorkingBranchState = Literal[
     "git-unavailable",
     "no-repository",
+    "blocked",
     "interrupted",
     "unset",
     "detached",
@@ -5984,7 +5995,8 @@ class GitWorkingBranchResponse(BaseModel):
     # Drives whether the startup modal fires (S27) and which variant (S14).
     state: GitWorkingBranchState = "unset"
     # Human-readable reasons when state is "invalid" (check_invariants output
-    # or eligibility failure).
+    # or eligibility failure), "blocked" (the cause git refuses the repository for,
+    # with what to do) or "interrupted" (the operation that stopped).
     errors: list[str] = Field(default_factory=list)
     # HEAD's attached branch; empty when the repository is absent or detached.
     current_branch: str = ""
@@ -6035,10 +6047,30 @@ class GitForkStorageResponse(BaseModel):
     message: str
 
 
+class GitSettleUnrecorded(BaseModel):
+    """What the analyst chose for the files an operation that replaces the project's files
+    was refused over (``GitUnrecordedFilesError``, 409 ``unrecorded_files``): record them as
+    one save on the working branch, or put them back as version history has them. The
+    operation asked again with it settles exactly these files first, under the same lock."""
+
+    choice: Literal["record", "put-back"]
+    files: list[BoundedPath] = Field(min_length=1, max_length=10_000)
+    # The refusal's token: what the files were when the analyst was asked.
+    token: BoundedName
+
+
+class GitUpstreamPullRequest(BaseModel):
+    """A hosted fork's catch-up to its parent; *settle* as for every operation that replaces
+    the project's files."""
+
+    settle: GitSettleUnrecorded | None = None
+
+
 class GitSetWorkingBranchRequest(BaseModel):
     branch: BoundedName
     # Create the branch off current HEAD before adopting it.
     create: bool = False
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitSetWorkingBranchResponse(BaseModel):
@@ -6065,6 +6097,8 @@ class GitCaptureRequest(BaseModel):
     to capture on the save ledger as they are on disk now."""
 
     paths: list[BoundedPath] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
+    # The working branch the tab asking shows, as the pipeline save names it.
+    working_branch: BoundedName | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -6266,6 +6300,14 @@ class GitManagedBranch(BaseModel):
     # True only for the current branch when the working tree has tracked,
     # uncommitted changes — archive/delete would have to switch away and can't.
     has_uncommitted_changes: bool = False
+    # The branch's and its ledger's tips as listed (the ledger's None before it
+    # spawns), which a delete names back so it acts on the branch it described.
+    tip: str
+    ledger_tip: str | None = None
+    # HEAD is on the branch or its ledger, whether or not the clone records it as its
+    # working branch (a checkout in a terminal): an archive or delete leaves it as it
+    # leaves the current branch.
+    is_checked_out: bool = False
 
 
 class GitDeletedBranch(BaseModel):
@@ -6304,6 +6346,7 @@ class GitCreateWorkingBranchRequest(BaseModel):
     # Open the new branch at once, leaving the current branch's refs as they
     # were. Not with ``move``, which already opens it.
     switch: bool = False
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitCreateWorkingBranchResponse(BaseModel):
@@ -6323,16 +6366,29 @@ class GitPrefs(BaseModel):
 
 class GitArchiveRequest(BaseModel):
     branch: BoundedName
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitArchiveResponse(BaseModel):
     archived_as: str
 
 
+class GitBranchSeen(BaseModel):
+    """A branch as the delete's confirmation described it: its two tips, as the branch
+    manager listed them, and whether it was the branch the project is on."""
+
+    tip: BoundedName
+    ledger_tip: BoundedName | None = None
+    is_current: bool
+    is_checked_out: bool
+
+
 class GitDeleteBranchRequest(BaseModel):
     branch: BoundedName
     # Override the unmerged-ledger-saves refusal (S32: loss is real on delete).
     confirm: bool = False
+    # What the confirmation showed; the delete is refused when the branch has moved since.
+    seen: GitBranchSeen
 
 
 class GitDeleteBranchResponse(BaseModel):
@@ -6430,6 +6486,7 @@ class GitPushResponse(BaseModel):
 
 class GitBranchAwayRequest(BaseModel):
     remote: BoundedName
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitBranchAwayResponse(BaseModel):
@@ -6444,6 +6501,7 @@ class GitBranchAwayResponse(BaseModel):
 
 class GitFastForwardRequest(BaseModel):
     remote: BoundedName
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitFastForwardResponse(BaseModel):

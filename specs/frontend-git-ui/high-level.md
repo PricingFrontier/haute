@@ -72,7 +72,11 @@ the Retry button for assistive technology. Successful responses render distinct 
 remediation for no repository, unset working branch, invalid state, attached divergence,
 and a detached HEAD, which reads "Viewing an earlier version". An interrupted clone, one whose git operation
 stopped part-way, reads "Unfinished", with the operation and its files in its tooltip and a
-Retry that asks the server to finish the operation or put it back. Every git
+Retry that asks the server to finish the operation or put it back. A repository git refuses
+to work in, a folder it does not trust or settings it cannot read, reads "Git refused", with
+the cause and what to do in its tooltip, and never offers `git init`; startup opens no chooser
+for it, Save still writes to disk (its capture warning gives the same cause), and Commit
+toasts the cause. Every git
 action that can rewrite the files (restore, switch, branch creation, archive, delete, catch
 up, spin off, and the undo of a branch operation) reads the readiness again when it fails,
 so an interruption shows at once. After a git action succeeds, the readiness is read with a request issued after it (`loadStatus({ refresh: true })`), never by joining a read already under way, which may describe the project before the action. Startup opens no chooser for an interrupted clone, and neither do Save and Commit: each refuses with a toast naming what stopped, from readiness's line, and asking for Retry in the toolbar first ("<line> Choose Retry in the toolbar before saving."), since a save then would record the files as the operation left them. A ready state shows the working branch name
@@ -122,12 +126,24 @@ control. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again", and a preference that cannot be saved is reported in an
-error toast while the switch goes ahead; archiving the current branch with tracked project
-changes not yet saved redirects to "commit a milestone first" instead of proceeding).
-Delete always confirms. A delete keeps the branch in the trash, so the dialog says it goes
+error toast while the switch goes ahead; archiving the current branch with files changed on
+disk outside Haute asks to record them or put them back, as every operation that replaces the
+files does).
+An open tab follows the project's branch when another tab or a terminal moves it: the
+server says so over live sync, and the tab reads its readiness again, so the toolbar shows
+the new branch and a project moved off its working branch opens its dialog without a reload.
+A save from a tab that has not heard yet is refused naming both branches, the edits kept.
+A switch, opening a new branch, Catch up, Spin off a copy or an archive refused over files
+changed outside Haute (a CSV saved in Excel, or a file copied in where the destination has
+one) asks, naming the files, whether to record them as a save or put them back as version
+history has them, and then goes on; Cancel leaves the refusal shown. Delete always confirms. A delete keeps the branch in the trash, so the dialog says it goes
 to Deleted and can be restored from there, with its saves not yet in a milestone when it
 has some, and names the one thing it loses: on the current branch, the project's changes
-since the last save, which the delete discards. A row's badges read "not saved" (project
+since the last save, which the delete discards. The delete names the branch as the dialog
+showed it, its two tips and whether it was the current one, so a branch another page has
+switched onto or saved to since is not deleted: the refusal says what changed ("'<branch>'
+changed since you chose to delete it: the project is on it now. Look again, then retry."),
+the dialog closes and the manager lists the branch as it now is. A row's badges read "not saved" (project
 files changed since the last save) and "saves to commit" (saves not yet in a milestone). A switch or Create & Move that would replace
 unsaved edits, in the canvas or the workbench's form, always requires Cancel, Discard, or
 Save first; the persisted

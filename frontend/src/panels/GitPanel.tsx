@@ -24,6 +24,7 @@ import { recordSwitch } from "../utils/vcHistory"
 import { apiErrorMessage } from "../api/errors"
 import { relativeTime } from "../utils/relativeTime"
 import { useGitHistory } from "./git/useGitHistory"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 /** Minimal graph-branch shape the in-row spawn chips need. */
 interface SpawnChipBranch {
@@ -203,11 +204,11 @@ function GitPanelBranchScope({
     if (!forkDraft || !forkDraft.name.trim()) return
     const here = ask([under(life)])
     try {
-      await answer([gitStorePart()], createWorkingBranch(forkDraft.name.trim(), {
+      await answer([gitStorePart()], clearingTheWay((...settled) => createWorkingBranch(forkDraft.name.trim(), {
         at: forkDraft.sha,
         move: forkDraft.mode === "move",
         switch: forkDraft.mode === "switch",
-      }), {
+      }, ...settled)), {
         ok: (res) => {
           addToast(
             "success",
@@ -257,7 +258,7 @@ function GitPanelBranchScope({
     // it ran keeps every unsaved edit.
     const chosenOver = ask(chosenOverParts())
     try {
-      await answer([gitStorePart()], setWorkingBranch(branch, false), {
+      await answer([gitStorePart()], clearingTheWay((...settled) => setWorkingBranch(branch, false, ...settled)), {
         ok: (_, asked) => {
           const drop = chosenOver.current()
           if (drop) discardCanvasEdits()

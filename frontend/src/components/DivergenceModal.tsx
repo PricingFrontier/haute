@@ -9,6 +9,7 @@ import useUIStore from "../stores/useUIStore"
 import { answer, ask, under } from "../utils/answers"
 import { ModalFormActions, ModalFormHeader } from "./ModalForm"
 import ModalShell from "./ModalShell"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 interface DivergenceModalProps {
   onConfirmed: () => void
@@ -52,7 +53,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
     // action belongs to this dialog, which a close ends.
     const here = ask([under(life)])
     try {
-      await answer([gitStorePart()], setWorkingBranch(target, false), {
+      await answer([gitStorePart()], clearingTheWay((...settled) => setWorkingBranch(target, false, ...settled)), {
         ok: (_, asked) => asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
           ok: () => {
             addToast("success", `Working branch set to ${target}`)

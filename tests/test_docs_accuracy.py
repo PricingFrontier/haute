@@ -159,7 +159,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "frontend-node-editors",
     "frontend-preview-explore",
     "frontend-shared",
-    "git-integration",
     "io-layer",
     "mlflow-model-registry",
     "modelling",

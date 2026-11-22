@@ -66,6 +66,7 @@ import { useDebouncedCallback } from "./useDebouncedCallback"
 import { answer, ask, newest, signalPart, type Part } from "../utils/answers"
 import { useRequestKind } from "./useRequestKind"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
+import { gitBranchMayHaveChanged, shownBranch } from "../stores/useGitStore"
 
 interface PipelineAPIParams {
   selectedNode: Node | null
@@ -107,7 +108,9 @@ export interface PipelineAPIReturn {
   previewNodeFrame: (nodeId: string, portLabel: string) => void
   /** Save the pipeline. Resolves true on success, false on failure (never rejects);
    *  callers chaining follow-on work (such as Commit) await this. */
-  handleSave: () => Promise<boolean>
+  /** The project Save passes the branch its tab showed when Save was pressed, so each of its
+   *  writes names that one branch; others save on the branch the tab shows now. */
+  handleSave: (workingBranch?: string | null) => Promise<boolean>
   /**
    * Atomically ingest a validated authoritative editor document, with the server fingerprint its
    * response named (null when the response names none, so the next live-sync resync refetches it).
@@ -1810,6 +1813,7 @@ export default function usePipelineAPI({
     sc: string[],
     as_: string,
     globalConstantsError: string | null,
+    workingBranch: string | null,
   ): Promise<boolean> => {
     const hold = saveHold(saveSourceFile)
     /** The graph as it is now, saved on the revision the tab holds now, under `operation`. */
@@ -1858,6 +1862,9 @@ export default function usePipelineAPI({
           // A repeat under the same operation writes once: the server answers it with
           // what the first request did when that one committed.
           operation,
+          // The branch the toolbar showed: a save made before this tab learned the project
+          // moved is refused, never landed on the other branch.
+          working_branch: workingBranch,
         },
       }
     }
@@ -1928,6 +1935,8 @@ export default function usePipelineAPI({
             return
           }
           failedSave(err)
+          // The project moved to another branch: the toolbar and the branch dialog follow it.
+          if (apiErrorCode(err) === "branch_changed") gitBranchMayHaveChanged()
           // Refused, it never landed: what is typed now is saved. Still held, its fate is
           // unknown, and nothing newer is sent before it.
           if (then !== undefined && hold.held() === null) saved = await then()
@@ -1962,7 +1971,7 @@ export default function usePipelineAPI({
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
   // once the ledger actually holds the latest editor state. Never rejects.
-  const handleSave = useCallback(async (): Promise<boolean> => {
+  const handleSave = useCallback(async (workingBranch: string | null = shownBranch()): Promise<boolean> => {
     const documentStatus = useDocumentStatusStore.getState()
     if (documentStatus.capabilities?.can_save !== true || !documentStatus.graphSynchronized) {
       addToast("error", documentReadOnlyReason())
@@ -2005,7 +2014,7 @@ export default function usePipelineAPI({
     let settleSave!: () => void
     trackPendingSave(saveSourceFile, new Promise<void>((resolve) => { settleSave = resolve }))
     const underWay = savesUnderWay.get(saveSourceFile)
-    const saveNow = () => saveHeldFirst(saveSourceFile, sc, as_, globalConstantsError)
+    const saveNow = () => saveHeldFirst(saveSourceFile, sc, as_, globalConstantsError, workingBranch)
     // Made while another save of the file is under way, it waits for that one to settle,
     // while the file is still the document.
     const thisDocument: Part = {

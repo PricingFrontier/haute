@@ -74,7 +74,7 @@ import useGraphCommitController from "./hooks/useGraphCommitController"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore, { canvasGraph } from "./stores/useGraphStore"
-import useGitStore from "./stores/useGitStore"
+import useGitStore, { shownBranch } from "./stores/useGitStore"
 import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
@@ -1068,7 +1068,7 @@ function FlowEditor() {
     void asked.answer(loadGitReadiness(), {
       ok: (st) => {
         if (!st) return
-        const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted"
+        const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "blocked" || st.state === "interrupted"
         // The branch chooser lists the pairs a crash split, with their Repair; when it does
         // not open, they are reported here.
         if (quiet || st.state === "divergent") reportBrokenPairs(st.broken_pairs)
@@ -1441,7 +1441,7 @@ function FlowEditor() {
   // read is not saved, rather than saved with connections the form may not hold.
   // The form store is a lazy chunk, imported here only while the workbench is
   // enabled and never on start.
-  const saveProjectNow = useCallback(async (): Promise<boolean> => {
+  const saveProjectNow = useCallback(async (branch: string | null): Promise<boolean> => {
     // The fence that disables Save in both toolbars, and the pipeline save's own
     // checks: the save is asked under them, so the assistant's turn starting or the
     // document changing while it waits refuses it, saying why, before the next step. A
@@ -1488,9 +1488,11 @@ function FlowEditor() {
       ok: async (settled, asked) => {
         if (!settled.ok) return said(settled.error)
         // What earlier writes left off the ledger is captured first; a capture that fails
-        // says so, and the project is saved all the same.
-        await asked.answer(captureUncaptured(), {
-          ok: async () => {
+        // says so, and the project is saved all the same, unless the project has moved to
+        // another branch: then nothing more is written.
+        await asked.answer(captureUncaptured(branch), {
+          ok: async (goOn) => {
+            if (!goOn) return
             await asked.answer(saveForm(asked), {
               ok: async (formSaved) => {
                 if (!formSaved) return
@@ -1504,7 +1506,7 @@ function FlowEditor() {
                     // The connections held to the tables just fetched at once, rather than on
                     // a render: one an undo put back while the save waited goes too.
                     if (workbench.enabled && !holdConnections()) return said(WORKBENCH_TABLES_UNREAD)
-                    saved = await handleSave()
+                    saved = await handleSave(branch)
                   },
                   stale: refuse,
                 })
@@ -1529,7 +1531,7 @@ function FlowEditor() {
       if (!workbench.enabled) return true
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       let read = false
-      await asked.answer(formStore.getState().flush(), {
+      await asked.answer(formStore.getState().flush(branch), {
         ok: async (flushed) => {
           if (!flushed) return
           workbench.refreshTables()
@@ -1552,7 +1554,12 @@ function FlowEditor() {
   // Project saves take turns, as the form store's saves do: a Save pressed while
   // one runs waits for it and then saves the project as it stands by then.
   const [projectSaveTurn] = useState(serial)
-  const saveProject = useCallback((): Promise<boolean> => projectSaveTurn(() => saveProjectNowRef.current()), [projectSaveTurn])
+  // The branch the tab shows when Save is pressed, read before the save waits its turn: each
+  // of its writes names that branch, so one learned while it waits or runs takes none of it.
+  const saveProject = useCallback((): Promise<boolean> => {
+    const branch = shownBranch()
+    return projectSaveTurn(() => saveProjectNowRef.current(branch))
+  }, [projectSaveTurn])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.
@@ -1569,7 +1576,9 @@ function FlowEditor() {
   // save, the same from either toolbar and from Ctrl/Cmd+S.
   const requestSave = useCallback(async () => {
     const decide = (st: GitWorkingBranchResponse | null) => {
-      if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
+      // A repository git refuses to work in (a folder it does not trust, settings it cannot
+      // read) still takes the save on disk; its capture warning says why history does not.
+      if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "blocked" || st.state === "ready") {
         void saveProject()
         return
       }
@@ -1603,6 +1612,10 @@ function FlowEditor() {
     }
     if (st.state === "git-unavailable") {
       addToast("error", "Git is not available in this environment - commit is unavailable.")
+      return
+    }
+    if (st.state === "blocked") {
+      addToast("error", st.errors[0] ?? "Git refuses to work in this repository.")
       return
     }
     if (st.state === "ready") {

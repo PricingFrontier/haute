@@ -11440,12 +11440,33 @@
           "title": "Is Archived",
           "type": "boolean"
         },
+        "is_checked_out": {
+          "default": false,
+          "title": "Is Checked Out",
+          "type": "boolean"
+        },
         "is_current": {
           "title": "Is Current",
           "type": "boolean"
         },
+        "ledger_tip": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ledger Tip"
+        },
         "name": {
           "title": "Name",
+          "type": "string"
+        },
+        "tip": {
+          "title": "Tip",
           "type": "string"
         }
       },
@@ -11454,7 +11475,10 @@
         "is_current",
         "is_archived",
         "has_unmerged_saves",
-        "has_uncommitted_changes"
+        "has_uncommitted_changes",
+        "tip",
+        "ledger_tip",
+        "is_checked_out"
       ],
       "title": "GitManagedBranch",
       "type": "object"
@@ -11909,6 +11933,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "blocked",
             "interrupted",
             "unset",
             "detached",
@@ -12232,6 +12257,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "blocked",
             "interrupted",
             "unset",
             "detached",

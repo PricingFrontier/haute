@@ -1698,7 +1698,16 @@ export interface GitWorkingBranchResponse {
   head_sha: string | null;
   identity_set: boolean;
   last_save_sha: string | null;
-  state: 'git-unavailable' | 'no-repository' | 'interrupted' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
+  state:
+    | 'git-unavailable'
+    | 'no-repository'
+    | 'blocked'
+    | 'interrupted'
+    | 'unset'
+    | 'detached'
+    | 'invalid'
+    | 'divergent'
+    | 'ready';
   storage: 'unsupported' | 'unbound' | 'bound';
   storage_bind: GitStorageBind | null;
   storage_forked_from: string | null;
@@ -1752,7 +1761,16 @@ export interface GitStorageSync {
 }
 export interface GitSetWorkingBranchResponse {
   last_save_sha: string | null;
-  state: 'git-unavailable' | 'no-repository' | 'interrupted' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
+  state:
+    | 'git-unavailable'
+    | 'no-repository'
+    | 'blocked'
+    | 'interrupted'
+    | 'unset'
+    | 'detached'
+    | 'invalid'
+    | 'divergent'
+    | 'ready';
   working_branch: string;
 }
 export interface GitWorkingBranchesResponse {
@@ -1764,8 +1782,11 @@ export interface GitManagedBranch {
   has_uncommitted_changes: boolean;
   has_unmerged_saves: boolean;
   is_archived: boolean;
+  is_checked_out: boolean;
   is_current: boolean;
+  ledger_tip: string | null;
   name: string;
+  tip: string;
 }
 export interface GitDeletedBranch {
   branch: string;

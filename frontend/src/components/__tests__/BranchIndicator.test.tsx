@@ -101,6 +101,18 @@ describe("BranchIndicator", () => {
     expect(screen.getByTestId("toolbar-branch-indicator")).toHaveTextContent("Git not initialised")
   })
 
+  it("says git refused the repository, with its reason, and never offers git init", async () => {
+    const reason = "Git can't read its settings: line 9 of .git/config is damaged."
+    useGitStore.setState({ status: status({ state: "blocked", working_branch: null, errors: [reason] }) })
+    render(<BranchIndicator />)
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveAttribute("data-branch-state", "blocked")
+    expect(indicator).toHaveTextContent("Git refused")
+    expect(indicator).not.toHaveTextContent("not initialised")
+    indicator.focus()
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(reason)
+  })
+
   it("labels detached, invalid, and divergent Git states distinctly", () => {
     const cases = [
       [status({ state: "detached", head_sha: "1234567890" }), "Viewing an earlier version"],

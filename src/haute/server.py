@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import secrets
+import threading
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -149,6 +150,7 @@ WS_FRAME_PARSE_ERROR = "parse_error"
 WS_FRAME_PIPELINE_DOCUMENT_UPDATE = "pipeline_document_update"
 WS_FRAME_SYNC_CONNECTION = "sync_connection"
 WS_FRAME_WORKBENCH_FORM_CHANGED = "workbench_form_changed"
+WS_FRAME_GIT_BRANCH_CHANGED = "git_branch_changed"
 PIPELINE_DOCUMENT_SCHEMA_VERSION = 1
 # A git action took the pipeline away: the version now open does not have it.
 PIPELINE_NOT_IN_VERSION = "This pipeline isn't in the version now open. Switch back to see it."
@@ -423,6 +425,14 @@ def _ws_workbench_form_changed_subscriber(payload: dict[str, Any]) -> None:
     _broadcast_event_as_ws_message(WS_FRAME_WORKBENCH_FORM_CHANGED, payload)
 
 
+def _ws_git_branch_changed_subscriber(payload: dict[str, Any]) -> None:
+    """Forward ``git.branch.changed`` events to WebSocket clients."""
+    _broadcast_event_as_ws_message(WS_FRAME_GIT_BRANCH_CHANGED, payload)
+
+
+_unsubscribe_git_branch_changed = default_bus.subscribe(
+    "git.branch.changed", _ws_git_branch_changed_subscriber
+)
 _unsubscribe_parse_error = default_bus.subscribe("parse.error", _ws_parse_error_subscriber)
 _unsubscribe_workbench_form_changed = default_bus.subscribe(
     "workbench.form.changed", _ws_workbench_form_changed_subscriber
@@ -667,10 +677,14 @@ _last_broadcast_fp: dict[str, str] = {}
 
 
 async def _watcher_forever() -> None:
-    """Keep the live-sync watcher alive across unexpected watcher crashes."""
+    """Keep the live-sync watchers alive across unexpected watcher crashes: the project's
+    files and the git directory's HEAD."""
     while True:
         try:
-            await _file_watcher()
+            # One group: a crash of either ends both before the restart starts them again.
+            async with asyncio.TaskGroup() as watchers:
+                watchers.create_task(_file_watcher())
+                watchers.create_task(_branch_watcher())
             return
         except asyncio.CancelledError:
             raise
@@ -784,9 +798,84 @@ def _broadcast_tree_change(payload: dict[str, Any]) -> None:
     form_file = _workbench_form_file(current_project().root)
     if form_file is not None:
         default_bus.publish("workbench.form.changed", {"form": form_file[0]})
+    # The route ran with the watcher paused, so the branch watcher said nothing of it.
+    _tell_branch_change()
 
 
 _unsubscribe_git_tree_changed = default_bus.subscribe("git.tree.changed", _broadcast_tree_change)
+
+# The checkout and the recorded working branch as the open tabs were last told of them;
+# None until the branch watcher reads them at startup.
+_branch_told: tuple[str, str | None] | None = None
+_branch_told_lock = threading.Lock()
+
+
+def _branch_now(root: Path) -> tuple[str, str | None]:
+    """The project's checkout, its branch or a detached HEAD's commit ("" outside a
+    repository), and the working branch the clone records."""
+    from haute._git_core import _is_git_repo, _rev_parse, _run_git_ok
+    from haute._git_state import read_working_branch
+
+    if not _is_git_repo(root):
+        return "", None
+    attached, branch = _run_git_ok("symbolic-ref", "-q", "HEAD", cwd=root)
+    checkout = branch if attached else (_rev_parse("HEAD", cwd=root) or "")
+    return checkout, read_working_branch(root)
+
+
+def _tell_branch_change() -> None:
+    """Tell every open tab when the project's checkout, or the working branch it records,
+    differs from what they were last told, whoever moved it: a git route, another tab, or
+    a terminal (``git.branch.changed``). Each tab reads its readiness again, as after its
+    own git actions, so its toolbar and branch dialog follow without a reload. The first
+    reading is the baseline, not a change."""
+    from haute._git_core import GitError
+
+    global _branch_told
+    try:
+        now = _branch_now(current_project().root)
+    except (GitError, OSError) as exc:
+        # A repository git refuses (its cause in readiness) or one going away: the next
+        # reading tells what changed.
+        logger.debug("git_branch_unreadable", error=str(exc))
+        return
+    with _branch_told_lock:
+        before, _branch_told = _branch_told, now
+    if before is not None and before != now:
+        default_bus.publish("git.branch.changed", {"checkout": now[0], "working_branch": now[1]})
+
+
+def _git_dir(root: Path) -> Path | None:
+    """The project's git directory (a linked worktree's own), or None outside a repository."""
+    from haute._git_core import GitError, _run_git_ok
+
+    try:
+        found, git_dir = _run_git_ok("rev-parse", "--absolute-git-dir", cwd=root)
+    except GitError:
+        return None
+    return Path(git_dir) if found and git_dir else None
+
+
+async def _branch_watcher() -> None:
+    """Watch the git directory's HEAD, which every checkout rewrites, a terminal's included,
+    and tell the open tabs when the branch changed (:func:`_tell_branch_change`). A checkout
+    in a terminal can change no file the file watcher sees (``git switch -c``), and that
+    watcher skips ``.git``. A change while a git route holds the watcher pause is told by
+    the route once it has answered."""
+    try:
+        from watchfiles import awatch
+    except ImportError:
+        return
+    git_dir = await asyncio.to_thread(_git_dir, current_project().root)
+    if git_dir is None:
+        return
+    await asyncio.to_thread(_tell_branch_change)
+    async for _changes in awatch(
+        git_dir, recursive=False, watch_filter=lambda _change, path: Path(path).name == "HEAD"
+    ):
+        if watcher_is_paused():
+            continue
+        await asyncio.to_thread(_tell_branch_change)
 
 
 def _watched_pipeline_dir(root: Path) -> Path:

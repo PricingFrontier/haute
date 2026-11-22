@@ -50,11 +50,13 @@ from haute._git_state import (
     record_trash,
     write_working_branch,
 )
-from tests._git_engine_helpers import LEDGER, WORKING, _git, _write_and_save
+from tests._git_engine_helpers import LEDGER, WORKING, _git, _write_and_save, seen_now
 from tests._git_helpers import install_hook
 from tests._source_files import source_files
 
 ROOT = "<root>"
+# A delete's confirmation: the branch (the call's first argument) as listed just before it.
+SEEN = "<seen>"
 SRC = Path(__file__).resolve().parents[1] / "src" / "haute"
 
 
@@ -81,6 +83,8 @@ class _Call:
 
     def run(self, root: Path) -> object:
         def at(value: object) -> object:
+            if value == SEEN:
+                return seen_now(root, str(self.args[0]))
             return root if value == ROOT else value
 
         action = getattr(haute_git, self.fn)
@@ -281,14 +285,16 @@ def _arrange_delete(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
     _milestone(root)
-    return root, _Call("delete_working_pair", (WORKING, ROOT), {"cwd": ROOT})
+    return root, _Call("delete_working_pair", (WORKING, ROOT), {"seen": SEEN, "cwd": ROOT})
 
 
 def _arrange_delete_confirmed_dirty(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
     _write(root, "keep.txt", "edited, not saved\n")
-    return root, _Call("delete_working_pair", (WORKING, ROOT), {"confirm": True, "cwd": ROOT})
+    return root, _Call(
+        "delete_working_pair", (WORKING, ROOT), {"seen": SEEN, "confirm": True, "cwd": ROOT}
+    )
 
 
 def _arrange_delete_at_the_cap(base: Path) -> tuple[Path, _Call]:
@@ -314,14 +320,14 @@ def _arrange_delete_at_the_cap(base: Path) -> tuple[Path, _Call]:
                 "deleted_at": "2026-01-01T00:00:00+00:00",
             },
         )
-    return root, _Call("delete_working_pair", (WORKING, ROOT), {"cwd": ROOT})
+    return root, _Call("delete_working_pair", (WORKING, ROOT), {"seen": SEEN, "cwd": ROOT})
 
 
 def _arrange_undelete(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
     _milestone(root)
-    entry_id = delete_working_pair(WORKING, root, cwd=root).trash_id
+    entry_id = delete_working_pair(WORKING, root, seen=seen_now(root, WORKING), cwd=root).trash_id
     return root, _Call("undelete_working_pair", (entry_id, ROOT), {"cwd": ROOT})
 
 
@@ -640,6 +646,18 @@ def perform(step, files, project_root, cwd):
 
 git_operation._perform = perform
 def at(value):
+    if value == "<seen>":
+        from haute.schemas import GitBranchSeen
+
+        branch = spec["args"][0]
+        listed = haute_git.working_branches(root, cwd=root).branches
+        row = next(b for b in listed if b.name == branch)
+        return GitBranchSeen(
+            tip=row.tip,
+            ledger_tip=row.ledger_tip,
+            is_current=row.is_current,
+            is_checked_out=row.is_checked_out,
+        )
     return root if value == "<root>" else value
 
 kwargs = {key: at(value) for key, value in spec["kwargs"].items()}
@@ -992,24 +1010,28 @@ def test_a_record_that_cannot_be_read_is_an_interruption_retry_will_not_guess(
 def test_the_analysts_own_edits_are_never_in_a_record_nor_touched_by_a_put_back(
     tmp_path: Path,
 ) -> None:
-    """The analyst has edited the one file the switch would write, and keeps an untracked
-    file beside it. Neither is the operation's: the record names neither, git refuses
-    the checkout over the edit, and the put-back leaves both as they are."""
-    root, call = _arrange_select(tmp_path)
+    """Create & Move carries the analyst's edit to the new branch by design, beside an
+    untracked file. Neither is the operation's: the record names neither, and the put-back
+    leaves both as they are. A switch, which would carry the edit off its branch, refuses
+    it by name before any record is written."""
+    from haute._git import GitUnrecordedFilesError
+
+    root, call = _arrange_fork(move=True)(tmp_path / "move")
     _write(root, "rating.py", "# the analyst's own edit\n")
     _write(root, "notes.md", "untracked\n")
-    record = _stop(root, call, "select-branch", 0)
+    record = _stop(root, call, "create-branch", 0)
     assert record.files == []
     retry_interrupted(root, cwd=root)
     assert (root / "rating.py").read_text() == "# the analyst's own edit\n"
-
-    with pytest.raises(GitError):
-        call.run(root)
-
-    assert (root / "rating.py").read_text() == "# the analyst's own edit\n"
     assert (root / "notes.md").read_text() == "untracked\n"
-    assert _git(root, "symbolic-ref", "--short", "HEAD") == LEDGER
-    assert read_operation(root) is None
+
+    switching, select = _arrange_select(tmp_path / "switch")
+    _write(switching, "rating.py", "# the analyst's own edit\n")
+    with pytest.raises(GitUnrecordedFilesError):
+        select.run(switching)
+    assert (switching / "rating.py").read_text() == "# the analyst's own edit\n"
+    assert _git(switching, "symbolic-ref", "--short", "HEAD") == LEDGER
+    assert read_operation(switching) is None
 
 
 # ---------------------------------------------------------------------------

@@ -251,6 +251,26 @@ export default function BranchIndicator({ children }: BranchIndicatorProps = {})
         </Tooltip>
       )
     }
+    if (status.state === "blocked") {
+      // The repository is there and holds the project's history: git init repairs nothing.
+      const detail = status.errors[0] ?? "Git refuses to work in this repository."
+      return wrapWithChildren(
+        <Tooltip label={detail} side="bottom" className="max-w-[260px]">
+          {(describedBy) => (
+            <span
+              data-testid="toolbar-branch-indicator"
+              data-branch-state="blocked"
+              tabIndex={0}
+              aria-describedby={describedBy}
+              className="toolbar-btn flex items-center justify-center px-2.5 py-1 text-[12px] font-medium min-w-[136px] max-w-[220px] w-full"
+              style={{ color: "var(--danger)" }}
+            >
+              <span className="truncate">Git refused</span>
+            </span>
+          )}
+        </Tooltip>
+      )
+    }
     if (status.state === "no-repository") {
       return wrapWithChildren(
         <span

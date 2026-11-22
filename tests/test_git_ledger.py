@@ -84,6 +84,32 @@ class TestResolveLedger:
 
 
 class TestCommitSave:
+    @pytest.mark.parametrize("elsewhere", ["colleague", None], ids=["another-branch", "detached"])
+    def test_a_save_never_checks_out_a_branch_the_analyst_left(
+        self, repo: Path, elsewhere: str | None
+    ) -> None:
+        """The analyst moved the project in a terminal (`git checkout colleague`, or to an
+        earlier version): the save is refused naming where the project is, and the
+        checkout, the ledger and the file written stay as they are."""
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        if elsewhere is None:
+            _git(repo, "checkout", "-q", "--detach", LEDGER)
+        else:
+            _git(repo, "checkout", "-q", "-b", elsewhere, "main")
+        head = _git(repo, "rev-parse", "--symbolic-full-name", "HEAD")
+
+        with pytest.raises(GitDomainError) as refused:
+            _write_and_save(repo, WORKING, {"rating.py": "# written while elsewhere\n"})
+
+        where = "an earlier version (a detached HEAD)" if elsewhere is None else f"'{elsewhere}'"
+        assert str(refused.value).startswith(
+            f"The project is checked out on {where}, not on '{WORKING}'"
+        )
+        assert _git(repo, "rev-parse", "--symbolic-full-name", "HEAD") == head
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
+        assert (repo / "rating.py").read_text() == "# written while elsewhere\n"
+
     def test_one_save_one_commit_on_ledger(self, repo: Path) -> None:
         sha = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         assert sha is not None
@@ -284,6 +310,83 @@ class TestMilestoneMerge:
         assert (
             "rating/files/data/rates.csv"
             in _git(repo, "ls-tree", "-r", "--name-only", milestone).splitlines()
+        )
+
+    @pytest.mark.parametrize(
+        ("staged_by", "removed", "added"),
+        [
+            pytest.param(("rm", "-q", "rating/rates.csv"), "rating/rates.csv", None, id="git-rm"),
+            pytest.param(
+                ("mv", "rating/rates.csv", "rating/renamed.csv"),
+                "rating/rates.csv",
+                "rating/renamed.csv",
+                id="git-mv",
+            ),
+            pytest.param(("rm", "-q", "notes.txt"), "notes.txt", None, id="outside-the-folder"),
+        ],
+    )
+    def test_milestone_and_restore_record_a_change_git_staged_by_hand(
+        self, repo: Path, staged_by: tuple[str, ...], removed: str, added: str | None
+    ) -> None:
+        """A deletion or rename staged with git (or an editor's git panel) is in neither the
+        folder nor the index under its old name; the sweep's save records it, not refuses it."""
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating/rates.csv": "a\n", "notes.txt": "n\n"})
+        _git(repo, *staged_by)
+
+        milestone = commit_milestone(
+            "With the staged change", repo, cwd=repo, pipeline_folder="rating"
+        ).sha
+
+        committed = set(_git(repo, "ls-tree", "-r", "--name-only", milestone).splitlines())
+        assert removed not in committed
+        assert added is None or added in committed
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+        # Staged once more, a Restore records it first and goes back to the milestone.
+        (repo / "rating").mkdir(exist_ok=True)  # `git rm` of its only file removed it
+        (repo / "rating" / "extra.csv").write_text("e\n")
+        _git(repo, "add", "rating/extra.csv")
+        _git(repo, "commit", "-q", "-m", "an extra file", "--", "rating/extra.csv")
+        _git(repo, "rm", "-q", "rating/extra.csv")
+        restored = git_transactions.restore_version(
+            milestone, repo, cwd=repo, pipeline_folder="rating"
+        )
+        assert _tree(repo, restored.sha) == _tree(repo, milestone)
+
+    def test_a_file_delete_whose_commit_stopped_is_recorded_by_the_next_commit(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Pipeline file delete stages the deletion, then commits it; stopped between the
+        two, the deletion is staged and the next Commit records it."""
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        _write_and_save(repo, WORKING, {"rating/files/data/old.csv": "a\n"})
+        (repo / "rating/files/data/old.csv").unlink()
+        real_run = git_core._run_git
+
+        def fail_commit(*args: str, **kwargs: object) -> str:
+            if git_core._subcommand(args) == "commit":
+                raise GitError("injected stop before the commit")
+            return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_transactions, "_run_git", fail_commit)
+        with pytest.raises(GitError):
+            commit_save(["rating/files/data/old.csv"], WORKING, cwd=repo)
+        monkeypatch.undo()
+        assert _git(repo, "status", "--porcelain", "--", "rating/files/data/old.csv") == (
+            "D  rating/files/data/old.csv"
+        )
+
+        milestone = commit_milestone(
+            "After the stopped delete", repo, cwd=repo, pipeline_folder="rating"
+        ).sha
+
+        assert "rating/files/data/old.csv" not in _git(
+            repo, "ls-tree", "-r", "--name-only", milestone
         )
 
     def test_milestone_without_a_pipeline_folder_leaves_new_files_alone(self, repo: Path) -> None:
@@ -583,10 +686,10 @@ class TestBaton:
 
         # the designed move-then-edit sequence (S13): materialise M1 first,
         # THEN edit, then save — the spawn checkout is tree-identical to M1 so
-        # the freshly-written save content survives it
+        # the freshly-written save content survives it. A save opens the ledger only
+        # from its working branch, never from a checkout elsewhere.
         child = "pricing-child"
-        _git(repo, "checkout", m1)
-        _git(repo, "branch", child, m1)
+        _git(repo, "checkout", "-b", child, m1)
         c1 = _write_and_save(repo, child, {"rating.py": "# child edit\n"})
         assert c1 is not None
 
@@ -599,7 +702,7 @@ class TestBaton:
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         m1 = merge_to_working(WORKING, "M1", cwd=repo)
         child = "pricing-child"
-        _git(repo, "branch", child, m1)
+        _git(repo, "checkout", "-b", child, m1)
         _write_and_save(repo, child, {"rating.py": "# child\n"})
         assert check_invariants(child, cwd=repo) == []
         merge_to_working(child, "child M1", cwd=repo)

@@ -23,6 +23,7 @@ from haute._git import (
     undelete_working_pair,
 )
 from haute._git_state import read_operation, read_trash, read_working_branch, write_working_branch
+from tests._git_engine_helpers import seen_now
 
 WORKING = "pricing-dev"
 LEDGER = "pricing-dev-save"
@@ -134,7 +135,7 @@ def test_confirmed_delete_of_only_active_pair_detaches_when_no_default_exists(
     resolve_ledger(WORKING, cwd=repo)
     write_working_branch(repo, WORKING)
 
-    delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+    delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=True, cwd=repo)
 
     assert _git(repo, "branch", "--list", WORKING) == ""
     assert _git(repo, "branch", "--list", LEDGER) == ""
@@ -246,7 +247,9 @@ def test_undelete_failure_removes_partial_heads_and_preserves_recovery_net(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_up_pair(repo)
-    entry_id = delete_working_pair(WORKING, repo, confirm=True, cwd=repo).trash_id
+    entry_id = delete_working_pair(
+        WORKING, repo, seen=seen_now(repo, WORKING), confirm=True, cwd=repo
+    ).trash_id
     _fail_first_transaction(monkeypatch, message="injected ref transaction failure")
 
     with pytest.raises(GitError, match="injected ref transaction failure"):

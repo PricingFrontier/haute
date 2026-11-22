@@ -75,7 +75,7 @@ defaults; `.github/workflows/ci.yml` installs the smoke wheel with
 
 ### AST-02 — An assistant change reports its version capture as a save does
 **Why:** Reproduced on 10 November 2026 with a real cause, a
-`.git/index.lock` left behind (`VCS-03`), through the assistant's own
+`.git/index.lock` left behind, through the assistant's own
 service as its tests drive it. An assistant change is applied and captured.
 Then, with the lock in place, it is undone. The undo's answer holds a null
 commit and nothing else about the capture: no warning, and no list of the
@@ -104,7 +104,7 @@ and once for a missing identity, an applied change and an undone one each
 show the save's warning, add their files to the editor's list for the next
 capture, and open the identity prompt when that is the cause.
 
-**Dependencies:** None. `VCS-03` words the causes.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/assistant/_application.py`;
 `src/haute/schemas.py::AssistantUndoResponse`;

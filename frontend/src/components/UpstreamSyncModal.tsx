@@ -7,6 +7,7 @@ import useToastStore from "../stores/useToastStore"
 import { apiErrorMessage } from "../api/errors"
 import { answer, ask, newest, under } from "../utils/answers"
 import ModalShell from "./ModalShell"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 interface UpstreamSyncModalProps {
   onClose: () => void
@@ -63,7 +64,7 @@ export default function UpstreamSyncModal({ onClose }: UpstreamSyncModalProps) {
     // to the dialog.
     const here = ask([under(life)])
     try {
-      await answer([gitStorePart()], pullUpstream(), {
+      await answer([gitStorePart()], clearingTheWay((...settled) => pullUpstream(...settled)), {
         ok: () => {
           addToast("success", "Caught up with the parent project.")
           here.apply(onClose)

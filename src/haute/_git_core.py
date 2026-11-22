@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import inspect
 import os
 import re
@@ -157,6 +158,22 @@ class GitMilestoneForkError(GitDomainError):
     def __init__(self, fork: GitMilestoneFork) -> None:
         super().__init__(fork.message)
         self.fork = fork
+
+
+GitBlockedCause = Literal["lock", "untrusted-folder", "damaged-config", "signing"]
+
+
+class GitBlockedError(GitDomainError):
+    """Git refused a command for a cause the analyst can remove outside Haute: a lock file
+    another git program holds or left behind, a folder git does not trust, a settings file
+    git cannot read, or a commit it could not sign. Raised by the core's runners from git's
+    own message (:func:`_blocked_by`), worded with what to do, so a probe never reads it as
+    "no" (not a repository, no identity) and a command never answers it as "Git refused
+    this"; git's message stays in the log, as for every refusal."""
+
+    def __init__(self, cause: GitBlockedCause, message: str) -> None:
+        super().__init__(message)
+        self.cause = cause
 
 
 class GitTransactionError(GitDomainError):
@@ -621,6 +638,94 @@ def _subcommand(args: tuple[str, ...]) -> str:
     return args[index] if index < len(args) else ""
 
 
+_LOCK_HELD = re.compile(r"Unable to create '([^'\n]+\.lock)': File exists")
+_UNTRUSTED = re.compile(r"detected dubious ownership in repository at '([^'\n]+)'")
+_SAFE_DIRECTORY = re.compile(r"git config --global --add safe\.directory (.+)")
+_DAMAGED_CONFIG = re.compile(r"bad config (?:file )?line (\d+) in (?:file )?(.+)")
+_BAD_BOOLEAN = re.compile(r"bad boolean config value '([^'\n]*)' for '([^'\n]+)'")
+# A commit git could not sign: git's words when gpg or gpgsm fails, then those of git and
+# ssh-keygen for the ssh format (no key set, the key file missing, no private key for it, a
+# key that asks for a passphrase, an ssh-keygen too old to sign). Read only of a commit.
+_UNSIGNED = re.compile(
+    r"failed to sign the data"
+    r"|either user\.signingkey or gpg\.ssh\.defaultKeyCommand needs to be configured"
+    r"|Couldn't load public key"
+    r"|No private key found for public key"
+    r"|incorrect passphrase supplied to decrypt private key"
+    r"|ssh-keygen -Y sign is needed"
+)
+_COMMITTING = frozenset({"commit", "commit-tree"})
+
+
+def _blocked_by(
+    stderr: str, cwd: Path | None, *, committing: bool = False
+) -> GitBlockedError | None:
+    """The cause outside Haute that git's *stderr* names, worded with what to do; None for
+    any other failure, which stays "Git refused this" with git's words in the log. A
+    signing failure is read only of a command that commits (*committing*): an ssh key's
+    words could otherwise be a push's.
+
+    Only what the analyst needs is taken from git's words: the lock file and the settings
+    file, shown relative to the project when they are in it, the line, and the
+    ``safe.directory`` value git itself proposes."""
+    root = cwd or current_project().root
+
+    def shown(path: str) -> str:
+        try:
+            return Path(path).resolve().relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return path
+
+    if (held := _LOCK_HELD.search(stderr)) is not None:
+        lock = shown(held.group(1))
+        return GitBlockedError(
+            "lock",
+            f"Another git program is using this project's repository: git found its lock "
+            f"file {lock}. Wait for it to finish, then try again. If no git program is "
+            f"running, one that stopped left the file behind: delete {lock}, then try again.",
+        )
+    if (untrusted := _UNTRUSTED.search(stderr)) is not None:
+        proposed = _SAFE_DIRECTORY.search(stderr)
+        value = proposed.group(1).strip() if proposed is not None else untrusted.group(1)
+        return GitBlockedError(
+            "untrusted-folder",
+            "Git does not trust this project's folder, because another account owns it (as "
+            "on a network share), so it will not work in it. To trust the folder, run: "
+            f"git config --global --add safe.directory {value}",
+        )
+    if (damaged := _DAMAGED_CONFIG.search(stderr)) is not None:
+        line, settings = damaged.group(1), shown(damaged.group(2).strip())
+        return GitBlockedError(
+            "damaged-config",
+            f"Git can't read its settings: line {line} of {settings} is damaged. Correct or "
+            "remove that line, then try again.",
+        )
+    if (bad := _BAD_BOOLEAN.search(stderr)) is not None:
+        value, setting = bad.group(1), bad.group(2)
+        return GitBlockedError(
+            "damaged-config",
+            f"Git can't read its settings: {setting} is set to '{value}', which is neither "
+            "true nor false. Correct it, then try again.",
+        )
+    if committing and _UNSIGNED.search(stderr) is not None:
+        return GitBlockedError(
+            "signing",
+            "Git is set to sign every commit, and this one could not be signed, so nothing "
+            "was recorded. Check that the signing key git uses is available and signs "
+            "without asking for a passphrase, then try again.",
+        )
+    return None
+
+
+def _refused(cmd: list[str], stderr: str, args: Sequence[str], cwd: Path | None) -> GitError:
+    """The error for a git command that exited non-zero: its cause in words when git names
+    one the analyst can remove, else git's own message, which is logged and never said."""
+    logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
+    subcommand = _subcommand(tuple(args))
+    blocked = _blocked_by(stderr, cwd, committing=subcommand in _COMMITTING)
+    return blocked or GitError(stderr or f"git {subcommand} failed")
+
+
 def _run_git(
     *args: str,
     check: bool = True,
@@ -668,33 +773,28 @@ def _run_git(
         stdout = byte_result.stdout.decode("utf-8", errors="replace")
         stderr = byte_result.stderr.decode("utf-8", errors="replace")
     if check and returncode != 0:
-        stderr = stderr.strip()
-        logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
-        raise GitError(stderr or f"git {_subcommand(args)} failed")
+        raise _refused(cmd, stderr.strip(), args, cwd)
     return stdout.strip()
 
 
 def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
-    """Run a git command and return (success, stdout).  Never raises."""
-    cmd = _git_argv(args)
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=cwd or current_project().root,
-        env=_git_env(),
-    )
-    return result.returncode == 0, result.stdout.strip()
+    """Run a git command and return (success, stdout).
+
+    A non-zero exit is an answer ("no"), except when git refused for a cause outside Haute
+    (:class:`GitBlockedError`): an untrusted folder or damaged settings would otherwise read
+    as no repository, or no identity, so that is raised."""
+    return_code, stdout = _run_git_rc(*args, cwd=cwd)
+    return return_code == 0, stdout
 
 
 def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
-    """Run a git command and return (returncode, stdout).  Never raises.
+    """Run a git command and return (returncode, stdout).
 
     Exists alongside :func:`_run_git_ok` for callers that must distinguish a
     SEMANTIC non-zero exit from a real failure — ``merge-base --is-ancestor``
     exits 1 for "not an ancestor" (a valid, cacheable answer) but >1 for an
-    unreadable object (which must never be cached).
+    unreadable object (which must never be cached). It raises only
+    :class:`GitBlockedError`, for a refusal no exit code can stand for.
     """
     cmd = _git_argv(args)
     result = subprocess.run(
@@ -705,7 +805,62 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         cwd=cwd or current_project().root,
         env=_git_env(),
     )
+    if result.returncode != 0:
+        blocked = _blocked_by(
+            result.stderr, cwd, committing=_subcommand(tuple(args)) in _COMMITTING
+        )
+        if blocked is not None:
+            logger.warning("git_command_failed", cmd=cmd, stderr=result.stderr.strip())
+            raise blocked
     return result.returncode, result.stdout.strip()
+
+
+def signs_commits(cwd: Path | None = None) -> bool:
+    """Whether git is set to sign every commit (``commit.gpgsign``, in the repository's
+    settings or the analyst's own). Only a setting left unset, or set false, signs nothing:
+    one git cannot read as true or false refuses (``GitBlockedError``), so a mistyped
+    setting never makes an unsigned commit where a team asked for signed ones."""
+    code, raw = _run_git_rc("config", "--type=bool", "--get", "commit.gpgsign", cwd=cwd)
+    if code == 1:  # not set
+        return False
+    if code != 0:
+        raise GitError("Git could not read whether to sign commits (commit.gpgsign).")
+    return raw == "true"
+
+
+def _signature(cwd: Path | None, env: dict[str, str] | None) -> tuple[str, ...]:
+    """What asks ``commit-tree`` for a signature when git is set to sign every commit: the
+    key git is set to use. A commit keeping another committer (a copy Create & Move makes)
+    is still signed by the analyst making it: git picks a GPG or X.509 key with none set by
+    the committer, so their own identity names the key."""
+    if not signs_commits(cwd):
+        return ()
+    if env is None or not any(name.startswith("GIT_COMMITTER_") for name in env):
+        return ("-S",)
+    keyed, _key = _run_git_ok("config", "--get", "user.signingkey", cwd=cwd)
+    _formatted, form = _run_git_ok("config", "--get", "gpg.format", cwd=cwd)
+    if keyed or form.strip() == "ssh":
+        # A key set, or SSH's own default key command: no identity picks it.
+        return ("-S",)
+    identity = _run_git("var", "GIT_COMMITTER_IDENT", cwd=cwd)
+    return (f"-S{identity.rsplit('>', 1)[0]}>",)
+
+
+def _commit_tree(
+    tree: str,
+    *parents: str,
+    message: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """A commit of *tree* on *parents*, as Haute makes every commit but a save's (a
+    milestone, a restore, a branch's first milestone, the copies Create & Move makes, a new
+    repository's first commit): signed, with the key and format git is set to use, when git
+    is set to sign every commit, as ``git commit`` signs a save. ``commit-tree`` reads no
+    such setting itself, so the commit asks for its signature (:func:`_signature`)."""
+    signed = _signature(cwd, env)
+    on = [arg for parent in parents for arg in ("-p", parent)]
+    return _run_git("commit-tree", *signed, tree, *on, "-m", message, cwd=cwd, env=env)
 
 
 # Haute's transport when the analyst has not chosen one: OpenSSH that never prompts.
@@ -942,12 +1097,23 @@ def _refuse_too_large_for_history(paths: list[str], root: Path, retry: str) -> N
 def _free_pair_name(stem: str, *, bare_first: bool, cwd: Path | None = None) -> str:
     """The first of ``<stem>`` (when *bare_first*), ``<stem>-<YYYYMMDD>``,
     ``<stem>-<YYYYMMDD>-2``, … for which BOTH the name and its ledger are free, so the pair
-    collides with no existing branch on either ref."""
+    collides with no existing branch on either ref, nor sits beside one git cannot keep
+    with it.
+
+    A branch named as a folder of *stem* (``archive`` for ``archive/<X>``) is in the way of
+    every candidate, since they differ only in their last part: that is refused, naming it."""
+    above = _branch_in_the_way(stem, cwd, above_only=True)
+    if above is not None:
+        raise GitDomainError(
+            f"Haute can't make the branch '{stem}': {_clash_words(stem, above)}. "
+            f"Delete '{above}' first: Deleted keeps it, to restore under another name."
+        )
 
     def taken(name: str) -> bool:
         return (
             _rev_parse(name, cwd=cwd) is not None
             or _rev_parse(ledger_name(name), cwd=cwd) is not None
+            or _branch_in_the_way(name, cwd) is not None
         )
 
     if bare_first and not taken(stem):
@@ -1176,10 +1342,14 @@ def _branch_name_refused(name: str, problem: str) -> GitDomainError:
 
 
 def _assert_new_branch_name(name: str, cwd: Path | None = None) -> None:
-    """Refuse a typed branch name git cannot use, naming the rule it breaks.
+    """Refuse a typed branch name git cannot use, or could not keep beside the branches
+    there are, naming the rule it breaks or the branch in its way.
 
-    ``git check-ref-format --branch`` is the authority: a name the in-process rules let
-    through is still refused, in words, if git would not take it."""
+    ``git check-ref-format --branch`` is the authority on the name's form: a name the
+    in-process rules let through is still refused, in words, if git would not take it. It
+    says nothing of the branches that exist, so the clash is checked here too."""
+    from haute._config_io import is_windows_reserved_filename
+
     problem = _branch_name_problem(name)
     if problem is None:
         accepted, checked = _run_git_ok("check-ref-format", "--branch", name, cwd=cwd)
@@ -1187,6 +1357,52 @@ def _assert_new_branch_name(name: str, cwd: Path | None = None) -> None:
             problem = "git does not accept it as a branch name"
     if problem is not None:
         raise _branch_name_refused(name, problem)
+    # Every git keeps a branch as a file, so a part Windows keeps for a device cannot name
+    # one there: refused on every platform, as a file of that name is, to keep the project
+    # one a colleague on Windows can fetch.
+    device = next((part for part in name.split("/") if is_windows_reserved_filename(part)), None)
+    if device is not None:
+        raise GitDomainError(
+            f"'{name}' can't be used as a branch name: Windows keeps "
+            f"'{device.split('.', 1)[0]}' for a device, "
+            "so the branch could not exist there. Choose another name."
+        )
+    in_the_way = _branch_in_the_way(name, cwd)
+    if in_the_way is not None:
+        raise GitDomainError(
+            f"'{name}' can't be used as a branch name: {_clash_words(name, in_the_way)}. "
+            "Choose another name."
+        )
+
+
+def _local_branch_names(cwd: Path | None) -> list[str]:
+    raw = _run_git("for-each-ref", "--format=%(refname:strip=2)", "refs/heads/", cwd=cwd)
+    return raw.splitlines()
+
+
+def _branch_in_the_way(name: str, cwd: Path | None, *, above_only: bool = False) -> str | None:
+    """The local branch a new branch *name* and its ledger cannot exist beside: one named as
+    a folder of either (``motor`` for ``motor/renewal``), or, unless *above_only*, one inside
+    a folder either would be (``team/home`` for ``team``).
+
+    Git keeps each branch as a file under ``refs/heads/``, so a name cannot be a file and a
+    folder at once, and git's own refusal ("cannot lock ref") reaches the analyst only as an
+    operation that failed. Compared in any letter case, as git on Windows and macOS keeps
+    those files. A branch of exactly the name is "already exists", the callers' own check."""
+    wanted = [candidate.casefold() for candidate in (name, ledger_name(name))]
+    for existing in _local_branch_names(cwd):
+        folded = existing.casefold()
+        for want in wanted:
+            if want.startswith(f"{folded}/") or (not above_only and folded.startswith(f"{want}/")):
+                return existing
+    return None
+
+
+def _clash_words(name: str, existing: str) -> str:
+    return (
+        f"the branch '{existing}' exists, and git can't keep both it and '{name}', since one "
+        "would be a folder of the other"
+    )
 
 
 def _assert_eligible_working(branch: str) -> None:
@@ -1471,8 +1687,9 @@ def _wipe_volatile_artefacts(repo_root: Path) -> None:
 _UNLINK_FAILED = re.compile(r"unable to unlink (?:old )?'(.+?)'")
 
 
-def _tracked_changes(cwd: Path | None = None) -> set[str]:
-    """Tracked paths whose index or working content differs from HEAD."""
+def _tracked_changes(cwd: Path | None = None, *, with_sources: bool = False) -> set[str]:
+    """Tracked paths whose index or working content differs from HEAD; *with_sources* adds
+    a staged rename's or copy's source, whose removal is part of the change."""
     # Read raw: each entry's two status letters may begin with a space, which a
     # stripped output would lose along with the path's first character.
     result = subprocess.run(
@@ -1484,8 +1701,8 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
         env=_git_env(),
     )
     if result.returncode != 0:
-        logger.warning("git_command_failed", cmd=["git", "status"], stderr=result.stderr.strip())
-        raise GitError(result.stderr.strip() or "git status failed")
+        args = ("status", "--porcelain", "-z", "--untracked-files=no")
+        raise _refused(["git", *args], result.stderr.strip(), args, cwd)
     tokens = result.stdout.split("\0")
     paths: set[str] = set()
     i = 0
@@ -1496,8 +1713,94 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
             continue
         paths.add(entry[3:])
         if entry[0] in "RC" or entry[1] in "RC":
-            i += 1  # a rename's or copy's source path follows
+            # A rename's or copy's source path follows.
+            if with_sources and i < len(tokens) and tokens[i]:
+                paths.add(tokens[i])
+            i += 1
     return paths
+
+
+#: How many of the files in an operation's way its refusal names in its message; the
+#: refusal carries every one of them.
+_UNRECORDED_NAMED = 5
+
+
+class GitUnrecordedFilesError(GitDomainError):
+    """An operation that would replace the project's files refused because some are on disk
+    as version history does not have them: tracked files changed outside Haute (a CSV saved
+    in Excel), and files git does not track where the destination has one. It carries
+    *files*, every one of them, so the editor can offer to record them as a save or put them
+    back (``settle_unrecorded``) and then ask for the operation again; HTTP 409."""
+
+    def __init__(self, words: str, files: list[str], token: str) -> None:
+        self.files = files
+        # What the files are now (_unrecorded_token): the choice made of them is answered
+        # against it, so one made after they changed again touches none of them.
+        self.token = token
+        named = ", ".join(files[:_UNRECORDED_NAMED])
+        if len(files) > _UNRECORDED_NAMED:
+            named += f" and {len(files) - _UNRECORDED_NAMED} more"
+        one = len(files) == 1
+        them, have = ("it", "has") if one else ("them", "have")
+        super().__init__(
+            f"{named} {have} changed on disk outside Haute since the last save. Before "
+            f"{words}, record {them} as a save on this branch, or put {them} back as version "
+            f"history has {them}."
+        )
+
+
+def _assert_way_clear(
+    words: str, destination: str, cwd: Path | None = None, *, leaving: bool
+) -> None:
+    """Refuse, naming them, the files an operation about to check out *destination* would
+    carry off or replace: every tracked file that differs from HEAD, and every file on disk
+    that git does not track where *destination* has one and HEAD has none, which git's own
+    checkout refuses as "would be overwritten".
+
+    The one rule for a switch, opening a new branch, Catch up, Spin off a copy, and archiving
+    or deleting the branch the project is on (*words* says which: "switching to 'other'").
+    An operation *leaving* the branch the files were changed on (a switch, opening a new
+    branch, an archive or delete of the current one) is always checked, since the files
+    would go with the analyst to another line or to none; one that stays on it is checked
+    only when its checkout changes HEAD's commit, the case where files are replaced."""
+    head = _rev_parse("HEAD", cwd=cwd)
+    if head is None or (head == destination and not leaving):
+        return
+    root = cwd or current_project().root
+    added = _run_git(
+        "diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", head, destination, cwd=cwd
+    )
+    in_the_way = [
+        path
+        for path in added.split("\0")
+        if path and ((root / path).exists() or (root / path).is_symlink())
+    ]
+    files = sorted(_tracked_changes(cwd, with_sources=True) | set(in_the_way))
+    if files:
+        raise GitUnrecordedFilesError(words, files, _unrecorded_token(files, cwd))
+
+
+def _unrecorded_token(files: list[str], cwd: Path | None = None) -> str:
+    """What *files* are now, as a digest: the branch the checkout is on, and for each file
+    its content on disk and at HEAD (the blob git would record, or none). A question asked
+    of them is answered against it (``settle_unrecorded``): once another tab has recorded
+    them, switched branch or edited them again, the answer touches nothing."""
+    root = cwd or current_project().root
+    _attached, branch = _run_git_ok("symbolic-ref", "-q", "HEAD", cwd=cwd)
+    on_disk = [path for path in files if (root / path).is_file()]
+    hashed = _run_git("hash-object", "--", *on_disk, cwd=cwd).split() if on_disk else []
+    disk = dict(zip(on_disk, hashed, strict=True))
+    listed = _run_git(
+        "ls-tree", "-z", "HEAD", "--", *(f":(literal){path}" for path in files), cwd=cwd
+    )
+    at_head = {}
+    for entry in filter(None, listed.split("\0")):
+        meta, _, name = entry.partition("\t")
+        at_head[name] = meta.split()[2]
+    digest = hashlib.sha256(branch.encode())
+    for path in sorted(files):
+        digest.update(f"\0{path}\0{disk.get(path, '-')}\0{at_head.get(path, '-')}".encode())
+    return digest.hexdigest()
 
 
 def _held_files(stderr: str) -> list[str]:
@@ -1544,8 +1847,7 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
         logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
         raise GitFilesInUseError(reported or out_of_step)
     if code != 0:
-        logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
-        raise GitError(stderr or f"git {_subcommand(args)} failed")
+        raise _refused(["git", *args], stderr, args, cwd)
 
 
 def _remote_names(cwd: Path | None = None) -> list[str]:

@@ -767,6 +767,38 @@ def test_a_save_without_a_working_branch_is_written_and_names_what_it_left_off(
     assert json.loads((project / FORM / "form.json").read_bytes())["name"] == "renamed"
 
 
+def test_a_form_save_from_a_tab_the_project_moved_away_from_writes_nothing(
+    project: Path,
+) -> None:
+    """Another tab switched the project to a branch whose form is the same, so the folder's
+    revision still matches: the form save names the branch its tab shows, and is refused
+    before anything is written, as the pipeline save is."""
+    enable(project)
+    init_repo(project)
+    write_form(project, form(POLICY))
+    # A milestone holding the pipeline and the form, which the new branch starts at.
+    _git.commit_milestone("The form", project, cwd=project, pipeline_folder="rating")
+    _git.create_working_branch("other", project, cwd=project)
+    body = served()
+    _git.set_working_branch("other", project, cwd=project)
+    before = files_of(project)
+    ledger = git(project, "rev-parse", "other-save")
+
+    refused = client().put(
+        "/api/workbench/form",
+        json={
+            "form": {**body["form"], "name": "renamed"},
+            "base_revision": body["revision"],
+            "working_branch": WORKING,
+        },
+    )
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["error_code"] == "branch_changed"
+    assert files_of(project) == before
+    assert git(project, "rev-parse", "other-save") == ledger
+
+
 def test_a_save_the_ledger_cannot_capture_is_written_and_says_why(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -8,9 +8,9 @@
  * waved away this session.
  */
 import { captureFiles } from "../api/client"
-import { apiErrorMessage } from "../api/errors"
+import { apiErrorCode, apiErrorMessage } from "../api/errors"
 import { isIdentityPromptDismissed } from "./identityPrompt"
-import useGitStore from "./useGitStore"
+import useGitStore, { gitBranchMayHaveChanged, shownBranch } from "./useGitStore"
 import useToastStore from "./useToastStore"
 import { documentPart } from "./useDocumentStatusStore"
 import { answer } from "../utils/answers"
@@ -58,23 +58,31 @@ function keepUncaptured(paths: string[]): void {
 
 /**
  * Capture on the ledger every file writes left uncaptured, as it is on disk now: after the
- * identity prompt records a name and email, and at each Save. The answer is reported as a
- * save's is, so a file still uncaptured is kept again; a request that fails keeps them all
- * and says so. Nothing is sent while nothing is kept.
+ * identity prompt records a name and email, and at each Save, naming `workingBranch` (the
+ * project Save's, else the branch the tab shows). The answer is reported as a save's is, so
+ * a file still uncaptured is kept again; a request that fails keeps them all and says so.
+ * Nothing is sent while nothing is kept. False when the project moved to another branch
+ * (`branch_changed`): the Save it is the first step of goes no further.
  */
-export async function captureUncaptured(): Promise<void> {
+export async function captureUncaptured(workingBranch: string | null = shownBranch()): Promise<boolean> {
   const paths = useGitStore.getState().uncaptured
-  if (paths.length === 0) return
+  if (paths.length === 0) return true
+  let moved = false
   // Taken off before the request: a write answered meanwhile keeps its own files.
   useGitStore.setState((state) => ({ uncaptured: state.uncaptured.filter((path) => !paths.includes(path)) }))
   const failed = (error: unknown) => {
     keepUncaptured(paths)
     useToastStore.getState().addToast("error", `Version capture failed: ${apiErrorMessage(error)}`)
+    if (apiErrorCode(error) === "branch_changed") {
+      moved = true
+      void gitBranchMayHaveChanged()
+    }
   }
   // The capture is the ledger's whatever the editor shows by its answer: it is settled either way.
-  await answer([documentPart()], captureFiles(paths), {
+  await answer([documentPart()], captureFiles(paths, workingBranch), {
     ok: reportSaveCapture,
     failed,
     stale: (settled) => ("value" in settled ? reportSaveCapture(settled.value) : failed(settled.error)),
   })
+  return !moved
 }

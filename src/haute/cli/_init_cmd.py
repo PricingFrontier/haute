@@ -251,6 +251,7 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
     files where ``git diff`` does not. Outside a repository there is nothing to record.
     """
     from haute._git_core import (
+        GitBlockedError,
         _get_current_branch,
         _is_git_repo,
         _run_git,
@@ -260,7 +261,17 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
     from haute._git_state import read_working_branch
 
     paths = list(dict.fromkeys(written))
-    if not paths or not _is_git_repo(project_dir):
+    if not paths:
+        return
+    try:
+        in_repository = _is_git_repo(project_dir)
+    except GitBlockedError as blocked:
+        # A folder git does not trust, or settings it cannot read: the repository is there,
+        # so say why nothing was recorded rather than treat it as none.
+        click.echo(f"\n{blocked}")
+        click.echo(f"Nothing was recorded in version history: {', '.join(paths)}")
+        return
+    if not in_repository:
         return
     pathspecs = [f":(literal){path}" for path in paths]
     untracked = _run_git(

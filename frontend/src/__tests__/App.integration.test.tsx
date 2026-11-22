@@ -1556,11 +1556,65 @@ describe("App integration - save pipeline", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
 
     await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(api.captureFiles)).toHaveBeenCalledWith(["rating/files/data/rates.csv"])
+    expect(vi.mocked(api.captureFiles)).toHaveBeenCalledWith(
+      ["rating/files/data/rates.csv"],
+      useGitStore.getState().status?.working_branch ?? null,
+    )
     expect(vi.mocked(api.captureFiles).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(api.savePipeline).mock.invocationCallOrder[0],
     )
     expect(useGitStore.getState().uncaptured).toEqual([])
+  })
+
+  it("Save stops at a capture refused because the project moved to another branch", async () => {
+    vi.mocked(api.captureFiles).mockClear()
+    vi.mocked(api.savePipeline).mockClear()
+    const moved = { error_code: "branch_changed", message: "This tab shows the branch 'dev', but the project is on 'other' now." }
+    vi.mocked(api.captureFiles).mockRejectedValueOnce(
+      new api.ApiError("HTTP 409", 409, JSON.stringify(moved), { detail: moved }, moved),
+    )
+    render(<App />)
+    await waitForAppReady()
+    useGitStore.setState({ uncaptured: ["rating/files/data/rates.csv"] })
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+
+    await waitFor(() => expect(vi.mocked(api.captureFiles)).toHaveBeenCalledTimes(1))
+    // Nothing more is written: not on the branch the tab showed, nor on the one it learns.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+    expect(useGitStore.getState().uncaptured).toEqual(["rating/files/data/rates.csv"])
+  })
+
+  it("a Save pressed while another runs names the branch shown when it was pressed", async () => {
+    vi.mocked(api.captureFiles).mockClear()
+    vi.mocked(api.savePipeline).mockClear()
+    const moved = { error_code: "branch_changed", message: "This tab shows the branch 'dev', but the project is on 'other' now." }
+    const refusal = () => new api.ApiError("HTTP 409", 409, JSON.stringify(moved), { detail: moved }, moved)
+    let refuseFirst!: () => void
+    vi.mocked(api.captureFiles)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { refuseFirst = () => reject(refusal()) }))
+      .mockRejectedValueOnce(refusal())
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => expect(useGitStore.getState().status?.working_branch).toBe("dev"))
+    useGitStore.setState({ uncaptured: ["rating/files/data/rates.csv"] })
+    // The project moves to 'other' while the first Save waits on its capture.
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "other", state: "ready", errors: [], current_branch: "other-save", identity_set: true,
+    }))
+
+    const save = screen.getByRole("button", { name: /^save$/i })
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() => expect(vi.mocked(api.captureFiles)).toHaveBeenCalledTimes(1))
+    refuseFirst()
+    await waitFor(() => expect(useGitStore.getState().status?.working_branch).toBe("other"))
+    await waitFor(() => expect(vi.mocked(api.captureFiles)).toHaveBeenCalledTimes(2))
+
+    expect(vi.mocked(api.captureFiles).mock.calls.map((call) => call[1])).toEqual(["dev", "dev"])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
   })
 
   it("shows a success toast when savePipeline resolves", async () => {

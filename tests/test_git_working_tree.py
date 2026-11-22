@@ -476,3 +476,227 @@ class TestTreeFence:
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
         assert (repo / "rating.py").read_text() == "# on dev\n"
         assert read_operation(repo) is None
+
+
+class TestFilesChangedOutsideHaute:
+    """A file edited by hand (a CSV saved in Excel) or copied in where the destination has
+    one: every operation that replaces the project's files names it and is asked again once
+    it is recorded as a save or put back (``GitUnrecordedFilesError``, ``settle_unrecorded``).
+    """
+
+    def _arrange(self, repo: Path, tmp_path: Path, operation: str) -> None:
+        """The pair on WORKING with one save; *other* holds another rating.py; for the remote
+        operations a teammate has pushed a save the clone is behind on."""
+        from haute._git import push_working_pair
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# on dev\n"})
+        if operation in ("switch", "archive"):
+            create_working_branch("other", repo, cwd=repo)
+        if operation in ("catch-up", "spin-off"):
+            bare = tmp_path / "origin.git"
+            _git(repo, "init", "--bare", "-q", str(bare))
+            _git(repo, "remote", "add", "origin", str(bare))
+            push_working_pair("origin", repo, cwd=repo)
+            teammate = tmp_path / "teammate"
+            _git(repo, "clone", "-q", str(bare), str(teammate))
+            _git(teammate, "config", "user.name", "Teammate")
+            _git(teammate, "config", "user.email", "teammate@example.com")
+            _git(teammate, "checkout", "-q", LEDGER)
+            (teammate / "rating.py").write_text("# teammate's\n")
+            _git(teammate, "commit", "-q", "-am", "teammate's save")
+            if operation == "spin-off":
+                # The clone saved too: the two lines have forked.
+                _write_and_save(repo, WORKING, {"notes.txt": "local\n"})
+            _git(teammate, "push", "-q", "origin", LEDGER)
+
+    def _run(self, repo: Path, operation: str) -> object:
+        from haute._git import archive_working_pair, branch_away, fast_forward_pair
+
+        if operation == "switch":
+            return set_working_branch("other", repo, cwd=repo)
+        if operation == "create-and-open":
+            return create_working_branch("opened", repo, switch=True, cwd=repo)
+        if operation == "archive":
+            return archive_working_pair(WORKING, repo, cwd=repo)
+        if operation == "catch-up":
+            return fast_forward_pair("origin", repo, cwd=repo)
+        return branch_away("origin", repo, cwd=repo)
+
+    def _settle(self, repo: Path, operation: str, choice: str) -> None:
+        """Answer the refusal the operation meets as the editor does: its files and token."""
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            self._run(repo, operation)
+        settle_unrecorded(
+            choice,  # type: ignore[arg-type]
+            refused.value.files,
+            refused.value.token,
+            repo,
+            cwd=repo,
+        )
+
+    _OPERATIONS = ["switch", "create-and-open", "archive", "catch-up", "spin-off"]
+    _WORDS = {
+        "switch": "switching to 'other'",
+        "create-and-open": "opening 'opened'",
+        "archive": f"archiving '{WORKING}'",
+        "catch-up": "catching up",
+        "spin-off": "spinning off a copy",
+    }
+
+    @pytest.mark.parametrize("operation", _OPERATIONS)
+    def test_a_file_edited_by_hand_is_named_and_nothing_moves(
+        self, repo: Path, tmp_path: Path, operation: str
+    ) -> None:
+        from haute._git import GitUnrecordedFilesError
+
+        self._arrange(repo, tmp_path, operation)
+        (repo / "rating.py").write_text("# edited in another program\n")
+        refs = _git(repo, "for-each-ref", "refs/heads/")
+        head = _git(repo, "symbolic-ref", "HEAD")
+
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            self._run(repo, operation)
+
+        assert refused.value.files == ["rating.py"]
+        assert str(refused.value) == (
+            "rating.py has changed on disk outside Haute since the last save. Before "
+            f"{self._WORDS[operation]}, record it as a save on this branch, or put it back as "
+            "version history has it."
+        )
+        assert "Save or discard" not in str(refused.value)
+        assert _git(repo, "for-each-ref", "refs/heads/") == refs
+        assert _git(repo, "symbolic-ref", "HEAD") == head
+        assert (repo / "rating.py").read_text() == "# edited in another program\n"
+
+    @pytest.mark.parametrize("operation", _OPERATIONS)
+    def test_put_back_the_operation_completes_with_the_file_as_history_has_it(
+        self, repo: Path, tmp_path: Path, operation: str
+    ) -> None:
+        self._arrange(repo, tmp_path, operation)
+        (repo / "rating.py").write_text("# edited in another program\n")
+
+        self._settle(repo, operation, "put-back")
+        assert (repo / "rating.py").read_text() == "# on dev\n"
+        self._run(repo, operation)
+
+        assert _git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+    @pytest.mark.parametrize("operation", ["switch", "create-and-open", "archive", "spin-off"])
+    def test_recorded_the_operation_completes_and_the_edit_is_among_the_branch_s_saves(
+        self, repo: Path, tmp_path: Path, operation: str
+    ) -> None:
+        self._arrange(repo, tmp_path, operation)
+        (repo / "rating.py").write_text("# edited in another program\n")
+
+        self._settle(repo, operation, "record")
+        recorded = _git(repo, "rev-parse", LEDGER)
+        result = self._run(repo, operation)
+
+        assert _git(repo, "log", "-1", "--format=%s", recorded) == "Updated project files"
+        assert _git(repo, "show", f"{recorded}:rating.py") == "# edited in another program"
+        # The save stays with the branch it was made on, set aside or archived with it.
+        kept = {
+            "switch": LEDGER,
+            "create-and-open": LEDGER,
+            "archive": f"archive/{LEDGER}",
+            "spin-off": f"{getattr(result, 'set_aside_as', '')}-save",
+        }[operation]
+        assert _git(repo, "rev-parse", kept) == recorded
+
+    def test_recorded_before_a_catch_up_the_save_asks_for_a_copy_to_be_spun_off(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """A save the remote does not have makes the lines fork: Catch up never merges, so
+        it refuses as for any local save, and Spin off a copy keeps the edit."""
+        self._arrange(repo, tmp_path, "catch-up")
+        (repo / "rating.py").write_text("# edited in another program\n")
+
+        self._settle(repo, "catch-up", "record")
+        with pytest.raises(GitDomainError, match="Spin off a copy"):
+            self._run(repo, "catch-up")
+
+    def test_a_file_git_does_not_track_where_the_destination_has_one_is_named(
+        self, repo: Path
+    ) -> None:
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("other", repo, cwd=repo)
+        set_working_branch("other", repo, cwd=repo)
+        _write_and_save(repo, "other", {"rates.csv": "rate\n1\n"})
+        set_working_branch(WORKING, repo, cwd=repo)
+        (repo / "rates.csv").write_text("copied in by hand\n")
+
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            set_working_branch("other", repo, cwd=repo)
+        assert refused.value.files == ["rates.csv"]
+
+        settle_unrecorded("put-back", ["rates.csv"], refused.value.token, repo, cwd=repo)
+        assert not (repo / "rates.csv").exists()
+        set_working_branch("other", repo, cwd=repo)
+        assert (repo / "rates.csv").read_text() == "rate\n1\n"
+
+    def test_recording_needs_a_working_branch_and_an_identity(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute._git_transactions as transactions
+        from haute._git import settle_unrecorded
+        from haute._git_core import _unrecorded_token
+
+        (repo / "rating.py").write_text("# edited\n")
+        token = _unrecorded_token(["rating.py"], repo)
+        with pytest.raises(GitDomainError, match="No working branch is chosen"):
+            settle_unrecorded("record", ["rating.py"], token, repo, cwd=repo)
+        set_working_branch(WORKING, repo, cwd=repo)
+        token = _unrecorded_token(["rating.py"], repo)
+        monkeypatch.setattr(transactions, "get_identity", lambda _cwd=None: (None, None))
+        with pytest.raises(GitDomainError, match="needs a git identity"):
+            settle_unrecorded("record", ["rating.py"], token, repo, cwd=repo)
+
+    def test_an_answer_given_after_the_files_changed_again_touches_nothing(
+        self, repo: Path
+    ) -> None:
+        """Asked about an edit, then another tab recorded it, switched branch and edited the
+        same file there: the first tab's Put back must not discard the other branch's edit."""
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("other", repo, cwd=repo)
+        (repo / "rating.py").write_text("# edited by hand\n")
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            set_working_branch("other", repo, cwd=repo)
+        # Meanwhile, another tab: Record, the switch, and an edit on 'other'.
+        settle_unrecorded("record", refused.value.files, refused.value.token, repo, cwd=repo)
+        set_working_branch("other", repo, cwd=repo)
+        (repo / "rating.py").write_text("# the other branch's own edit\n")
+
+        with pytest.raises(GitDomainError, match="changed since you were asked about it"):
+            settle_unrecorded("put-back", refused.value.files, refused.value.token, repo, cwd=repo)
+
+        assert (repo / "rating.py").read_text() == "# the other branch's own edit\n"
+
+    @pytest.mark.parametrize("choice", ["record", "put-back"])
+    def test_a_rename_staged_by_hand_is_named_by_both_its_names_and_settled_whole(
+        self, repo: Path, choice: str
+    ) -> None:
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"old.csv": "a\n"})
+        create_working_branch("other", repo, cwd=repo)
+        _git(repo, "mv", "old.csv", "new.csv")
+
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            set_working_branch("other", repo, cwd=repo)
+        assert refused.value.files == ["new.csv", "old.csv"]
+        settle_unrecorded(choice, refused.value.files, refused.value.token, repo, cwd=repo)  # type: ignore[arg-type]
+        set_working_branch("other", repo, cwd=repo)
+
+        held = _git(repo, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+        if choice == "record":
+            assert "new.csv" in held and "old.csv" not in held
+        else:
+            assert "old.csv" in held and not (repo / "new.csv").exists()

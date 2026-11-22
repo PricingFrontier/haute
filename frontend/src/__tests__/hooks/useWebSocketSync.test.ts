@@ -110,6 +110,7 @@ import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore.ts"
+import useGitStore from "../../stores/useGitStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore.ts"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture.ts"
 import { loadEditorDocumentValidators } from "../../types/pipelineDocument.ts"
@@ -1126,6 +1127,57 @@ describe("useWebSocketSync", () => {
         expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
       } finally {
         useWorkbenchStore.setState({ refreshTables: fetchTables })
+      }
+    })
+
+    it.each([
+      ["divergent", 1],
+      ["ready", 0],
+    ] as const)("a branch moved elsewhere reads the readiness again (%s opens the branch dialog %i times)", async (state, opened) => {
+      const params = makeHookParams("rating/main.py")
+      const { loadStatus, openModal, notifyHistoryChanged } = useGitStore.getState()
+      const readStatus = vi.fn(async () => ({ state }) as never)
+      const open = vi.fn()
+      const history = vi.fn()
+      useGitStore.setState({ loadStatus: readStatus, openModal: open, notifyHistoryChanged: history, modal: null })
+      try {
+        renderHook(() => useWebSocketSync(params))
+
+        await act(async () => {
+          latestWS().onmessage?.(new MessageEvent("message", {
+            data: JSON.stringify({ type: "git_branch_changed", checkout: "refs/heads/colleague", working_branch: "dev" }),
+          }))
+        })
+
+        expect(readStatus).toHaveBeenCalledWith({ refresh: true })
+        expect(open).toHaveBeenCalledTimes(opened)
+        if (opened) expect(open).toHaveBeenCalledWith("divergence")
+        expect(history).toHaveBeenCalledOnce()
+        expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
+      } finally {
+        useGitStore.setState({ loadStatus, openModal, notifyHistoryChanged })
+      }
+    })
+
+    it("reads the branch again when the socket reconnects, not at its first open", async () => {
+      const params = makeHookParams("rating/main.py")
+      const { loadStatus } = useGitStore.getState()
+      const readStatus = vi.fn(async () => null)
+      useGitStore.setState({ loadStatus: readStatus })
+      try {
+        renderHook(() => useWebSocketSync(params))
+        act(() => latestWS().onopen?.(new Event("open")))
+        expect(readStatus).not.toHaveBeenCalled()
+
+        act(() => latestWS().onclose?.(new CloseEvent("close", { code: 1006 })))
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(60_000)
+        })
+        act(() => latestWS().onopen?.(new Event("open")))
+
+        expect(readStatus).toHaveBeenCalledWith({ refresh: true })
+      } finally {
+        useGitStore.setState({ loadStatus })
       }
     })
 

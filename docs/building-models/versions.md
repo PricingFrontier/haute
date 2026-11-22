@@ -111,3 +111,81 @@ milestone, restoring a version and switching branch are refused.
 
 If you changed one of the files after the action stopped, Retry leaves it alone and names
 it. Move your changes aside, then choose **Retry** again.
+
+## When git refuses the repository
+
+Sometimes git itself will not work in a project, for a reason outside Haute. The toolbar
+reads **Git refused**, and its tooltip says why and what to do:
+
+- **A folder git does not trust.** Git refuses a folder another account owns, as on a
+  network share. The tooltip gives the command that trusts it, `git config --global --add
+  safe.directory` and the folder. Run it, then reload the page.
+- **Damaged settings.** A line of git's settings file, usually `.git/config`, cannot be
+  read, or a setting that must be true or false is neither. The message names the line or
+  the setting. Correct or remove it.
+
+Saving still writes your work to disk. Its warning gives the same reason, and the files are
+captured at the next save once git works again. Two more causes are named when a save or a
+milestone meets them:
+
+- **A lock file.** Another git program is using the repository, or one that stopped left its
+  lock file behind. Wait for it to finish. If no git program is running, delete the file the
+  message names, usually `.git/index.lock`.
+- **Signing.** Git is set to sign every commit, and the signature could not be made. Check
+  that your signing key is available and signs without asking for a passphrase.
+
+## Signed commits
+
+A signed commit carries a signature made with the key of the person who recorded it, so
+anyone can check who made each save and milestone, and that no one has changed it since.
+Where pricing work is audited, signing every commit makes version history a record you can
+show. Git checks the signatures; a hosting service such as GitHub or GitLab shows each
+commit as verified.
+
+Haute signs when git is set to sign every commit: each save, milestone and restore, the first
+milestone of a branch made from a save, and the saves Create & Move copies to a new branch.
+It uses the key and the format git is set to use. Nothing is signed unless git is set to sign.
+
+To sign with an SSH key, run in the project's folder:
+
+```
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git config commit.gpgsign true
+```
+
+Add `--global` to each to sign in every project. The key must sign without asking for a
+passphrase while Haute runs: load it into your SSH agent, or use a key without one. A GPG key
+works the same way, without the first line.
+
+When a commit cannot be signed, nothing is recorded and Haute says so (see **Signing** above).
+A mistyped `commit.gpgsign` is refused the same way, never read as "don't sign".
+The saves Create & Move copies are signed by whoever moves them; the copies keep each save's
+original author. Version labels are not signed; the milestone each one names is.
+
+## Files changed outside Haute
+
+A file you change in another program, such as a rate table saved in Excel, is on disk but not
+in version history. The editor's **Save** saves what is on the canvas and in the form, so it
+does not record that file. Before Haute switches branch, opens a new branch, catches up,
+spins off a copy, or archives or deletes the branch you are on, it asks about such files and
+names them. It also names a file you copied in where the other branch has one of that name.
+
+- **Record** saves them as one save on the branch you are on, then goes on. The change stays
+  with that branch.
+- **Put back** returns them to the version history has, then goes on. A file version history
+  does not have, such as one you copied in, is removed.
+
+Recording before **Catch up** makes a save the shared branch does not have, so Catch up then
+asks you to **Spin off a copy**, which keeps your save on a copy beside the shared line.
+
+## Another tab or a terminal changes branch
+
+When another tab switches the project's branch, or you check out a branch in a terminal, every
+open tab follows: its toolbar shows the new branch without a reload. A project moved off its
+working branch, as by `git checkout` in a terminal, opens the dialog that asks whether to go
+back to your working branch or make the new one your working branch.
+
+A save made from a tab before it has followed is refused, naming both branches. Nothing is
+written, and your changes stay in the tab. Look at the branch the toolbar now shows, then save
+again.

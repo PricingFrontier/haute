@@ -214,9 +214,11 @@ describe("recordRestore", () => {
   })
 })
 
+const SEEN = { tip: "a".repeat(40), ledger_tip: "b".repeat(40), is_current: false, is_checked_out: false }
+
 describe("recordDelete", () => {
   it("undoes via undelete (trash restore) and redoes via a confirmed delete", async () => {
-    recordDelete("experiment", "experiment@20261027T131400Z")
+    recordDelete("experiment", "experiment@20261027T131400Z", SEEN)
     const entry = lastEntry()
     expect(entry.label).toBe("delete experiment")
 
@@ -225,12 +227,13 @@ describe("recordDelete", () => {
     expect(mockDelete).not.toHaveBeenCalled()
 
     await entry.redo()
-    expect(mockDelete).toHaveBeenCalledWith("experiment", true)
+    // The redo names the branch as the delete saw it: an undo brought it back exactly.
+    expect(mockDelete).toHaveBeenCalledWith("experiment", SEEN, true)
   })
 
   it("a redo's delete is a new trash entry, which the next undo restores", async () => {
     mockDelete.mockResolvedValue({ status: "deleted", branch: "experiment", trash_id: "experiment@20261027T140000Z" })
-    recordDelete("experiment", "experiment@20261027T131400Z")
+    recordDelete("experiment", "experiment@20261027T131400Z", SEEN)
     const entry = lastEntry()
 
     await entry.undo()
@@ -259,7 +262,7 @@ describe("leg side effects", () => {
 
   it("a failing leg toasts the error, reads the status again, and rethrows for the store", async () => {
     mockUndelete.mockRejectedValue(new Error("tombstone missing"))
-    recordDelete("experiment", "experiment@20261027T131400Z")
+    recordDelete("experiment", "experiment@20261027T131400Z", SEEN)
 
     await expect(lastEntry().undo()).rejects.toThrow("tombstone missing")
 

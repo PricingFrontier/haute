@@ -1180,6 +1180,9 @@ export function savePipeline(
     connection_id: string | null
     /** Makes a repeat of this save, after its answer was lost, write once. */
     operation: string
+    /** The working branch this tab shows: the server refuses the save, writing nothing, when
+     *  the project has moved to another branch since the tab learned of it. */
+    working_branch: string | null
   },
   ticket: KeyedTicket,
   options?: MutationOptions,
@@ -2316,12 +2319,32 @@ export function retryInterruptedGit(
   return post<unknown>("/api/git/interrupted/retry", {}, options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
 }
 
+/** What the analyst chose for the files an operation that replaces the project's files was
+ *  refused over (409 `unrecorded_files`): the operation asked again with it records them as
+ *  a save or puts them back first (`clearingTheWay` asks). */
+export interface GitSettleUnrecorded {
+  choice: "record" | "put-back"
+  files: string[]
+  /** The refusal's token: what the files were when the analyst was asked. */
+  token: string
+}
+
+/** The options of an operation that replaces the project's files. */
+export interface ReplacingFilesOptions {
+  signal?: AbortSignal
+  settle?: GitSettleUnrecorded
+}
+
+function settled(settle: GitSettleUnrecorded | undefined): { settle?: GitSettleUnrecorded } {
+  return settle === undefined ? {} : { settle }
+}
+
 export function setWorkingBranch(
   branch: string,
   create: boolean,
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitSetWorkingBranchResponse> {
-  return post<unknown>("/api/git/working-branch", { branch, create }, options).then(async (data) => expectGeneratedContract("GitSetWorkingBranchResponse", (await gitValidators()).validateGitSetWorkingBranchResponse, data))
+  return post<unknown>("/api/git/working-branch", { branch, create, ...settled(settle) }, options).then(async (data) => expectGeneratedContract("GitSetWorkingBranchResponse", (await gitValidators()).validateGitSetWorkingBranchResponse, data))
 }
 
 /** Bind this clone's state volume to a remote for durable storage (hosted mode only). */
@@ -2355,9 +2378,9 @@ export function checkGitUpstream(
 
 /** Catch this fork up to its parent's tips, fast-forward only. */
 export function pullGitUpstream(
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitFastForwardResponse> {
-  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
+  return post<unknown>("/api/git/storage/upstream/pull", settled(settle), options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
 }
 
 /** Clear a finished bind result once the dialog has shown it. */
@@ -2389,8 +2412,12 @@ export function setGitIdentity(
 
 /** Capture on the save ledger the files earlier writes reported uncaptured, as they are on
  *  disk now. Capturing again what is already captured commits nothing, so a retry is safe. */
-export function captureFiles(paths: string[], options?: { signal?: AbortSignal }): Promise<SaveCapture> {
-  return post<unknown>("/api/git/capture", { paths }, options).then(async (data) => expectGeneratedContract("SaveCapture", (await gitValidators()).validateSaveCapture, data))
+export function captureFiles(
+  paths: string[],
+  workingBranch: string | null,
+  options?: { signal?: AbortSignal },
+): Promise<SaveCapture> {
+  return post<unknown>("/api/git/capture", { paths, working_branch: workingBranch }, options).then(async (data) => expectGeneratedContract("SaveCapture", (await gitValidators()).validateSaveCapture, data))
 }
 
 export function commitMilestone(
@@ -2451,20 +2478,30 @@ export function getGitGraph(
 
 export function gitArchiveBranch(
   branch: string,
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitArchiveResponse> {
-  return post<unknown>("/api/git/archive", { branch }, options).then(async (data) => expectGeneratedContract("GitArchiveResponse", (await gitValidators()).validateGitArchiveResponse, data))
+  return post<unknown>("/api/git/archive", { branch, ...settled(settle) }, options).then(async (data) => expectGeneratedContract("GitArchiveResponse", (await gitValidators()).validateGitArchiveResponse, data))
+}
+
+/** A branch as a delete's confirmation showed it: the server refuses the delete when the
+ *  branch has moved, or become or stopped being the current one, since. */
+export interface GitBranchSeen {
+  tip: string
+  ledger_tip: string | null
+  is_current: boolean
+  is_checked_out: boolean
 }
 
 export function gitDeleteBranch(
   branch: string,
+  seen: GitBranchSeen,
   confirm = false,
   options?: { signal?: AbortSignal },
 ): Promise<GitDeleteBranchResponse> {
   return request<unknown>("/api/git/branches", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ branch, confirm }),
+    body: JSON.stringify({ branch, confirm, seen }),
     ...options,
   }).then(async (data) => expectGeneratedContract("GitDeleteBranchResponse", (await gitValidators()).validateGitDeleteBranchResponse, data))
 }
@@ -2504,11 +2541,11 @@ export function repairBranchPair(
 export function createWorkingBranch(
   name: string,
   opts: { at?: string | null; move?: boolean; switch?: boolean } = {},
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitCreateWorkingBranchResponse> {
   return post<unknown>(
     "/api/git/working-branches",
-    { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false },
+    { name, at: opts.at ?? null, move: opts.move ?? false, switch: opts.switch ?? false, ...settled(settle) },
     options,
   ).then(async (data) => expectGeneratedContract("GitCreateWorkingBranchResponse", (await gitValidators()).validateGitCreateWorkingBranchResponse, data))
 }
@@ -2572,18 +2609,18 @@ export function gitSetCiSecrets(
  *  conflict-free ref advance, never a merge. */
 export function gitFastForward(
   remote: string,
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitFastForwardResponse> {
-  return post<unknown>("/api/git/fast-forward", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
+  return post<unknown>("/api/git/fast-forward", { remote, ...settled(settle) }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
 }
 
 /** Set the local fork aside under a dated name and adopt the remote (P7 M3) —
  *  both lineages kept, never a merge. */
 export function gitBranchAway(
   remote: string,
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitBranchAwayResponse> {
-  return post<unknown>("/api/git/branch-away", { remote }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitBranchAwayResponse", (await gitValidators()).validateGitBranchAwayResponse, data))
+  return post<unknown>("/api/git/branch-away", { remote, ...settled(settle) }, { ...UNBOUNDED_BY_THE_BROWSER, ...options }).then(async (data) => expectGeneratedContract("GitBranchAwayResponse", (await gitValidators()).validateGitBranchAwayResponse, data))
 }
 
 /**

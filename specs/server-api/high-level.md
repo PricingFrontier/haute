@@ -713,7 +713,15 @@ detail, and the assistant shows the same message.
   removals and capture do; it is removed once the removals are made and captured. Each
   committed save that names an operation leaves a receipt under `.haute/saves/receipts/`, the
   newest 256 kept, so a repeat of it is answered with its answer after a restart too. A record
-  is settled when the server starts and before the next save of its pipeline: a committed one
+  names what the pipeline's code files hold while it is the checkout's (what each held before
+  the save or was being written, then what the save left in it once it commits), and is
+  settled when the server starts, and before the next save of its pipeline, only while they
+  hold it, since its removals and capture are that code's: a save on another branch, however
+  much history the two share, or on a branch made again under an old name, neither finishes
+  one, which could remove a file that branch needs, nor replaces it, and the record waits for
+  its code to be checked out again. A pipeline file's records change in one write, so a save
+  that rolls back leaves the ones it found. One naming no code (written before records named
+  theirs) is settled where the project is. A committed one
   has its removals finished, its capture made and its receipt written; one that never
   committed, left by a server that died part-way or a rollback that failed, has its staging
   files removed, so no Commit takes them, and is reported on the pipeline's document as a
@@ -805,7 +813,10 @@ be read or built, the server sends a `parse_error` holding that failure's answer
 or an incident under which the exception is logged); that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents. A change on disk to a file of the workbench's form
 folder is announced as `workbench_form_changed`, naming the folder; the workbench reads
-it again.
+it again. A change of the project's checked-out branch, or of the working branch the clone
+records, is announced as `git_branch_changed`, whoever made it: a git route once it has
+answered, another tab, or a checkout in a terminal, which the server sees on the git
+directory's HEAD although it may change no file. Each tab reads its git readiness again.
 
 ## Minimal transactional pipeline repair
 

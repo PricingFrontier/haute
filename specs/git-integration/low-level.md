@@ -29,6 +29,30 @@ conversion in the routes).
 - `GitError(HauteError)` — base; wraps raw subprocess stderr.
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
+    - `GitBlockedError(GitDomainError)` — git refused for a cause outside Haute that its
+      message names (`_blocked_by`), carrying `cause`: `lock` ("Unable to create
+      '<path>.lock': File exists"), `untrusted-folder` ("detected dubious ownership"),
+      `damaged-config` ("bad config line <n> in file <file>", or "bad boolean config value
+      '<value>' for '<setting>'") or `signing`, read only of a
+      command that commits (`commit`, `commit-tree`), since an SSH key's words can be a
+      push's ("failed to sign the data" from gpg or gpgsm; for the SSH format, no
+      `user.signingkey` set, "Couldn't load public key", "No private key found for public
+      key", a key that asks for a passphrase, an `ssh-keygen` too old to sign). Its message says the cause and what to do: "Another git program is
+      using this project's repository: git found its lock file <file>. Wait for it to
+      finish, then try again. If no git program is running, one that stopped left the file
+      behind: delete <file>, then try again."; "Git does not trust this project's folder,
+      because another account owns it (as on a network share), so it will not work in it.
+      To trust the folder, run: git config --global --add safe.directory <the value git
+      proposes>"; "Git can't read its settings: line <n> of <file> is damaged. Correct or
+      remove that line, then try again." (for a setting that is neither true nor false: "Git
+      can't read its settings: <setting> is set to '<value>', which is neither true nor
+      false. Correct it, then try again."); "Git is set to sign every commit, and this one
+      could not be signed, so nothing was recorded. Check that the signing key git uses is
+      available and signs without asking for a passphrase, then try again." A file inside
+      the project is named relative to it.
+    - `GitUnrecordedFilesError(GitDomainError)` — an operation that replaces the project's
+      files refused over files off version history (`_assert_way_clear`), carrying `files`;
+      HTTP 409 `unrecorded_files`.
     - `GitTransactionError(GitDomainError)` — a recorded operation `recover` can neither
       put back nor finish: its refs are where no step of its record leaves them ("<operation>
       stopped part-way, and its branches have moved since. Inspect the repository before
@@ -66,7 +90,23 @@ used as a branch name: <rule>. Use letters, numbers, dashes and slashes.". A nam
 types (create, adopt-create, undelete under its own or another name) also passes
 `_assert_new_branch_name` first: the same rules, then `git check-ref-format --branch` as the
 authority, a name it refuses that the rules let through answering "git does not accept it as
-a branch name". Both run before any git command can fail on the name.
+a branch name". It then refuses, on every platform, a name with a part Windows keeps for a
+device (`is_windows_reserved_filename`: `con`, `aux.v2`), "'<name>' can't be used as a branch
+name: Windows keeps '<device>' for a device, so the branch could not exist there. Choose
+another name.", and a name that cannot exist beside a local branch (`_branch_in_the_way`): git
+keeps each branch as a file under `refs/heads/`, so a branch named as a folder of the name or
+of its ledger (`motor` for `motor/renewal`), or one inside a folder either would be
+(`team/home` for `team`), compared in any letter case as git on Windows and macOS keeps those
+files, answers "'<name>' can't be used as a branch name: the branch '<existing>' exists, and
+git can't keep both it and '<name>', since one would be a folder of the other. Choose another
+name." Both refusals say "another name", which is what opens the branch manager's name box
+for an undelete. A branch of exactly the name is each caller's "already exists". Un-archive
+refuses a branch in the way of the restored name the same way ("Cannot restore '<name>':
+… Delete '<existing>' first: Deleted keeps it, to restore under another name."), and
+`_free_pair_name` (archive's `archive/<X>`, Spin off's aside) passes over a dated candidate
+with a branch beneath it and refuses, naming it, a branch named as a folder of the stem
+(`archive`), which is in the way of every candidate. All of these run before any git command
+can fail on the name.
 
 **Content-addressed cache keys**: every `@lru_cache`-decorated inner function
 (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
@@ -202,10 +242,12 @@ appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 byt
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
 because pipeline position sidecars belong on the save ledger.
 
-**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of eight
+**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of nine
 literal values: `"git-unavailable"` (no Git binary on PATH; distinct from
 `"no-repository"` so the UI does not offer init), `"no-repository"` (there is no Git
-repository), `"interrupted"` (`.haute/operation.json` exists: an operation stopped
+repository), `"blocked"` (a repository is there, but a probe raised `GitBlockedError`: a
+folder git does not trust or settings it cannot read; `errors` holds its one message, and
+the UI offers no init), `"interrupted"` (`.haute/operation.json` exists: an operation stopped
 part-way, and `errors` holds one line naming it and up to five of its files, "<operation>
 stopped part-way: <files>." or "<operation> stopped part-way." when it writes none; read
 before every state below), `"unset"` (repository present, attached HEAD, no working branch recorded),
@@ -234,24 +276,24 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (eight-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
-| `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (nine-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
+| `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false,settle=null}`; files off version history are 409 `unrecorded_files`, and *settle* is the choice for them ("Files changed outside Haute" above), as for the archive, branch creation, fast-forward and branch-away requests | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/interrupted/retry` | None | `GitWorkingBranchResponse`, the readiness once `retry_interrupted` has finished the stopped operation or put it back and removed its record; files still held are 400 `GitFilesInUseError`, a file changed since it stopped is 400 naming it, and refs no step leaves are 400 `GitTransactionError`, the record kept in each case |
 | `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
-| `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
+| `POST /api/git/capture` | `GitCaptureRequest {paths,working_branch=null}`, *working_branch* the branch the tab shows, refused 409 `branch_changed` as the pipeline save is (`refuse_another_branch`): at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
 | `POST /api/git/commit` | `GitCommitRequest {message,version_label=null,allow_fork=false}` | `GitCommitResponse {sha,short_sha,working_branch,version_label?}`; would-fork is 409 |
 | `GET /api/git/milestones` | Query `limit=20` (1..500), `branch=null` | `GitMilestonesResponse {working_branch?,entries:[GitMilestoneEntry...]}` |
 | `GET /api/git/graph` | Query `limit=50` (1..500) | `GitGraphResponse {working_branch?,order:[],branches:[GitGraphBranch...]}` |
 | `GET /api/git/milestones/{sha}/saves` | Commit SHA path | `GitLedgerSavesResponse {saves:[GitLedgerSave...]}` |
 | `GET /api/git/pending-saves` | Query `branch=null` | `GitLedgerSavesResponse` |
-| `POST /api/git/archive` | `GitArchiveRequest {branch}` | `GitArchiveResponse {archived_as}` |
-| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false}` | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
+| `POST /api/git/archive` | `GitArchiveRequest {branch,settle=null}` | `GitArchiveResponse {archived_as}` |
+| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false,seen}`: *seen* is `GitBranchSeen {tip,ledger_tip,is_current,is_checked_out}`, the branch as the confirmation showed it | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
 | `POST /api/git/undelete` | `GitUndeleteRequest {id,as_name=null}`: a trash entry, rebuilt under its branch name or *as_name* | `GitUndeleteResponse {status="restored",branch}`, the name it was rebuilt under |
-| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
+| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch {name,is_current,is_archived,has_unmerged_saves,has_uncommitted_changes,tip,ledger_tip,is_checked_out}...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
 | `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
-| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
+| `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false,settle=null}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
 | `GET /api/git/prefs` | None | `GitPrefs {skip_switch_confirm=false}` |
 | `POST /api/git/prefs` | `GitPrefs {skip_switch_confirm=false}` | The persisted `GitPrefs` |
 | `GET /api/git/remotes` | None | `GitRemotesResponse {remotes:[GitRemote {name,url,working,ledger}...],working_branch?}`; `working` and `ledger` are the sole per-leg divergence records and URL userinfo is redacted |
@@ -259,8 +301,8 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/commit-context/{sha}` | Commit SHA path; query `base=null` | `GitCommitContext`, with `delta_from_base` only when `base` is supplied |
 | `POST /api/git/push` | `GitPushRequest {remote}` | `GitPushResponse {remote,working_branch,ledger_branch,default_branch,bootstrapped_default=false,pushed_refs=[],ci_secrets=null}`; `default_branch` and `bootstrapped_default` are required response members, `ci_secrets` is the deploy's secrets on a GitHub remote's repository ([cli](../cli/low-level.md)), and working/ledger non-fast-forward is 409 |
 | `POST /api/git/ci-secrets` | `GitCiSecretsRequest {remote}` | `GitCiSecrets {repository,state,missing=[],newly_set=[],problem=null}` once the deploy's secrets the repository lacked are set from `.env`; 400 naming why when they do not apply or cannot be set ([cli](../cli/low-level.md)) |
-| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded,labels_added}`: the branches that moved and the version labels (`2.0`, without `version/`) now held too |
-| `POST /api/git/branch-away` | `GitBranchAwayRequest {remote}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
+| `POST /api/git/fast-forward` | `GitFastForwardRequest {remote,settle=null}` | `GitFastForwardResponse {remote,working_branch,fast_forwarded,labels_added}`: the branches that moved and the version labels (`2.0`, without `version/`) now held too |
+| `POST /api/git/branch-away` | `GitBranchAwayRequest {remote,settle=null}` | `GitBranchAwayResponse {working_branch,set_aside_as}` |
 
 ## Control flow
 
@@ -268,15 +310,42 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 (a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
 merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
-current: the `open-ledger` operation, nothing when both are so already) → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion an earlier `git add` staged before the process stopped: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
+current: the `open-ledger` operation, nothing when both are so already; only from the working
+branch itself, where the checkout changes no file: with HEAD on another branch or detached,
+which the analyst moved it to in a terminal or another tab, it refuses, "The project is
+checked out on '<branch>' | an earlier version (a detached HEAD), not on '<working>', so
+nothing was recorded on '<working>'. Go back to '<working>', or make '<branch>' the working
+branch.", which a save's capture answers as its warning, so a save never checks out a branch
+the analyst left; a restore refuses the same way) → each path given
+git's spelling (`_git_spelling`): git on Windows and macOS ignores letter case on disk but
+compares paths letter for letter, so after `rating` is renamed `Rating` it keeps `rating` and
+finds nothing under `Rating/main.py`; one `ls-files --cached` of `:(icase,literal)<top
+folder>` pathspecs gives the tracked names, and a path takes the tracked name of the same file,
+or a new file the spelling of its nearest tracked folder, when both spellings name one place
+on disk (`os.path.samefile`; for a deleted file, its folders), which on a disk that keeps case
+apart they never do, so two names differing only in case stay two files → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion or a rename's old name already staged (`git rm`, `git mv`, an editor's git panel, or an earlier `git add` before the process stopped), which the path-scoped commit records as staged: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <the paths git add takes>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged), the one ref move outside a recorded operation,
-inside `_save_commit()` → returns the new SHA. The `git commit` passes
+inside `_save_commit()` → `_refuse_unrecorded`, a net under any other way a path can miss
+git's: each path's file on disk (`hash-object`, with its filters) is compared with the
+ledger's copy (`ls-tree HEAD`), and any that differ raise `GitDomainError` ("Version history
+did not take the change to <files>; the next save tries again.", at most five named), which
+the capture answers as a failed capture, with the warning and the files `uncaptured` → returns
+the new SHA, or `None` when nothing changed. The `git commit` passes
 `-c core.hooksPath=/dev/null` (`_git_core.NO_HOOKS`): a save runs none of the project's
 hooks, `prepare-commit-msg` and `post-commit` included (which `--no-verify` would still
-run); they run at a milestone over every save it records. Every path reaches Git as a
+run); they run at a milestone over every save it records. `git commit` signs a save when git
+is set to sign every commit; every other commit Haute makes is
+`src/haute/_git_core.py::_commit_tree`, which asks `commit-tree` (which reads no such
+setting) for the signature with `-S` when `signs_commits` reads `commit.gpgsign` true. Only
+a setting left unset or false signs nothing: one git cannot read as a boolean raises
+`GitBlockedError` (`damaged-config`), so no unsigned commit is made. A copy `_replay_onto`
+makes keeps its original's author and committer through the environment, so for GPG or X.509
+with no `user.signingkey`, which git would pick by that committer, `_signature` names the
+analyst's own identity (`git var GIT_COMMITTER_IDENT`, read before the copy's) as the key.
+`tests/test_git_signing.py` fails any `commit-tree` named outside the git core. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change
@@ -291,7 +360,9 @@ with no working branch chosen: no capture, a warning ("Changes saved, but no wor
 is chosen, so version history doesn't have them yet. Choose a working branch to keep
 them."), and every path `uncaptured`. A missing identity skips the commit with a warning
 and `identity_required`; a `GitDomainError` or
-`GitError` is a warning. A skipped or failed capture names its paths in `uncaptured`, since
+`GitError` is a warning, the repository and identity probes included, so a
+`GitBlockedError` they raise is the warning "Changes saved; version capture failed: <its
+message>", never the identity prompt or nothing owed. A skipped or failed capture names its paths in `uncaptured`, since
 the pathspec-scoped commit of a later save never takes them; `POST /api/git/capture` takes
 them later.
 
@@ -515,8 +586,8 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     `ledger_name(name)` at the base; current HEAD and branch untouched.
   - `switch=True`: that transaction, then a checkout of the new ledger and the recorded
     working branch set to `name`, the current pair's refs untouched. It first refuses a git
-    operation in progress and tracked changes ("You have unsaved changes. Save or discard
-    them before opening the new branch."), since the checkout replaces the files.
+    operation in progress, and files off version history (`_assert_way_clear`, below), since
+    the checkout replaces the files.
   - `move=True`: only legal at the latest milestone or a pending save (not an older
     milestone or a folded save), and not with `switch`, which it implies. Refuses if the spawning ledger's later commits are already published on
     ANY remote and the rewind would orphan them (checked per-remote via `_is_ancestor`),
@@ -529,6 +600,70 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     out the new ledger (its tree matches old HEAD's, so uncommitted edits carry across
     untouched), rewinds the spawning branch's ledger to the fork point, and records the new
     working branch.
+
+**Open tabs and the branch.** The server's branch watcher (`server._branch_watcher`) watches
+the git directory's `HEAD` (`rev-parse --absolute-git-dir`, not recursively), which every
+checkout rewrites, a terminal's `git switch -c` included, which changes no file the file
+watcher sees, and which that watcher skips with `.git`. `_tell_branch_change` reads the
+checkout (`symbolic-ref -q HEAD`, else HEAD's commit) and the recorded working branch, and
+publishes `git.branch.changed` (`{checkout, working_branch}`) when they differ from what it
+last told; its first reading, at startup, is the baseline. A change while a git route holds
+the watcher pause is skipped there and told once the route has answered (`_broadcast_tree_change`
+calls it), so a tab never reads an operation half done. A project that has no repository
+when the server starts is not watched. Each tab then reads its readiness again
+([frontend-git-ui](../frontend-git-ui/low-level.md)). Each of the project Save's writes names
+the branch the saving tab shows, and `routes._save_pipeline.refuse_another_branch` refuses
+it, under the repository lock and before anything is written, when the project has moved:
+the capture of files left uncaptured (`POST /api/git/capture`), the workbench form's save
+([workbench](../workbench/low-level.md)) and the pipeline save
+([server-api](../server-api/low-level.md), `POST /api/pipeline/save`). The working branch the
+clone records is compared without git, so another one recorded refuses even in a repository
+git refuses to work in; there the checkout alone is not checked, and the save lands on disk
+with its capture's warning. The editor reads the branch once, when Save is pressed (before a Save queued behind another waits its turn), and names
+it in all three writes; a capture refused as `branch_changed` ends the Save before the form
+or the pipeline is written.
+
+**Files changed outside Haute (`_assert_way_clear`, `GitUnrecordedFilesError`,
+`settle_unrecorded`).** Every operation that replaces the project's files runs one check
+before its operation is recorded: a switch (`set_working_branch` to an existing branch, the
+destination its ledger tip, or its working tip before the ledger spawns), opening a new
+branch (`create_working_branch(switch=True)`, the base), Catch up (when the ledger moves, the
+remote ledger's tip), Spin off a copy (the adopted ledger's tip) and an archive or an
+unconfirmed delete of the current pair (its last milestone). The files it names are every
+tracked file that differs from HEAD (`_tracked_changes(with_sources=True)`, a CSV saved in
+Excel among them, and both names of a staged rename, whose source's removal is part of it)
+and every file on disk, untracked or ignored, where the destination has one that HEAD's tree
+lacks (`diff --diff-filter=A HEAD <destination>`, which git's checkout would refuse or
+overwrite). An operation leaving the branch the files were changed on (a switch, opening a
+new branch, the archive or delete) is checked always; one staying on it (Catch up, Spin off)
+only when the checkout changes HEAD's commit. Adopting the branch the project is already on
+replaces nothing and is let through, as is Create & Move, which carries uncommitted edits by
+design, and a confirmed delete, which discards them. Any file named raises
+`GitUnrecordedFilesError` carrying every file, worded "<files> has/have changed on disk
+outside Haute since the last save. Before <switching to 'other' | opening '<name>' | catching
+up | spinning off a copy | archiving '<X>' | deleting '<X>'>, record it/them as a save on this
+branch, or put it/them back as version history has it/them." (five named, the rest counted),
+which the failure answers make 409 `unrecorded_files` with `files` and `token` beside the
+message. *token* (`_unrecorded_token`) is a digest of what the files were when the analyst
+was asked: the branch the checkout is on and, for each file, its blob on disk and at HEAD.
+The five routes' requests, and the hosted parent catch-up's (`GitUpstreamPullRequest`), take
+`settle: GitSettleUnrecorded {choice: "record" | "put-back", files, token}`, the analyst's
+choice for those files: `_rewriting_tree(background, settle)` refuses a path that is not an
+ordinary one inside the project (400), then, under the repository lock the operation
+re-enters, calls `settle_unrecorded`, which first refuses, touching nothing, files whose token
+differs ("<files> has/have changed since you were asked about it/them, so nothing was
+recorded or put back. Look again, then retry.": another tab recorded them, switched branch
+or edited them while the question was open), then records them as one save on the
+working branch with the sweep's message, "Updated project files" (a working branch and an
+identity required, each refused in words, and a file over the history limit refused by
+name), or puts them back: `restore --source=HEAD --staged --worktree` for those HEAD has, and
+for one it lacks the staged addition undone and the file removed. Only the named files are
+touched; the operation then checks the way again and names any file changed since. Files the
+settlement changed are announced (`git.tree.changed`) although the operation after it fails,
+since the watcher was paused and no background task runs. A
+recorded save before Catch up is a save the remote lacks, so the catch-up refuses as for any
+local save and offers Spin off a copy, which keeps it on the set-aside line; putting the
+files back lets it complete.
 
 **The volatile wipe (`_wipe_volatile_artefacts`).** Restore, Catch up and Spin off a copy
 wipe `_VOLATILE_ARTEFACTS` once their files are in place, so a refused or failed one deletes
@@ -824,7 +959,9 @@ as Push inspection (`_read_advertisement`, which `_inspect_remote` wraps), and a
 failure propagates: an unreachable remote never reads as adoptable.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
-detached states) and a clean tracked tree. Fetches and prunes the remote's branches and
+detached states). Once the legs are known, a catch-up whose ledger moves refuses files off
+version history (`_assert_way_clear`); one of the working ref or of labels alone writes no
+file and checks none. Fetches and prunes the remote's branches and
 version labels (`_fetch_refs`), then aborts if that required refresh times out, cannot launch or exits non-zero
 (`GitRemoteUnavailableError`, the refresh message) or shows that either managed remote leg is
 missing (`GitDomainError`); transport failure and a deleted working/ledger branch have
@@ -865,9 +1002,9 @@ the aside names and HEAD back from the record.
 
 **Archive/delete active pair.** HEAD detaches at the working branch's tip, its last
 milestone, through the tree fence. A confirmed delete forces it over a dirty tree; an archive
-or an unconfirmed delete refuses tracked changes first, with `_leave_if_active`'s
-"You have unsaved changes on this branch. Save or discard them before archiving it." (or
-"deleting it"), and the tree is left as it was. The
+or an unconfirmed delete refuses files off version history first (`_leave_if_active` through
+`_assert_way_clear`, "Before archiving '<X>'…" or "deleting"), and the tree is left as it
+was. The
 ledger's later saves stay with the archived ledger or the trash pins. HEAD never moves to
 another branch, so the analyst is not left on a default branch's unrelated files. Archive
 moves the pair with one `update-ref --stdin` transaction: it creates `archive/<X>` (or,
@@ -878,7 +1015,19 @@ The `archive` operation's steps are that detach when the pair is active, the rec
 branch cleared when it is this pair, and the transaction. Un-archive (`restore_working_pair`)
 is the same transaction the other way, the `unarchive` operation's one step.
 
-**Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
+**Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete takes *seen*,
+the branch as its confirmation showed it (`GitBranchSeen`: the branch's and its ledger's
+tips as the listing gave them, whether it was the recorded working branch, and whether HEAD
+was on it or its ledger, `is_checked_out`, the two things `_leave_if_active` reads to leave
+it), and refuses, under the repository lock and before anything else it checks, a branch that
+is no longer so (`_change_since_seen`): "'<branch>' changed since you chose to delete it: <the
+project is on it now | the project is no longer on it | the project is checked out on it now |
+the project is no longer checked out on it | its milestones changed | its saves changed>. Look
+again, then retry." A checkout made in a terminal since the confirmation is a change, so a
+confirmed delete never forces HEAD off a branch it did not show as checked out, discarding
+the changes on disk. The listing's `has_uncommitted_changes` is the tree's for the current
+branch and for one checked out. *seen* is required, so no caller deletes a branch it has not described.
+Delete refuses on
 unmerged ledger saves, and on the active pair's tracked changes, unless `confirm=True`. It
 takes a fresh entry id, then the `delete` operation:
 1. detaches HEAD at the working tip when the pair is active, forced when confirmed, and
@@ -1017,12 +1166,19 @@ so recognition of the small documented set of Git failure phrases is locale-inde
 When `_run_git` supplies byte-mode stdin for an LF-delimited plumbing protocol, it
 replacement-decodes stdout/stderr as UTF-8 so malformed diagnostic bytes still reach the
 normal sanitized `GitError` path instead of escaping as `UnicodeDecodeError`.
-On a non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
-(sanitize-by-default). `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
+On a non-zero exit it logs `git_command_failed` (full stderr) and raises `GitBlockedError`
+when `_blocked_by` recognises the cause in git's message, else plain `GitError`
+(sanitize-by-default); the tree fence does the same for a command that wrote no file out of
+step. `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
 `(int, str)`) do not raise merely for a non-zero git exit — used wherever that exit is an expected, meaningful
 outcome (e.g. `merge-base --is-ancestor` exiting 1 for "not an ancestor" vs. >1 for a
 genuinely unreadable object, which `_is_ancestor_cached` still raises on, to avoid
-memoizing a bad answer). None of these three general wrappers catches a subprocess-launch
+memoizing a bad answer) — but raise `GitBlockedError` for a recognised cause, which no exit
+code stands for: `rev-parse --is-inside-work-tree` in an untrusted folder, or `config
+user.name` beside a damaged line, would otherwise read as no repository or no identity.
+Outside the Git component a caller that must go on catches it by name: training
+provenance records no commit (`provenance_git_blocked` logged), and `capture_new_files`
+prints the cause and that nothing was recorded. None of these three general wrappers catches a subprocess-launch
 `OSError`; that propagates to the route's generic 500 handler. Deliberate remote helpers,
 including the final push subprocess, explicitly catch timeout/OS failures and convert
 required refresh failures to a Git error.
@@ -1065,20 +1221,24 @@ process failures, and precise ref-movement races deterministic.
   serialized mutator.
 - **`tests/test_git_ledger.py`**, **`tests/test_git_working_branches.py`**, **`tests/test_git_working_tree.py`**, **`tests/test_git_remotes.py`** and **`tests/test_git_core_commands.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
-  focused test classes covering: branch-category naming, ledger
+  focused test classes covering: branch-category naming, a typed name beside a branch git
+  cannot keep with it (beneath, above, in another case, through the ledger) and a device
+  name refused by name, an un-archive, an archive and an undelete into such a name, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a
   filename with glob characters committing only itself, a save during a merge refused with
   the reason and a status check git cannot answer raising), a typed branch name refused
   naming each rule and git deciding one the rules let through, the milestone sweep of the pipeline
   folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
-  limit refusing the Commit by name), the milestone's run of the project's hooks (the
+  limit refusing the Commit by name), a milestone and a restore after `git rm`, `git mv` and
+  a staged deletion outside the pipeline folder, and a file delete stopped before its commit
+  recorded by the next Commit, the milestone's run of the project's hooks (the
   pre-commit hook seeing only the milestone's changes and its rewrite recorded before the
   milestone, a refusing hook refusing it with HEAD back on the ledger, a commit-msg hook
   rewriting the message), the project's tracked hook installed in a clone and an analyst's
   own hook or hooks path left alone,
   milestone merge and its
-  invariant checks, git identity get/set, working-branch status across all eight readiness states,
+  invariant checks, git identity get/set, working-branch status across all nine readiness states,
   `set_working_branch` including a branch created from a detached pending save, folded
   save and milestone (an anchoring milestone for a save, none for a milestone), the
   capture of a save made with no working branch chosen (warned and left uncaptured) and
@@ -1099,7 +1259,10 @@ process failures, and precise ref-movement races deterministic.
   again and deleted again keeping both entries, undelete under another name, the cap
   dropping the oldest entry's pins, a legacy bare-name tombstone restored, the active pair
   detached at its last milestone, an unconfirmed delete of it keeping a dirty tree),
-  request-path no-fetch
+  a delete refused when the branch was switched onto, saved to or committed since its
+  confirmation, or checked out in a terminal with a change on disk (the change kept), with
+  the branch, HEAD and the recorded working branch unchanged, the
+  listing giving the tips a delete names, request-path no-fetch
   guarantees,
   the tree fence (`TestTreeFence`: a switch whose checkout exits 0 with a file left stale
   put back and refused by name, a file held too tightly to read leaving the clone
@@ -1134,6 +1297,47 @@ process failures, and precise ref-movement races deterministic.
   inspection/auth/timeout failure, or any ref rejection; an unreachable remote answered with the
   refresh message, a push transport failure with the could-not-push message, a hook that
   declines the push and a lost create-only lease each answered in words.
+- **`tests/test_git_core_commands.py`** also holds each cause `GitBlockedError` names (a
+  lock file, `GIT_TEST_ASSUME_DIFFERENT_OWNER`, a damaged `.git/config`, a signing program
+  that cannot run) said by a save's capture warning and Commit's refusal, never `git init`
+  nor the identity prompt, readiness `blocked` for the two that refuse the repository, and
+  a failure with no recognised cause staying git's own.
+- **`tests/test_git_working_tree.py::TestFilesChangedOutsideHaute`** — with a tracked file
+  edited by hand, a switch, opening a new branch, an archive, Catch up and Spin off a copy
+  each refused naming it, with no ref, HEAD or file moved and no "Save or discard"; each
+  completing once it is put back, with the file as history has it; each but Catch up
+  completing once it is recorded, the save on the branch it was made on (set aside or
+  archived with it); a recorded save before Catch up refused with Spin off a copy; a file git
+  does not track where the destination has one named, removed by a put-back and then the
+  switch completing; recording refused with no working branch or no identity; a staged
+  rename named by both its names and recorded or put back whole; and a Put back answered
+  after another tab recorded the file, switched and edited it again refused, the other
+  branch's edit kept. In
+  `tests/test_git_routes.py`, the 409's `error_code` and `files`, the switch asked again with
+  `settle` recording the file, a settled path outside the project refused 400, files put back
+  announced although the Catch up after them fails, and the hosted parent catch-up settling
+  the files before it runs. In
+  `tests/test_git_operations.py`, Create & Move carrying the analyst's edit with none of it
+  in its record or touched by a put-back, and a switch refusing it before any record.
+- **Open tabs and the branch** — in `tests/test_git_ledger.py`, a save with HEAD on another
+  branch or detached refused naming where the project is, with the checkout, the ledger and
+  the file as they were; in `tests/test_save_git_serialization.py`, a save from a tab after
+  another tab switched, a terminal checkout and a terminal `git switch -c`, each refused
+  `branch_changed` naming both, writing nothing and leaving the checkout alone, and one from
+  a tab on the project's branch recorded, a repeat of a committed save after a switch
+  answered from its receipt, and a save while git refuses the repository written with the
+  cause as its warning; in `tests/test_workbench_routes.py` and
+  `tests/test_project_files_routes.py`, the form's save and the capture of files left
+  uncaptured refused the same way, nothing written; in `tests/test_git_routes.py`, a switch through a
+  route told once to the open tabs, and a `git switch -c` in a terminal told by the branch
+  watcher.
+- **`tests/test_git_letter_case.py`** — a save after the pipeline folder is renamed to other
+  letter case, an upload into a renamed data folder, a replace of a renamed data file and a
+  request naming a folder in other capitals, each recorded under git's spelling with nothing
+  left changed, a switch then succeeding, the net warning and keeping a file a capture recorded
+  nothing for, and two names that differ only in case kept apart where the disk keeps them so.
+  CI's platform smoke runs it on Windows and macOS, where the rename is real; elsewhere a link
+  under the new spelling stands for a folder that ignores case.
 - **`tests/test_git_remote_transport.py`** — real remote commands over `ssh://` through a
   fake ssh script, on every platform (CI's platform smoke runs it on Windows and macOS): a
   transport configured as `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` inspects and

@@ -9,6 +9,7 @@ import { answer, ask, under } from "../utils/answers"
 import { GitIdentityFields, ModalFormActions, ModalFormHeader, ModalTextInput } from "./ModalForm"
 import BrokenPairs from "./BrokenPairs"
 import ModalShell from "./ModalShell"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 interface WorkingBranchModalProps {
   /** Called after the working branch has been set and status reloaded. */
@@ -70,7 +71,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
     try {
       const identity = identityNeeded ? setGitIdentity(userName.trim(), userEmail.trim(), setGlobal) : Promise.resolve(null)
       await answer([gitStorePart()], identity, {
-        ok: (_, asked) => asked.answer(setWorkingBranch(branchName, creating), {
+        ok: (_, asked) => asked.answer(clearingTheWay((...settled) => setWorkingBranch(branchName, creating, ...settled)), {
           ok: () => asked.answer(loadStatus({ refresh: true }), { // not a read begun before the action
             ok: () => {
               addToast("success", `Working branch set to ${branchName}`)

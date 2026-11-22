@@ -59,8 +59,9 @@ def repo(tmp_path: Path) -> Path:
 
 
 class TestBranchAwayGuards:
-    """branch_away user-facing guard refusals: dirty/unsaved tree and detached
-    HEAD (viewing history) are refused before any ref is touched."""
+    """branch_away user-facing guard refusals: detached HEAD (viewing history) and no
+    working branch are refused before any ref is touched. A file changed outside Haute is
+    named once the remote is read (tests/test_git_working_tree.py::TestFilesChangedOutsideHaute)."""
 
     def _setup_pair_with_remote(self, repo: Path, tmp_path: Path) -> None:
         from haute._git_state import write_working_branch
@@ -76,13 +77,6 @@ class TestBranchAwayGuards:
         # Detach HEAD: simulate "viewing history" — HEAD is no longer on the ledger.
         _git(repo, "checkout", "--detach", LEDGER)
         with pytest.raises(GitDomainError, match="viewing history"):
-            branch_away("origin", repo, cwd=repo)
-
-    def test_refuses_on_dirty_tree(self, repo: Path, tmp_path: Path) -> None:
-        self._setup_pair_with_remote(repo, tmp_path)
-        # Unsaved tracked edit on the checked-out ledger.
-        (repo / "rating.py").write_text("# unsaved edit\n")
-        with pytest.raises(GitDomainError, match="unsaved changes"):
             branch_away("origin", repo, cwd=repo)
 
     def test_refuses_when_no_working_branch(self, repo: Path, tmp_path: Path) -> None:

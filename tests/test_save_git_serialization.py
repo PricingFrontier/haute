@@ -496,3 +496,354 @@ def test_a_save_runs_none_of_the_projects_hooks(project: Path, refuses: bool) ->
     assert response.git_sha is not None
     assert _blob(project, response.git_sha, "main.py") == written.rstrip("\n")
     assert not [warning for warning in response.warnings if "capture" in warning]
+
+
+# ---------------------------------------------------------------------------
+# A save from a tab that shows another branch than the project is on
+# ---------------------------------------------------------------------------
+
+
+def _refusal(exc: pytest.ExceptionInfo[Exception]) -> dict[str, Any]:
+    detail = getattr(exc.value, "detail", None)
+    assert isinstance(detail, dict), exc.value
+    return detail
+
+
+@pytest.mark.parametrize(
+    ("moved", "said"),
+    [
+        (
+            "switched",
+            f"This tab shows the branch '{WORKING}', but the project is on 'other' now, so "
+            "nothing was saved. Your changes are still here.",
+        ),
+        (
+            "checked-out",
+            f"The project is checked out on 'colleague', not on '{WORKING}', so nothing was "
+            "saved. Your changes are still here.",
+        ),
+        (
+            "new-branch",
+            f"The project is checked out on 'mine', not on '{WORKING}', so nothing was saved. "
+            "Your changes are still here.",
+        ),
+    ],
+)
+def test_a_save_from_a_tab_the_project_moved_away_from_writes_nothing(
+    project: Path, moved: str, said: str
+) -> None:
+    """Another tab switched the project, or the analyst checked out another branch or made
+    one in a terminal: the save names both, writes nothing and leaves the checkout alone."""
+    from haute._git import create_working_branch
+
+    # The tab's request, made while it showed the project as it was.
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    if moved == "switched":
+        create_working_branch("other", project, cwd=project)
+        set_working_branch("other", project, cwd=project)
+    elif moved == "checked-out":
+        _git(project, "checkout", "-q", "-b", "colleague", "main")
+    else:
+        _git(project, "switch", "-q", "-c", "mine")
+    head = _git(project, "rev-parse", "--symbolic-full-name", "HEAD")
+    tips = _git(project, "for-each-ref", "refs/heads/")
+    on_disk = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+
+    with pytest.raises(save_pipeline.ConflictError) as refused:
+        SavePipelineService(project_root=project).save(request)
+
+    assert _refusal(refused) == {"error_code": "branch_changed", "message": said}
+    after = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+    assert after == on_disk
+    assert _git(project, "rev-parse", "--symbolic-full-name", "HEAD") == head
+    assert _git(project, "for-each-ref", "refs/heads/") == tips
+
+
+def test_a_save_from_a_tab_on_the_project_s_branch_is_recorded(project: Path) -> None:
+    tip = _git(project, "rev-parse", f"{WORKING}-save")
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+
+    SavePipelineService(project_root=project).save(request)
+
+    assert _git(project, "rev-parse", f"{WORKING}-save") != tip
+
+
+def test_a_repeat_of_a_save_that_committed_is_answered_from_its_receipt_after_a_switch(
+    project: Path,
+) -> None:
+    """The save committed and its answer was lost; another tab then switched branch. The
+    repeat is answered with what the save did, not refused as a new write."""
+    from haute._git import create_working_branch
+
+    request = _save_request(project, banding=True).model_copy(
+        update={"working_branch": WORKING, "operation": "repeat-after-switch"}
+    )
+    first = SavePipelineService(project_root=project).save(request)
+    create_working_branch("other", project, cwd=project)
+    set_working_branch("other", project, cwd=project)
+
+    service = SavePipelineService(project_root=project)
+    again = service.save(request)
+
+    assert service.replayed is True
+    assert again == first
+
+
+def test_a_save_where_git_refuses_the_repository_lands_on_disk_with_the_cause(
+    project: Path,
+) -> None:
+    """The tab still shows its branch when the repository's settings are damaged: the save
+    is written, and its capture warns with the cause rather than refusing the save."""
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    with (project / ".git" / "config").open("a", encoding="utf-8") as config:
+        config.write("[core\n")
+
+    saved = SavePipelineService(project_root=project).save(request)
+
+    assert "Bands" in (project / "main.py").read_text(encoding="utf-8")
+    assert saved.git_sha is None
+    assert any("Git can't read its settings" in warning for warning in saved.warnings)
+
+
+def test_a_save_from_a_tab_the_project_moved_away_from_finishes_no_earlier_save(
+    project: Path,
+) -> None:
+    """A save before it committed and left a stale file still to remove; the project then
+    moved to another branch. A stale tab's save is refused before that leftover work runs:
+    the file stays, and the record waits for a save that may make it."""
+    from haute._git import create_working_branch
+    from haute._save_records import Removal, SaveRecord, read_record, write_record
+    from haute.routes._save_pipeline import _artifact_digest
+
+    stale = project / "config" / "stale.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    create_working_branch("other", project, cwd=project)
+    set_working_branch("other", project, cwd=project)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+    record = SaveRecord(
+        source_file="main.py",
+        committed=True,
+        removes=(Removal("config/stale.json", _artifact_digest(stale)),),
+    )
+    write_record(project, record)
+
+    with pytest.raises(save_pipeline.ConflictError):
+        SavePipelineService(project_root=project).save(request)
+
+    assert stale.read_text(encoding="utf-8") == "{}\n"
+    assert read_record(project, "main.py", record.id) is not None
+
+
+def test_a_save_refused_though_git_refuses_the_repository_when_another_branch_is_recorded(
+    project: Path,
+) -> None:
+    """The working branch Haute records needs no git: another one recorded refuses the
+    save even while git cannot be asked where the checkout is."""
+    from haute._git import create_working_branch
+
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    create_working_branch("other", project, cwd=project)
+    set_working_branch("other", project, cwd=project)
+    on_disk = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+    with (project / ".git" / "config").open("a", encoding="utf-8") as config:
+        config.write("[core\n")
+
+    with pytest.raises(save_pipeline.ConflictError) as refused:
+        SavePipelineService(project_root=project).save(request)
+
+    assert _refusal(refused)["error_code"] == "branch_changed"
+    after = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+    assert after == on_disk
+
+
+BANDS = "config/banding/Bands.json"
+
+
+@contextmanager
+def _removal_held(name: str) -> Iterator[None]:
+    """The removal of every file called *name* fails, as a file held open does."""
+    import errno
+
+    real_unlink = Path.unlink
+
+    def held(self: Path, missing_ok: bool = False) -> None:
+        if self.name == name:
+            raise PermissionError(errno.EACCES, "held")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "unlink", held)
+        yield
+
+
+def _without_bands(project: Path, branch: str) -> SavePipelineRequest:
+    """A save of the pipeline on *branch* that drops its banding node."""
+    request = _save_request(project, banding=False)
+    graph = request.graph.model_copy(
+        update={
+            "nodes": [node for node in request.graph.nodes if node.id != "Bands"],
+            "edges": [edge for edge in request.graph.edges if "Bands" not in edge.id],
+        }
+    )
+    return request.model_copy(update={"graph": graph, "working_branch": branch})
+
+
+def _bands_left_to_remove(project: Path) -> None:
+    """'pricing' and 'other' both hold a banding node and its settings file, 'other' made
+    from the milestone with nothing between them; a save on 'pricing' then drops the node,
+    and its settings file, held open, is left for a later save to remove."""
+    from haute._git import create_working_branch
+    from haute._save_records import records_of
+
+    on = {"working_branch": WORKING}
+    service = SavePipelineService(project_root=project)
+    service.save(_save_request(project, banding=True).model_copy(update=on))
+    commit_milestone("Bands", project, cwd=project)
+    create_working_branch("other", project, cwd=project)
+    with _removal_held("Bands.json"):
+        service.save(_without_bands(project, WORKING))
+    assert (project / BANDS).exists()
+    assert [record.removes[0].file for record in records_of(project, "main.py")] == [BANDS]
+
+
+def test_a_save_on_another_branch_neither_finishes_nor_replaces_a_record_left_on_one(
+    project: Path,
+) -> None:
+    """The record's removal is 'pricing''s code's: on 'other', which shares every commit
+    'pricing' had before the save, neither the start nor a save removes the settings file
+    'other''s banding node reads, and the start back on 'pricing' does."""
+    from haute._save_records import holds_here, records_of
+    from haute.routes._save_pipeline import settle_saves
+
+    _bands_left_to_remove(project)
+    left = records_of(project, "main.py")
+    set_working_branch("other", project, cwd=project)
+
+    settle_saves(project)
+    assert (project / BANDS).exists()
+    assert not holds_here(project, left[0])
+    with _removal_held("Bands.json"):
+        SavePipelineService(project_root=project).save(_without_bands(project, "other"))
+    # 'other''s own save leaves its stale file to remove, beside 'pricing''s record.
+    assert left[0] in records_of(project, "main.py")
+    assert len(records_of(project, "main.py")) == 2
+
+    set_working_branch(WORKING, project, cwd=project)
+    settle_saves(project)
+
+    assert not (project / BANDS).exists()
+    assert left[0].id not in {record.id for record in records_of(project, "main.py")}
+
+
+def test_a_branch_made_again_under_a_deleted_one_s_name_does_not_take_its_record(
+    project: Path,
+) -> None:
+    """'pricing' archived with a record still to finish, then a new 'pricing' made from
+    'other': its code is 'other''s, so the start leaves the settings file it reads."""
+    from haute._git import archive_working_pair, create_working_branch
+    from haute._save_records import records_of
+    from haute.routes._save_pipeline import settle_saves
+
+    _bands_left_to_remove(project)
+    left = records_of(project, "main.py")
+    set_working_branch("other", project, cwd=project)
+    archive_working_pair(WORKING, project, cwd=project)
+    create_working_branch(WORKING, project, cwd=project)
+    set_working_branch(WORKING, project, cwd=project)
+
+    settle_saves(project)
+
+    assert (project / BANDS).exists()
+    assert records_of(project, "main.py") == left
+
+
+def test_a_save_that_rolls_back_leaves_the_record_it_carried_and_only_it(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save carrying a record's removal fails before it commits: the one write that
+    forgets its own record puts the carried one back, unchanged and not reported."""
+    from haute._save_records import interrupted_save, records_of
+
+    _bands_left_to_remove(project)
+    left = records_of(project, "main.py")
+
+    def fails(*_args: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(SavePipelineService, "_write_config_files", fails)
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    with _removal_held("Bands.json"), pytest.raises(OSError, match="disk full"):
+        SavePipelineService(project_root=project).save(request)
+
+    assert records_of(project, "main.py") == left
+    assert interrupted_save(project, "main.py") is None
+
+
+def test_a_save_that_stopped_while_git_refuses_the_folder_is_kept_and_reported(
+    project: Path,
+) -> None:
+    """Whose a record is, the files say: git refusing the folder neither forgets a save
+    that stopped part-way nor hides it from its document."""
+    from haute._save_records import Held, SaveRecord, interrupted_save, write_record
+    from haute.routes._save_pipeline import _artifact_digest, settle_saves
+
+    now = _artifact_digest(project / "main.py")
+    write_record(
+        project,
+        SaveRecord(
+            source_file="main.py",
+            holds=(Held("main.py", (now, "the bytes it was writing")),),
+            writes=("main.py", BANDS),
+        ),
+    )
+    with (project / ".git" / "config").open("a", encoding="utf-8") as config:
+        config.write("[core\n")
+
+    settle_saves(project)
+
+    stopped = interrupted_save(project, "main.py")
+    assert stopped is not None and stopped.writes == ("main.py", BANDS)
+
+
+def test_a_record_kept_before_records_named_their_code_is_settled_where_the_project_is(
+    project: Path,
+) -> None:
+    """A record an earlier Haute kept (the pipeline file's only one, naming no code): the
+    start finishes a committed one, and one that never committed goes on being reported."""
+    from haute._save_records import _record_path, interrupted_save, records_of
+    from haute.routes._save_pipeline import _artifact_digest, settle_saves
+
+    stale = project / "config" / "stale.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+
+    def kept_before(**fields: object) -> None:
+        record = {
+            "source_file": "main.py",
+            "operation": None,
+            "digest": None,
+            "base_revision": None,
+            "writes": [],
+            "leftover": [],
+            "removes": [],
+            "committed": False,
+            "answer": None,
+            **fields,
+        }
+        path = project / ".haute" / "saves" / "records" / _record_path(project, "main.py").name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    kept_before(
+        committed=True,
+        removes=[{"file": "config/stale.json", "digest": _artifact_digest(stale)}],
+    )
+    settle_saves(project)
+    assert not stale.exists() and records_of(project, "main.py") == []
+
+    kept_before(writes=["main.py"])
+    settle_saves(project)
+    assert interrupted_save(project, "main.py") is not None

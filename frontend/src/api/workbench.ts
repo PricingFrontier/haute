@@ -177,11 +177,17 @@ export async function fetchWorkbenchForm(): Promise<WorkbenchFormResponse> {
  * left as it is. A save that lands answers the form with its new revision and what its
  * capture on the save ledger gave, as the pipeline's save does.
  */
-export async function saveWorkbenchForm(form: FormSpec, baseRevision: string): Promise<WorkbenchFormSaveResponse> {
+/** Write the form; `workingBranch` is the branch the tab shows, and the server refuses the
+ *  save (`branch_changed`), writing nothing, when the project has moved to another. */
+export async function saveWorkbenchForm(
+  form: FormSpec,
+  baseRevision: string,
+  workingBranch: string | null,
+): Promise<WorkbenchFormSaveResponse> {
   const data = await request<unknown>("/api/workbench/form", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ form, base_revision: baseRevision }),
+    body: JSON.stringify({ form, base_revision: baseRevision, working_branch: workingBranch }),
   })
   return expectGeneratedContract(
     "WorkbenchFormSaveResponse",

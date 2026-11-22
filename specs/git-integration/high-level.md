@@ -72,7 +72,10 @@ Out of scope (owned by neighbouring components):
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
 scoped to exactly the files that changed: the pipeline's files, the workbench's form folder's files, or a
 file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
-panel ([server-api](../server-api/high-level.md)). A save whose capture is skipped for want
+panel ([server-api](../server-api/high-level.md)). A save names each file as git spells it, so a folder renamed
+to other letter case on Windows or macOS (`rating` to `Rating`, which git there keeps as
+`rating`) is still recorded; a save that would leave a file on disk unlike the ledger's copy
+is a failed capture. A save whose capture is skipped for want
 of a git identity or of a chosen working branch, or fails, still lands on disk, and its
 answer names the files it left off the ledger with a warning: no later save's pathspec takes
 them, so the editor keeps them and one capture route takes them once an identity is set or a
@@ -114,6 +117,17 @@ it with `# noqa`, and the docs section on refused milestones. A clone carries no
 so choosing its working branch installs the project's tracked `.githooks/pre-commit` where
 none is set up.
 
+**Signed commits.** When git is set to sign every commit (`commit.gpgsign`, in the
+repository's settings or the analyst's), every commit Haute makes is signed with the key and
+format git is set to use: a save, a milestone, a restore, a branch's first milestone made at
+a save, the copies of the saves Create & Move relocates (signed with the key of whoever moves
+them, each keeping its original author and committer), and a new repository's root commit.
+A signing setting git cannot read as true or false is refused, never read as "don't sign". Where an
+audit asks who recorded each version, a team sets git to sign. Nothing is signed otherwise,
+and a commit that cannot be signed records nothing and is refused with that cause
+(`GitBlockedError`, below). Version labels, tag objects Haute writes itself, are not signed;
+the milestone each names is.
+
 **Guardrails.** The default-branch and a fixed set of protected names (`main`, `master`,
 `develop`, `production`, or an operator-configured override) can never be written to
 directly — any attempt raises a guardrail error, distinguished from an ordinary domain
@@ -123,7 +137,12 @@ denylist of characters that could be interpreted as a CLI flag or contain contro
 characters, closing an argument-injection path from user input into the `git` CLI. A
 branch name the analyst types is refused before any ref is made when git could not use
 it, naming the rule it breaks (a space, `..`, a part starting with `.` or ending in
-`.lock`, `//`, a trailing `/`, `@{`); git's own `check-ref-format --branch` decides.
+`.lock`, `//`, a trailing `/`, `@{`); git's own `check-ref-format --branch` decides. A name
+git could not keep beside a branch that exists is refused naming that branch: git keeps
+each branch as a file, so `motor` and `motor/renewal` cannot both exist, in any letter case.
+So is a name Windows keeps for a device (`con`), on every platform. Restoring an archived
+or deleted branch into such a name is refused in the same words, and a deleted branch is
+then offered another name.
 While a merge, rebase, cherry-pick or revert started outside Haute is in progress, a save's
 capture, a milestone, a restore, Catch up and Spin off each refuse with that reason rather
 than git's own; the save itself still lands on disk, its capture warning saying why.
@@ -241,6 +260,10 @@ it again and deleting it again keeps both.
   transaction too.
 - **Restoring:** the branch manager lists the 20 most recent deletions and restores any of
   them exactly, under another name when its own is taken.
+- **What was confirmed:** a delete names the branch as its confirmation showed it, both tips
+  and whether it was the current one, and is refused when the branch has since moved or
+  become or stopped being the current one, so a confirmation shown before another page
+  switched onto the branch never deletes the branch the project is on.
 - **The cap:** when it rolls over, the oldest entry's pins go with its tombstone, since
   nothing could reach them any more.
 - **A pair broken before that:** delete and archive once moved the two refs one at a time,
@@ -285,6 +308,28 @@ files named. The operation it is a step of then puts everything back from its re
 and refuses: "<files> are open in another program, so Haute could not replace them. Close
 them and try again." A file held so tightly git cannot even read it, as Excel holds an open
 CSV, cannot be checked until it is closed, so the clone reads as interrupted until Retry.
+
+**Open tabs and the branch.** Every open tab learns when the project changes branch, whoever
+changed it: a switch in another tab, or a checkout in a terminal, which the server sees on
+the git directory's HEAD although it may change no file. The tab reads its readiness again,
+so its toolbar follows, and a project moved off its working branch opens the dialog that
+asks whether to go back or adopt where it is. A save from a tab names the working branch the
+tab shows, and is refused before anything is written, naming both, when the project records
+another or is checked out on neither that branch nor its ledger; the unsaved work stays in
+the tab. A save never checks out a branch the analyst left: its capture is made only from the
+working branch or its ledger, as `haute ci update`'s is.
+
+**Files changed outside Haute.** A file edited by hand, a rate changed in Excel, is on disk
+as version history does not have it, and the editor's Save, which writes only what the canvas
+and the form hold, never records it. So every operation that replaces the project's files (a
+switch, opening a new branch, Catch up, Spin off a copy, archiving or deleting the branch the
+project is on) is refused first while such a file is there, naming it, as is a file git does
+not track where the destination has one. The editor offers the two things an analyst can
+want, to record the files as one save on the branch or to put them back as version history
+has them, and then asks for the operation again, which settles exactly those files first and
+goes on. Recording before Catch up makes a save the remote lacks, so the catch-up then offers
+Spin off a copy, which keeps it. Create & Move carries edits to the new branch as it always
+has, and a confirmed delete discards them.
 
 **Operations recorded before they start.** Every action that moves a branch, HEAD, a version
 label or a deleted branch's pin is an operation of known steps: catching up, restoring a
@@ -440,6 +485,20 @@ subclass of the project-wide `HauteError`):
 - **`GitGuardrailError`** — a `GitDomainError` subtype specifically for guardrail blocks
   (protected branch, already-archived, save ledger used as a working branch). Surfaces
   verbatim as HTTP 403.
+- **`GitBlockedError`** — a `GitDomainError` subtype for a refusal whose cause the analyst
+  can remove outside Haute, recognised from git's own message: a lock file another git
+  program holds or one that stopped left behind (`.git/index.lock`), a folder git does not
+  trust because another account owns it, a settings file with a damaged line, and a commit
+  that could not be signed (recognised only of a command that commits). Its message names the cause and what to do (wait or delete the
+  lock file; the `safe.directory` command git proposes; the file and the line; that the
+  commit could not be signed), never git's own words. A probe that asks git a yes-or-no
+  question raises it rather than reading it as "no", so an untrusted folder or damaged
+  settings is never "not a git repository" or a missing identity: readiness answers
+  `blocked`, with the cause, and no answer mentions `git init`. Any other git failure stays
+  "Git refused this" under an incident.
+- **`GitUnrecordedFilesError`** — a `GitDomainError` subtype for an operation that replaces the
+  project's files refused over files off version history; it carries every file, and the
+  HTTP layer answers 409 with them so the editor can offer to record them or put them back.
 - **`GitTransactionError`** — a `GitDomainError` subtype used when an operation failed and
   its refs are where no step of its record leaves them, so it can be neither put back nor
   finished, or when the project's commit hooks left HEAD off the ledger. The record stays and

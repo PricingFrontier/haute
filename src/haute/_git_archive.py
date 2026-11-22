@@ -16,6 +16,9 @@ from haute._git_core import (
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _assert_way_clear,
+    _branch_in_the_way,
+    _clash_words,
     _free_pair_name,
     _get_current_branch,
     _list_branches_with_tips,
@@ -32,6 +35,7 @@ from haute._git_read_models import _broken_pair, _has_unmerged_saves, _normalize
 from haute._logging import get_logger
 from haute.schemas import (
     GitArchiveResponse,
+    GitBranchSeen,
     GitDeleteBranchResponse,
     GitRepairPairResponse,
     GitRestoreResponse,
@@ -76,17 +80,14 @@ def _leave_if_active(
     recorded = read_working_branch(project_root)
     if not (recorded == working or _get_current_branch(cwd) in (working, ledger)):
         return False
-    # TRACKED modifications would make the checkout abort with a raw, sanitized
-    # error. Untracked files (e.g. .haute/state.json) don't block a checkout.
-    ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-    dirty = ok and bool(status.strip())
-    if dirty and not discard:
-        raise GitDomainError(
-            f"You have unsaved changes on this branch. Save or discard them before {action} it."
-        )
     milestone = _rev_parse(working, cwd=cwd) or _rev_parse(ledger, cwd=cwd)
     if milestone is None:
         raise GitDomainError("No safe commit is available to leave the active branch.")
+    ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    dirty = ok and bool(status.strip())
+    if not discard:
+        # Files off version history would be carried off or replaced by the checkout.
+        _assert_way_clear(f"{action} '{working}'", milestone, cwd, leaving=True)
     steps_before = operation.step_count
     operation.checkout_detached(milestone, force=discard)
     discarded = discard and dirty and operation.step_count > steps_before
@@ -146,6 +147,32 @@ def _moved_pair(
     return updates
 
 
+def _change_since_seen(
+    seen: GitBranchSeen,
+    tip: str,
+    ledger_tip: str | None,
+    is_current: bool,
+    is_checked_out: bool,
+) -> str | None:
+    """How a branch differs from what its delete's confirmation showed, in words; None
+    when it is as shown. Whether it is the recorded working branch and whether HEAD is on
+    it are both what `_leave_if_active` reads to leave it, a confirmed delete discarding the
+    changes on disk: a checkout made in a terminal since is a change."""
+    if is_current != seen.is_current:
+        return "the project is on it now" if is_current else "the project is no longer on it"
+    if is_checked_out != seen.is_checked_out:
+        return (
+            "the project is checked out on it now"
+            if is_checked_out
+            else "the project is no longer checked out on it"
+        )
+    if tip != seen.tip:
+        return "its milestones changed"
+    if ledger_tip != seen.ledger_tip:
+        return "its saves changed"
+    return None
+
+
 def _new_trash_id(working: str, project_root: Path, cwd: Path | None) -> str:
     """A trash entry id for deleting *working* now: ``<branch>@<UTC stamp>``, with a
     counter when the same name is deleted twice within a second."""
@@ -164,6 +191,8 @@ def _new_trash_id(working: str, project_root: Path, cwd: Path | None) -> str:
 def delete_working_pair(
     branch: str,
     project_root: Path,
+    *,
+    seen: GitBranchSeen,
     confirm: bool = False,
     cwd: Path | None = None,
 ) -> GitDeleteBranchResponse:
@@ -177,7 +206,11 @@ def delete_working_pair(
     lands in ``.haute/trash.json``, so ``undelete_working_pair`` can rebuild the
     pair exactly and a name deleted twice keeps both. The oldest entries beyond
     the cap then go, pins with them. All of it is one recorded operation, whose
-    commit point is the transaction, or the checkout that discarded changes."""
+    commit point is the transaction, or the checkout that discarded changes.
+
+    *seen* is the branch as the delete's confirmation described it: a branch whose tips
+    have moved, or that has become or stopped being the current one, since then is
+    refused, so a confirmation never deletes a branch other than the one it showed."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     working = _normalize_to_working(branch)
@@ -189,6 +222,19 @@ def delete_working_pair(
 
     ledger = ledger_name(working)
     ledger_tip = _rev_parse(ledger, cwd=cwd)
+    from haute._git_state import read_working_branch
+
+    change = _change_since_seen(
+        seen,
+        working_tip,
+        ledger_tip,
+        read_working_branch(project_root) == working,
+        _get_current_branch(cwd) in (working, ledger),
+    )
+    if change is not None:
+        raise GitDomainError(
+            f"'{working}' changed since you chose to delete it: {change}. Look again, then retry."
+        )
 
     if not confirm and _has_unmerged_saves(working_tip, ledger_tip, cwd=cwd):
         raise GitGuardrailError(
@@ -336,6 +382,12 @@ def restore_working_pair(
     restored_ledger = ledger_name(restored)
     if _rev_parse(restored_ledger, cwd=cwd) is not None:
         raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
+    in_the_way = _branch_in_the_way(restored, cwd)
+    if in_the_way is not None:
+        raise GitDomainError(
+            f"Cannot restore '{restored}': {_clash_words(restored, in_the_way)}. "
+            f"Delete '{in_the_way}' first: Deleted keeps it, to restore under another name."
+        )
 
     ledger_tip = _rev_parse(ledger_name(archived_working), cwd=cwd)
     unarchive = Operation("unarchive", project_root, cwd)

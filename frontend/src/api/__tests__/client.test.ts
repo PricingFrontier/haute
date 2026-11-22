@@ -852,6 +852,7 @@ describe("endpoint contracts", () => {
       preserved_blocks: [],
       connection_id: "tab-1",
       operation: "save-test-operation",
+      working_branch: "dev",
     }
     await sentHeld((ticket) => savePipeline(payload, ticket))
     const [url, opts] = mockFetch.mock.calls[0]
@@ -863,6 +864,7 @@ describe("endpoint contracts", () => {
     expect(body.base_revision).toBe("rev-1")
     expect(body.connection_id).toBe("tab-1")
     expect(body.operation).toBe("save-test-operation")
+    expect(body.working_branch).toBe("dev")
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
@@ -871,6 +873,7 @@ describe("endpoint contracts", () => {
       source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
       connection_id: null,
       operation: "save-test-operation",
+      working_branch: null,
     }, ticket))
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
@@ -1085,19 +1088,21 @@ describe("git endpoints", () => {
       trash_id: "stale-branch@20261027T131400Z",
     }
     mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitDeleteBranch("stale-branch")
+    const seen = { tip: "a".repeat(40), ledger_tip: null, is_current: false, is_checked_out: false }
+    const result = await gitDeleteBranch("stale-branch", seen)
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/git/branches")
     expect(opts.method).toBe("DELETE")
     expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch", confirm: false })
+    expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch", confirm: false, seen })
     expect(result).toEqual(data)
   })
 
   it("gitDeleteBranch sends confirm=true when overriding the unmerged guard", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip", trash_id: "wip@20261027T131400Z" }))
-    await gitDeleteBranch("wip", true)
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true })
+    const seen = { tip: "a".repeat(40), ledger_tip: null, is_current: false, is_checked_out: false }
+    await gitDeleteBranch("wip", seen, true)
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true, seen })
   })
 
   it("getGitRemotes GETs /api/git/remotes and parses per-leg divergence", async () => {

@@ -39,10 +39,12 @@ from haute._git import (
     restore_version,
     restore_working_pair,
     set_working_branch,
+    undelete_working_pair,
     working_branch_status,
     working_branches,
     working_milestones,
 )
+from haute.schemas import GitBranchSeen
 from tests import _git_engine_helpers
 from tests._git_engine_helpers import (
     LEDGER,
@@ -51,6 +53,7 @@ from tests._git_engine_helpers import (
     _parents,
     _tree,
     _write_and_save,
+    seen_now,
 )
 from tests._git_helpers import install_hook
 
@@ -959,11 +962,13 @@ class TestBranchManager:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})  # unmerged save
         with pytest.raises(GitGuardrailError, match="loses them"):
-            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+            delete_working_pair(
+                WORKING, repo, seen=seen_now(repo, WORKING), confirm=False, cwd=repo
+            )
         # branch still there after the refusal
         assert self._branch_exists(repo, WORKING)
         working_tip = _git(repo, "rev-parse", WORKING)
-        delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+        delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=True, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
         assert self._current_head(repo) == "HEAD"
@@ -973,13 +978,86 @@ class TestBranchManager:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         commit_milestone("m", repo, cwd=repo)  # nothing unmerged now
-        delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+        delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=False, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
 
+    @pytest.mark.parametrize(
+        ("moved", "change"),
+        [
+            ("switched", "the project is on it now"),
+            ("saved", "its saves changed"),
+            ("committed", "its milestones changed"),
+        ],
+    )
+    def test_delete_refuses_a_branch_that_moved_since_its_confirmation(
+        self, repo: Path, moved: str, change: str
+    ) -> None:
+        """Another page switched the project onto the branch, or saved to it, while this
+        page's confirmation showed it as it was: the delete names the change, and the
+        branch, HEAD and the recorded working branch stay as they are."""
+        from haute._git_state import read_working_branch
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("scratch", repo, cwd=repo)
+        seen = seen_now(repo, "scratch")
+        set_working_branch("scratch", repo, cwd=repo)
+        if moved != "switched":
+            _write_and_save(repo, "scratch", {"rating.py": "# on scratch\n"})
+            if moved == "committed":
+                commit_milestone("scratch work", repo, cwd=repo)
+            set_working_branch(WORKING, repo, cwd=repo)
+        tips = {ref: _git(repo, "rev-parse", ref) for ref in ("scratch", "scratch-save", "HEAD")}
+        recorded = read_working_branch(repo)
+
+        with pytest.raises(GitDomainError) as refused:
+            delete_working_pair("scratch", repo, seen=seen, confirm=True, cwd=repo)
+
+        assert str(refused.value) == (
+            f"'scratch' changed since you chose to delete it: {change}. Look again, then retry."
+        )
+        assert {ref: _git(repo, "rev-parse", ref) for ref in tips} == tips
+        assert read_working_branch(repo) == recorded
+
+    def test_delete_refuses_a_branch_checked_out_in_a_terminal_since_its_confirmation(
+        self, repo: Path
+    ) -> None:
+        """A confirmed delete of the branch HEAD is on forces the checkout off it and discards
+        the changes on disk: a confirmation shown while it was elsewhere never does that."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("scratch", repo, cwd=repo)
+        seen = seen_now(repo, "scratch")
+        assert not seen.is_current and not seen.is_checked_out
+        _git(repo, "checkout", "-q", "scratch-save")
+        (repo / "rating.py").write_text("# edited in the terminal\n")
+
+        with pytest.raises(GitDomainError) as refused:
+            delete_working_pair("scratch", repo, seen=seen, confirm=True, cwd=repo)
+
+        assert str(refused.value) == (
+            "'scratch' changed since you chose to delete it: the project is checked out on it "
+            "now. Look again, then retry."
+        )
+        assert (repo / "rating.py").read_text() == "# edited in the terminal\n"
+        assert self._branch_exists(repo, "scratch")
+        listed = seen_now(repo, "scratch")
+        assert listed.is_checked_out and not listed.is_current
+
+    def test_the_branch_manager_lists_what_a_delete_names(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        listed = next(b for b in working_branches(repo, cwd=repo).branches if b.name == WORKING)
+        assert listed.tip == _git(repo, "rev-parse", WORKING)
+        assert listed.ledger_tip == _git(repo, "rev-parse", LEDGER)
+
     def test_delete_refuses_protected(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
-            delete_working_pair("main", repo, cwd=repo)
+            delete_working_pair(
+                "main",
+                repo,
+                seen=GitBranchSeen(tip="0" * 40, is_current=False, is_checked_out=False),
+                cwd=repo,
+            )
 
     def test_unconfirmed_delete_of_the_current_branch_keeps_a_dirty_tree(self, repo: Path) -> None:
         """Only a confirmed delete may discard edits: confirm guarded the unmerged saves
@@ -990,10 +1068,14 @@ class TestBranchManager:
         (repo / "rating.py").write_text("# uncommitted edit\n")
 
         with pytest.raises(GitDomainError) as refused:
-            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+            delete_working_pair(
+                WORKING, repo, seen=seen_now(repo, WORKING), confirm=False, cwd=repo
+            )
 
         assert str(refused.value) == (
-            "You have unsaved changes on this branch. Save or discard them before deleting it."
+            "rating.py has changed on disk outside Haute since the last save. Before deleting "
+            f"'{WORKING}', record it as a save on this branch, or put it back as version "
+            "history has it."
         )
         assert (repo / "rating.py").read_text() == "# uncommitted edit\n"
         assert self._branch_exists(repo, WORKING) and self._branch_exists(repo, LEDGER)
@@ -1009,7 +1091,7 @@ class TestBranchManager:
         commit_milestone("m", repo, cwd=repo)
         milestone = _git(repo, "rev-parse", WORKING)
         (repo / "rating.py").write_text("# uncommitted edit\n")  # dirty tree
-        delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+        delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=True, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
         # HEAD detached at the last milestone with the edit discarded; state
@@ -1025,7 +1107,7 @@ class TestBranchManager:
         # actionable message rather than a sanitized git error.
         set_working_branch(WORKING, repo, cwd=repo)
         (repo / "rating.py").write_text("# uncommitted edit\n")
-        with pytest.raises(GitDomainError, match="unsaved changes"):
+        with pytest.raises(GitDomainError, match="rating.py has changed on disk outside Haute"):
             archive_working_pair(WORKING, repo, cwd=repo)
 
     def test_archive_avoids_ledger_name_collision(self, repo: Path) -> None:
@@ -1066,6 +1148,51 @@ class TestBranchManager:
         _git(repo, "branch", WORKING, "main")
         with pytest.raises(GitDomainError, match="already exists"):
             restore_working_pair(archived, repo, cwd=repo)
+
+    def test_restore_refuses_a_branch_in_the_way_naming_it(self, repo: Path) -> None:
+        """``squad/home`` archived, then a branch ``squad`` made: the restore cannot put
+        ``squad/home`` back beside it, and says so instead of "Operation failed"."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("squad/home", repo, cwd=repo)
+        archived = archive_working_pair("squad/home", repo, cwd=repo).archived_as
+        _git(repo, "branch", "squad", "main")
+        with pytest.raises(GitDomainError) as refused:
+            restore_working_pair(archived, repo, cwd=repo)
+        assert str(refused.value) == (
+            "Cannot restore 'squad/home': the branch 'squad' exists, and git can't keep both "
+            "it and 'squad/home', since one would be a folder of the other. Delete 'squad' "
+            "first: Deleted keeps it, to restore under another name."
+        )
+        assert self._branch_exists(repo, archived)
+
+    def test_archive_beside_a_branch_named_archive_is_refused_naming_it(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _git(repo, "branch", "archive", "main")
+        with pytest.raises(GitDomainError, match="the branch 'archive' exists"):
+            archive_working_pair(WORKING, repo, cwd=repo)
+        assert self._branch_exists(repo, WORKING)
+
+    def test_archive_takes_a_dated_name_past_a_branch_beneath_its_own(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _git(repo, "branch", f"archive/{WORKING}/old", "main")
+        result = archive_working_pair(WORKING, repo, cwd=repo)
+        assert result.archived_as.startswith(f"archive/{WORKING}-")
+        assert self._branch_exists(repo, result.archived_as)
+
+    @pytest.mark.parametrize("as_name", [None, "grp/y"])
+    def test_undelete_into_a_name_beside_a_branch_offers_another_name(
+        self, repo: Path, as_name: str | None
+    ) -> None:
+        """The branch manager opens its name box when the refusal says "another name"."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("grp/x", repo, cwd=repo)
+        entry = delete_working_pair(
+            "grp/x", repo, seen=seen_now(repo, "grp/x"), confirm=True, cwd=repo
+        ).trash_id
+        _git(repo, "branch", "grp", "main")
+        with pytest.raises(GitDomainError, match="the branch 'grp' exists.*another name"):
+            undelete_working_pair(entry, repo, as_name=as_name, cwd=repo)
+        assert undelete_working_pair(entry, repo, as_name="grp-x", cwd=repo).branch == "grp-x"
 
     def test_restore_refuses_non_archived(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
@@ -1271,7 +1398,7 @@ class TestCreateWorkingBranch:
     def test_switch_refuses_tracked_changes(self, repo: Path) -> None:
         ids = _fork_setup(repo)
         (repo / "rating.py").write_text("# not saved\n")
-        with pytest.raises(GitDomainError, match="unsaved changes"):
+        with pytest.raises(GitDomainError, match="rating.py has changed on disk outside Haute"):
             create_working_branch("idea", repo, at=ids["m1"], switch=True, cwd=repo)
         assert _git(repo, "branch", "--list", "idea") == ""
 
@@ -1338,6 +1465,45 @@ class TestCreateWorkingBranch:
             "Use letters, numbers, dashes and slashes."
         )
         assert _git(repo, "for-each-ref", "refs/heads/") == before
+
+    @pytest.mark.parametrize(
+        ("existing", "name"),
+        [
+            ("motor", "motor/renewal"),
+            ("team/home", "team"),
+            ("Motor", "motor/renewal"),
+            ("cover-save/x", "cover"),
+        ],
+        ids=["beneath", "above", "another-case", "the-ledger"],
+    )
+    def test_a_name_that_cannot_exist_beside_a_branch_is_refused_naming_it(
+        self, repo: Path, existing: str, name: str
+    ) -> None:
+        """Git keeps each branch as a file, so ``motor`` and ``motor/renewal`` cannot both
+        exist; git's "cannot lock ref" reached the analyst as "Operation failed"."""
+        _fork_setup(repo)
+        _git(repo, "branch", existing, "main")
+        before = _git(repo, "for-each-ref", "refs/heads/")
+        with pytest.raises(GitDomainError) as refused:
+            create_working_branch(name, repo, cwd=repo)
+        assert str(refused.value) == (
+            f"'{name}' can't be used as a branch name: the branch '{existing}' exists, and "
+            f"git can't keep both it and '{name}', since one would be a folder of the other. "
+            "Choose another name."
+        )
+        assert _git(repo, "for-each-ref", "refs/heads/") == before
+
+    @pytest.mark.parametrize(("name", "device"), [("con", "con"), ("team/aux.v2", "aux")])
+    def test_a_name_windows_keeps_for_a_device_is_refused_by_name(
+        self, repo: Path, name: str, device: str
+    ) -> None:
+        _fork_setup(repo)
+        with pytest.raises(GitDomainError) as refused:
+            create_working_branch(name, repo, cwd=repo)
+        assert str(refused.value) == (
+            f"'{name}' can't be used as a branch name: Windows keeps '{device}' for a device, "
+            "so the branch could not exist there. Choose another name."
+        )
 
     def test_git_decides_a_typed_name_the_named_rules_let_through(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
