@@ -1,0 +1,621 @@
+diff --git a/crates/t-boost-py/src/lib.rs b/crates/t-boost-py/src/lib.rs
+index 1ef4852..c27d506 100644
+--- a/crates/t-boost-py/src/lib.rs
++++ b/crates/t-boost-py/src/lib.rs
+@@ -5471,7 +5471,7 @@ impl PyModel {
+         cat_x: Option<Vec<Vec<String>>>,
+         table_budget: usize,
+         table_min_arity: u8,
+-    ) -> PyResult<(PyTableModel, String, String, Option<String>)> {
++    ) -> PyResult<PrunedOutput> {
+         let columns = raw_columns_from_array(x)?;
+         let y_vec = y
+             .as_slice()
+@@ -5540,26 +5540,135 @@ impl PyModel {
+                 }
+             })
+             .map_err(py_err)?;
+-        let report_json = serde_json::to_string(&report)
+-            .map_err(|err| py_err(PbError::Serialization(format!("box budget report: {err}"))))?;
+-        let table_report_json = serde_json::to_string(&table_report).map_err(|err| {
+-            py_err(PbError::Serialization(format!(
+-                "table budget report: {err}"
+-            )))
+-        })?;
+-        let rebalance_json = rebalance_report
+-            .map(|r| serde_json::to_string(&r))
+-            .transpose()
+-            .map_err(|err| py_err(PbError::Serialization(format!("rebalance report: {err}"))))?;
+-        Ok((
+-            PyTableModel {
+-                model: Arc::new(tm),
+-                serve: Default::default(),
+-            },
+-            report_json,
+-            table_report_json,
+-            rebalance_json,
+-        ))
++        pruned_output(tm, report, table_report, rebalance_report)
++    }
++
++    /// [`Self::apply_keepset_budgeted`] (with no box or table budget) for several keep-sets
++    /// of one model and one set of rows, in one call: a pruning path's candidates.
++    ///
++    /// The rows are binned once. The keep-sets are pruned in parallel waves on the `n_jobs`
++    /// pool, each wave small enough that its cell-refit designs fit in
++    /// [`FAMILY_DESIGN_BYTES`]. Each candidate is computed exactly as by a single call, so
++    /// every result is identical to `apply_keepset_budgeted(..., keep, 0, ...)`; results are
++    /// returned in `keeps` order.
++    #[pyo3(signature = (x, y, weight, keeps, ref_measure=None, laplace=1.0, measure_floor=0.001, reanchor=true, rebalance=false, n_jobs=None, exposure=None, cat_x=None, table_min_arity=3))]
++    #[allow(clippy::too_many_arguments)] // JUSTIFIED: mirrors apply_keepset_budgeted's keyword signature.
++    fn apply_keepset_family(
++        &self,
++        py: Python<'_>,
++        x: PyReadonlyArray2<'_, f32>,
++        y: PyReadonlyArray1<'_, f32>,
++        weight: PyReadonlyArray1<'_, f32>,
++        keeps: Vec<Vec<Vec<u32>>>,
++        ref_measure: Option<String>,
++        laplace: f32,
++        measure_floor: f32,
++        reanchor: bool,
++        rebalance: bool,
++        n_jobs: Option<usize>,
++        exposure: Option<PyReadonlyArray1<'_, f32>>,
++        cat_x: Option<Vec<Vec<String>>>,
++        table_min_arity: u8,
++    ) -> PyResult<Vec<PrunedOutput>> {
++        let columns = raw_columns_from_array(x)?;
++        let y_vec = y
++            .as_slice()
++            .map_err(|e| PyValueError::new_err(format!("y must be contiguous: {e}")))?
++            .to_vec();
++        let w_vec = weight
++            .as_slice()
++            .map_err(|e| PyValueError::new_err(format!("weight must be contiguous: {e}")))?
++            .to_vec();
++        let offset_vec: Option<Vec<f32>> = match exposure {
++            Some(e) => Some(
++                e.as_slice()
++                    .map_err(|err| {
++                        PyValueError::new_err(format!("exposure must be contiguous: {err}"))
++                    })?
++                    .iter()
++                    .map(|&v| v.ln())
++                    .collect(),
++            ),
++            None => None,
++        };
++        let keepsets: Vec<Vec<FeatureSet>> = keeps
++            .iter()
++            .map(|keep| {
++                keep.iter()
++                    .map(|ids| feature_set_from_raw_ids(ids))
++                    .collect()
++            })
++            .collect();
++        let model = Arc::clone(&self.model);
++        let w_measure = parse_ref_measure(ref_measure, laplace, measure_floor).map_err(py_err)?;
++        let evidence: BTreeMap<FeatureSet, f64> = BTreeMap::new();
++        let pruned = py
++            .detach(move || {
++                let binned = serve_binned_for_model(&model, &columns, cat_x.as_deref())?;
++                let serve = ServeBinnedMatrix(binned);
++                let loss = loss_choice_from_tag(&model.schema.objective)?;
++                let prune = |keepset: &Vec<FeatureSet>| {
++                    t_boost_core::prune::prune_model_to_keepset_budgeted(
++                        &model,
++                        &serve,
++                        &y_vec,
++                        &w_vec,
++                        offset_vec.as_deref(),
++                        loss.as_loss(),
++                        w_measure.clone(),
++                        reanchor,
++                        keepset,
++                        rebalance,
++                        0,
++                        0,
++                        table_min_arity,
++                        &evidence,
++                    )
++                };
++                run_on_pool(n_jobs, || {
++                    let n_axes = model.provenance.len();
++                    let n_raw_features = model
++                        .provenance
++                        .iter()
++                        .map(|p| p.raw.0 as usize + 1)
++                        .max()
++                        .unwrap_or(0);
++                    let wave = family_wave(
++                        y_vec.len(),
++                        n_raw_features,
++                        n_axes,
++                        &keepsets,
++                        rayon::current_num_threads(),
++                    );
++                    // Largest keep-sets first, so each wave holds candidates of similar cost
++                    // and the slowest ones are not left to run alone at the end.
++                    let mut order: Vec<(usize, &Vec<FeatureSet>)> =
++                        keepsets.iter().enumerate().collect();
++                    order.sort_by_key(|(_, keepset)| std::cmp::Reverse(keepset.len()));
++                    let mut out = Vec::with_capacity(keepsets.len());
++                    for chunk in order.chunks(wave) {
++                        let results: Vec<_> = chunk
++                            .par_iter()
++                            .map(|&(i, keepset)| (i, prune(keepset)))
++                            .collect();
++                        for (i, result) in results {
++                            out.push((i, result?));
++                        }
++                    }
++                    out.sort_by_key(|(i, _)| *i);
++                    Ok(out
++                        .into_iter()
++                        .map(|(_, pruned)| pruned)
++                        .collect::<Vec<_>>())
++                })
++            })
++            .map_err(py_err)?;
++        pruned
++            .into_iter()
++            .map(|(tm, report, table_report, rebalance_report)| {
++                pruned_output(tm, report, table_report, rebalance_report)
++            })
++            .collect()
+     }
+ 
+     /// Per-bag purified banks restricted to `keep`, as JSON strings (one per bag, in bag
+@@ -7935,6 +8044,80 @@ fn run_fit_pool<R: Send>(
+ /// opposite of what a caller probing for "disable parallelism" would expect — and the exact
+ /// oversubscription [`run_on_pool`]'s ambient-pool `None` path exists to avoid. The `_Booster`
+ /// constructor already rejects `n_jobs=0`; every per-call `n_jobs` parameter must match.
++/// The row-proportional memory a pruning family's concurrent candidates may use together.
++const FAMILY_DESIGN_BYTES: usize = 1 << 30;
++
++/// The rebalance's peak per-row working buffers, beyond the bank map, binned copy and design.
++const FAMILY_WORKING_BYTES_PER_ROW: usize = 128;
++
++/// How many keep-sets a pruning family prunes at once: at most `threads`, and few enough that
++/// their estimated row-proportional allocations fit in [`FAMILY_DESIGN_BYTES`]. A wave always
++/// holds at least one candidate, so a single very large one may exceed the budget alone.
++///
++/// The estimate per candidate, deliberately conservative (bytes per row):
++/// - the full bank build's per-row cell map, one `u32` per raw feature (`fill_support`);
++/// - a copy of the binned rows, one byte per model axis counted as two (a categorical rebalance
++///   clones them);
++/// - the cell-refit design, four bytes per kept main or pair (it stores `u16` indices);
++/// - 128 for the rebalance's per-row working buffers live at its peak: mass, scores,
++///   gradient and Hessian, residual, weight, row indices, the compacted fit vectors and the
++///   warm start (about 88 bytes measured, with headroom for allocation slack).
++fn family_wave(
++    n_rows: usize,
++    n_raw_features: usize,
++    n_axes: usize,
++    keepsets: &[Vec<FeatureSet>],
++    threads: usize,
++) -> usize {
++    let widest = keepsets
++        .iter()
++        .map(|keep| keep.iter().filter(|u| u.order() <= 2).count())
++        .max()
++        .unwrap_or(0)
++        .max(1);
++    let per_row = n_raw_features
++        .saturating_mul(4)
++        .saturating_add(n_axes.saturating_mul(2))
++        .saturating_add(widest.saturating_mul(4))
++        .saturating_add(FAMILY_WORKING_BYTES_PER_ROW);
++    let per_call = n_rows.saturating_mul(per_row).max(1);
++    (FAMILY_DESIGN_BYTES / per_call)
++        .clamp(1, threads.max(1))
++        .min(keepsets.len().max(1))
++}
++
++/// A pruned model with its box-budget, table-budget and rebalance reports (JSON).
++type PrunedOutput = (PyTableModel, String, String, Option<String>);
++
++/// A pruned model and its reports as `apply_keepset_budgeted` returns them.
++fn pruned_output(
++    tm: TableModel,
++    report: impl serde::Serialize,
++    table_report: impl serde::Serialize,
++    rebalance_report: Option<impl serde::Serialize>,
++) -> PyResult<PrunedOutput> {
++    let report_json = serde_json::to_string(&report)
++        .map_err(|err| py_err(PbError::Serialization(format!("box budget report: {err}"))))?;
++    let table_report_json = serde_json::to_string(&table_report).map_err(|err| {
++        py_err(PbError::Serialization(format!(
++            "table budget report: {err}"
++        )))
++    })?;
++    let rebalance_json = rebalance_report
++        .map(|r| serde_json::to_string(&r))
++        .transpose()
++        .map_err(|err| py_err(PbError::Serialization(format!("rebalance report: {err}"))))?;
++    Ok((
++        PyTableModel {
++            model: Arc::new(tm),
++            serve: Default::default(),
++        },
++        report_json,
++        table_report_json,
++        rebalance_json,
++    ))
++}
++
+ fn require_nonzero_n_jobs(n_jobs: Option<usize>) -> Result<(), PbError> {
+     if matches!(n_jobs, Some(0)) {
+         return Err(PbError::InvalidConfig {
+@@ -11224,3 +11407,52 @@ fn _t_boost(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     )?;
+     Ok(())
+ }
++
++#[cfg(test)]
++mod family_wave_tests {
++    use super::{
++        family_wave, feature_set_from_raw_ids, FAMILY_DESIGN_BYTES, FAMILY_WORKING_BYTES_PER_ROW,
++    };
++
++    #[test]
++    fn a_wave_holds_at_least_one_and_at_most_the_threads_and_requests() {
++        let keepsets = vec![
++            vec![
++                feature_set_from_raw_ids(&[0]),
++                feature_set_from_raw_ids(&[0, 1]),
++            ],
++            vec![feature_set_from_raw_ids(&[0])],
++        ];
++        assert_eq!(family_wave(1000, 2, 2, &keepsets, 32), 2); // bounded by the requests
++        assert_eq!(family_wave(1000, 2, 2, &keepsets, 1), 1); // bounded by the threads
++        assert_eq!(family_wave(1000, 2, 2, &[], 8), 1);
++        // A candidate larger than the whole budget still runs, one at a time.
++        assert_eq!(family_wave(FAMILY_DESIGN_BYTES, 2, 2, &keepsets, 32), 1);
++    }
++
++    #[test]
++    fn a_wave_accounts_for_every_row_proportional_allocation() {
++        let per_call = |rows: usize, raw: usize, axes: usize, kept: usize| {
++            rows * (raw * 4 + axes * 2 + kept * 4 + FAMILY_WORKING_BYTES_PER_ROW)
++        };
++        // Wide inputs with narrow keep-sets: the bank build's row map dominates the design.
++        let narrow: Vec<_> = (0..5).map(|f| feature_set_from_raw_ids(&[f])).collect();
++        let keepsets = vec![narrow; 10];
++        let rows = 2_000_000;
++        let wave = family_wave(rows, 200, 200, &keepsets, 32);
++        assert_eq!(wave, 1);
++        let wave = family_wave(100_000, 200, 200, &keepsets, 32);
++        assert_eq!(wave, FAMILY_DESIGN_BYTES / per_call(100_000, 200, 200, 5));
++        assert!(wave * per_call(100_000, 200, 200, 5) <= FAMILY_DESIGN_BYTES);
++        // Wide keep-sets over few features: the design term matters.
++        let wide: Vec<_> = (0..50).map(|f| feature_set_from_raw_ids(&[f])).collect();
++        let wave = family_wave(1_000_000, 10, 10, &vec![wide; 10], 32);
++        assert_eq!(wave, FAMILY_DESIGN_BYTES / per_call(1_000_000, 10, 10, 50));
++        // A narrow model is dominated by the rebalance's working buffers, measured at about
++        // 92 MB per candidate for a million rows with one feature and one kept table.
++        let one = vec![vec![feature_set_from_raw_ids(&[0])]; 16];
++        let wave = family_wave(1_000_000, 1, 1, &one, 32);
++        assert!(per_call(1_000_000, 1, 1, 1) >= 92_000_000 * 14 / 10);
++        assert!(wave * 92_000_000 <= FAMILY_DESIGN_BYTES);
++    }
++}
+diff --git a/python/t_boost/_paths.py b/python/t_boost/_paths.py
+index 9d54d25..371d9f8 100644
+--- a/python/t_boost/_paths.py
++++ b/python/t_boost/_paths.py
+@@ -1,7 +1,7 @@
+ """Immutable, bounded post-fit alternatives; fit evidence belongs to the parent session."""
+ from __future__ import annotations
+ 
+-from copy import copy, deepcopy
++from copy import deepcopy
+ from dataclasses import dataclass, replace
+ from hashlib import sha256
+ import io
+@@ -254,10 +254,9 @@ def prepare_path(session: TBoostTrainingSession, stage: str, *, parent: str | No
+         counts: list[Any] = session.pruning_budgets(**settings) if values is None else list(values)
+         if not counts or len(counts) > 16 or any(type(v) is not int or v < 0 for v in counts):
+             raise ValueError('pruning path requires 1..16 non-negative integer table budgets')
+-        for i, count in enumerate(counts, 1):
+-            private = copy(session)
+-            private._stages = session._stages.copy()
+-            model = private.prune(max_tables=count)
++        # Each budget is pruned into its own fork; the native rebalances run together.
++        pruned = session._prune_family(list(counts))
++        for i, (count, (private, model)) in enumerate(zip(counts, pruned), 1):
+             value = private._stages['pruned']
+             diagnostic = _complexity(model)
+             status = 'unchanged' if diagnostic['outcome_id'] == candidates[0].diagnostics['outcome_id'] else 'changed'
+diff --git a/python/t_boost/_staged.py b/python/t_boost/_staged.py
+index f162888..5cec87c 100644
+--- a/python/t_boost/_staged.py
++++ b/python/t_boost/_staged.py
+@@ -19,6 +19,11 @@ if TYPE_CHECKING:
+     from ._paths import TBoostPathFamily
+ 
+ 
++# The automatic pruning selection's defaults (`prune`, `pruning_selection`).
++PRUNE_FRACTION = 0.995
++PRUNE_TOLERANCE = 0.001
++
++
+ @dataclass(frozen=True)
+ class _FullFitState:
+     model: _Model
+@@ -264,7 +269,7 @@ class TBoostTrainingSession:
+                             expected_data_digest=expected_data_digest, max_bytes=max_bytes)
+ 
+     def prune(
+-        self, *, fraction: float = 0.995, tolerance: float = 0.001,
++        self, *, fraction: float = PRUNE_FRACTION, tolerance: float = PRUNE_TOLERANCE,
+         max_tables: int | None = None,
+     ) -> TBoostRegressor | TBoostClassifier:
+         """Apply an automatic selection rule or a fixed total-table budget, without fitting.
+@@ -273,23 +278,72 @@ class TBoostTrainingSession:
+         the largest hereditary prefix within the budget. It cannot be combined with
+         non-default fraction/tolerance. The path's OOB scores precede rebalancing/repair.
+         """
+-        report = self.pruning_selection(fraction=fraction, tolerance=tolerance, max_tables=max_tables)
+-        result = self.full_model
+-        for key, value in self._path_settings.items():
+-            setattr(result, key, value)
+-        result.prune = True
+-        result.prune_path_fraction = fraction
+-        result.prune_path_tolerance = tolerance
++        return self._prune_sessions([(self, (fraction, tolerance, max_tables))])[0]
++
++    def _prune_family(
++        self, budgets: list[int],
++    ) -> list[tuple[TBoostTrainingSession, TBoostRegressor | TBoostClassifier]]:
++        """Prune this session to several table budgets at once, each into its own fork.
++
++        Returns one ``(fork, model)`` per budget, in order; each fork has that budget's
++        ``pruned`` stage published, and this session is unchanged. Each result is identical
++        to calling ``prune(max_tables=budget)`` on a fork.
++        """
++        forks = []
++        for _ in budgets:
++            fork = copy(self)
++            fork._stages = self._stages.copy()
++            forks.append(fork)
++        requests = [(PRUNE_FRACTION, PRUNE_TOLERANCE, budget) for budget in budgets]
++        models = self._prune_sessions(list(zip(forks, requests)))
++        return list(zip(forks, models))
++
++    @staticmethod
++    def _prune_sessions(
++        targets: list[tuple[TBoostTrainingSession, tuple[float, float, int | None]]],
++    ) -> list[TBoostRegressor | TBoostClassifier]:
++        """Prune each ``(session, request)`` into its session, with one native family call.
++
++        The sessions share one retained fit (they are forks), so the rows are binned once
++        and the rebalances run together (``apply_keepset_family``).
++        """
++        state = targets[0][0]._state
++        if any(session._state is not state for session, _ in targets):
++            raise ValueError("a pruning family needs sessions of one retained fit")
++        prepared = []
++        for session, (fraction, tolerance, max_tables) in targets:
++            report = session.pruning_selection(fraction=fraction, tolerance=tolerance,
++                                               max_tables=max_tables)
++            result = session.full_model
++            for key, value in session._path_settings.items():
++                setattr(result, key, value)
++            result.prune = True
++            result.prune_path_fraction = fraction
++            result.prune_path_tolerance = tolerance
++            result.pruning_report_ = report
++            prepared.append((result, report))
++        # Every request shares the session's estimator settings, so one native call serves all.
++        first = prepared[0][0]
++        outputs = state.model.apply_keepset_family(
++            state.x, state.y, state.weights, [report['kept'] for _, report in prepared],
++            reanchor=first._resolved_reanchor(), rebalance=bool(first.prune_rebalance),
++            n_jobs=first._resolve_n_jobs(), exposure=state.exposure, cat_x=state.categories,
++            table_min_arity=int(first.prune_table_min_arity), **first._measure_kwargs(),
++        )
++        return [
++            session._finish_prune(result, report, output, request)
++            for (session, request), (result, report), output in zip(targets, prepared, outputs)
++        ]
++
++    def _finish_prune(
++        self, result: TBoostRegressor | TBoostClassifier, report: dict[str, Any],
++        output: tuple[Any, str, str, str | None], request: tuple[float, float, int | None],
++    ) -> TBoostRegressor | TBoostClassifier:
++        """Deploy a natively pruned model into *result* and publish its ``pruned`` stage."""
++        fraction, tolerance, max_tables = request
+         keep = report['kept']
+-        result.pruning_report_ = report
+         state = self._state
+-        model, _, _, rebalance = state.model.apply_keepset_budgeted(
+-            state.x, state.y, state.weights, keep, 0, [],
+-            reanchor=result._resolved_reanchor(), rebalance=bool(result.prune_rebalance),
+-            n_jobs=result._resolve_n_jobs(), exposure=state.exposure, cat_x=state.categories,
+-            table_budget=0, table_min_arity=int(result.prune_table_min_arity),
+-            **result._measure_kwargs(),
+-        )
++        model, _, _, rebalance = output
+         if rebalance is not None:
+             result.pruning_report_["rebalance"] = json.loads(rebalance)
+         result._reconcile_deployed(model)
+@@ -457,7 +511,7 @@ class TBoostTrainingSession:
+ 
+ 
+     def pruning_selection(
+-        self, *, fraction: float = 0.995, tolerance: float = 0.001, max_tables: int | None = None,
++        self, *, fraction: float = PRUNE_FRACTION, tolerance: float = PRUNE_TOLERANCE, max_tables: int | None = None,
+     ) -> dict[str, Any]:
+         """Resolve a cutoff against cached evidence, without building or publishing a model."""
+         _check_selection(fraction=fraction, tolerance=tolerance, max_tables=max_tables)
+@@ -471,7 +525,7 @@ class TBoostTrainingSession:
+         return report
+ 
+     def pruning_budgets(
+-        self, *, fraction: float = 0.995, tolerance: float = 0.001, max_tables: int | None = None,
++        self, *, fraction: float = PRUNE_FRACTION, tolerance: float = PRUNE_TOLERANCE, max_tables: int | None = None,
+     ) -> list[int]:
+         """The default pruning path's total-table budgets, ascending and distinct.
+ 
+diff --git a/python/t_boost/_t_boost.pyi b/python/t_boost/_t_boost.pyi
+index bd19548..5a00470 100644
+--- a/python/t_boost/_t_boost.pyi
++++ b/python/t_boost/_t_boost.pyi
+@@ -443,6 +443,23 @@ class _Model:
+         table_min_arity: int = 3,
+     ) -> tuple[_TableModel, str, str, str | None]: ...
+ 
++    def apply_keepset_family(
++        self,
++        x: np.ndarray,
++        y: np.ndarray,
++        weight: np.ndarray,
++        keeps: Sequence[Sequence[Sequence[int]]],
++        ref_measure: str | None = None,
++        laplace: float = 1.0,
++        measure_floor: float = 0.001,
++        reanchor: bool = True,
++        rebalance: bool = False,
++        n_jobs: int | None = None,
++        exposure: np.ndarray | None = None,
++        cat_x: Sequence[Sequence[str]] | None = None,
++        table_min_arity: int = 3,
++    ) -> list[tuple[_TableModel, str, str, str | None]]: ...
++
+     def bag_bank_jsons(
+         self,
+         x: np.ndarray,
+diff --git a/python/tests/test_staged_postfit.py b/python/tests/test_staged_postfit.py
+index c66502e..f20a86e 100644
+--- a/python/tests/test_staged_postfit.py
++++ b/python/tests/test_staged_postfit.py
+@@ -381,3 +381,86 @@ def test_path_cell_counts_match_materialised_interaction_grid_dimensions():
+         assert expected > 2 * len(interactions)
+         assert point['diagnostics']['interaction_cells'] == expected
+         assert point['diagnostics']['factored_interactions'] == len(bank.get('factored', []))
++
++
++@pytest.mark.parametrize('categorical', [False, True])
++@pytest.mark.parametrize('n_jobs', [1, 3])
++def test_native_pruning_family_matches_separate_prunes_without_mutation(categorical, n_jobs):
++    """One `apply_keepset_family` call gives every budget exactly what `prune` gives alone.
++
++    ``n_jobs=1`` prunes one keep-set per wave; ``n_jobs=3`` prunes them concurrently.
++    """
++    from copy import copy
++    x, y = book()
++    training = x
++    if categorical:
++        import polars as pl
++        training = pl.DataFrame({"a": x[:, 0], "b": x[:, 1], "c": x[:, 2],
++                                 "region": np.where(x[:, 3] > 0, "north", "south")})
++    fit = estimator(prune_rebalance=True)
++    fit.n_jobs = n_jobs
++    session = fit.fit_staged(training, y)
++    counts = session.pruning_path['table_counts']
++    budgets = [counts[0], counts[len(counts) // 2], counts[-1], counts[0]]
++    stages = dict(session._stages)
++    family = session._prune_family(budgets)
++    assert session._stages == stages  # the session itself is unchanged
++    assert len(family) == len(budgets)
++    for budget, (fork, model) in zip(budgets, family):
++        alone = copy(session)
++        alone._stages = session._stages.copy()
++        expected = alone.prune(max_tables=budget)
++        assert fork._stages['pruned'].revision == alone._stages['pruned'].revision
++        assert model.pruning_report_ == expected.pruning_report_
++        np.testing.assert_array_equal(model.predict(training), expected.predict(training))
++    assert family[0][0]._stages['pruned'].revision == family[3][0]._stages['pruned'].revision
++    assert any('rebalance' in model.pruning_report_ for _, model in family)  # exercised
++
++
++def _family_inputs(session):
++    """The arguments the session's pruning passes to the native family and single calls."""
++    state, result = session._state, session.full_model
++    kwargs = dict(reanchor=result._resolved_reanchor(), rebalance=True,
++                  exposure=state.exposure, cat_x=state.categories,
++                  table_min_arity=int(result.prune_table_min_arity), **result._measure_kwargs())
++    return state, kwargs
++
++
++@pytest.mark.parametrize('n_jobs', [1, 3, None])
++def test_native_pruning_family_equals_the_single_keepset_binding(n_jobs):
++    """The oracle is the native single call itself, not `prune()` (which uses the family)."""
++    import json
++    import polars as pl
++    x, y = book()
++    training = pl.DataFrame({"a": x[:, 0], "b": x[:, 1], "c": x[:, 2],
++                             "region": np.where(x[:, 3] > 0, "north", "south")})
++    session = estimator(prune_rebalance=True).fit_staged(training, y)
++    counts = session.pruning_path['table_counts']
++    keeps = [session.pruning_selection(max_tables=count)['kept']
++             for count in (counts[-1], counts[0], counts[len(counts) // 2])]
++    state, kwargs = _family_inputs(session)
++    family = state.model.apply_keepset_family(state.x, state.y, state.weights, keeps,
++                                              n_jobs=n_jobs, **kwargs)
++    assert len(family) == len(keeps)
++    for keep, (model, box, table, rebalance) in zip(keeps, family):
++        single = state.model.apply_keepset_budgeted(state.x, state.y, state.weights, keep, 0, [],
++                                                    n_jobs=n_jobs, table_budget=0, **kwargs)
++        assert bytes(model.to_bytes()) == bytes(single[0].to_bytes())
++        assert (json.loads(box), json.loads(table)) == (json.loads(single[1]), json.loads(single[2]))
++        assert rebalance is not None and json.loads(rebalance) == json.loads(single[3])
++
++
++def test_a_failing_candidate_fails_the_whole_family_without_publishing():
++    x, y = book()
++    session = estimator(prune_rebalance=True).fit_staged(x, y)
++    counts = session.pruning_path['table_counts']
++    good = session.pruning_selection(max_tables=counts[0])['kept']
++    state, kwargs = _family_inputs(session)
++    # A native failure raises: no partial list of candidates is ever returned.
++    with pytest.raises(ValueError, match="length|len|shape|mismatch"):
++        state.model.apply_keepset_family(state.x, state.y[:-1], state.weights[:-1],
++                                         [good, good], n_jobs=3, **kwargs)
++    stages = dict(session._stages)
++    with pytest.raises(ValueError):
++        session._prune_family([counts[0], -1])
++    assert session._stages == stages
+diff --git a/specs/roadmap/staged-training.md b/specs/roadmap/staged-training.md
+index 27b33ca..07feeca 100644
+--- a/specs/roadmap/staged-training.md
++++ b/specs/roadmap/staged-training.md
+@@ -219,6 +219,18 @@ The unchanged point is separate from positive budget requests. The default path
+ m = [1/32, 1/16, 1/8, 1/4, 1/2, 1], tolerance = sqrt(m) * maximum tolerance and
+ deviance cap = m * maximum cap. Complexity reports count interaction cells, excluding mains.
+ 
++Prune families (`apply_keepset_family`) bin the rows once and prune every budget's keep-set
++in parallel waves on the `n_jobs` pool, largest keep-sets first. A wave holds at most as many
++candidates as the pool has threads, and few enough that their estimated row-proportional
++allocations fit in 1 GiB together. The estimate is conservative: per row, four bytes per raw
++feature (the full bank's cell map), two per model axis (a binned copy), four per kept main
++or pair (the cell-refit design, stored as `u16`), and 128 for the rebalance's working
++buffers at their peak (about 88 measured). A wave always
++holds one candidate, so a very large dataset prunes one at a time, and that single candidate
++may exceed the budget, as a lone `prune` call does. Each candidate's computation is
++unchanged, so every result equals an independent `prune(max_tables=…)`, and results keep the
++request order.
++
+ Auto-relative smoothing uses each table's pre-guard GCV proposal multiplied by a positive
+ strength. Zero proposals stay zero. Identity is strength zero; default positive strengths
+ are [.25, .5, 1, 2, 4]. Strength one reproduces Auto. Higher-order strength stays fixed
+@@ -230,13 +242,15 @@ Every point passes the ordinary distillation, reanchor and monotonicity finalisa
+ EDF is a pre-finalisation diagnostic, not a claim about final constrained degrees of freedom.
+ Recipes persist the Auto multiplier or manual settings; refits recompute their own proposals.
+ 
+-Testing: native batched banding equals independent calls including repeated/reordered budgets,
++Testing: native batched banding and pruning equal independent calls, including repeated or
++reordered budgets, single- and multi-threaded pools,
+ categorical/missing cells, factored interactions and no interactions; invalid schedules fail
+ before any visitor output. Smoothing identity, Auto parity, zero proposals and rejection are
+ observable; weaker candidates can survive a rejected Auto proposal. Families do not mutate
+ session revisions, survive compact round trips, reject a different parent, and replay policy
+ on a fresh fit without transferring table IDs or alpha vectors. Memory is bounded by the
+-candidate schedule and bank sizes, never rows times candidates.
++candidate schedule and bank sizes, never rows times candidates, except that a prune
++family's concurrent candidates share the fixed 1 GiB row-proportional budget above.
+ 
+ Each point carries a native inference-bank outcome fingerprint, independently of its policy
+ revision. Repeated outcomes share immutable working-byte storage within a family; callers

@@ -616,6 +616,14 @@ source. The step 4 Haute changes are not in the demo; steps 1–2 (t-boost) are.
     - **Wasted work:** from 30 tables up, the held-out slice rejects the rebalance (deviance after > before). Those 1–3 s per call are computed and then discarded, by design of the guard.
     - **The 10 budget calls are independent** (`_paths.py:257`), but run one after another.
     - **Proposal:** a native pruning family call, like `band_family`, that runs the budgets in parallel under rayon, with concurrency bounded by memory. Each candidate stays bit-identical. Expected ~17.6 s → ~4–5 s per pruning job, and the categorical conversion done once rather than 10 times.
+  - [x] **Native pruning family (22 Nov), t-boost commit after `fa45a80`, approved by Codex after three rounds.**
+    - **What changed:** `_Model.apply_keepset_family` prunes all budgets in memory-bounded parallel waves. Each candidate is identical to a single call.
+    - **Review rounds:** account for every row-proportional allocation; the direct single-binding oracle and failure tests; working buffers raised to 128 bytes per row.
+    - **Measured:**
+      - demo session, 10 budgets: 18.7 → 7.9 s, with identical revisions;
+      - pruning job: 41.6 → 32.8 s;
+      - workflow (ev15): 199.9 → 190.0 s, with the same final model and metrics.
+    - **Remaining limit:** memory bandwidth. Concurrent backfits each run 1.6–2.2× slower.
   - **Next candidates:**
     1. ~~Point-result serialization~~ (done above).
     2. `apply_keepset_budgeted` (t-boost native).
