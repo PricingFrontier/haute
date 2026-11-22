@@ -976,3 +976,16 @@ export function variablesBefore(steps: Step[], index: number): string[] {
     .map((step) => step.name)
     .filter((name) => name.length > 0)
 }
+
+/**
+ * Why rename `index` of `renames` cannot take the new name `to` over a frame of
+ * `columns`, or null when it can. Polars renames every entry at once, so a name a
+ * renamed column leaves free may be taken (a swap), and one the frame keeps or
+ * another entry gives may not.
+ */
+export function renameRefusal(renames: Extract<Step, { kind: "rename" }>["renames"], index: number, to: string, columns: readonly string[]): string | null {
+  if (to === "" || to === renames[index]?.from) return null
+  if (renames.some((entry, i) => i !== index && entry.to === to)) return `Another rename already names a column ${to}.`
+  const kept = columns.includes(to) && !renames.some((entry) => entry.from === to)
+  return kept ? `The data already has a column named ${to}.` : null
+}

@@ -48,34 +48,18 @@ _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
 def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
     """The one-row frame a Constant node's ``values`` describe.
 
-    Each named value becomes a column of the type its settings file holds it as
+    Each value becomes a column of the type its settings file holds it as
     (``constant_held``): canonical decimal text a whole number or a float, a
     boolean a boolean, any other text text; a value that is not finite is
-    refused, naming the constant. An entry without a name is skipped, and a node
-    with no named values yields the single column ``constant``. A name that is
-    not text, and two entries with one name, are refused rather than the frame
-    failing to build or the later value replacing the earlier.
+    refused, naming the constant. The rows are read as the sidecar reads them
+    (``named_constants``): a name that is not text or is empty, and two rows
+    with one name, are refused. A node with no values yields the single column
+    ``constant``.
     """
-    from haute._constant_config import constant_held
-    from haute.errors import NodeConfigError
+    from haute._constant_config import named_constants
 
-    data: dict[str, list[Any]] = {}
-    for index, entry in enumerate(values):
-        name = entry.get("name", "")
-        if not isinstance(name, str):
-            raise NodeConfigError(
-                f"Constant name {name!r} is not text; give each value a name.",
-                setting="values",
-            )
-        if not name:
-            continue
-        if name in data:
-            raise NodeConfigError(
-                f"Constant name {name!r} is used by more than one value; "
-                "give each value its own name.",
-                setting="values",
-            )
-        data[name] = [constant_held(name, entry.get("value", ""), setting=f"values[{index}].value")]
+    named = named_constants(list(values))
+    data: dict[str, list[Any]] = {name: [value] for name, value in named.items()}
     if not data:
         data = {"constant": [0]}
     return pl.LazyFrame(data)

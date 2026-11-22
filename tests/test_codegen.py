@@ -3367,26 +3367,17 @@ class TestGenConstantEdgeCases:
         _compile_node_code(code)
         assert _run_saved_node(node, tmp_path).collect().to_dicts() == [{"x": None}]
 
-    def test_empty_or_missing_name_entries_skipped(self, tmp_path: Path):
-        """F134: entries with an empty or missing name are dropped from the frame.
+    @pytest.mark.parametrize("entry", [{"name": "", "value": "5"}, {"value": "6"}])
+    def test_empty_or_missing_name_entries_are_refused(self, tmp_path: Path, entry: dict):
+        """F134, FEN-04: an entry with an empty or missing name is refused when saved.
 
-        Pre-fix an empty name became ``""`` and a missing name defaulted to
-        ``"col"`` — both emitted phantom columns. The standalone run skips
-        them, matching the executor's ``_build_constant``
-        (``if not name: continue``).
+        Pre-F134 an empty name became ``""`` and a missing name ``"col"``, phantom
+        columns; a save then dropped such an entry without a word. Its row is named
+        instead, so a value whose name was cleared is never lost in silence.
         """
-        node = _constant(
-            "SkipConst",
-            [
-                {"name": "", "value": "5"},  # empty name -> skipped
-                {"value": "6"},  # missing name -> skipped
-                {"name": "keep", "value": "seven"},  # valid -> kept
-            ],
-        )
-        frame = _run_saved_node(node, tmp_path).collect()
-        # The pre-fix phantom columns must NOT appear.
-        assert frame.columns == ["keep"]
-        assert frame.to_dicts() == [{"keep": "seven"}]
+        node = _constant("SkipConst", [entry, {"name": "keep", "value": "seven"}])
+        with pytest.raises(NodeConfigError, match="Constant value 1 has no name"):
+            _run_saved_node(node, tmp_path)
 
 
 class TestGenDataSourceEdgeCases:

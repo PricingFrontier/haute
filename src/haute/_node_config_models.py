@@ -543,7 +543,7 @@ SCENARIO_EXPANDER_CONFIG_KEYS: tuple[str, ...] = (
 
 @closed
 class ConstantValue(TypedDict, total=False):
-    """One value of a Constant node; an entry without a name is skipped."""
+    """One value of a Constant node; an entry without a name is refused (``named_constants``)."""
 
     name: str
     """The column the value is written to."""

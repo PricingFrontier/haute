@@ -154,7 +154,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "frontend-graph-canvas",
     "frontend-modelling-optimiser-ui",
-    "frontend-node-editors",
     "frontend-preview-explore",
     "frontend-shared",
     "io-layer",

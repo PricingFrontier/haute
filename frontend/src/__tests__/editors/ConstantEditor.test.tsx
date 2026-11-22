@@ -143,6 +143,24 @@ describe("ConstantEditor", () => {
     expect(screen.getByTestId("constant-name-1-error")).toHaveTextContent("Another value is named rate")
   })
 
+  it("refuses a cleared name, so the value keeps its last name until a new one is typed", () => {
+    const onUpdate = vi.fn()
+    const values = [
+      { name: "brand", value: "x" },
+      { name: "base_rate", value: "100" },
+    ]
+    render(<ConstantEditor config={{ values }} onUpdate={onUpdate} />)
+    const nameInput = screen.getByDisplayValue("base_rate")
+    fireEvent.change(nameInput, { target: { value: "" } })
+    fireEvent.blur(nameInput)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByTestId("constant-name-1-error")).toHaveTextContent("Enter a name")
+
+    fireEvent.change(nameInput, { target: { value: "rate" } })
+    fireEvent.blur(nameInput)
+    expect(onUpdate).toHaveBeenLastCalledWith("values", [values[0], { name: "rate", value: "100" }])
+  })
+
   it("offers the first free name after a deletion", () => {
     const onUpdate = vi.fn()
     const values = [{ name: "constant_2", value: "0" }]

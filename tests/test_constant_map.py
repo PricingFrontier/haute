@@ -53,11 +53,14 @@ def test_a_constant_node_round_trips_as_a_map_of_numbers_and_text(tmp_path: Path
     assert frame.schema["written"] == pl.String and frame["written"].to_list() == ["1e3"]
 
 
-def test_a_row_without_a_name_is_not_written_and_a_name_twice_is_refused(
-    tmp_path: Path,
-) -> None:
-    text, loaded = _round_trip(tmp_path, [{"name": "", "value": "1"}, {"name": "a", "value": "2"}])
-    assert loaded["values"] == [{"name": "a", "value": "2"}]
+def test_a_row_without_a_name_and_a_name_twice_are_refused_where_written_and_run() -> None:
+    """FEN-04: a value whose name was cleared is refused, naming its row, never dropped."""
+    nameless = [{"name": "brand", "value": "x"}, {"name": "", "value": "100"}]
+    with pytest.raises(NodeConfigError, match="Constant value 2 has no name") as written:
+        node_config_json(NodeType.CONSTANT, {"values": nameless}, node_label="rates")
+    assert written.value.setting == "values[1].name"
+    with pytest.raises(NodeConfigError, match="Constant value 2 has no name"):
+        constant_frame(nameless)
     with pytest.raises(NodeConfigError, match="more than one value"):
         node_config_json(
             NodeType.CONSTANT,

@@ -31,6 +31,7 @@ import { BandingHistogram } from "./banding/BandingHistogram"
 import useBandingStats from "./banding/useBandingStats"
 import { wholeDataStatusText } from "./shared/useWholeDataAnswer"
 import { useGraph } from "../useGraph"
+import { useDataInputColumns } from "../../hooks/useDataInputColumns"
 import useUIStore, { type BandingRuleStash } from "../../stores/useUIStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
@@ -93,8 +94,6 @@ export default function BandingEditor({
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
   const [showImport, setShowImport] = useState(false)
 
-  const colMap = Object.fromEntries(upstreamColumns.map(c => [c.name, c.dtype]))
-
   // The whole dataset this node reads, when it is cached: the counts, values
   // and distribution below are execution's rather than a sample's. A workbench
   // project bands the quote being priced, so there is no dataset to count: the
@@ -102,6 +101,17 @@ export default function BandingEditor({
   const graph = useGraph()
   const workbench = useWorkbenchStore((state) => state.enabled)
   const node = nodeId && !workbench ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
+
+  // The input's columns: those its last preview recorded, else asked for as the editor
+  // opens, so a factor whose column the input no longer has is marked at once.
+  const inputNode = inputSources.length === 1 && !workbench ? inputSources[0].sourceNodeId : ""
+  const fetchedColumns = useDataInputColumns(inputNode, graph.allNodes, graph.edges, graph.submodels, graph.preamble, {
+    enabled: upstreamColumns.length === 0 && inputNode !== "",
+    fallbackColumns: upstreamColumns,
+  })
+  const inputColumns = upstreamColumns.length > 0 ? upstreamColumns : fetchedColumns
+  const colMap = Object.fromEntries(inputColumns.map(c => [c.name, c.dtype]))
+
   const { stats, current: statsCurrent, status } = useBandingStats({
     node,
     allNodes: graph.allNodes,
@@ -207,7 +217,7 @@ export default function BandingEditor({
         compact
         label={`${factorItems[idx]?.name ?? `Column ${idx + 1}`} input column`}
         value={f.column || ""}
-        columns={upstreamColumns}
+        columns={inputColumns}
         placeholder="Select column..."
         tabIndex={selected ? 0 : -1}
         onFocus={() => { if (!selected) setActiveIdx(idx) }}
@@ -224,7 +234,7 @@ export default function BandingEditor({
     const ruleCount = (f.rules || []).length
     const names = nameIssues(f, i)
     const issues = [
-      ...(f.column ? [] : ["No input column"]),
+      ...(!f.column ? ["No input column"] : inputColumns.length > 0 && !Object.hasOwn(colMap, f.column) ? [`${f.column} is not in the input`] : []),
       ...names.missing,
       ...(ruleCount > 0 ? [] : ["No rules yet"]),
       ...names.collision,

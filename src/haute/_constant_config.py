@@ -6,19 +6,20 @@ line, each value as it runs (``haute._typed_numbers.constant_value``, specs/fron
 high-level, "Typed numbers"): canonical finite decimal text is a JSON number (``1.45``,
 ``5``), which reads back as the text it was typed as; a boolean stays a boolean; any other
 value stays text. So a value runs as the type its sidecar holds. A value that is not finite,
-or a whole number outside a 64-bit integer's range, is refused, naming the constant; a row
-with no name, which a run skips, is not written; two rows with one name, which a run refuses,
-are refused.
+or a whole number outside a 64-bit integer's range, is refused, naming the constant. The
+rows are read by one rule (``named_constants``), for the sidecar and for a run alike: a row
+whose name is not text or is empty, and two rows with one name, are refused, naming the row.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 from haute._typed_numbers import ConstantValueError, canonical_text, constant_value
 from haute.errors import NodeConfigError
 
-__all__ = ["constant_held", "constants_for_sidecar", "constants_from_sidecar"]
+__all__ = ["constant_held", "constants_for_sidecar", "constants_from_sidecar", "named_constants"]
 
 
 def constant_held(
@@ -48,16 +49,26 @@ def _as_read(name: str, value: Any, index: int) -> Any:
     return canonical_text(held)
 
 
-def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
-    """*config* with its ``values`` rows written as a name-to-value map."""
-    rows = config.get("values")
-    if not isinstance(rows, list):
-        return config
-    values: dict[str, Any] = {}
+def named_constants(rows: list[Any]) -> dict[str, bool | int | float | str | None]:
+    """Each of a Constant's ``values`` rows as its name and the value it runs as.
+
+    A row whose name is not text or is empty, and a name two rows share, are refused, naming
+    the row, rather than the row being dropped or the later value replacing the earlier.
+    """
+    values: dict[str, bool | int | float | str | None] = {}
     for index, row in enumerate(rows):
-        name = row.get("name", "") if isinstance(row, dict) else ""
-        if not isinstance(name, str) or not name:
-            continue
+        name = row.get("name", "") if isinstance(row, Mapping) else None
+        if not isinstance(name, str):
+            raise NodeConfigError(
+                f"Constant value {index + 1} has a name {name!r} that is not text; "
+                "give each value a name.",
+                setting=f"values[{index}].name",
+            )
+        if not name:
+            raise NodeConfigError(
+                f"Constant value {index + 1} has no name; give it a name.",
+                setting=f"values[{index}].name",
+            )
         if name in values:
             raise NodeConfigError(
                 f"Constant name {name!r} is used by more than one value; "
@@ -65,6 +76,15 @@ def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
                 setting="values",
             )
         values[name] = constant_held(name, row.get("value", ""), setting=f"values[{index}].value")
+    return values
+
+
+def constants_for_sidecar(config: dict[str, Any]) -> dict[str, Any]:
+    """*config* with its ``values`` rows written as a name-to-value map."""
+    rows = config.get("values")
+    if not isinstance(rows, list):
+        return config
+    values = named_constants(rows)
     return {**config, "values": values}
 
 

@@ -4,7 +4,7 @@ import { useState } from "react"
 
 import { commitOpenDrafts } from "../../../../components/form"
 import { summarizeStep } from "../summary"
-import { MAX_EXPR_DEPTH, createStep, stepProblem } from "../catalogue"
+import { MAX_EXPR_DEPTH, createStep, renameRefusal, stepProblem } from "../catalogue"
 import { calculationExpr } from "../calculations"
 import { parseFormula } from "../formula"
 import { StepForm, type StepFormContext } from "../forms"
@@ -1090,6 +1090,33 @@ describe("step forms only build schema-valid payloads", () => {
     expect(summarizeStep(spy.mock.calls.at(-1)?.[0] as Step)).toBe("premium → net")
   })
 
+  it("a rename to a name the data already has is refused at the field and not written", () => {
+    const spy = vi.fn()
+    render(<Stateful initial={{ id: "r", kind: "rename", renames: [{ from: "premium", to: "net" }, { from: "", to: "" }] }} spy={spy} />)
+    const to = screen.getByLabelText("Rename 1 to")
+
+    fireEvent.change(to, { target: { value: "region" } })
+    fireEvent.blur(to)
+    expect(screen.getByText("The data already has a column named region.")).toBeInTheDocument()
+    expect(to).toHaveValue("region")
+    expect(spy).not.toHaveBeenCalled()
+
+    // A name another rename in the step gives is taken too.
+    const second = screen.getByLabelText("Rename 2 to")
+    fireEvent.change(second, { target: { value: "net" } })
+    fireEvent.blur(second)
+    expect(screen.getByText("Another rename already names a column net.")).toBeInTheDocument()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it("a rename may take a name another entry of the step frees", () => {
+    const renames = [{ from: "premium", to: "region" }, { from: "region", to: "premium" }]
+    expect(renameRefusal(renames, 0, "region", ctx.columns)).toBeNull()
+    expect(renameRefusal(renames, 1, "premium", ctx.columns)).toBeNull()
+    expect(renameRefusal([{ from: "premium", to: "" }], 0, "premium", ctx.columns)).toBeNull()
+    expect(renameRefusal([{ from: "premium", to: "" }], 0, "region", [])).toBeNull()
+  })
+
   it("cast rows pair a column with a type and can be added", () => {
     const spy = vi.fn()
     render(<Stateful initial={{ id: "c", kind: "cast", strict: true, casts: [{ column: "premium", dtype: "Float64" }] }} spy={spy} />)
@@ -1863,13 +1890,13 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     expect(screen.queryByLabelText("Cast 1 format")).not.toBeInTheDocument()
   })
 
-  it("a membership list records the kind of number its column holds", () => {
+  it("a membership list holds its column's kind of value and number", () => {
     const spy = vi.fn()
     const context = contextFor([["claims", "Int64"]])
     const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "claims", operator: "is_in", values: [] }] }
     render(<StatefulIn initial={step} spy={spy} context={context} />)
 
-    fireEvent.change(screen.getByLabelText("Filter condition 1 values type"), { target: { value: "number" } })
+    expect(screen.queryByLabelText("Filter condition 1 values type")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("Filter condition 1 values number type")).not.toBeInTheDocument()
     const value = screen.getByLabelText("Filter condition 1 values new value")
     fireEvent.change(value, { target: { value: "2" } })
@@ -1886,7 +1913,6 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
     const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "premium", operator: "is_in", values: [] }] }
     render(<StatefulIn initial={step} spy={spy} context={context} />)
 
-    fireEvent.change(screen.getByLabelText("Filter condition 1 values type"), { target: { value: "number" } })
     const value = screen.getByLabelText("Filter condition 1 values new value")
     fireEvent.change(value, { target: { value: "2.505" } })
     fireEvent.blur(value)
@@ -1894,6 +1920,61 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
 
     expect(screen.getByRole("alert")).toHaveTextContent("2.505 has more decimal places than the column's 2, so it can never match.")
     expect(spy.mock.calls.some(([next]) => (next as Extract<Step, { kind: "filter" }>).conditions[0].values?.length)).toBe(false)
+  })
+
+  it("a membership list of another kind than its column's is refused at the field", () => {
+    const spy = vi.fn()
+    const context = contextFor([["claims", "Int64"]])
+    const values = [{ kind: "literal" as const, type: "text" as const, value: "24" }]
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "claims", operator: "is_in", values }] }
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+
+    expect(screen.getByRole("alert")).toHaveTextContent("claims holds numbers, so text can never match it.")
+    const value = screen.getByLabelText("Filter condition 1 values new value")
+    fireEvent.change(value, { target: { value: "30" } })
+    fireEvent.blur(value)
+    fireEvent.click(screen.getByRole("button", { name: "Filter condition 1 values: add value" }))
+    expect(spy).not.toHaveBeenCalled()
+
+    // Changing the list to its column's kind clears it, and the refusal goes with it.
+    fireEvent.change(screen.getByLabelText("Filter condition 1 values type"), { target: { value: "number" } })
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions[0].values).toEqual([])
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Filter condition 1 values type")).not.toBeInTheDocument()
+  })
+
+  it("cells pasted into a membership list become one value each", () => {
+    const spy = vi.fn()
+    const context = contextFor([["channel", "String"], ["claims", "Int64"]])
+    const step: Step = {
+      id: "f",
+      kind: "filter",
+      match: "all",
+      conditions: [{ column: "channel", operator: "is_in", values: [] }, { column: "claims", operator: "is_in", values: [] }],
+    }
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+    const conditions = () => (spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>).conditions
+    const text = (value: string) => ({ kind: "literal", type: "text", value })
+
+    // Two cells of a spreadsheet row, then three of a column.
+    fireEvent.paste(screen.getByLabelText("Filter condition 1 values new value"), { clipboardData: { getData: () => "direct\tbroker" } })
+    expect(conditions()[0].values).toEqual([text("direct"), text("broker")])
+    fireEvent.paste(screen.getByLabelText("Filter condition 1 values new value"), { clipboardData: { getData: () => "web\r\nphone\r\npost\r\n" } })
+    expect(conditions()[0].values).toEqual(["direct", "broker", "web", "phone", "post"].map(text))
+
+    // Numbers are read as typed numbers are; one cell that is not a number adds none.
+    const claims = screen.getByLabelText("Filter condition 2 values new value")
+    fireEvent.paste(claims, { clipboardData: { getData: () => "24\t2.5" } })
+    expect(screen.getByRole("alert")).toHaveTextContent('Pasted "2.5": Enter a whole number.')
+    expect(conditions()[1].values).toEqual([])
+    fireEvent.paste(claims, { clipboardData: { getData: () => "24\n30\n" } })
+    expect(conditions()[1]).toEqual({
+      column: "claims",
+      operator: "is_in",
+      values: [24, 30].map((value) => ({ kind: "literal", type: "number", value })),
+      number_type: "integer",
+    })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 
   it("a membership list keeps its kind of number when a value is removed", () => {

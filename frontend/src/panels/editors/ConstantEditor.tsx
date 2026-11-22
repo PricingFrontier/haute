@@ -43,9 +43,11 @@ export default function ConstantEditor({
     onUpdate("values", rowKeys.add([...values, { name: nextConstantName(values.map((v) => v.name)), value: "0" }]))
   }
 
-  // Execution refuses two values of one name, so a row whose name another row
-  // uses is marked, and typing such a name is refused.
+  // Execution and the settings file refuse a value without a name or two values of
+  // one name, so clearing a name or typing another row's is refused: the row keeps
+  // its last name until a new one is typed.
   const nameError = (index: number, candidate: string): string | null => {
+    if (candidate === "") return "Enter a name"
     const names = values.map((v, i) => (i === index ? candidate : v.name))
     return duplicateConstantNames(names).has(candidate) ? `Another value is named ${candidate}` : null
   }

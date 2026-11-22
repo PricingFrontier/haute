@@ -133,6 +133,25 @@ describe("BandingEditor", () => {
     expect(rowOf("region_group")).toHaveAttribute("aria-pressed", "false")
   })
 
+  it("counts a factor whose input column the input does not have among its Issues", () => {
+    const rule = { upper: 40, label: "young" }
+    const config = {
+      factors: [
+        { banding: "breakpoints", column: "proposer_agee", output_column: "age_band", rules: [rule] },
+        { banding: "breakpoints", column: "vehicle_age", output_column: "vehicle_band", rules: [rule] },
+      ],
+    }
+    const upstreamColumns = [{ name: "proposer_age", dtype: "Int64" }, { name: "vehicle_age", dtype: "Int64" }]
+    renderEditor(
+      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} upstreamColumns={upstreamColumns} accentColor="#22d3ee" />,
+    )
+    expect(rowOf("age_band")).toHaveAttribute("title", "proposer_agee is not in the input")
+    expect(rowOf("vehicle_band")).toHaveAttribute("title", "Healthy")
+    fireEvent.click(screen.getByRole("button", { name: "Issues 1" }))
+    expect(rowOf("age_band")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^vehicle_band / })).not.toBeInTheDocument()
+  })
+
   it("names a factor by its input column while its output column is empty", () => {
     const config = {
       factors: [
