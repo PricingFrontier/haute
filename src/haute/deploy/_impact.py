@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 import polars as pl
 
 from haute._polars_dtypes import NUMBER_KINDS, column_kind
+from haute._temporal_text import exact_rows
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -122,7 +123,8 @@ def dataset_records(frame: pl.DataFrame) -> list[dict[str, Any]]:
             f"The impact dataset's column {column!r} is {value} on row {row}, which no "
             "request can carry: write it as null, or drop that row."
         )
-    records: list[dict[str, Any]] = json.loads(response_json(frame.to_dicts()))
+    # Each date-time is its exact text, as a request carries it, nanoseconds included.
+    records: list[dict[str, Any]] = json.loads(response_json(exact_rows(frame)))
     return records
 
 

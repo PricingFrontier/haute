@@ -225,7 +225,11 @@ as two kinds, two frames at one level, or a frame missing a relation key), and
 collects each emitting frame exactly once, ancestors first. It never joins frames.
 The prefix-tree builder nests child arrays by ancestor values without
 joining siblings, attaching each child level's objects at its `_child_hop` below
-the parent object. An object's identity at a level is the tuple of its own leaf
+the parent object. Each emitting frame's rows are read through `exact_text`
+([io-layer](../io-layer/low-level.md)), so a datetime, time or duration leaf is its
+exact text, to the nanosecond: two objects whose values differ below a microsecond
+stay two, and the document carries all nine digits. An object's identity at a level
+is the tuple of its own leaf
 values, canonicalised by `_identity`: scalars (including `None`) pass through
 unchanged, while container-valued leaves (`List`, `Struct`, `Array`) are
 canonicalised into hashable tuples — recursively, with struct fields kept in
@@ -256,7 +260,9 @@ A missing source port or column, and one output path mapped from source columns
 of different dtypes, are `OutputMappingSchemaError` rejections.
 
 `assemble_output_from_config` uses the same assembler and constructs the final
-document frame under that derived schema rather than by Python inference, which
+document frame under that derived schema rather than by Python inference, its
+temporal leaves read back from their exact text through `frame_from_exact_rows`
+(each the column's physical integer, cast to the leaf's own type), which
 makes the derivation the single schema authority for both OUTPUT paths. Under a
 schema-only execution (`schema_only=True`) it returns an empty frame under the
 derived schema and never assembles; otherwise it returns a `limited_python_scan`
@@ -264,7 +270,9 @@ derived schema and never assembles; otherwise it returns a `limited_python_scan`
 scan reaches `assemble_output_from_mapping(..., row_limit=n)` and
 `_assemble_document`: an emitting root level reads only its first `n` rows, and
 every deeper emitting level reads only the rows whose keys match its nearest
-collected ancestor level (`is_in` for one key, a semi join for several, ordered
+collected ancestor level (`is_in` of the ancestor's keys as a Series of their own
+type, so a datetime key is compared exactly and the filter still reaches the scan,
+for one key; a semi join for several, ordered
 `maintain_order="left"` so the level keeps its rows' order), so each
 returned top-level object equals the unlimited assembly's object for the same
 root rows. Root rows sharing their own-field values collapse, so fewer than `n`

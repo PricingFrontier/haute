@@ -135,14 +135,23 @@ def frame_rows(
             value = row.get(name)
             try:
                 columns[name].append(json_value(value, dtype))
-            except JsonValueError:
+            except JsonValueError as refused:
+                held = (
+                    f"finer than its {dtype} column holds"
+                    if refused.finer
+                    else f"which its {dtype} column does not hold"
+                )
                 raise QuoteInputError(
-                    f"Quote {index}'s {name!r} is {_shown(value)}, which its {dtype} column "
-                    "does not hold.",
+                    f"Quote {index}'s {name!r} is {_shown(value)}, {held}.",
                     column=name,
                     quote=index,
                 ) from None
-    return pl.DataFrame(columns, schema=dict(schema))
+    # A date-time arrives as its column's physical integer, cast to the column exactly.
+    physical = {
+        name: pl.Int64() if dtype.base_type() is pl.Datetime else dtype
+        for name, dtype in schema.items()
+    }
+    return pl.DataFrame(columns, schema=physical).cast(pl.Schema(dict(schema)))
 
 
 def _shown(value: object) -> str:

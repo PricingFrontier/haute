@@ -48,6 +48,7 @@ from haute._output_assembler import (
     output_document_schema,
     render_output_document,
 )
+from haute._temporal_text import frame_from_exact_rows
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
@@ -377,7 +378,8 @@ def test_wide_dtype_matrix_declares_source_dtypes_and_renders_unchanged() -> Non
     assert derived["top"] == pl.Int64
 
     document = assemble_output_from_mapping(frames, mapping)
-    declared = pl.LazyFrame(document, schema=derived).collect()
+    # The document holds each temporal value as its exact text; the frame reads it back.
+    declared = frame_from_exact_rows(document, derived)
     assert declared.schema == derived
     # Declaring the derived schema is rendering-neutral: the null padding polars
     # adds under a uniform schema is pruned back out at render time.

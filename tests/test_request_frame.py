@@ -116,6 +116,33 @@ def test_a_zoned_date_time_keeps_its_instant() -> None:
     assert framed.isoformat() == "2024-05-01T09:30:00+00:00"
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2024-05-01T10:30:00.000000100",
+        # A pandas Timestamp carries its nanoseconds, and writes them.
+        pd.Timestamp("2024-05-01T10:30:00.000000100"),
+    ],
+    ids=["text", "pandas"],
+)
+def test_a_date_time_reaches_the_pipeline_with_all_nine_digits(value: object) -> None:
+    frame = frame_rows([{"x": value}], {"x": pl.Datetime("ns")}, omittable=frozenset())
+
+    assert frame.schema["x"] == pl.Datetime("ns")
+    expected = pl.datetime(2024, 5, 1, 10, 30, time_unit="ns") + pl.duration(nanoseconds=100)
+    assert frame.select(pl.col("x") == expected).item()
+
+
+def test_a_date_time_finer_than_its_column_is_refused_naming_the_field() -> None:
+    with pytest.raises(QuoteInputError) as refused:
+        _framed(pl.Datetime("us"), "2024-05-01T10:30:00.000000100")
+
+    assert (refused.value.column, refused.value.quote) == ("x", 0)
+    assert "finer than its Datetime(time_unit='us', time_zone=None) column holds" in str(
+        refused.value
+    )
+
+
 def test_explicit_nulls_keep_the_declared_type_and_unknown_keys_are_ignored() -> None:
     schema = {"age": pl.Int64(), "region": pl.String(), "start": pl.Date()}
 

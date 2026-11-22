@@ -1580,3 +1580,67 @@ def test_limited_level_without_ancestor_keys_reads_every_row() -> None:
     )
 
     assert limited is level
+
+
+# ─── Values that differ below a microsecond (SRV-19) ───────────────
+
+
+def _events() -> dict[str, pl.LazyFrame]:
+    """Policy P1's two events of amount 5, 100 ns apart, as a pandas-written Parquet holds them."""
+    at = pl.Series([10**18 + 100, 10**18 + 200], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    return {
+        "events": pl.LazyFrame({"policy": ["P1", "P1"], "at": at, "amount": [5, 5]}),
+    }
+
+
+_EVENT_MAPPING = [
+    _entry("events", "policy", "$[:].policy"),
+    _entry("events", "at", "$[:].events[:].at"),
+    _entry("events", "amount", "$[:].events[:].amount"),
+]
+_TWO_EVENTS = [
+    {
+        "policy": "P1",
+        "events": [
+            {"at": "2001-09-09T01:46:40.000000100", "amount": 5},
+            {"at": "2001-09-09T01:46:40.000000200", "amount": 5},
+        ],
+    }
+]
+
+
+def test_objects_that_differ_below_a_microsecond_stay_two_with_nine_digits() -> None:
+    assert assemble_output_from_mapping(_events(), _EVENT_MAPPING) == _TWO_EVENTS
+
+
+def test_the_output_frame_and_its_rendered_document_keep_the_nanoseconds() -> None:
+    frame = assemble_output_from_config(
+        *_events().values(), config={"output_mapping": _EVENT_MAPPING}, source_names=["events"]
+    ).collect(engine="in-memory")
+
+    assert frame.schema["events"] == pl.List(
+        pl.Struct({"at": pl.Datetime("ns"), "amount": pl.Int64})
+    )
+    assert render_output_document(frame) == _TWO_EVENTS
+
+
+def test_a_limited_preview_keeps_every_child_of_a_parent_keyed_below_a_microsecond() -> None:
+    at = pl.Series([10**18 + 100, 10**18 + 200], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    frames = {
+        "policies": pl.LazyFrame({"at": at, "name": ["first", "second"]}),
+        "drivers": pl.LazyFrame({"at": at.gather([0, 0, 1]), "driver": ["a", "b", "c"]}),
+    }
+    mapping = [
+        _entry("policies", "at", "$[:].at"),
+        _entry("policies", "name", "$[:].name"),
+        _entry("drivers", "at", "$[:].at"),
+        _entry("drivers", "driver", "$[:].drivers[:].name"),
+    ]
+
+    assert assemble_output_from_mapping(frames, mapping, row_limit=1) == [
+        {
+            "at": "2001-09-09T01:46:40.000000100",
+            "name": "first",
+            "drivers": [{"name": "a"}, {"name": "b"}],
+        }
+    ]

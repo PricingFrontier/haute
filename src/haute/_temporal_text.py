@@ -19,6 +19,7 @@ becomes a value of its column again (:func:`temporal_physical`,
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, Literal, TypeVar, cast
 
@@ -225,6 +226,60 @@ def exact_row(frame: pl.DataFrame, index: int) -> dict[str, Any]:
     return exact_text(frame.slice(index, 1)).row(0, named=True)
 
 
+def _physical_dtype(held: pl.DataType | DataTypeClass) -> pl.DataType:
+    """*held* with each temporal type in it, nested ones included, its physical ``Int64``."""
+    dtype = held() if isinstance(held, type) else held
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return pl.Int64()
+    if isinstance(dtype, pl.Struct):
+        return pl.Struct({field.name: _physical_dtype(field.dtype) for field in dtype.fields})
+    if isinstance(dtype, pl.List):
+        return pl.List(_physical_dtype(dtype.inner))
+    if isinstance(dtype, pl.Array):
+        return pl.Array(_physical_dtype(dtype.inner), dtype.shape)
+    return dtype
+
+
+def _physical_value(value: Any, held: pl.DataType | DataTypeClass) -> Any:
+    """*value*, of a column of type *held* as :func:`exact_rows` reads it, with each temporal
+    value in it, nested ones included, its physical integer (:func:`temporal_physical`)."""
+    dtype = held() if isinstance(held, type) else held
+    if value is None:
+        return None
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        if not isinstance(value, str):
+            raise TypeError(f"A {dtype} value read as exact text is a string, not {value!r}.")
+        return temporal_physical(value, dtype)
+    if isinstance(dtype, pl.Struct):
+        return {
+            field.name: _physical_value(value.get(field.name), field.dtype)
+            for field in dtype.fields
+        }
+    if isinstance(dtype, pl.List | pl.Array):
+        return [_physical_value(item, dtype.inner) for item in value]
+    return value
+
+
+def frame_from_exact_rows(
+    rows: Sequence[Mapping[str, Any]], schema: Mapping[str, pl.DataType]
+) -> pl.DataFrame:
+    """*rows*, read as :func:`exact_rows` reads a frame's (each temporal value its exact text),
+    back into a frame of *schema*, each temporal value exactly the one its text names:
+    through its physical integer, never a Python ``datetime``, ``time`` or ``timedelta``."""
+    temporal = [name for name, dtype in schema.items() if holds_temporal(dtype)]
+    if not temporal:
+        return pl.DataFrame(rows, schema=dict(schema))
+    physical = [
+        {
+            **row,
+            **{name: _physical_value(row.get(name), schema[name]) for name in temporal},
+        }
+        for row in rows
+    ]
+    physical_schema = {name: _physical_dtype(dtype) for name, dtype in schema.items()}
+    return pl.DataFrame(physical, schema=physical_schema).cast(pl.Schema(dict(schema)))
+
+
 # ---------------------------------------------------------------------------
 # Text back to a value of its column
 # ---------------------------------------------------------------------------
@@ -382,6 +437,7 @@ __all__ = [
     "exact_text",
     "exact_text_dtype",
     "exact_text_expression",
+    "frame_from_exact_rows",
     "holds_temporal",
     "is_temporal",
     "temporal_literal",
