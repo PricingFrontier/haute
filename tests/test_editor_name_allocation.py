@@ -40,6 +40,13 @@ def _rates_definition() -> SubmodelDefinition:
     )
 
 
+def _staging_extra(target: Path) -> int:
+    """How much longer an atomic write's staging name is than its target's."""
+    from haute._file_ops import _temp_path_for
+
+    return len(_temp_path_for(target).name) - len(target.name)
+
+
 def _candidate(node_id: str, label: str, node_type: str = "polars", alias: str | None = None):
     request = {"node_id": node_id, "label": label, "node_type": node_type, "source_handles": []}
     if alias is not None:
@@ -277,7 +284,9 @@ def test_a_name_too_long_for_its_settings_file_is_refused_when_it_is_typed(
     collision = refused["identities"][0]["collision"]
     assert collision.startswith(f"Node {too_long!r} would keep its settings in config/banding/")
     # {name}.json is staged as {name}.<8 hex>.tmp: 8 longer than 255 allows.
-    assert "its file name would be 257 bytes long, more than the 247" in collision
+    # {name}.json is staged under a longer sibling name: the limit is 255 less the difference.
+    extra = _staging_extra(Path("x.json"))
+    assert f"its file name would be 257 bytes long, more than the {255 - extra}" in collision
 
 
 def test_a_name_too_long_for_its_settings_path_on_windows_is_refused(
@@ -291,13 +300,15 @@ def test_a_name_too_long_for_its_settings_path_on_windows_is_refused(
     monkeypatch.setattr(_file_ops, "windows_long_paths_enabled", lambda: False)
     graph = PipelineGraph(nodes=[_node("rates", "rates", "banding")], edges=[])
     folder = len(str((project / "config" / "banding").resolve())) + 1
-    label = "r" * (_file_ops.WINDOWS_MAX_PATH_CHARS - 8 - folder - len(".json") + 1)
+    extra = _staging_extra(Path("x.json"))
+    label = "r" * (_file_ops.WINDOWS_MAX_PATH_CHARS - extra - folder - len(".json") + 1)
 
     body = _post(client, graph, [_candidate("rates", label, "banding")], allocate=False)
 
     collision = body["identities"][0]["collision"]
     assert collision.startswith(f"Node {label!r} would keep its settings in config/banding/")
-    assert "more than the 251 Windows allows a saved file's path" in collision
+    limit = _file_ops.WINDOWS_MAX_PATH_CHARS - extra
+    assert f"more than the {limit} Windows allows a saved file's path" in collision
     shorter = _post(client, graph, [_candidate("rates", label[:-1], "banding")], allocate=False)
     assert shorter["identities"][0]["collision"] is None
 

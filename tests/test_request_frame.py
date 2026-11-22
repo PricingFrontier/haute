@@ -534,3 +534,19 @@ def test_a_frame_request_read_as_records_refuses_a_value_below_a_microsecond() -
 
     whole = pl.Series([1_000, 2_000], dtype=pl.Int64).cast(pl.Datetime("ns"))
     assert len(request_records(pl.DataFrame({"at": whole}))) == 2
+
+
+def test_a_nested_value_below_a_microsecond_is_refused_by_its_column_and_quote() -> None:
+    """Codex review: a structured quote's claims hold their own timestamps; one below a
+    microsecond is refused, naming the column and the quote it is in."""
+    from haute.deploy._scorer import request_records
+    from haute.errors import QuoteInputError
+
+    claims = pl.DataFrame({"claims": [[{"at": 1_000}], [{"at": 1_000}, {"at": 1_100}]]})
+    claims = claims.with_columns(
+        pl.col("claims").cast(pl.List(pl.Struct({"at": pl.Datetime("ns")})))
+    )
+
+    with pytest.raises(QuoteInputError, match="below a microsecond") as refused:
+        request_records(claims)
+    assert (refused.value.column, refused.value.quote) == ("claims", 1)

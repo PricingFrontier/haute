@@ -182,35 +182,59 @@ def _nested_text(expression: pl.Expr, dtype: pl.DataType, separator: str) -> pl.
 
 
 def first_value_finer_than_microseconds(frame: pl.DataFrame) -> tuple[str, int] | None:
-    """The first top-level datetime, time or duration column of *frame* holding a value
-    below a microsecond, with that value's row, or ``None``: what a Python value, which
-    holds microseconds, would cut short. A caller that must hand rows on as Python values
-    refuses them rather than lose the digits."""
+    """The first column of *frame* holding a datetime, time or duration value below a
+    microsecond, at any depth of a struct, list or array, with the row it is in, or
+    ``None``: what a Python value, which holds microseconds, would cut short. A caller that
+    must hand rows on as Python values refuses them rather than lose the digits."""
     for name, dtype in frame.schema.items():
-        if column_kind(dtype) not in TEMPORAL_TEXT_KINDS:
+        if not _holds_temporal(dtype):
             continue
-        if column_kind(dtype) != "time" and getattr(dtype, "time_unit", None) != "ns":
-            continue
-        below = frame.select(
-            (pl.col(name).to_physical() % _NANOSECONDS_PER_MICROSECOND != 0).arg_true().first()
-        ).item()
-        if below is not None:
-            return name, int(below)
+        row = frame.select(_finer_than_microseconds(pl.col(name), dtype).arg_true().first())
+        if row.item() is not None:
+            return name, int(row.item())
     return None
+
+
+def _finer_than_microseconds(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """Whether *expression*, of *dtype*, holds a temporal value below a microsecond, as a
+    Boolean that is never null."""
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        if column_kind(dtype) != "time" and getattr(dtype, "time_unit", None) != "ns":
+            return pl.lit(False)
+        finer = expression.to_physical() % _NANOSECONDS_PER_MICROSECOND != 0
+    elif isinstance(dtype, pl.Struct):
+        fields = [
+            _finer_than_microseconds(expression.struct.field(field.name), _instance(field.dtype))
+            for field in dtype.fields
+            if _holds_temporal(_instance(field.dtype))
+        ]
+        finer = pl.any_horizontal(fields)
+    elif isinstance(dtype, pl.List):
+        inner = _instance(dtype.inner)
+        finer = expression.list.eval(_finer_than_microseconds(pl.element(), inner)).list.any()
+    elif isinstance(dtype, pl.Array):
+        inner = _instance(dtype.inner)
+        finer = expression.arr.eval(_finer_than_microseconds(pl.element(), inner)).arr.any()
+    else:
+        return pl.lit(False)
+    return finer.fill_null(False)
 
 
 class TemporalTextError(ValueError):
     """Text that names no value of its column's type, or one finer than the column holds."""
 
 
-# A datetime's or time's text: its whole seconds (a datetime's day may be all of it), a
-# part-second of up to nine digits, and an offset ("Z", "+05:30", "+05:21:10").
-# The day and clock hold no fraction mark, so a part-second is always the fraction group's,
-# after a full stop or a comma (both ISO 8601's), and its offset may be written with
-# colons or without ("+00:00", "+0000"). Text of any other shape matches nothing and is
-# refused: a part-second never reaches fromisoformat, which would cut it to six digits.
+# A datetime's or time's text, ISO 8601's shape and nothing else: a day ("2024-03-01" or
+# "20240301") with an optional clock after "T" or a space, or a clock alone; a part-second
+# only straight after a clock's seconds, after a full stop or a comma; then an optional
+# offset ("Z", "+05", "+0530", "+05:30", "+05:21:10"), which holds no part-second. Text of
+# any other shape matches nothing and is refused: a part-second never reaches
+# fromisoformat, which would cut it to six digits, and an offset never takes one.
+_DAY = r"[0-9]{4}-?[0-9]{2}-?[0-9]{2}"
+_CLOCK = r"[0-9]{2}:?[0-9]{2}(?::?(?P<seconds>[0-9]{2}))?"
 _TEMPORAL_PARTS = re.compile(
-    r"(?P<whole>[^.,]*?(?:[0-9]{2}:?[0-9]{2}(?::?[0-9]{2})?)?)(?:[.,](?P<fraction>[0-9]+))?"
+    rf"(?P<whole>{_DAY}(?:[T ]{_CLOCK})?|{_CLOCK.replace('seconds', 'clock_seconds')})"
+    r"(?:[.,](?P<fraction>[0-9]+))?"
     r"(?P<offset>Z|[+-][0-9]{2}(?::?[0-9]{2}(?::?[0-9]{2})?)?)?"
 )
 # A duration's text as temporal_text writes it, str(timedelta)'s layout to nanoseconds.
@@ -243,7 +267,9 @@ def temporal_physical(text: str, dtype: pl.DataType) -> int:
     if kind not in ("datetime", "time"):
         raise TemporalTextError(f"{dtype} is not a datetime, time or duration type.")
     parts = _TEMPORAL_PARTS.fullmatch(text.strip())
-    if parts is None or not parts["whole"]:
+    seconds_given = parts is not None and (parts["seconds"] or parts["clock_seconds"])
+    if parts is None or (parts["fraction"] is not None and not seconds_given):
+        # A part-second belongs to a clock's seconds: "2024-03-01.5" names nothing.
         raise TemporalTextError(f"{text!r} is not a {kind}.")
     digits = parts["fraction"] or ""
     unit = "ns" if kind == "time" else cast(pl.Datetime, dtype).time_unit

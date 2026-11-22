@@ -126,19 +126,22 @@ The codes are retried only on Windows; every error on another platform and every
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
 
-A writer killed before its rename leaves its stage, and nothing else would remove it. This
-process's start (`_file_ops.PROCESS_STARTED`, this module's import) does not alone prove
-another process's writer dead, so each removal names what does.
-`remove_files_left_before_start(paths, settled_seconds=)` removes each regular file of
-`paths` last written before the start and at least `settled_seconds` before it, follows and
-removes no link, and returns the files it could not remove for the caller to log;
+A writer killed before its rename leaves its stage, and nothing else would remove it, so a
+stage says whose it is. Its name is `<stem>.<owner><4 hex>.tmp`, where `<owner>` is the
+writing process's token (`_writer_token`): on its first atomic write a process takes an
+exclusive `FileLock` on `haute-writers/<owner>.lock` under the temporary folder and holds it
+until it exits, and the operating system frees it then, however the process ends.
+`remove_dead_writers_stages(paths)` removes a stage only once its owner's lock can be taken,
+so only when that process is gone (removing the freed lock file too), never this process's
+own and never another live process's, however long its write takes; it follows and removes
+no link, and returns the stages it could not remove for the caller to log.
 `staging_files_under(folder)` lists every atomic-write stage in a folder tree, entering
 neither the folder nor any folder under it through a link or junction. The editor's server
 runs both over the project's `.haute` folder when it starts (`server.py::_remove_leftover_staging`,
-after the save records are settled), with `ATOMIC_STAGE_SETTLE_SECONDS` (60): an atomic write
-renames within seconds, another server's included. A `.haute` reached through a link, or
-outside the project (`ordinary_path_problem`), is not searched. So a settings write, an
-undelete or a branch-away killed at its rename leaves nothing there after the next start.
+after the save records are settled); a `.haute` reached through a link, or outside the project
+(`ordinary_path_problem`), is not searched. So a settings write, an undelete or a branch-away
+killed at its rename leaves nothing there after the next start, a restart straight after the
+crash included.
 
 A Data Output's Write holds its destination's lock from staging its copy to publishing it
 (`executor.data_output_destination_lock`, a `FileLock` under the temporary folder's

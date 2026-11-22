@@ -991,21 +991,15 @@ class TestExecuteSinkDataOutput:
         output; the next Write to that destination removes it, however recent, since it
         holds the destination's lock and no other Write of it can be live. Another
         destination's copy stays."""
-        import os
-
-        from haute import _file_ops
 
         src_path = haute_scratch / "in.parquet"
         struct_frame.write_parquet(src_path)
         outputs = haute_scratch / "outputs"
         outputs.mkdir()
-        before_start = _file_ops.PROCESS_STARTED - 60
         left = outputs / f".result.haute-stage-{'a' * 32}.parquet"
         other = outputs / f".other.haute-stage-{'c' * 32}.parquet"
         left.write_bytes(b"a cut-short Write's copy")
         other.write_bytes(b"a cut-short Write's copy")
-        for leftover in (left, other):
-            os.utime(leftover, (before_start, before_start))
         recent = outputs / f".result.haute-stage-{'b' * 32}.parquet"
         recent.write_bytes(b"a copy left a moment ago")
         graph = PipelineGraph(
@@ -3037,18 +3031,14 @@ def test_the_write_route_removes_the_staged_copies_an_earlier_write_left(
 ) -> None:
     """SRV-05: the route's Write removes its destination's leftover staged copies before it
     stages its own, whatever then becomes of it."""
-    import os
 
     import haute.routes.pipeline as pipeline_route
-    from haute import _file_ops
 
     use_project(haute_scratch)
     # A bare file name is written under outputs/.
     (haute_scratch / "outputs").mkdir()
     left = haute_scratch / "outputs" / f".sink_failure.haute-stage-{'a' * 32}.parquet"
     left.write_bytes(b"a cut-short Write's copy")
-    before_start = _file_ops.PROCESS_STARTED - 60
-    os.utime(left, (before_start, before_start))
 
     def _stop(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("stopped after the cleanup")
@@ -3087,3 +3077,53 @@ def test_a_write_refuses_a_name_windows_cannot_hold_by_name_and_writes_nothing(
     assert repr(path) in response.json()["detail"]
     assert rule in response.json()["detail"]
     assert files_in(haute_scratch) == before
+
+
+@pytest.mark.parametrize("why", ["cancelled", "timed_out"])
+def test_a_write_waiting_for_another_write_of_its_file_stops_when_it_is_no_longer_wanted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """Codex review: a Write waits for another Write of the same file only while it is
+    still wanted and within its time limit, so a cancelled one gives up its admission."""
+    import threading
+
+    from haute._worker_failures import WorkerStoppedError, WorkerTimeoutError
+    from haute.executor import data_output_destination_lock
+    from haute.routes import pipeline as pipeline_route
+
+    final = tmp_path / "result.parquet"
+    staging = tmp_path / f".result.haute-stage-{'a' * 32}.parquet"
+    holding, release = threading.Event(), threading.Event()
+
+    def _other_write() -> None:
+        with data_output_destination_lock(final):
+            holding.set()
+            release.wait(10)
+
+    other = threading.Thread(target=_other_write)
+    other.start()
+    assert holding.wait(10)
+    gate = WorkerCancellationGate()
+    if why == "cancelled":
+        gate.request()
+    else:
+        monkeypatch.setattr(pipeline_route, "_pipeline_time_limit", lambda: 0.2)
+    expected = WorkerStoppedError if why == "cancelled" else WorkerTimeoutError
+    try:
+        with pytest.raises(expected):
+            pipeline_route._output_write_transaction(
+                graph=None,  # type: ignore[arg-type]
+                output_node_id="sink",
+                source="batch",
+                project_root=tmp_path,
+                overwrite=False,
+                final_path=final,
+                staging_path=staging,
+                budget=None,  # type: ignore[arg-type]
+                cancellation_requested=gate,
+                display_path="result.parquet",
+                execution_context=None,  # type: ignore[arg-type]
+            )
+    finally:
+        release.set()
+        other.join(10)

@@ -44,12 +44,16 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
+
+from haute._file_lock import FileLock, remove_unheld_lock_file
 
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0)
@@ -264,13 +268,14 @@ def ensure_disk_headroom(directory: Path, additional_bytes: int = 0) -> None:
 def _temp_path_for(target: Path) -> Path:
     """Return a unique sibling temp path for *target*.
 
-    Uniqueness is a random uuid4 fragment, so concurrent writers from
-    different threads or processes do not clobber each other's staging files.
+    The name holds this process's writer token (:func:`_writer_token`), which says whose
+    stage it is, and a random uuid4 fragment, so concurrent writers from different threads
+    or processes do not clobber each other's staging files.
     The name replaces the target's last suffix rather than extending it: a
     staging file sits beside deep store paths, and Windows' traditional
     260-character path limit applies to it too.
     """
-    return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
+    return target.with_name(f"{target.stem}.{_writer_token()}{uuid.uuid4().hex[:4]}.tmp")
 
 
 def _backup_path_for(target: Path) -> Path:
@@ -279,24 +284,70 @@ def _backup_path_for(target: Path) -> Path:
     return target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
 
 
-_STAGING_NAME = re.compile(r"(?P<stem>.+)\.[0-9a-f]{8}\.tmp")
+_STAGING_NAME = re.compile(r"(?P<stem>.+)\.(?P<owner>[0-9a-f]{8})[0-9a-f]{4}\.tmp")
+
+
+#: Where each process keeps the lock that says its atomic writes are live. It is held for
+#: the process's life and the operating system frees it when the process exits, however
+#: it exits, so a stage whose owner's lock can be taken was left by a writer that is gone.
+def _writer_locks() -> Path:
+    """The folder of the writers' locks, read at each use, as the temporary folder is."""
+    return Path(tempfile.gettempdir()) / "haute-writers"
+
+
+_writer: tuple[int, str, FileLock] | None = None
+_writer_guard = threading.Lock()
+
+
+def _writer_token() -> str:
+    """This process's writer token, its lock taken on first use and held until it exits."""
+    global _writer
+    with _writer_guard:
+        if _writer is None or _writer[0] != os.getpid():
+            while True:
+                token = uuid.uuid4().hex[:8]
+                lock = FileLock(_writer_locks() / f"{token}.lock")
+                if lock.acquire(blocking=False):
+                    break
+            _writer = (os.getpid(), token, lock)
+        return _writer[1]
+
+
+def remove_dead_writers_stages(paths: Iterable[Path]) -> list[tuple[Path, OSError]]:
+    """Remove each atomic-write stage of *paths* (:func:`is_staging_name`) whose writer is
+    gone: the lock its name's token names (:func:`_writer_token`) can be taken, which only
+    happens once the process that held it has exited. A live writer's stage, this
+    process's own included, is left, however old.
+
+    Returns the stages that could not be removed, each with its error, for the caller to
+    log; one already gone is no failure. A link is never followed or removed.
+    """
+    own = _writer[1] if _writer is not None and _writer[0] == os.getpid() else None
+    failed: list[tuple[Path, OSError]] = []
+    for path in paths:
+        named = _STAGING_NAME.fullmatch(path.name)
+        if named is None or named["owner"] == own:
+            continue
+        owner = FileLock(_writer_locks() / f"{named['owner']}.lock")
+        if not owner.acquire(blocking=False):
+            continue
+        try:
+            if stat.S_ISREG(path.lstat().st_mode):
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failed.append((path, exc))
+        finally:
+            owner.release()
+            remove_unheld_lock_file(_writer_locks() / f"{named['owner']}.lock")
+    return failed
 
 
 def is_staging_name(name: str) -> bool:
     """Whether the file name *name* is an atomic write's staging file (:func:`_temp_path_for`):
     never a project's file to version."""
     return _STAGING_NAME.fullmatch(name) is not None
-
-
-#: When this process started (this module's import, early in its start). A writer of this
-#: process stages its file after it, so a staging file last written before it was left by
-#: a writer that is gone: a server or a run killed before its rename.
-PROCESS_STARTED = time.time()
-
-
-#: How long an atomic write may hold its stage before the rename: it writes a small file
-#: and renames it within seconds, so a stage older than this was left by a writer that died.
-ATOMIC_STAGE_SETTLE_SECONDS = 60.0
 
 
 def _plain_directory(path: Path) -> bool:
@@ -323,32 +374,6 @@ def staging_files_under(folder: Path) -> list[Path]:
         folders[:] = [name for name in folders if _plain_directory(Path(directory, name))]
         found.extend(Path(directory, name) for name in names if is_staging_name(name))
     return found
-
-
-def remove_files_left_before_start(
-    paths: Iterable[Path], *, settled_seconds: float = 0.0
-) -> list[tuple[Path, OSError]]:
-    """Remove each regular file of *paths* last written before this process started
-    (:data:`PROCESS_STARTED`) and at least *settled_seconds* before then, and leave every
-    other one.
-
-    The start alone proves nothing of another process still writing: a caller either holds
-    the lock every writer of those files holds (a Data Output's destination lock), or names
-    how long a live writer can take (*settled_seconds*). Returns the files that could not
-    be removed, each with its error, for the caller to log; a file already gone is no
-    failure. A link is never followed or removed.
-    """
-    failed: list[tuple[Path, OSError]] = []
-    for path in paths:
-        try:
-            info = path.lstat()
-            if stat.S_ISREG(info.st_mode) and info.st_mtime < PROCESS_STARTED - settled_seconds:
-                path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            failed.append((path, exc))
-    return failed
 
 
 def staging_files_of(targets: Iterable[Path]) -> list[Path]:

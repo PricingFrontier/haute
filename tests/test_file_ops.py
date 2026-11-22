@@ -1097,71 +1097,62 @@ def test_a_server_start_removes_the_staging_files_left_under_haute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SRV-05: a settings write, an undelete or a branch-away killed at its rename leaves
-    its staging file under .haute; the next start removes it. A staging file written
-    within the minute before the start may be another server's live write and stays, as
-    does a newer one and every other file."""
-    import os
-
+    its staging file under .haute; the next start removes it, since its owner's lock can be
+    taken. Another live writer's stage stays however old, as does this process's own and
+    every other file."""
     from haute import _file_ops, server
+    from haute._file_lock import FileLock
     from tests._project import use_project
 
+    monkeypatch.setattr(_file_ops, "_writer_locks", lambda: tmp_path / "writers")
     use_project(tmp_path)
     haute_dir = tmp_path / ".haute"
     (haute_dir / "uploads").mkdir(parents=True)
-    before_start = _file_ops.PROCESS_STARTED - 2 * _file_ops.ATOMIC_STAGE_SETTLE_SECONDS
-    just_before = _file_ops.PROCESS_STARTED - 1
-    left = [
-        haute_dir / "pipeline-settings.3b78e6a0.tmp",
-        haute_dir / "trash.0123abcd.tmp",
-        haute_dir / "uploads" / "state.89abcdef.tmp",
-    ]
-    (haute_dir / "pipeline-settings.3b78e6a0.tmp").write_text("{}")
-    (haute_dir / "trash.0123abcd.tmp").write_text("{}")
-    (haute_dir / "uploads" / "state.89abcdef.tmp").write_text("{}")
-    for path in left:
-        os.utime(path, (before_start, before_start))
-    live = haute_dir / "state.fedcba98.tmp"
-    settling = haute_dir / "trash.76543210.tmp"
-    kept = haute_dir / "state.json"
-    live.write_text("{}")
-    settling.write_text("{}")
-    kept.write_text("{}")
-    os.utime(settling, (just_before, just_before))
-    os.utime(kept, (before_start, before_start))
+    # Left by writers that are gone: nobody holds their tokens' locks.
+    (haute_dir / "pipeline-settings.3b78e6a00000.tmp").write_text("{}")
+    (haute_dir / "trash.0123abcd0000.tmp").write_text("{}")
+    (haute_dir / "uploads" / "state.89abcdef0000.tmp").write_text("{}")
+    # Another server's write, still live: it holds its token's lock.
+    live_writer = FileLock(tmp_path / "writers" / "fedcba98.lock")
+    assert live_writer.acquire(blocking=False)
+    (haute_dir / "state.fedcba980000.tmp").write_text("{}")
+    # This process's own stage, named as _temp_path_for names one.
+    own = haute_dir / f"prefs.{_file_ops._writer_token()}0000.tmp"
+    own.write_text("{}")
+    (haute_dir / "state.json").write_text("{}")
 
-    server._remove_leftover_staging()
+    try:
+        server._remove_leftover_staging()
+    finally:
+        live_writer.release()
 
-    assert sorted(p.name for p in haute_dir.rglob("*") if p.is_file()) == [
-        "state.fedcba98.tmp",
-        "state.json",
-        "trash.76543210.tmp",
-    ]
+    assert sorted(p.name for p in haute_dir.rglob("*") if p.is_file()) == sorted(
+        ["state.fedcba980000.tmp", own.name, "state.json"]
+    )
 
 
-def test_a_haute_folder_reached_through_a_link_is_not_searched(tmp_path: Path) -> None:
+def test_a_haute_folder_reached_through_a_link_is_not_searched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Codex review: a .haute that links elsewhere could take startup cleanup outside the
     project, so it is not searched at all."""
-    import os
-
     from haute import _file_ops, server
     from tests._project import use_project
+    from tests.test_save_record import _link
 
+    monkeypatch.setattr(_file_ops, "_writer_locks", lambda: tmp_path / "writers")
     project = tmp_path / "project"
     elsewhere = tmp_path / "elsewhere"
     project.mkdir()
     elsewhere.mkdir()
-    (elsewhere / "settings.0123abcd.tmp").write_text("{}")
-    before_start = _file_ops.PROCESS_STARTED - 2 * _file_ops.ATOMIC_STAGE_SETTLE_SECONDS
-    os.utime(elsewhere / "settings.0123abcd.tmp", (before_start, before_start))
-    try:
-        (project / ".haute").symlink_to(elsewhere, target_is_directory=True)
-    except OSError:
-        pytest.skip("this machine cannot make a directory link")
+    (elsewhere / "settings.0123abcd0000.tmp").write_text("{}")
+    # The registered directory-link helper: Windows withholds the privilege by default.
+    _link(project / ".haute", elsewhere)
     use_project(project)
 
     server._remove_leftover_staging()
 
-    assert (elsewhere / "settings.0123abcd.tmp").exists()
+    assert (elsewhere / "settings.0123abcd0000.tmp").exists()
 
 
 @pytest.mark.parametrize(

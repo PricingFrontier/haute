@@ -243,9 +243,22 @@ def test_every_accepted_iso_spelling_of_a_part_second_is_read_exactly(text: str)
         temporal_physical(text, pl.Datetime("us", "UTC" if zoned else None))
 
 
-def test_text_of_another_shape_is_refused_rather_than_read_in_part() -> None:
-    with pytest.raises(TemporalTextError, match="is not a datetime"):
-        temporal_physical("2024-03-01T09:00:00.1.2", pl.Datetime("ns"))
+@pytest.mark.parametrize(
+    ("text", "dtype"),
+    [
+        ("2024-03-01T09:00:00.1.2", pl.Datetime("ns")),
+        # An offset holds no part-second: read as one, the instant would move.
+        ("2024-03-01T09:00:00+01:00:00.5", pl.Datetime("ns", "UTC")),
+        # A part-second belongs to a clock's seconds.
+        ("2024-03-01.5", pl.Datetime("ns")),
+        ("09:00.5", pl.Time),
+    ],
+)
+def test_text_of_another_shape_is_refused_rather_than_read_in_part(
+    text: str, dtype: pl.DataType
+) -> None:
+    with pytest.raises(TemporalTextError, match="is not a"):
+        temporal_physical(text, dtype)
 
 
 def test_a_multidimensional_temporal_array_is_read_back_whole() -> None:

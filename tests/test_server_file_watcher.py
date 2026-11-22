@@ -2792,8 +2792,9 @@ class TestLiveSyncWatchesWhatItReads:
         assert max(timings) < 0.1, timings
 
 
+@pytest.mark.parametrize("settle", [False, True], ids=["at-once", "after-the-restart"])
 def test_a_flush_still_running_when_the_watcher_fails_is_finished_before_it_exits(
-    pipeline_dir: Path,
+    pipeline_dir: Path, settle: bool
 ) -> None:
     """Codex review: a batch's thread is running, a newer event restarts the debounce, then
     the watcher fails. The watcher does not exit, nor so restart, before that batch has
@@ -2834,6 +2835,10 @@ def test_a_flush_still_running_when_the_watcher_fails_is_finished_before_it_exit
         yield [(Change.modified, str(first))]
         assert await asyncio.to_thread(in_thread.wait, 10)
         yield [(Change.modified, str(second))]
+        if settle:
+            # The first cancellation reaches the flush, which then waits on its thread; the
+            # watcher's own stop cancels it a second time.
+            await asyncio.sleep(0.05)
         raise RuntimeError("the watcher failed")
 
     async def _run() -> list[str]:

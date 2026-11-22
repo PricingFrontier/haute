@@ -564,7 +564,7 @@ def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
 ) -> None:
     from haute._git_transactions import _pipeline_folder_new_files
 
-    staged = project / "rating" / "config" / "banding" / "Bands.0123abcd.tmp"
+    staged = project / "rating" / "config" / "banding" / "Bands.0123abcd0000.tmp"
     staged.write_text("{}", encoding="utf-8")
     save_records.write_record(
         project,
@@ -588,7 +588,7 @@ def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
     # The save landed, and the staging file it could not remove is still its to remove.
     assert staged.is_file()
     assert _interruption(_document(project)) == []
-    assert "rating/config/banding/Bands.0123abcd.tmp" not in _pipeline_folder_new_files(
+    assert "rating/config/banding/Bands.0123abcd0000.tmp" not in _pipeline_folder_new_files(
         "rating", cwd=project
     )
 

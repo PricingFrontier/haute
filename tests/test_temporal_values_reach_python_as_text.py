@@ -168,40 +168,101 @@ def _is_exact_call(node: ast.AST) -> bool:
     )
 
 
+#: Frame methods that can add no column, so a chain through them keeps what
+#: ``with_temporal_text`` wrote; any other method (a join, a select, ``with_columns``) can
+#: bring a temporal column back, and ends the guarantee.
+_KEEPS_COLUMNS = frozenset(
+    {"head", "tail", "slice", "limit", "sort", "filter", "drop_nulls", "unique", "drop"}
+)
+
+
 def _exact(node: ast.AST, exact_names: set[str]) -> bool:
     """Whether *node*, a read's frame, was written through ``with_temporal_text``: the call
-    itself, a method chain on it (``with_temporal_text(frame).head(5)``), or a name this
-    function assigns only from one of those."""
+    itself, a chain on it of methods that add no column (``with_temporal_text(f).head(5)``),
+    or a name every binding of which in this function is one of those."""
     while True:
         if _is_exact_call(node):
             return True
         if isinstance(node, ast.Name):
             return node.id in exact_names
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _KEEPS_COLUMNS
+        ):
             node = node.func.value
             continue
         return False
 
 
 def _exact_names(function: ast.AST) -> set[str]:
-    """The names *function* assigns only from frames written through ``with_temporal_text``."""
-    values: dict[str, list[ast.AST]] = {}
+    """The names *function* binds only by assigning a frame written through
+    ``with_temporal_text``: a parameter, a loop or ``with`` target, or any other binding of
+    the name makes it not exact, so no read is protected by an assignment it precedes."""
+    assigned: dict[str, list[ast.AST]] = {}
+    other: set[str] = set()
+    arguments = getattr(function, "args", None)
+    if isinstance(arguments, ast.arguments):
+        every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+        every += [a for a in (arguments.vararg, arguments.kwarg) if a is not None]
+        other.update(argument.arg for argument in every)
     for node in _own_nodes(function):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    values.setdefault(target.id, []).append(node.value)
-        elif isinstance(node, ast.AnnAssign | ast.AugAssign) and isinstance(node.target, ast.Name):
-            values.setdefault(node.target.id, []).append(node.value or node.target)
+                    assigned.setdefault(target.id, []).append(node.value)
+                else:
+                    other.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.value is None:
+                continue
+            assigned.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor | ast.comprehension):
+            target = node.target
+            other.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            other.update(n.id for n in ast.walk(node.optional_vars) if isinstance(n, ast.Name))
+        elif isinstance(node, ast.NamedExpr):
+            other.add(node.target.id)
     exact: set[str] = set()
     changed = True
     while changed:
         changed = False
-        for name, assigned in values.items():
-            if name not in exact and all(_exact(value, exact) for value in assigned):
+        for name, values in assigned.items():
+            if name in exact or name in other:
+                continue
+            if all(_exact(value, exact) for value in values):
                 exact.add(name)
                 changed = True
     return exact
+
+
+def test_the_guard_sees_through_no_read_that_only_looks_exact() -> None:
+    """Codex review: a chain that can add a column, a name assigned after the read, and a
+    parameter later reassigned are each reported."""
+    source = """
+def joined(left, right):
+    return with_temporal_text(left).join(right, on="id").to_dicts()
+
+def read_before(frame):
+    rows = frame.to_dicts()
+    frame = with_temporal_text(frame)
+    return rows
+
+def selected(frame):
+    return with_temporal_text(frame).select("at").to_dicts()
+
+def kept(frame):
+    exact = with_temporal_text(frame)
+    return exact.head(5).to_dicts(), with_temporal_text(frame).filter(True).rows()
+"""
+    found: Counter[tuple[str, str]] = Counter()
+    _visit(ast.parse(source), "example.py", "<module>", found)
+    assert dict(found) == {
+        ("example.py", "joined"): 1,
+        ("example.py", "read_before"): 1,
+        ("example.py", "selected"): 1,
+    }
 
 
 def test_every_row_read_writes_temporal_columns_as_text_or_says_why_it_holds_none() -> None:

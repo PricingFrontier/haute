@@ -36,11 +36,7 @@ from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_
 from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._failure_answers import answer_failure
-from haute._file_ops import (
-    ATOMIC_STAGE_SETTLE_SECONDS,
-    remove_files_left_before_start,
-    staging_files_under,
-)
+from haute._file_ops import remove_dead_writers_stages, staging_files_under
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
@@ -477,22 +473,19 @@ def _settle_saves() -> None:
 
 
 def _remove_leftover_staging() -> None:
-    """Remove the atomic writer's staging files under the project's ``.haute`` folder that a
-    writer which died left: a settings write, an undelete or a branch-away killed at its
-    rename leaves one, which nothing else would remove. A stage counts as left when it was
-    last written over a minute before this process started (an atomic write renames within
-    seconds, another server's included). A ``.haute`` reached through a link or junction,
-    or outside the project, is not searched. One that cannot be removed is logged, and tried
-    again at the next start."""
+    """Remove the atomic writer's staging files under the project's ``.haute`` folder whose
+    writer is gone: a settings write, an undelete or a branch-away killed at its rename
+    leaves one, which nothing else would remove. A stage's name says whose it is, and it is
+    removed only once that writer's lock can be taken (``remove_dead_writers_stages``), so
+    another live server's stage is never touched, however long its write takes. A ``.haute``
+    reached through a link or junction, or outside the project, is not searched. One that
+    cannot be removed is logged, and tried again at the next start."""
     root = current_project().root
     _folder, problem = ordinary_path_problem(root, ".haute", private=True)
     if problem is not None:
         logger.warning("leftover_staging_not_searched", folder=".haute", problem=problem)
         return
-    leftovers = staging_files_under(root / ".haute")
-    for path, exc in remove_files_left_before_start(
-        leftovers, settled_seconds=ATOMIC_STAGE_SETTLE_SECONDS
-    ):
+    for path, exc in remove_dead_writers_stages(staging_files_under(root / ".haute")):
         logger.warning("leftover_staging_not_removed", file=str(path), error=str(exc))
 
 
@@ -1099,6 +1092,18 @@ def _watcher_batch_events(changes: set[tuple[Any, str]], root: Path) -> list[_Bu
     return events
 
 
+async def _taken_batch(work: asyncio.Future[list[_BusEvent]]) -> list[_BusEvent]:
+    """The events of a batch whose thread is running, waited for however often the
+    waiting task is cancelled meanwhile: the thread cannot be stopped, and its batch is
+    taken."""
+    while True:
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            if work.done():
+                return work.result()
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
 
@@ -1178,11 +1183,12 @@ async def _file_watcher() -> None:
             try:
                 events = await asyncio.shield(work)
             except asyncio.CancelledError:
-                # A newer event restarted the debounce while the thread ran. The thread
-                # has taken the batch (consumed its self-write markers, recorded its
-                # fingerprints), so its events are published and it is not requeued.
+                # A newer event restarted the debounce, or the watcher is stopping, while
+                # the thread ran. The thread has taken the batch (consumed its self-write
+                # markers, recorded its fingerprints), so it is waited for through every
+                # further cancellation, its events are published, and it is not requeued.
                 taken = True
-                _publish_bus_events(await work)
+                _publish_bus_events(await _taken_batch(work))
                 raise
             _publish_bus_events(events)
         except asyncio.CancelledError:

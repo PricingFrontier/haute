@@ -7,7 +7,7 @@ import dataclasses
 import json
 import time
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -2437,11 +2437,12 @@ def _output_write_transaction(
     """Run one Data Output Write's transaction holding its destination's lock, so no other
     Write of the file, here or in another process, is live from staging to publishing: the
     staged copies beside it are dead Writes' to remove (:func:`_held_output_write`)."""
-    with (
-        nullcontext()
-        if final_path is None or staging_path is None
-        else data_output_destination_lock(final_path)
-    ):
+    deadline = time.monotonic() + _pipeline_time_limit()
+    if final_path is None or staging_path is None:
+        held: AbstractContextManager[object] = nullcontext()
+    else:
+        held = _destination_lock_held(final_path, cancellation_requested, deadline)
+    with held:
         return _held_output_write(
             graph,
             output_node_id,
@@ -2454,7 +2455,32 @@ def _output_write_transaction(
             cancellation_requested,
             display_path=display_path,
             execution_context=execution_context,
+            deadline=deadline,
         )
+
+
+@contextmanager
+def _destination_lock_held(
+    final_path: Path, cancellation_requested: WorkerCancellationGate, deadline: float
+) -> Iterator[None]:
+    """Hold *final_path*'s Data Output lock, waiting for another Write of the file only
+    while this Write is still wanted and within its time limit: a cancelled Write gives up
+    its wait, and so its admission, at once."""
+    lock = data_output_destination_lock(final_path)
+    while not lock.acquire(blocking=False):
+        if cancellation_requested.is_set():
+            raise WorkerStoppedError(terminal_reason="cancelled")
+        if time.monotonic() >= deadline:
+            raise WorkerTimeoutError(timeout_seconds=_pipeline_time_limit())
+        time.sleep(_DESTINATION_LOCK_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+#: How often a Write waiting for another Write of its file looks again.
+_DESTINATION_LOCK_POLL_SECONDS = 0.05
 
 
 def _held_output_write(
@@ -2470,6 +2496,7 @@ def _held_output_write(
     *,
     display_path: str,
     execution_context: ExecutionContext,
+    deadline: float,
 ) -> WriteOutputResponse:
     """Prepare inputs and open the seed plan, supervise the sink child, and publish.
 
@@ -2480,7 +2507,6 @@ def _held_output_write(
     """
     prepared: PreparedDataOutput | None = None
     primary_error: BaseException | None = None
-    deadline = time.monotonic() + _pipeline_time_limit()
     try:
         if final_path is not None and staging_path is not None:
             remove_leftover_data_output_staging(final_path, own_staging=staging_path)
