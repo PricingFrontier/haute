@@ -2310,8 +2310,9 @@ class RowScopeResolver:
                 for name, value in carried.items()
                 if value is not None and (name not in other_columns or name in input_join_keys)
             }
-        # A grouping that reads every input row aggregates exactly the rows
-        # sharing all its keys — provided every key is carried unchanged.
+        # A grouping that reads every input row and carries its keys to the
+        # output aggregates exactly the rows sharing all its keys, so the row
+        # names its group when it holds every key's value.
         aggregated = (
             proof.whole_groups
             and proof.restricted_to.get(proof_input) is not None

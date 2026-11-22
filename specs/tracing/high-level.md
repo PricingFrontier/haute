@@ -146,10 +146,12 @@ Out of scope (owned elsewhere, linked where relevant):
   policy, a quote with no claims) rather than as a correlation failure.
 - **A grouped row is an aggregate, not a gap.** Code whose one grouping reads every
   input row (nothing before it filters, slices, deduplicates, selects, or joins) and
-  keeps every group key unchanged summarises exactly the input rows sharing its keys.
-  When several do, the input is reported as an informational `aggregated_rows` omission
-  naming the keys and how many input rows share them; a group of one input row resolves
-  to that row. Any other grouping leaves the ambiguity a gap.
+  keeps every group key unchanged to its output summarises exactly the input rows sharing
+  its keys. When several do, the input is reported as an informational `aggregated_rows`
+  omission naming the keys and how many input rows share them; a group of one input row
+  resolves to that row. Any other grouping leaves the ambiguity a gap, a key selected away,
+  dropped, rewritten or renamed after the grouping among them: the keys left can be shared
+  by several groups, so the rows behind the group cannot be told from them.
 - **Head frames are matched on carried values too.** A parent matched in its head
   frame is matched on the values its child provably carried through unchanged, as a
   lookup is, so a column the child's code rewrote (`fill_null`) is left out of the

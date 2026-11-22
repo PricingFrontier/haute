@@ -506,8 +506,10 @@ the limited preview shows rather than independent source samples.
      (`pl.len()` unaliased) fails the proof if a named input is joined after it; a literal boolean
      `maintain_order` keyword is allowed, and any other keyword (a named computed key)
      fails the proof. The proof reports `whole_groups` when it is the program's only
-     grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,
-     so each group holds exactly the input rows sharing its keys;
+     grouping, nothing before it filters, slices, deduplicates, selects, or joins rows,
+     and the finished proof still `carries` each of its keys from the root input (none
+     selected away, dropped, assigned or renamed after it), so each output row holds exactly
+     the input rows sharing its key values;
    - an output whose name the syntax cannot fix — a regex or wildcard column outside a
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.

@@ -1516,6 +1516,52 @@ class TestRowCorrelationAggregation:
         assert set(diagnostic["match_columns"]) == {"region"}
         assert diagnostic["matched_row_count"] == 2
 
+    @pytest.mark.parametrize(
+        ("after", "rows"),
+        [
+            # Every grouping column kept: the row's two source rows are named.
+            (".select(['cover', 'policy_id', 'premium'])", 2),
+            # A grouping column dropped afterwards: the rows behind the group can no
+            # longer be told from the columns left, so no count is claimed.
+            (".select(['policy_id', 'premium'])", None),
+            (".drop('cover')", None),
+            (".with_columns(cover=pl.lit('any'))", None),
+            (".rename({'cover': 'peril'})", None),
+        ],
+        ids=["kept", "selected-away", "dropped", "overwritten", "renamed"],
+    )
+    def test_a_grouping_column_lost_afterwards_claims_no_group(self, tmp_path, after, rows):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {
+                "policy_id": [1, 1, 1, 1],
+                "cover": ["fire", "fire", "theft", "theft"],
+                "premium": [10, 20, 100, 200],
+            }
+        ).write_parquet(p)
+        code = (
+            "df = src.group_by(['policy_id', 'cover'], maintain_order=True)"
+            f".agg(pl.col('premium').sum()){after}"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("summed", code)],
+                "edges": [_edge("src", "summed")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="summed", column="premium")
+
+        assert _step_by_id(result, "summed").output_values["premium"] == 30
+        assert "src" not in _step_ids(result)
+        codes = [diagnostic["code"] for diagnostic in result.correlation_diagnostics]
+        if rows is None:
+            assert "aggregated_rows" not in codes, result.correlation_diagnostics
+            assert codes, "the correlation that cannot be proven is still reported"
+        else:
+            assert codes == ["aggregated_rows"]
+            assert result.correlation_diagnostics[0]["matched_row_count"] == rows
+
 
 class TestRowCorrelationSortChangesOrder:
     """I.4: Sort changes row order -- value-based match still works.
