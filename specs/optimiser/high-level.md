@@ -247,7 +247,10 @@ Invariants:
   unweighted), the shares adjusted up and down and the share at the edge of the scenario range.
   A numeric key is cut into at most 20 quantile bins (tied edges collapse into one bin); a
   categorical key lists its 15 largest levels and sums the rest into Other; a quote with no value,
-  or absent from the analysis frame, is Missing. Every quote is in exactly one level. The weighting
+  or absent from the analysis frame, is Missing. Every quote is in exactly one level. A level is
+  its key's own value, so two values that differ only below a microsecond are two levels: of a
+  `Datetime("ns")` or `Time` segment key, and of a `Datetime("ns")`, `Time` or `Duration("ns")`
+  ratebook factor. A time is shown with its fraction of a second. The weighting
   rules are the Adjustments tab's; a level whose weight totals 0 has no weighted figures, and says
   so, while its count and unweighted figures remain. Keys are ranked by how differently the
   optimiser adjusted their levels (the quote-weighted standard deviation of the levels' mean

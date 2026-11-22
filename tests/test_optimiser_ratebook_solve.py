@@ -847,6 +847,27 @@ class TestSolveRatebookUnit:
             "young\x1f30.5": 1,
         }
 
+    @pytest.mark.parametrize(
+        ("factors", "message"),
+        [
+            pytest.param(
+                {"a": ["x\x1fy", "x"], "b": ["z", "y\x1fz"]},
+                r"\['x', 'y\\x1fz'\] and \['x\\x1fy', 'z'\].*unit separator",
+                id="separator-in-a-value",
+            ),
+            pytest.param({"a": ["x", None], "b": ["z", "z"]}, "null factor levels", id="null"),
+        ],
+    )
+    def test_ratebook_factor_level_counts_refuse_levels_they_cannot_key_apart(
+        self, factors, message
+    ):
+        """A composite level's text holding the unit separator would key as another level,
+        and a null level keys as nothing: both are refused, never merged."""
+        from haute.routes._optimiser_solver import _ratebook_factor_level_counts
+
+        with pytest.raises(ValueError, match=message):
+            _ratebook_factor_level_counts(pl.DataFrame(factors), [["a", "b"]])
+
     def test_ratebook_factor_level_counts_rejects_object_dtype(self):
         """Mixed Python object columns have no stable persisted dtype contract."""
         from haute.routes._optimiser_solver import _ratebook_factor_level_counts

@@ -382,6 +382,46 @@ class TestMissingAndOther:
         assert z.unweighted.mean_scenario_value == 1.0
 
 
+class TestTemporalLevels:
+    """A Time or Datetime analysis column is grouped and ordered by its own values, and
+    each listed level labelled with its exact text."""
+
+    def test_times_within_one_second_are_their_own_levels(self) -> None:
+        seconds = [1.7, 1.7, 1.7, 1.5, 1.5, 1.5000001, 1.5000001, None]
+        nanoseconds = [None if s is None else round(s * 1_000_000_000) for s in seconds]
+        frames, n = _frames(
+            [i % 3 for i in range(len(seconds))],
+            {"clock": pl.Series(nanoseconds, dtype=pl.Int64).cast(pl.Time)},
+        )
+        response = _run(frames, n, column="clock")
+
+        assert [(row.label, row.quotes) for row in response.rows] == [
+            ("00:00:01.700000", 3),
+            ("00:00:01.500000", 2),
+            ("00:00:01.500000100", 2),
+            ("Missing", 1),
+        ]
+        assert response.n_levels == 3
+
+    def test_a_zoned_datetime_is_ordered_by_its_instant_and_keeps_its_label(self) -> None:
+        # 01:30 happens twice in London on 29 October 2023: first at +01:00, then at +00:00.
+        first, second = 1_698_539_400_000_000, 1_698_543_000_000_000
+        frames, n = _frames(
+            [0, 1],
+            {
+                "arrived": pl.Series([second, first], dtype=pl.Int64).cast(
+                    pl.Datetime("us", "Europe/London")
+                )
+            },
+        )
+        response = _run(frames, n, column="arrived")
+
+        assert [row.label for row in response.rows] == [
+            "2023-10-29 01:30:00.000000+01:00",
+            "2023-10-29 01:30:00.000000+00:00",
+        ]
+
+
 class TestNumericBins:
     def test_ten_distinct_values_are_cut_at_their_lower_quantiles(self) -> None:
         values = list(range(1, 11))
@@ -871,6 +911,40 @@ class TestSegmentsRoute:
             sum(row["deployed_factor_differs"] for row in body["rows"])
             == result["adjustments"]["deployed_factor_differs"]
         )
+
+    def test_nanosecond_factor_levels_100_ns_apart_are_two_levels(self, client, tmp_path):
+        """A Datetime("ns") factor whose levels differ by 100 ns counts two levels,
+        solves, and its segment and outcome breakdowns show both, labelled as the Rates tab
+        labels them."""
+        from haute.routes._optimiser_outcomes import ChoiceTarget, FactorSegments
+        from haute.routes.optimiser import _choice_service
+        from tests.test_optimiser_routes_real_library import (
+            _poll_until_done,
+            _ratebook_fixture_paths,
+            _ratebook_graph,
+            _solve_completed,
+        )
+
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
+        start = 1_700_000_000_000_000_000
+        stamps = pl.Series("stamp", [start + 100 * (q % 2) for q in range(9)], dtype=pl.Int64)
+        banding = pl.read_parquet(banding_path).with_columns(stamps.cast(pl.Datetime("ns")))
+        banding.write_parquet(banding_path)
+        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path, [["stamp"]]))
+        result = _poll_until_done(client, job_id)["result"]
+
+        labels = {"2023-11-14 22:13:20.000000000": 5, "2023-11-14 22:13:20.000000100": 4}
+        rates = result["factor_tables"]["stamp"]
+        assert {row["__factor_group__"]: row["quote_count"] for row in rates} == labels
+
+        response = _segments(client, job_id, "stamp")
+        assert response.status_code == 200, response.text
+        assert {row["label"]: row["quotes"] for row in response.json()["rows"]} == labels
+
+        outcome = _choice_service.choice_query(
+            job_id, ChoiceTarget(None), FactorSegments("stamp", limit=10)
+        )
+        assert dict(zip(outcome.rows["level"], outcome.rows["quotes"], strict=True)) == labels
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
