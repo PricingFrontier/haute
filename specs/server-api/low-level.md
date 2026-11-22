@@ -619,11 +619,21 @@ and restarts). `_file_watcher()` watches `cwd`, the pipeline directory and its
 (recursive); a `haute.toml` the settings parse refuses, which the editor's load shows as
 the document's issue, leaves it watching `cwd` alone (`file_watcher_settings_refused`), never
 a crash-restart loop; if `watchfiles` isn't installed, live sync is disabled with a warning, not a
-crash. Every filesystem event batches into `pending_changes`; a 300ms debounce timer
-(`asyncio.Task`, cancelled and restarted on each new event) triggers `_flush()`, which:
+crash. The watch filter (`_LiveSyncFilter`, a `watchfiles.DefaultFilter`) reports only what
+live sync reads: a `.py` or `.json` file, `haute.toml`, or any file inside the workbench's
+form folder as it was last read (at the watcher's start and at each flush), and never a path
+under `.haute_cache`, `.haute` or one of the library's default ignored folders. Every
+reported event batches into `pending_changes`; a 300ms debounce timer (`asyncio.Task`,
+cancelled and restarted on each new event) triggers `_flush()`, which takes the flush lock
+(one batch at a time) and then:
 1. Snapshots and clears `pending_changes` (so new events queue independently of the batch
    being processed).
 2. Bails out entirely if `watcher_is_paused()` (a haute-initiated git op holds the pause).
+   Otherwise steps 3 to 5 run in a worker thread (`_watcher_batch_events`), which returns
+   the batch's bus events in order; the event loop publishes them. A cancellation while the
+   thread runs (a newer event restarting the debounce) waits for the thread, publishes its
+   events and does not requeue the batch: the thread has consumed its self-write markers
+   and recorded its fingerprints.
 3. Announces a change to a file of the workbench's form folder, the pipeline folder's
    `workbench/` while the workbench is enabled (`_workbench_form_file`, read at each
    flush, nothing while `haute.toml` cannot be read), before any self-write check: one
@@ -657,7 +667,7 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    re-broadcasts even if the bytes happen to match a previous good state.
 6. If the flush body itself raises, the *entire* processed batch is requeued and `_flush`
    retries it in the same task at most three times with exponential backoff. Cancellation
-   after snapshotting also requeues the batch. On exhaustion, `_flush` removes that batch
+   after snapshotting and before the worker thread starts also requeues the batch. On exhaustion, `_flush` removes that batch
    from `pending_changes`, tries each change once in isolation so healthy paths still
    broadcast, and logs/drops each still-failing event. A later event for a dropped path is a
    fresh attempt; no retry task is recursively scheduled.

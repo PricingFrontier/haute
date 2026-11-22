@@ -1825,19 +1825,24 @@ async def _preview_canonical_graph(
                 # The worker's captures stage under this token; whatever a killed
                 # or superseded worker left there is removed once it settles.
                 staging_token = new_staging_token()
+                # Key computation hashes preamble utility files from disk, as trace's
+                # does: off the event loop.
+                supersession_key = await run_in_threadpool(
+                    lambda: _preview_supersession_key(
+                        graph,
+                        body.source,
+                        target.key,
+                        body.row_limit,
+                        body.requested_preview_columns,
+                        target.port_label,
+                        None if target.port_labels is None else list(target.port_labels),
+                        memo=fingerprint_memo,
+                    )
+                )
                 return await await_until_disconnected(
                     http_request,
                     _preview_supersession.run_latest(
-                        _preview_supersession_key(
-                            graph,
-                            body.source,
-                            target.key,
-                            body.row_limit,
-                            body.requested_preview_columns,
-                            target.port_label,
-                            None if target.port_labels is None else list(target.port_labels),
-                            memo=fingerprint_memo,
-                        ),
+                        supersession_key,
                         lambda: _run_interactive(
                             run,
                             worker=_execute_preview_worker,

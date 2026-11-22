@@ -4,11 +4,9 @@
 
 The local server's routes and live sync, as [the server API
 specification](../server-api/high-level.md) describes them: what a route
-answers when a node of the analyst's own fails, what the file watcher does on
-the event loop, what a save answers when it cannot write its files, and what
+answers when a node of the analyst's own fails, what a save answers when it cannot write its files, and what
 a Data Output's Write and a model save leave when they are cut short.
-`SRV-02` comes from the 9 November 2026 codebase review and carries a
-measurement taken on that day. `SRV-04` and `SRV-05` come from the review
+`SRV-04` and `SRV-05` come from the review
 plan's sweep of failed writes on 10 November, which failed every step of 17
 writing operations in turn, held their files open and killed the server at
 three points, and were reproduced on that day; the main session added the Data Output's case to
@@ -27,7 +25,6 @@ is retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SRV-02 | Planned | P2 | Live sync watches only what it reads and does its parsing off the event loop. |
 | SRV-04 | Planned | P2 | A node or submodel name that makes its file's path too long for Windows is refused when it is typed, naming the node and the limit, not by the save. |
 | SRV-05 | Planned | P3 | A Data Output's Write and a model save leave no staged copy beside their file, and no other writer's staging file outlives a restart. |
 | SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, not as "HTTP <status>". |
@@ -36,44 +33,6 @@ is retired.
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 
 ## Planned improvements
-
-### SRV-02 — Live sync watches what it reads and parses off the event loop
-**Why:** Measured cost, reach read from the source. The file watcher watches
-the whole project root recursively with the watcher library's default filter,
-which lets through Haute's own `.haute_cache` folder (source snapshots, node
-snapshots, JSON spill), the outputs folder and data folders. Its flush is an
-`async` function that awaits nothing: for every changed path it resolves the
-path and runs the routing checks on the event loop, then loads, dumps and
-fingerprints the full editor document of each affected pipeline there, all
-pipelines when a settings file changed. The websocket resync does the same
-load in a worker thread, with a comment saying why. The per-path work alone
-took 16.1 seconds for 20,000 changed paths that no longer existed (0.8 ms
-each, on the review machine). A chunked cache write of a few thousand part
-files, each a temporary file then a rename, therefore stalls every request
-and every websocket for seconds when the debounce fires, and the debounce
-restarts on every batch, so a long write is flushed in one piece at its end.
-The preview route computes its supersession key on the event loop too, where
-trace computes its key in a worker thread.
-
-**Plan:** Give the watcher a filter that names what live sync reads: pipeline
-and module `.py` files, settings and sidecar JSON, the form folder. Run a
-batch's routing and document loads in a worker thread, as the resync does,
-and publish from the loop. Move the preview's supersession key to a worker
-thread.
-
-**Acceptance:** Writing 5,000 files under `.haute_cache` produces no flush
-at all, asserted on the watcher's filter and on a counter in the flush. A
-batch of 20,000 changed paths keeps a concurrent request to a cheap route
-under 100 ms, asserted with an injected batch. An edit to a pipeline file is
-still broadcast.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/server.py::_file_watcher` and its nested
-`_flush_once`; `src/haute/server.py::_publish_pipeline_document`;
-`src/haute/server.py::_prepare_ws_document_resync` uses
-`run_in_threadpool`; `src/haute/routes/pipeline.py::_preview_canonical_graph`
-and `src/haute/routes/pipeline.py::_preview_supersession_key`.
 
 ### SRV-04 — A name that makes its file's path too long is refused when it is typed
 **Why:** Reproduced on 10 and 11 November 2026. A node's settings file is
