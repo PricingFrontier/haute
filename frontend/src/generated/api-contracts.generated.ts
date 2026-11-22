@@ -4799,7 +4799,7 @@ export interface ConstantConfig {
   values?: ConstantValue[];
 }
 /**
- * One value of a Constant node; an entry without a name is skipped.
+ * One value of a Constant node; an entry without a name is refused (``named_constants``).
  */
 export interface ConstantValue {
   /**
