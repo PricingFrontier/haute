@@ -1231,3 +1231,64 @@ def test_a_step_variable_cannot_take_the_reserved_global_constants_name() -> Non
             ["quotes"],
             start="input",
         )
+
+
+_PLACEHOLDER_BODY = (
+    "    raise NotImplementedError(\n"
+    '        "This node\'s steps are incomplete. Complete or remove them before running.",\n'
+    "    )\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("surface", "body"),
+    [("dataInput", "    return df\n"), ("polars", "    ...\n")],
+    ids=["data-input-returns-df", "transform-starts-afresh"],
+)
+@pytest.mark.parametrize("degraded", [False, True], ids=["ready", "degraded"])
+def test_a_body_written_over_the_placeholder_ends_its_unfinished_steps(
+    project_root: Path, surface: str, body: str, degraded: bool
+) -> None:
+    """The record of unfinished steps belongs to the placeholder alone: once the body is
+    written by hand (``return df``, or ``...`` as the refusal suggests), every load reads
+    the body, and the next save drops the record (READ-22)."""
+    quotes, _rates = _frames(project_root)
+    incomplete = [step("f", "filter", match="all", conditions=[])]
+    if surface == "dataInput":
+        node_id, graph = "quotes", PipelineGraph(nodes=[_stepped_input(quotes, incomplete)])
+    else:
+        node_id = "t"
+        graph = PipelineGraph(
+            nodes=[quotes, _stepped("t", [source(), *incomplete])],
+            edges=[make_edge("quotes", "t")],
+        )
+    _save(project_root, graph)
+    main = project_root / "main.py"
+    sidecar = project_root / "main.haute.json"
+    assert node_id in json.loads(sidecar.read_text(encoding="utf-8"))["unfinished_steps"]
+    saved = main.read_text(encoding="utf-8")
+    assert _PLACEHOLDER_BODY in saved
+    edited = saved.replace(_PLACEHOLDER_BODY, body)
+    if degraded:
+        edited += "\n\n@pipeline.constant(config=1)\ndef broken(): ...\n"
+    main.write_text(edited, encoding="utf-8")
+
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    document = load_pipeline_editor_document(main, project_root=project_root)
+    assert document.load_status == ("degraded" if degraded else "ready")
+    loaded = next(n for n in document.nodes if n.authored_id == node_id)
+    assert loaded.availability == "ready"
+    assert loaded.config is not None
+    assert "steps" not in loaded.config or loaded.config["steps"] != incomplete
+    assert loaded.editor.steps_error is None
+    if degraded:
+        return
+
+    parsed = next(n for n in parse_pipeline_to_graph(main).nodes if n.id == node_id)
+    assert parsed.data.editor.steps_error is None
+    assert not [s for s in parsed.data.config.get("steps") or [] if s.get("kind") == "filter"]
+
+    _save(project_root, parse_pipeline_to_graph(main))
+    assert "unfinished_steps" not in json.loads(sidecar.read_text(encoding="utf-8"))
+    assert INCOMPLETE_STEPS_MESSAGE not in main.read_text(encoding="utf-8")

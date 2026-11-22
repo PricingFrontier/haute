@@ -1554,7 +1554,9 @@ def _with_unfinished_candidate_steps(
             editor=candidate.editor,
         ),
     )
-    [given] = with_unfinished_steps([node], dict(unfinished))
+    [given] = with_unfinished_steps(
+        [node], dict(unfinished), {candidate.authored_id} if placeholder else ()
+    )
     if given is node:
         return candidate
     return replace(candidate, config=dict(given.data.config), editor=given.data.editor)

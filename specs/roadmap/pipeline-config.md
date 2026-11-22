@@ -4,22 +4,15 @@
 
 Node settings, their recovery and the project's `haute.toml`, as [the
 pipeline config specification](../pipeline-config/high-level.md) describes
-them: which paths a project saved on one system can open on another, and
-what recovery makes of a node's settings. `PCF-05` comes from the codebase
+them: which paths a project saved on one system can open on another. `PCF-05` comes from the codebase
 review plan's phase 4, which carried projects made on Windows to Linux on
 12 November 2026; the main session ran each case again on both systems.
-
-`PCF-06` to `PCF-08` come from the review plan's phase 5, a reader from a second
-model family (Codex) over the code changed since the 31 October audit. A
-worker built each run and the main session ran each again on 14 November
-2026.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PCF-05 | Planned | P2 | A node's absolute path and a node's path in another letter case than its file are each refused or rewritten on Windows when saved and linted, instead of running there and failing on Linux. |
-| PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
 
 ## Planned improvements
 
@@ -61,31 +54,3 @@ project from Windows to Linux and back.
 **Evidence:** `src/haute/_path_resolution.py::resolve_node_input_path`;
 `src/haute/_path_case_audit.py`; `src/haute/_project.py`;
 `src/haute/routes/_save_pipeline.py`; `src/haute/cli/_lint.py`.
-
-### PCF-06 — A record of unfinished steps ends when the node's code is rewritten by hand
-**Why:** Reproduced on 14 November 2026. A Data Input saved in the editor
-with a half-built step gets a placeholder body that raises, and a record
-of its unfinished steps in `.haute.json`. The analyst then replaces the
-body by hand with `return df`. The four ways of using the file now
-disagree. Run as plain Python, the pipeline returns its three rows. The
-editor loads the node as ready, shows the old steps, and its preview says
-"This node's steps are incomplete". `haute lint` warns the same and exits
-0. `haute run` on the node exits 1 with a traceback ending in
-`NotImplementedError`. The specification has the record ignored once the
-body is no longer the placeholder. The record is restored whenever the
-body yields no step code, and `return df` yields none.
-
-**Plan:** Restore the record only while the body is the placeholder
-itself; drop it from `.haute.json` on the next save otherwise.
-
-**Acceptance:** After the hand edit above, the editor's preview,
-`haute lint`, `haute run` and plain Python all treat the node as
-`return df`.
-
-**Dependencies:** None. A save of a node nobody edited writes it from its
-record only while the node carries the code its record loads as ("Which
-steps a write renders" in the code generation specification), so the
-loader's rule here is the save's too.
-
-**Evidence:** `src/haute/_sidecar.py`; `src/haute/_builders.py`;
-`specs/pipeline-config/high-level.md`.
