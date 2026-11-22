@@ -200,11 +200,17 @@
   width and measured, from the column's uncompressed Parquet size and a bounded head probe
   of the rows, never assumed to be one 8-byte value. A node's columns are its own output's:
   a Polars node with code resolves them from its column lineage over its inputs' resolved
-  columns (`_resolve_code_node_columns`), a column it outputs under an input column's name
-  sized as that column and any other (a join's suffixed column, a computed one) as the
-  widest input column the lineage says it alone reads, and neither less than one 8-byte
-  value, since the lineage cannot tell a carried column from one the code recomputed
-  wider (a one-byte column cast to eight bytes); when the lineage cannot follow the code,
+  columns (`_resolve_code_node_columns`). A column it carries unchanged under an input
+  column's name is sized as that column. A column the code computes
+  (`ColumnLineageAnalysis.recomputed_columns`: a `select`/`with_columns` output that is not
+  the unchanged input column, an aggregate, a rename's target or a produced column), under
+  a new name or an input column's, and any other output (a join's suffixed column) is sized
+  as the widest input column the lineage says it alone reads, so
+  `pl.col("description").alias("risk_text")` is as wide as `description`, never as the
+  `risk_text` it replaced. None is less than one 8-byte value, since a computed column can
+  be wider than what it reads (a one-byte column cast to eight bytes). Only computed
+  columns ask the lineage again, so a wide frame is not analysed once per column. When
+  the lineage cannot follow the code,
   a node with several inputs is sized as all of them. A node that is neither (nor an Edge Join, nor
   a selection) takes its input's columns, walking up to a sized source.
 - **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
@@ -2631,14 +2637,32 @@ present a structural or schema result as execution evidence.
   cardinality or width cannot be resolved keeps the whole estimate unavailable, as
   for any other boundary: a join sized from one readable port and one unreadable
   one would be an under-estimate, which is the one failure mode admission must
-  never have. A cross join (`how='cross'`) is a boundary like any other
-  join, but nobody has measured what it costs, so its estimate is unavailable
-  with reason `cross_join_unmeasured`: under an active native worker cap it plans
-  `full-width-conservative` with status `warned`, and without one it is the typed
-  `materialisation_estimate_unavailable` rejection. Its row product still
-  propagates to every downstream boundary, so a later `group_by` is estimated on
-  that product and, when it does not fit, takes the same unavailable-estimate
-  path as an undeclared many-to-many join.
+  never have. A cross join (`how='cross'`) with a frame whose row bound is at most
+  one (a Constant, which the estimate sizes from the one-row frame it yields) cannot
+  grow: it is the chain's rows with that row's columns added, bounded by the chain
+  like a join on a unique key, so it is neither a cross join nor a many-to-many join
+  to the planner and is estimated and admitted on every surface. Any other cross
+  join is a boundary like any other join, but nobody has measured what it costs, so
+  its estimate is unavailable with reason `cross_join_unmeasured`: under an active
+  native worker cap it plans `full-width-conservative` with status `warned`, and
+  without one it is the typed `materialisation_estimate_unavailable` rejection. Its
+  row product still propagates to every downstream boundary, so a later `group_by`
+  is estimated on that product and, when it does not fit, takes the same
+  unavailable-estimate path as an undeclared many-to-many join.
+- **A join's row bound reads only what can change its rows.** The cardinality
+  reading of a Polars `join` (`_column_lineage._parse_join(..., cardinality_only=True)`)
+  takes `how`, `validate`, the keys and `maintain_order`, and ignores the options
+  that cannot change how many rows it returns: `coalesce`, `nulls_equal` (a
+  `validate=` contract counts a null key as a key when nulls match, and Polars
+  refuses a duplicated one on the unique side, so the contract's bound holds),
+  `build_side`, `allow_parallel` and `force_parallel`. Column lineage reads the last
+  three only: `coalesce` changes the key columns and `nulls_equal` the rows it
+  proves. Any other argument is the reason `unsupported_join_option=<argument>`.
+- **A deployed Data Input is sized from the files it is served from.** The deploy
+  scorer serves a Data Input from its bundled snapshot parts (or its bundled
+  Parquet file), not the project's source cache, and hands the planner each such
+  node as `RuntimeSourceFiles` in `runtime_source_frames_by_node`, so the estimate
+  reads those files' Parquet metadata, as the bundle-time dry run read the cache.
 
 - **Estimate calibration only tightens admission.** A bounded process-local registry
   stores one basis-point multiplier per `ExecutionProfile`. On terminal metrics with
@@ -2737,11 +2761,18 @@ present a structural or schema result as execution evidence.
   worker memory cap, so Haute cannot run the plan conservatively here." In both
   outcomes the estimator's own reason (its `<node>:<reason>` detail, such as
   `source_row_count_unavailable`, `target_schema_unavailable`,
-  `cross_join_unmeasured`, or the planner's own
-  `join_cardinality_many_to_many`) is retained, and a
-  `join_cardinality_many_to_many` detail additionally ends the remediation with
-  the advice to declare `validate='m:1'`, `'1:m'`, or `'1:1'` where a key side is
-  unique. The
+  `cross_join_unmeasured`, `unsupported_join_option=<argument>`, or the planner's
+  own `join_cardinality_many_to_many`) is retained. A gap that readable source
+  metadata cannot close has its own remedy, chosen in one place
+  (`execution._estimate_gap_remedy`, by the detail's final reason): it ends the
+  remediation in place of the "Provide readable source/schema metadata" sentence. A
+  `join_cardinality_many_to_many` detail advises declaring `validate='m:1'`, `'1:m'`,
+  or `'1:1'` where a key side is unique; `cross_join_unmeasured` says a cross join's
+  memory cannot be estimated when both sides may hold more than one row, and to cross
+  with a one-row input such as a Constant, use an Edge Join set to Cross, or run on a
+  surface with a hard memory cap; `unsupported_join_option=<argument>` names the
+  argument, and says to drop it or run on a surface with a hard memory cap. The
+  deploy's refusals name the boundary's operator and node, never a group-by. The
   estimator already knows which node it could not measure and why; discarding that
   left an analyst with "provide readable metadata" and no way to tell an unreadable
   file from an unsummarisable source shape.
@@ -3031,6 +3062,23 @@ present a structural or schema result as execution evidence.
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- **Replaced column width** — `tests/test_ram_estimate.py::TestWidthsFollowTheLineage::test_a_column_replaced_under_its_own_name_is_sized_as_what_it_reads`:
+  a column selected from a 4,097-byte `description` under the name of a three-byte
+  `risk_text`, and under a new name, both give a distinct step at least 4,097 bytes a row.
+
+- **Join options and one-row cross joins** — `tests/test_column_lineage.py` holds the
+  row bound of a join carrying each option that cannot change its rows, column lineage
+  still refusing `coalesce` and `nulls_equal`, and an unknown argument named in its
+  reason. `tests/test_run_parity.py::test_a_join_option_polars_accepts_answers_every_way`
+  holds a Transform joining a lookup with each such option to one answer from the
+  editor's preview, a trace, `haute run`, plain Python, the dry run and the deployed
+  service (a full join at the node); `test_a_transform_crossing_a_constant_answers_every_way`
+  the Constant page's example the same way; and
+  `test_an_unmeasured_boundary_is_refused_without_a_cap` a cross join of two many-row
+  inputs refused every uncapped way in one message naming the node, the join and the
+  remedies. `tests/test_polars_backend_strategy_contract.py::test_a_gap_metadata_cannot_close_is_refused_with_what_works_instead`
+  holds each gap's remedy in place of the metadata sentence.
 
 - **Preamble failure lines** — `tests/test_executor.py::TestCompilePreamble`: in a project
   folder named `utility-pricing`, a preamble line failing inside a library is reported as

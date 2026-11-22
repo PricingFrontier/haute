@@ -295,10 +295,9 @@ def infer_deploy_execution_policy(
             raise DeployError(
                 "Deployed batch scoring cannot be admitted: this target scores "
                 "multi-row requests in the serving process without a hard memory "
-                f"cap, so the group-by at node {exc.node_id!r} (operator "
-                f"{exc.operator!r}) cannot be admitted without a materialisation "
-                "estimate. Deploy to a container target, whose batch worker runs "
-                "under a hard cap, or make the estimate provable. "
+                f"cap, so the {exc.operator!r} at node {exc.node_id!r} cannot be admitted "
+                "without a materialisation estimate. Deploy to a container target, whose "
+                "batch worker runs under a hard cap, or make the estimate provable. "
                 f"{exc.remediation}",
                 node_id=exc.node_id,
                 operator=exc.operator,
@@ -314,10 +313,11 @@ def infer_deploy_execution_policy(
             "blocking_node_id": exc.node_id,
             "blocking_operator": exc.operator,
             "remediation": (
-                "The deployed batch worker runs this group-by under its full hard-capped "
-                "memory envelope because the materialisation estimate is unavailable at "
-                "bundle time. Provide readable source metadata or rewrite "
-                f"'{exc.operator}' at '{exc.node_id}' so Haute can prove the estimate."
+                f"The deployed batch worker runs the {exc.operator!r} at node "
+                f"{exc.node_id!r} under its full hard-capped memory envelope because the "
+                "materialisation estimate is unavailable at bundle time. Provide readable "
+                f"source metadata or rewrite '{exc.operator}' at '{exc.node_id}' so Haute can "
+                "prove the estimate."
             ),
         }
     else:
@@ -557,7 +557,7 @@ def infer_output_schema(
         except (BatchScoreError, WorkerError) as worker_error:
             raise DeployError(
                 "Deployed batch scoring could not be proven at bundle time: the "
-                f"group-by at node {exc.node_id!r} (operator {exc.operator!r}) has no "
+                f"{exc.operator!r} at node {exc.node_id!r} has no "
                 "materialisation estimate, and the one-row dry-run through the "
                 "hard-capped batch worker did not produce an output schema "
                 f"({type(worker_error).__name__}: {worker_error}). The deployed "

@@ -705,6 +705,45 @@ class TestWidthsFollowTheLineage:
         assert estimate.estimated_bytes is not None
         assert estimate.estimated_bytes / _OVERHEAD_MULTIPLIER >= 8 * rows
 
+    @pytest.mark.parametrize("name", ["risk_text", "risk_text_new"])
+    def test_a_column_replaced_under_its_own_name_is_sized_as_what_it_reads(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """EXE-08: a column the code replaces under an input column's name is as wide as
+        what it is computed from, as it is under a new name, never the old column's width."""
+        rows = self.ROWS
+        frame = pl.DataFrame(
+            {
+                "risk_text": ["abc"] * rows,
+                "description": [f"{i:04d}" + "x" * 4093 for i in range(rows)],
+            }
+        )
+        frame.write_parquet(tmp_path / "quotes.parquet")
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / "quotes.parquet"),
+        )
+        renamed = _make_transform_node(
+            node_id="t",
+            label="t",
+            config={"code": f"df = src.select(pl.col('description').alias('{name}'))"},
+        )
+        distinct = _make_transform_node(node_id="u", label="u", config={"code": "df = t.unique()"})
+        graph = PipelineGraph(
+            nodes=[source, renamed, distinct],
+            edges=[
+                GraphEdge(id="e1", source="src", target="t"),
+                GraphEdge(id="e2", source="t", target="u"),
+            ],
+        )
+
+        estimate = _boundary_estimate(graph, "u")
+
+        assert estimate.estimated_peak_bytes is not None
+        assert estimate.estimated_peak_bytes >= 4097 * rows
+
     def test_a_nested_column_is_measured(self, tmp_path: Path) -> None:
         path = tmp_path / "nested.parquet"
         self._frames()["nested"].write_parquet(path)

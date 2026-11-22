@@ -136,6 +136,10 @@ class ColumnLineageAnalysis:
     demands_by_input: Mapping[str, frozenset[str]]
     reason: str
     unsupported_operation: str | None = None
+    recomputed_columns: frozenset[str] = frozenset()
+    """Names an operation computes rather than carries: a ``select``/``with_columns``
+    output that is not the unchanged input column, an aggregate, a rename's target or a
+    produced column. Every other output column is an input column carried by name."""
 
 
 _NO_OPERANDS: Mapping[str, int] = MappingProxyType({})
@@ -1586,6 +1590,18 @@ def _parse_group_by_agg(
     )
 
 
+UNSUPPORTED_JOIN_OPTION = "unsupported_join_option"
+"""The reason, as ``unsupported_join_option=<argument>``, a join argument is not read."""
+
+# Join arguments that choose how Polars runs a join, never its rows or its columns.
+_JOIN_EXECUTION_KEYWORDS = frozenset({"build_side", "allow_parallel", "force_parallel"})
+# Join arguments a row bound may ignore. ``coalesce`` changes the key columns, never the
+# rows. ``nulls_equal`` lets null keys match, and a ``validate=`` contract then counts a
+# null key as a key: Polars refuses a duplicated null key on the unique side, so the
+# contract's bound still holds. Column lineage reads neither.
+_JOIN_ROW_NEUTRAL_KEYWORDS = frozenset({"coalesce", "nulls_equal"})
+
+
 def _parse_join(
     call: ast.Call,
     input_names: frozenset[str],
@@ -1632,8 +1648,12 @@ def _parse_join(
             left_on_node = keyword.value
         elif keyword.arg == "right_on":
             right_on_node = keyword.value
+        elif keyword.arg in _JOIN_EXECUTION_KEYWORDS or (
+            cardinality_only and keyword.arg in _JOIN_ROW_NEUTRAL_KEYWORDS
+        ):
+            continue
         else:
-            return _ParseFailure("unsupported_join_option", "join")
+            return _ParseFailure(f"{UNSUPPORTED_JOIN_OPTION}={keyword.arg or '**'}", "join")
     supported_how = _CARDINALITY_JOIN_HOW if cardinality_only else _SUPPORTED_JOIN_HOW
     if how not in supported_how or (not cardinality_only and not suffix):
         return _ParseFailure("unsupported_join_semantics", "join")
@@ -3154,7 +3174,23 @@ def analyze_polars_lineage(
         ),
         reason="lineage_proven",
         unsupported_operation=None,
+        recomputed_columns=_recomputed_columns(evaluated),
     )
+
+
+def _recomputed_columns(evaluated: Sequence[_EvaluatedOperation]) -> frozenset[str]:
+    """The names any of *evaluated* computes rather than carries unchanged."""
+    names: set[str] = set()
+    for item in evaluated:
+        operation = item.operation
+        names.update(
+            name
+            for name, _refs in operation.output_to_inputs
+            if name not in operation.identity_outputs
+        )
+        names.update(target for _source, target in operation.renamed_columns)
+        names.update(operation.produced_columns)
+    return frozenset(names)
 
 
 def analyze_polars_cardinality(
@@ -3204,10 +3240,16 @@ def analyze_polars_cardinality(
         if operation.kind is LineageOperationKind.JOIN:
             assert operation.right_input is not None
             assert operation.how is not None
-            if operation.how == "cross":
+            right_rows = normalised_inputs[operation.right_input]
+            # A cross join with a frame of at most one row (a Constant) cannot grow:
+            # it is the chain's rows with that row's columns added, bounded by the
+            # chain like a join on a unique key. A cross join with a frame that may
+            # hold more is the product nobody has measured, whatever the chain holds.
+            grows_by_product = operation.how != "cross" or right_rows > 1
+            if operation.how == "cross" and grows_by_product:
                 has_cross_join = True
             # An absent ``validate=`` normalises to ``m:m`` at parse time.
-            if operation.validate == "m:m":
+            if operation.validate == "m:m" and grows_by_product:
                 # Nothing bounds this join by an operand, so only the row
                 # product bounds it.
                 depends_on_many_to_many_join = True
@@ -3216,15 +3258,15 @@ def analyze_polars_cardinality(
             )
             # The frame this join consumes is whatever the chain holds now, not
             # the program's original root input.
-            operand_peak = max(operand_peak, current, normalised_inputs[operation.right_input])
+            operand_peak = max(operand_peak, current, right_rows)
             bound = join_cardinality_upper_bound(
                 current,
-                normalised_inputs[operation.right_input],
+                right_rows,
                 how=operation.how,
                 validate=operation.validate,
             )
             current = bound.max_rows
-            peak = max(peak, normalised_inputs[operation.right_input], current)
+            peak = max(peak, right_rows, current)
             evidence.extend(f"operation[{index}].{item}" for item in bound.evidence)
         elif operation.kind in {LineageOperationKind.SELECT, LineageOperationKind.WITH_COLUMNS}:
             operand_peak = max(operand_peak, current)

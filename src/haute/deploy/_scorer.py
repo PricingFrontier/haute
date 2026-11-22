@@ -36,6 +36,7 @@ from haute._model_source import model_score_output_column, model_score_task
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_utils import streaming_collect
+from haute._ram_estimate import RuntimeSourceFiles
 from haute._types import GraphNode, PipelineGraph, _Frame
 from haute._workbench_input import workbench_request_frames
 from haute._workbench_output import as_response
@@ -864,7 +865,19 @@ def _score_graph_lazy(
     # the memory estimate sizes each consumer from the table that feeds it rather than
     # from the request that holds them all.
     quote_tables: dict[str, dict[str, pl.DataFrame]] = {}
-    runtime_source_frames_by_node: dict[str, pl.DataFrame | Mapping[str, pl.DataFrame]] = {}
+    runtime_source_frames_by_node: dict[
+        str, pl.DataFrame | Mapping[str, pl.DataFrame] | RuntimeSourceFiles
+    ] = {}
+    # A Data Input served from its bundled files is sized from them: the project's source
+    # cache, which the estimate reads otherwise, is not where it is served.
+    for node in graph.nodes:
+        if node.id in relevant_node_ids and DEPLOY_ARTIFACTS[node.data.nodeType] == "dataset":
+            bundled = _bundled_input_artifact(node, remap)
+            if bundled is not None:
+                paths = [bundled] if isinstance(bundled, str) else bundled
+                runtime_source_frames_by_node[node.id] = RuntimeSourceFiles(
+                    tuple(Path(path) for path in paths)
+                )
     # The input nodes are the request input or the promoted Data Input, nothing else.
     for node in graph.nodes:
         if node.id not in input_set:

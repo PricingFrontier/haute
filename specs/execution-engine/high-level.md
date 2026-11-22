@@ -351,10 +351,15 @@ running heavy work in a child process the parent can kill on timeout or memory l
   evidence recorded. A reducing operator is bound by the same full-width control
   as any other wide plan, because emitting few rows does not change what it must
   read; the tiny `head` sink is only the matched floor for a reducing
-  boundary's does-not-stream witness. A cross join is a boundary whose cost
+  boundary's does-not-stream witness. A cross join with a frame of at most one
+  row (a Constant) cannot grow, so it is bounded and estimated like a join on a
+  unique key and admitted everywhere. Any other cross join is a boundary whose cost
   nobody has measured, so it is admitted as a boundary but its estimate is
   unavailable until someone measures it: warned under a native worker cap,
-  rejected without one, with its row product still carried downstream.
+  rejected without one, with its row product still carried downstream. A join's
+  row bound ignores the options that cannot change how many rows it returns
+  (`coalesce`, `nulls_equal`, `build_side`, `allow_parallel`, `force_parallel`).
+  A refusal for a gap that source metadata cannot close says what works instead.
   Operations no measurement covers —
   `join_where`, `pivot`, `upsample`, `gather`, `sample` — keep
   streaming with "no evidence" recorded; widening or narrowing any of these
@@ -641,7 +646,7 @@ The differences that are meant, each with its reason:
   The dry run sends each such quote alone, as the deployment's record says to.
 - A process runs what its memory admits: work whose memory nobody has measured is
   admitted, with a warning, under a worker's memory cap and refused without one (a cross
-  join, above). The editor's preview runs in a capped worker; `haute run` runs in the
+  join of two many-row sides, above). The editor's preview runs in a capped worker; `haute run` runs in the
   command's own process, without one.
 - A trace of a Workbench Output explains a cell from the frame that fills its table
   ([tracing](../tracing/high-level.md)), so it holds that frame's columns too.

@@ -60,11 +60,25 @@ from haute.projection import ProjectionEdgeKey
 
 logger = get_logger(component="ram_estimate")
 
+
 #: Request-local source frames, by node: the frame a source node was given, or for a
 #: multi-frame source (a Workbench Input reading its quote) a frame per port, keyed by it.
-RuntimeSourceFrames = Mapping[str, pl.DataFrame | Mapping[str, pl.DataFrame]]
+@dataclass(frozen=True, slots=True)
+class RuntimeSourceFiles:
+    """The Parquet files a source reads in this run in place of its configured source.
+
+    A deployed bundle serves a Data Input from the snapshot parts it ships, not from the
+    project's source cache, so the estimate sizes the source from these files.
+    """
+
+    paths: tuple[Path, ...]
+
+
+RuntimeSourceFrames = Mapping[str, pl.DataFrame | Mapping[str, pl.DataFrame] | RuntimeSourceFiles]
 
 __all__ = [
+    "CROSS_JOIN_UNMEASURED_DETAIL",
+    "RuntimeSourceFiles",
     "MaterialisationEstimate",
     "MaterialisationEstimateBasis",
     "MaterialisationEstimateState",
@@ -411,6 +425,11 @@ class _EstimateGraphIndex:
         runtime_port_metadata: dict[tuple[str, str], _DetailedSourceMetadata | None] = {}
         if runtime_source_frames_by_node is not None:
             for node_id, frame in runtime_source_frames_by_node.items():
+                if isinstance(frame, RuntimeSourceFiles):
+                    runtime_metadata_by_node[node_id] = _source_scoped_metadata(
+                        _detailed_parquet_metadata(frame.paths), node_id
+                    )
+                    continue
                 if isinstance(frame, Mapping):
                     # A multi-frame source read for this request, a Workbench Input's
                     # quote: each port its own frame and no whole-node summary, so a
@@ -792,6 +811,14 @@ def _data_input_source_metadata(node: GraphNode) -> _DetailedSourceMetadata | No
     )
 
 
+def _constant_source_metadata(node: GraphNode) -> _DetailedSourceMetadata:
+    """A Constant's one row, sized from the frame it yields: it reads no file."""
+    from haute._node_apply import constant_frame
+
+    frame = constant_frame(node.data.config.get("values") or [])
+    return _detailed_dataframe_metadata(streaming_collect(frame), node.id)
+
+
 #: How the estimate reads each source's size from its stored metadata; ``None``
 #: for a node type it does not size from metadata.
 _SOURCE_METADATA_READERS: Mapping[
@@ -802,7 +829,7 @@ _SOURCE_METADATA_READERS: Mapping[
         NodeType.API_INPUT: _request_input_source_metadata,
         NodeType.WORKBENCH_INPUT: _request_input_source_metadata,
         NodeType.DATA_INPUT: _data_input_source_metadata,
-        NodeType.CONSTANT: None,
+        NodeType.CONSTANT: _constant_source_metadata,
         NodeType.DATA_OUTPUT: None,
         NodeType.POLARS: None,
         NodeType.EDGE_JOIN: None,
@@ -1864,12 +1891,12 @@ def _resolve_code_node_columns(
 ) -> _ResolvedTargetColumns | None:
     """A Polars node's output columns, from its own lineage over its inputs' columns.
 
-    A column the node outputs under an input column's name is sized as that column,
-    and any other (a join's suffixed column, a computed one) as the widest input
-    column it reads, found by asking the lineage what that column alone demands. The
-    lineage does not tell a carried column from one the code recomputed, which can be
-    wider than what it reads (a one-byte column cast to eight bytes), so neither is
-    charged less than one fixed-width value. When the lineage
+    A column the node carries unchanged under an input column's name is sized as that
+    column. A column the code computes (``recomputed_columns``), under a new name or an
+    input column's, is sized as the widest input column it reads, found by asking the
+    lineage what that column alone demands. A computed column can be wider than what it
+    reads (a one-byte column cast to eight bytes), so none is charged less than one
+    fixed-width value. When the lineage
     cannot follow the code, a node with several inputs is sized as all of them (a
     join or concatenation holds every input's columns), and None leaves a node with
     one input to its input's columns, as the walk to its source finds them.
@@ -1933,9 +1960,12 @@ def _resolve_code_node_columns(
             for resolved in by_name.values()
             if column in resolved.columns
         ]
-        if kept:
+        if kept and column not in result.recomputed_columns:
             pairs.append((column, widest(kept, column)))
             continue
+        # A computed column is as wide as what it alone reads, whatever its name: one
+        # replaced under an input column's name (``pl.col("description").alias(
+        # "risk_text")``) is sized as ``description``, never as the column it replaced.
         alone = lineage({column})
         read = (
             [
@@ -1945,7 +1975,7 @@ def _resolve_code_node_columns(
                 for read_column in read_columns
             ]
             if alone is not None and alone[0].supported
-            else []
+            else kept
         )
         pairs.append((column, widest(read, column)))
     return _dedupe_resolved_columns(pairs)
@@ -2325,6 +2355,9 @@ def estimate_materialisation_boundaries(
         )
 
 
+CROSS_JOIN_UNMEASURED_DETAIL = "cross_join_unmeasured"
+"""Estimator detail for a cross join of two sides that may each hold more than one row."""
+
 _PORT_SIZED_BOUNDARY_OPERATORS = frozenset({"join", "join_asof"})
 """Boundaries whose own peak scales with their input ports, not their output.
 
@@ -2442,7 +2475,7 @@ def _estimate_materialisation_boundary_from_index(
         # EXEC-P07 measured inner/left/asof joins. A cross join's peak was never
         # probed, so it cannot inherit their admission; its output product still
         # propagates downstream unchanged.
-        return MaterialisationEstimate.unavailable("cross_join_unmeasured")
+        return MaterialisationEstimate.unavailable(CROSS_JOIN_UNMEASURED_DETAIL)
     if (
         boundary_operators
         and all(operator in _PORT_SIZED_BOUNDARY_OPERATORS for operator in boundary_operators)
