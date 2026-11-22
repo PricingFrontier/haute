@@ -275,16 +275,16 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `POST /api/git/interrupted/retry` | None | `GitWorkingBranchResponse`, the readiness once `retry_interrupted` has finished the stopped operation or put it back and removed its record; files still held are 400 `GitFilesInUseError`, a file changed since it stopped is 400 naming it, and refs no step leaves are 400 `GitTransactionError`, the record kept in each case |
 | `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
 | `POST /api/git/identity` | `GitSetIdentityRequest {user_name,user_email,set_global=false}` | `GitSetIdentityResponse {user_name,user_email,scope}` |
-| `POST /api/git/capture` | `GitCaptureRequest {paths}`: at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
+| `POST /api/git/capture` | `GitCaptureRequest {paths,working_branch=null}`, *working_branch* the branch the tab shows, refused 409 `branch_changed` as the pipeline save is (`refuse_another_branch`): at least one file, relative to the project in POSIX form, as writes reported it `uncaptured` | `SaveCapture {warnings,git_sha,identity_required,uncaptured}`: the paths committed on the ledger as they are on disk, through the save capture, under the repository lock; a path `_artifact_paths.ordinary_path_problem` refuses (absolute, a drive, `..`, `.git`, `.haute`, a link on the way) is 400, nothing captured |
 | `POST /api/git/commit` | `GitCommitRequest {message,version_label=null,allow_fork=false}` | `GitCommitResponse {sha,short_sha,working_branch,version_label?}`; would-fork is 409 |
 | `GET /api/git/milestones` | Query `limit=20` (1..500), `branch=null` | `GitMilestonesResponse {working_branch?,entries:[GitMilestoneEntry...]}` |
 | `GET /api/git/graph` | Query `limit=50` (1..500) | `GitGraphResponse {working_branch?,order:[],branches:[GitGraphBranch...]}` |
 | `GET /api/git/milestones/{sha}/saves` | Commit SHA path | `GitLedgerSavesResponse {saves:[GitLedgerSave...]}` |
 | `GET /api/git/pending-saves` | Query `branch=null` | `GitLedgerSavesResponse` |
 | `POST /api/git/archive` | `GitArchiveRequest {branch,settle=null}` | `GitArchiveResponse {archived_as}` |
-| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false,seen}`: *seen* is `GitBranchSeen {tip,ledger_tip,is_current}`, the branch as the confirmation showed it | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
+| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false,seen}`: *seen* is `GitBranchSeen {tip,ledger_tip,is_current,is_checked_out}`, the branch as the confirmation showed it | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
 | `POST /api/git/undelete` | `GitUndeleteRequest {id,as_name=null}`: a trash entry, rebuilt under its branch name or *as_name* | `GitUndeleteResponse {status="restored",branch}`, the name it was rebuilt under |
-| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch {name,is_current,is_archived,has_unmerged_saves,has_uncommitted_changes,tip,ledger_tip}...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
+| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch {name,is_current,is_archived,has_unmerged_saves,has_uncommitted_changes,tip,ledger_tip,is_checked_out}...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
 | `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
 | `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false,settle=null}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
@@ -596,9 +596,13 @@ last told; its first reading, at startup, is the baseline. A change while a git 
 the watcher pause is skipped there and told once the route has answered (`_broadcast_tree_change`
 calls it), so a tab never reads an operation half done. A project that has no repository
 when the server starts is not watched. Each tab then reads its readiness again
-([frontend-git-ui](../frontend-git-ui/low-level.md)). The pipeline save names the branch the
-saving tab shows and is refused before anything is written when the project has moved
-([server-api](../server-api/low-level.md), `POST /api/pipeline/save`).
+([frontend-git-ui](../frontend-git-ui/low-level.md)). Each of the project Save's writes names
+the branch the saving tab shows, and `routes._save_pipeline.refuse_another_branch` refuses
+it, under the repository lock and before anything is written, when the project has moved:
+the capture of files left uncaptured (`POST /api/git/capture`), the workbench form's save
+([workbench](../workbench/low-level.md)) and the pipeline save
+([server-api](../server-api/low-level.md), `POST /api/pipeline/save`). A repository git refuses
+to work in is not checked there, so the save still lands on disk and its capture warns.
 
 **Files changed outside Haute (`_assert_way_clear`, `GitUnrecordedFilesError`,
 `settle_unrecorded`).** Every operation that replaces the project's files runs one check
@@ -607,7 +611,8 @@ destination its ledger tip, or its working tip before the ledger spawns), openin
 branch (`create_working_branch(switch=True)`, the base), Catch up (when the ledger moves, the
 remote ledger's tip), Spin off a copy (the adopted ledger's tip) and an archive or an
 unconfirmed delete of the current pair (its last milestone). The files it names are every
-tracked file that differs from HEAD (`_tracked_changes`, a CSV saved in Excel among them)
+tracked file that differs from HEAD (`_tracked_changes(with_sources=True)`, a CSV saved in
+Excel among them, and both names of a staged rename, whose source's removal is part of it)
 and every file on disk, untracked or ignored, where the destination has one that HEAD's tree
 lacks (`diff --diff-filter=A HEAD <destination>`, which git's checkout would refuse or
 overwrite). An operation leaving the branch the files were changed on (a switch, opening a
@@ -619,16 +624,24 @@ design, and a confirmed delete, which discards them. Any file named raises
 outside Haute since the last save. Before <switching to 'other' | opening '<name>' | catching
 up | spinning off a copy | archiving '<X>' | deleting '<X>'>, record it/them as a save on this
 branch, or put it/them back as version history has it/them." (five named, the rest counted),
-which the failure answers make 409 `unrecorded_files` with `files` beside the message. The
-five routes' requests take `settle: GitSettleUnrecorded {choice: "record" | "put-back",
-files}`, the analyst's choice for those files: `_rewriting_tree(background, settle)` refuses
-a path that is not an ordinary one inside the project (400), then, under the repository lock
-the operation re-enters, calls `settle_unrecorded`, which records them as one save on the
+which the failure answers make 409 `unrecorded_files` with `files` and `token` beside the
+message. *token* (`_unrecorded_token`) is a digest of what the files were when the analyst
+was asked: the branch the checkout is on and, for each file, its blob on disk and at HEAD.
+The five routes' requests, and the hosted parent catch-up's (`GitUpstreamPullRequest`), take
+`settle: GitSettleUnrecorded {choice: "record" | "put-back", files, token}`, the analyst's
+choice for those files: `_rewriting_tree(background, settle)` refuses a path that is not an
+ordinary one inside the project (400), then, under the repository lock the operation
+re-enters, calls `settle_unrecorded`, which first refuses, touching nothing, files whose token
+differs ("<files> has/have changed since you were asked about it/them, so nothing was
+recorded or put back. Look again, then retry.": another tab recorded them, switched branch
+or edited them while the question was open), then records them as one save on the
 working branch with the sweep's message, "Updated project files" (a working branch and an
 identity required, each refused in words, and a file over the history limit refused by
 name), or puts them back: `restore --source=HEAD --staged --worktree` for those HEAD has, and
 for one it lacks the staged addition undone and the file removed. Only the named files are
-touched; the operation then checks the way again and names any file changed since. A
+touched; the operation then checks the way again and names any file changed since. Files the
+settlement changed are announced (`git.tree.changed`) although the operation after it fails,
+since the watcher was paused and no background task runs. A
 recorded save before Catch up is a save the remote lacks, so the catch-up refuses as for any
 local save and offers Spin off a copy, which keeps it on the set-aside line; putting the
 files back lets it complete.
@@ -985,11 +998,16 @@ is the same transaction the other way, the `unarchive` operation's one step.
 
 **Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete takes *seen*,
 the branch as its confirmation showed it (`GitBranchSeen`: the branch's and its ledger's
-tips as the listing gave them, and whether it was the recorded working branch), and refuses,
-under the repository lock and before anything else it checks, a branch that is no longer so
-(`_change_since_seen`): "'<branch>' changed since you chose to delete it: <the project is on
-it now | the project is no longer on it | its milestones changed | its saves changed>. Look
-again, then retry." *seen* is required, so no caller deletes a branch it has not described.
+tips as the listing gave them, whether it was the recorded working branch, and whether HEAD
+was on it or its ledger, `is_checked_out`, the two things `_leave_if_active` reads to leave
+it), and refuses, under the repository lock and before anything else it checks, a branch that
+is no longer so (`_change_since_seen`): "'<branch>' changed since you chose to delete it: <the
+project is on it now | the project is no longer on it | the project is checked out on it now |
+the project is no longer checked out on it | its milestones changed | its saves changed>. Look
+again, then retry." A checkout made in a terminal since the confirmation is a change, so a
+confirmed delete never forces HEAD off a branch it did not show as checked out, discarding
+the changes on disk. The listing's `has_uncommitted_changes` is the tree's for the current
+branch and for one checked out. *seen* is required, so no caller deletes a branch it has not described.
 Delete refuses on
 unmerged ledger saves, and on the active pair's tracked changes, unless `confirm=True`. It
 takes a fresh entry id, then the `delete` operation:
@@ -1223,7 +1241,8 @@ process failures, and precise ref-movement races deterministic.
   dropping the oldest entry's pins, a legacy bare-name tombstone restored, the active pair
   detached at its last milestone, an unconfirmed delete of it keeping a dirty tree),
   a delete refused when the branch was switched onto, saved to or committed since its
-  confirmation, with the branch, HEAD and the recorded working branch unchanged, the
+  confirmation, or checked out in a terminal with a change on disk (the change kept), with
+  the branch, HEAD and the recorded working branch unchanged, the
   listing giving the tips a delete names, request-path no-fetch
   guarantees,
   the tree fence (`TestTreeFence`: a switch whose checkout exits 0 with a file left stale
@@ -1271,9 +1290,14 @@ process failures, and precise ref-movement races deterministic.
   completing once it is recorded, the save on the branch it was made on (set aside or
   archived with it); a recorded save before Catch up refused with Spin off a copy; a file git
   does not track where the destination has one named, removed by a put-back and then the
-  switch completing; recording refused with no working branch or no identity. In
+  switch completing; recording refused with no working branch or no identity; a staged
+  rename named by both its names and recorded or put back whole; and a Put back answered
+  after another tab recorded the file, switched and edited it again refused, the other
+  branch's edit kept. In
   `tests/test_git_routes.py`, the 409's `error_code` and `files`, the switch asked again with
-  `settle` recording the file, and a settled path outside the project refused 400. In
+  `settle` recording the file, a settled path outside the project refused 400, files put back
+  announced although the Catch up after them fails, and the hosted parent catch-up settling
+  the files before it runs. In
   `tests/test_git_operations.py`, Create & Move carrying the analyst's edit with none of it
   in its record or touched by a put-back, and a switch refusing it before any record.
 - **Open tabs and the branch** — in `tests/test_git_ledger.py`, a save with HEAD on another
@@ -1281,7 +1305,11 @@ process failures, and precise ref-movement races deterministic.
   the file as they were; in `tests/test_save_git_serialization.py`, a save from a tab after
   another tab switched, a terminal checkout and a terminal `git switch -c`, each refused
   `branch_changed` naming both, writing nothing and leaving the checkout alone, and one from
-  a tab on the project's branch recorded; in `tests/test_git_routes.py`, a switch through a
+  a tab on the project's branch recorded, a repeat of a committed save after a switch
+  answered from its receipt, and a save while git refuses the repository written with the
+  cause as its warning; in `tests/test_workbench_routes.py` and
+  `tests/test_project_files_routes.py`, the form's save and the capture of files left
+  uncaptured refused the same way, nothing written; in `tests/test_git_routes.py`, a switch through a
   route told once to the open tabs, and a `git switch -c` in a terminal told by the branch
   watcher.
 - **`tests/test_git_letter_case.py`** — a save after the pipeline folder is renamed to other

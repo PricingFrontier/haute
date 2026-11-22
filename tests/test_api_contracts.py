@@ -473,7 +473,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     },
     "/api/git/storage/upstream/pull": {
         "POST": {
-            "request_ref": None,
+            "request_ref": "#/components/schemas/GitUpstreamPullRequest",
             "success_schema": {"$ref": "#/components/schemas/GitFastForwardResponse"},
         },
     },

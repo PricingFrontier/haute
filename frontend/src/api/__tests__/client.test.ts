@@ -1085,7 +1085,7 @@ describe("git endpoints", () => {
       trash_id: "stale-branch@20261027T131400Z",
     }
     mockFetch.mockReturnValue(jsonResponse(data))
-    const seen = { tip: "a".repeat(40), ledger_tip: null, is_current: false }
+    const seen = { tip: "a".repeat(40), ledger_tip: null, is_current: false, is_checked_out: false }
     const result = await gitDeleteBranch("stale-branch", seen)
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/git/branches")
@@ -1097,7 +1097,7 @@ describe("git endpoints", () => {
 
   it("gitDeleteBranch sends confirm=true when overriding the unmerged guard", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip", trash_id: "wip@20261027T131400Z" }))
-    const seen = { tip: "a".repeat(40), ledger_tip: null, is_current: false }
+    const seen = { tip: "a".repeat(40), ledger_tip: null, is_current: false, is_checked_out: false }
     await gitDeleteBranch("wip", seen, true)
     expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true, seen })
   })

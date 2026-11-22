@@ -235,6 +235,9 @@ test.describe("deleting and restoring branches", () => {
     // then switches the project onto it. Page one's Delete must not take the branch the
     // project is now on.
     const one = await context.newPage()
+    // Page one hears nothing from the server, as when the switch lands just before its
+    // Delete: a page that hears of it closes the dialog itself.
+    await one.routeWebSocket(/\/ws\/sync/, () => {})
     const two = await context.newPage()
     await one.goto("/")
     await openGitPanel(one)

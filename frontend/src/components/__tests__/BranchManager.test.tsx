@@ -4,6 +4,7 @@ import BranchManager from "../BranchManager"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useQuestionStore from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../../stores/useWorkbenchStore"
@@ -41,13 +42,14 @@ const branch = (over: Partial<Record<string, unknown>> = {}) => ({
   has_uncommitted_changes: false,
   tip: "a".repeat(40),
   ledger_tip: "b".repeat(40),
+  is_checked_out: false,
   ...over,
 })
 
 // What a delete's confirmation names back: the branch as the listing showed it.
 const seenAs = (over: Partial<Record<string, unknown>> = {}) => {
   const b = branch(over)
-  return { tip: b.tip, ledger_tip: b.ledger_tip, is_current: b.is_current }
+  return { tip: b.tip, ledger_tip: b.ledger_tip, is_current: b.is_current, is_checked_out: b.is_checked_out }
 }
 
 const listing = {
@@ -353,7 +355,13 @@ describe("BranchManager", () => {
     await waitFor(() => expect(mockArchive).toHaveBeenCalledWith("experiment"))
   })
 
-  it("routes archive of a dirty current branch through a save dialog", async () => {
+  it("asks to record or put back the files an archive of the current branch is refused over", async () => {
+    const files = ["rating/files/data/rates.csv"]
+    const message = "rating/files/data/rates.csv has changed on disk outside Haute since the last save."
+    const refusal = Object.assign(new Error(message), {
+      rawDetail: { error_code: "unrecorded_files", message, files, token: "t1" },
+    })
+    mockArchive.mockRejectedValueOnce(refusal).mockResolvedValueOnce({ archived_as: "archive/demo" })
     mockGetWorkingBranches.mockResolvedValue({
       current: "demo",
       deleted: [],
@@ -362,8 +370,12 @@ describe("BranchManager", () => {
     render(<BranchManager />)
     await waitFor(() => expect(screen.getByTestId("branch-manager-archive")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("branch-manager-archive"))
-    await waitFor(() => expect(screen.getByTestId("branch-manager-archive-dirty")).toBeInTheDocument())
-    expect(mockArchive).not.toHaveBeenCalled() // gated on a save
+
+    await waitFor(() => expect(useQuestionStore.getState().question?.list).toEqual(files))
+    act(() => useQuestionStore.getState().answer({ choice: "other", reason: "" }))
+
+    await waitFor(() => expect(mockArchive).toHaveBeenCalledTimes(2))
+    expect(mockArchive.mock.calls[1]).toEqual(["demo", { settle: { choice: "record", files, token: "t1" } }])
   })
 
   it("deletes an unmerged branch with confirm=true, saying it and its saves can be restored", async () => {

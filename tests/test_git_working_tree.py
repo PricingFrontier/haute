@@ -523,6 +523,20 @@ class TestFilesChangedOutsideHaute:
             return fast_forward_pair("origin", repo, cwd=repo)
         return branch_away("origin", repo, cwd=repo)
 
+    def _settle(self, repo: Path, operation: str, choice: str) -> None:
+        """Answer the refusal the operation meets as the editor does: its files and token."""
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            self._run(repo, operation)
+        settle_unrecorded(
+            choice,  # type: ignore[arg-type]
+            refused.value.files,
+            refused.value.token,
+            repo,
+            cwd=repo,
+        )
+
     _OPERATIONS = ["switch", "create-and-open", "archive", "catch-up", "spin-off"]
     _WORDS = {
         "switch": "switching to 'other'",
@@ -561,12 +575,10 @@ class TestFilesChangedOutsideHaute:
     def test_put_back_the_operation_completes_with_the_file_as_history_has_it(
         self, repo: Path, tmp_path: Path, operation: str
     ) -> None:
-        from haute._git import settle_unrecorded
-
         self._arrange(repo, tmp_path, operation)
         (repo / "rating.py").write_text("# edited in another program\n")
 
-        settle_unrecorded("put-back", ["rating.py"], repo, cwd=repo)
+        self._settle(repo, operation, "put-back")
         assert (repo / "rating.py").read_text() == "# on dev\n"
         self._run(repo, operation)
 
@@ -576,12 +588,10 @@ class TestFilesChangedOutsideHaute:
     def test_recorded_the_operation_completes_and_the_edit_is_among_the_branch_s_saves(
         self, repo: Path, tmp_path: Path, operation: str
     ) -> None:
-        from haute._git import settle_unrecorded
-
         self._arrange(repo, tmp_path, operation)
         (repo / "rating.py").write_text("# edited in another program\n")
 
-        settle_unrecorded("record", ["rating.py"], repo, cwd=repo)
+        self._settle(repo, operation, "record")
         recorded = _git(repo, "rev-parse", LEDGER)
         result = self._run(repo, operation)
 
@@ -601,12 +611,10 @@ class TestFilesChangedOutsideHaute:
     ) -> None:
         """A save the remote does not have makes the lines fork: Catch up never merges, so
         it refuses as for any local save, and Spin off a copy keeps the edit."""
-        from haute._git import settle_unrecorded
-
         self._arrange(repo, tmp_path, "catch-up")
         (repo / "rating.py").write_text("# edited in another program\n")
 
-        settle_unrecorded("record", ["rating.py"], repo, cwd=repo)
+        self._settle(repo, "catch-up", "record")
         with pytest.raises(GitDomainError, match="Spin off a copy"):
             self._run(repo, "catch-up")
 
@@ -626,7 +634,7 @@ class TestFilesChangedOutsideHaute:
             set_working_branch("other", repo, cwd=repo)
         assert refused.value.files == ["rates.csv"]
 
-        settle_unrecorded("put-back", ["rates.csv"], repo, cwd=repo)
+        settle_unrecorded("put-back", ["rates.csv"], refused.value.token, repo, cwd=repo)
         assert not (repo / "rates.csv").exists()
         set_working_branch("other", repo, cwd=repo)
         assert (repo / "rates.csv").read_text() == "rate\n1\n"
@@ -636,11 +644,59 @@ class TestFilesChangedOutsideHaute:
     ) -> None:
         import haute._git_transactions as transactions
         from haute._git import settle_unrecorded
+        from haute._git_core import _unrecorded_token
 
         (repo / "rating.py").write_text("# edited\n")
+        token = _unrecorded_token(["rating.py"], repo)
         with pytest.raises(GitDomainError, match="No working branch is chosen"):
-            settle_unrecorded("record", ["rating.py"], repo, cwd=repo)
+            settle_unrecorded("record", ["rating.py"], token, repo, cwd=repo)
         set_working_branch(WORKING, repo, cwd=repo)
+        token = _unrecorded_token(["rating.py"], repo)
         monkeypatch.setattr(transactions, "get_identity", lambda _cwd=None: (None, None))
         with pytest.raises(GitDomainError, match="needs a git identity"):
-            settle_unrecorded("record", ["rating.py"], repo, cwd=repo)
+            settle_unrecorded("record", ["rating.py"], token, repo, cwd=repo)
+
+    def test_an_answer_given_after_the_files_changed_again_touches_nothing(
+        self, repo: Path
+    ) -> None:
+        """Asked about an edit, then another tab recorded it, switched branch and edited the
+        same file there: the first tab's Put back must not discard the other branch's edit."""
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("other", repo, cwd=repo)
+        (repo / "rating.py").write_text("# edited by hand\n")
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            set_working_branch("other", repo, cwd=repo)
+        # Meanwhile, another tab: Record, the switch, and an edit on 'other'.
+        settle_unrecorded("record", refused.value.files, refused.value.token, repo, cwd=repo)
+        set_working_branch("other", repo, cwd=repo)
+        (repo / "rating.py").write_text("# the other branch's own edit\n")
+
+        with pytest.raises(GitDomainError, match="changed since you were asked about it"):
+            settle_unrecorded("put-back", refused.value.files, refused.value.token, repo, cwd=repo)
+
+        assert (repo / "rating.py").read_text() == "# the other branch's own edit\n"
+
+    @pytest.mark.parametrize("choice", ["record", "put-back"])
+    def test_a_rename_staged_by_hand_is_named_by_both_its_names_and_settled_whole(
+        self, repo: Path, choice: str
+    ) -> None:
+        from haute._git import GitUnrecordedFilesError, settle_unrecorded
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"old.csv": "a\n"})
+        create_working_branch("other", repo, cwd=repo)
+        _git(repo, "mv", "old.csv", "new.csv")
+
+        with pytest.raises(GitUnrecordedFilesError) as refused:
+            set_working_branch("other", repo, cwd=repo)
+        assert refused.value.files == ["new.csv", "old.csv"]
+        settle_unrecorded(choice, refused.value.files, refused.value.token, repo, cwd=repo)  # type: ignore[arg-type]
+        set_working_branch("other", repo, cwd=repo)
+
+        held = _git(repo, "ls-tree", "-r", "--name-only", LEDGER).splitlines()
+        if choice == "record":
+            assert "new.csv" in held and "old.csv" not in held
+        else:
+            assert "old.csv" in held and not (repo / "new.csv").exists()

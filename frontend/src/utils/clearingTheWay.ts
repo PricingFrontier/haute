@@ -20,6 +20,8 @@ export async function clearingTheWay<T>(
     const files = unrecordedFiles(err)
     if (files === null) throw err
     const detail = apiErrorRawDetail(err)
+    // What the files were when the question was asked: the server settles none that changed since.
+    const token = typeof detail?.token === "string" ? detail.token : ""
     const choice = await useQuestionStore.getState().ask({
       title: "Files changed outside Haute",
       text: typeof detail?.message === "string" ? detail.message : undefined,
@@ -29,7 +31,7 @@ export async function clearingTheWay<T>(
       other: "Record",
     })
     if (choice === null) throw err
-    return operation({ settle: { choice: choice.choice === "other" ? "record" : "put-back", files } })
+    return operation({ settle: { choice: choice.choice === "other" ? "record" : "put-back", files, token } })
   }
 }
 

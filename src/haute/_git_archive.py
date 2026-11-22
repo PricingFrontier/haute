@@ -148,12 +148,24 @@ def _moved_pair(
 
 
 def _change_since_seen(
-    seen: GitBranchSeen, tip: str, ledger_tip: str | None, is_current: bool
+    seen: GitBranchSeen,
+    tip: str,
+    ledger_tip: str | None,
+    is_current: bool,
+    is_checked_out: bool,
 ) -> str | None:
     """How a branch differs from what its delete's confirmation showed, in words; None
-    when it is as shown."""
+    when it is as shown. Whether it is the recorded working branch and whether HEAD is on
+    it are both what `_leave_if_active` reads to leave it, a confirmed delete discarding the
+    changes on disk: a checkout made in a terminal since is a change."""
     if is_current != seen.is_current:
         return "the project is on it now" if is_current else "the project is no longer on it"
+    if is_checked_out != seen.is_checked_out:
+        return (
+            "the project is checked out on it now"
+            if is_checked_out
+            else "the project is no longer checked out on it"
+        )
     if tip != seen.tip:
         return "its milestones changed"
     if ledger_tip != seen.ledger_tip:
@@ -213,7 +225,11 @@ def delete_working_pair(
     from haute._git_state import read_working_branch
 
     change = _change_since_seen(
-        seen, working_tip, ledger_tip, read_working_branch(project_root) == working
+        seen,
+        working_tip,
+        ledger_tip,
+        read_working_branch(project_root) == working,
+        _get_current_branch(cwd) in (working, ledger),
     )
     if change is not None:
         raise GitDomainError(

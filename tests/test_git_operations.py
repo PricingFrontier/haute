@@ -652,7 +652,12 @@ def at(value):
         branch = spec["args"][0]
         listed = haute_git.working_branches(root, cwd=root).branches
         row = next(b for b in listed if b.name == branch)
-        return GitBranchSeen(tip=row.tip, ledger_tip=row.ledger_tip, is_current=row.is_current)
+        return GitBranchSeen(
+            tip=row.tip,
+            ledger_tip=row.ledger_tip,
+            is_current=row.is_current,
+            is_checked_out=row.is_checked_out,
+        )
     return root if value == "<root>" else value
 
 kwargs = {key: at(value) for key, value in spec["kwargs"].items()}

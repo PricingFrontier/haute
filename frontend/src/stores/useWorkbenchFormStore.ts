@@ -10,12 +10,13 @@
  * form.
  */
 import { create } from "zustand"
-import { apiErrorMessage, isStaleRevision } from "../api/errors"
+import { apiErrorCode, apiErrorMessage, isStaleRevision } from "../api/errors"
 import type { FormSpec, WorkbenchFormSaveResponse } from "../api/types"
 import { fetchWorkbenchForm, saveWorkbenchForm } from "../api/workbench"
 import { canonicalJson } from "../utils/canonicalJson"
 import { reportSaveCapture } from "./saveCapture"
 import useDocumentStatusStore from "./useDocumentStatusStore"
+import { gitBranchMayHaveChanged, shownBranch } from "./useGitStore"
 import useQuestionStore from "./useQuestionStore"
 import { appendHistoryEntry } from "./useGraphStore"
 import useToastStore from "./useToastStore"
@@ -325,6 +326,10 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           if (isStaleRevision(error)) {
             set({ stale: true })
             addToast("error", `Save rejected: ${path} changed on disk. Reload the workbench first.`)
+          } else if (apiErrorCode(error) === "branch_changed") {
+            // Refused before anything was written: the project moved to another branch.
+            addToast("error", `Could not save ${path}: ${apiErrorMessage(error)}`)
+            void gitBranchMayHaveChanged()
           } else {
             // Its answer, not necessarily the save, was lost.
             unanswered = serialise(form)
@@ -338,7 +343,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           reportSaveCapture(settled.value)
           done = true
         }
-        await answer([under(formReads)], () => saveWorkbenchForm(form, revision), {
+        await answer([under(formReads)], () => saveWorkbenchForm(form, revision, shownBranch()), {
           ok: landed,
           failed: async (error, asked) => {
             const sent = unanswered
@@ -355,7 +360,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
                   return
                 }
                 set({ revision: file.revision, savedForm: sent })
-                await asked.answer(saveWorkbenchForm(form, file.revision), { ok: landed, failed: refused, stale: settle })
+                await asked.answer(saveWorkbenchForm(form, file.revision, shownBranch()), { ok: landed, failed: refused, stale: settle })
               },
               failed: refused,
             })

@@ -508,6 +508,8 @@ class WorkbenchFormSaveRequest(BaseModel):
 
     form: FormSpec
     base_revision: BoundedName
+    # The working branch the saving tab shows, as the pipeline save names it.
+    working_branch: BoundedName | None = None
 
 
 class WorkbenchFormSaveResponse(WorkbenchFormFile, SaveCapture):
@@ -6022,6 +6024,15 @@ class GitSettleUnrecorded(BaseModel):
 
     choice: Literal["record", "put-back"]
     files: list[BoundedPath] = Field(min_length=1, max_length=10_000)
+    # The refusal's token: what the files were when the analyst was asked.
+    token: BoundedName
+
+
+class GitUpstreamPullRequest(BaseModel):
+    """A hosted fork's catch-up to its parent; *settle* as for every operation that replaces
+    the project's files."""
+
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitSetWorkingBranchRequest(BaseModel):
@@ -6055,6 +6066,8 @@ class GitCaptureRequest(BaseModel):
     to capture on the save ledger as they are on disk now."""
 
     paths: list[BoundedPath] = Field(min_length=1, max_length=MAX_REQUEST_ITEMS)
+    # The working branch the tab asking shows, as the pipeline save names it.
+    working_branch: BoundedName | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -6260,6 +6273,10 @@ class GitManagedBranch(BaseModel):
     # spawns), which a delete names back so it acts on the branch it described.
     tip: str
     ledger_tip: str | None = None
+    # HEAD is on the branch or its ledger, whether or not the clone records it as its
+    # working branch (a checkout in a terminal): an archive or delete leaves it as it
+    # leaves the current branch.
+    is_checked_out: bool = False
 
 
 class GitDeletedBranch(BaseModel):
@@ -6332,6 +6349,7 @@ class GitBranchSeen(BaseModel):
     tip: BoundedName
     ledger_tip: BoundedName | None = None
     is_current: bool
+    is_checked_out: bool
 
 
 class GitDeleteBranchRequest(BaseModel):

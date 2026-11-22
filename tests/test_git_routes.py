@@ -52,14 +52,14 @@ class TestGitArchive:
 
 
 # A branch as no listing showed it, for a delete refused before the branch is read.
-_UNSEEN = {"tip": "0" * 40, "ledger_tip": None, "is_current": False}
+_UNSEEN = {"tip": "0" * 40, "ledger_tip": None, "is_current": False, "is_checked_out": False}
 
 
 def _seen(client: TestClient, branch: str) -> dict[str, object]:
     """*branch* as the branch manager lists it now: what a delete's confirmation names."""
     listed = client.get("/api/git/working-branches").json()["branches"]
     row = next(b for b in listed if b["name"] == branch)
-    return {"tip": row["tip"], "ledger_tip": row["ledger_tip"], "is_current": row["is_current"]}
+    return {key: row[key] for key in ("tip", "ledger_tip", "is_current", "is_checked_out")}
 
 
 class TestGitDeleteBranch:
@@ -1555,7 +1555,7 @@ class TestFilesChangedOutsideHaute:
         assert detail["files"] == ["rates.csv"]
         assert detail["message"].startswith("rates.csv has changed on disk outside Haute")
 
-        settle = {"choice": "record", "files": detail["files"]}
+        settle = {"choice": "record", "files": detail["files"], "token": detail["token"]}
         done = client.post(
             "/api/git/working-branch", json={"branch": self._OTHER, "settle": settle}
         )
@@ -1563,11 +1563,66 @@ class TestFilesChangedOutsideHaute:
         assert _git(tmp_path, "show", f"{self._DEV}-save:rates.csv") == "rate\n9"
         assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == f"{self._OTHER}-save"
 
+    def test_files_put_back_are_announced_although_the_operation_after_them_fails(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Put back lands, then Catch up fails (no such remote): the files changed with the
+        watcher paused, so the tree change is announced all the same."""
+        from haute._event_bus import default_bus
+        from haute._git_core import _unrecorded_token
+
+        self._hand_edited(tmp_path)
+        settle = {
+            "choice": "put-back",
+            "files": ["rates.csv"],
+            "token": _unrecorded_token(["rates.csv"], tmp_path),
+        }
+        announced: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("git.tree.changed", announced.append)
+        try:
+            failed = client.post(
+                "/api/git/fast-forward", json={"remote": "nowhere", "settle": settle}
+            )
+        finally:
+            unsubscribe()
+
+        assert failed.status_code == 400, failed.text
+        assert (tmp_path / "rates.csv").read_text() == "rate\n1\n"
+        assert len(announced) == 1
+
+    def test_the_parent_catch_up_settles_the_files_first(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import _project_storage
+        from haute._git_core import _unrecorded_token
+        from haute.schemas import GitFastForwardResponse
+
+        self._hand_edited(tmp_path)
+        seen_on_disk: list[str] = []
+
+        def caught_up(root: Path) -> GitFastForwardResponse:
+            seen_on_disk.append((root / "rates.csv").read_text())
+            return GitFastForwardResponse(
+                remote="upstream", working_branch=self._DEV, fast_forwarded=[], labels_added=[]
+            )
+
+        monkeypatch.setattr(_project_storage, "pull_upstream", caught_up)
+        settle = {
+            "choice": "put-back",
+            "files": ["rates.csv"],
+            "token": _unrecorded_token(["rates.csv"], tmp_path),
+        }
+
+        pulled = client.post("/api/git/storage/upstream/pull", json={"settle": settle})
+
+        assert pulled.status_code == 200, pulled.text
+        assert seen_on_disk == ["rate\n1\n"]
+
     def test_a_settled_path_outside_the_project_is_refused_before_anything_changes(
         self, client: TestClient, tmp_path: Path
     ) -> None:
         self._hand_edited(tmp_path)
-        settle = {"choice": "put-back", "files": ["../elsewhere.csv"]}
+        settle = {"choice": "put-back", "files": ["../elsewhere.csv"], "token": "t"}
 
         refused = client.post(
             "/api/git/working-branch", json={"branch": self._OTHER, "settle": settle}

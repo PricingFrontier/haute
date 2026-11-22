@@ -1019,6 +1019,30 @@ class TestBranchManager:
         assert {ref: _git(repo, "rev-parse", ref) for ref in tips} == tips
         assert read_working_branch(repo) == recorded
 
+    def test_delete_refuses_a_branch_checked_out_in_a_terminal_since_its_confirmation(
+        self, repo: Path
+    ) -> None:
+        """A confirmed delete of the branch HEAD is on forces the checkout off it and discards
+        the changes on disk: a confirmation shown while it was elsewhere never does that."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("scratch", repo, cwd=repo)
+        seen = seen_now(repo, "scratch")
+        assert not seen.is_current and not seen.is_checked_out
+        _git(repo, "checkout", "-q", "scratch-save")
+        (repo / "rating.py").write_text("# edited in the terminal\n")
+
+        with pytest.raises(GitDomainError) as refused:
+            delete_working_pair("scratch", repo, seen=seen, confirm=True, cwd=repo)
+
+        assert str(refused.value) == (
+            "'scratch' changed since you chose to delete it: the project is checked out on it "
+            "now. Look again, then retry."
+        )
+        assert (repo / "rating.py").read_text() == "# edited in the terminal\n"
+        assert self._branch_exists(repo, "scratch")
+        listed = seen_now(repo, "scratch")
+        assert listed.is_checked_out and not listed.is_current
+
     def test_the_branch_manager_lists_what_a_delete_names(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
@@ -1029,7 +1053,10 @@ class TestBranchManager:
     def test_delete_refuses_protected(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
             delete_working_pair(
-                "main", repo, seen=GitBranchSeen(tip="0" * 40, is_current=False), cwd=repo
+                "main",
+                repo,
+                seen=GitBranchSeen(tip="0" * 40, is_current=False, is_checked_out=False),
+                cwd=repo,
             )
 
     def test_unconfirmed_delete_of_the_current_branch_keeps_a_dirty_tree(self, repo: Path) -> None:

@@ -50,13 +50,14 @@ const saved = (form: FormSpec, revision: string | null, capture: SaveCapture = {
  */
 function server(initial: { form: FormSpec; revision: string | null; repairs?: string[] }) {
   let file = initial
-  const puts: Array<{ form: FormSpec; base_revision: string | null }> = []
+  // Each save names the branch the tab shows (null: no git readiness loaded here).
+  const puts: Array<{ form: FormSpec; base_revision: string | null; working_branch: string | null }> = []
   let saves = 0
-  let answerPut: ((body: { form: FormSpec; base_revision: string | null }) => Response) | null = null
+  let answerPut: ((body: { form: FormSpec; base_revision: string | null; working_branch: string | null }) => Response) | null = null
   let capture: SaveCapture = {}
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
     if (init?.method === "PUT") {
-      const body = JSON.parse(String(init.body)) as { form: FormSpec; base_revision: string | null }
+      const body = JSON.parse(String(init.body)) as { form: FormSpec; base_revision: string | null; working_branch: string | null }
       puts.push(body)
       if (answerPut) return answerPut(body)
       saves += 1
@@ -136,7 +137,7 @@ describe("useWorkbenchFormStore", () => {
     // An undo has nothing to go back to, and Save writes the form as read.
     expect(store().undoStack).toEqual([])
     expect(await store().flush()).toBe(true)
-    expect(api.puts).toEqual([{ form: named("grown"), base_revision: "rev-0" }])
+    expect(api.puts).toEqual([{ form: named("grown"), base_revision: "rev-0", working_branch: null }])
     expect(store().dirty).toBe(false)
 
     // A changed file adopted while clean is read the same way.
@@ -327,7 +328,7 @@ describe("useWorkbenchFormStore", () => {
 
     await expect(store().save()).resolves.toBe(true)
 
-    expect(api.puts).toEqual([{ form: named("home"), base_revision: "rev-0" }])
+    expect(api.puts).toEqual([{ form: named("home"), base_revision: "rev-0", working_branch: null }])
     expect(store()).toMatchObject({ revision: "rev-1", dirty: false, saving: false, stale: false })
     expect(toasts()).toEqual([["success", "Saved → rating/workbench"]])
     // The schema may have changed, but the save fetches no tables itself: the project
@@ -338,7 +339,7 @@ describe("useWorkbenchFormStore", () => {
     // The next save quotes the revision the last one gave.
     store().change((form) => ({ ...form, name: "boat" }))
     await store().save()
-    expect(api.puts[1]).toEqual({ form: named("boat"), base_revision: "rev-1" })
+    expect(api.puts[1]).toEqual({ form: named("boat"), base_revision: "rev-1", working_branch: null })
     expect(store().revision).toBe("rev-2")
   })
 
@@ -442,7 +443,7 @@ describe("useWorkbenchFormStore", () => {
 
     store().change((form) => ({ ...form, name: "home" }))
     await expect(store().flush()).resolves.toBe(true)
-    expect(api.puts).toEqual([{ form: named("home"), base_revision: "rev-0" }])
+    expect(api.puts).toEqual([{ form: named("home"), base_revision: "rev-0", working_branch: null }])
     expect(store().dirty).toBe(false)
 
     // A refused save refuses the flush: a milestone does not go on without it.
@@ -450,6 +451,29 @@ describe("useWorkbenchFormStore", () => {
     store().change((form) => ({ ...form, name: "boat" }))
     await expect(store().flush()).resolves.toBe(false)
     expect(store()).toMatchObject({ stale: true, dirty: true })
+  })
+
+  it("names the branch the tab shows, and a save refused as the project moved keeps the edit and reads the branch again", async () => {
+    const api = server({ form: blank, revision: "rev-0" })
+    const store = useWorkbenchFormStore.getState
+    const { status, loadStatus } = useGitStore.getState()
+    const readStatus = vi.fn(async () => null)
+    useGitStore.setState({ status: { ...makeGitWorkingBranch(), working_branch: "dev" }, loadStatus: readStatus })
+    try {
+      await store().load()
+      const moved = "This tab shows the branch 'dev', but the project is on 'other' now, so nothing was saved. Your changes are still here."
+      api.refusePut(() => json({ detail: { error_code: "branch_changed", message: moved } }, 409))
+      store().change((form) => ({ ...form, name: "home" }))
+
+      await expect(store().flush()).resolves.toBe(false)
+
+      expect(api.puts.at(-1)?.working_branch).toBe("dev")
+      expect(store()).toMatchObject({ dirty: true, stale: false })
+      expect(readStatus).toHaveBeenCalledWith({ refresh: true })
+      expect(useToastStore.getState().toasts.map((t) => t.text)).toContain(`Could not save rating/workbench: ${moved}`)
+    } finally {
+      useGitStore.setState({ status, loadStatus })
+    }
   })
 
   it("saves a form a gesture under way has changed, and keeps it from a changed file, though its steps leave dirty as it was", async () => {

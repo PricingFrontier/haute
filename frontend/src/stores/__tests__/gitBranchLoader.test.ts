@@ -13,7 +13,7 @@ type BranchesPayload = { current: string; branches: GitManagedBranch[]; deleted:
 
 function branch(name: string, overrides: Partial<GitManagedBranch> = {}): GitManagedBranch {
   return {
-    name, is_current: false, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null,
+    name, is_current: false, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null, is_checked_out: false,
     has_uncommitted_changes: false, ...overrides,
   }
 }

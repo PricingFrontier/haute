@@ -99,6 +99,7 @@ from haute.routes._save_pipeline import (
     _stage_artifact_write_bytes,
     _TouchedFile,
     capture_save_in_ledger,
+    refuse_another_branch,
 )
 from haute.schemas import (
     WorkbenchExportRequest,
@@ -216,7 +217,18 @@ def _save_form(
     """Write the form's files that changed and delete those it no longer has, unless the
     folder changed since the view read it, holds a file that is not the form's, or a path on
     the way is no ordinary one of the project's (a link, a junction, a reserved name), and
-    capture the writes: one `project_write`."""
+    capture the writes: one `project_write`, holding the repository lock from the branch
+    check to the capture, as the pipeline save does, so the form is never written onto a
+    branch the saving tab does not show."""
+    with repository_mutation(config.project_root):
+        if body.working_branch is not None:
+            refuse_another_branch(config.project_root, body.working_branch)
+        return _write_form(config, body)
+
+
+def _write_form(
+    config: WorkbenchConfig, body: WorkbenchFormSaveRequest
+) -> WorkbenchFormSaveResponse:
     form = with_quote_details(body.form)
     try:
         files = folder_files(form, config.form_folder)

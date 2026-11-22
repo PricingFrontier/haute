@@ -51,7 +51,6 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const branches = useGitStore((s) => s.branches)
   const deletedBranches = useGitStore((s) => s.deletedBranches)
   const loadBranches = useGitStore((s) => s.loadBranches)
-  const openModal = useGitStore((s) => s.openModal)
   const branchesExpandNonce = useGitStore((s) => s.branchesExpandNonce)
   // Undo/redo of a VC operation changes the branch forest from outside this
   // component — the nonce tells us to re-list.
@@ -73,7 +72,6 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const [confirmDelete, setConfirmDelete] = useState<GitManagedBranch | null>(null)
   const [confirmSwitch, setConfirmSwitch] = useState<GitManagedBranch | null>(null)
   const [confirmMove, setConfirmMove] = useState<string | null>(null)
-  const [archiveDirty, setArchiveDirty] = useState<GitManagedBranch | null>(null)
   const [dontAskSwitch, setDontAskSwitch] = useState(false)
 
   // Persisted "don't ask again" for switching (loaded once; whole-environment).
@@ -232,11 +230,9 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
 
   // -- archive / delete / restore --------------------------------------------
   const onArchiveClick = (b: GitManagedBranch) => {
+    // Files on disk off version history (a CSV saved in Excel) are the server's to name:
+    // the archive is refused naming them, and clearingTheWay asks to record or put them back.
     const archive = () => {
-      if (b.has_uncommitted_changes) {
-        setArchiveDirty(b)
-        return
-      }
       // Archiving the CURRENT branch moves you off it — that flow keeps the
       // full reload (and records no history entry, since a reload clears the
       // stacks anyway). Archiving any other branch is an in-app, undoable op.
@@ -253,7 +249,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   // dialog opened): one another page has switched onto or saved to since is refused,
   // and the manager then lists it as it now is.
   const doDelete = (b: GitManagedBranch) => {
-    const seen = { tip: b.tip, ledger_tip: b.ledger_tip, is_current: b.is_current }
+    const seen = { tip: b.tip, ledger_tip: b.ledger_tip, is_current: b.is_current, is_checked_out: b.is_checked_out }
     return run(b.name, "delete", gitDeleteBranch(b.name, seen, true), (res, here) => { // dialog already confirmed the loss
       here.apply(() => setConfirmDelete(null))
       addToast("success", `Deleted ${b.name}`)
@@ -578,34 +574,6 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
             </div>
           )}
 
-          {/* Archive-current needs a clean tree first (S38) */}
-          {archiveDirty && (
-            <div
-              data-testid="branch-manager-archive-dirty"
-              className="flex flex-col gap-2 px-2.5 py-2 rounded-md"
-              style={{ background: "var(--warning-soft, var(--accent-soft-faint))", border: "1px solid var(--warning-border)" }}
-            >
-              <span className="text-[12px]" style={{ color: "var(--text-primary)" }}>
-                <span className="font-mono">{archiveDirty.name}</span> has changes not yet
-                saved. Commit a milestone to keep them before archiving. Edits on the canvas are
-                kept separately and never go into an archive.
-              </span>
-              <div className="flex justify-end gap-2">
-                <button onClick={() => setArchiveDirty(null)} className="px-2.5 py-1 text-[12px] font-medium rounded-md" style={{ color: "var(--text-secondary)" }}>
-                  Cancel
-                </button>
-                <button
-                  data-testid="branch-manager-archive-dirty-commit"
-                  onClick={() => { setArchiveDirty(null); openModal("milestone") }}
-                  className="px-2.5 py-1 text-[12px] font-semibold rounded-md"
-                  style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-                >
-                  Commit a milestone…
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Delete confirmation */}
           {confirmDelete && (
             <div
@@ -830,7 +798,7 @@ function BranchRow({
       {/* Archive: on the current branch it requires a milestone when dirty;
           archived branches can't be re-archived. */}
       {!b.is_archived && (
-        <Tooltip label={b.is_current && b.has_uncommitted_changes ? "Commit changes before archiving" : "Archive working branch"}>
+        <Tooltip label="Archive working branch">
           <button
             data-testid="branch-manager-archive"
             onClick={onArchive}

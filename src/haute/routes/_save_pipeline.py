@@ -376,17 +376,26 @@ def resolve_definition_file(
         raise ForbiddenError("Cannot access paths outside the project root") from None
 
 
-def _refuse_another_branch(root: Path, shown: str) -> None:
+def refuse_another_branch(root: Path, shown: str) -> None:
     """Refuse, before anything is written, a save from a tab showing the working branch
     *shown* when the project has moved on: another tab or a terminal switched it, so the
     save would land on another branch than the tab names, or the checkout is on neither the
     branch nor its ledger, where the capture would have to check out a branch the analyst
-    left. The unsaved work stays in the tab."""
-    from haute._git_core import _get_current_branch, _is_git_repo, ledger_name
+    left. The unsaved work stays in the tab. Each of the project save's three writes runs
+    it under the repository lock: the uncaptured files' capture, the workbench form and the
+    pipeline.
+
+    A repository git refuses to work in (``GitBlockedError``) is not checked: the save still
+    lands on disk, and its capture warns with the cause."""
+    from haute._git_core import GitBlockedError, _get_current_branch, _is_git_repo, ledger_name
     from haute._git_state import read_working_branch
 
     recorded = read_working_branch(root)
-    if recorded is None and not _is_git_repo(root):
+    try:
+        if recorded is None and not _is_git_repo(root):
+            return
+        current = _get_current_branch(root)
+    except GitBlockedError:
         return
     if recorded != shown:
         now = "has no working branch" if recorded is None else f"is on '{recorded}'"
@@ -399,7 +408,6 @@ def _refuse_another_branch(root: Path, shown: str) -> None:
                 ),
             }
         )
-    current = _get_current_branch(root)
     if current not in (recorded, ledger_name(recorded)):
         where = "an earlier version (a detached HEAD)" if current == "HEAD" else f"'{current}'"
         raise ConflictError(
@@ -856,8 +864,6 @@ class SavePipelineService:
         self.replayed = False
         self.recovered = None
         with repository_mutation(self._root):
-            if body.working_branch is not None:
-                _refuse_another_branch(self._root, body.working_branch)
             py_path = self._resolve_source_file(body.source_file)
             source_file = py_path.relative_to(self._root).as_posix()
             left = read_record(self._root, source_file)
@@ -872,6 +878,10 @@ class SavePipelineService:
                 if replayed is not None:
                     self.replayed = True
                     return replayed
+            # After the receipt: a repeat of a save that committed is answered with what it
+            # did, wherever the project has moved since; a new write is refused first.
+            if body.working_branch is not None:
+                refuse_another_branch(self._root, body.working_branch)
             with saving(self._root, source_file):
                 return self._save(
                     body,

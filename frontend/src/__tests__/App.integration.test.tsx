@@ -1556,7 +1556,10 @@ describe("App integration - save pipeline", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
 
     await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(api.captureFiles)).toHaveBeenCalledWith(["rating/files/data/rates.csv"])
+    expect(vi.mocked(api.captureFiles)).toHaveBeenCalledWith(
+      ["rating/files/data/rates.csv"],
+      useGitStore.getState().status?.working_branch ?? null,
+    )
     expect(vi.mocked(api.captureFiles).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(api.savePipeline).mock.invocationCallOrder[0],
     )

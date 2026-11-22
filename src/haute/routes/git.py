@@ -71,7 +71,7 @@ from haute.routes._helpers import (
     discover_pipelines,
     pause_watcher,
 )
-from haute.routes._save_pipeline import capture_save_in_ledger
+from haute.routes._save_pipeline import capture_save_in_ledger, refuse_another_branch
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
@@ -118,6 +118,7 @@ from haute.schemas import (
     GitStorageSync,
     GitUndeleteRequest,
     GitUndeleteResponse,
+    GitUpstreamPullRequest,
     GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
@@ -237,10 +238,21 @@ def _rewriting_tree(
         # what it takes away.
         logger.warning("git_pipeline_inventory_failed", error=str(exc))
         before = []
-    with pause_watcher(), repository_mutation(root):
-        if settle is not None:
-            settle_unrecorded(settle.choice, list(dict.fromkeys(settle.files)), root)
-        yield
+    settled = False
+    try:
+        with pause_watcher(), repository_mutation(root):
+            if settle is not None:
+                settle_unrecorded(
+                    settle.choice, list(dict.fromkeys(settle.files)), settle.token, root
+                )
+                settled = True
+            yield
+    except BaseException:
+        # The files the settlement recorded or put back changed with the watcher paused:
+        # say so although the action after it was refused, since no background task runs.
+        if settled:
+            default_bus.publish("git.tree.changed", {"pipelines_before": before})
+        raise
     background.add_task(default_bus.publish, "git.tree.changed", {"pipelines_before": before})
 
 
@@ -308,6 +320,8 @@ def git_capture(body: GitCaptureRequest) -> SaveCapture:
             raise InvalidRequestError(f"{path} is not a file in the project.")
     warnings: list[str] = []
     with repository_mutation(root):
+        if body.working_branch is not None:
+            refuse_another_branch(root, body.working_branch)
         captured = capture_save_in_ledger(root, list(dict.fromkeys(body.paths)), warnings)
     return SaveCapture(warnings=warnings, **captured._asdict())
 
@@ -748,13 +762,16 @@ def git_check_upstream() -> GitUpstreamStatusResponse:
 
 
 @router.post("/storage/upstream/pull", response_model=GitFastForwardResponse)
-def git_pull_upstream(background: BackgroundTasks) -> GitFastForwardResponse:
+def git_pull_upstream(
+    body: GitUpstreamPullRequest, background: BackgroundTasks
+) -> GitFastForwardResponse:
     """Catch this fork up to its parent by fast-forward only.
 
     One-directional by design (parent → fork). The watcher is paused for
-    the wholesale tree replacement, exactly as the remote catch-up does."""
+    the wholesale tree replacement, exactly as the remote catch-up does, and files off
+    version history are settled first as the analyst chose (*settle*)."""
     try:
-        with _rewriting_tree(background):
+        with _rewriting_tree(background, body.settle):
             response = _project_storage.pull_upstream(current_project().root)
         return response
     except _project_storage.StorageConfigError as e:

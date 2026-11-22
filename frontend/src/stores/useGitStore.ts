@@ -23,6 +23,7 @@ import {
 import type { GitBindStorageResponse, GitDeletedBranch, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
 import { answer, newest, requestKind, under, type Part, type Settled } from "../utils/answers"
 import { createSingleFlight } from "./singleFlight"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 const statusFlight = createSingleFlight<GitWorkingBranchResponse | null>()
 /** The status request that owns the single-flight's slot: each one issued takes a turn, and a
@@ -321,7 +322,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   checkUpstream: async () => checkGitUpstream(),
   pullUpstream: async () => {
     let pulled!: GitFastForwardResponse
-    await answer([gitStorePart()], pullGitUpstream(), {
+    await answer([gitStorePart()], clearingTheWay((...settled) => pullGitUpstream(...settled)), {
       ok: async (result) => {
         pulled = result
         // refresh: same pre-mutation-join hazard as bindStorage.
@@ -358,6 +359,12 @@ const useGitStore = create<GitState>()((set, get) => ({
  *  branch loader's). Async because the loader import must stay dynamic, like
  *  `loadBranches`' — a static import would fold the split chunk back into the
  *  main bundle. */
+/** The working branch this tab shows, which each of the project save's writes names so that
+ *  none lands on a branch the project has moved to since (`branch_changed`). */
+export function shownBranch(): string | null {
+  return useGitStore.getState().status?.working_branch ?? null
+}
+
 /**
  * The project's branch may have moved, whoever moved it: live sync's `git_branch_changed`
  * (another tab, a terminal) or a save refused as `branch_changed`. The readiness is read

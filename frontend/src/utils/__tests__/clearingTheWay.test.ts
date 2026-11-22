@@ -16,7 +16,7 @@ const MESSAGE =
   "rating/files/data/rates.csv has changed on disk outside Haute since the last save. Before switching to 'other', record it as a save on this branch, or put it back as version history has it."
 
 function refusedOver(files: string[]): ApiError {
-  const detail = { error_code: "unrecorded_files", message: MESSAGE, files }
+  const detail = { error_code: "unrecorded_files", message: MESSAGE, files, token: "token-1" }
   // As the client throws a structured refusal: its detail parsed, beside its text.
   return new ApiError("HTTP 409", 409, JSON.stringify(detail), { detail }, detail)
 }
@@ -40,7 +40,7 @@ describe("clearingTheWay", () => {
     useQuestionStore.getState().answer({ choice: answer, reason: "" })
 
     await expect(done).resolves.toBe("switched")
-    expect(operation.mock.calls).toEqual([[], [{ settle: { choice, files } }]])
+    expect(operation.mock.calls).toEqual([[], [{ settle: { choice, files, token: "token-1" } }]])
   })
 
   it("cancelled, leaves the refusal standing and asks nothing again", async () => {
@@ -73,6 +73,7 @@ const REPLACING_FILES = new Set([
   "gitArchiveBranch",
   "gitFastForward",
   "gitBranchAway",
+  "pullGitUpstream",
 ])
 
 function sourceFiles(folder: string): string[] {

@@ -1779,6 +1779,7 @@ export interface GitManagedBranch {
   has_uncommitted_changes: boolean;
   has_unmerged_saves: boolean;
   is_archived: boolean;
+  is_checked_out: boolean;
   is_current: boolean;
   ledger_tip: string | null;
   name: string;

@@ -135,7 +135,7 @@ describe("git identity save prompt", () => {
 
     await waitFor(() => expect(mockSetIdentity).toHaveBeenCalledTimes(1))
     expect(mockSetIdentity).toHaveBeenCalledWith("Restored User", "restored@example.com", false)
-    await waitFor(() => expect(mockCapture).toHaveBeenCalledWith(["test.py"]))
+    await waitFor(() => expect(mockCapture).toHaveBeenCalledWith(["test.py"], useGitStore.getState().status?.working_branch ?? null))
     await waitFor(() => expect(useGitStore.getState().uncaptured).toEqual([]))
     // The save itself is not repeated: its files are captured as they are.
     expect(mockSave).toHaveBeenCalledTimes(1)

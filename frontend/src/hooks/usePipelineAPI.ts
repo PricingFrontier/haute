@@ -66,7 +66,7 @@ import { useDebouncedCallback } from "./useDebouncedCallback"
 import { answer, ask, newest, signalPart, type Part } from "../utils/answers"
 import { useRequestKind } from "./useRequestKind"
 import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
-import useGitStore, { gitBranchMayHaveChanged } from "../stores/useGitStore"
+import { gitBranchMayHaveChanged, shownBranch } from "../stores/useGitStore"
 
 interface PipelineAPIParams {
   selectedNode: Node | null
@@ -1861,7 +1861,7 @@ export default function usePipelineAPI({
           operation,
           // The branch the toolbar shows: a save made before this tab learned the project
           // moved is refused, never landed on the other branch.
-          working_branch: useGitStore.getState().status?.working_branch ?? null,
+          working_branch: shownBranch(),
         },
       }
     }

@@ -214,7 +214,7 @@ describe("recordRestore", () => {
   })
 })
 
-const SEEN = { tip: "a".repeat(40), ledger_tip: "b".repeat(40), is_current: false }
+const SEEN = { tip: "a".repeat(40), ledger_tip: "b".repeat(40), is_current: false, is_checked_out: false }
 
 describe("recordDelete", () => {
   it("undoes via undelete (trash restore) and redoes via a confirmed delete", async () => {

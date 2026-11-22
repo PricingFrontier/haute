@@ -2317,6 +2317,8 @@ export function retryInterruptedGit(
 export interface GitSettleUnrecorded {
   choice: "record" | "put-back"
   files: string[]
+  /** The refusal's token: what the files were when the analyst was asked. */
+  token: string
 }
 
 /** The options of an operation that replaces the project's files. */
@@ -2368,9 +2370,9 @@ export function checkGitUpstream(
 
 /** Catch this fork up to its parent's tips, fast-forward only. */
 export function pullGitUpstream(
-  options?: { signal?: AbortSignal },
+  { settle, ...options }: ReplacingFilesOptions = {},
 ): Promise<GitFastForwardResponse> {
-  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
+  return post<unknown>("/api/git/storage/upstream/pull", settled(settle), options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
 }
 
 /** Clear a finished bind result once the dialog has shown it. */
@@ -2402,8 +2404,12 @@ export function setGitIdentity(
 
 /** Capture on the save ledger the files earlier writes reported uncaptured, as they are on
  *  disk now. Capturing again what is already captured commits nothing, so a retry is safe. */
-export function captureFiles(paths: string[], options?: { signal?: AbortSignal }): Promise<SaveCapture> {
-  return post<unknown>("/api/git/capture", { paths }, options).then(async (data) => expectGeneratedContract("SaveCapture", (await gitValidators()).validateSaveCapture, data))
+export function captureFiles(
+  paths: string[],
+  workingBranch: string | null,
+  options?: { signal?: AbortSignal },
+): Promise<SaveCapture> {
+  return post<unknown>("/api/git/capture", { paths, working_branch: workingBranch }, options).then(async (data) => expectGeneratedContract("SaveCapture", (await gitValidators()).validateSaveCapture, data))
 }
 
 export function commitMilestone(
@@ -2475,6 +2481,7 @@ export interface GitBranchSeen {
   tip: string
   ledger_tip: string | null
   is_current: boolean
+  is_checked_out: boolean
 }
 
 export function gitDeleteBranch(

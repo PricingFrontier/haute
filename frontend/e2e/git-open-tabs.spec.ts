@@ -57,7 +57,7 @@ test.describe("an open tab and the project's branch", () => {
     await createBranchInManager(one, "other")
     await switchInManager(one, "other")
     await expectOnBranch(one, "other")
-    const otherBefore = pipelineSavedOn(ledgerOf("other"))
+    const otherBefore = pipelineSavedOn("other")
 
     await two.getByRole("button", { name: "Save", exact: true }).click()
 
@@ -65,7 +65,7 @@ test.describe("an open tab and the project's branch", () => {
       toast(two, `This tab shows the branch '${work}', but the project is on 'other' now, so nothing was saved.`),
     ).toBeVisible()
     await expect(canvasNode(two, "enriched_unsaved")).toBeVisible()
-    expect(pipelineSavedOn(ledgerOf("other"))).toBe(otherBefore)
+    expect(pipelineSavedOn("other")).toBe(otherBefore)
     expect(checkedOutBranch()).toBe(ledgerOf("other"))
     // The refusal reads the branch again: the toolbar follows.
     await expectOnBranch(two, "other")

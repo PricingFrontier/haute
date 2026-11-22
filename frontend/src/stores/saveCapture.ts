@@ -8,9 +8,9 @@
  * waved away this session.
  */
 import { captureFiles } from "../api/client"
-import { apiErrorMessage } from "../api/errors"
+import { apiErrorCode, apiErrorMessage } from "../api/errors"
 import { isIdentityPromptDismissed } from "./identityPrompt"
-import useGitStore from "./useGitStore"
+import useGitStore, { gitBranchMayHaveChanged, shownBranch } from "./useGitStore"
 import useToastStore from "./useToastStore"
 import { documentPart } from "./useDocumentStatusStore"
 import { answer } from "../utils/answers"
@@ -70,9 +70,10 @@ export async function captureUncaptured(): Promise<void> {
   const failed = (error: unknown) => {
     keepUncaptured(paths)
     useToastStore.getState().addToast("error", `Version capture failed: ${apiErrorMessage(error)}`)
+    if (apiErrorCode(error) === "branch_changed") void gitBranchMayHaveChanged()
   }
   // The capture is the ledger's whatever the editor shows by its answer: it is settled either way.
-  await answer([documentPart()], captureFiles(paths), {
+  await answer([documentPart()], captureFiles(paths, shownBranch()), {
     ok: reportSaveCapture,
     failed,
     stale: (settled) => ("value" in settled ? reportSaveCapture(settled.value) : failed(settled.error)),

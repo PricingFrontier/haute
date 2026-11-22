@@ -37,6 +37,7 @@ from haute._git_core import (
     _serialized_mutation,
     _serialized_while_interrupted,
     _tree_of,
+    _unrecorded_token,
     _validate_ref_name,
     divergence_state,
     ledger_name,
@@ -979,6 +980,7 @@ def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
 def settle_unrecorded(
     choice: Literal["record", "put-back"],
     files: list[str],
+    token: str,
     project_root: Path,
     cwd: Path | None = None,
 ) -> None:
@@ -987,10 +989,20 @@ def settle_unrecorded(
     working branch, with the sweep's message, or put them back as HEAD has them, which
     removes one HEAD does not have (a file copied in where the destination has one).
 
-    Only *files* are touched: the operation asked again checks the way once more and names
-    any file changed since. The route holds the repository lock across this and the
-    operation, so nothing lands between them."""
+    Only *files* are touched, and only while they are as they were when the analyst was
+    asked (*token*, from the refusal): a choice made after another tab recorded them,
+    switched branch or edited them again is refused, nothing touched. The operation asked
+    again checks the way once more and names any other file. The route holds the repository
+    lock across this and the operation, so nothing lands between them."""
     root = cwd or project_root
+    if _unrecorded_token(files, cwd) != token:
+        one = len(files) == 1
+        raise GitDomainError(
+            f"{', '.join(files[:5])}{' and more' if len(files) > 5 else ''} "
+            f"{'has' if one else 'have'} changed since you were asked about "
+            f"{'it' if one else 'them'}, so nothing was recorded or put back. Look again, "
+            "then retry."
+        )
     if choice == "record":
         from haute._git_state import read_working_branch
 

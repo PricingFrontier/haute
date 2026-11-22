@@ -14,6 +14,7 @@ from haute._git_core import (
     GitBlockedError,
     _assert_git_repo,
     _branch_name_problem,
+    _get_current_branch,
     _get_default_branch,
     _is_git_repo,
     _is_protected,
@@ -307,6 +308,7 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
     # delete of the *current* pair needs. Compute once.
     ok_dirty, dirty_status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
     tree_dirty = ok_dirty and bool(dirty_status.strip())
+    checked_out = _get_current_branch(cwd)
 
     entries: list[GitManagedBranch] = []
     # Working AND ledger tips come from the single for-each-ref enumeration
@@ -321,6 +323,7 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
         if branch_category(b.name) != "working" or b.name == default:
             continue
         is_current = b.name == current
+        is_checked_out = checked_out in (b.name, ledger_name(b.name))
         entries.append(
             GitManagedBranch(
                 name=b.name,
@@ -329,9 +332,10 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                 has_unmerged_saves=_has_unmerged_saves(
                     tips.get(b.name), tips.get(ledger_name(b.name)), cwd=cwd
                 ),
-                has_uncommitted_changes=is_current and tree_dirty,
+                has_uncommitted_changes=(is_current or is_checked_out) and tree_dirty,
                 tip=tips[b.name],
                 ledger_tip=tips.get(ledger_name(b.name)),
+                is_checked_out=is_checked_out,
             )
         )
     from haute._git_state import read_trash, trash_entry_branch

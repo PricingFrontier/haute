@@ -566,3 +566,40 @@ def test_a_save_from_a_tab_on_the_project_s_branch_is_recorded(project: Path) ->
     SavePipelineService(project_root=project).save(request)
 
     assert _git(project, "rev-parse", f"{WORKING}-save") != tip
+
+
+def test_a_repeat_of_a_save_that_committed_is_answered_from_its_receipt_after_a_switch(
+    project: Path,
+) -> None:
+    """The save committed and its answer was lost; another tab then switched branch. The
+    repeat is answered with what the save did, not refused as a new write."""
+    from haute._git import create_working_branch
+
+    request = _save_request(project, banding=True).model_copy(
+        update={"working_branch": WORKING, "operation": "repeat-after-switch"}
+    )
+    first = SavePipelineService(project_root=project).save(request)
+    create_working_branch("other", project, cwd=project)
+    set_working_branch("other", project, cwd=project)
+
+    service = SavePipelineService(project_root=project)
+    again = service.save(request)
+
+    assert service.replayed is True
+    assert again == first
+
+
+def test_a_save_where_git_refuses_the_repository_lands_on_disk_with_the_cause(
+    project: Path,
+) -> None:
+    """The tab still shows its branch when the repository's settings are damaged: the save
+    is written, and its capture warns with the cause rather than refusing the save."""
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    with (project / ".git" / "config").open("a", encoding="utf-8") as config:
+        config.write("[core\n")
+
+    saved = SavePipelineService(project_root=project).save(request)
+
+    assert "Bands" in (project / "main.py").read_text(encoding="utf-8")
+    assert saved.git_sha is None
+    assert any("Git can't read its settings" in warning for warning in saved.warnings)

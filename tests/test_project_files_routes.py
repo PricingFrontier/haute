@@ -547,6 +547,25 @@ def test_a_capture_takes_a_deletion_git_has_already_staged(
     )
 
 
+def test_a_capture_from_a_tab_showing_another_branch_records_nothing(
+    client: TestClient, project: Path
+) -> None:
+    """The project Save's first write: a tab that has not heard the project moved names
+    the branch it shows, and the capture is refused before anything is recorded."""
+    (project / "rating" / "files" / "data").mkdir(parents=True, exist_ok=True)
+    (project / "rating" / "files" / "data" / "late.csv").write_text("late\n")
+    refs = git_run(project, "for-each-ref", "refs/heads/")
+
+    refused = client.post(
+        "/api/git/capture",
+        json={"paths": ["rating/files/data/late.csv"], "working_branch": "another-branch"},
+    )
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["error_code"] == "branch_changed"
+    assert git_run(project, "for-each-ref", "refs/heads/") == refs
+
+
 def test_a_capture_still_skipped_names_the_files_again(
     client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

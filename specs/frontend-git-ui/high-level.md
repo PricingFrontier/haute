@@ -126,8 +126,9 @@ control. Peeking (viewing
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again", and a preference that cannot be saved is reported in an
-error toast while the switch goes ahead; archiving the current branch with tracked project
-changes not yet saved redirects to "commit a milestone first" instead of proceeding).
+error toast while the switch goes ahead; archiving the current branch with files changed on
+disk outside Haute asks to record them or put them back, as every operation that replaces the
+files does).
 An open tab follows the project's branch when another tab or a terminal moves it: the
 server says so over live sync, and the tab reads its readiness again, so the toolbar shows
 the new branch and a project moved off its working branch opens its dialog without a reload.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import inspect
 import os
 import re
@@ -1611,8 +1612,9 @@ def _wipe_volatile_artefacts(repo_root: Path) -> None:
 _UNLINK_FAILED = re.compile(r"unable to unlink (?:old )?'(.+?)'")
 
 
-def _tracked_changes(cwd: Path | None = None) -> set[str]:
-    """Tracked paths whose index or working content differs from HEAD."""
+def _tracked_changes(cwd: Path | None = None, *, with_sources: bool = False) -> set[str]:
+    """Tracked paths whose index or working content differs from HEAD; *with_sources* adds
+    a staged rename's or copy's source, whose removal is part of the change."""
     # Read raw: each entry's two status letters may begin with a space, which a
     # stripped output would lose along with the path's first character.
     result = subprocess.run(
@@ -1636,7 +1638,10 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
             continue
         paths.add(entry[3:])
         if entry[0] in "RC" or entry[1] in "RC":
-            i += 1  # a rename's or copy's source path follows
+            # A rename's or copy's source path follows.
+            if with_sources and i < len(tokens) and tokens[i]:
+                paths.add(tokens[i])
+            i += 1
     return paths
 
 
@@ -1652,8 +1657,11 @@ class GitUnrecordedFilesError(GitDomainError):
     *files*, every one of them, so the editor can offer to record them as a save or put them
     back (``settle_unrecorded``) and then ask for the operation again; HTTP 409."""
 
-    def __init__(self, words: str, files: list[str]) -> None:
+    def __init__(self, words: str, files: list[str], token: str) -> None:
         self.files = files
+        # What the files are now (_unrecorded_token): the choice made of them is answered
+        # against it, so one made after they changed again touches none of them.
+        self.token = token
         named = ", ".join(files[:_UNRECORDED_NAMED])
         if len(files) > _UNRECORDED_NAMED:
             named += f" and {len(files) - _UNRECORDED_NAMED} more"
@@ -1692,9 +1700,32 @@ def _assert_way_clear(
         for path in added.split("\0")
         if path and ((root / path).exists() or (root / path).is_symlink())
     ]
-    files = sorted(_tracked_changes(cwd) | set(in_the_way))
+    files = sorted(_tracked_changes(cwd, with_sources=True) | set(in_the_way))
     if files:
-        raise GitUnrecordedFilesError(words, files)
+        raise GitUnrecordedFilesError(words, files, _unrecorded_token(files, cwd))
+
+
+def _unrecorded_token(files: list[str], cwd: Path | None = None) -> str:
+    """What *files* are now, as a digest: the branch the checkout is on, and for each file
+    its content on disk and at HEAD (the blob git would record, or none). A question asked
+    of them is answered against it (``settle_unrecorded``): once another tab has recorded
+    them, switched branch or edited them again, the answer touches nothing."""
+    root = cwd or current_project().root
+    _attached, branch = _run_git_ok("symbolic-ref", "-q", "HEAD", cwd=cwd)
+    on_disk = [path for path in files if (root / path).is_file()]
+    hashed = _run_git("hash-object", "--", *on_disk, cwd=cwd).split() if on_disk else []
+    disk = dict(zip(on_disk, hashed, strict=True))
+    listed = _run_git(
+        "ls-tree", "-z", "HEAD", "--", *(f":(literal){path}" for path in files), cwd=cwd
+    )
+    at_head = {}
+    for entry in filter(None, listed.split("\0")):
+        meta, _, name = entry.partition("\t")
+        at_head[name] = meta.split()[2]
+    digest = hashlib.sha256(branch.encode())
+    for path in sorted(files):
+        digest.update(f"\0{path}\0{disk.get(path, '-')}\0{at_head.get(path, '-')}".encode())
+    return digest.hexdigest()
 
 
 def _held_files(stderr: str) -> list[str]:

@@ -91,7 +91,8 @@ describe("reportSaveCapture", () => {
     vi.mocked(captureFiles).mockResolvedValue({ git_sha: "ledger-2", warnings: [], identity_required: false, uncaptured: [] })
     await captureUncaptured()
 
-    expect(captureFiles).toHaveBeenCalledWith(["rating/workbench/form.json", "rating/files/data/a.csv"])
+    // With the branch the tab shows, which the server checks the project is still on.
+    expect(captureFiles).toHaveBeenCalledWith(["rating/workbench/form.json", "rating/files/data/a.csv"], null)
     expect(useGitStore.getState().uncaptured).toEqual([])
     expect(useGitStore.getState().status?.last_save_sha).toBe("ledger-2")
 
@@ -119,6 +120,25 @@ describe("reportSaveCapture", () => {
       ["warning", "Changes saved; version capture failed: busy"],
       ["error", "Version capture failed: the server stopped"],
     ])
+  })
+
+  it("names the branch the tab shows, and a capture refused as the project moved keeps the files and reads the branch again", async () => {
+    const { loadStatus } = useGitStore.getState()
+    const readStatus = vi.fn(async () => null)
+    useGitStore.setState({ status: { ...makeGitWorkingBranch(), working_branch: "dev" }, loadStatus: readStatus })
+    try {
+      reportSaveCapture({ uncaptured: ["rating/files/data/a.csv"] })
+      const moved = { error_code: "branch_changed", message: "This tab shows the branch 'dev', but the project is on 'other' now." }
+      vi.mocked(captureFiles).mockRejectedValueOnce(new ApiError("HTTP 409", 409, JSON.stringify(moved), { detail: moved }, moved))
+
+      await captureUncaptured()
+
+      expect(captureFiles).toHaveBeenCalledWith(["rating/files/data/a.csv"], "dev")
+      expect(useGitStore.getState().uncaptured).toEqual(["rating/files/data/a.csv"])
+      expect(readStatus).toHaveBeenCalledWith({ refresh: true })
+    } finally {
+      useGitStore.setState({ loadStatus })
+    }
   })
 
   it("keeps a file a write reports while the capture is under way", async () => {
