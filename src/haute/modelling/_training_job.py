@@ -51,6 +51,7 @@ from haute.modelling._evaluation import (
     EvaluationPlan,
     EvaluationResultsArtifact,
     aggregate_evaluation_results,
+    evaluation_key_values,
     generate_evaluation_plan,
     load_evaluation_plan,
     load_evaluation_report,
@@ -1107,7 +1108,7 @@ class TrainingJob:
                 stage_name="evaluation_plan_key_collect",
                 execution_context=execution_context,
             )
-            values = {column: frame[column].to_list() for column in columns}
+            values = {column: evaluation_key_values(frame[column]) for column in columns}
         # A random plan selects positions: it draws over the source's canonical order.
         row_order = (
             _training_row_order(

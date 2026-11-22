@@ -78,6 +78,7 @@ from haute.modelling._candidate_run import capture_provenance
 from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import (
     EvaluationConfig,
+    evaluation_key_values,
     generate_evaluation_plan,
 )
 from haute.modelling._glm_terms import validate_glm_model_columns
@@ -506,28 +507,23 @@ class TrainService:
                     raise HauteValidationError(
                         f"evaluation preview is missing required column(s): {missing_columns}"
                     )
-                projection = [
-                    (
-                        pl.col(column).cast(pl.String).alias(column)
-                        if column == evaluation.date_column
-                        else pl.col(column)
-                    )
-                    for column in selected_columns
-                ]
                 frame = streaming_collect(
-                    evaluation_lf.filter(pl.col(target).is_not_null()).select(projection),
+                    evaluation_lf.filter(pl.col(target).is_not_null()).select(selected_columns),
                     execution_context=execution_context,
                 )
             if frame.height < 1:
                 raise HauteValidationError(f"Target column {target!r} contains only null values")
-            target_values = frame[target].to_list() if task == "classification" else None
+            # The key columns reach the planner as a training run's do.
+            target_values = (
+                evaluation_key_values(frame[target]) if task == "classification" else None
+            )
             group_values = (
-                frame[evaluation.group_column].to_list()
+                evaluation_key_values(frame[evaluation.group_column])
                 if evaluation.group_column is not None
                 else None
             )
             date_values = (
-                frame[evaluation.date_column].to_list()
+                evaluation_key_values(frame[evaluation.date_column])
                 if evaluation.date_column is not None
                 else None
             )
