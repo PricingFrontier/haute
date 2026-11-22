@@ -332,6 +332,17 @@ class TestProvenance:
         )
         assert (provenance.git_commit, provenance.git_dirty) == (None, None)
 
+    def test_git_state_is_unknown_where_git_refuses_the_repository(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A folder git does not trust records no commit, and the training goes on."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+        provenance = capture_provenance(
+            job_id="j", node_label="n", training_identity_sha256="a" * 64, project_root=tmp_path
+        )
+        assert (provenance.git_commit, provenance.git_dirty) == (None, None)
+
     def test_git_state_records_the_commit_and_uncommitted_changes(self, tmp_path: Path) -> None:
         def git(*args: str) -> str:
             return subprocess.run(

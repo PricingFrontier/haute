@@ -159,6 +159,22 @@ class GitMilestoneForkError(GitDomainError):
         self.fork = fork
 
 
+GitBlockedCause = Literal["lock", "untrusted-folder", "damaged-config", "signing"]
+
+
+class GitBlockedError(GitDomainError):
+    """Git refused a command for a cause the analyst can remove outside Haute: a lock file
+    another git program holds or left behind, a folder git does not trust, a settings file
+    git cannot read, or a commit it could not sign. Raised by the core's runners from git's
+    own message (:func:`_blocked_by`), worded with what to do, so a probe never reads it as
+    "no" (not a repository, no identity) and a command never answers it as "Git refused
+    this"; git's message stays in the log, as for every refusal."""
+
+    def __init__(self, cause: GitBlockedCause, message: str) -> None:
+        super().__init__(message)
+        self.cause = cause
+
+
 class GitTransactionError(GitDomainError):
     """A recorded operation that can be neither put back nor finished: its refs are
     where no step of its record leaves them. Its record stays."""
@@ -621,6 +637,69 @@ def _subcommand(args: tuple[str, ...]) -> str:
     return args[index] if index < len(args) else ""
 
 
+_LOCK_HELD = re.compile(r"Unable to create '([^'\n]+\.lock)': File exists")
+_UNTRUSTED = re.compile(r"detected dubious ownership in repository at '([^'\n]+)'")
+_SAFE_DIRECTORY = re.compile(r"git config --global --add safe\.directory (.+)")
+_DAMAGED_CONFIG = re.compile(r"bad config (?:file )?line (\d+) in (?:file )?(.+)")
+_UNSIGNED = "failed to sign the data"
+
+
+def _blocked_by(stderr: str, cwd: Path | None) -> GitBlockedError | None:
+    """The cause outside Haute that git's *stderr* names, worded with what to do; None for
+    any other failure, which stays "Git refused this" with git's words in the log.
+
+    Only what the analyst needs is taken from git's words: the lock file and the settings
+    file, shown relative to the project when they are in it, the line, and the
+    ``safe.directory`` value git itself proposes."""
+    root = cwd or current_project().root
+
+    def shown(path: str) -> str:
+        try:
+            return Path(path).resolve().relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return path
+
+    if (held := _LOCK_HELD.search(stderr)) is not None:
+        lock = shown(held.group(1))
+        return GitBlockedError(
+            "lock",
+            f"Another git program is using this project's repository: git found its lock "
+            f"file {lock}. Wait for it to finish, then try again. If no git program is "
+            f"running, one that stopped left the file behind: delete {lock}, then try again.",
+        )
+    if (untrusted := _UNTRUSTED.search(stderr)) is not None:
+        proposed = _SAFE_DIRECTORY.search(stderr)
+        value = proposed.group(1).strip() if proposed is not None else untrusted.group(1)
+        return GitBlockedError(
+            "untrusted-folder",
+            "Git does not trust this project's folder, because another account owns it (as "
+            "on a network share), so it will not work in it. To trust the folder, run: "
+            f"git config --global --add safe.directory {value}",
+        )
+    if (damaged := _DAMAGED_CONFIG.search(stderr)) is not None:
+        line, settings = damaged.group(1), shown(damaged.group(2).strip())
+        return GitBlockedError(
+            "damaged-config",
+            f"Git can't read its settings: line {line} of {settings} is damaged. Correct or "
+            "remove that line, then try again.",
+        )
+    if _UNSIGNED in stderr:
+        return GitBlockedError(
+            "signing",
+            "Git is set to sign every commit, and this one could not be signed, so nothing "
+            "was recorded. Check that the signing key git uses is available and signs "
+            "without asking for a passphrase, then try again.",
+        )
+    return None
+
+
+def _refused(cmd: list[str], stderr: str, args: Sequence[str], cwd: Path | None) -> GitError:
+    """The error for a git command that exited non-zero: its cause in words when git names
+    one the analyst can remove, else git's own message, which is logged and never said."""
+    logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
+    return _blocked_by(stderr, cwd) or GitError(stderr or f"git {_subcommand(tuple(args))} failed")
+
+
 def _run_git(
     *args: str,
     check: bool = True,
@@ -668,33 +747,28 @@ def _run_git(
         stdout = byte_result.stdout.decode("utf-8", errors="replace")
         stderr = byte_result.stderr.decode("utf-8", errors="replace")
     if check and returncode != 0:
-        stderr = stderr.strip()
-        logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
-        raise GitError(stderr or f"git {_subcommand(args)} failed")
+        raise _refused(cmd, stderr.strip(), args, cwd)
     return stdout.strip()
 
 
 def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
-    """Run a git command and return (success, stdout).  Never raises."""
-    cmd = _git_argv(args)
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=cwd or current_project().root,
-        env=_git_env(),
-    )
-    return result.returncode == 0, result.stdout.strip()
+    """Run a git command and return (success, stdout).
+
+    A non-zero exit is an answer ("no"), except when git refused for a cause outside Haute
+    (:class:`GitBlockedError`): an untrusted folder or damaged settings would otherwise read
+    as no repository, or no identity, so that is raised."""
+    return_code, stdout = _run_git_rc(*args, cwd=cwd)
+    return return_code == 0, stdout
 
 
 def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
-    """Run a git command and return (returncode, stdout).  Never raises.
+    """Run a git command and return (returncode, stdout).
 
     Exists alongside :func:`_run_git_ok` for callers that must distinguish a
     SEMANTIC non-zero exit from a real failure — ``merge-base --is-ancestor``
     exits 1 for "not an ancestor" (a valid, cacheable answer) but >1 for an
-    unreadable object (which must never be cached).
+    unreadable object (which must never be cached). It raises only
+    :class:`GitBlockedError`, for a refusal no exit code can stand for.
     """
     cmd = _git_argv(args)
     result = subprocess.run(
@@ -705,6 +779,11 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         cwd=cwd or current_project().root,
         env=_git_env(),
     )
+    if result.returncode != 0:
+        blocked = _blocked_by(result.stderr, cwd)
+        if blocked is not None:
+            logger.warning("git_command_failed", cmd=cmd, stderr=result.stderr.strip())
+            raise blocked
     return result.returncode, result.stdout.strip()
 
 
@@ -1605,8 +1684,7 @@ def _rewrite_tree(*args: str, cwd: Path | None = None) -> None:
         logger.warning("git_tree_out_of_step", cmd=["git", *args], files=out_of_step, stderr=stderr)
         raise GitFilesInUseError(reported or out_of_step)
     if code != 0:
-        logger.warning("git_command_failed", cmd=["git", *args], stderr=stderr)
-        raise GitError(stderr or f"git {_subcommand(args)} failed")
+        raise _refused(["git", *args], stderr, args, cwd)
 
 
 def _remote_names(cwd: Path | None = None) -> list[str]:

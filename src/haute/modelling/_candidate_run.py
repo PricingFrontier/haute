@@ -18,10 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from haute._logging import get_logger
 from haute.errors import HauteValidationError
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 CANDIDATE_RUN_CONTRACT_VERSION = "1"
+
+logger = get_logger(component="modelling")
 
 _TRAINING_IDENTITY_KEYS = (
     "target",
@@ -159,9 +162,22 @@ class CandidateProvenance:
 
 
 def _git_state(project_root: Path) -> tuple[str | None, bool | None]:
-    from haute._git_core import _is_git_repo, _rev_parse, _run_git_ok, git_binary_available
+    from haute._git_core import (
+        GitBlockedError,
+        _is_git_repo,
+        _rev_parse,
+        _run_git_ok,
+        git_binary_available,
+    )
 
-    if not git_binary_available() or not _is_git_repo(project_root):
+    if not git_binary_available():
+        return None, None
+    try:
+        if not _is_git_repo(project_root):
+            return None, None
+    except GitBlockedError as blocked:
+        # Provenance records no commit it cannot read; the training it describes goes on.
+        logger.warning("provenance_git_blocked", cause=blocked.cause)
         return None, None
     commit = _rev_parse("HEAD", cwd=project_root)
     ok, status = _run_git_ok("status", "--porcelain", cwd=project_root)

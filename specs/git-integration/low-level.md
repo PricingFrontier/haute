@@ -29,6 +29,21 @@ conversion in the routes).
 - `GitError(HauteError)` — base; wraps raw subprocess stderr.
   - `GitDomainError(GitError)` — hand-written, safe-to-surface message.
     - `GitGuardrailError(GitDomainError)` — guardrail block → HTTP 403.
+    - `GitBlockedError(GitDomainError)` — git refused for a cause outside Haute that its
+      message names (`_blocked_by`), carrying `cause`: `lock` ("Unable to create
+      '<path>.lock': File exists"), `untrusted-folder` ("detected dubious ownership"),
+      `damaged-config` ("bad config line <n> in file <file>") or `signing` ("failed to
+      sign the data"). Its message says the cause and what to do: "Another git program is
+      using this project's repository: git found its lock file <file>. Wait for it to
+      finish, then try again. If no git program is running, one that stopped left the file
+      behind: delete <file>, then try again."; "Git does not trust this project's folder,
+      because another account owns it (as on a network share), so it will not work in it.
+      To trust the folder, run: git config --global --add safe.directory <the value git
+      proposes>"; "Git can't read its settings: line <n> of <file> is damaged. Correct or
+      remove that line, then try again."; "Git is set to sign every commit, and this one
+      could not be signed, so nothing was recorded. Check that the signing key git uses is
+      available and signs without asking for a passphrase, then try again." A file inside
+      the project is named relative to it.
     - `GitTransactionError(GitDomainError)` — a recorded operation `recover` can neither
       put back nor finish: its refs are where no step of its record leaves them ("<operation>
       stopped part-way, and its branches have moved since. Inspect the repository before
@@ -218,10 +233,12 @@ appends only missing exact lines under a `# Haute` block. Existing non-UTF-8 byt
 with replacement for membership testing. It deliberately does not ignore `*.haute.json`,
 because pipeline position sidecars belong on the save ledger.
 
-**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of eight
+**`GitWorkingBranchResponse.state`** (computed by `working_branch_status`) is one of nine
 literal values: `"git-unavailable"` (no Git binary on PATH; distinct from
 `"no-repository"` so the UI does not offer init), `"no-repository"` (there is no Git
-repository), `"interrupted"` (`.haute/operation.json` exists: an operation stopped
+repository), `"blocked"` (a repository is there, but a probe raised `GitBlockedError`: a
+folder git does not trust or settings it cannot read; `errors` holds its one message, and
+the UI offers no init), `"interrupted"` (`.haute/operation.json` exists: an operation stopped
 part-way, and `errors` holds one line naming it and up to five of its files, "<operation>
 stopped part-way: <files>." or "<operation> stopped part-way." when it writes none; read
 before every state below), `"unset"` (repository present, attached HEAD, no working branch recorded),
@@ -250,7 +267,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 
 | Method and path | Input | Success response |
 |---|---|---|
-| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (eight-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
+| `GET /api/git/working-branch` | None | `GitWorkingBranchResponse` (nine-state readiness contract above, including `head_sha` when resolvable; augmented via `_with_storage_state` with durable-storage fields `storage`, `storage_remote`, `storage_forked_from`, `sync`, and `storage_bind` owned by [hosted-project-storage](../hosted-project-storage/low-level.md)) |
 | `POST /api/git/working-branch` | `GitSetWorkingBranchRequest {branch,create=false}` | `GitSetWorkingBranchResponse {working_branch,state,last_save_sha?}` |
 | `POST /api/git/interrupted/retry` | None | `GitWorkingBranchResponse`, the readiness once `retry_interrupted` has finished the stopped operation or put it back and removed its record; files still held are 400 `GitFilesInUseError`, a file changed since it stopped is 400 naming it, and refs no step leaves are 400 `GitTransactionError`, the record kept in each case |
 | `POST /api/git/restore-version` | `GitRestoreVersionRequest {sha}` | `GitRestoreVersionResponse {sha,short_sha,restored_from,working_branch}`: `sha` is the new save on the ledger, `restored_from` the full SHA of the version restored |
@@ -284,12 +301,24 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 (a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
 merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
-current: the `open-ledger` operation, nothing when both are so already) → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion or a rename's old name already staged (`git rm`, `git mv`, an editor's git panel, or an earlier `git add` before the process stopped), which the path-scoped commit records as staged: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
+current: the `open-ledger` operation, nothing when both are so already) → each path given
+git's spelling (`_git_spelling`): git on Windows and macOS ignores letter case on disk but
+compares paths letter for letter, so after `rating` is renamed `Rating` it keeps `rating` and
+finds nothing under `Rating/main.py`; one `ls-files --cached` of `:(icase,literal)<top
+folder>` pathspecs gives the tracked names, and a path takes the tracked name of the same file,
+or a new file the spelling of its nearest tracked folder, when both spellings name one place
+on disk (`os.path.samefile`; for a deleted file, its folders), which on a disk that keeps case
+apart they never do, so two names differing only in case stay two files → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion or a rename's old name already staged (`git rm`, `git mv`, an editor's git panel, or an earlier `git add` before the process stopped), which the path-scoped commit records as staged: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <the paths git add takes>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
 what else the user may have pre-staged), the one ref move outside a recorded operation,
-inside `_save_commit()` → returns the new SHA. The `git commit` passes
+inside `_save_commit()` → `_refuse_unrecorded`, a net under any other way a path can miss
+git's: each path's file on disk (`hash-object`, with its filters) is compared with the
+ledger's copy (`ls-tree HEAD`), and any that differ raise `GitDomainError` ("Version history
+did not take the change to <files>; the next save tries again.", at most five named), which
+the capture answers as a failed capture, with the warning and the files `uncaptured` → returns
+the new SHA, or `None` when nothing changed. The `git commit` passes
 `-c core.hooksPath=/dev/null` (`_git_core.NO_HOOKS`): a save runs none of the project's
 hooks, `prepare-commit-msg` and `post-commit` included (which `--no-verify` would still
 run); they run at a milestone over every save it records. Every path reaches Git as a
@@ -307,7 +336,9 @@ with no working branch chosen: no capture, a warning ("Changes saved, but no wor
 is chosen, so version history doesn't have them yet. Choose a working branch to keep
 them."), and every path `uncaptured`. A missing identity skips the commit with a warning
 and `identity_required`; a `GitDomainError` or
-`GitError` is a warning. A skipped or failed capture names its paths in `uncaptured`, since
+`GitError` is a warning, the repository and identity probes included, so a
+`GitBlockedError` they raise is the warning "Changes saved; version capture failed: <its
+message>", never the identity prompt or nothing owed. A skipped or failed capture names its paths in `uncaptured`, since
 the pathspec-scoped commit of a later save never takes them; `POST /api/git/capture` takes
 them later.
 
@@ -1033,12 +1064,19 @@ so recognition of the small documented set of Git failure phrases is locale-inde
 When `_run_git` supplies byte-mode stdin for an LF-delimited plumbing protocol, it
 replacement-decodes stdout/stderr as UTF-8 so malformed diagnostic bytes still reach the
 normal sanitized `GitError` path instead of escaping as `UnicodeDecodeError`.
-On a non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
-(sanitize-by-default). `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
+On a non-zero exit it logs `git_command_failed` (full stderr) and raises `GitBlockedError`
+when `_blocked_by` recognises the cause in git's message, else plain `GitError`
+(sanitize-by-default); the tree fence does the same for a command that wrote no file out of
+step. `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
 `(int, str)`) do not raise merely for a non-zero git exit — used wherever that exit is an expected, meaningful
 outcome (e.g. `merge-base --is-ancestor` exiting 1 for "not an ancestor" vs. >1 for a
 genuinely unreadable object, which `_is_ancestor_cached` still raises on, to avoid
-memoizing a bad answer). None of these three general wrappers catches a subprocess-launch
+memoizing a bad answer) — but raise `GitBlockedError` for a recognised cause, which no exit
+code stands for: `rev-parse --is-inside-work-tree` in an untrusted folder, or `config
+user.name` beside a damaged line, would otherwise read as no repository or no identity.
+Outside the Git component a caller that must go on catches it by name: training
+provenance records no commit (`provenance_git_blocked` logged), and `capture_new_files`
+prints the cause and that nothing was recorded. None of these three general wrappers catches a subprocess-launch
 `OSError`; that propagates to the route's generic 500 handler. Deliberate remote helpers,
 including the final push subprocess, explicitly catch timeout/OS failures and convert
 required refresh failures to a Git error.
@@ -1098,7 +1136,7 @@ process failures, and precise ref-movement races deterministic.
   rewriting the message), the project's tracked hook installed in a clone and an analyst's
   own hook or hooks path left alone,
   milestone merge and its
-  invariant checks, git identity get/set, working-branch status across all eight readiness states,
+  invariant checks, git identity get/set, working-branch status across all nine readiness states,
   `set_working_branch` including a branch created from a detached pending save, folded
   save and milestone (an anchoring milestone for a save, none for a milestone), the
   capture of a save made with no working branch chosen (warned and left uncaptured) and
@@ -1154,6 +1192,18 @@ process failures, and precise ref-movement races deterministic.
   inspection/auth/timeout failure, or any ref rejection; an unreachable remote answered with the
   refresh message, a push transport failure with the could-not-push message, a hook that
   declines the push and a lost create-only lease each answered in words.
+- **`tests/test_git_core_commands.py`** also holds each cause `GitBlockedError` names (a
+  lock file, `GIT_TEST_ASSUME_DIFFERENT_OWNER`, a damaged `.git/config`, a signing program
+  that cannot run) said by a save's capture warning and Commit's refusal, never `git init`
+  nor the identity prompt, readiness `blocked` for the two that refuse the repository, and
+  a failure with no recognised cause staying git's own.
+- **`tests/test_git_letter_case.py`** — a save after the pipeline folder is renamed to other
+  letter case, an upload into a renamed data folder, a replace of a renamed data file and a
+  request naming a folder in other capitals, each recorded under git's spelling with nothing
+  left changed, a switch then succeeding, the net warning and keeping a file a capture recorded
+  nothing for, and two names that differ only in case kept apart where the disk keeps them so.
+  CI's platform smoke runs it on Windows and macOS, where the rename is real; elsewhere a link
+  under the new spelling stands for a folder that ignores case.
 - **`tests/test_git_remote_transport.py`** — real remote commands over `ssh://` through a
   fake ssh script, on every platform (CI's platform smoke runs it on Windows and macOS): a
   transport configured as `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` inspects and

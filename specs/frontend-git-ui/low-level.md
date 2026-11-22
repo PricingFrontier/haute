@@ -555,7 +555,8 @@ Library component/unit tests (no e2e for this surface).
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
   states, full error tooltip on hover and Retry focus with an accessible description,
-  no-repository/unset/detached/invalid/divergent/ready rendering, an interrupted clone
+  no-repository/unset/detached/invalid/divergent/ready rendering, a blocked repository
+  reading "Git refused" with its cause in the tooltip and no `git init`, an interrupted clone
   reading "Unfinished" and naming the operation and its files, with a Retry that reloads
   readiness on success and toasts the files still held on refusal, the branch-name
   click's panel/store side effects, and that the ready state stays branch-only — carrying no
@@ -650,7 +651,7 @@ Library component/unit tests (no e2e for this surface).
   both it and `gitPush` still answer after five minutes, where the default deadline would
   have ended them.
   The guard suite also accepts exactly
-  the eight working-branch readiness states, preserves detached `head_sha`, and rejects an
+  the nine working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.
 - **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current

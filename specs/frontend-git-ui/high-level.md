@@ -72,7 +72,11 @@ the Retry button for assistive technology. Successful responses render distinct 
 remediation for no repository, unset working branch, invalid state, attached divergence,
 and a detached HEAD, which reads "Viewing an earlier version". An interrupted clone, one whose git operation
 stopped part-way, reads "Unfinished", with the operation and its files in its tooltip and a
-Retry that asks the server to finish the operation or put it back. Every git
+Retry that asks the server to finish the operation or put it back. A repository git refuses
+to work in, a folder it does not trust or settings it cannot read, reads "Git refused", with
+the cause and what to do in its tooltip, and never offers `git init`; startup opens no chooser
+for it, Save still writes to disk (its capture warning gives the same cause), and Commit
+toasts the cause. Every git
 action that can rewrite the files (restore, switch, branch creation, archive, delete, catch
 up, spin off, and the undo of a branch operation) reads the readiness again when it fails,
 so an interruption shows at once. After a git action succeeds, the readiness is read with a request issued after it (`loadStatus({ refresh: true })`), never by joining a read already under way, which may describe the project before the action. Startup opens no chooser for an interrupted clone, and neither do Save and Commit: each refuses with a toast naming what stopped, from readiness's line, and asking for Retry in the toolbar first ("<line> Choose Retry in the toolbar before saving."), since a save then would record the files as the operation left them. A ready state shows the working branch name

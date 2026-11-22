@@ -10,6 +10,7 @@ from haute._git_archive import (
 from haute._git_core import (
     DEFAULT_PROTECTED_BRANCHES,
     LEDGER_SUFFIX,
+    GitBlockedError,
     GitBootstrapIncompleteError,
     GitDomainError,
     GitError,
@@ -116,6 +117,7 @@ from haute.schemas import GitPrefs
 __all__ = [
     "DEFAULT_PROTECTED_BRANCHES",
     "LEDGER_SUFFIX",
+    "GitBlockedError",
     "GitBootstrapIncompleteError",
     "GitDomainError",
     "GitError",

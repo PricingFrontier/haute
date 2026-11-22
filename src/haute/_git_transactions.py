@@ -100,7 +100,29 @@ def commit_save(
     _assert_no_git_op_in_progress(cwd)
 
     ledger = resolve_ledger(working, cwd=cwd)
+    # Every command below names a path as git spells it, which a folder renamed to other
+    # letter case on Windows or macOS no longer matches.
+    spelled = _git_spelling(paths, cwd)
+    sha: str | None = None
+    staged = _stage_save(spelled, cwd)
+    if staged is not None:
+        pathspecs, changed = staged
+        msg = message if message is not None else _generate_commit_message(changed)
+        # `git commit -- <paths>` commits the working-tree state of exactly those
+        # paths, bypassing unrelated index content the user may have pre-staged. It is
+        # the one ref move outside a recorded operation: one commit, all or nothing.
+        with _save_commit():
+            _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
+        sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
+        logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
+    _refuse_unrecorded(spelled, cwd)
+    return sha
 
+
+def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str]] | None:
+    """Stage a save of *paths*, as git spells them: the pathspecs its commit takes and the
+    paths that changed, which name the files in its default message; None when nothing in
+    *paths* changed."""
     # :(literal) so a filename holding glob characters names only itself.
     literal = [_literal(path) for path in paths]
     # `git add` takes a path in the index or in the working tree (`--others`, untracked). One
@@ -138,22 +160,99 @@ def commit_save(
         "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *pathspecs, cwd=cwd
     )
     changed = staged.splitlines()
-    if not changed:
-        return None
-    msg = message if message is not None else _generate_commit_message(changed)
-    # `git commit -- <paths>` commits the working-tree state of exactly those
-    # paths, bypassing unrelated index content the user may have pre-staged. It is
-    # the one ref move outside a recorded operation: one commit, all or nothing.
-    with _save_commit():
-        _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
-
-    sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
-    logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
-    return sha
+    return (pathspecs, changed) if changed else None
 
 
 def _literal(path: str) -> str:
     return f":(literal){path}"
+
+
+def _git_spelling(paths: list[str], cwd: Path | None) -> list[str]:
+    """Each of *paths* as git spells it.
+
+    Git on Windows and macOS ignores letter case on disk but compares a path letter for
+    letter, so after a folder is renamed from ``rating`` to ``Rating`` git keeps ``rating``
+    and finds nothing under ``Rating/main.py``: the save would record nothing. A path is
+    given git's spelling when git tracks it, or its nearest folder, under other letter case
+    and both spellings name one place on disk; on a disk that keeps case apart they never
+    do, so two files whose names differ only in case stay two."""
+    root = cwd or current_project().root
+    tops = dict.fromkeys(f":(icase,literal){PurePosixPath(path).parts[0]}" for path in paths)
+    tracked = [
+        name
+        for name in _run_git("ls-files", "-z", "--cached", "--", *tops, cwd=cwd).split("\0")
+        if name
+    ]
+    exact = set(tracked)
+    files: dict[str, list[str]] = {}
+    folders: dict[str, list[str]] = {}
+    for name in tracked:
+        files.setdefault(name.casefold(), []).append(name)
+        parts = name.split("/")
+        for depth in range(1, len(parts)):
+            folder = "/".join(parts[:depth])
+            known = folders.setdefault(folder.casefold(), [])
+            if folder not in known:
+                known.append(folder)
+
+    def spelled(path: str) -> str:
+        if path in exact:
+            return path
+        for known in files.get(path.casefold(), ()):
+            if _same_place(root, path, known):
+                return known
+        parts = path.split("/")
+        for depth in range(len(parts) - 1, 0, -1):
+            folder = "/".join(parts[:depth])
+            for known in folders.get(folder.casefold(), ()):
+                if known == folder:
+                    return path
+                if _same_place(root, folder, known):
+                    return "/".join([known, *parts[depth:]])
+        return path
+
+    return [spelled(path) for path in paths]
+
+
+def _same_place(root: Path, one: str, other: str) -> bool:
+    """Whether *one* and *other*, relative to *root*, name the same file or folder on disk;
+    for two that are both gone (a deleted file), whether their folders are the same."""
+    first, second = root / one, root / other
+    if first.exists() or second.exists():
+        try:
+            return os.path.samefile(first, second)
+        except OSError:  # one of them is not there
+            return False
+    up_one, up_other = PurePosixPath(one).parent, PurePosixPath(other).parent
+    if up_one == PurePosixPath() or up_other == PurePosixPath():
+        return up_one == up_other
+    return _same_place(root, up_one.as_posix(), up_other.as_posix())
+
+
+def _refuse_unrecorded(paths: list[str], cwd: Path | None) -> None:
+    """Refuse a save whose files on disk differ from the ledger's copy once it is made.
+
+    A net under every way a path can fail to match git's, the letter case of a folder among
+    them: the capture would otherwise answer a save that recorded nothing as one that
+    changed nothing, and the editor would keep nothing for the next capture."""
+    root = cwd or current_project().root
+    on_disk = [path for path in paths if (root / path).is_file()]
+    hashed = _run_git("hash-object", "--", *on_disk, cwd=cwd).split() if on_disk else []
+    disk = dict(zip(on_disk, hashed, strict=True))
+    ledger: dict[str, str] = {}
+    listing = _run_git("ls-tree", "-z", "HEAD", "--", *map(_literal, paths), cwd=cwd)
+    for entry in filter(None, listing.split("\0")):
+        meta, _, name = entry.partition("\t")
+        ledger[name] = meta.split()[2]
+    differ = [path for path in paths if disk.get(path) != ledger.get(path)]
+    if differ:
+        named = ", ".join(differ[:_IN_THE_WAY_NAMED])
+        more = len(differ) - _IN_THE_WAY_NAMED
+        if more > 0:
+            named += f" and {more} more"
+        raise GitDomainError(
+            f"Version history did not take the change to {named}; the next save tries again."
+        )
 
 
 # Never versioned from the pipeline folder, whatever the project's .gitignore says.

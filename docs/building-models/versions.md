@@ -111,3 +111,24 @@ milestone, restoring a version and switching branch are refused.
 
 If you changed one of the files after the action stopped, Retry leaves it alone and names
 it. Move your changes aside, then choose **Retry** again.
+
+## When git refuses the repository
+
+Sometimes git itself will not work in a project, for a reason outside Haute. The toolbar
+reads **Git refused**, and its tooltip says why and what to do:
+
+- **A folder git does not trust.** Git refuses a folder another account owns, as on a
+  network share. The tooltip gives the command that trusts it, `git config --global --add
+  safe.directory` and the folder. Run it, then reload the page.
+- **Damaged settings.** A line of git's settings file, usually `.git/config`, cannot be
+  read. The tooltip names the file and the line. Correct or remove that line.
+
+Saving still writes your work to disk. Its warning gives the same reason, and the files are
+captured at the next save once git works again. Two more causes are named when a save or a
+milestone meets them:
+
+- **A lock file.** Another git program is using the repository, or one that stopped left its
+  lock file behind. Wait for it to finish. If no git program is running, delete the file the
+  message names, usually `.git/index.lock`.
+- **Signing.** Git is set to sign every commit, and the signature could not be made. Check
+  that your signing key is available and signs without asking for a passphrase.

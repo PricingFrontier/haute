@@ -398,6 +398,23 @@ def test_update_names_a_file_it_adds_that_it_could_not_record(runner, project: P
     assert "git status" in result.output
 
 
+def test_update_says_why_a_repository_git_does_not_trust_recorded_nothing(
+    runner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A folder another account owns, as on a network share: the repository is there, so the
+    # update says git refuses it, never that the project has none.
+    _in_a_repository(project, working_branch="pricing-dev")
+    _to_provider(project, "gitlab")
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert "Git does not trust this project's folder" in result.output
+    assert "Nothing was recorded in version history: " in result.output
+    assert ".gitlab-ci.yml" in result.output
+
+
 def test_update_records_a_workflow_an_earlier_run_left_uncommitted(runner, project: Path) -> None:
     # A project already in that state: the workflow on disk as generated, never committed.
     # Run again, the update finds it unchanged and records it all the same.

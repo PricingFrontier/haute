@@ -6,12 +6,8 @@ Version control inside Haute, as [the git integration
 specification](../git-integration/high-level.md) describes it: the working
 branch and its save ledger, catching up from a remote, and what a failed git
 command leaves behind. The packages below come from the review plan's runs
-of 10 November 2026. Each was reproduced on Windows in a scratch
-repository: `VCS-03` with nothing injected into Haute, and
-`VCS-05` in a browser with two pages open on one project.
-`VCS-06` comes from the main session's runs of 11 November behind the
-plan's sweep of damaged requests: folders and files renamed on disk, with
-nothing injected.
+of 10 November 2026. `VCS-05` was reproduced on Windows in a browser with
+two pages open on one project.
 `VCS-08` comes from the main session's runs of the same day: a tracked
 file edited by hand, then each operation that replaces working files.
 `VCS-09` comes from the plan's browser sweep of what happens around an
@@ -22,89 +18,11 @@ tabs and with a terminal.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "Git refused this". |
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
-| VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
 | VCS-08 | Planned | P2 | A switch, a catch-up, an archive and a new branch that meet a file edited by hand name it and offer to record it or put it back, instead of "Operation failed" or advice that does not apply. |
 | VCS-09 | Planned | P2 | An open tab learns when the project changes branch, and a save made from a tab that shows another branch is refused naming both, instead of landing on the other branch, moving the checkout back or leaving its files uncommitted with "see server log". |
 
 ## Planned improvements
-
-### VCS-03 — A git command that git refuses is reported with git's reason
-**Why:** Reproduced on 10 November 2026 with four everyday causes, none
-injected into Haute.
-
-- A `.git/index.lock` left by a git command that crashed, or held by one
-  still running. Readiness reads `ready`. Every save answers "Changes saved;
-  version capture failed: Git refused this. Its reason is recorded under
-  incident <id>." and Commit answers "Git refused this. Its reason is
-  recorded under incident <id>." Git's own message, which only the record
-  under that incident holds, says another git process seems to be running
-  and that the file can be removed by hand if none is.
-- A folder git does not trust because another account owns it, as on a
-  network share (switched on here with git's own
-  `GIT_TEST_ASSUME_DIFFERENT_OWNER`). Git says "detected dubious ownership
-  in repository" and gives the command that adds an exception. Haute's
-  readiness answers `no-repository`, so the toolbar reads "Git not
-  initialised" with the hint "Run git init in this project to enable version
-  control."; Commit answers "Not a git repository. Run 'git init' first.";
-  and every save answers "Changes saved, but version capture needs a git
-  identity. Set your name and email to keep version history." and opens the
-  identity prompt, although an identity is set.
-- A damaged line in `.git/config`. Git says "bad config line 29 in file
-  .git/config". Haute answers exactly as for the untrusted folder.
-- A git set to sign every commit (`commit.gpgsign`, usual where signed
-  commits are required) whose signing program fails, as a gpg with no key
-  or one that cannot ask for its passphrase does (run with a program that
-  exits at once). Git says "error: gpg failed to sign the data". Every
-  save answers the "Git refused this" warning, and Commit and Restore answer
-  "Git refused this", each naming an incident, so version history stops and
-  nothing mentions signing. Each failed save leaves its
-  files staged.
-
-In the second and third cases the repository exists and holds the project's
-history, and `git init` repairs neither. The readiness check asks git
-whether the folder is inside a work tree and reads any failure as "no"; the
-identity check reads a failed `git config` as "not set". The helper both use
-returns only success or failure and drops git's exit code and message. A
-second helper beside it exists "for callers that must distinguish a
-SEMANTIC non-zero exit from a real failure" and is used elsewhere. Keeping
-git's raw message out of answers is deliberate, since it can hold paths and
-remote addresses, so the remedy is to recognise these causes, not to print
-the message. The specification already separates `git-unavailable` from
-`no-repository` "so the UI does not offer init".
-
-**Plan:** Tell a refusal from a "no". When `rev-parse` or `config` ends with
-git's fatal exit code, or a commit fails, match the message against a short
-list (a lock file present, an untrusted folder, a config file git cannot
-read, a commit that could not be signed) and carry the reason. Readiness
-then answers a state other than `no-repository`, with the reason in its
-errors. The capture warning and Commit's refusal use sentences written for
-each cause, with what to do: wait, or delete `.git/index.lock`
-when no git command is running; the `safe.directory` command with the
-folder; the config file and the line; that the commit could not be signed.
-A failure outside the list keeps the generic text. Whether an automatic save
-should be signed at all is worth deciding with this: saves already skip the
-project's hooks, which run at the milestone.
-
-**Acceptance:** With a `.git/index.lock` present, a save's warning and
-Commit's refusal name the lock and what to do. With
-`GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, and with a damaged `.git/config`,
-readiness is not `no-repository`, no answer mentions `git init`, the
-identity prompt does not open, and the message names the cause. With
-`commit.gpgsign` on and a signing program that fails, a save's warning and
-Commit's refusal say the commit could not be signed.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_core.py::_is_git_repo`;
-`src/haute/_git_core.py::_run_git_ok`;
-`src/haute/_git_core.py::_assert_git_repo`;
-`src/haute/_git_setup.py::get_identity`;
-`src/haute/_git_read_models.py::working_branch_status`;
-`src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
-`src/haute/_git_transactions.py::commit_save`;
-`frontend/src/components/BranchIndicator.tsx`.
 
 ### VCS-05 — A branch delete names what was confirmed
 **Why:** Reproduced on 10 November 2026 in a browser, with two pages open on
@@ -142,61 +60,6 @@ pages on one project.
 **Evidence:** `frontend/src/components/BranchManager.tsx`;
 `src/haute/_git_archive.py::delete_working_pair`;
 `src/haute/routes/project_files.py::_delete`.
-
-### VCS-06 — A save is captured after its folder's letter case changes
-**Why:** Reproduced on 11 November 2026 with nothing injected. An analyst
-renames a folder in Explorer from `rating` to `Rating`. Windows allows it,
-and git on Windows, which `git init` sets to ignore letter case, does not
-notice: `git status` stays clean and git keeps the old spelling. Haute names
-files as the disk spells them, so the editor's document now carries
-`Rating/main.py`. From then on every save answers 200 with a null commit, no
-warning and an empty list of files left out: the same answer as a save that
-changed nothing. It was run four ways with the same result: the pipeline
-folder renamed, with `haute.toml` left alone and with it edited to match; a
-data folder under Pipeline files renamed, then a new upload and a replace
-through the names the Files panel lists; and one data file renamed, then
-replaced. The files on disk are right. Version history is not: the save
-ledger keeps the content from before the rename, the panel's pending saves
-list one save, and `git status` shows the files modified or staged.
-
-Three things follow, each of them run. A Commit records the content, and
-the next save is left out again, so the saves between milestones are never
-kept. A Restore records what is on disk first, so nothing is lost by it. A
-switch to another branch is refused with "Operation failed. Check the server
-logs for details.": git will not overwrite changes that Haute believes are
-on the ledger.
-
-The capture hands git the request's spelling as a literal path, and git
-compares it with its own spelling letter for letter. For a file git already
-tracks, the first check, whether the path has changed, sees nothing. A new
-file is found on disk and staged under git's spelling of the folder, and the
-list of staged names, asked for under the request's spelling, comes back
-empty. Either way the capture concludes that nothing changed. The plan's
-sweep of damaged requests found the same answer for a request that spells
-an existing folder in other capitals (`DATA/b.csv` into `data`).
-
-**Plan:** Have the capture ask git for its own spelling of each path first:
-the tracked name for a file git knows, and for a new file the spelling git
-has for its nearest tracked folder. Use that spelling in every command.
-Then, as a net under any other mismatch: where a write changed a file and
-the capture recorded nothing for it, compare the file with the ledger's
-copy before answering, and answer as a failed capture does when they
-differ, with the save's warning and the file in the list the editor keeps
-for the next capture.
-
-**Acceptance:** With the pipeline folder, a data folder and a data file each
-renamed to another letter case after a first capture, the next save, upload
-and replace each answer a commit whose tree holds the new content, and a
-switch to another branch then succeeds. A capture that records nothing for
-a file whose content differs from the ledger's answers the save's warning
-and names the file.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_transactions.py::commit_save`;
-`src/haute/_git_transactions.py::_literal`;
-`src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
-`src/haute/_git_setup.py::set_working_branch`.
 
 ### VCS-08 — A file edited by hand does not strand the analyst
 **Why:** Reproduced on 11 November 2026 through the routes, with nothing
@@ -249,8 +112,7 @@ has it and the operation completes. A switch that an untracked file is in
 the way of answers naming the file. None answers "Operation failed." and
 none advises Save.
 
-**Dependencies:** None. `VCS-06` reaches the same failed switch by another
-road.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_git_setup.py::set_working_branch`;
 `src/haute/_git_remote.py::fast_forward_pair_from_tracking`;

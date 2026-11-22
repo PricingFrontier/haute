@@ -398,36 +398,38 @@ def capture_save_in_ledger(
     ``uncaptured``: the commit is pathspec-scoped, so no later save's capture
     takes them, and the editor keeps them for ``POST /api/git/capture``.
     """
+    from haute import _git
     from haute._git_core import _is_git_repo
     from haute._git_state import read_working_branch
 
     if not rel_paths:
         return LedgerCapture(None, False, [])
-    working = read_working_branch(root)
-    if working is None:
-        if not _is_git_repo(root):
-            return LedgerCapture(None, False, [])
-        warnings.append(
-            "Changes saved, but no working branch is chosen, so version history doesn't "
-            "have them yet. Choose a working branch to keep them."
-        )
-        return LedgerCapture(None, False, list(rel_paths))
-
-    from haute import _git
-
-    # Same source of truth as the working-branch response's `identity_set`.
-    # Checked BEFORE committing so a missing identity costs no failing
-    # subprocess and yields a specific, actionable message instead of the
-    # generic git-error fallback.
-    name, email = _git.get_identity(root)
-    if name is None or email is None:
-        warnings.append(
-            "Changes saved, but version capture needs a git identity. "
-            "Set your name and email to keep version history."
-        )
-        return LedgerCapture(None, True, list(rel_paths))
-
     try:
+        # Inside the try: a folder git does not trust, or settings it cannot read, refuses
+        # these probes in words (GitBlockedError) rather than reading as no repository or
+        # no identity.
+        working = read_working_branch(root)
+        if working is None:
+            if not _is_git_repo(root):
+                return LedgerCapture(None, False, [])
+            warnings.append(
+                "Changes saved, but no working branch is chosen, so version history doesn't "
+                "have them yet. Choose a working branch to keep them."
+            )
+            return LedgerCapture(None, False, list(rel_paths))
+
+        # Same source of truth as the working-branch response's `identity_set`.
+        # Checked BEFORE committing so a missing identity costs no failing
+        # subprocess and yields a specific, actionable message instead of the
+        # generic git-error fallback.
+        name, email = _git.get_identity(root)
+        if name is None or email is None:
+            warnings.append(
+                "Changes saved, but version capture needs a git identity. "
+                "Set your name and email to keep version history."
+            )
+            return LedgerCapture(None, True, list(rel_paths))
+
         sha = _git.commit_save(rel_paths, working, cwd=root, message=message)
         if sha is not None:
             # Publish to durable storage when bound; no-op otherwise.
@@ -436,7 +438,8 @@ def capture_save_in_ledger(
             _project_storage.enqueue_push()
         return LedgerCapture(sha, False, [])
     except _git.GitDomainError as exc:
-        # Hand-authored messages (incl. guardrails) are safe verbatim.
+        # Hand-authored messages (incl. guardrails and the causes git names) are safe
+        # verbatim.
         warnings.append(f"Changes saved; version capture failed: {exc}")
     except _git.GitError as exc:
         # Raw git stderr may leak paths/remotes: it is recorded under the incident the

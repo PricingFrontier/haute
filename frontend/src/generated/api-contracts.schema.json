@@ -11885,6 +11885,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "blocked",
             "interrupted",
             "unset",
             "detached",
@@ -12208,6 +12209,7 @@
           "enum": [
             "git-unavailable",
             "no-repository",
+            "blocked",
             "interrupted",
             "unset",
             "detached",

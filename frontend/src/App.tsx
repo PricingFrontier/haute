@@ -1068,7 +1068,7 @@ function FlowEditor() {
     void asked.answer(loadGitReadiness(), {
       ok: (st) => {
         if (!st) return
-        const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "interrupted"
+        const quiet = st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "blocked" || st.state === "interrupted"
         // The branch chooser lists the pairs a crash split, with their Repair; when it does
         // not open, they are reported here.
         if (quiet || st.state === "divergent") reportBrokenPairs(st.broken_pairs)
@@ -1569,7 +1569,9 @@ function FlowEditor() {
   // save, the same from either toolbar and from Ctrl/Cmd+S.
   const requestSave = useCallback(async () => {
     const decide = (st: GitWorkingBranchResponse | null) => {
-      if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
+      // A repository git refuses to work in (a folder it does not trust, settings it cannot
+      // read) still takes the save on disk; its capture warning says why history does not.
+      if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "blocked" || st.state === "ready") {
         void saveProject()
         return
       }
@@ -1603,6 +1605,10 @@ function FlowEditor() {
     }
     if (st.state === "git-unavailable") {
       addToast("error", "Git is not available in this environment - commit is unavailable.")
+      return
+    }
+    if (st.state === "blocked") {
+      addToast("error", st.errors[0] ?? "Git refuses to work in this repository.")
       return
     }
     if (st.state === "ready") {

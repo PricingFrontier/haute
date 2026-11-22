@@ -11,6 +11,7 @@ from typing import Literal
 # original signatures and semantics without a facade dependency.
 from haute._git_core import (
     _ARCHIVE_PREFIX,
+    GitBlockedError,
     _assert_git_repo,
     _branch_name_problem,
     _get_default_branch,
@@ -131,6 +132,9 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
                       git); distinct from "no-repository" so the UI can say
                       "git is not available here" instead of offering init
       - "no-repository" — the project has no Git repository
+      - "blocked"   — a repository is there, but git refuses to work in it for a
+                      cause outside Haute (a folder it does not trust, settings it
+                      cannot read); ``errors`` says which and what to do
       - "interrupted" — an operation stopped part-way and its record is still
                       there; ``errors`` names it and its files
       - "unset"     — no working branch recorded
@@ -140,14 +144,25 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
                       ledger (user moved the repo outside haute)
       - "ready"     — recorded branch is the current lineage and healthy
     """
-    from haute._git_state import interruption_message, read_operation, read_working_branch
-
     if not git_binary_available():
         return GitWorkingBranchResponse(
             state="git-unavailable",
             current_branch="",
             identity_set=False,
         )
+
+    try:
+        return _repository_status(project_root, cwd)
+    except GitBlockedError as blocked:
+        # Not "no-repository": the history is there, and `git init` repairs nothing.
+        return GitWorkingBranchResponse(
+            state="blocked", current_branch="", identity_set=False, errors=[str(blocked)]
+        )
+
+
+def _repository_status(project_root: Path, cwd: Path | None) -> GitWorkingBranchResponse:
+    """The readiness of a clone with git available, every state but ``blocked``."""
+    from haute._git_state import interruption_message, read_operation, read_working_branch
 
     if not _is_git_repo(cwd):
         return GitWorkingBranchResponse(

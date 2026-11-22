@@ -5865,6 +5865,7 @@ class OptimiserMlflowLogResponse(MlflowLogResponse):
 GitWorkingBranchState = Literal[
     "git-unavailable",
     "no-repository",
+    "blocked",
     "interrupted",
     "unset",
     "detached",
@@ -5953,7 +5954,8 @@ class GitWorkingBranchResponse(BaseModel):
     # Drives whether the startup modal fires (S27) and which variant (S14).
     state: GitWorkingBranchState = "unset"
     # Human-readable reasons when state is "invalid" (check_invariants output
-    # or eligibility failure).
+    # or eligibility failure), "blocked" (the cause git refuses the repository for,
+    # with what to do) or "interrupted" (the operation that stopped).
     errors: list[str] = Field(default_factory=list)
     # HEAD's attached branch; empty when the repository is absent or detached.
     current_branch: str = ""

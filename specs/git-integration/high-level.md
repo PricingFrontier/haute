@@ -72,7 +72,10 @@ Out of scope (owned by neighbouring components):
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
 scoped to exactly the files that changed: the pipeline's files, the workbench's form folder's files, or a
 file added, replaced or deleted in the pipeline folder's `files/` through the Pipeline files
-panel ([server-api](../server-api/high-level.md)). A save whose capture is skipped for want
+panel ([server-api](../server-api/high-level.md)). A save names each file as git spells it, so a folder renamed
+to other letter case on Windows or macOS (`rating` to `Rating`, which git there keeps as
+`rating`) is still recorded; a save that would leave a file on disk unlike the ledger's copy
+is a failed capture. A save whose capture is skipped for want
 of a git identity or of a chosen working branch, or fails, still lands on disk, and its
 answer names the files it left off the ledger with a warning: no later save's pathspec takes
 them, so the editor keeps them and one capture route takes them once an identity is set or a
@@ -445,6 +448,17 @@ subclass of the project-wide `HauteError`):
 - **`GitGuardrailError`** — a `GitDomainError` subtype specifically for guardrail blocks
   (protected branch, already-archived, save ledger used as a working branch). Surfaces
   verbatim as HTTP 403.
+- **`GitBlockedError`** — a `GitDomainError` subtype for a refusal whose cause the analyst
+  can remove outside Haute, recognised from git's own message: a lock file another git
+  program holds or one that stopped left behind (`.git/index.lock`), a folder git does not
+  trust because another account owns it, a settings file with a damaged line, and a commit
+  that could not be signed. Its message names the cause and what to do (wait or delete the
+  lock file; the `safe.directory` command git proposes; the file and the line; that the
+  commit could not be signed), never git's own words. A probe that asks git a yes-or-no
+  question raises it rather than reading it as "no", so an untrusted folder or damaged
+  settings is never "not a git repository" or a missing identity: readiness answers
+  `blocked`, with the cause, and no answer mentions `git init`. Any other git failure stays
+  "Git refused this" under an incident.
 - **`GitTransactionError`** — a `GitDomainError` subtype used when an operation failed and
   its refs are where no step of its record leaves them, so it can be neither put back nor
   finished, or when the project's commit hooks left HEAD off the ledger. The record stays and
