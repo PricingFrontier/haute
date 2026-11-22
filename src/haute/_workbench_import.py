@@ -559,7 +559,9 @@ def _expanded_size(data: bytes) -> int:
     """How much *data*, a workbook, holds once unzipped, counted as each file is unzipped a
     piece at a time, never as its stated size says: refused past
     :data:`WORKBOOK_EXPANDED_LIMIT`, for a file unzipping to more than it states (which
-    would let openpyxl's whole reads unzip it all), and when it is no zip."""
+    would let openpyxl's whole reads unzip it all), for a file compressed otherwise than
+    stored or deflated, as Excel writes them (zipfile unzips the others a piece whole), and
+    when it is no zip."""
     import copy
     import zipfile
     import zlib
@@ -568,6 +570,12 @@ def _expanded_size(data: bytes) -> int:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             for member in archive.infolist():
+                # As Excel writes them: other methods unzip a piece whole, unbounded.
+                if member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    raise ImportRefusedError(
+                        "The workbook is compressed as Excel does not compress one: save it "
+                        "again from Excel."
+                    )
                 # Counted past its stated size, which would otherwise cut the count there;
                 # each piece is unzipped to at most its own length, so the count bounds it.
                 counted = copy.copy(member)

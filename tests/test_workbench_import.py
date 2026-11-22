@@ -770,6 +770,18 @@ def test_a_workbook_too_large_unzipped_or_headed_too_wide_is_refused(
         imports._excel_rows(EXCEL, b"not a zip", lambda _names: [0])
 
 
+@pytest.mark.parametrize("method", ["ZIP_BZIP2", "ZIP_LZMA"])
+def test_a_workbook_compressed_as_excel_does_not_is_refused(method: str) -> None:
+    import zipfile
+
+    packed = io.BytesIO()
+    with zipfile.ZipFile(packed, "w", getattr(zipfile, method)) as archive:
+        archive.writestr("xl/sharedStrings.xml", b"0" * 1_000)
+
+    with pytest.raises(ImportRefusedError, match="compressed as Excel does not"):
+        imports._excel_rows(EXCEL, packed.getvalue(), lambda _names: [0])
+
+
 def test_a_workbook_whose_files_unzip_to_more_than_they_state_is_refused() -> None:
     import struct
     import zipfile

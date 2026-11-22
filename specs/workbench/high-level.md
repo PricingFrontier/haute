@@ -1898,8 +1898,9 @@ Out of scope:
     workbook's sheet named, else its first, its columns named by its header row, the table
     as wide as the header names (at most 1,024 columns), and its rows those under it, a row
     empty across the header's columns ending them; a workbook holding more than 64 MiB once
-    unzipped, counted as it unzips, or one whose files unzip to more than they state, is
-    refused before it is read, as its text is read whole.
+    unzipped, counted as it unzips, one whose files unzip to more than they state, and one
+    compressed otherwise than Excel compresses one, are refused before it is read, as its
+    text is read whole.
   - **A database.** Its query run on the named connection (below), on Databricks SQL, SQL
     Server, PostgreSQL or a SQLite file: one statement, starting `SELECT` or `WITH`, with no
     `;`, no comment and none of the words that change a database (`INSERT`, `UPDATE`,
