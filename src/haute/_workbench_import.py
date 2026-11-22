@@ -556,26 +556,55 @@ def _csv_rows(read: CsvImport, data: bytes, keep: Keep) -> tuple[list[str], Rows
 
 
 def _expanded_size(data: bytes) -> int:
-    """How much *data*, a workbook, holds once unzipped, by its files' stated sizes, which
-    unzipping holds each file to; refused when it is no zip."""
+    """How much *data*, a workbook, holds once unzipped, counted as each file is unzipped a
+    piece at a time, never as its stated size says: refused past
+    :data:`WORKBOOK_EXPANDED_LIMIT`, for a file unzipping to more than it states (which
+    would let openpyxl's whole reads unzip it all), and when it is no zip."""
+    import copy
     import zipfile
+    import zlib
 
+    total = 0
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            return sum(member.file_size for member in archive.infolist())
-    except (zipfile.BadZipFile, ValueError):
+            for member in archive.infolist():
+                # Counted past its stated size, which would otherwise cut the count there;
+                # each piece is unzipped to at most its own length, so the count bounds it.
+                counted = copy.copy(member)
+                counted.file_size = 1 << 62
+                size = 0
+                with archive.open(counted) as unzipping:
+                    while piece := unzipping.read(64 * 1024):
+                        size += len(piece)
+                        if total + size > WORKBOOK_EXPANDED_LIMIT:
+                            raise ImportRefusedError(
+                                "The workbook holds more than "
+                                f"{WORKBOOK_EXPANDED_LIMIT // (1024 * 1024)} MiB once unzipped: "
+                                "import a workbook of the rows alone."
+                            )
+                if size != member.file_size:
+                    raise ImportRefusedError(
+                        "The workbook's files do not hold what it says they hold: save it "
+                        "again from Excel."
+                    )
+                total += size
+    except (
+        zipfile.BadZipFile,
+        zlib.error,
+        EOFError,
+        NotImplementedError,
+        RuntimeError,
+        ValueError,
+    ):
         raise ImportRefusedError("The file is not an Excel workbook (.xlsx).") from None
+    return total
 
 
 def _excel_rows(read: ExcelImport, data: bytes, keep: Keep) -> tuple[list[str], Rows]:
     from openpyxl import load_workbook
 
     # openpyxl reads a workbook's shared text whole as it opens it.
-    if _expanded_size(data) > WORKBOOK_EXPANDED_LIMIT:
-        raise ImportRefusedError(
-            f"The workbook holds more than {WORKBOOK_EXPANDED_LIMIT // (1024 * 1024)} MiB once "
-            "unzipped: import a workbook of the rows alone."
-        )
+    _expanded_size(data)
     try:
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception:  # noqa: BLE001 - any file openpyxl cannot read is no workbook

@@ -770,6 +770,23 @@ def test_a_workbook_too_large_unzipped_or_headed_too_wide_is_refused(
         imports._excel_rows(EXCEL, b"not a zip", lambda _names: [0])
 
 
+def test_a_workbook_whose_files_unzip_to_more_than_they_state_is_refused() -> None:
+    import struct
+    import zipfile
+
+    packed = io.BytesIO()
+    with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/sharedStrings.xml", b"0" * 1_000_000)
+    data = bytearray(packed.getvalue())
+    # Its local and central headers say it holds 100 bytes.
+    for signature, offset in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        at = data.index(signature) + offset
+        data[at : at + 4] = struct.pack("<I", 100)
+
+    with pytest.raises(ImportRefusedError, match="do not hold what it says they hold"):
+        imports._excel_rows(EXCEL, bytes(data), lambda _names: [0])
+
+
 def test_a_colon_in_a_string_is_no_parameter_where_the_query_runs(tmp_path: Path) -> None:
     rates = tmp_path / "rates.sqlite"
     _rates(rates)
