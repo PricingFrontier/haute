@@ -16,6 +16,10 @@ model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
 2026.
 
+`PCF-17` was found on 22 November 2026, once `haute lint` passed the pipeline
+`haute init` writes; the main session ran the generated CI's next check on a
+new project.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -25,6 +29,7 @@ worker built each run and the main session ran each again on 14 November
 | PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
 | PCF-07 | Planned | P3 | Recover settings rebuilds a Model Score that follows an alias, instead of refusing a version it added itself. |
 | PCF-08 | Planned | P2 | Reset node refuses to replace a settings file that a node inside a submodel shares. |
+| PCF-17 | Decision | P3 | A new project's generated CI either passes a pipeline with no nodes yet or says what to do, instead of failing its dry run with no remedy. |
 
 ## Planned improvements
 
@@ -165,3 +170,28 @@ case gets, and the shared file is unchanged.
 
 **Evidence:** `src/haute/_pipeline_recovery.py`;
 `specs/server-api/node-recovery-actions.md`.
+
+### PCF-17 — A new project's CI and a pipeline with no nodes yet
+**Why:** Reproduced on 22 November 2026. `haute init` writes a pipeline with
+no nodes, which the editor loads ready and saves and `haute lint` passes. The
+generated CI's next check, `uv run haute deploy --dry-run`,
+refuses the same project: "✗ Resolution failed: No nodes found in
+<project>/rating/main.py", exit 1. So the first push of a new project still
+fails its CI, with no remedy named, and on GitHub the staging deploy job a
+push to `main` starts would refuse it too. Refusing to deploy a pipeline with
+no nodes is right; what the CI says before there is one is the decision.
+
+**Plan:** A decision between: (a) the dry run, and the deploy jobs, pass a
+pipeline with no nodes saying there is nothing to deploy yet, while a deploy
+outside CI still refuses it; or (b) the refusal names the remedy (build the
+pipeline in the editor before the first push) and the CI stays red until then.
+
+**Acceptance:** On a project `haute init` makes, the generated CI's checks
+pass, or the one that fails names what to do; the decision is in the CLI and
+pipeline-config specifications.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_config.py::resolve_config` ("No nodes found
+in"); `src/haute/_scaffold.py` (the CI workflow's "Dry-run deploy" step);
+`specs/cli/high-level.md`.

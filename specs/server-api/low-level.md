@@ -8,7 +8,7 @@
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher (the workbench's form file announced through
 `workbench.form.changed`, forwarded as `workbench_form_changed`), the branch watcher (`_branch_watcher`, the git directory's HEAD; `_tell_branch_change`, also run once a git route that paused the watcher has answered, publishing `git.branch.changed`, forwarded as `git_branch_changed`), and credential-free static SPA serving. |
 | `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
-| `src/haute/_node_addresses.py` | Node addresses (see "Node addresses"): `resolve_target` and `resolve_node` resolve a request's address target in its flattened document through the expansion's record, refusing by name; `address_entry`/`node_addresses` label the keys an answer names, `occurrence_ports` builds frame provenance, and `labelled` builds an answer with `node_addresses` for every key at a node-key position of its schema. |
+| `src/haute/_node_addresses.py` | Node addresses (see "Node addresses"): `resolve_target` and `resolve_node` resolve a request's address target in its flattened document through the expansion's record, refusing by name; `resolve_spelled` and `spelled_name` take and print the names the command line uses (`SpelledTarget`); `address_entry`/`node_addresses` label the keys an answer names, `occurrence_ports` builds frame provenance, and `labelled` builds an answer with `node_addresses` for every key at a node-key position of its schema. |
 | `src/haute/_node_address_schemas.py` | The wire shapes of node addresses: `RuntimeNodeKey` (a string marked `x-haute-node-key`, branded in the generated TypeScript), `NodeAddressPayload`, the `FrameTargetPayload` union (a node, an occurrence's input port, an occurrence's output port), `NodeAddressEntry`, `RuntimeEndpointPayload` and `OccurrencePortProvenance`; apart from `schemas.py` so the execution-metrics payloads can name nodes by key. |
 | `src/haute/schemas.py` | Stable shared Pydantic request/response import surface used across the app — re-exports canonical graph types from `_types.py`, re-exports execution-strategy DTOs from `_execution_schemas.py`, and defines the remaining per-feature model groups, including the structurally separate pipeline editor-recovery document and diagnostics, and `DocumentRequest`, the base of every request model that carries the document ("Requests that carry the document"). The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. `RequestRefusedError` is a service's refusal of a request, with the `status_code` and `detail` its caller hears; its subclasses name the reason (`InvalidRequestError`, `ForbiddenError`, `NotFoundError`, `ConflictError`, `GoneError`, `UnprocessableError`, `ServiceFailedError`, `InsufficientMemoryError`). |
@@ -520,6 +520,18 @@ rows addressed, its other owners described by what they recorded) and the execut
 send their targets by address and address every key their answers name. The browser builds no
 runtime key. `tests/test_node_address_contracts.py` lists every answer field that names a node,
 each a `RuntimeNodeKey`, and fails on a node key it does not list.
+
+**Names on the command line.** `haute run --node` takes a name, not an address, and
+`haute._node_addresses.resolve_spelled` resolves it against the same record:
+`<occurrence>/<node>` is that occurrence's child; a bare name is a node of the pipeline
+by its id, else an occurrence by its instance id, run to its first declared output's
+endpoint (the frame the editor previews), else the child of that id in the one occurrence
+holding one. It refuses (`NotFoundError`) a name several occurrences' children have,
+naming each `<occurrence>/<node>`; an occurrence with no outputs, or whose first names no
+child, naming its children; and a name that fits nothing, naming the pipeline's nodes and
+occurrences. A runtime key is no name. `spelled_name` is its inverse, how the command line
+prints a key (the address's two ids for a child), so every name `haute run` prints can be
+typed back.
 
 `tests/test_node_addresses.py` covers resolution (a root node, the children of an owner and of a
 copy, both card kinds, several port labels, every refusal) and frame provenance (bound, unbound,

@@ -150,7 +150,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
-    "cli",
     "engineering-quality",
     "frontend-graph-canvas",
     "frontend-modelling-optimiser-ui",

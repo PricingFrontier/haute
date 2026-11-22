@@ -30,7 +30,8 @@ class RunConfig:
     """Parsed inputs for the ``haute run`` command."""
 
     pipeline_file: Path
-    #: The node to run to, by id; ``None`` runs to the pipeline's output node.
+    #: The node to run to, by the name the command line takes
+    #: (``haute._node_addresses.resolve_spelled``); ``None`` runs to the pipeline's output node.
     node: str | None = None
     #: The source the pipeline runs under, as the editor's source selector names it.
     source: str = "live"
@@ -38,11 +39,16 @@ class RunConfig:
     rows: int | None = None
 
 
-def _frames(node_id: str, output: Any) -> list[tuple[str, pl.LazyFrame | pl.DataFrame]]:
-    """A node's frames by display name: one, or each frame of a multi-frame result."""
+def _frames(
+    name: str, output: Any, port: str | None = None
+) -> list[tuple[str, pl.LazyFrame | pl.DataFrame]]:
+    """A node's frames by display name: one, each frame of a multi-frame result, or the one
+    *port* reads of it (a submodel occurrence's output)."""
     if isinstance(output, dict):
-        return [(f"{node_id}[{label}]", frame) for label, frame in output.items()]
-    return [(node_id, output)]
+        if port is not None:
+            return [(name, output[port])]
+        return [(f"{name}[{label}]", frame) for label, frame in output.items()]
+    return [(name, output)]
 
 
 def _fail(message: str) -> NoReturn:
@@ -76,9 +82,11 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
     The output node's ancestors are walked once as lazy plans
     (:func:`haute.execution.execute_lazy_graph`) under the ``LAZY_SINK`` profile and
     *config.source*; each node's schema is read from its plan, and only the output is
-    collected, all of it or its first *config.rows* rows. A failure exits with
-    ``SystemExit(1)``: a node's names the node and, when the executor located it, the
-    line of its code.
+    collected, all of it or its first *config.rows* rows. Nodes are named as the command line
+    takes them, a submodel occurrence's node as ``<occurrence>/<node>``
+    (``spelled_name``), and *config.node* is resolved through the expansion's record
+    (``resolve_spelled``). A failure exits with ``SystemExit(1)``: a node's names the node
+    and, when the executor located it, the line of its code.
     """
     import polars as pl
 
@@ -86,11 +94,12 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
     from haute._execution_admission import create_admitted_execution_context
     from haute._execution_context import ExecutionProfile
     from haute._memory_errors import memory_error_in
+    from haute._node_addresses import SpelledTarget, resolve_spelled, spelled_name
     from haute._polars_utils import streaming_collect
     from haute._project_context import current_project, graph_pipeline_dir
     from haute._workbench_nodes import form_owner, with_form_tables
     from haute.deploy._pruner import find_output_node
-    from haute.errors import failing_node, mark_failing_node
+    from haute.errors import NotFoundError, failing_node, mark_failing_node
     from haute.execution import execute_lazy_graph
     from haute.executor import _build_node_fn, _compile_preamble
     from haute.parser import parse_pipeline_file
@@ -113,14 +122,17 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
     if not graph.nodes:
         _fail("Error: No pipeline nodes found in file.")
     if config.node is not None:
-        if config.node not in graph.node_map:
-            _fail(f"Error: The pipeline has no node {config.node!r}.")
-        output_id = config.node
+        try:
+            target = resolve_spelled(graph, config.node)
+        except NotFoundError as e:
+            _fail(f"Error: {e}")
     else:
         try:
             output_id = find_output_node(graph)
         except ValueError as e:
             _fail(f"Error: {e} Or name the node to run to with --node.")
+        target = SpelledTarget(output_id, None, spelled_name(graph, output_id))
+    output_id = target.key
 
     name = graph.pipeline_name or filepath.stem
     click.echo(f"Pipeline: {name} ({len(graph.nodes)} nodes), source {config.source!r}")
@@ -149,7 +161,7 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
             # Occurrence entries carry warnings only, no frames of their own.
             walked = [nid for nid in order if nid not in graph._submodel_shared_bindings]
             for nid in walked:
-                for label, frame in _frames(nid, outputs[nid]):
+                for label, frame in _frames(spelled_name(graph, nid), outputs[nid]):
                     try:
                         width = len(frame.collect_schema())
                     except Exception as e:
@@ -159,7 +171,7 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
                     carried = "" if nid == output_id else " carried"
                     click.echo(f"  \u2713 {label}: {width} cols{carried}")
             collected: list[tuple[str, pl.DataFrame]] = []
-            for label, frame in _frames(output_id, outputs[output_id]):
+            for label, frame in _frames(target.shown, outputs[output_id], target.port_label):
                 if config.rows is not None:
                     frame = frame.head(config.rows)
                 if isinstance(frame, pl.LazyFrame):
@@ -181,8 +193,9 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
             failed = failing_node(e)
             if failed is not None:
                 line = _extract_error_line(e)
+                named = spelled_name(graph, failed)
                 click.echo(
-                    f"  \u2717 {failed}{'' if line is None else f' (line {line})'}: {e}",
+                    f"  \u2717 {named}{'' if line is None else f' (line {line})'}: {e}",
                     err=True,
                 )
                 _fail("")
@@ -199,7 +212,10 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
 @click.option(
     "--node",
     default=None,
-    help="Run to this node instead of the pipeline's output node.",
+    help=(
+        "Run to this node instead of the pipeline's output node: a node inside a submodel "
+        "by its name or as SUBMODEL/NODE, a submodel by its name for its first output."
+    ),
 )
 @click.option(
     "--source",

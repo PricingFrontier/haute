@@ -596,7 +596,7 @@ fails it, as does a difference without a sentence here.
 |---|---|---|
 | **preview** | the graph walker's display walk (`executor.execute_graph`), in the editor's capped interactive worker | any node, under any source |
 | **trace** | the display walk the preview ran (`trace.execute_trace`), one row at a time | any node, under any source |
-| **haute run** | the graph walker's sink walk (`execution.execute_lazy_graph`; `cli._run.run_frames` holds what it collects) | the response node, or `--node` |
+| **haute run** | the graph walker's sink walk (`execution.execute_lazy_graph`; `cli._run.run_frames` holds what it collects) | the response node, or `--node` (a name, resolved as "Node addresses" in the server API resolves the editor's) |
 | **plain Python** | the file's own `Pipeline.run()` and `Pipeline.score()` loop over its decorated functions | its response node, or its single leaf |
 | **dry run** | `haute deploy --dry-run`: the deploy scorer on the test quotes (`deploy._validators._price_requests`) | the response node, under `live` |
 | **service** | the deployed app's `/quote` route, its batch worker and the Databricks model | the response node, under `live` |

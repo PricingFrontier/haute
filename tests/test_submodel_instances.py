@@ -363,25 +363,30 @@ def test_instance_missing_columns_compiles_preamble_once_when_needed(mode: str) 
     assert compile_preamble.call_count == (0 if mode == "recorded" else 1)
 
 
+def _write_pipeline(root: Path, graph: PipelineGraph, name: str) -> Path:
+    for relative_path, source in graph_to_code_multi(
+        graph, pipeline_name=name, source_file="main.py"
+    ).items():
+        destination = root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(source, encoding="utf-8", newline="\n")
+    return root / "main.py"
+
+
 def test_haute_run_reports_executable_nodes_with_instance_warnings(tmp_path: Path) -> None:
     """Run to each occurrence's scoring node, ``haute run`` reports the executable nodes it
-    walks by id, never the occurrences' warning-only entries."""
+    walks by the names it takes, an occurrence's as ``<occurrence>/<node>``, never the
+    occurrences' warning-only entries."""
     from click.testing import CliRunner
 
     from haute.cli import cli
 
-    files = graph_to_code_multi(
-        _missing_columns_graph(), pipeline_name="warnings", source_file="main.py"
-    )
-    for relative_path, source in files.items():
-        destination = tmp_path / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(source, encoding="utf-8", newline="\n")
+    pipeline = _write_pipeline(tmp_path, _missing_columns_graph(), "warnings")
     reported: set[str] = set()
     for occurrence in ("owner", "copy"):
-        target = qualified_runtime_node_id(occurrence, "score")
+        target = f"{occurrence}/score"
         run = CliRunner().invoke(
-            cli, ["run", str(tmp_path / "main.py"), "--node", target], catch_exceptions=False
+            cli, ["run", str(pipeline), "--node", target], catch_exceptions=False
         )
         assert run.exit_code == 0, run.output
         assert f"Output - {target} (1 rows):" in run.output
@@ -393,10 +398,85 @@ def test_haute_run_reports_executable_nodes_with_instance_warnings(tmp_path: Pat
         "other_data": "2 cols carried",
         "original_rates": "2 cols carried",
         "other_rates": "3 cols carried",
-        qualified_runtime_node_id("owner", "score"): "1 cols",
-        qualified_runtime_node_id("copy", "score"): "1 cols",
+        "owner/score": "1 cols",
+        "copy/score": "1 cols",
     }
     assert reported == {f"  \u2713 {node_id}: {width}" for node_id, width in expected.items()}
+
+
+class TestHauteRunFindsANodeByTheNameTheAnalystSees:
+    """CLI-05: ``haute run --node`` resolves a name through the expansion's record, as a
+    request's address resolves, so grouping nodes into a submodel keeps each findable."""
+
+    def _four_nodes(self) -> PipelineGraph:
+        codes = {
+            "source": "df = pl.LazyFrame({'x': [1, 2, 3]})",
+            "rated": "df = source.with_columns((pl.col('x') * 10).alias('y'))",
+            "loaded": "df = rated.with_columns((pl.col('y') * 1.1).alias('z'))",
+            "capped": "df = loaded.with_columns(pl.col('z').clip(0, 25))",
+        }
+        names = list(codes)
+        return PipelineGraph(
+            nodes=[_node(name, config={"code": code}) for name, code in codes.items()],
+            edges=[
+                GraphEdge(id=f"{source}_{target}", source=source, target=target)
+                for source, target in zip(names, names[1:], strict=False)
+            ],
+        )
+
+    def _frames(self, pipeline: Path, node: str) -> list[tuple[str, pl.DataFrame]]:
+        from haute.cli._run import RunConfig, run_frames
+
+        return run_frames(RunConfig(pipeline_file=pipeline, node=node))
+
+    def test_a_grouped_node_is_found_by_its_name_and_gives_the_rows_it_gave(
+        self, tmp_path: Path, runner: Any
+    ) -> None:
+        from haute.cli import cli
+
+        before = self._frames(_write_pipeline(tmp_path / "flat", self._four_nodes(), "p"), "capped")
+        grouped = create_submodel_graph(self._four_nodes(), ["loaded", "capped"], "loading")
+        pipeline = _write_pipeline(tmp_path / "grouped", grouped.graph, "p")
+
+        for spelled in ("capped", "loading/capped"):
+            after = self._frames(pipeline, spelled)
+            assert [(label, frame.to_dicts()) for label, frame in after] == [
+                ("loading/capped", before[0][1].to_dicts())
+            ]
+        # The box holds the pipeline's last node, so it has no output to run to.
+        refused = runner.invoke(cli, ["run", str(pipeline), "--node", "loading"])
+        assert refused.exit_code == 1
+        assert (
+            "Error: Submodel 'loading' has no outputs to run to. Name one of its nodes: "
+            "loading/loaded, loading/capped."
+        ) in refused.output
+        unknown = runner.invoke(cli, ["run", str(pipeline), "--node", "capd"])
+        assert unknown.exit_code == 1
+        assert (
+            "Error: The pipeline has no node 'capd'. Its nodes: source, rated, loading/loaded, "
+            "loading/capped. Its submodels: loading."
+        ) in unknown.output
+
+    def test_an_occurrence_runs_to_its_first_output_and_a_shared_name_is_refused(
+        self, tmp_path: Path, runner: Any
+    ) -> None:
+        from haute.cli import cli
+
+        pipeline = _write_pipeline(tmp_path, _reuse_graph(), "reuse")
+
+        # The first declared output, as the editor previews the occurrence.
+        assert [
+            (label, frame.to_dicts()) for label, frame in self._frames(pipeline, "rating_ie")
+        ] == [("rating_ie[premium]", [{"x": 21}])]
+        assert [label for label, _ in self._frames(pipeline, "rating_fr/scale")] == [
+            "rating_fr/scale"
+        ]
+        refused = runner.invoke(cli, ["run", str(pipeline), "--node", "finish"])
+        assert refused.exit_code == 1
+        assert (
+            "Error: 'finish' is a node of 3 submodels: rating/finish, rating_ie/finish, "
+            "rating_fr/finish. Name one as <submodel>/<node>."
+        ) in refused.output
 
 
 def test_instance_missing_columns_preview_response_and_refresh() -> None:

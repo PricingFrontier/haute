@@ -142,7 +142,14 @@ Out of scope, owned elsewhere:
   no node is materialised but the target, whose output alone is collected, all of it or its
   first N rows. It prints each node walked with the columns its plan carries and the
   target's output. A pipeline with no output node and no `--node` is refused, naming both
-  remedies.
+  remedies. `--node` takes the names an analyst sees, through the same record the editor's
+  requests resolve their addresses by ([server API](../server-api/low-level.md), "Node
+  addresses"): a pipeline node's, a submodel's (run to its first output, as the editor
+  previews it), and a node inside a submodel by its own name when one submodel holds it, or
+  as `<submodel>/<node>`, the name the run prints for it; so grouping nodes into a submodel
+  keeps each of them findable. A name several submodels' nodes have is refused naming each,
+  a submodel without outputs naming its nodes, and a name that fits nothing naming the names
+  there are.
 - `haute lint [pipeline_file]` checks a pipeline as the editor's save does, without
   executing anything, so the generated CI's lint step refuses what the editor would refuse
   to save. It strictly parses the pipeline and exits non-zero on syntax, configuration,
