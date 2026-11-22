@@ -23,7 +23,7 @@ import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/type
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge, SubmodelDefinition } from "../../types/node"
 import { toSimpleNode } from "../../hooks/usePanelGraphContext"
-import { makeIdentifiedNode, makeNodeDataPoint } from "../../test-utils/factories"
+import { makeIdentifiedNode, makeNodeDataPoint, makePreviewResponse } from "../../test-utils/factories"
 import { documentRequestScope } from "../../utils/requestGateway"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
@@ -49,6 +49,7 @@ vi.mock("../../panels/editors/banding/CategoricalValuePicker", () => ({
 
 const mockGetBandingStats = vi.fn()
 const mockGetNodeDataPoint = vi.fn()
+const mockPreviewNode = vi.fn()
 
 class ApiError extends Error {
   status: number
@@ -72,6 +73,7 @@ vi.mock("../../api/client", () => ({
   ),
   getBandingStats: (...args: unknown[]) => mockGetBandingStats(...args),
   getNodeDataPoint: (...args: unknown[]) => mockGetNodeDataPoint(...args),
+  previewNode: (...args: unknown[]) => mockPreviewNode(...args),
   runNodeData: vi.fn(),
   getNodeDataStatus: vi.fn(),
   cancelNodeData: vi.fn(),
@@ -229,6 +231,19 @@ describe("BandingEditor statistics", () => {
     vi.useRealTimers()
     cleanup()
     useWorkbenchStore.setState({ enabled: false })
+  })
+
+  it("asks for its input's columns as it opens, at the output its edge reads, and marks a column the input lacks", async () => {
+    mockPreviewNode.mockReset()
+    mockPreviewNode.mockResolvedValue(makePreviewResponse({ status: "ok", columns: [{ name: "premium_net", dtype: "Float64" }] }))
+    const input = { sourceNodeId: "source_1", name: "source", sourceLabel: "source", edgeId: "e1", sourceHandle: "quotes" }
+    renderEditor(editor({ inputSources: [input] }))
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^premium_band (complete|incomplete)$/ })).toHaveAttribute("title", "premium is not in the input"),
+    )
+    expect(mockPreviewNode).toHaveBeenCalledTimes(1)
+    expect(mockPreviewNode.mock.calls[0][0]).toMatchObject({ target: { kind: "node", node_id: "source_1", port_label: "quotes" }, rowLimit: 1 })
   })
 
   it("counts the whole dataset once the point it reads is cached", async () => {

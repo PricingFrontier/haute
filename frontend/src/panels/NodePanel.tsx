@@ -191,6 +191,7 @@ function inputSourceForEdge(
     name,
     sourceLabel,
     edgeId: edge.id,
+    ...(typeof edge.sourceHandle === "string" ? { sourceHandle: edge.sourceHandle } : {}),
     ...(frameUnresolved ? { frameUnresolved: true } : {}),
     ...(columns ? { columns } : {}),
     ...(typeof edge.targetHandle === "string" ? { targetHandle: edge.targetHandle } : {}),

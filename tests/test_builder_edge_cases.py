@@ -63,14 +63,13 @@ class TestBuildConstantEdgeCases:
         assert result["region"].dtype == pl.String
         assert result["region"].to_list() == ["north"]
 
-    def test_value_with_empty_name_skipped(self) -> None:
-        _, fn, _ = _build(
-            "constant",
-            {"values": [{"name": "", "value": "99"}, {"name": "kept", "value": "1"}]},
-        )
-        result = fn().collect()
-        assert "kept" in result.columns
-        assert result.shape[1] == 1
+    def test_value_with_empty_name_refused(self) -> None:
+        # A value whose name was cleared is refused, naming its row, never dropped (FEN-04).
+        with pytest.raises(NodeConfigError, match="Constant value 1 has no name"):
+            _build(
+                "constant",
+                {"values": [{"name": "", "value": "99"}, {"name": "kept", "value": "1"}]},
+            )
 
     def test_mixed_numeric_and_string_values(self) -> None:
         _, fn, _ = _build(
@@ -93,11 +92,8 @@ class TestBuildConstantEdgeCases:
         result = fn().collect()
         assert result["x"].to_list() == [None]
 
-    def test_all_empty_names_produces_default(self) -> None:
-        _, fn, _ = _build(
-            "constant",
-            {"values": [{"name": "", "value": "1"}, {"name": "", "value": "2"}]},
-        )
+    def test_no_values_produces_default(self) -> None:
+        _, fn, _ = _build("constant", {"values": []})
         result = fn().collect()
         assert result.columns == ["constant"]
 

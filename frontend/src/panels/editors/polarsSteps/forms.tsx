@@ -51,6 +51,7 @@ import {
   joinOrderAfterHowChange,
   literal,
   parsesText,
+  renameRefusal,
   suggestedAggregationName,
   type FunctionArg,
 } from "./catalogue"
@@ -1129,7 +1130,14 @@ function RenameForm({ step, onChange, ctx }: FormProps<RenameStep>) {
           </div>
           <Words>to</Words>
           <div className="flex-1 basis-28 min-w-0">
-            <TextField value={entry.to} onCommit={(to) => set({ ...entry, to })} ariaLabel={`Rename ${index + 1} to`} placeholder="new name" mono />
+            <TextField
+              value={entry.to}
+              onCommit={(to) => set({ ...entry, to })}
+              validate={(to) => renameRefusal(step.renames, index, to, ctx.schema?.exists ?? null)}
+              ariaLabel={`Rename ${index + 1} to`}
+              placeholder="new name"
+              mono
+            />
           </div>
         </>
       )}

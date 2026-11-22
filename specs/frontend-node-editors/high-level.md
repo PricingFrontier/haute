@@ -64,13 +64,18 @@ backend API modules own validation and persistence.
   action. Directory rows remain navigable when the server reports a null size; only numeric file
   sizes are rendered.
 - Constant lists its named values. A name another row also uses marks both rows inline, and
-  typing one into a row is refused without being applied, the typed name kept; Add value offers
-  the first `constant_<n>` no row uses.
+  typing one into a row is refused without being applied, the typed name kept. A cleared name
+  is refused the same way ("Enter a name"), so a value keeps its last name, in the panel and
+  the settings file, until a new one is typed, and a save that runs meanwhile writes it under
+  that name; Add value offers the first `constant_<n>` no row uses.
 - Neither Banding nor Rating Step has an Output Column field: an item's output column is its
   name in the list, renamed there. Banding has no Input Column field either: each row shows
   the factor's input column, a dropdown with a search box over the input's columns, never a
   text box (with none known yet it says so), then an arrow to its name, so a row reads
-  input → output. Using a row's
+  input → output. The input's columns are those its last preview recorded or, with none
+  recorded, asked for as the editor opens (a one-row preview of the input through the
+  source-aware column cache, as the Optimiser asks for its data input's), so a saved column
+  the input no longer has reads "(not in input)" without a Refresh. Using a row's
   dropdown selects that row first, since a change of type clears the rules on screen, and
   only the selected row's dropdown is in the tab order. Banding's rename refuses, inline and without applying it, a
   name another active factor writes while the factor being edited is active (it has its input
@@ -83,8 +88,10 @@ backend API modules own validation and persistence.
   against number or date boundaries, which a text or boolean column cannot satisfy. Banding lists its
   factors the way Rating Step lists its tables, with the same shared list: a search over each
   factor's output and input column names, an All/Issues filter (an issue is a factor without
-  its input column, output column or rules, or an active factor whose output column another
-  active factor also writes, which marks both, as execution refuses them), a scrollable box of rows with
+  its input column, output column or rules, one whose input column the input's known columns
+  lack ("proposer_agee is not in the input", which a run refuses by name), or an active
+  factor whose output column another active factor also writes, which marks both, as
+  execution refuses them), a scrollable box of rows with
   a health dot, for Banding the input column and an arrow, the output name, a rule-count badge and, when there is more than one factor, a
   remove control, and under the box a button as wide as it, Add banding or Add table. The rows of both lists can be dragged, or moved with Alt+Up/Down, to reorder
   them, and both show the grip and keep the remove control's place even with a single row, so
@@ -394,7 +401,14 @@ entry moves focus into the new card. The chooser covers filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable. Short forms read as
 sentences (`Keep the first [100] rows`, `Sort by [column] [ascending]`, `Rename [column]
-to [name]`); other fields carry short sentence-case labels with any note beside them;
+to [name]`); a Rename's new name that another rename of the step gives ("Another rename
+already names a column value."), or that the frame surely keeps where its columns are
+exactly known (a Transform's previewed input carried through steps that keep the list
+exact: "The data already has a column named value."), is refused at its box, the typed
+name kept and nothing written, since Polars refuses a duplicate column; a name a rename of
+the same step frees may be taken, as Polars renames them at once (a swap), and a name the
+columns there may no longer hold (after a Drop by type, or over a Data Input's recorded
+columns) is left for the run to judge; other fields carry short sentence-case labels with any note beside them;
 options read in plain words with the Polars name where it helps (fill strategies such as
 "the previous row's value (forward)", the common cast types first with their meaning, such
 as "Int64 (whole number)"); secondary actions are quiet text buttons ("+ Add condition");
@@ -662,7 +676,16 @@ one is connected; a persisted input that is no longer connected remains visible
 as unavailable until another input is chosen. Adding steps requires a connected
 start input. A missing step id is an invalid persisted shape. Invalid steps
 are skipped by column and variable suggestions; the backend already keeps such a list
-behind an incomplete body. A membership list keeps its chosen value type while empty.
+behind an incomplete body. A membership list holds the kind of value its column holds
+(numbers, text for a text or category column, true/false or dates), with no type to
+choose; where the column's type is unknown it offers the type and keeps the chosen one
+while empty. A saved list of another kind than its column's is refused at the field
+("proposer_age holds numbers, so text can never match it."), adds nothing more, and
+offers the type, whose change clears it. Cells pasted into the list's box from a
+spreadsheet, split at tabs and line breaks, become one value each, read as a typed value
+of the list's type (a number by the one grammar for a typed number, a date written as
+`YYYY-MM-DD`, `true` or `false`); a cell that cannot be read is refused by its text and
+none of the paste is added. Text without a tab or line break is typed into the box.
 Numeric controls parse the complete value, including scientific notation (`1e3`
 commits as 1000). Integer controls reject fractional values instead of truncating;
 empty, non-finite and below-minimum values never replace the committed value and

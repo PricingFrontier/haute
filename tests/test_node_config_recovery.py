@@ -155,6 +155,14 @@ def _engine_refusal(check: Callable[[], object]) -> str:
         ),
         pytest.param(
             NodeType.CONSTANT,
+            {"values": [{"name": "rate", "value": "1"}, {"value": "2"}]},
+            lambda config: constant_frame(config["values"]),
+            "/values/1/name",
+            "required",
+            id="constant-without-a-name",
+        ),
+        pytest.param(
+            NodeType.CONSTANT,
             {"values": [{"name": "rate", "value": "1"}, {"name": "cap", "value": "inf"}]},
             lambda config: constant_frame(config["values"]),
             "/values/1/value",
@@ -232,7 +240,7 @@ def test_a_constant_name_that_is_not_text_is_an_issue_not_a_crash(name: object) 
     [
         (NodeType.SCENARIO_EXPANDER, {"step_count": 3}),
         (NodeType.SCENARIO_EXPANDER, {"step_count": 3, "min_value": 1.2, "max_value": 0.8}),
-        (NodeType.CONSTANT, {"values": [{"name": "Prämie 2024", "value": "1"}, {"value": "2"}]}),
+        (NodeType.CONSTANT, {"values": [{"name": "Prämie 2024", "value": "1"}]}),
         (NodeType.CONSTANT, {}),
     ],
 )

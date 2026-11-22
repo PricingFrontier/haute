@@ -1003,8 +1003,10 @@ already-defined `f` registers it. A
 Constant node whose `values` hold two entries with one non-empty name is refused with a
 node-config error naming the name, wherever its frame is built (`constant_frame`, which
 canvas execution and a standalone run share), rather than keeping the second value; an
-entry whose name is not text is refused the same way, and an entry without a name is
-skipped, as before. Its sidecar writes `values` as a map from each name to its value,
+entry whose name is not text, and an entry without a name ("Constant value 2 has no name;
+give it a name.", naming its row), are refused the same way, when its sidecar is written
+too, so a value is never dropped from the file in silence (`named_constants`, one reading of
+the rows for the frame and the sidecar). Its sidecar writes `values` as a map from each name to its value,
 one a line (`haute._constant_config`, READ-28), each value as it runs, by the Constant's
 reading of the one grammar for a typed number (`haute._typed_numbers.constant_value`;
 specs/frontend-shared high-level, "Typed numbers"): canonical finite decimal text is a JSON

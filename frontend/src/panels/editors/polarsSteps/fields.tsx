@@ -25,7 +25,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react"
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react"
 
 import {
   CommittedTextField,
@@ -43,6 +43,7 @@ import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, NUMBER_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal, numberTypeOf } from "./catalogue"
 import { castFamily, decimalScale } from "../../../utils/polarsDtypes"
 import { readNumberDraft } from "../../../utils/numberRule"
+import { parsePastedGrid } from "../shared/tableClipboard"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
@@ -1108,31 +1109,80 @@ function decimalPlaces(value: number): number {
   return Math.max(0, (mantissa.split(".")[1] ?? "").length - Number(exponent ?? 0))
 }
 
+/** The value type a membership list on a column of `dtype` holds, or null where Polars 2 matches none or the type is unknown. */
+function listTypeOf(dtype: string | null): LiteralType | null {
+  switch (castFamily(dtype)) {
+    case "integer":
+    case "float":
+    case "decimal":
+      return "number"
+    case "text":
+    case "category":
+      return "text"
+    case "boolean":
+      return "boolean"
+    case "date":
+      return "date"
+    default:
+      return null
+  }
+}
+
+/** A list's values as a column's type names them. */
+const LIST_VALUE_WORDS: Record<LiteralType, string> = {
+  number: "numbers",
+  text: "text",
+  boolean: "true/false values",
+  date: "dates",
+  null: "missing values",
+}
+
+/** Whether `text` is a date written `YYYY-MM-DD` that the calendar has (not 2026-02-30). */
+function isCalendarDate(text: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (!match) return false
+  const [year, month, day] = match.slice(1).map(Number)
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
 /**
  * Membership values: one type for the whole list, then plain values as chips.
- * Numbers carry the kind of number their column holds (`number_type`), taken
- * from the column's type, or chosen while that type is unknown; a value that
- * kind can never match (a fraction for whole numbers, more decimal places than
- * a Decimal column's scale) is refused.
+ * The list holds its column's kind of value, taken from the column's type, or
+ * chosen while that type is unknown; a list of another kind, which Polars 2
+ * refuses to compare, is refused at the field. Numbers carry the kind of number
+ * their column holds (`number_type`) the same way; a value that kind can never
+ * match (a fraction for whole numbers, more decimal places than a Decimal
+ * column's scale) is refused. Cells pasted from a spreadsheet, split at tabs and
+ * line breaks, become one value each.
  */
 function LiteralListField({
   values,
   onChange,
   ariaLabel,
   numberType,
+  column = "",
   columnType = null,
 }: {
   values: LiteralOperand[]
   onChange: (next: LiteralOperand[], numberType?: NumberType) => void
   ariaLabel: string
   numberType?: NumberType
+  /** The column the values are compared with. */
+  column?: string
   /** The type of the column the values are compared with, when known. */
   columnType?: string | null
 }) {
-  // The list's type is the first value's type; while the list is empty the
-  // chosen type lives here so switching type does not snap back to text.
+  const columnListType = listTypeOf(columnType)
+  // The list's type is the first value's type, else its column's; while the list is
+  // empty and the column's type unknown, the chosen type lives here so switching type
+  // does not snap back to text.
   const [chosenType, setChosenType] = useState<LiteralType>(values[0]?.type ?? "text")
-  const type: LiteralType = values[0]?.type ?? chosenType
+  const type: LiteralType = values[0]?.type ?? columnListType ?? chosenType
+  const mismatch = columnListType !== null && type !== columnListType
+    ? `${column} holds ${LIST_VALUE_WORDS[columnListType]}, so ${LIST_VALUE_WORDS[type]} can never match it.`
+    : null
   const [draft, setDraft] = useState<LiteralOperand>(defaultLiteral(type))
   const [refusal, setRefusal] = useState<string | null>(null)
   // Why the new-value box refused what it shows: nothing is added while it does, so what
@@ -1142,6 +1192,35 @@ function LiteralListField({
   const knownNumberType = numberTypeOf(columnType)
   const kind: NumberType | undefined = type === "number" ? (knownNumberType ?? numberType ?? "float") : undefined
   const scale = kind === "decimal" ? decimalScale(columnType) : null
+  /** Why `value` cannot join the list, or null when it can. */
+  const valueRefusal = (value: LiteralOperand): string | null => {
+    if (mismatch !== null) return mismatch
+    if (scale !== null && typeof value.value === "number" && decimalPlaces(value.value) > scale) {
+      return `${value.value} has more decimal places than the column's ${scale}, so it can never match.`
+    }
+    return null
+  }
+  /** A pasted cell as a value of the list's type, or why it is not one. */
+  const pastedValue = (cell: string): LiteralOperand | { refusal: string } => {
+    const trimmed = cell.trim()
+    switch (type) {
+      case "number": {
+        const read = readNumberDraft(trimmed, { integer: kind === "integer", required: true })
+        if (!read.ok) return { refusal: `Pasted "${trimmed}": ${read.problem}` }
+        return spelledNumber(read.value as number, slotSpelling(trimmed, kind === "integer"))
+      }
+      case "boolean":
+        return /^(true|false)$/i.test(trimmed)
+          ? literal("boolean", trimmed.toLowerCase() === "true")
+          : { refusal: `Pasted "${trimmed}" is not true or false.` }
+      case "date":
+        return isCalendarDate(trimmed)
+          ? literal("date", trimmed)
+          : { refusal: `Pasted "${trimmed}" is not a date written as YYYY-MM-DD.` }
+      default:
+        return literal("text", cell)
+    }
+  }
   // Every type keeps a draft and adds through the explicit action, so the
   // default of a select (true, today's date) can be added like any other.
   const add = () => {
@@ -1150,18 +1229,36 @@ function LiteralListField({
       return
     }
     if (type === "text" && String(current.value).length === 0) return
-    if (scale !== null && typeof current.value === "number" && decimalPlaces(current.value) > scale) {
-      setRefusal(`${current.value} has more decimal places than the column's ${scale}, so it can never match.`)
-      return
-    }
-    setRefusal(null)
+    const refused = valueRefusal(current)
+    setRefusal(refused)
+    if (refused !== null) return
     // A number goes in as the list writes its members, its spelling kept where it can be.
     onChange([...values, asMember(current, kind ?? null)], kind)
     setDraft(defaultLiteral(type))
   }
+  // A paste of several cells adds each as a value, or none when one cannot be added; a
+  // paste of plain text goes into the box as typing does.
+  const paste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const text = event.clipboardData.getData("text/plain")
+    if (!/[\t\r\n]/.test(text)) return
+    event.preventDefault()
+    const added: LiteralOperand[] = []
+    for (const cell of parsePastedGrid(text).flat()) {
+      if (cell.trim() === "") continue
+      const value = pastedValue(cell)
+      const refused = "refusal" in value ? value.refusal : valueRefusal(value)
+      if (refused !== null) {
+        setRefusal(refused)
+        return
+      }
+      added.push(asMember(value as LiteralOperand, kind ?? null))
+    }
+    setRefusal(null)
+    if (added.length > 0) onChange([...values, ...added], kind)
+  }
   return (
     <div className="grid gap-1.5" role="group" aria-label={ariaLabel}>
-      <SelectField
+      {(columnListType === null || mismatch !== null) && <SelectField
         value={type}
         options={LIST_LITERAL_TYPES}
         onChange={(next) => {
@@ -1172,7 +1269,7 @@ function LiteralListField({
           if (values.length > 0) onChange([])
         }}
         ariaLabel={`${ariaLabel} type`}
-      />
+      />}
       {type === "number" && knownNumberType === null && (
         <Field label="Number type">
           <SelectField
@@ -1192,7 +1289,7 @@ function LiteralListField({
             onRemove={() => onChange(values.filter((_, i) => i !== index), kind)}
           />
         ))}
-        <div className="flex-1 basis-28 min-w-0 flex items-center gap-1">
+        <div className="flex-1 basis-28 min-w-0 flex items-center gap-1" onPaste={paste}>
           <LiteralValueInput
             value={current}
             onChange={setDraft}
@@ -1205,9 +1302,9 @@ function LiteralListField({
           </button>
         </div>
       </div>
-      {refusal && (
+      {(refusal ?? mismatch) && (
         <p role="alert" className="m-0 text-[11px]" style={{ color: "var(--warning)" }}>
-          {refusal}
+          {refusal ?? mismatch}
         </p>
       )}
     </div>
@@ -1332,6 +1429,7 @@ export function ConditionRow({
         <LiteralListField
           values={condition.values ?? []}
           numberType={condition.number_type}
+          column={condition.column}
           columnType={condition.column ? schema.typeOf(condition.column) : null}
           onChange={(values, numberType) => {
             const { number_type: _previous, ...rest } = condition

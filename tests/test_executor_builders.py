@@ -197,14 +197,12 @@ class TestBuildConstant:
         result = fn().collect()
         assert "constant" in result.columns
 
-    def test_value_with_empty_name_skipped(self) -> None:
-        _, fn, _ = _build(
-            "constant",
-            {"values": [{"name": "", "value": "5"}, {"name": "x", "value": "1"}]},
-        )
-        result = fn().collect()
-        assert "x" in result.columns
-        assert result.shape == (1, 1)  # empty name skipped
+    def test_value_with_empty_name_refused(self) -> None:
+        with pytest.raises(NodeConfigError, match="Constant value 1 has no name"):
+            _build(
+                "constant",
+                {"values": [{"name": "", "value": "5"}, {"name": "x", "value": "1"}]},
+            )
 
     def test_mixed_numeric_and_string(self) -> None:
         _, fn, _ = _build(

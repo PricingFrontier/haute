@@ -3272,7 +3272,7 @@
     },
     "ConstantValue": {
       "additionalProperties": false,
-      "description": "One value of a Constant node; an entry without a name is skipped.",
+      "description": "One value of a Constant node; an entry without a name is refused (``named_constants``).",
       "properties": {
         "name": {
           "description": "The column the value is written to.",

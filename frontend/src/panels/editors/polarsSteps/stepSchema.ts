@@ -17,12 +17,15 @@ export type StepSchema = {
   typeOf: (name: string) => string | null
   /** Whether `name` is a column here; null when the columns are not complete, so nothing is judged. */
   isKnown: ((name: string) => boolean) | null
+  /** Whether `name` is surely a column here; null when the columns are not exact (a name
+   * listed may be gone), so nothing is refused for being taken. */
+  exists: ((name: string) => boolean) | null
   /** The known name closest to a mistyped one, or null. */
   closest: (name: string) => string | null
 }
 
 /** A schema that knows nothing: no notes, no judgement. */
-export const UNKNOWN_SCHEMA: StepSchema = { describe: () => null, typeOf: () => null, isKnown: null, closest: () => null }
+export const UNKNOWN_SCHEMA: StepSchema = { describe: () => null, typeOf: () => null, isKnown: null, exists: null, closest: () => null }
 
 function distance(a: string, b: string): number {
   const row = Array.from({ length: b.length + 1 }, (_, j) => j)
@@ -72,6 +75,7 @@ export function schemaFor(state: StepColumns): StepSchema {
     describe: (name) => describeColumn(byName.get(name)),
     typeOf: (name) => byName.get(name)?.dtype ?? null,
     isKnown: state.complete ? (name) => byName.has(name) : null,
+    exists: state.exact ? (name) => byName.has(name) : null,
     closest: (name) => (state.complete ? closestName(name, names) : null),
   }
 }

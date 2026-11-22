@@ -40,6 +40,8 @@ export type InputSource = {
   name: string
   sourceLabel: string
   edgeId: string
+  /** The source's output the edge leaves from, when the source has named outputs (a submodel's ports). */
+  sourceHandle?: string
   frameUnresolved?: boolean
   /** The columns this input carries, as the last preview recorded them. */
   columns?: { name: string; dtype: string }[]

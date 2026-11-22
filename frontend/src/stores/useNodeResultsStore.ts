@@ -1364,7 +1364,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         return false
       }))
       const columnCache = Object.fromEntries(
-        Object.entries(s.columnCache).filter(([k]) => k !== nodeId && !k.startsWith(`${nodeId}:`))
+        // A node's columns, under each source and each of its named outputs (`<id>#<handle>:`).
+        Object.entries(s.columnCache).filter(([k]) => k !== nodeId && !k.startsWith(`${nodeId}:`) && !k.startsWith(`${nodeId}#`))
       )
       const { [nodeId]: _rsr, ...solveResults } = s.solveResults; void _rsr
       const { [nodeId]: _rsj, ...solveJobs } = s.solveJobs; void _rsj
