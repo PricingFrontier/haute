@@ -44,7 +44,9 @@ from haute._rating import (
     normalise_rating_key,
     rating_dtype_descriptor,
     rating_dtype_from_descriptor,
+    rating_key_of,
 )
+from haute._temporal_text import with_temporal_text
 from haute._types import (
     GraphNode,
     OnlineSolveResultLike,
@@ -537,6 +539,38 @@ def _ratebook_factor_level_key(
     return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(parts)
 
 
+def _ratebook_factor_level_keys(
+    levels: pl.DataFrame,
+    columns: Sequence[str],
+    dtypes: Sequence[pl.DataType],
+) -> list[str]:
+    """The canonical level key of each row of *levels*' factor *columns*, in row order.
+
+    Each component is keyed inside the query by :func:`haute._rating.rating_key_of`,
+    the expression the apply side's rating join keys a frame's values with, so a key
+    is the one :func:`_ratebook_factor_level_key` gives the level's exact value. A
+    level is never read into Python first: a ``Datetime("ns")``, ``Duration("ns")`` or
+    ``Time`` value would lose what lies below a microsecond there, and two levels that
+    differ only there would become one key.
+    """
+    import polars as pl
+
+    if len(columns) != len(dtypes):
+        raise ValueError("Ratebook factor columns and dtypes must have the same length.")
+    keyed = levels.select(
+        pl.concat_str(
+            [
+                rating_key_of(pl.col(column), dtype)
+                for column, dtype in zip(columns, dtypes, strict=True)
+            ],
+            separator=_RATEBOOK_FACTOR_LEVEL_SEPARATOR,
+        ).alias("level_key")
+    ).to_series()
+    if keyed.null_count():
+        raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
+    return cast(list[str], keyed.to_list())
+
+
 def _canonical_ratebook_table_level(
     name: str,
     level: Any,
@@ -716,24 +750,23 @@ def _ratebook_factor_level_counts(
             )
         table_name = _ratebook_factor_table_name(columns)
         grouped = factors_df.group_by(columns).agg(pl.len().alias("quote_count"))
-        if is_lazy:
-            count_rows = streaming_collect(grouped).to_dicts()
-        else:
-            count_rows = grouped.to_dicts()
+        count_rows = streaming_collect(grouped) if is_lazy else grouped
         table_counts: dict[str, int] = {}
         level_sources: dict[str, list[Any]] = {}
         column_dtypes = [schema[column] for column in columns]
-        for row in count_rows:
-            values = [row[column] for column in columns]
-            level_key = _ratebook_factor_level_key(values, column_dtypes)
+        level_keys = _ratebook_factor_level_keys(count_rows, columns, column_dtypes)
+        shown = with_temporal_text(count_rows.select(columns)).rows()
+        for level_key, values, quote_count in zip(
+            level_keys, shown, count_rows["quote_count"].to_list(), strict=True
+        ):
             if level_key in table_counts:
                 raise ValueError(
-                    f"Ratebook factor levels {level_sources[level_key]!r} and {values!r} in "
-                    f"factor table {table_name!r} both canonicalise to {level_key!r}; the "
+                    f"Ratebook factor levels {level_sources[level_key]!r} and {list(values)!r} "
+                    f"in factor table {table_name!r} both canonicalise to {level_key!r}; the "
                     "source column mixes value types. Cast it to a single type upstream."
                 )
-            table_counts[level_key] = int(row["quote_count"])
-            level_sources[level_key] = values
+            table_counts[level_key] = int(quote_count)
+            level_sources[level_key] = list(values)
         counts[table_name] = table_counts
     return counts
 
@@ -999,11 +1032,12 @@ def _compute_ratebook_factor_level_order(
 
 
 def _json_records(value: Any) -> Any:
-    """Replace every Polars frame nested in *value* with its row records."""
+    """Replace every Polars frame nested in *value* with its row records, each datetime,
+    time or duration value as its exact text."""
     import polars as pl
 
     if isinstance(value, pl.DataFrame):
-        return value.to_dicts()
+        return with_temporal_text(value).to_dicts()
     if isinstance(value, dict):
         return {key: _json_records(item) for key, item in value.items()}
     if isinstance(value, list | tuple):

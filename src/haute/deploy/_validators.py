@@ -17,6 +17,7 @@ import polars as pl
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._output_assembler import pruned_document
+from haute._temporal_text import with_temporal_text
 from haute._types import GLOBAL_CONSTANTS_FILE, PipelineGraph
 from haute._workbench_config import read_workbench_config
 from haute._workbench_folder import unresolved_references
@@ -389,7 +390,7 @@ def _validate_expected_outputs(
             f"{len(cases)} expected row(s), {output.height} output row(s)."
         )
 
-    output_rows = output.to_dicts()
+    output_rows = with_temporal_text(output).to_dicts()
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, case in expected_cases:
@@ -412,7 +413,11 @@ def _validate_expected_outputs_per_case(
     errors: list[str] = []
     missing_columns: set[str] = set()
     for row_index, (case, output) in enumerate(zip(cases, outputs, strict=True)):
-        errors.extend(_response_errors(row_index, case, output.to_dicts(), missing_columns))
+        errors.extend(
+            _response_errors(
+                row_index, case, with_temporal_text(output).to_dicts(), missing_columns
+            )
+        )
     if errors:
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 

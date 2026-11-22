@@ -99,6 +99,9 @@ def test_a_value_its_type_holds_exactly_is_accepted(
         (pl.Datetime("us"), "yesterday"),
         (pl.Datetime("us"), "2024-05-01T10:30:00+01:00"),
         (pl.Datetime("us", "UTC"), "2024-05-01T10:30:00"),
+        # Finer than the column holds: read, it would be cut short.
+        (pl.Datetime("us"), "2024-03-01T09:00:00.000000100"),
+        (pl.Datetime("ms"), "2024-03-01T09:00:00.0001"),
         (pl.Null(), 1),
     ],
 )
@@ -114,6 +117,36 @@ def test_a_value_its_type_does_not_hold_is_refused_naming_the_column(
 def test_a_zoned_date_time_keeps_its_instant() -> None:
     framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00")
     assert framed.isoformat() == "2024-05-01T09:30:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2024-03-01T09:00:00.000000100",
+        "2024-03-01 09:00:00.000000100",
+        pd.Timestamp("2024-03-01T09:00:00.000000100"),
+    ],
+)
+def test_a_date_time_below_a_microsecond_is_read_whole(value: object) -> None:
+    """SRV-20: never through a Python ``datetime``, which would drop the last three digits."""
+    from tests._nanosecond_values import NINE_AM_NS
+
+    framed = frame_rows([{"x": value}], {"x": pl.Datetime("ns")}, omittable=frozenset())
+
+    assert framed["x"].to_physical().to_list() == [NINE_AM_NS + 100]
+
+
+def test_a_date_time_finer_than_its_column_is_refused_naming_it() -> None:
+    with pytest.raises(QuoteInputError) as refused:
+        frame_rows(
+            [{"x": "2024-03-01T09:00:00"}, {"x": "2024-03-01T09:00:00.000000100"}],
+            {"x": pl.Datetime("us")},
+            omittable=frozenset(),
+        )
+
+    assert (refused.value.column, refused.value.quote) == ("x", 1)
+    assert "Quote 1's 'x' is '2024-03-01T09:00:00.000000100'" in str(refused.value)
+    assert "is finer than a us datetime holds: reading it would cut it short." in str(refused.value)
 
 
 def test_explicit_nulls_keep_the_declared_type_and_unknown_keys_are_ignored() -> None:
@@ -397,6 +430,59 @@ def test_a_dated_dry_run_reaches_the_worker_as_iso_strings(tmp_path):
             context.release_admission(preserve_primary_error=False)
         assert outcome.row_count == 1
         assert pl.read_parquet(plan.request.result_path)["start"].to_list() == [date(2024, 5, 1)]
+    finally:
+        plan.cleanup(primary_error=None)
+
+
+def test_a_nanosecond_request_reaches_the_pipeline_whole_in_the_batch_worker(tmp_path):
+    """SRV-20: the served batch worker reads a request's nine digits, and its answer holds
+    them, as the deploy's dry run sends its sample's."""
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                {"id": "quotes", "data": {"label": "quotes", "nodeType": "apiInput", "config": {}}},
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "output_mapping": [
+                                {
+                                    "source_port": "quotes",
+                                    "source_column": "at",
+                                    "output_path": "$[:].at",
+                                    "enabled": True,
+                                }
+                            ],
+                        },
+                    },
+                },
+            ],
+            "edges": [{"id": "e1", "source": "quotes", "target": "out", "sourceHandle": "quotes"}],
+        }
+    )
+    from tests._nanosecond_values import NINE_AM_NS
+
+    plan = prepare_batch_scoring(
+        [{"at": "2024-03-01T09:00:00.000000100"}],
+        graph=graph,
+        input_node_ids=["quotes"],
+        output_node_id="out",
+        artifact_paths={},
+        output_fields=None,
+        operation="deploy_bundle_schema",
+        input_schema=pl.Schema({"at": pl.Datetime("ns")}),
+    )
+    try:
+        context = admit_deploy_execution(operation="deploy_quote", row_count=1)
+        try:
+            outcome = score_batch_scoring_request(plan.request, execution_context=context)
+        finally:
+            context.release_admission(preserve_primary_error=False)
+        assert outcome.row_count == 1
+        answer = pl.read_parquet(plan.request.result_path)
+        assert answer["at"].to_physical().to_list() == [NINE_AM_NS + 100]
     finally:
         plan.cleanup(primary_error=None)
 

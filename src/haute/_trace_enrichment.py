@@ -30,7 +30,7 @@ import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import polars as pl
 
@@ -50,15 +50,20 @@ from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._logging import get_logger
 from haute._node_specs import node_type_table
 from haute._node_type import NodeType
+from haute._polars_dtypes import column_kind
 from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
     _breakpoints_to_rules,
     banding_categorical_claims,
+    banding_comparison_expr,
+    banding_threshold,
     normalise_combined_outputs,
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
+from haute._temporal_text import temporal_series
+from haute._trace_correlation import traced_rating_key
 
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode
@@ -102,11 +107,12 @@ def _enrich_single_table(
         default_val = None
 
     # Try to find the matched entry in the table.  Keys are compared in
-    # the engine's canonical form (shared ``normalise_rating_key``), so
-    # the matched/default flags here cannot diverge from what the
-    # rating lookup join actually did (e.g. int-like float 25.0 matching
-    # the string key "25").  Null keys never match the join, so a null
-    # input key skips entry matching entirely.
+    # the engine's canonical form (shared ``normalise_rating_key`` for an
+    # entry, ``traced_rating_key`` for the traced value, whose temporal text
+    # is keyed exactly), so the matched/default flags here cannot diverge
+    # from what the rating lookup join actually did (e.g. int-like float
+    # 25.0 matching the string key "25").  Null keys never match the join,
+    # so a null input key skips entry matching entirely.
     matched_entry: dict[str, Any] | None = None
     if entries:
         resolved_dtypes = factor_input_dtypes or {}
@@ -117,10 +123,7 @@ def _enrich_single_table(
                 f"factor(s) {missing_dtypes!r}"
             )
         input_keys = {
-            factor: normalise_rating_key(
-                input_row.get(factor),
-                resolved_dtypes[factor],
-            )
+            factor: traced_rating_key(input_row.get(factor), resolved_dtypes[factor])
             for factor in factors
         }
         if all(key is not None for key in input_keys.values()):
@@ -292,8 +295,7 @@ def _match_interval_rule(
     for op, threshold in comparators:
         fn = SUPPORTED_BANDING_OPERATORS[op]
         if isinstance(threshold, date):
-            observed = _temporal_trace_value(input_value, threshold)
-            if observed is None or not fn(observed, threshold):
+            if not _temporal_rule_holds(input_value, op, threshold, input_dtype):
                 return False
             continue
         try:
@@ -306,24 +308,29 @@ def _match_interval_rule(
     return True
 
 
-def _temporal_trace_value(value: Any, threshold: date) -> date | None:
-    """*value* as a date or date-and-time boundary compares it, as the runtime does.
+def _temporal_rule_holds(value: Any, op: str, threshold: date, dtype: pl.DataType | None) -> bool:
+    """Whether a traced Date or Datetime *value* meets one date or date-and-time boundary,
+    compared in Polars as the runtime compares its column (``banding_comparison_expr``).
 
     A date boundary compares the calendar date and a date-and-time boundary the
-    wall-clock time, both in the column's own time zone, which is the zone a
-    traced time-zoned value already carries. A value of the wrong kind (a plain
-    date against a time) is one the runtime refuses, so it matches nothing.
+    wall-clock time, both in the column's own time zone. The traced value is its exact
+    text, read back into the column's own type and compared by the runtime's own
+    expression and operator, so the trace makes the comparison the run made rather
+    than one through a Python ``datetime``, which holds microseconds. A pairing the
+    runtime refuses (a date-and-time boundary on a Date column) is refused here too.
     """
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    if isinstance(threshold, datetime):
-        return value.replace(tzinfo=None) if isinstance(value, datetime) else None
-    if isinstance(value, datetime):
-        return value.date()
-    return value if isinstance(value, date) else None
+    if dtype is None:
+        raise ValueError("Cannot match a date breakpoint without the banded column's dtype.")
+    kind: Literal["date", "datetime"] = "datetime" if isinstance(threshold, datetime) else "date"
+    if column_kind(dtype) == "datetime":
+        values = temporal_series("value", [value], dtype)
+    else:
+        values = pl.Series("value", [date.fromisoformat(value)], dtype=dtype)
+    compared = banding_comparison_expr(pl.col("value"), dtype, kind)
+    holds = values.to_frame().select(
+        SUPPORTED_BANDING_OPERATORS[op](compared, banding_threshold(threshold, dtype))
+    )
+    return bool(holds.item())
 
 
 def _values_equivalent(left: Any, right: Any) -> bool:
@@ -536,7 +543,7 @@ def enrich_banding(
                     claims = banding_categorical_claims(
                         raw_rules, input_dtype, output_column=out_col, column=col
                     )
-                    input_key = normalise_rating_key(input_value, input_dtype)
+                    input_key = traced_rating_key(input_value, input_dtype)
                     claim = None if input_key is None else claims.get(input_key)
                     if claim is not None and _values_equivalent(claim[1], selected_band):
                         rule_index = claim[0]

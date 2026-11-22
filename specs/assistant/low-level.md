@@ -565,7 +565,10 @@ each column: `null_count` always; `distinct_count` whenever the dtype can be cou
 string, categorical, enum and boolean columns with at most `_MAX_PROFILE_LEVELS` distinct
 values, those values with their counts, most frequent first and equal counts in value
 order, so the profile reads the same on every run; for numeric and temporal columns,
-`min` and `max`;
+`min` and `max` (a datetime, time or duration bound written as its exact text inside the
+query, `with_temporal_text`, so a `Datetime("ns")`, `Time` or `Duration("ns")` bound shows
+all nine digits a Python value would cut to six; `json_safe_scalar` refuses a Python
+`datetime`, `time` or `timedelta`, which only a site going round that would hand it);
 otherwise `values_withheld`. The cardinality bound reduces disclosure for high-cardinality
 strings, while low-cardinality strings — including repeated names, addresses, dates of
 birth, or registrations — can be emitted. The explicit `allow_row_samples` grant is the

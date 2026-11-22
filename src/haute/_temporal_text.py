@@ -14,11 +14,12 @@ duration reads as ``str(timedelta)`` does.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, time, timedelta
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import polars as pl
+from polars.datatypes import DataTypeClass
 
 from haute._polars_dtypes import ColumnKind, column_kind
 from haute.errors import SchemaMismatchError
@@ -130,14 +131,54 @@ FrameT = TypeVar("FrameT", pl.DataFrame, pl.LazyFrame)
 def with_temporal_text(frame: FrameT, *, separator: str = "T") -> FrameT:
     """*frame* with each datetime, time and duration column written as its exact text
     (:func:`temporal_text`), for a caller about to read its rows into Python: the one way
-    Haute's own code collects a temporal column. Other columns are left as they are."""
+    Haute's own code collects a temporal column. A struct, list or array holding one is
+    written field by field and element by element, a null struct staying null. Other
+    columns are left as they are."""
     schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
     texts = [
-        temporal_text(pl.col(name), dtype, separator=separator).alias(name)
+        _nested_text(pl.col(name), dtype, separator).alias(name)
         for name, dtype in schema.items()
-        if column_kind(dtype) in TEMPORAL_TEXT_KINDS
+        if _holds_temporal(dtype)
     ]
     return frame.with_columns(texts) if texts else frame
+
+
+def _instance(dtype: pl.DataType | DataTypeClass) -> pl.DataType:
+    """*dtype* as an instance: a nested type may hold its inner type as a class."""
+    return dtype() if isinstance(dtype, DataTypeClass) else dtype
+
+
+def _holds_temporal(dtype: pl.DataType) -> bool:
+    """Whether *dtype* is, or holds at any depth, a datetime, time or duration."""
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return True
+    if isinstance(dtype, pl.Struct):
+        return any(_holds_temporal(_instance(field.dtype)) for field in dtype.fields)
+    if isinstance(dtype, pl.List | pl.Array):
+        return _holds_temporal(_instance(dtype.inner))
+    return False
+
+
+def _nested_text(expression: pl.Expr, dtype: pl.DataType, separator: str) -> pl.Expr:
+    """*expression* with every temporal value it holds written as its exact text."""
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return temporal_text(expression, dtype, separator=separator)
+    if isinstance(dtype, pl.Struct):
+        fields = [
+            _nested_text(
+                expression.struct.field(field.name), _instance(field.dtype), separator
+            ).alias(field.name)
+            if _holds_temporal(_instance(field.dtype))
+            else expression.struct.field(field.name)
+            for field in dtype.fields
+        ]
+        # A struct built from a null struct's fields is a struct of nulls: keep it null.
+        return pl.when(expression.is_null()).then(None).otherwise(pl.struct(fields))
+    if isinstance(dtype, pl.List):
+        return expression.list.eval(_nested_text(pl.element(), _instance(dtype.inner), separator))
+    if isinstance(dtype, pl.Array):
+        return expression.arr.eval(_nested_text(pl.element(), _instance(dtype.inner), separator))
+    return expression
 
 
 class TemporalTextError(ValueError):
@@ -258,9 +299,64 @@ def temporal_series(name: str, texts: Sequence[str | None], dtype: pl.DataType) 
     return pl.Series(name, physical, dtype=pl.Int64).cast(dtype)
 
 
+def temporal_frame(rows: Sequence[Mapping[str, Any]], schema: pl.Schema) -> pl.DataFrame:
+    """*rows* as a frame of *schema*, each datetime, time and duration value, at any depth,
+    read from its exact text (:func:`with_temporal_text`'s) as its column's own value
+    (:func:`temporal_physical`): the way back for rows read as text. A key a row or an object
+    leaves out is a null, as Polars reads such rows; any other value is taken as it is."""
+    temporal = {name: dtype for name, dtype in schema.items() if _holds_temporal(dtype)}
+    if not temporal:
+        return pl.DataFrame(rows, schema=schema)
+    physical_rows = [
+        {
+            name: _physical_value(value, temporal[name]) if name in temporal else value
+            for name, value in row.items()
+        }
+        for row in rows
+    ]
+    physical_schema = {
+        name: _physical_dtype(dtype) if name in temporal else dtype
+        for name, dtype in schema.items()
+    }
+    return pl.DataFrame(physical_rows, schema=physical_schema).cast(temporal)  # type: ignore[arg-type]
+
+
+def _physical_dtype(dtype: pl.DataType) -> pl.DataType:
+    """*dtype* with each datetime, time and duration it holds as its physical ``Int64``."""
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return pl.Int64()
+    if isinstance(dtype, pl.Struct):
+        return pl.Struct(
+            {field.name: _physical_dtype(_instance(field.dtype)) for field in dtype.fields}
+        )
+    if isinstance(dtype, pl.List):
+        return pl.List(_physical_dtype(_instance(dtype.inner)))
+    if isinstance(dtype, pl.Array):
+        return pl.Array(_physical_dtype(_instance(dtype.inner)), dtype.shape)
+    return dtype
+
+
+def _physical_value(value: Any, dtype: pl.DataType) -> Any:
+    """*value*, of *dtype*, with each temporal text it holds as that value's physical integer."""
+    if value is None:
+        return None
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return temporal_physical(value, dtype)
+    if isinstance(dtype, pl.Struct) and isinstance(value, Mapping):
+        fields = {field.name: _instance(field.dtype) for field in dtype.fields}
+        return {
+            key: _physical_value(item, fields[key]) if key in fields else item
+            for key, item in value.items()
+        }
+    if isinstance(dtype, pl.List | pl.Array) and isinstance(value, list | tuple):
+        return [_physical_value(item, _instance(dtype.inner)) for item in value]
+    return value
+
+
 __all__ = [
     "TEMPORAL_TEXT_KINDS",
     "TemporalTextError",
+    "temporal_frame",
     "temporal_literal",
     "temporal_physical",
     "temporal_series",

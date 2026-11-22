@@ -162,7 +162,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-2",
     "polars-node-clarity",
     "sandbox-security",
-    "server-api",
     "tracing",
     "workbench",
 )
@@ -172,7 +171,7 @@ _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
 )
 # One shared cause each, taken before the packages it lists. They stand alone: no row in
 # the index and no priorities table.
-_ROADMAP_ROOT_CAUSES: tuple[str, ...] = ("root-cause-temporal-values.md",)
+_ROADMAP_ROOT_CAUSES: tuple[str, ...] = ()
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,

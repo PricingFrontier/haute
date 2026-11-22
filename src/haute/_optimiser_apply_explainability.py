@@ -14,9 +14,10 @@ from haute._builders import (
     has_ratio_constraint,
     online_apply_read_columns,
 )
-from haute._json_safe import to_json_safe
+from haute._json_safe import row_to_json_safe, to_json_safe
 from haute._logging import get_logger
 from haute._node_apply import load_configured_optimiser_artifact
+from haute._polars_dtypes import column_kind
 from haute._price_contour import price_contour
 from haute._project_context import current_project
 from haute._ratebook_collar import (
@@ -29,7 +30,13 @@ from haute._rating import (
     normalise_rating_key,
     rating_dtype_descriptor,
 )
-from haute._trace_correlation import _jsonify_row, _trace_values_match
+from haute._temporal_text import TEMPORAL_TEXT_KINDS, with_temporal_text
+from haute._trace_correlation import (
+    _trace_values_match,
+    _traced_row,
+    _typed_value_match_expr,
+    traced_rating_key,
+)
 
 logger = get_logger(component="optimiser_apply_explainability")
 _TRACE_MATCH_BATCH_SIZE = 50_000
@@ -185,7 +192,7 @@ def _explain_online(
 
     candidates = [
         _online_candidate_payload(row, constraints, objective_col, step_col, value_col)
-        for row in quote_rows.iter_rows(named=True)
+        for row in with_temporal_text(quote_rows).iter_rows(named=True)
     ]
     selected = [row for row in candidates if row.get("selected") is True]
     baseline = [row for row in candidates if row.get("is_baseline") is True]
@@ -293,7 +300,7 @@ def _online_candidate_payload(
     step_col: str,
     value_col: str,
 ) -> dict[str, Any]:
-    raw = _jsonify_row(dict(row))
+    raw = row_to_json_safe(dict(row))
     payload = dict(raw)
     constraint_values: dict[str, Any] = {}
     linearised: dict[str, Any] = {}
@@ -570,7 +577,7 @@ def _match_ratebook_input_row(
             "selected ratebook input frame shares no columns with clicked output row"
         )
 
-    predicate = _build_polars_equality_predicate(shared, output_row)
+    predicate = _build_polars_equality_predicate(shared, output_row, parent_frame.collect_schema())
 
     # The Polars predicate is the fast path — it only materialises the
     # matching row.  Two ways the fast path can miss:
@@ -590,35 +597,46 @@ def _match_ratebook_input_row(
         return _python_match_ratebook_input_row(parent_frame, output_row, shared)
     if matched.is_empty():
         return _python_match_ratebook_input_row(parent_frame, output_row, shared)
-    return _jsonify_row(dict(matched.row(0, named=True)))
+    return _traced_row(matched, 0)
 
 
 def _build_polars_equality_predicate(
     shared: list[str],
     output_row: dict[str, Any],
+    schema: pl.Schema,
 ) -> pl.Expr:
     """And-combine per-column equality predicates for the shared columns.
 
     ``shared`` is guaranteed non-empty by the caller, so the result is always
     a real predicate (no ``None`` to handle downstream).
     """
-    predicate = _polars_equality_predicate(shared[0], output_row.get(shared[0]))
+    predicate = _polars_equality_predicate(shared[0], output_row.get(shared[0]), schema)
     for column in shared[1:]:
-        predicate = predicate & _polars_equality_predicate(column, output_row.get(column))
+        predicate = predicate & _polars_equality_predicate(column, output_row.get(column), schema)
     return predicate
 
 
-def _polars_equality_predicate(column: str, value: Any) -> pl.Expr:
+def _polars_equality_predicate(column: str, value: Any, schema: pl.Schema) -> pl.Expr:
     """Build the strictest Polars equality predicate we can for *value*.
 
     Nulls and NaN need explicit handling because Polars ``==`` propagates them.
     Floats use ``==`` for the fast path; NaN/tolerance comparisons fall through
-    to :func:`_python_match_ratebook_input_row`.
+    to :func:`_python_match_ratebook_input_row`. A datetime, time or duration value
+    is the clicked row's exact text, compared with the column's own value by the
+    trace's typed match (a Python value would drop its nanoseconds).
     """
     if value is None:
         return pl.col(column).is_null()
     if isinstance(value, float) and math.isnan(value):
         return pl.col(column).is_nan()
+    if column_kind(schema[column]) in TEMPORAL_TEXT_KINDS:
+        expression, reason = _typed_value_match_expr(column, value, schema[column])
+        if expression is None:
+            raise OptimiserApplyTraceError(
+                f"clicked ratebook output value {value!r} of column {column!r} is not a "
+                f"{schema[column]} value ({reason})"
+            )
+        return expression
     return cast(pl.Expr, pl.col(column) == value)
 
 
@@ -640,9 +658,9 @@ def _python_match_ratebook_input_row(
         if batch.is_empty():
             continue
         saw_row = True
-        for row in batch.iter_rows(named=True):
+        for row in with_temporal_text(batch).iter_rows(named=True):
             if all(_values_match(row.get(column), output_row.get(column)) for column in shared):
-                return _jsonify_row(dict(row))
+                return row_to_json_safe(dict(row))
     if not saw_row:
         raise OptimiserApplyTraceError("selected ratebook input frame is empty")
     raise OptimiserApplyTraceError(
@@ -679,7 +697,7 @@ def _match_ratebook_entry(
             f"ratebook factor table {table_name!r} has misaligned dtype metadata"
         )
     input_keys = [
-        normalise_rating_key(value, input_dtypes[index]) for index, value in enumerate(input_values)
+        traced_rating_key(value, input_dtypes[index]) for index, value in enumerate(input_values)
     ]
     if any(key is None for key in input_keys):
         return None

@@ -21,6 +21,7 @@ from haute._file_ops import atomic_write_text
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._temporal_text import with_temporal_text
 from haute._workbench_input import null_quote, workbench_input_tables
 from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, request_schema
 from haute._worker_failures import WorkerError
@@ -407,7 +408,7 @@ def _capped_worker_output_schema(
         rows = [dict(record) for record in sample.records]
         input_schema = None
     else:
-        rows = sample.to_dicts()
+        rows = with_temporal_text(sample).to_dicts()
         input_schema = sample.schema
     plan = prepare_batch_scoring(
         rows,

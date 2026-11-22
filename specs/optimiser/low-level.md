@@ -993,7 +993,14 @@ counted key raises `ValueError` rather than guessing.
 `_ratebook_factor_level_counts` computes the per-level quote-exposure counts this
 canonicalisation is checked against, and deliberately raises rather than merging if two distinct
 raw level tuples canonicalise to the same key — a last-writer-wins merge here would silently
-drop a solved rate.
+drop a solved rate. Each counted level is keyed inside the query, before any level is read,
+by `_ratebook_factor_level_keys`: every component through `haute._rating.rating_key_of` (the
+expression the apply side's rating join keys a frame with, so the key is the one
+`normalise_rating_key` gives the level's exact value), joined with the unit separator. A level
+is never read into Python to be keyed: a `Datetime("ns")`, `Duration("ns")` or `Time` value
+holds nanoseconds and a Python value microseconds, so two levels 100 ns apart would become one
+key and the solve would be refused as a column that mixes value types. The levels a collision
+refusal names are written through `with_temporal_text` ([io-layer temporal text](../io-layer/low-level.md)).
 
 `_ratebook_factor_dtypes_from_artifact` reads the solved factor parquet schema and stores
 `factor_dtypes[table]` as an ordered list of
@@ -1167,11 +1174,16 @@ all raise rather than silently omitting explainer columns or falling back to an 
 `_explain_ratebook` locates the matching input row for the clicked output row
 (`_match_ratebook_input_row` — Polars-pushed-down equality filter first, falling back to a
 bounded Python batch scan for cross-dtype/NaN-tolerant matching if the fast predicate errors or
-finds nothing), then walks the artifact's `factor_tables` in order, for each factor: resolves
+finds nothing). The clicked row's datetime, time and duration values arrive as their exact text
+(tracing's `_traced_row`): the equality filter compares such a column with the text read back
+as a literal of its own type (`temporal_literal`), the batch scan reads each batch through
+`with_temporal_text`, and the matched row is read the same way, so a factor value with digits
+below a microsecond is matched and shown with all of them. The ladder then walks the artifact's `factor_tables` in order, for each factor: resolves
 whether the table is a composite (joins on multiple columns, split via
 `_split_ratebook_level`) or single-column table, looks up the matching entry via
 `_match_ratebook_entry` (keys normalised through the same dtype descriptor and
-`normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
+`normalise_rating_key` used at runtime, an input value of a datetime, time or duration factor
+keyed exactly from its text by tracing's `traced_rating_key`; ties resolved by walking entries in *reverse* to mirror the engine's
 `unique(keep="last")` deduplication; each ladder entry names the input columns the table
 joined on as `input_columns`), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
@@ -2326,8 +2338,9 @@ analysis table (the quote id cast to String, as price-contour keys its frame), r
 `ChoiceJoinError` on any difference, before the reducer runs. `ChoiceFrames.with_factors()` is then
 the inner 1:1 join on the quote id (`validate="1:1"`, `maintain_order="left"`). Each row is one
 level: `level`, the label the Rates tab shows for it (`__factor_group__`: each component
-canonicalised by `normalise_rating_key` under the factor column's dtype and joined with the
-unit separator, `_ratebook_factor_level_key`), `quotes`, `mean_scenario_value`, the Float64 sums
+keyed by `rating_key_of` under the factor column's dtype inside the query and joined with the
+unit separator, `_ratebook_factor_level_keys`, so levels that differ below a microsecond keep
+their own labels), `quotes`, `mean_scenario_value`, the Float64 sums
 and `deployed_factor_differs`, ordered by `quotes` descending and then the constituent values
 ascending, the first `limit` levels; `total` is the number of levels. The segments need no
 analysis columns: their quote counts sum to `n_quotes`, and each level's count equals that
@@ -2392,12 +2405,13 @@ target falls in exactly one level:
   with `lower` and `upper` the bin's bounds. Bounds are formatted in the column's dtype (an
   integer as an integer, a Float32 by its shortest Float32 form). Bins are listed in ascending
   order. A column with no non-missing value has only the Missing level.
-- *Categorical keys*: every distinct non-missing value (as a String; a factor by all its
-  constituent columns) is grouped, ordered by quotes descending and then by value ascending. The
+- *Categorical keys*: every distinct non-missing value (as a String written in the query: a
+  datetime or time as its exact text, `temporal_text`, since `cast(pl.String)` drops a `Time`'s
+  whole fraction; a factor by all its constituent columns) is grouped, ordered by quotes descending and then by value ascending. The
   **exact post-group-by check** runs on that grouping before any truncation: more than
   `MAX_SEGMENT_LEVELS = 2000` levels is refused (`SegmentKeyUnavailableError`, a 422) whatever
   the estimate admitted. Then the first `MAX_CATEGORICAL_LEVELS = 15` are listed (`kind:
-  "value"`; a factor level labelled as the Rates tab labels it, `_ratebook_factor_level_key`)
+  "value"`; a factor level labelled as the Rates tab labels it, `_ratebook_factor_level_keys`)
   and the rest are summed into one `"Other"` level (`kind: "other"`, `merged_levels` the number
   it merges, at least 1: exactly 16 levels list 15 and an Other of one; 15 or fewer have no
   Other), listed after them. The re-aggregation is in the lazy plan: only at most 17 rows

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 import polars as pl
 
 from haute._polars_dtypes import NUMBER_KINDS, column_kind
+from haute._temporal_text import with_temporal_text
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -105,8 +106,9 @@ _QUOTE_ENVELOPE_REQUIRED_KEYS = frozenset(
 
 def dataset_records(frame: pl.DataFrame) -> list[dict[str, Any]]:
     """An impact dataset's rows as the requests carry them: JSON values, written as the
-    deployment writes JSON (``response_json``), so a date or a time is its ISO text, the
-    form a served request takes one in, whichever transport sends them.
+    deployment writes JSON (``response_json``), so a date is its ISO text and a date-time,
+    time or duration its exact text (``with_temporal_text``), every digit kept: the form a
+    served request takes one in, whichever transport sends them.
 
     Raises:
         ValueError: A NaN or an infinity, which no request can carry, naming its column.
@@ -122,7 +124,7 @@ def dataset_records(frame: pl.DataFrame) -> list[dict[str, Any]]:
             f"The impact dataset's column {column!r} is {value} on row {row}, which no "
             "request can carry: write it as null, or drop that row."
         )
-    records: list[dict[str, Any]] = json.loads(response_json(frame.to_dicts()))
+    records: list[dict[str, Any]] = json.loads(response_json(with_temporal_text(frame).to_dicts()))
     return records
 
 

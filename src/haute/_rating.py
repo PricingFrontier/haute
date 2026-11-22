@@ -43,6 +43,7 @@ from haute._rating_step_config import (
     rating_default_value,
     validate_unique_rating_table_outputs,
 )
+from haute._temporal_text import with_temporal_text
 from haute._typed_numbers import read_typed_number, read_typed_whole, setting_number, trim_typed
 from haute._types import NodeType, _Frame
 from haute._validation_error import ConfigSettingError
@@ -204,10 +205,24 @@ def _banding_rule_comparators(
     return comparators
 
 
-def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
+def banding_threshold(threshold: float | date | datetime, dtype: Any) -> Any:
+    """A breakpoint's *threshold* as the banded column of *dtype* is compared with it.
+
+    A date-and-time boundary on a Datetime column is a literal in the column's own unit:
+    a Python ``datetime`` holds microseconds, and comparing a ``Datetime("ns")`` column
+    with one would bring the column down to microseconds, so a value 100 ns past a
+    boundary would be banded as on it. The boundary itself, typed to the minute or
+    second, is exact in any unit. Any other threshold is compared as it is.
+    """
+    if isinstance(threshold, datetime) and isinstance(dtype, pl.Datetime):
+        return pl.lit(threshold).cast(pl.Datetime(dtype.time_unit))
+    return threshold
+
+
+def _banding_condition(col: pl.Expr, rule: dict[str, Any], dtype: Any = None) -> pl.Expr | None:
     """Build a Polars boolean expression from one interval rule of a breakpoint."""
     parts: list[pl.Expr] = [
-        SUPPORTED_BANDING_OPERATORS[op](col, threshold)
+        SUPPORTED_BANDING_OPERATORS[op](col, banding_threshold(threshold, dtype))
         for op, threshold in _banding_rule_comparators(rule)
     ]
     if not parts:
@@ -431,7 +446,7 @@ def banding_rule_claim_expr(
     )
     chain: Any = None
     for index, rule in banding_interval_claims(prepared, right_closed=right_closed):
-        cond = _banding_condition(col, rule)
+        cond = _banding_condition(col, rule, dtype)
         if cond is None or not str(rule.get("assignment", "")):
             continue
         claim = pl.lit(index, dtype=pl.Int32)
@@ -519,7 +534,7 @@ def _apply_banding(
 
     chain: Any = None
     for rule in rules:
-        cond = _banding_condition(col, rule)
+        cond = _banding_condition(col, rule, dtype)
         if cond is None:
             continue
         assignment = str(rule.get("assignment", ""))
@@ -1354,7 +1369,7 @@ def _apply_rating_miss_guard(
             miss_count=miss_count,
             row_count=frame.height,
             distinct_missing_keys=missed.height,
-            missing_keys=missed.head(_MISS_KEY_DISPLAY_CAP).to_dicts(),
+            missing_keys=with_temporal_text(missed.head(_MISS_KEY_DISPLAY_CAP)).to_dicts(),
         )
         return frame
 

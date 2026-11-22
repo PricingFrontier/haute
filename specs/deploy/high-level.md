@@ -147,7 +147,7 @@ declared type holds it exactly:
 | `String`, `Categorical`, `Enum` | A JSON string (for an `Enum`, one of its categories). |
 | `Boolean` | `true` or `false`. |
 | `Date` | An ISO date string (`2024-05-01`). |
-| `Datetime` | An ISO date-time string: with an offset when the type has a time zone, without one when it has none. |
+| `Datetime` | An ISO date-time string: with an offset when the type has a time zone, without one when it has none. Read whole, to the nanosecond, never through a Python `datetime`: a part-second finer than the type holds (seven digits or more for `Datetime("us")`, four or more for `Datetime("ms")`) is refused, never cut short. |
 | `Null` | Only null. |
 
 Any other declared type (`Decimal`, `Time`, `Duration`, `Binary`, `List`, `Array`, `Struct`,
@@ -193,7 +193,7 @@ test-quote row wraps its request as `input`, with an optional `expected` output 
 top-level key, is refused naming the row, and any row whose actual output falls outside
 tolerance fails the deploy. An expected value is compared with the output as the response
 serves it: a date, a date-time or a time by its ISO 8601 text, the only form a JSON file
-holds one in, and a number, a decimal included, as a number within the tolerance; a
+holds one in (a date-time or a time with every digit it holds, nine for a part below a microsecond), and a number, a decimal included, as a number within the tolerance; a
 mismatch names both values as the response writes them. Comparing a priced response with
 an accepted one follows the same rule. Each file is read once, and every row that leaves out a column
 the request requires is named in the report, not only the first. A `test_quotes.dir` that is not a string, or is an empty one,
@@ -370,7 +370,9 @@ definition file's own preamble, would be refused like any other unbundled projec
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
   when requested through `Accept`. Either way the rows are the OUTPUT document as
   `render_output_document` renders it (a null field and an empty collection left out, a
-  null inside an array kept) and encoded alike, a date or time as its ISO 8601 text and a
+  null inside an array kept) and encoded alike, a date or time as its ISO 8601 text, a
+  date-time, a time or a duration with every digit it holds (nine for a part below a
+  microsecond, as a pandas-written `Datetime("ns")` holds), and a
   decimal as its exact digits, so
   `Accept` changes the framing and the row limit, never a row. NDJSON is collected into a bounded-memory spooled
   temporary file in Starlette's worker threadpool before response headers are sent, so
@@ -675,7 +677,7 @@ most: a silent wrong answer here mis-prices real policies.
   any quote, or answers as other than a number fails the command naming it, so a premium
   staging lost is never left out of the report as an output it does not compare. The
   quotes of an impact dataset are sent as the deployment writes JSON (`dataset_records`): a
-  date, a date-time or a time as its ISO text, as a served request takes one, whichever
+  date, a date-time or a time as its ISO text, every digit kept, as a served request takes one, whichever
   transport sends them; a NaN or an infinity in the dataset, which no request carries, is
   refused naming its column. A quote production prices
   at zero and staging does not has no percentage either, but it is an ordinary release event (a

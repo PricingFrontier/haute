@@ -8,7 +8,12 @@ from datetime import UTC, datetime, time, timedelta
 import polars as pl
 import pytest
 
-from haute._temporal_text import temporal_text
+from haute._temporal_text import (
+    TemporalTextError,
+    temporal_frame,
+    temporal_text,
+    with_temporal_text,
+)
 from haute.errors import SchemaMismatchError
 
 _SEED = 20261122
@@ -138,3 +143,81 @@ def test_a_duration_below_a_microsecond_keeps_all_nine_digits() -> None:
 def test_a_value_of_another_kind_is_refused_by_its_type() -> None:
     with pytest.raises(SchemaMismatchError, match="Int64 is not a datetime, time or duration"):
         temporal_text(pl.col("value"), pl.Int64())
+
+
+#: 2024-03-01T09:00:00 as nanoseconds from 1970: a pandas-written timestamp's unit.
+_NINE_AM = 1_709_283_600 * 1_000_000_000
+
+
+def test_a_nested_temporal_value_is_written_with_all_its_digits() -> None:
+    """A datetime, time or duration inside a struct, a list or an array is read as text too:
+    Python would cut it to six digits wherever it sits."""
+    frame = pl.DataFrame(
+        {
+            "event": [{"at": _NINE_AM + 100, "n": 1}, None],
+            "waits": [[100, None], None],
+            "clocks": [[300, 400], [500, 600]],
+            "n": [1, 2],
+        },
+        schema={
+            "event": pl.Struct({"at": pl.Datetime("ns"), "n": pl.Int64}),
+            "waits": pl.List(pl.Duration("ns")),
+            "clocks": pl.Array(pl.Time, 2),
+            "n": pl.Int64,
+        },
+    )
+    expected = [
+        {
+            "event": {"at": "2024-03-01T09:00:00.000000100", "n": 1},
+            "waits": ["0:00:00.000000100", None],
+            "clocks": ["00:00:00.000000300", "00:00:00.000000400"],
+            "n": 1,
+        },
+        {
+            "event": None,
+            "waits": None,
+            "clocks": ["00:00:00.000000500", "00:00:00.000000600"],
+            "n": 2,
+        },
+    ]
+
+    assert with_temporal_text(frame).to_dicts() == expected
+    assert with_temporal_text(frame.lazy()).collect().to_dicts() == expected
+
+
+def test_a_frame_is_read_back_from_its_exact_text() -> None:
+    """``temporal_frame`` is ``with_temporal_text`` undone: every digit, at any depth, an
+    aware column's instant included, and a field the rows leave out a null."""
+    schema = pl.Schema(
+        {
+            "at": pl.Datetime("ns", "Europe/London"),
+            "events": pl.List(pl.Struct({"clock": pl.Time, "wait": pl.Duration("ns")})),
+            "n": pl.Int64,
+        }
+    )
+    source = pl.DataFrame(
+        {
+            "at": [_NINE_AM + 100, None],
+            "events": [[{"clock": 300, "wait": -400}], []],
+            "n": [1, 2],
+        },
+        schema={
+            "at": pl.Int64,
+            "events": pl.List(pl.Struct({"clock": pl.Int64, "wait": pl.Int64})),
+            "n": pl.Int64,
+        },
+    ).cast(dict(schema))  # type: ignore[arg-type]
+    rows = with_temporal_text(source).to_dicts()
+    assert rows[0]["at"] == "2024-03-01T09:00:00.000000100+00:00"
+
+    read = temporal_frame([rows[0], {"n": 2, "events": []}], schema)
+
+    assert read.schema == schema
+    assert read.select(pl.all().to_physical()).equals(source.select(pl.all().to_physical()))
+
+
+def test_text_finer_than_its_column_is_refused_when_a_frame_is_read() -> None:
+    with pytest.raises(TemporalTextError, match="finer than a us datetime holds"):
+        temporal_frame(
+            [{"at": "2024-03-01T09:00:00.000000100"}], pl.Schema({"at": pl.Datetime("us")})
+        )

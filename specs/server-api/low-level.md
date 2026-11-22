@@ -1297,6 +1297,17 @@ through the shared analysis helper.
 
 ## Edge cases and invariants
 
+- **A temporal value in a preview row carries every digit.** The node preview's rows
+  (`executor._frame_rows`; an OUTPUT node's through `render_output_document`) and the
+  file preview's (`GET /api/schema`) are read from their frame through
+  `haute._temporal_text.with_temporal_text`, before any row reaches Python: each
+  datetime, time and duration value, a nested one inside a `Struct`, `List` or `Array`
+  included, is its exact text, ISO 8601 with a `T` as `isoformat()` writes it and a
+  duration as `str(timedelta)` does, with nine digits for a part below a microsecond.
+  A `Datetime("ns")` of 09:00:00.000000100, the unit pandas writes to Parquet, shows as
+  `…T09:00:00.000000100`, never cut to `…T09:00:00`; a value Python holds exactly is
+  spelled as it was before. A date is not temporal text: Python holds it exactly.
+
 Save preconditions capture artifact identities **before** validating the client's
 document revision. Revision validation must not bless bytes captured after an
 external edit. The same ordering covers a new destination appearing during save;

@@ -102,6 +102,18 @@ class TestJsonSafe:
         assert json_safe_scalar(value) == to_json_safe(value)
         assert json_safe_scalar(value) == {"__haute_type__": "non_finite_float", "value": token}
 
+    @pytest.mark.parametrize(
+        "value",
+        [datetime(2026, 4, 23, 10, 5, 3), time(10, 5, 3), timedelta(seconds=30)],
+        ids=type,
+    )
+    def test_provider_scalar_renderer_refuses_a_python_temporal_value(self, value) -> None:
+        # A Python datetime, time or timedelta holds microseconds, so a nanosecond
+        # value has already lost digits by the time it is one: such a column reaches
+        # the renderer as its exact text, and a site that went round that fails here.
+        with pytest.raises(TypeError, match="with_temporal_text"):
+            json_safe_scalar(value)
+
 
 class TestContracts:
     def test_contract_round_trips_between_tuple_and_dataclass(self) -> None:

@@ -2845,9 +2845,6 @@ class TestEnrichBandingRealConfig:
 
     def test_a_date_band_is_credited_by_calendar_day_in_the_values_zone(self):
         """A date band compares a traced time-zoned value by its own calendar day."""
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2860,10 +2857,13 @@ class TestEnrichBandingRealConfig:
                 }
             ]
         }
-        # 00:30 on 1 July in London is still 30 June in UTC.
-        start = datetime(2024, 7, 1, 0, 30, tzinfo=ZoneInfo("Europe/London"))
-
-        result = enrich_banding(config, {"start": start}, {"start_band": "July+"})
+        # 00:30 on 1 July in London is still 30 June in UTC. A traced value is its text.
+        result = enrich_banding(
+            config,
+            {"start": "2024-07-01T00:30:00+01:00"},
+            {"start_band": "July+"},
+            factor_input_dtypes={"start": pl.Datetime("us", "Europe/London")},
+        )
 
         assert result["matched_band"] == "July+"
         assert result["status"] == "matched"

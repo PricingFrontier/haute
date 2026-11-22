@@ -18,6 +18,7 @@ from haute._logging import get_logger
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._project_context import current_project
 from haute._sandbox import contained_path
+from haute._temporal_text import with_temporal_text
 from haute.errors import InvalidRequestError, NotFoundError, SchemaMismatchError
 from haute.schemas import (
     BrowseFilesResponse,
@@ -214,7 +215,7 @@ def _read_schema_blocking(
             row_count=meta["row_count"],
             row_count_estimated=False,
             column_count=len(columns),
-            preview=rows_to_json_safe(preview_df.to_dicts()),
+            preview=rows_to_json_safe(with_temporal_text(preview_df).to_dicts()),
         )
 
     schema = lf.collect_schema()
@@ -250,7 +251,7 @@ def _read_schema_blocking(
         row_count=row_count,
         row_count_estimated=row_count_estimated,
         column_count=len(columns),
-        preview=rows_to_json_safe(preview_df.to_dicts()),
+        preview=rows_to_json_safe(with_temporal_text(preview_df).to_dicts()),
     )
 
 

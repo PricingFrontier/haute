@@ -1580,3 +1580,102 @@ def test_limited_level_without_ancestor_keys_reads_every_row() -> None:
     )
 
     assert limited is level
+
+
+# ---------------------------------------------------------------------------
+# A value below a microsecond (SRV-19): keyed and written by its own digits
+# ---------------------------------------------------------------------------
+
+#: 2024-03-01T09:00:00 as nanoseconds from 1970: a pandas-written timestamp's unit.
+_NINE_AM = 1_709_283_600 * 1_000_000_000
+_EVENTS_MAPPING = [
+    _entry("events", "policy", "$[:].policy"),
+    _entry("events", "at", "$[:].events[:].at"),
+    _entry("events", "amount", "$[:].events[:].amount"),
+]
+
+
+def _nanosecond_events() -> pl.LazyFrame:
+    return pl.LazyFrame(
+        {"policy": ["P1", "P1"], "at": [_NINE_AM + 100, _NINE_AM + 200], "amount": [5, 5]},
+        schema={"policy": pl.String, "at": pl.Int64, "amount": pl.Int64},
+    ).with_columns(pl.col("at").cast(pl.Datetime("ns")))
+
+
+def test_two_events_apart_below_a_microsecond_stay_two_objects_with_every_digit() -> None:
+    assert assemble_output_from_mapping({"events": _nanosecond_events()}, _EVENTS_MAPPING) == [
+        {
+            "policy": "P1",
+            "events": [
+                {"at": "2024-03-01T09:00:00.000000100", "amount": 5},
+                {"at": "2024-03-01T09:00:00.000000200", "amount": 5},
+            ],
+        }
+    ]
+
+
+def test_the_output_node_s_frame_and_its_rendering_keep_a_nanosecond_value() -> None:
+    """The OUTPUT node's frame holds each value whole, and its rendering, the deployed
+    answer's rows, writes a datetime, a time and a duration with all nine digits."""
+    frame = _nanosecond_events().with_columns(
+        clock=pl.lit(9 * 3_600 * 10**9 + 300, dtype=pl.Int64).cast(pl.Time),
+        wait=pl.lit(400, dtype=pl.Int64).cast(pl.Duration("ns")),
+    )
+    mapping = [
+        *_EVENTS_MAPPING,
+        _entry("events", "clock", "$[:].events[:].clock"),
+        _entry("events", "wait", "$[:].events[:].wait"),
+    ]
+
+    collected = assemble_output_from_config(
+        frame, config={"output_mapping": mapping}, source_names=["events"]
+    ).collect(engine="in-memory")
+
+    ats = collected.select(pl.col("events").list.eval(pl.element().struct.field("at")))
+    assert ats.select(pl.col("events").list.eval(pl.element().to_physical())).item().to_list() == [
+        _NINE_AM + 100,
+        _NINE_AM + 200,
+    ]
+    assert render_output_document(collected) == [
+        {
+            "policy": "P1",
+            "events": [
+                {
+                    "at": f"2024-03-01T09:00:00.000000{n}00",
+                    "amount": 5,
+                    "clock": "09:00:00.000000300",
+                    "wait": "0:00:00.000000400",
+                }
+                for n in (1, 2)
+            ],
+        }
+    ]
+
+
+def test_a_limited_preview_keeps_the_children_of_a_parent_keyed_below_a_microsecond() -> None:
+    def at(*nanoseconds: int) -> pl.Series:
+        return pl.Series([_NINE_AM + n for n in nanoseconds], dtype=pl.Int64).cast(
+            pl.Datetime("ns")
+        )
+
+    frames = {
+        "policies": pl.LazyFrame({"at": at(100, 200), "policy": ["P1", "P2"]}),
+        "events": pl.LazyFrame({"at": at(100, 100, 200), "amount": [5, 6, 7]}),
+    }
+    mapping = [
+        _entry("policies", "at", "$[:].at"),
+        _entry("policies", "policy", "$[:].policy"),
+        _entry("events", "at", "$[:].at"),
+        _entry("events", "amount", "$[:].events[:].amount"),
+    ]
+
+    limited = assemble_output_from_mapping(frames, mapping, row_limit=1)
+
+    assert limited == [
+        {
+            "at": "2024-03-01T09:00:00.000000100",
+            "policy": "P1",
+            "events": [{"amount": 5}, {"amount": 6}],
+        }
+    ]
+    assert limited == assemble_output_from_mapping(frames, mapping)[:1]

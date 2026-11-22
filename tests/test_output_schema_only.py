@@ -45,6 +45,7 @@ from haute._output_assembler import (
     OutputMappingSchemaError,
     _prune,
     assemble_output_from_mapping,
+    output_document_frame,
     output_document_schema,
     render_output_document,
 )
@@ -377,7 +378,7 @@ def test_wide_dtype_matrix_declares_source_dtypes_and_renders_unchanged() -> Non
     assert derived["top"] == pl.Int64
 
     document = assemble_output_from_mapping(frames, mapping)
-    declared = pl.LazyFrame(document, schema=derived).collect()
+    declared = output_document_frame(document, derived)
     assert declared.schema == derived
     # Declaring the derived schema is rendering-neutral: the null padding polars
     # adds under a uniform schema is pruned back out at render time.
@@ -393,7 +394,7 @@ def test_wide_dtype_matrix_empty_source_keeps_the_typed_schema() -> None:
     assert output_document_schema(_source_schemas(empty), mapping) == derived
     document = assemble_output_from_mapping(empty, mapping)
     assert document == []
-    assert pl.LazyFrame(document, schema=derived).collect_schema() == derived
+    assert output_document_frame(document, derived).schema == derived
     assert pl.LazyFrame(schema=derived).collect_schema() == derived
 
 
@@ -494,7 +495,7 @@ def test_container_relation_keys_nest_children_under_their_parent(
     derived = output_document_schema(_source_schemas(frames), mapping)
     assert derived["key"] == dtype
     assert derived["drivers"] == pl.List(pl.Struct({"driver_id": pl.Int64}))
-    declared = pl.LazyFrame(document, schema=derived).collect()
+    declared = output_document_frame(document, derived)
     assert render_output_document(declared) == _prune(document)
 
 

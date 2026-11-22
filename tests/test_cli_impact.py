@@ -666,6 +666,12 @@ class TestImpactAgainstStandInEndpoints:
         with pytest.raises(ValueError, match=r"column 'cover\.limit' is nan on row 1"):
             dataset_records(dataset)
 
+    def test_a_value_below_a_microsecond_is_sent_with_every_digit(self) -> None:
+        from haute.deploy._impact import dataset_records
+        from tests._nanosecond_values import NANOSECOND_TEXTS, nanosecond_frame
+
+        assert dataset_records(nanosecond_frame()) == [NANOSECOND_TEXTS]
+
     def test_a_date_column_is_sent_as_its_iso_text(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

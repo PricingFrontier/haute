@@ -66,6 +66,7 @@ from haute._submodel_instances import (
     qualified_runtime_node_id,
     resolve_submodel_instances,
 )
+from haute._temporal_text import with_temporal_text
 from haute._types import GraphNode, PipelineGraph
 from haute._user_exec import user_code_line
 from haute._validation_error import HauteValidationError
@@ -1690,8 +1691,11 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
         return profile
 
     if dtype.is_numeric() or dtype.is_temporal():
-        profile["min"] = _profile_value(column.min())
-        profile["max"] = _profile_value(column.max())
+        # Written in the query: a Python datetime, time or timedelta holds microseconds.
+        bounds = frame.select(pl.col(name).min().alias("min"), pl.col(name).max().alias("max"))
+        low, high = with_temporal_text(bounds, separator=" ").row(0)
+        profile["min"] = _profile_value(low)
+        profile["max"] = _profile_value(high)
     else:
         profile["values_withheld"] = "unsupported_dtype"
     return profile

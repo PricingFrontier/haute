@@ -27,6 +27,7 @@ from typing import Any, cast
 import polars as pl
 
 from haute._polars_dtypes import column_kind, numpy_float_type
+from haute._temporal_text import with_temporal_text
 
 __all__ = [
     "AssignmentPhases",
@@ -2826,8 +2827,10 @@ def _row_value(node: ast.AST, row: pl.DataFrame, namespace: Mapping[str, Any]) -
     if missing:
         return _RowValue(reason=f"column_unavailable: {missing[0]}")
     # ``to_list`` gives native values: ``item()`` would return a Series for a
-    # List or Array cell.
-    value = row.select(expression.alias(_TRACE_VALUE_COLUMN)).to_series().to_list()[0]
+    # List or Array cell. A datetime, time or duration is read as its exact text, as the
+    # trace carries the row's own values: a Python value would drop its nanoseconds.
+    computed = row.select(expression.alias(_TRACE_VALUE_COLUMN))
+    value = with_temporal_text(computed).to_series().to_list()[0]
     return _RowValue(value=value)
 
 

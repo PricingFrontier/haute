@@ -269,6 +269,16 @@ class TestGetSchemaParquet:
         assert body["column_count"] == 2
         assert len(body["preview"]) == 3
 
+    def test_a_value_below_a_microsecond_is_previewed_with_every_digit(
+        self, client: TestClient, work_dir: Path
+    ):
+        from tests._nanosecond_values import NANOSECOND_TEXTS, nanosecond_frame
+
+        nanosecond_frame().write_parquet(work_dir / "events.parquet")
+        resp = client.get("/api/schema", params={"path": "events.parquet"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["preview"] == [NANOSECOND_TEXTS]
+
     def test_empty_parquet_returns_empty_preview(self, client: TestClient, work_dir: Path):
         df = pl.DataFrame({"a": pl.Series([], dtype=pl.Int64), "b": pl.Series([], dtype=pl.Utf8)})
         df.write_parquet(work_dir / "empty.parquet")

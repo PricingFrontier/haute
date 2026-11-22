@@ -738,6 +738,7 @@ def assemble_output_from_config(
         OutputMappingSchemaError,
         assemble_output_from_mapping,
         is_active_mapping_entry,
+        output_document_frame,
         output_document_schema,
     )
 
@@ -779,7 +780,7 @@ def assemble_output_from_config(
         document = assemble_output_from_mapping(
             lazy_frames, mapping, row_limit=row_limit, top_level_per_row=top_level_per_row
         )
-        return pl.DataFrame(document, schema=schema)
+        return output_document_frame(document, schema)
 
     return limited_python_scan(produce, schema=schema)
 

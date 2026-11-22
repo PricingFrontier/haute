@@ -14,10 +14,10 @@ from haute._trace_correlation import (
     _child_transform_may_reorder,
     _correlate_rows_posthoc,
     _find_matching_row,
-    _jsonify_row,
     _match_rows_vectorized,
     _RowMatchStatus,
     _trace_values_match,
+    _traced_row,
 )
 from haute.errors import TraceCorrelationUnsupportedError
 from haute.trace import _find_target_row_index
@@ -280,16 +280,36 @@ def test_unique_relaxed_match_emits_explicit_low_confidence_diagnostic() -> None
     ]
 
 
-def test_trace_row_serialization_is_the_preview_json_safe_boundary() -> None:
-    row = {
-        "day": date(2026, 7, 22),
-        "unsafe": 2**53,
-        "nested": {"values": [float("inf"), Decimal("1.25")]},
-        "opaque": object(),
-    }
+def test_a_traced_row_is_the_json_safe_row_with_temporal_values_as_their_exact_text() -> None:
+    start = 1_700_000_000_000_000_100
+    frame = pl.DataFrame(
+        {
+            "day": pl.Series([date(2026, 7, 22)]),
+            "unsafe": [2**53],
+            "nested": [{"values": [1.5, float("inf")]}],
+            "start": pl.Series([start]).cast(pl.Datetime("ns")),
+            "clock": pl.Series([1_500_000_100]).cast(pl.Time),
+            "wait": pl.Series([100]).cast(pl.Duration("ns")),
+        }
+    )
 
-    assert _jsonify_row is row_to_json_safe
-    assert _jsonify_row(row) == row_to_json_safe(row)
+    row = _traced_row(frame, 0)
+
+    plain = row_to_json_safe(frame.select("day", "unsafe", "nested").row(0, named=True))
+    assert {name: row[name] for name in plain} == plain
+    assert (row["start"], row["clock"], row["wait"]) == (
+        "2023-11-14T22:13:20.000000100",
+        "00:00:01.500000100",
+        "0:00:00.000000100",
+    )
+
+
+def test_a_python_temporal_value_is_refused_as_a_defect() -> None:
+    """A traced value is always its exact text; a Python datetime has lost digits."""
+    frame = pl.DataFrame({"start": pl.Series([1]).cast(pl.Datetime("ns"))})
+
+    with pytest.raises(TypeError, match="_traced_row"):
+        _match_rows_vectorized(frame, {"start": datetime(1970, 1, 1)}, ["start"])
 
 
 def _node(node_id: str, node_type: str = "generic", config: dict | None = None):

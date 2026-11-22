@@ -292,6 +292,25 @@ class TestDateBreakpoints:
         out = _apply_banding(self.LONDON.lazy(), "t", "b", "breakpoints", rules).collect()
         assert out["b"].to_list() == ["before", "after"]
 
+    @pytest.mark.parametrize("right_closed", [True, False])
+    def test_a_nanosecond_past_a_date_and_time_boundary_is_banded_past_it(self, right_closed):
+        """IOL-08: the boundary is compared in the column's own unit, not as a Python
+        datetime, which would bring a Datetime("ns") column down to microseconds."""
+        start = pl.Series([datetime(2024, 7, 1)], dtype=pl.Datetime("ns")).to_physical()[0]
+        # On the boundary, 100 ns past it, and 100 ns before it.
+        frame = pl.DataFrame(
+            {"t": pl.Series([start, start + 100, start - 100]).cast(pl.Datetime("ns"))}
+        )
+        rules = [
+            {"boundary": "2024-07-01 00:00", "label": "before"},
+            {"boundary": "", "label": "after"},
+        ]
+        out = _apply_banding(
+            frame.lazy(), "t", "b", "breakpoints", rules, right_closed=right_closed
+        ).collect()
+        on_boundary = "before" if right_closed else "after"
+        assert out["b"].to_list() == [on_boundary, "after", "before"]
+
     @pytest.mark.parametrize("boundary", ["2023-02-30", "2024-01-01 25:00"])
     def test_a_boundary_shaped_like_a_date_but_not_one_is_unreadable(self, boundary):
         with pytest.raises(ValueError, match=f"unreadable boundary '{boundary}'"):

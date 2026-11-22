@@ -135,10 +135,11 @@ def frame_rows(
             value = row.get(name)
             try:
                 columns[name].append(json_value(value, dtype))
-            except JsonValueError:
+            except JsonValueError as exc:
+                why = "" if exc.reason is None else f": {exc.reason.rstrip('.')}"
                 raise QuoteInputError(
                     f"Quote {index}'s {name!r} is {_shown(value)}, which its {dtype} column "
-                    "does not hold.",
+                    f"does not hold{why}.",
                     column=name,
                     quote=index,
                 ) from None

@@ -90,6 +90,7 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
+from haute._temporal_text import with_temporal_text
 from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
 from haute.errors import (
@@ -615,7 +616,10 @@ def _frame_preview(
 
 
 def _frame_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
-    return frame.to_dicts()
+    """*frame*'s rows, each datetime, time and duration as its exact text, as
+    ``isoformat()`` spells it with every digit: a Python value holds six of a
+    ``Datetime("ns")``'s nine."""
+    return with_temporal_text(frame).to_dicts()
 
 
 #: How each node type's preview frame becomes its preview rows. The OUTPUT node

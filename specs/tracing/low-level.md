@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), the `_TABLE_TRACE_TARGETS` node-type table (a Workbench Output target is traced through one of its tables), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), the `_TRACE_ROW_RULES` node-type table (each type's edge alignment, carried values, unique-row transfer and chosen-row rule), `joins_by_role` (an Edge Join: a type whose specification declares input roles), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Every row the trace reads from a frame is read by `_traced_row(frame, index)`: the row written through `with_temporal_text` (each datetime, time and duration column as its exact text, [io-layer](../io-layer/low-level.md)) and then made JSON-safe by the shared converter `row_to_json_safe` from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) rather than a second converter, so a traced value keeps the nanoseconds a Python `datetime`, `time` or `timedelta` would drop; `traced_rating_key` keys such a value exactly as the rating join keys its column (`rating_key_of` of the text read back into the column's type); the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), the `_TRACE_ROW_RULES` node-type table (each type's edge alignment, carried values, unique-row transfer and chosen-row rule), `joins_by_role` (an Edge Join: a type whose specification declares input roles), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type through the `_ROW_LINEAGE_BY_NODE_TYPE` table and operation alone), the per-step dispatch walk (`enrich_steps`, whose node-type enrichment is the `_STEP_ENRICHMENT` table) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
 | `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). Its per-type rules are the `_COMPUTES_NOTHING` (pure routers) and `_GENERATED_COLUMNS` (columns a type writes from its settings) node-type tables. |
@@ -26,7 +26,9 @@
   (one entry per contributed column, in the same order: `column`, the step's formula as
   `expression_text` with its `substituted_text`, `result_value`, `not_computable_reason` and
   `result_source` when the step's code assigns the column, else those null and
-  `result_value` the row's value; `reads`, each read column with the `sources` that
+  `result_value` the row's value (a formula's value on the traced row is read through
+  `with_temporal_text`, so a datetime, time or duration result is its exact text, as the
+  row's values and the `substituted_text` that shows them are); `reads`, each read column with the `sources` that
   computed the value read (`node_id`, `column`, `before_code`), or `None` when the column's
   inputs could not be told apart; `error`/`error_type` when evaluating the formula
   failed), `identical_row_count` (the number of
@@ -37,7 +39,7 @@
   pipeline's dtypes, for evaluating the step's formulas. They are not serialised. `_TypedRows`
   slices them from the frames correlation read (`_correlate_rows_posthoc` reports each resolved
   row's position through `row_positions`); a multi-frame node's row is the one frame its consumer
-  reads. A slice is kept only when its JSON-safe form equals the row the trace shows, and
+  reads. A slice is kept only when its traced form (`_traced_row`) equals the row the trace shows, and
   otherwise the field is `None`. The input row joins the parents' rows with the same
   `f"{pid}.{k}"` namespacing as `input_values`.
 - **Node-detail contracts** — enrichment consumes the same node config shape as
@@ -259,7 +261,9 @@ continuation is never cached: every click proves again.
    `TraceCorrelationUnsupportedError`.
 7. Call `_correlate_rows_posthoc()` (below, passed the click-local frames,
    `source_frames_of`, `column` as `traced_column`, and the resolver as `row_scope`) to
-   get a JSON-safe row dict per node (or `None` for unresolved nodes).
+   get a JSON-safe row dict per node (or `None` for unresolved nodes). Each row is
+   read by `_traced_row`, so a datetime, time or duration value is its exact text
+   (nine digits for a part-microsecond), the text every later match is built from.
 8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
    correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
@@ -714,16 +718,23 @@ its public facade.
    than merged across every frame the source emits — a column name recurring
    across frames with a different dtype must resolve in the *consumed* frame's
    dtype, not by dict-iteration order over frames the node never sees. Rating
-   entry and input-row keys are both canonicalised through that exact dtype via
-   `normalise_rating_key(value, dtype)`. A real rating table with entries cannot
+   entry and input-row keys are both canonicalised through that exact dtype: an entry's
+   via `normalise_rating_key(value, dtype)`, and a traced input value via
+   `traced_rating_key(value, dtype)`, which reads a datetime, time or duration value's
+   text back into its column's type (`temporal_series`) and keys it with the join's own
+   `rating_key_of`, so a Rating Step keyed by a `Datetime("ns")` column is explained with
+   the level the run matched. A real rating table with entries cannot
    fall back to Python-scalar dtype inference: missing factor dtype resolution
    raises inside enrichment and is surfaced through the existing structured
    node-enrichment error boundary. Breakpoint banding's interval rules are filtered through
    rating's shared usable-condition parser before comparison, so a rule the
    runtime skipped for having no usable operator/value pair cannot be selected
    by enrichment. A traced value is compared in the kind its breakpoints share
-   (`_match_interval_rule` reads a date or date-and-time input as the runtime's
-   `banding_comparison_expr` does), so a date band the engine chose is credited. A number
+   (`_match_interval_rule` reads a date or date-and-time input back into its column's own
+   type and compares it in Polars through the runtime's `banding_comparison_expr` and
+   operator, so the trace makes the comparison the run made, never one through a Python
+   `datetime`), so a date band the engine chose is credited. A date or date-and-time breakpoint without the
+   factor column's dtype is refused, as a categorical banding's is. A number
    is compared in the precision the engine compares it in: Polars types a rule's float
    threshold as a float column's own dtype, so a `Float32` (or `Float16`) value and
    threshold are both rounded through that dtype, and every other numeric column compares
@@ -837,9 +848,12 @@ snapshot deterministically.
   match only its exact canonical decimal string. A carried column with a cast (an
   online optimiser apply's chosen-row identity) is compared as
   `cast(column, dtype, strict=False)` under the same contract for that dtype.
-- **Temporal, decimal, categorical, and nested matching stays typed.** Date,
-  Time, Datetime, and Duration compare through checked integer temporal
-  representations with timezone-awareness preserved; Decimal uses exact
+- **Temporal, decimal, categorical, and nested matching stays typed.** Date
+  compares as a date literal; Time, Datetime, and Duration values arrive as their
+  exact text and compare with the text read back as a literal of the compared
+  column's own type (`temporal_literal`), timezone-awareness preserved. A value
+  with more digits than the column holds matches no row; a Python `datetime`,
+  `time` or `timedelta` is refused as a defect (a traced value is never one); Decimal uses exact
   lossless rescaling and never floats; Categorical/Enum compares normalised
   string values; compatible List/Array/Struct uses a typed one-row Polars
   literal. Object and incompatible nested schemas are unsupported, refused by

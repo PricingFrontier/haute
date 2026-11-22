@@ -629,6 +629,37 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         assert by_name["settled_at"]["min"] == "2024-01-01 00:00:00"
         assert (by_name["paid"]["min"], by_name["paid"]["max"]) == ("0.50", "5.50")
 
+    def test_nanosecond_bounds_keep_all_nine_digits(self):
+        """A Python datetime, time or timedelta holds microseconds: a bound read
+        through one is shown to the provider with six digits."""
+
+        from haute.assistant._tools import _profile_frame
+
+        frame = pl.DataFrame(
+            {
+                "stamp": pl.Series([1_700_000_000_000_000_100, 1_700_000_000_000_000_200]).cast(
+                    pl.Datetime("ns")
+                ),
+                "clock": pl.Series([1_000_000_100, 1_000_000_200]).cast(pl.Time),
+                "wait": pl.Series([100, 1_000_000_200]).cast(pl.Duration("ns")),
+            }
+        ).lazy()
+
+        by_name = {column["name"]: column for column in _profile_frame(frame)["columns"]}
+
+        assert (by_name["stamp"]["min"], by_name["stamp"]["max"]) == (
+            "2023-11-14 22:13:20.000000100",
+            "2023-11-14 22:13:20.000000200",
+        )
+        assert (by_name["clock"]["min"], by_name["clock"]["max"]) == (
+            "00:00:01.000000100",
+            "00:00:01.000000200",
+        )
+        assert (by_name["wait"]["min"], by_name["wait"]["max"]) == (
+            "0:00:00.000000100",
+            "0:00:01.000000200",
+        )
+
     def test_numeric_bounds_keep_their_json_type(self, dtype_matrix_project: Path):
         """A bound the model compares against must stay a number."""
 

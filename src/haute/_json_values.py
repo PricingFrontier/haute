@@ -5,7 +5,8 @@ columns as the sample it was built from: an integer within its type's range, nev
 boolean, a numeric string or a number with a fraction, which is never truncated; a finite
 float, an integer only when the float type holds its exact value; a string for a string,
 Categorical or Enum column (an Enum's one of its categories); a boolean; an ISO date or
-date-time string. A null is a null of any type. Nothing is coerced.
+date-time string, a date-time read whole and refused when it is finer than its column holds.
+A null is a null of any type. Nothing is coerced.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import numpy as np
 import polars as pl
 
 from haute._polars_dtypes import column_kind, integer_range, numpy_float_type
+from haute._temporal_text import TemporalTextError, temporal_physical
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -47,14 +49,22 @@ REQUEST_DTYPES: tuple[type[pl.DataType], ...] = (
 
 
 class JsonValueError(ValueError):
-    """A value its declared type does not hold."""
+    """A value its declared type does not hold; *reason*, when there is one past the type,
+    says why (a date-time finer than its column holds), for a refusal to show."""
+
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def json_value(value: object, dtype: pl.DataType) -> Any:
     """*value* as a column of *dtype* holds it, or :class:`JsonValueError`.
 
     *dtype* is one of :data:`REQUEST_DTYPES`. A ``date`` or ``datetime`` object is taken
-    as its ISO string would be: a deploy's dry run and a pandas request carry them so.
+    as its ISO string would be: a deploy's dry run and a pandas request carry them so. A
+    date-time is returned as its column's physical integer, which a frame of *dtype* holds
+    exactly: a Python ``datetime`` holds microseconds, and would cut a nanosecond request
+    short.
     """
     if value is None:
         return None
@@ -82,9 +92,7 @@ def json_value(value: object, dtype: pl.DataType) -> Any:
         if day is not None:
             return day
     elif base is pl.Datetime:
-        moment = _datetime(value, zoned=dtype.time_zone is not None)  # type: ignore[attr-defined]
-        if moment is not None:
-            return moment
+        return _datetime(value, dtype)
     raise JsonValueError(f"not {dtype}")
 
 
@@ -124,12 +132,16 @@ def _date(value: object) -> date | None:
     return None
 
 
-def _datetime(value: object, *, zoned: bool) -> datetime | None:
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    if not isinstance(value, datetime) or (value.tzinfo is not None) != zoned:
-        return None
-    return value
+def _datetime(value: object, dtype: pl.DataType) -> int:
+    """*value*, an ISO date-time or a ``datetime``, as *dtype*'s physical integer, read by
+    :func:`~haute._temporal_text.temporal_physical`: every digit, never through a Python
+    ``datetime``. A zone the column lacks, or a missing one it needs, and a part-second
+    finer than it holds are refused."""
+    if isinstance(value, datetime):
+        value = value.isoformat()
+    if not isinstance(value, str):
+        raise JsonValueError(f"not {dtype}")
+    try:
+        return temporal_physical(value, dtype)
+    except TemporalTextError as exc:
+        raise JsonValueError(str(exc), reason=str(exc)) from None

@@ -20,11 +20,11 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from functools import lru_cache, partial
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, cast
 
 import polars as pl
 from polars.datatypes import DataTypeClass
@@ -37,12 +37,21 @@ from haute._edge_join import (
 from haute._json_safe import (
     MAX_SAFE_INTEGER,
     non_finite_float_token,
+    row_to_json_safe,
 )
-from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
 from haute._node_specs import known_node_spec, node_type_table
 from haute._polars_dtypes import TEXT_KINDS, column_kind, integer_range
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
+from haute._rating import normalise_rating_key, rating_key_of
+from haute._temporal_text import (
+    TEMPORAL_TEXT_KINDS,
+    TemporalTextError,
+    temporal_literal,
+    temporal_physical,
+    temporal_series,
+    with_temporal_text,
+)
 from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, TraceRowOutOfRangeError
 
@@ -271,6 +280,77 @@ _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
 
+def _traced_row(frame: pl.DataFrame, index: int) -> dict[str, Any]:
+    """Row *index* of *frame* as the trace carries it: JSON-safe, with each datetime,
+    time and duration value as its exact text (``with_temporal_text``).
+
+    The one way a traced or matched row reaches Python: correlation's rows, the typed
+    rows ``trace.py`` keeps, and the optimiser apply explainability's matched ratebook
+    input row all read through it. A Python ``datetime``, ``time`` or
+    ``timedelta`` holds microseconds, so a ``Datetime("ns")`` or ``Time`` value read
+    through one would no longer equal its own row when matched again
+    (:func:`_typed_value_match_expr` builds each match from this text), and two rows
+    that differ below a microsecond would look the same.
+    """
+    return row_to_json_safe(with_temporal_text(frame.slice(index, 1)).row(0, named=True))
+
+
+def traced_rating_key(value: Any, dtype: pl.DataType) -> str | None:
+    """The rating key of a traced *value* of a column of type *dtype*, as the rating join
+    keys the column's own value (``rating_key_of``).
+
+    A datetime, time or duration value is its exact text (:func:`_traced_row`), read
+    back into its column's type before it is keyed; ``normalise_rating_key`` reads a
+    configured level, which is written as an analyst writes it. Malformed text raises
+    ``TemporalTextError``.
+    """
+    if value is None or column_kind(dtype) not in TEMPORAL_TEXT_KINDS:
+        return normalise_rating_key(value, dtype)
+    if not isinstance(value, str):
+        raise TypeError(
+            f"A traced {column_kind(dtype)} value is its exact text, not {type(value).__name__}."
+        )
+    keyed = temporal_series("key", [value], dtype).to_frame()
+    return cast(str, keyed.select(rating_key_of(pl.col("key"), dtype)).item())
+
+
+def _temporal_match_expr(
+    subject: pl.Expr, value: Any, dtype: pl.DataType
+) -> tuple[pl.Expr | None, str | None]:
+    """Compare a datetime, time or duration column with a traced value's exact text.
+
+    The text is read back as a literal of the compared type (``temporal_physical``),
+    never through a Python value, so a value below a microsecond matches its own row.
+    Text finer than the column holds names no value of it and matches no row.
+    """
+    kind = column_kind(dtype)
+    if isinstance(value, (date, time, timedelta)):
+        raise TypeError(
+            f"A traced {kind} value is its exact text, never a Python {type(value).__name__}: "
+            "read the row through _traced_row."
+        )
+    if not isinstance(value, str):
+        return None, f"invalid_{kind}_value"
+    if kind == "datetime":
+        unit = cast(pl.Datetime, dtype).time_unit
+        finest: pl.DataType = pl.Datetime("ns", cast(pl.Datetime, dtype).time_zone)
+    elif kind == "duration":
+        unit = cast(pl.Duration, dtype).time_unit
+        finest = pl.Duration("ns")
+    else:
+        unit, finest = "ns", dtype
+    try:
+        nanoseconds = temporal_physical(value, finest)
+    except TemporalTextError:
+        return None, f"invalid_{kind}_value"
+    factor = _TIME_UNIT_NS[unit]
+    if nanoseconds % factor:
+        return _never_match_expr(subject), None
+    if not _INT64_MIN <= nanoseconds // factor <= _INT64_MAX:
+        return None, f"{kind}_out_of_range"
+    return subject == temporal_literal(value, dtype), None
+
+
 def _never_match_expr(subject: pl.Expr) -> pl.Expr:
     """Return a frame-height false expression tied to *subject*."""
     return subject.is_null() & pl.lit(False)
@@ -285,39 +365,6 @@ def _finite_numeric_match_expr(subject: pl.Expr, expected: float) -> pl.Expr:
         pl.lit(_TRACE_REL_TOL) * magnitude,
     )
     return actual.is_finite() & (delta <= tolerance)
-
-
-def _datetime_epoch_ns(value: datetime) -> tuple[int, bool] | None:
-    aware = value.utcoffset() is not None
-    normalised = value.astimezone(UTC).replace(tzinfo=None) if aware else value.replace(tzinfo=None)
-    delta = normalised - datetime(1970, 1, 1)
-    nanoseconds = (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
-    if not _INT64_MIN <= nanoseconds <= _INT64_MAX:
-        return None
-    return nanoseconds, aware
-
-
-def _parse_duration(value: Any) -> timedelta | None:
-    if isinstance(value, timedelta):
-        return value
-    if not isinstance(value, str):
-        return None
-    match = re.fullmatch(
-        r"(?:(?P<days>-?[0-9]+) day(?:s)?, )?"
-        r"(?P<hours>[0-9]+):(?P<minutes>[0-9]{2}):(?P<seconds>[0-9]{2})"
-        r"(?:\.(?P<microseconds>[0-9]{1,6}))?",
-        value,
-    )
-    if match is None:
-        return None
-    micros = (match.group("microseconds") or "0").ljust(6, "0")
-    return timedelta(
-        days=int(match.group("days") or 0),
-        hours=int(match.group("hours")),
-        minutes=int(match.group("minutes")),
-        seconds=int(match.group("seconds")),
-        microseconds=int(micros),
-    )
 
 
 def _typed_value_match_expr(
@@ -429,49 +476,8 @@ def _typed_value_match_expr(
             return None, "invalid_date_value"
         return subject == pl.lit(date_value), None
 
-    if base is pl.Time:
-        try:
-            time_value = value if isinstance(value, time) else time.fromisoformat(value)
-        except (TypeError, ValueError):
-            return None, "invalid_time_value"
-        if time_value.utcoffset() is not None:
-            return None, "timezone_time_unsupported"
-        nanoseconds = (
-            time_value.hour * 3_600 + time_value.minute * 60 + time_value.second
-        ) * 1_000_000_000 + time_value.microsecond * 1_000
-        return subject.cast(pl.Int64) == nanoseconds, None
-
-    if isinstance(dtype, pl.Datetime):
-        if isinstance(value, date) and not isinstance(value, datetime):
-            return None, "date_datetime_mismatch"
-        try:
-            datetime_value = value if isinstance(value, datetime) else datetime.fromisoformat(value)
-        except (TypeError, ValueError):
-            return None, "invalid_datetime_value"
-        normalised = _datetime_epoch_ns(datetime_value)
-        if normalised is None:
-            return None, "datetime_nanosecond_overflow"
-        nanoseconds, aware = normalised
-        if aware != (dtype.time_zone is not None):
-            return None, "datetime_timezone_mismatch"
-        factor = _TIME_UNIT_NS[dtype.time_unit]
-        if nanoseconds % factor:
-            return never_match, None
-        return subject.cast(pl.Int64) == nanoseconds // factor, None
-
-    if isinstance(dtype, pl.Duration):
-        duration = _parse_duration(value)
-        if duration is None:
-            return None, "invalid_duration_value"
-        nanoseconds = (
-            duration.days * 86_400 + duration.seconds
-        ) * 1_000_000_000 + duration.microseconds * 1_000
-        if not _INT64_MIN <= nanoseconds <= _INT64_MAX:
-            return None, "duration_nanosecond_overflow"
-        factor = _TIME_UNIT_NS[dtype.time_unit]
-        if nanoseconds % factor:
-            return never_match, None
-        return subject.cast(pl.Int64) == nanoseconds // factor, None
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return _temporal_match_expr(subject, value, dtype)
 
     if dtype.is_nested():
         if not isinstance(value, (list, tuple, dict)):
@@ -896,7 +902,7 @@ def _find_matching_row(
                     "candidate_indices_state": match.candidate_indices_state.value,
                 }
             )
-        return _jsonify_row(df.row(idx, named=True)), idx
+        return _traced_row(df, idx), idx
 
     if match.status is _RowMatchStatus.AMBIGUOUS:
         relaxed = match.relaxation_reason is not None
@@ -912,7 +918,7 @@ def _find_matching_row(
                 )
             )
             if identical_count is not None:
-                candidate = _jsonify_row(df.row(match.candidate_indices[0], named=True))
+                candidate = _traced_row(df, match.candidate_indices[0])
                 _record_identical_row_match(
                     diagnostics,
                     node_id=node_id,
@@ -1342,13 +1348,13 @@ def _match_parent_row(
                 and positional_match.candidate_indices == (expected_index,)
             ):
                 return (
-                    _jsonify_row(parent_df.row(child_row_idx, named=True)),
+                    _traced_row(parent_df, child_row_idx),
                     child_row_idx,
                     len(match_row),
                 )
         elif len(parent_df) == 1 or not child_may_reorder:
             return (
-                _jsonify_row(parent_df.row(child_row_idx, named=True)),
+                _traced_row(parent_df, child_row_idx),
                 child_row_idx,
                 len(match_row),
             )
@@ -1447,13 +1453,11 @@ def _correlate_rows_posthoc(
             f"row_index {row_index} is out of range (target node has {len(target_df)} rows)"
         )
 
-    # Step 1: extract the target row — this is exactly what the user clicked
-    target_row_raw = target_df.row(row_index, named=True)
-
     result: dict[str, dict[str, Any] | None] = {}
     row_indices: dict[str, int] = {}  # track positional index per node
 
-    result[target_node_id] = _jsonify_row(target_row_raw)
+    # Step 1: extract the target row — this is exactly what the user clicked
+    result[target_node_id] = _traced_row(target_df, row_index)
     row_indices[target_node_id] = row_index
 
     # Step 2: build children_of (reverse of parents_of)
@@ -2439,7 +2443,7 @@ class RowScopeResolver:
             )
             if transferred is not None:
                 self._record_frame(parent_id, source_handle, transferred)
-                row = _jsonify_row(transferred.row(0, named=True))
+                row = _traced_row(transferred, 0)
                 matches.append((source_handle, row, 0, transferred.width, transferred, False, ()))
                 continue
             carried = self._carried_values(
