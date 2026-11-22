@@ -100,9 +100,9 @@ def most_common_values(
         execution_context=context,
     )
     # A temporal value is shown as its exact text, as str() spells it, every digit kept.
-    shown = with_temporal_text(top, separator=" ")
+    rows = with_temporal_text(top, separator=" ").iter_rows(named=True)
     return (
-        [(str(row["value"]), int(row["count"])) for row in shown.iter_rows(named=True)],
+        [(str(row["value"]), int(row["count"])) for row in rows],
         int(distinct.item(0, "distinct")),
     )
 

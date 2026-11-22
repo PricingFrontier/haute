@@ -284,7 +284,10 @@ def _backup_path_for(target: Path) -> Path:
     return target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
 
 
-_STAGING_NAME = re.compile(r"(?P<stem>.+)\.(?P<owner>[0-9a-f]{8})[0-9a-f]{4}\.tmp")
+# A stage written by this version names its owner (eight hex digits, then four); one an
+# earlier version wrote has eight random ones and no owner, so it is still a stage, never a
+# project's file, but it is not removed: whose it is cannot be told.
+_STAGING_NAME = re.compile(r"(?P<stem>.+)\.(?:(?P<owner>[0-9a-f]{8})[0-9a-f]{4}|[0-9a-f]{8})\.tmp")
 
 
 #: Where each process keeps the lock that says its atomic writes are live. It is held for
@@ -326,7 +329,7 @@ def remove_dead_writers_stages(paths: Iterable[Path]) -> list[tuple[Path, OSErro
     failed: list[tuple[Path, OSError]] = []
     for path in paths:
         named = _STAGING_NAME.fullmatch(path.name)
-        if named is None or named["owner"] == own:
+        if named is None or named["owner"] is None or named["owner"] == own:
             continue
         owner = FileLock(_writer_locks() / f"{named['owner']}.lock")
         if not owner.acquire(blocking=False):

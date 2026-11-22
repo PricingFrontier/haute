@@ -127,10 +127,9 @@ def _visit(node: ast.AST, relative: str, scope: str, found: Counter[tuple[str, s
         if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             inner = child.name if scope == "<module>" else f"{scope}.{child.name}"
             if not isinstance(child, ast.ClassDef):
-                exact_names = _exact_names(child)
                 for call in _own_calls(child):
                     assert isinstance(call.func, ast.Attribute)
-                    if not _exact(call.func.value, exact_names):
+                    if not _exact(call.func.value):
                         found[(relative, inner)] += 1
             _visit(child, relative, inner, found)
         elif scope == "<module>":
@@ -143,7 +142,8 @@ def _own_nodes(function: ast.AST) -> list[ast.AST]:
     stack = list(ast.iter_child_nodes(function))
     while stack:
         node = stack.pop()
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+        # A lambda's body is its function's: its reads are counted there.
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             continue
         nodes.append(node)
         stack.extend(ast.iter_child_nodes(node))
@@ -176,15 +176,14 @@ _KEEPS_COLUMNS = frozenset(
 )
 
 
-def _exact(node: ast.AST, exact_names: set[str]) -> bool:
-    """Whether *node*, a read's frame, was written through ``with_temporal_text``: the call
-    itself, a chain on it of methods that add no column (``with_temporal_text(f).head(5)``),
-    or a name every binding of which in this function is one of those."""
+def _exact(node: ast.AST) -> bool:
+    """Whether *node*, a read's frame, is written through ``with_temporal_text`` at the read
+    itself: the call, or a chain on it of methods that add no column
+    (``with_temporal_text(frame).head(5)``). A name never is: between its assignment and the
+    read, anything may change its columns (``insert_column``, a reassignment)."""
     while True:
         if _is_exact_call(node):
             return True
-        if isinstance(node, ast.Name):
-            return node.id in exact_names
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -195,51 +194,9 @@ def _exact(node: ast.AST, exact_names: set[str]) -> bool:
         return False
 
 
-def _exact_names(function: ast.AST) -> set[str]:
-    """The names *function* binds only by assigning a frame written through
-    ``with_temporal_text``: a parameter, a loop or ``with`` target, or any other binding of
-    the name makes it not exact, so no read is protected by an assignment it precedes."""
-    assigned: dict[str, list[ast.AST]] = {}
-    other: set[str] = set()
-    arguments = getattr(function, "args", None)
-    if isinstance(arguments, ast.arguments):
-        every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
-        every += [a for a in (arguments.vararg, arguments.kwarg) if a is not None]
-        other.update(argument.arg for argument in every)
-    for node in _own_nodes(function):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    assigned.setdefault(target.id, []).append(node.value)
-                else:
-                    other.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.value is None:
-                continue
-            assigned.setdefault(node.target.id, []).append(node.value)
-        elif isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor | ast.comprehension):
-            target = node.target
-            other.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
-        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-            other.update(n.id for n in ast.walk(node.optional_vars) if isinstance(n, ast.Name))
-        elif isinstance(node, ast.NamedExpr):
-            other.add(node.target.id)
-    exact: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for name, values in assigned.items():
-            if name in exact or name in other:
-                continue
-            if all(_exact(value, exact) for value in values):
-                exact.add(name)
-                changed = True
-    return exact
-
-
 def test_the_guard_sees_through_no_read_that_only_looks_exact() -> None:
-    """Codex review: a chain that can add a column, a name assigned after the read, and a
-    parameter later reassigned are each reported."""
+    """Codex review: a chain that can add a column, a name read before its conversion or
+    changed after it, and a read inside a lambda are each reported."""
     source = """
 def joined(left, right):
     return with_temporal_text(left).join(right, on="id").to_dicts()
@@ -252,9 +209,16 @@ def read_before(frame):
 def selected(frame):
     return with_temporal_text(frame).select("at").to_dicts()
 
-def kept(frame):
+def mutated(frame, timestamps):
     exact = with_temporal_text(frame)
-    return exact.head(5).to_dicts(), with_temporal_text(frame).filter(True).rows()
+    exact.insert_column(0, timestamps)
+    return exact.to_dicts()
+
+def in_a_lambda(frames):
+    return list(map(lambda frame: frame.to_dicts(), frames))
+
+def kept(frame):
+    return with_temporal_text(frame).head(5).to_dicts(), with_temporal_text(frame).rows()
 """
     found: Counter[tuple[str, str]] = Counter()
     _visit(ast.parse(source), "example.py", "<module>", found)
@@ -262,6 +226,8 @@ def kept(frame):
         ("example.py", "joined"): 1,
         ("example.py", "read_before"): 1,
         ("example.py", "selected"): 1,
+        ("example.py", "mutated"): 1,
+        ("example.py", "in_a_lambda"): 1,
     }
 
 

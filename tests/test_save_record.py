@@ -559,12 +559,19 @@ def test_a_records_folder_reached_through_a_link_refuses_the_save(
     assert (project / "rating" / "main.py").read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    "stage_name",
+    ["Bands.0123abcd0000.tmp", "Bands.0123abcd.tmp"],
+    ids=["named-by-its-owner", "an-earlier-version-s"],
+)
 def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, stage_name: str
 ) -> None:
+    """A save's leftover stage is its own to remove, whether this version named it (by its
+    owner) or an earlier one did (eight random hex digits), and no Commit takes it."""
     from haute._git_transactions import _pipeline_folder_new_files
 
-    staged = project / "rating" / "config" / "banding" / "Bands.0123abcd0000.tmp"
+    staged = project / "rating" / "config" / "banding" / stage_name
     staged.write_text("{}", encoding="utf-8")
     save_records.write_record(
         project,
@@ -588,7 +595,7 @@ def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
     # The save landed, and the staging file it could not remove is still its to remove.
     assert staged.is_file()
     assert _interruption(_document(project)) == []
-    assert "rating/config/banding/Bands.0123abcd0000.tmp" not in _pipeline_folder_new_files(
+    assert f"rating/config/banding/{stage_name}" not in _pipeline_folder_new_files(
         "rating", cwd=project
     )
 

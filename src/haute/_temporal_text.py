@@ -187,7 +187,7 @@ def first_value_finer_than_microseconds(frame: pl.DataFrame) -> tuple[str, int] 
     ``None``: what a Python value, which holds microseconds, would cut short. A caller that
     must hand rows on as Python values refuses them rather than lose the digits."""
     for name, dtype in frame.schema.items():
-        if not _holds_temporal(dtype):
+        if not _can_be_finer(dtype):
             continue
         row = frame.select(_finer_than_microseconds(pl.col(name), dtype).arg_true().first())
         if row.item() is not None:
@@ -195,20 +195,33 @@ def first_value_finer_than_microseconds(frame: pl.DataFrame) -> tuple[str, int] 
     return None
 
 
+def _can_be_finer(dtype: pl.DataType) -> bool:
+    """Whether *dtype* is, or holds at any depth, a type whose values can lie below a
+    microsecond: a nanosecond datetime or duration, or any time."""
+    kind = column_kind(dtype)
+    if kind in TEMPORAL_TEXT_KINDS:
+        return kind == "time" or getattr(dtype, "time_unit", None) == "ns"
+    if isinstance(dtype, pl.Struct):
+        return any(_can_be_finer(_instance(field.dtype)) for field in dtype.fields)
+    if isinstance(dtype, pl.List | pl.Array):
+        return _can_be_finer(_instance(dtype.inner))
+    return False
+
+
 def _finer_than_microseconds(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
-    """Whether *expression*, of *dtype*, holds a temporal value below a microsecond, as a
-    Boolean that is never null."""
+    """Whether *expression*, of *dtype*, which :func:`_can_be_finer`, holds a value below a
+    microsecond, as a Boolean that is never null and has one value for each of
+    *expression*'s (so it can stand inside a list's or an array's ``eval``)."""
     if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
-        if column_kind(dtype) != "time" and getattr(dtype, "time_unit", None) != "ns":
-            return pl.lit(False)
         finer = expression.to_physical() % _NANOSECONDS_PER_MICROSECOND != 0
     elif isinstance(dtype, pl.Struct):
-        fields = [
-            _finer_than_microseconds(expression.struct.field(field.name), _instance(field.dtype))
-            for field in dtype.fields
-            if _holds_temporal(_instance(field.dtype))
-        ]
-        finer = pl.any_horizontal(fields)
+        finer = pl.any_horizontal(
+            [
+                _finer_than_microseconds(expression.struct.field(field.name), inner)
+                for field in dtype.fields
+                if _can_be_finer(inner := _instance(field.dtype))
+            ]
+        )
     elif isinstance(dtype, pl.List):
         inner = _instance(dtype.inner)
         finer = expression.list.eval(_finer_than_microseconds(pl.element(), inner)).list.any()
@@ -216,7 +229,7 @@ def _finer_than_microseconds(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr
         inner = _instance(dtype.inner)
         finer = expression.arr.eval(_finer_than_microseconds(pl.element(), inner)).arr.any()
     else:
-        return pl.lit(False)
+        raise AssertionError(f"{dtype} holds no value below a microsecond")
     return finer.fill_null(False)
 
 
@@ -268,8 +281,16 @@ def temporal_physical(text: str, dtype: pl.DataType) -> int:
         raise TemporalTextError(f"{dtype} is not a datetime, time or duration type.")
     parts = _TEMPORAL_PARTS.fullmatch(text.strip())
     seconds_given = parts is not None and (parts["seconds"] or parts["clock_seconds"])
-    if parts is None or (parts["fraction"] is not None and not seconds_given):
-        # A part-second belongs to a clock's seconds: "2024-03-01.5" names nothing.
+    clock_given = parts is not None and (
+        parts["clock_seconds"] is not None or re.search(r"[T ]", parts["whole"]) is not None
+    )
+    if (
+        parts is None
+        or (parts["fraction"] is not None and not seconds_given)
+        or (parts["offset"] is not None and not clock_given)
+    ):
+        # A part-second belongs to a clock's seconds ("2024-03-01.5" names nothing), and an
+        # offset to a clock ("2024-03-01+05:30" would be read as 05:30).
         raise TemporalTextError(f"{text!r} is not a {kind}.")
     digits = parts["fraction"] or ""
     unit = "ns" if kind == "time" else cast(pl.Datetime, dtype).time_unit

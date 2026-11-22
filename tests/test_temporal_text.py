@@ -252,6 +252,8 @@ def test_every_accepted_iso_spelling_of_a_part_second_is_read_exactly(text: str)
         # A part-second belongs to a clock's seconds.
         ("2024-03-01.5", pl.Datetime("ns")),
         ("09:00.5", pl.Time),
+        # An offset belongs to a clock: read as one, "+05:30" would become 05:30.
+        ("2024-03-01+05:30", pl.Datetime("ns")),
     ],
 )
 def test_text_of_another_shape_is_refused_rather_than_read_in_part(
@@ -273,3 +275,29 @@ def test_a_multidimensional_temporal_array_is_read_back_whole() -> None:
         [[1, 2], [3, 4]],
         [[5, 100], [7, 8]],
     ]
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pl.Array(pl.Datetime("us"), 2),
+        pl.Array(pl.Duration("ms"), 2),
+        pl.List(pl.Datetime("us")),
+        pl.Struct({"at": pl.Datetime("us"), "n": pl.Int64}),
+    ],
+)
+def test_a_column_that_cannot_hold_a_value_below_a_microsecond_is_never_one(
+    dtype: pl.DataType,
+) -> None:
+    """Codex review: a nested temporal column of microseconds or coarser holds nothing a
+    Python value would cut short, so it passes the records check rather than failing it."""
+    from haute._temporal_text import first_value_finer_than_microseconds
+
+    if isinstance(dtype, pl.Struct):
+        frame = pl.DataFrame({"a": [{"at": 1, "n": 2}]}).with_columns(pl.col("a").cast(dtype))
+    else:
+        physical = pl.Array(pl.Int64, 2) if isinstance(dtype, pl.Array) else pl.List(pl.Int64)
+        frame = pl.DataFrame({"a": pl.Series([[1, 2]], dtype=physical)})
+        frame = frame.with_columns(pl.col("a").cast(dtype))
+
+    assert first_value_finer_than_microseconds(frame) is None

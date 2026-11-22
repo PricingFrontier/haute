@@ -132,7 +132,7 @@ writing process's token (`_writer_token`): on its first atomic write a process t
 exclusive `FileLock` on `haute-writers/<owner>.lock` under the temporary folder and holds it
 until it exits, and the operating system frees it then, however the process ends.
 `remove_dead_writers_stages(paths)` removes a stage only once its owner's lock can be taken,
-so only when that process is gone (removing the freed lock file too), never this process's
+so only when that process is gone (removing the freed lock file too); a stage an earlier version named with eight random hex digits is still a stage (never versioned, still a save's to recover) but is never removed, since whose it is cannot be told; never this process's
 own and never another live process's, however long its write takes; it follows and removes
 no link, and returns the stages it could not remove for the caller to log.
 `staging_files_under(folder)` lists every atomic-write stage in a folder tree, entering
