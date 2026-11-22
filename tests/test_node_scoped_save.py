@@ -836,3 +836,36 @@ def test_scoped_save_keeps_a_transforms_keyword_only_parameters(tmp_path):
     assert "def priced(source_b: pl.LazyFrame, *, factor=1.2) -> pl.LazyFrame:" in (
         main.read_text(encoding="utf-8")
     )
+
+
+def test_scoped_save_refuses_an_absolute_path_without_writing(client, monkeypatch, tmp_path):
+    """One node's save holds its paths to the rule the whole save does: an absolute path is
+    refused, naming the node and the path from the project root to write instead."""
+    _inputs_and_transform(tmp_path)
+    _recover(tmp_path, "source_b")
+    use_project(tmp_path)
+    data = tmp_path / "data" / "quotes.csv"
+    data.parent.mkdir()
+    data.write_text("x\n1\n", encoding="utf-8")
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "source_b")
+    assert target.scoped_editable is True
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    response = client.post(
+        "/api/pipeline/node/save",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "config": {**target.config, "format": "csv", "path": str(data)},
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "node_path_not_portable"
+    assert f"Data Input node 'source_b' (path): Path {str(data)!r} is absolute" in detail["message"]
+    assert "Write it from the project root: data/quotes.csv." in detail["message"]
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

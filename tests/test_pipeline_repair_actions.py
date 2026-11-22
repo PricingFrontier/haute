@@ -1694,3 +1694,107 @@ def test_recover_reports_a_keyword_only_form_it_cannot_keep(tmp_path):
     ]
     assert change.outcome == "removed"
     assert "'factor' has no default" in change.reason
+
+
+def _input_shared_with_a_submodel(root: Path, *, broken: bool) -> Path:
+    """A Data Input at the root and one inside a submodel that both name one config file."""
+    (root / "haute.toml").write_text('[project]\nname = "demo"\n')
+    (root / "config").mkdir()
+    (root / "config" / "shared_input.json").write_text(
+        json.dumps({"input_type": "file", "format": "csv", "mode": "scan", "path": "q.csv"})
+    )
+    child = root / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
+        'output_ports=[{"name": "output_1", "source": {"node_id": "inner"}}], '
+        'pipeline_dir="..")\n\n'
+        '@submodel.data_input(config="config/shared_input.json")\ndef inner(): ...\n',
+        encoding="utf-8",
+    )
+    keyword = ", bogus=1" if broken else ""
+    parent = root / "main.py"
+    parent.write_text(
+        "import haute\nimport polars as pl\n\nfrom modules import Inputs\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
+        f'@pipeline.data_input(config="config/shared_input.json"{keyword})\n'
+        "def source(): ...\n\n"
+        'pipeline.submodel(Inputs.submodel, "Inputs")\n',
+        encoding="utf-8",
+    )
+    return parent
+
+
+def test_reset_refuses_a_config_a_node_inside_a_submodel_shares(tmp_path):
+    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+
+    _input_shared_with_a_submodel(tmp_path, broken=True)
+    shared = tmp_path / "config" / "shared_input.json"
+    before = shared.read_bytes()
+
+    with pytest.raises(
+        PipelineRepairError,
+        match="This config is shared by another node and cannot be reset independently.",
+    ):
+        build_recover_unavailable_node_plan(
+            project_root=tmp_path, request=_request(tmp_path, "source", "reset")
+        )
+
+    assert shared.read_bytes() == before
+
+
+@pytest.mark.parametrize("broken", [True, False], ids=["root-degraded", "ready"])
+def test_a_parsed_node_names_the_config_file_its_decorator_names(tmp_path, broken):
+    """A graph the strict parse read records the file each decorator names, as the
+    recovery pass does, so no node sharing it is taken for its sole owner."""
+    parent = _input_shared_with_a_submodel(tmp_path, broken=broken)
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    assert document.submodels is not None
+    (definition,) = document.submodels.values()
+    nodes = [
+        *(node for node in document.nodes if node.authored_id == "source"),
+        *(node for node in definition.graph.nodes if node.authored_id == "inner"),
+    ]
+
+    assert [node.config_reference for node in nodes] == ["config/shared_input.json"] * 2
+    assert not any(node.scoped_editable for node in nodes)
+
+
+@pytest.mark.parametrize(
+    ("source", "kept"),
+    [
+        ({"alias": "champion"}, {"alias": "champion"}),
+        ({"version": "3"}, {"version": "3"}),
+        ({}, {"version": "latest"}),
+    ],
+    ids=["follows-an-alias", "pins-a-version", "names-neither"],
+)
+def test_recover_gives_a_model_score_no_default_its_settings_exclude(tmp_path, source, kept):
+    """A key a new node's defaults fill is left out where the kept settings exclude it:
+    a version beside an alias. Without the alias the default version still fills it."""
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "model_scoring" / "scored.json"
+    sidecar.parent.mkdir(parents=True)
+    saved = {
+        "source_type": "registered",
+        "registered_model": "motor_freq",
+        "task": "regression",
+        "output_column": "prediction",
+        "retired_setting": True,
+        **source,
+    }
+    sidecar.write_text(json.dumps(saved))
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + '@pipeline.model_score(config="config/model_scoring/scored.json")\n'
+        "def scored(quotes): ...\n"
+        'pipeline.connect("quotes", "scored")\n'
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "scored", "recover"))
+
+    assert result.document.load_status == "ready"
+    written = json.loads(sidecar.read_text())
+    assert "retired_setting" not in written
+    assert written["registered_model"] == "motor_freq"
+    assert {key: written.get(key) for key in ("alias", "version") if key in written} == kept

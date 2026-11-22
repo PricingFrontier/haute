@@ -59,7 +59,9 @@ told the same way: on Linux, a Data Input whose path is spelt
 `data/Synthetic.csv` for the file `data/synthetic.csv`, a spelling Windows
 opens, ends `haute run` with "This Data Input's source is unavailable and
 no published snapshot exists." and no file's name (run on 13 November
-2026; `PCF-05` is the Windows side).
+2026). A save and `haute lint` now refuse that spelling on every system,
+naming the file's own, so the run's words are left for a project that
+reached Linux without either.
 
 **Plan:** Let a failure that is about the file's content through: Haute's
 schema errors as written, and a JSON syntax error as its line and column

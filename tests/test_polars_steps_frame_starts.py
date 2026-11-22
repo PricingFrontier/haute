@@ -56,7 +56,9 @@ from tests._polars_steps_helpers import (
     _explore,
     _external_file,
     _frames,
+    _from_project_root,
     _lifted,
+    _project_frames,
     _rating_step,
     _ready_source,
     _render_body,
@@ -437,7 +439,7 @@ def test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode(
 
 
 def test_save_warns_about_incomplete_data_input_steps(project_root: Path) -> None:
-    quotes, rates = _frames(project_root)
+    quotes, rates = _project_frames(project_root)
     broken = _stepped_input(quotes, [step("f", "filter", match="all", conditions=[])])
     warnings = _save(project_root, PipelineGraph(nodes=[broken, rates], edges=[]))
     assert any(
@@ -909,7 +911,7 @@ def test_recovery_and_save_report_incomplete_steps_on_every_surface(project_root
             if issue.path == "/steps"
         ], node.data.nodeType
 
-    quotes, rates = _frames(project_root)
+    quotes, rates = _project_frames(project_root)
     warnings = _save(
         project_root,
         PipelineGraph(
@@ -1024,7 +1026,7 @@ def test_comment_first_free_code_keeps_its_steps_through_the_editor_save(
     """The comment above the first statement is part of the body the steps must render."""
     steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
     graph, node_id = _frame_start_graph(project_root, surface, steps)
-    _save(project_root, graph)
+    _save(project_root, _from_project_root(graph, project_root))
     _assert_comment_first_steps_kept(project_root / "main.py", node_id, surface)
 
 
@@ -1035,7 +1037,7 @@ async def test_comment_first_free_code_keeps_its_steps_through_the_assistant_app
     from haute.assistant._application import PipelineApplicationService
 
     graph, node_id = _frame_start_graph(project_root, surface, [])
-    _save(project_root, graph)
+    _save(project_root, _from_project_root(graph, project_root))
     service = PipelineApplicationService(
         project_root=project_root,
         pipeline_root=project_root,

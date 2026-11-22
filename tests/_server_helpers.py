@@ -42,9 +42,8 @@ def pipeline_dir(tmp_path: Path) -> Path:
     data_dir.mkdir()
     pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(data_dir / "input.parquet")
 
-    # Use as_posix() to avoid Windows backslash escape issues in the
-    # generated Python source (e.g. \U interpreted as unicode escape).
-    data_path = (data_dir / "input.parquet").as_posix()
+    # Written from the project root, as a save stores it: a save refuses an absolute path.
+    data_path = "data/input.parquet"
     source_config = write_data_input_config(tmp_path, "source", data_path)
     build_test_input_snapshot(_file_input_config(data_path), base_dir=tmp_path)
 

@@ -36,13 +36,9 @@ def project_dir(tmp_path: Path) -> Path:
     data.mkdir()
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(data / "input.parquet")
 
-    # ``as_posix`` is required on Windows: the raw string form contains
-    # ``C:\Users\...`` which Python's parser sees as an invalid
-    # ``\U``-prefixed escape.  Forward slashes are accepted by both
-    # Polars and os.path on every platform, so the generated pipeline
-    # file loads without a ``SyntaxError`` cross-platform.
-    input_path = (data / "input.parquet").as_posix()
-    source_config = write_data_input_config(tmp_path, "source", input_path)
+    # Written from the project root, as a save stores it: a save and ``haute lint``
+    # refuse an absolute path, which another checkout does not have.
+    source_config = write_data_input_config(tmp_path, "source", "data/input.parquet")
     code = f'''\
 import haute
 import polars as pl

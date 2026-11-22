@@ -185,6 +185,26 @@ def _is_receiver_authored_decorator(decorator: ast.expr, receiver: str) -> bool:
     )
 
 
+def authored_config_reference(decorator: ast.expr) -> str | None:
+    """The config file a node's decorator names in a ``config=`` string, as written.
+
+    Read on its own: a keyword beside it the parse cannot evaluate must not hide which
+    file the node names, since sharing decides what a reset or a delete may change.
+    """
+    keywords = decorator.keywords if isinstance(decorator, ast.Call) else []
+    reference = next(
+        (
+            keyword.value.value
+            for keyword in keywords
+            if keyword.arg == "config"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        ),
+        None,
+    )
+    return reference if reference and reference.strip() else None
+
+
 def _is_pipeline_authored_decorator(decorator: ast.expr) -> bool:
     """Return whether *decorator* is any direct ``@pipeline.<name>`` use."""
     return _is_receiver_authored_decorator(decorator, "pipeline")

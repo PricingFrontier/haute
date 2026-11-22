@@ -16,8 +16,10 @@ import pytest
 from haute._path_resolution import (
     MalformedRuntimePathError,
     RuntimePathOutsideProjectError,
+    RuntimePathWrittenOnWindowsError,
     copies_differ,
     node_input_path_copies,
+    portable_path_refusal,
     resolve_node_input_path,
 )
 from tests._project import use_project, work_elsewhere
@@ -200,11 +202,19 @@ def test_windows_drive_path_never_becomes_project_relative(
     tmp_path: Path,
     raw_path: str,
 ) -> None:
+    """Absolute here (on Windows), it is outside the project; where it is not absolute,
+    it is said to be written on Windows, never read as a path inside the project."""
     project_root = tmp_path / "project"
     project_root.mkdir()
 
-    with pytest.raises(RuntimePathOutsideProjectError, match="outside the project root"):
+    with pytest.raises(RuntimePathOutsideProjectError) as refused:
         resolve_node_input_path(raw_path, project_root=project_root)
+
+    if Path(raw_path.replace("\\", "/")).is_absolute():
+        assert "outside the project root" in str(refused.value)
+    else:
+        assert isinstance(refused.value, RuntimePathWrittenOnWindowsError)
+        assert f"Path {raw_path!r} was written on Windows" in str(refused.value)
 
 
 def test_absolute_raw_path_inside_root_is_allowed(tmp_path: Path) -> None:
@@ -441,3 +451,93 @@ def test_an_outside_link_the_pattern_cannot_reach_is_left_alone(tmp_path: Path) 
     copies = _copies("rates/*.parquet", project_root, pipeline_dir)
 
     assert copies is not None and not copies_differ(*copies, project_root=project_root)
+
+
+# ---------------------------------------------------------------------------
+# A path carried to another checkout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("written", "remedy"),
+    [
+        ("data/synthetic.csv", None),
+        ("inputs/rates.csv", None),
+        ("data/Synthetic.csv", "Write data/synthetic.csv."),
+        ("Data/synthetic.csv", "Write data/synthetic.csv."),
+        (r"DATA\SYNTHETIC.csv", "Write data/synthetic.csv."),
+        ("inputs/Rates.csv", "Write inputs/rates.csv."),
+        ("<the file's absolute path>", "Write it from the project root: data/synthetic.csv."),
+        (r"C:\Users\analyst\pricing\data\synthetic.csv", "from the project root"),
+        ("../../elsewhere/synthetic.csv", "from the project root"),
+        ("data/*.csv", None),
+        ("*/synthetic.csv", None),
+        ("**/rates.csv", None),
+        ("data/*.CSV", "matches 'data/synthetic.csv' only where letter case is ignored"),
+        ("*/Synthetic.csv", "matches 'data/synthetic.csv' only where letter case is ignored"),
+        ("**/Rates.csv", "only where letter case is ignored"),
+    ],
+)
+def test_a_node_path_has_one_verdict_on_every_system(
+    tmp_path: Path, written: str, remedy: str | None
+) -> None:
+    """One project's paths, carried from Windows to Linux and back: CI's platform smoke
+    runs this module on Windows and macOS, which read a file in any letter case, and on
+    Linux, which does not. Each path is accepted on all three or refused on all three,
+    the refusal quoting it and saying what to write."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    data = _write(project_root / "data" / "synthetic.csv", "a\n1\n")
+    _write(pipeline_dir / "inputs" / "rates.csv", "a\n1\n")
+    if written == "<the file's absolute path>":
+        written = str(data)
+
+    refusal = portable_path_refusal(written, pipeline_dir=pipeline_dir, project_root=project_root)
+
+    if remedy is None:
+        assert refusal is None
+    else:
+        assert refusal is not None
+        assert f"Path {written!r}" in refusal
+        assert remedy in refusal
+
+
+def test_a_folder_in_another_letter_case_names_nothing_the_rule_would_read(
+    tmp_path: Path,
+) -> None:
+    """An empty ``Data`` folder at the root is no case-variant of the pipeline folder's
+    ``data/quotes.csv``, which every system reads: the path is accepted."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    (project_root / "Data").mkdir()
+    _write(pipeline_dir / "data" / "quotes.csv", "a\n1\n")
+
+    assert (
+        portable_path_refusal(
+            "data/quotes.csv", pipeline_dir=pipeline_dir, project_root=project_root
+        )
+        is None
+    )
+
+
+def _folds_letter_case(folder: Path) -> bool:
+    probe = _write(folder / "case-probe", "")
+    try:
+        return (folder / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_twins_in_letter_case_are_refused_where_they_can_be_held(tmp_path: Path) -> None:
+    """On a filesystem that tells letter case apart, ``Quotes.csv`` beside ``quotes.csv``
+    is one file on Windows and macOS: a path naming either is refused."""
+    project_root, pipeline_dir = _layout(tmp_path)
+    if _folds_letter_case(project_root):
+        pytest.skip("this filesystem holds one file for both spellings")
+    _write(project_root / "data" / "quotes.csv", "a\n1\n")
+    _write(project_root / "data" / "Quotes.csv", "a\n2\n")
+
+    refusal = portable_path_refusal(
+        "data/quotes.csv", pipeline_dir=pipeline_dir, project_root=project_root
+    )
+
+    assert refusal is not None
+    assert "also matches 'data/Quotes.csv' where letter case is ignored" in refusal

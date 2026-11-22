@@ -73,6 +73,7 @@ A file's columns take their names from its header row, or from **ARGUMENTS**, ne
 - **A file without a header row.** A CSV, Excel or ODS file with `has_header` set to `false` must name every column, in order, with `new_columns`, for example `["policy_id", "region", "premium"]`. A CSV can instead declare a full `schema`, whose names are given to the columns in order. Without either, the node reports "A CSV file without a header must name every column, in order, with new_columns, or a full schema". Polars would otherwise call the columns `column_0`, `column_1` and so on, and a pipeline that relied on those names would read the wrong column after an upgrade. A `new_columns` list must name every column the file has: one naming fewer or more is refused with both counts.
 - **A CSV `schema`.** The names in a `schema` are matched to the CSV's header by name, so you can list the columns in any order. A `schema` must name exactly the header's columns: to rename columns, use `new_columns`; to set the type of some columns, use `schema_overrides`, which may name any of them.
 - **Several files at once.** A path matching several CSV files takes its column types from the first ten files.
+- **A path every copy of the project can open.** Saving, and `haute lint`, refuse a path that another computer's copy of the project, or a CI job on Linux, would not find: an absolute path, such as the one Windows Explorer's **Copy as path** gives, and a path whose letter case differs from the file's, such as `data/Synthetic.csv` for `data/synthetic.csv`. Windows and macOS open the file either way and Linux does not. The message names the node and the path to write instead.
 
 ## The TRANSFORM tab
 
@@ -162,7 +163,7 @@ A Databricks table:
     | `mode` | `""` or `"read"` or `"scan"` | Whether the file is read eagerly or scanned lazily; empty or absent takes the format's default. With `input_type` `"file"`, `"lakehouse"`, `"inline"`. |
     | `input_type` | `"file"` | The provider: a file. |
     | `format` | text | The file format, such as `parquet`, `csv` or `ndjson`. With `input_type` `"file"`, `"database"`, `"lakehouse"`, `"inline"`. |
-    | `path` | text | The file, relative to the project root or absolute. With `input_type` `"file"`, `"lakehouse"`. |
+    | `path` | text | The file, written from the project root: a save refuses an absolute path. With `input_type` `"file"`, `"lakehouse"`. |
     | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `input_type` `"database"`. |
     | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `input_type` `"database"`. |
     | `query` | text | The SQL query whose rows the node reads. With `input_type` `"database"`, `"databricks"`. |

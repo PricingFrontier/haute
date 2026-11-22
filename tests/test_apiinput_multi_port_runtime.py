@@ -1454,7 +1454,8 @@ def test_haute_run_executes_a_node_instance_after_a_multi_frame_source(
     data_path.write_text(json.dumps(_rating_records()))
     from haute.routes._save_pipeline import SavePipelineService
 
-    graph = _instance_after_two_frames(_multi_port_config(data_path))
+    # Written from the project root, as a save stores it: a save refuses an absolute path.
+    graph = _instance_after_two_frames(_multi_port_config(Path("data.json")))
     SavePipelineService(isolated_root).save_graph_transactionally(
         graph=graph,
         name="instances",
