@@ -384,7 +384,7 @@ def _refuse_unwritable(engine: Engine) -> None:
     from haute._failure_answers import classify_failure
 
     with engine.connect() as connection:
-        version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+        version: int = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
         try:
             connection.exec_driver_sql(f"PRAGMA user_version = {int(version)}")
         except DBAPIError as exc:
