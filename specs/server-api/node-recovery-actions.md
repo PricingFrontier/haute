@@ -222,7 +222,10 @@ code slots). The server resolves spans and affected files itself, revalidates
 eligibility under the shared save lock, refuses a configuration key the node type does
 not declare with HTTP 400 (`node_config_undeclared_keys`, naming the node and listing the
 keys in `unrecognized_config_keys`) before any other check or write, requires the
-candidate to remain loadable (completeness gaps allowed), rewrites only that node's settings and code through the
+candidate to remain loadable (completeness gaps allowed), refuses a path setting another
+checkout would read otherwise with HTTP 400 (`node_path_not_portable`, naming the node, the
+path and what to write; [IO layer](../io-layer/low-level.md), "A path every checkout reads
+alike"), rewrites only that node's settings and code through the
 existing LibCST and staged-write boundaries (regenerating the `contract=` annotation and
 omitting a sidecar `contract` copy exactly as Recover settings does, so a settings edit
 cannot leave a stale annotation, and adding `import polars as pl` below `import haute`

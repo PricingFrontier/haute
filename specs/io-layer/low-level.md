@@ -191,7 +191,30 @@ platforms, and on Windows with long paths on, nothing is renamed.
    resolver takes no preference, so no caller can put the pipeline directory first; outside
    `_path_resolution.py` only the places `tests/test_path_anchoring_by_hand.py` lists, each
    with its reason, anchor a relative path on the pipeline directory themselves (a node's
-   config sidecar and a SQLite URI among them).
+   config sidecar and a SQLite URI among them). A path with a Windows drive letter that is
+   not absolute where it is read (`C:\\Users\\...` on Linux or macOS, or `C:file.csv`) raises
+   `RuntimePathWrittenOnWindowsError`, a `RuntimePathOutsideProjectError`, saying it was
+   written on Windows and naming the longest tail of it found under the project root as the
+   path to write (`_path_resolution.reject_windows_drive_path`); a file Data Output's path is
+   refused the same way, never joined to the root as a folder named `C:`. The preview
+   request's path check names the node whose path it refuses, since every node's request
+   checks the whole graph.
+
+   **A path every checkout reads alike.** A node's path settings
+   (`execution.node_file_path_settings`: its local runtime inputs and a file Data Output's
+   `path`) must name the same file in every checkout of the project, on any computer or
+   system. `_path_resolution.portable_path_refusal` says why one would not, and what to
+   write instead: a path outside the project; an absolute path, which names this computer's
+   folders (write the path from the project root, spelled as on disk); a drive-letter path as
+   above; and a path spelled in another letter case than its entries on disk, which Windows
+   and macOS read and Linux does not (write the spelling on disk). For letter case the
+   candidates are walked in the anchoring rule's order, refused at the first one on disk in
+   another case, and accepted at the first one on disk as written, so a path gets the same
+   verdict on every system. A whole save (`SavePipelineService.validate_graph`, which
+   `haute lint` runs), one node's save (`apply_scoped_node_save`, HTTP 400
+   `node_path_not_portable`) and therefore `haute lint` refuse each, naming the node, the
+   setting, the path and what to write, with nothing saved (`execution.node_path_refusals`).
+   A run reads an absolute path inside the project as before.
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
    effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
    No cache-mode field is stored — validation rejects a config still carrying the removed

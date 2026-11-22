@@ -295,6 +295,28 @@ def _frames(tmp_path: Path) -> tuple[GraphNode, GraphNode]:
     return _ready_source("quotes", quotes), _ready_source("rates", rates)
 
 
+def _project_frames(root: Path) -> tuple[GraphNode, GraphNode]:
+    """:func:`_frames` as a saved project holds them, each path written from *root*: a save
+    refuses an absolute path (``haute._path_resolution.portable_path_refusal``)."""
+    quotes, rates = _from_project_root(PipelineGraph(nodes=list(_frames(root))), root).nodes
+    return quotes, rates
+
+
+def _from_project_root(graph: PipelineGraph, root: Path) -> PipelineGraph:
+    """*graph* with each node's path settings written from *root*, as a save stores them:
+    it refuses an absolute path (``haute._path_resolution.portable_path_refusal``)."""
+    from haute.execution import node_file_path_settings
+
+    def relative(node: GraphNode) -> GraphNode:
+        config = dict(node.data.config)
+        for key in node_file_path_settings(node):
+            if isinstance(config.get(key), str) and Path(config[key]).is_absolute():
+                config[key] = Path(config[key]).relative_to(root).as_posix()
+        return node.with_config(config)
+
+    return graph.model_copy(update={"nodes": [relative(node) for node in graph.nodes]})
+
+
 # ---------------------------------------------------------------------------
 # Codegen, parse, sidecars
 # ---------------------------------------------------------------------------
@@ -347,7 +369,7 @@ def _save(root: Path, graph: PipelineGraph) -> list[str]:
 def _project_graph(
     root: Path, steps: list[dict[str, Any]] | None, *, code: str | None = None
 ) -> PipelineGraph:
-    quotes, rates = _frames(root)
+    quotes, rates = _project_frames(root)
     config: dict[str, Any] = {"steps": steps} if steps is not None else {"code": code or ""}
     node = GraphNode(id="t", data=NodeData(label="t", nodeType="polars", config=config))
     return PipelineGraph(

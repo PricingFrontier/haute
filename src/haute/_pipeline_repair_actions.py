@@ -913,6 +913,17 @@ def apply_scoped_node_save(
         )
     except CONFIG_REFUSALS as exc:
         raise _unsupported(f"The proposed settings are not loadable: {exc}") from exc
+    from haute.execution import node_path_refusals
+
+    node = GraphNode(
+        id=target.authored_id,
+        data=NodeData(label=target.label, nodeType=NodeType(target.node_type), config=config),
+    )
+    refusals = node_path_refusals(node, pipeline_dir=root_path.parent, project_root=root)
+    if refusals:
+        raise PipelineRepairError(
+            "node_path_not_portable", " ".join([*refusals, "Nothing was saved."]), status_code=400
+        )
     edits = _reset_node(
         root,
         root_path,

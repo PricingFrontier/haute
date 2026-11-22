@@ -3301,7 +3301,7 @@ export interface DataInputFileConfig {
   input_type: 'file';
   mode?: '' | 'read' | 'scan';
   /**
-   * The file, relative to the project root or absolute.
+   * The file, written from the project root: a save refuses an absolute path.
    */
   path?: string;
   selected_columns?: string[];
@@ -3487,7 +3487,7 @@ export interface DataOutputFileConfig {
    */
   output_type: 'file';
   /**
-   * The file written, relative to the project root or absolute.
+   * The file written, from the project root: a save refuses an absolute path.
    */
   path?: string;
   selected_columns?: string[];

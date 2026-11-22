@@ -55,6 +55,7 @@ from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     _normalise_path_text,
+    reject_windows_drive_path,
 )
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import current_project, graph_pipeline_dir, installed_project
@@ -2129,6 +2130,9 @@ def resolve_data_output_path(
     ext = default_output_extension(fmt_entry)
     if ext is not None and not Path(path).suffix:
         path = f"{path}{ext}"
+    if format_group(fmt_entry) == "file":
+        # Joined to the root, a drive-letter path would land in a folder named ``C:``.
+        reject_windows_drive_path(raw, project_root=root)
     target = str(root / _normalise_path_text(path)) if format_group(fmt_entry) == "file" else path
     return _contain_output_path(graph, target, project_root=root), path
 

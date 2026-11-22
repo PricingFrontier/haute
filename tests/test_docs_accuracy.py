@@ -161,7 +161,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "mlflow-model-registry",
     "modelling",
     "optimiser",
-    "pipeline-config",
     "polars-2",
     "polars-node-clarity",
     "sandbox-security",

@@ -35,6 +35,11 @@ class RuntimePathOutsideProjectError(RuntimePathError):
     """Raised when a runtime path resolves outside its execution root."""
 
 
+class RuntimePathWrittenOnWindowsError(RuntimePathOutsideProjectError):
+    """A path with a drive letter read where it is not absolute: it names a folder on the
+    Windows computer it was written on, and no file in this checkout."""
+
+
 def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
     """Normalise path separators before constructing a ``Path``.
 
@@ -96,6 +101,42 @@ def _contained_candidate(candidate: Path, project_root: Path) -> Path | None:
     return spelling_preserved
 
 
+def reject_windows_drive_path(raw_path: str | Path, *, project_root: Path) -> None:
+    """Refuse *raw_path* when it starts with a drive letter and is not absolute here.
+
+    On Linux and macOS ``C:\\Users\\...`` is a relative path, so read as written it
+    would leave the project (an input) or land in a folder named ``C:`` inside it (an
+    output). It names a folder on the Windows computer it was written on, which this
+    checkout does not have, and the refusal says so. ``C:file.csv`` is relative to a
+    drive's current folder on Windows too, so it is refused there as well.
+    """
+    normalised = _normalise_path_text(raw_path)
+    windows_path = PureWindowsPath(normalised)
+    if not windows_path.drive or Path(normalised).is_absolute():
+        return
+    found = _project_suffix(windows_path.parts[1:], project_root)
+    remedy = (
+        f"Write it from the project root: {found}."
+        if found is not None
+        else "Write it from the project root, as the editor's file browser does."
+    )
+    raise RuntimePathWrittenOnWindowsError(
+        f"Path {str(raw_path)!r} was written on Windows: its drive letter names a folder "
+        f"on that computer only, which this checkout of the project does not have. {remedy}"
+    )
+
+
+def _project_suffix(parts: tuple[str, ...], project_root: Path) -> str | None:
+    """The longest tail of *parts* naming an entry under *project_root*, ``/``-separated."""
+    if any(part in {".", ".."} for part in parts):
+        return None
+    for start in range(len(parts)):
+        tail = parts[start:]
+        if (project_root.joinpath(*tail)).exists():
+            return "/".join(tail)
+    return None
+
+
 def _anchored_candidates(
     raw_path: str | Path,
     *,  # pragma: no mutate
@@ -115,9 +156,7 @@ def _anchored_candidates(
     normalised_path = _normalise_path_text(raw_path)
     raw = Path(normalised_path)
     _reject_reserved_device_components(raw_path, raw)
-    windows_path = PureWindowsPath(normalised_path)
-    if windows_path.drive and not raw.is_absolute():
-        raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
+    reject_windows_drive_path(raw_path, project_root=root)
 
     if raw.is_absolute():
         anchored = [raw]
@@ -310,6 +349,98 @@ def _exists_or_matches(candidate: Path) -> bool:
     if not any(marker in text for marker in _GLOB_MARKERS):
         return False
     return next(glob.iglob(text, recursive=True, include_hidden=True), None) is not None
+
+
+def _spelled_on_disk(project_root: Path, parts: tuple[str, ...]) -> tuple[str, ...]:
+    """*parts*, a path under *project_root*, with each entry spelled as it is on disk.
+
+    A part no entry of its folder matches exactly takes the one entry it matches in
+    another letter case. The walk stops at a glob pattern, at a folder that cannot be
+    listed, and at a part that matches no entry or more than one.
+    """
+    spelled: list[str] = []
+    folder = project_root
+    for index, part in enumerate(parts):
+        if any(marker in part for marker in _GLOB_MARKERS):
+            return (*spelled, *parts[index:])
+        try:
+            entries = os.listdir(folder)
+        except OSError:
+            return (*spelled, *parts[index:])
+        if part not in entries:
+            matches = [entry for entry in entries if entry.casefold() == part.casefold()]
+            if len(matches) != 1:
+                return (*spelled, *parts[index:])
+            part = matches[0]
+        spelled.append(part)
+        folder = folder / part
+    return tuple(spelled)
+
+
+def _inside(path: Path, project_root: Path) -> tuple[str, ...]:
+    """*path*'s parts below *project_root*, which contains it once resolved."""
+    try:
+        return path.relative_to(project_root).parts
+    except ValueError:
+        return path.resolve().relative_to(project_root).parts
+
+
+def portable_path_refusal(
+    raw_path: str,
+    *,
+    source_file: str | Path | None = None,
+    pipeline_dir: str | Path | None = None,
+    project_root: str | Path | None = None,
+) -> str | None:
+    """Why *raw_path*, a node's path setting, would not name the same file in another
+    checkout of the project, on another computer or system; ``None`` when it would.
+
+    A path that leaves the project, an absolute one, one with a Windows drive letter
+    and one spelled in another letter case than its entries on disk are each refused,
+    saying what to write: the path from the project root, or the spelling on disk.
+    Windows and macOS read a file in any letter case and Linux only in its own, so a
+    path spelled otherwise runs on the first and fails on the second. The save and
+    ``haute lint`` ask this of every path setting of every node.
+    """
+    root = current_project().root if project_root is None else Path(project_root).resolve()
+    try:
+        candidates = _anchored_candidates(
+            raw_path, source_file=source_file, pipeline_dir=pipeline_dir, project_root=root
+        )
+    except RuntimePathWrittenOnWindowsError as exc:
+        return str(exc)
+    except RuntimePathOutsideProjectError as exc:
+        return f"{exc}. Copy the file into the project and write its path from the project root."
+    except RuntimePathError as exc:
+        return str(exc)
+    written = Path(_normalise_path_text(raw_path))
+    if written.is_absolute():
+        found = next((candidate for candidate in candidates if _exists_or_matches(candidate)), None)
+        inside = "/".join(_spelled_on_disk(root, _inside(found or candidates[0], root)))
+        return (
+            f"Path {raw_path!r} is absolute: it names folders on this computer, which another "
+            f"checkout of the project does not have. Write it from the project root: {inside}."
+        )
+    # In the rule's order: a candidate on disk in another letter case is the file a system
+    # that ignores case reads, and a candidate on disk as written is the one every system reads.
+    own = written.parts
+    for candidate in candidates:
+        parts = _inside(candidate, root)
+        spelled = _spelled_on_disk(root, parts)
+        corrected = (
+            "/".join(spelled[len(spelled) - len(own) :])
+            if not any(part in {".", ".."} for part in own)
+            else "/".join(spelled)
+        )
+        if spelled != parts and corrected != "/".join(own):
+            return (
+                f"Path {raw_path!r} is spelled {corrected!r} on disk. Windows and macOS read it "
+                "in either letter case and Linux only as it is spelled, so a checkout on Linux "
+                f"cannot find it. Write {corrected}."
+            )
+        if _exists_or_matches(candidate):
+            return None
+    return None
 
 
 def resolve_graph_source_path(raw_path: str, source_file: str | Path) -> str:

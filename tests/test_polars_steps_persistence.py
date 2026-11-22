@@ -52,6 +52,7 @@ from tests._polars_steps_helpers import (
     _explore,
     _frames,
     _lifted,
+    _project_frames,
     _project_graph,
     _reparsed,
     _save,
@@ -1252,7 +1253,7 @@ def test_a_body_written_over_the_placeholder_ends_its_unfinished_steps(
     """The record of unfinished steps belongs to the placeholder alone: once the body is
     written by hand (``return df``, or ``...`` as the refusal suggests), every load reads
     the body, and the next save drops the record (READ-22)."""
-    quotes, _rates = _frames(project_root)
+    quotes, _rates = _project_frames(project_root)
     incomplete = [step("f", "filter", match="all", conditions=[])]
     if surface == "dataInput":
         node_id, graph = "quotes", PipelineGraph(nodes=[_stepped_input(quotes, incomplete)])
