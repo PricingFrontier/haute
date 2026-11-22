@@ -2193,14 +2193,13 @@ def resolve_data_output_path(
         reject_unportable_path_text(config["path"], project_root=root)
     if format_group(fmt_entry) != "file":
         return _contain_output_path(graph, path, project_root=root), path
-    contained = _contain_output_path(
-        graph, str(root / _normalise_path_text(path)), project_root=root
-    )
-    # A name Windows cannot hold is refused by name before anything is written: the file is
-    # staged under a longer hidden sibling name first.
-    reject_unportable_destination(
+    # A name Windows cannot hold is refused by name before anything is written, and before
+    # the path is resolved: the file is staged under a longer hidden sibling name first.
+    contained = reject_unportable_destination(
         path,
-        contained,
+        lambda: _contain_output_path(
+            graph, str(root / _normalise_path_text(path)), project_root=root
+        ),
         project_root=root,
         staged_as=lambda target: [new_data_output_staging_path(target)],
     )

@@ -116,7 +116,6 @@ ALLOWLIST: dict[str, str] = {
     "src/haute/_dedicated_workers.py::child_limit_evidence_counter": (
         "Child-side counter the memory-limit notification tests read."
     ),
-    "src/haute/_file_lock.py::owned_by_current_thread": "Ownership read under the lock's guard.",
     "src/haute/_mlflow_io.py::get_model_cache_stats": "Cache counters read under the cache lock.",
     "src/haute/_mlflow_io.py::clear_local_model_cache": "Cache reset under the cache lock.",
     "src/haute/_mlflow_utils.py::_restore_mlflow_databricks_credentials": (

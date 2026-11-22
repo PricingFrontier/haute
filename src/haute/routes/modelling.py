@@ -543,7 +543,7 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
         try:
             reject_unportable_destination(
                 contract_display_path,
-                destination_contract,
+                lambda: destination_contract,
                 project_root=current_project().root,
                 staged_as=atomic_copy_names,
             )

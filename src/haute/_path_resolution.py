@@ -88,11 +88,11 @@ _WINDOWS_FORBIDDEN_NAME_CHARACTERS = frozenset('<>:"|?*')
 
 def reject_unportable_destination(
     display_path: str,
-    target: Path,
+    resolve: Callable[[], Path],
     *,
     project_root: Path,
     staged_as: Callable[[Path], Sequence[Path]] | None = None,
-) -> None:
+) -> Path:
     """Refuse a destination a person typed that a file cannot have, before anything is
     written, naming the path and the rule.
 
@@ -103,9 +103,18 @@ def reject_unportable_destination(
     the path that is a file, and a name or path too long for the disk as the save writes it
     (*staged_as*, the sibling names its write makes: an atomic write's unless said;
     :func:`haute._file_ops.written_file_length_problem`). *display_path* is the path as
-    typed, which Windows would have changed by resolving it; *target* its resolved file.
+    typed, which Windows would have changed by resolving it. Its names are judged as typed
+    first, their length included, and only then is it resolved (*resolve*, the save's own
+    resolution and containment): Linux refuses to resolve a name too long for it at all.
+    Returns the resolved file.
     """
-    from haute._file_ops import atomic_write_names, written_file_length_problem
+    from haute._file_ops import (
+        MAX_FILE_NAME_CHARS,
+        atomic_write_names,
+        name_unit_word,
+        name_units,
+        written_file_length_problem,
+    )
 
     text = _normalise_path_text(display_path)
     _reject_reserved_device_components(display_path, Path(text))
@@ -128,6 +137,14 @@ def reject_unportable_destination(
                 f"Path {display_path!r} has {name!r}, which ends with a dot or a space: "
                 "Windows drops it, so the file would have another name. Choose another name."
             )
+        if name_units(name) > MAX_FILE_NAME_CHARS:
+            shown = name if len(name) <= 40 else name[:40] + "…"
+            raise MalformedRuntimePathError(
+                f"Path {display_path!r} cannot be saved: its name {shown!r} would be "
+                f"{name_units(name)} {name_unit_word()} long, more than the "
+                f"{MAX_FILE_NAME_CHARS} a file or folder name may be. Choose a shorter name."
+            )
+    target = resolve()
     root = project_root.resolve()
     for folder in target.parents:
         if not is_contained(root, folder) or folder == root:
@@ -143,6 +160,7 @@ def reject_unportable_destination(
         raise MalformedRuntimePathError(
             f"Path {display_path!r} cannot be saved: {too_long}. Choose a shorter name."
         )
+    return target
 
 
 def _resolve_source_file_parent(  # pragma: no mutate

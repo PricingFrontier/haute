@@ -829,9 +829,13 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     output_path = body.output_path
     if "/" not in output_path and "\\" not in output_path:
         output_path = f"{default_model_folder(project_root)}/{output_path}"
-    out = contained_path(project_root, output_path)
-    # A name Windows cannot hold is refused by name before anything is written.
-    reject_unportable_destination(output_path, out, project_root=project_root)
+    # A name Windows cannot hold is refused by name before anything is written, and before
+    # the path is resolved.
+    out = reject_unportable_destination(
+        output_path,
+        lambda: contained_path(project_root, output_path),
+        project_root=project_root,
+    )
     apply_path = Path(os.path.relpath(out, project_root)).as_posix()
 
     payload = _build_artifact_payload(

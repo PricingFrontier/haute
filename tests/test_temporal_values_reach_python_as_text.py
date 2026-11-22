@@ -15,6 +15,8 @@ import ast
 from collections import Counter
 from pathlib import Path
 
+from tests._source_files import source_files
+
 SOURCE = Path(__file__).resolve().parent.parent / "src" / "haute"
 _ROW_READERS = frozenset({"to_dicts", "iter_rows", "rows", "row"})
 _EXACT = "with_temporal_text"
@@ -113,7 +115,7 @@ READERS_WITHOUT_TEMPORAL_COLUMNS: dict[tuple[str, str], tuple[int, str]] = {
 def _readers() -> Counter[tuple[str, str]]:
     """Each function's row reads whose frame is not written through ``with_temporal_text``."""
     found: Counter[tuple[str, str]] = Counter()
-    for path in sorted(SOURCE.rglob("*.py")):
+    for path in source_files(SOURCE):
         relative = path.relative_to(SOURCE).as_posix()
         if relative == "_temporal_text.py":
             continue

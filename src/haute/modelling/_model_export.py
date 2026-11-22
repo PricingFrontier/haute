@@ -60,17 +60,20 @@ def resolve_model_export_destination(
     _reject_reserved_device_components(raw_path, relative)
     if PureWindowsPath(text).drive and not relative.is_absolute():
         raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
-    try:
-        target = contained_path(project_root, relative)
-    except PathOutsideProjectError:
-        raise RuntimePathOutsideProjectError(
-            f"Path {raw_path!r} resolves outside the project root"
-        ) from None
-    # A name Windows cannot hold is refused by name before anything is written: the model
-    # is copied in past a staged copy and a backup of the file it replaces. The route
-    # holds its contract beside it to the same rule.
-    reject_unportable_destination(
-        text, target, project_root=project_root, staged_as=atomic_copy_names
+
+    def resolve() -> Path:
+        try:
+            return contained_path(project_root, relative)
+        except PathOutsideProjectError:
+            raise RuntimePathOutsideProjectError(
+                f"Path {raw_path!r} resolves outside the project root"
+            ) from None
+
+    # A name Windows cannot hold is refused by name before anything is written, and before
+    # the path is resolved: the model is copied in past a staged copy and a backup of the
+    # file it replaces. The route holds its contract beside it to the same rule.
+    target = reject_unportable_destination(
+        text, resolve, project_root=project_root, staged_as=atomic_copy_names
     )
     return ModelExportDestination(
         path=target,
