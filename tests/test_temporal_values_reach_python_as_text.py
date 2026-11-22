@@ -133,8 +133,8 @@ def _visit(node: ast.AST, relative: str, scope: str, found: Counter[tuple[str, s
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             inner = child.name if scope == "<module>" else f"{scope}.{child.name}"
-            if not isinstance(child, ast.ClassDef):
-                _count_reads(child, relative, inner, found)
+            # A class body's own reads run when the class is defined: they count as its.
+            _count_reads(child, relative, inner, found)
             _visit(child, relative, inner, found)
         else:
             _visit(child, relative, scope, found)
@@ -209,8 +209,8 @@ def _exact(node: ast.AST) -> bool:
 
 def test_the_guard_sees_through_no_read_that_only_looks_exact() -> None:
     """Codex review: a chain that can add a column, a name read before its conversion or
-    changed after it, a read inside a lambda, a function defined inside an ``if`` and a read
-    at module level are each reported."""
+    changed after it, a read inside a lambda, a function defined inside an ``if``, a read at
+    module level and one in a class body are each reported."""
     source = """
 def joined(left, right):
     return with_temporal_text(left).join(right, on="id").to_dicts()
@@ -240,6 +240,9 @@ def conditional(frame, include_details):
 
 rows_at_import = FRAME.to_dicts()
 
+class Defaults:
+    records = FRAME.to_dicts()
+
 def kept(frame):
     return with_temporal_text(frame).head(5).to_dicts(), with_temporal_text(frame).rows()
 """
@@ -253,6 +256,7 @@ def kept(frame):
         ("example.py", "in_a_lambda"): 1,
         ("example.py", "conditional.render"): 1,
         ("example.py", "<module>"): 1,
+        ("example.py", "Defaults"): 1,
     }
 
 
