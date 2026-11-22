@@ -2587,8 +2587,11 @@ Out of scope:
     it is being built: a one-row table nothing is connected to holds one row of nulls and a
     many-row one no rows. None of them stops a run; an index filled with nulls fails pricing
     a quote instead (Each output row on its input row, below). A table leading with the quote's
-    reference and option holds them null in the node's tables whatever its frame holds, and
-    the panel never flags them; the response fills them.
+    reference and option holds the quote's on every row whatever its frame holds, read from
+    the `quote_details` of the Workbench Input the node reads from: in the editor, `haute run`
+    and a trace the sample's, under the stand-in identity, `PREVIEW` and 1, and where it is
+    given a request the request's; null when the node reads from no Workbench Input. The
+    panel never flags them, and a pipeline need not carry them through.
   - **Its tables are its result.** When the node runs, its result is its tables, one frame per
     table with a column, under its port's name, each holding the table's columns in the tables' order with
     their declared types, and nothing else of the frames it was given. A column fits its
@@ -2601,8 +2604,8 @@ Out of scope:
     when there are several, the first table first. Clicking a value in them traces it from
     the node connected to its table: the same row of that node's frame, and its column of the
     value's column's name. A value filled with nulls, its column missing from the frame or of
-    a type that does not fit, its table not connected, or the quote's reference and option
-    the table holds blank, has no value to trace, and tracing it says so.
+    a type that does not fit, its table not connected, or the quote's reference and option,
+    which the quote gives, has no value to trace, and tracing it says so.
   - **The response.** The tables are what a priced quote's outputs are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its schema table's name, not its
@@ -2612,7 +2615,8 @@ Out of scope:
     of a table leading with the quote's reference and option takes the quote's, read from
     the run's `quote_details` frame where the response is built (the request's in deployed
     scoring, the source's in `Pipeline.run`, the frame given to `Pipeline.score`, null
-    without one), so a pipeline need not carry them through; where it is rendered as JSON a
+    without one), by the one rule the node's tables follow, so every way of running the
+    pipeline answers one quote under one identity; where it is rendered as JSON a
     null value or an empty list is left out, as a Quote Response's are.
   - **Each output row on its input row.** A many-row table with inputs and outputs is one
     table, so each row pricing gives it belongs to one of the quote's rows of it: the row

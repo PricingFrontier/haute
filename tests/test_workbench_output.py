@@ -525,7 +525,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     app = project_app()
 
     # The graph as the editor holds it, which the route gives the tables the project's form
-    # defines: each table leads with the quote's identity, null in the node's own tables.
+    # defines: each table leads with the quote's identity, the sample's stand-in.
     saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
     summary = form_table("summary", outputs=[("state", "str"), ("premium", "float")])
     workbench_project(project, [*FORM_TABLES, summary], FORM_SAMPLE)
@@ -542,7 +542,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     previews = answer.json()["port_previews"]
     assert list(previews) == ["pricing_output", "summary_output"]
     assert previews["summary_output"]["preview"] == [
-        {"quote_reference": None, "quote_option": None, "state": "NY", "premium": 100.0}
+        {"quote_reference": "PREVIEW", "quote_option": 1, "state": "NY", "premium": 100.0}
     ]
     assert previews["summary_output"]["row_count"] == 1
     assert previews["summary_output"]["preview_truncated"] is False
@@ -907,11 +907,12 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
             "item_prices": [{**identity, "item_id": "A"}, {**identity, "item_id": "B"}],
         }
     ]
-    # The Workbench Output's own tables hold them blank, as the editor shows them.
+    # The Workbench Output's own tables, as the editor shows them, hold the sample's: the
+    # stand-in, whatever the items' frame held.
     tables = _tables(graph)
     assert (
         tables["item_prices_output"].select("quote_reference", "quote_option").to_dicts()
-        == [{"quote_reference": None, "quote_option": None}] * 2
+        == [{"quote_reference": "PREVIEW", "quote_option": 1}] * 2
     )
 
 

@@ -2076,3 +2076,39 @@ def test_hashed_streaming_sink_cleans_up_after_a_partial_write(tmp_path: Path) -
 
     assert not out.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def _scans_of(frame: pl.DataFrame) -> dict[str, pl.LazyFrame]:
+    """*frame* through each of Haute's Python scans, unchanged."""
+    return {
+        "limited": limited_python_scan(lambda _n: frame, schema=frame.schema),
+        "row_local": row_local_python_scan(
+            frame.lazy(),
+            lambda batch: batch,
+            schema=frame.schema,
+            generated_columns=(),
+            required_input_columns=None,
+            input_predicates_allowed=False,
+            elide_transform_when_unused=False,
+        ),
+        "fanout": fanout_python_scan(
+            frame.lazy(),
+            lambda batch: batch,
+            schema=frame.schema,
+            fanout=1,
+            generated_columns=(),
+            required_input_columns=None,
+        ),
+    }
+
+
+@pytest.mark.parametrize("kind", ["limited", "row_local", "fanout"])
+@pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+def test_a_python_scan_asked_for_no_columns_keeps_its_rows(kind: str, engine: Any) -> None:
+    """A cross join that reads only the other side asks a scan for its rows alone: the scan
+    keeps them, rather than answering none."""
+    scan = _scans_of(pl.DataFrame({"x": [1, 2, 3]}))[kind]
+
+    crossed = pl.LazyFrame({"y": [7]}).join(scan, how="cross").select("y")
+
+    assert crossed.collect(engine=engine).to_series().to_list() == [7, 7, 7]

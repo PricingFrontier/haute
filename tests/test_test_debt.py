@@ -39,9 +39,8 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 _EXPECTED_DEBT_IDS = {
     # tests/test_run_parity.py (EXE-10): differences between the ways of running a
     # pipeline that another roadmap package owns, each strict so its delivery turns
-    # it green: MLR-04, WB-76 and IOL-03.
+    # it green: MLR-04 and IOL-03.
     "2e1728e0067476c5",
-    "04008f4cbb41a642",
     "df8007541766fc3a",
     # The chunked GLM suite (MOD-M01) fits real RustyStats models in both fit modes;
     # rustystats is an optional dependency, so the module importorskips it like the

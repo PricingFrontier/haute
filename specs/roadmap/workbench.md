@@ -76,7 +76,6 @@ session ran each again on 16 November 2026.
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
-| WB-76 | Planned | P2 | A workbench's sample is priced under the stand-in identity by the preview and `haute run`, as `pipeline.run()` prices it. |
 
 ## Planned improvements
 
@@ -975,30 +974,3 @@ with no restart. A variable set outside `.env` still wins.
 
 **Evidence:** `src/haute/server.py`; `src/haute/_connections.py`;
 `specs/workbench/low-level.md`.
-
-### WB-76 — The preview and `haute run` price the sample under the stand-in identity
-**Why:** Found on 18 November 2026 by `tests/test_run_parity.py`. A workbench
-project has a Workbench Input whose `policy` table a Transform prices into a
-Workbench Output's `pricing` table; nothing reads `quote_details`. Run as
-Python, `pipeline.run(source="live")` answers `pricing` with
-`quote_reference` `PREVIEW` and `quote_option` 1, the stand-in the
-specification gives the sample in "editor runs, previews and `run()`". The
-graph walker's preview of the Workbench Output and `haute run` answer the
-same table with both columns null. The standalone run puts the quote's
-identity on every row from the Workbench Input's quote (`as_response`); the
-walker takes it from the frames the Workbench Output is connected to.
-
-**Plan:** Give the Workbench Output its quote's identity in the walker from the
-quote the Workbench Input reads, as `as_response` gives it in a standalone run,
-whatever the Workbench Output is connected to.
-
-**Acceptance:** The pipeline above gives `PREVIEW` and 1 in the preview, from
-`haute run` and from `pipeline.run()`, and
-`tests/test_run_parity.py::test_a_workbench_sample_is_priced_under_one_identity_every_way`
-passes with its expected-failure mark removed.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_output.py::as_response`;
-`src/haute/_workbench_input.py::with_stand_in`; `src/haute/_builders.py`
-(`_build_workbench_output`); `specs/workbench/high-level.md`.

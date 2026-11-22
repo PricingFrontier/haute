@@ -122,8 +122,8 @@ def _unconnected(table: WorkbenchTable) -> pl.LazyFrame:
 
 def frame_columns(table: WorkbenchTable) -> list[WorkbenchColumn]:
     """The columns of *table* its frame fills, each where the frame holds it with a type that
-    fits: every one but the quote's identity, which the response gives
-    (:func:`workbench_response`), and a numbered index of outputs alone, which the Workbench
+    fits: every one but the quote's identity, which the quote gives
+    (:func:`with_quote_identity`), and a numbered index of outputs alone, which the Workbench
     Output numbers."""
     return [column for column in request_columns(table) if column.name != _numbered(table)]
 
@@ -193,42 +193,71 @@ def quote_identity(frames: object) -> pl.LazyFrame | None:
     return frame.select(_IDENTITY_NAMES)
 
 
+def with_quote_identity(filled: WorkbenchOutputTables, quote: object) -> WorkbenchOutputTables:
+    """*filled* with every row of each table that leads with the quote's identity holding the
+    quote's reference and option, read from the run's ``quote_details`` in *quote*, the
+    Workbench Input's frames by port (:func:`quote_identity`), whatever the frame connected
+    to the table held there; blank (null) without it. The one rule wherever the tables are
+    read: a run's response (:func:`workbench_response`) and the graph walker's Workbench
+    Output, previewed, run or scored. Nothing is collected: the quote is held to its one row
+    as a table is read."""
+    identity = quote_identity(quote)
+    if identity is None:
+        return filled
+    one = _one_row_identity(identity)
+    frames: dict[str, pl.LazyFrame] = {}
+    for table in filled.tables:
+        frame = filled[table.port]
+        if carries_identity(table):
+            frame = (
+                frame.drop(_IDENTITY_NAMES)
+                .join(one, how="cross")
+                .select(pl.col(column.name).cast(column.dtype) for column in table.columns)
+            )
+        frames[table.port] = frame
+    return WorkbenchOutputTables(frames, filled.tables)
+
+
+def _one_row_identity(identity: pl.LazyFrame) -> pl.LazyFrame:
+    """*identity*, the quote's reference and option, failing when it is read with other
+    than one row: a quote's ``quote_details`` holds one."""
+
+    def produce(_row_limit: int | None) -> pl.DataFrame:
+        held = execution_collect(identity, engine="streaming")
+        if held.height != 1:
+            raise WorkbenchOutputError(
+                f"The quote's {QUOTE_DETAILS_NAME} has {held.height} rows; its reference and "
+                "option are read from its one row."
+            )
+        return held
+
+    return limited_python_scan(produce, schema=identity.collect_schema())
+
+
 def workbench_response(
     filled: WorkbenchOutputTables, quote: Mapping[str, Any] | None = None
 ) -> pl.LazyFrame:
     """The response for one quote: each table under its name, as a quote holds its tables.
 
     A one-row table is an object of its columns and a many-row table a list of them, every
-    row of a table leading with the quote's reference and option holding the quote's, read
-    from the run's ``quote_details`` in *quote*, the Workbench Input's frames by port
-    (:func:`quote_identity`); blank without it. An input table's rows are held to the
-    quote's rows of it by their index (:func:`haute._workbench_tables.output_misfit`), a
-    misfit refused, and a row holding no output value is left out, as the store cannot tell
-    it from a row the pricing left out; a table of outputs alone's typed index or index of
-    values is held to its own rules. The schema is the tables' without collecting; the
-    tables are read when the response is.
+    row of a table leading with the quote's reference and option holding the quote's
+    (:func:`with_quote_identity`, from *quote*, the Workbench Input's frames by port). An
+    input table's rows are held to the quote's rows of it by their index
+    (:func:`haute._workbench_tables.output_misfit`), a misfit refused, and a row holding no
+    output value is left out, as the store cannot tell it from a row the pricing left out; a
+    table of outputs alone's typed index or index of values is held to its own rules. The
+    schema is the tables' without collecting; the tables are read when the response is.
     """
+    filled = with_quote_identity(filled, quote)
     tables = filled.tables
     schema = quote_schema(tables)
-    identity = quote_identity(quote)
 
     def produce(_row_limit: int | None) -> pl.DataFrame:
-        named: dict[str, Any] = dict.fromkeys(_IDENTITY_NAMES)
-        if identity is not None:
-            held = execution_collect(identity, engine="streaming")
-            if held.height != 1:
-                raise WorkbenchOutputError(
-                    f"The quote's {QUOTE_DETAILS_NAME} has {held.height} rows; its reference and "
-                    "option are read from its one row."
-                )
-            named = held.row(0, named=True)
         document: dict[str, Any] = {}
         for table in tables:
             rows = execution_collect(filled[table.port], engine="streaming").to_dicts()
             if table.key is not None:
                 rows = _fitted(table, rows, quote)
-            if carries_identity(table):
-                rows = [{**row, **named} for row in rows]
             # A one-row table has been read with exactly its one row.
             document[table.name] = rows[0] if table.one_row else rows
         return pl.DataFrame([document], schema=schema)
