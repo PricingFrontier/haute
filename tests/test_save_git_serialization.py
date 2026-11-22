@@ -833,7 +833,7 @@ def test_a_record_kept_before_records_named_their_code_is_settled_where_the_proj
             "answer": None,
             **fields,
         }
-        path = _record_path(project, "main.py")
+        path = project / ".haute" / "saves" / "records" / _record_path(project, "main.py").name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(record), encoding="utf-8")
 

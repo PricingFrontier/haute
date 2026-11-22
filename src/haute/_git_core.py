@@ -642,12 +642,27 @@ _LOCK_HELD = re.compile(r"Unable to create '([^'\n]+\.lock)': File exists")
 _UNTRUSTED = re.compile(r"detected dubious ownership in repository at '([^'\n]+)'")
 _SAFE_DIRECTORY = re.compile(r"git config --global --add safe\.directory (.+)")
 _DAMAGED_CONFIG = re.compile(r"bad config (?:file )?line (\d+) in (?:file )?(.+)")
-_UNSIGNED = "failed to sign the data"
+# A commit git could not sign: git's words when gpg or gpgsm fails, then those of git and
+# ssh-keygen for the ssh format (no key set, the key file missing, no private key for it, a
+# key that asks for a passphrase, an ssh-keygen too old to sign). Read only of a commit.
+_UNSIGNED = re.compile(
+    r"failed to sign the data"
+    r"|either user\.signingkey or gpg\.ssh\.defaultKeyCommand needs to be configured"
+    r"|Couldn't load public key"
+    r"|No private key found for public key"
+    r"|incorrect passphrase supplied to decrypt private key"
+    r"|ssh-keygen -Y sign is needed"
+)
+_COMMITTING = frozenset({"commit", "commit-tree"})
 
 
-def _blocked_by(stderr: str, cwd: Path | None) -> GitBlockedError | None:
+def _blocked_by(
+    stderr: str, cwd: Path | None, *, committing: bool = False
+) -> GitBlockedError | None:
     """The cause outside Haute that git's *stderr* names, worded with what to do; None for
-    any other failure, which stays "Git refused this" with git's words in the log.
+    any other failure, which stays "Git refused this" with git's words in the log. A
+    signing failure is read only of a command that commits (*committing*): an ssh key's
+    words could otherwise be a push's.
 
     Only what the analyst needs is taken from git's words: the lock file and the settings
     file, shown relative to the project when they are in it, the line, and the
@@ -684,7 +699,7 @@ def _blocked_by(stderr: str, cwd: Path | None) -> GitBlockedError | None:
             f"Git can't read its settings: line {line} of {settings} is damaged. Correct or "
             "remove that line, then try again.",
         )
-    if _UNSIGNED in stderr:
+    if committing and _UNSIGNED.search(stderr) is not None:
         return GitBlockedError(
             "signing",
             "Git is set to sign every commit, and this one could not be signed, so nothing "
@@ -698,7 +713,9 @@ def _refused(cmd: list[str], stderr: str, args: Sequence[str], cwd: Path | None)
     """The error for a git command that exited non-zero: its cause in words when git names
     one the analyst can remove, else git's own message, which is logged and never said."""
     logger.warning("git_command_failed", cmd=cmd, stderr=stderr)
-    return _blocked_by(stderr, cwd) or GitError(stderr or f"git {_subcommand(tuple(args))} failed")
+    subcommand = _subcommand(tuple(args))
+    blocked = _blocked_by(stderr, cwd, committing=subcommand in _COMMITTING)
+    return blocked or GitError(stderr or f"git {subcommand} failed")
 
 
 def _run_git(
@@ -781,11 +798,37 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
         env=_git_env(),
     )
     if result.returncode != 0:
-        blocked = _blocked_by(result.stderr, cwd)
+        blocked = _blocked_by(
+            result.stderr, cwd, committing=_subcommand(tuple(args)) in _COMMITTING
+        )
         if blocked is not None:
             logger.warning("git_command_failed", cmd=cmd, stderr=result.stderr.strip())
             raise blocked
     return result.returncode, result.stdout.strip()
+
+
+def signs_commits(cwd: Path | None = None) -> bool:
+    """Whether git is set to sign every commit (``commit.gpgsign``, in the repository's
+    settings or the analyst's own)."""
+    ok, raw = _run_git_ok("config", "--type=bool", "--get", "commit.gpgsign", cwd=cwd)
+    return ok and raw.strip() == "true"
+
+
+def _commit_tree(
+    tree: str,
+    *parents: str,
+    message: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """A commit of *tree* on *parents*, as Haute makes every commit but a save's (a
+    milestone, a restore, a branch's first milestone, the copies Create & Move makes, a new
+    repository's first commit): signed, with the key and format git is set to use, when git
+    is set to sign every commit, as ``git commit`` signs a save. ``commit-tree`` reads no
+    such setting itself, so the commit asks for its signature."""
+    signed = ("-S",) if signs_commits(cwd) else ()
+    on = [arg for parent in parents for arg in ("-p", parent)]
+    return _run_git("commit-tree", *signed, tree, *on, "-m", message, cwd=cwd, env=env)
 
 
 # Haute's transport when the analyst has not chosen one: OpenSSH that never prompts.

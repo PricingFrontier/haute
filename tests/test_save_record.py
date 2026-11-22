@@ -764,7 +764,8 @@ def test_an_unreadable_record_beside_readable_ones_is_reported_and_they_are_kept
 ) -> None:
     kept = save_records.SaveRecord(source_file="rating/main.py", committed=True)
     save_records.write_record(project, kept)
-    path = save_records._record_path(project, "rating/main.py")
+    name = save_records._record_path(project, "rating/main.py").name
+    path = project / ".haute" / "saves" / "records" / name
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["saves"].append({"source_file": "rating/main.py", "writes": "not a list"})
     path.write_text(json.dumps(payload), encoding="utf-8")

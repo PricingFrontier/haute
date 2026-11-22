@@ -32,8 +32,11 @@ conversion in the routes).
     - `GitBlockedError(GitDomainError)` — git refused for a cause outside Haute that its
       message names (`_blocked_by`), carrying `cause`: `lock` ("Unable to create
       '<path>.lock': File exists"), `untrusted-folder` ("detected dubious ownership"),
-      `damaged-config` ("bad config line <n> in file <file>") or `signing` ("failed to
-      sign the data"). Its message says the cause and what to do: "Another git program is
+      `damaged-config` ("bad config line <n> in file <file>") or `signing`, read only of a
+      command that commits (`commit`, `commit-tree`), since an SSH key's words can be a
+      push's ("failed to sign the data" from gpg or gpgsm; for the SSH format, no
+      `user.signingkey` set, "Couldn't load public key", "No private key found for public
+      key", a key that asks for a passphrase, an `ssh-keygen` too old to sign). Its message says the cause and what to do: "Another git program is
       using this project's repository: git found its lock file <file>. Wait for it to
       finish, then try again. If no git program is running, one that stopped left the file
       behind: delete <file>, then try again."; "Git does not trust this project's folder,
@@ -330,7 +333,11 @@ the capture answers as a failed capture, with the warning and the files `uncaptu
 the new SHA, or `None` when nothing changed. The `git commit` passes
 `-c core.hooksPath=/dev/null` (`_git_core.NO_HOOKS`): a save runs none of the project's
 hooks, `prepare-commit-msg` and `post-commit` included (which `--no-verify` would still
-run); they run at a milestone over every save it records. Every path reaches Git as a
+run); they run at a milestone over every save it records. `git commit` signs a save when git
+is set to sign every commit; every other commit Haute makes is
+`src/haute/_git_core.py::_commit_tree`, which asks `commit-tree` (which reads no such
+setting) for the signature with `-S` when `signs_commits` reads `commit.gpgsign` true, and
+`tests/test_git_signing.py` fails any `commit-tree` named outside the git core. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no
 message, so the default names the changed files; an assistant apply passes its change

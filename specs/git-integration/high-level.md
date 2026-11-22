@@ -117,6 +117,16 @@ it with `# noqa`, and the docs section on refused milestones. A clone carries no
 so choosing its working branch installs the project's tracked `.githooks/pre-commit` where
 none is set up.
 
+**Signed commits.** When git is set to sign every commit (`commit.gpgsign`, in the
+repository's settings or the analyst's), every commit Haute makes is signed with the key and
+format git is set to use: a save, a milestone, a restore, a branch's first milestone made at
+a save, the copies of the saves Create & Move relocates (signed by whoever moves them, each
+keeping its original author and committer), and a new repository's root commit. Where an
+audit asks who recorded each version, a team sets git to sign. Nothing is signed otherwise,
+and a commit that cannot be signed records nothing and is refused with that cause
+(`GitBlockedError`, below). Version labels, tag objects Haute writes itself, are not signed;
+the milestone each names is.
+
 **Guardrails.** The default-branch and a fixed set of protected names (`main`, `master`,
 `develop`, `production`, or an operator-configured override) can never be written to
 directly — any attempt raises a guardrail error, distinguished from an ordinary domain
@@ -478,7 +488,7 @@ subclass of the project-wide `HauteError`):
   can remove outside Haute, recognised from git's own message: a lock file another git
   program holds or one that stopped left behind (`.git/index.lock`), a folder git does not
   trust because another account owns it, a settings file with a damaged line, and a commit
-  that could not be signed. Its message names the cause and what to do (wait or delete the
+  that could not be signed (recognised only of a command that commits). Its message names the cause and what to do (wait or delete the
   lock file; the `safe.directory` command git proposes; the file and the line; that the
   commit could not be signed), never git's own words. A probe that asks git a yes-or-no
   question raises it rather than reading it as "no", so an untrusted folder or damaged

@@ -20,6 +20,7 @@ from haute._git_core import (
     _assert_way_clear,
     _canonical_remote,
     _commit_parents,
+    _commit_tree,
     _generate_commit_message,
     _git_env,
     _GitProcessTimeoutError,
@@ -455,9 +456,7 @@ def merge_to_working(
         raise GitDomainError("No new saves to commit — the working branch is up to date.")
 
     tree = _tree_of(ledger_tip, cwd=cwd)
-    sha = _run_git(
-        "commit-tree", tree, "-p", working_tip, "-p", ledger_tip, "-m", message, cwd=cwd
-    ).strip()
+    sha = _commit_tree(tree, working_tip, ledger_tip, message=message, cwd=cwd)
     # The branch moves by CAS, and a label is created with it in the same ref
     # transaction: if either precondition loses a race, git applies neither.
     updates: dict[str, str | None] = {f"refs/heads/{working}": sha}
@@ -517,7 +516,7 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
             "GIT_COMMITTER_EMAIL": ce,
             "GIT_COMMITTER_DATE": cd,
         }
-        tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd, env=env)
+        tip = _commit_tree(tree, tip, message=msg, cwd=cwd, env=env)
     return tip
 
 
@@ -937,9 +936,7 @@ def restore_version(
     subject = _run_git("log", "-1", "--format=%s", target, cwd=cwd).strip()
     title = f"Restored {target[:8]}: {subject}" if subject else f"Restored {target[:8]}"
     message = f"{title}\n\nRestored-from: {target}"
-    restored = _run_git(
-        "commit-tree", target_tree, "-p", ledger_tip, "-m", message, cwd=cwd
-    ).strip()
+    restored = _commit_tree(target_tree, ledger_tip, message=message, cwd=cwd)
 
     # The ledger's advance is the commit point: history holds the restore from
     # then on. HEAD is the ledger, so the files are then brought to it: paths

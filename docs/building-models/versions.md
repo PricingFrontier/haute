@@ -133,6 +133,34 @@ milestone meets them:
 - **Signing.** Git is set to sign every commit, and the signature could not be made. Check
   that your signing key is available and signs without asking for a passphrase.
 
+## Signed commits
+
+A signed commit carries a signature made with the key of the person who recorded it, so
+anyone can check who made each save and milestone, and that no one has changed it since.
+Where pricing work is audited, signing every commit makes version history a record you can
+show. Git checks the signatures; a hosting service such as GitHub or GitLab shows each
+commit as verified.
+
+Haute signs when git is set to sign every commit: each save, milestone and restore, the first
+milestone of a branch made from a save, and the saves Create & Move copies to a new branch.
+It uses the key and the format git is set to use. Nothing is signed unless git is set to sign.
+
+To sign with an SSH key, run in the project's folder:
+
+```
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git config commit.gpgsign true
+```
+
+Add `--global` to each to sign in every project. The key must sign without asking for a
+passphrase while Haute runs: load it into your SSH agent, or use a key without one. A GPG key
+works the same way, without the first line.
+
+When a commit cannot be signed, nothing is recorded and Haute says so (see **Signing** above).
+The saves Create & Move copies are signed by whoever moves them; the copies keep each save's
+original author. Version labels are not signed; the milestone each one names is.
+
 ## Files changed outside Haute
 
 A file you change in another program, such as a rate table saved in Excel, is on disk but not

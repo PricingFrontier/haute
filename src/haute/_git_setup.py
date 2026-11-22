@@ -15,6 +15,7 @@ from haute._git_core import (
     _assert_new_branch_name,
     _assert_way_clear,
     _clear_content_caches,
+    _commit_tree,
     _get_current_branch,
     _is_ancestor,
     _ledger_or_branch_sha,
@@ -98,7 +99,7 @@ def _crystallize_milestone(anchor: str, save: str, name: str, cwd: Path | None =
     save's tree, so the new branch opens at a clean milestone capturing that state."""
     tree = _tree_of(save, cwd=cwd)
     msg = f"Start {name} from save {save[:8]}"
-    return _run_git("commit-tree", tree, "-p", anchor, "-p", save, "-m", msg, cwd=cwd)
+    return _commit_tree(tree, anchor, save, message=msg, cwd=cwd)
 
 
 def _folding_anchor(working_tip: str, save: str, cwd: Path | None = None) -> str:
@@ -328,7 +329,7 @@ def set_working_branch(
             # a save is: the project's hooks run at a milestone.
             tree = _run_git("write-tree", cwd=cwd)
             try:
-                root = _run_git("commit-tree", tree, "-m", "Initial commit", cwd=cwd)
+                root = _commit_tree(tree, message="Initial commit", cwd=cwd)
             except GitError as exc:
                 stderr = str(exc)
                 if any(
