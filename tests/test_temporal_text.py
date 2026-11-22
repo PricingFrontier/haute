@@ -275,6 +275,32 @@ def test_digits_past_six_of_a_fraction_after_minutes_are_kept_and_held_to_the_un
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        # Any one character may separate the date from the clock, as Python reads it.
+        "2024-03-01t09:30:00.000000100",
+        "2024-03-01_09:30:00.000000100",
+        "2024-03-01.09:30:00.000000100",
+        "20240301x093000.000000100",
+        # Week dates, extended and basic, whose date Python finds as for any other.
+        "2024-W09-5T09:30:00.000000100",
+        "2024W095T093000.000000100",
+    ],
+)
+def test_a_fraction_past_six_digits_is_kept_whatever_separates_the_date(text: str) -> None:
+    from datetime import datetime
+
+    moment = datetime.fromisoformat(text)
+    assert moment == datetime(2024, 3, 1, 9, 30)
+
+    whole = temporal_physical(moment.isoformat(), pl.Datetime("ns"))
+    assert temporal_physical(text, pl.Datetime("ns")) == whole + 100
+    with pytest.raises(TemporalTextError) as refused:
+        temporal_physical(text, pl.Datetime("us"))
+    assert refused.value.reason == "finer"
+
+
+@pytest.mark.parametrize(
     ("text", "dtype", "reason"),
     [
         ("2024-03-01T09:00:00.000000100", pl.Datetime("us"), "finer"),

@@ -102,6 +102,7 @@ def test_a_value_its_type_holds_exactly_is_accepted(
         (pl.Datetime("us"), "2024-05-01T10:30:00+01:00"),
         (pl.Datetime("us", "UTC"), "2024-05-01T10:30:00"),
         (pl.Datetime("us"), "2024-05-01T10:30.0000001"),
+        (pl.Datetime("us"), "2024-05-01t10:30:00.000000100"),
         (pl.Null(), 1),
     ],
 )
@@ -126,10 +127,12 @@ def test_a_zoned_date_time_keeps_its_instant() -> None:
     "value",
     [
         "2024-05-01T10:30:00.000000100",
+        # Any one character may separate the date from the clock, as Python reads it.
+        "2024-05-01t10:30:00.000000100",
         # A pandas Timestamp carries its nanoseconds, and writes them.
         pd.Timestamp("2024-05-01T10:30:00.000000100"),
     ],
-    ids=["text", "pandas"],
+    ids=["text", "lowercase-separator", "pandas"],
 )
 def test_a_date_time_reaches_the_pipeline_with_all_nine_digits(value: object) -> None:
     frame = frame_rows([{"x": value}], {"x": pl.Datetime("ns")}, omittable=frozenset())

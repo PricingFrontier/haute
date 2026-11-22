@@ -340,11 +340,37 @@ def _below_a_microsecond(text: str, kind: str, *, clock_start: int) -> tuple[str
     return text[:cut] + text[clock_end:], int(digits[6:].ljust(3, "0"))
 
 
+_DIGITS = frozenset("0123456789")
+
+
+def _date_length(text: str) -> int:
+    """How many characters of a date-time *text* its date takes, found as
+    ``datetime.fromisoformat`` finds it (CPython's ``_find_isoformat_datetime_separator``):
+    any one character may separate the date from the clock (``T``, ``t``, a space, ``_``),
+    and the date is ``YYYY-MM-DD``, ``YYYYMMDD`` or a week date (``YYYY-Www-D``, ``YYYYWwwD``)."""
+    if len(text) <= 7:
+        return len(text)
+    if text[4] == "-":
+        if text[5] != "W":
+            return 10
+        if len(text) > 8 and text[8] == "-":
+            # YYYY-Www-D, unless a digit at 10 says the hyphen at 8 is the separator.
+            return 8 if len(text) > 10 and text[10] in _DIGITS else 10
+        return 8
+    if text[4] == "W":
+        end = 7
+        while end < len(text) and text[end] in _DIGITS:
+            end += 1
+        if end < 9:
+            return end
+        return 7 if end % 2 == 0 else 8
+    return 8
+
+
 def _date_time_parts(text: str) -> tuple[datetime, int]:
     """*text*, a date or date-time in any spelling ``datetime.fromisoformat`` accepts, as the
     moment Python reads to the microsecond and the nanoseconds below it."""
-    separator = next((place for place, char in enumerate(text) if char in "T "), len(text))
-    whole, below = _below_a_microsecond(text, "date-time", clock_start=separator + 1)
+    whole, below = _below_a_microsecond(text, "date-time", clock_start=_date_length(text) + 1)
     try:
         return datetime.fromisoformat(whole), below
     except ValueError:

@@ -1100,9 +1100,10 @@ is no eager dataframe or collect-then-write fallback.
   showing and keying: a reader orders and compares values in Polars, by the column's own
   values, never by their text, which a duration's or an offset's spelling does not order.
 - Back: `temporal_physical(text, dtype)` is the column's physical integer for *text*: for a
-  datetime, any spelling `datetime.fromisoformat` accepts (a space or `T`, `Z` or an offset,
-  minutes or seconds left out), read as Python reads it, with the digits past the sixth of
-  the fraction ending its clock (after `.` or `,`, wherever the clock stops, so `09:30.5` is
+  datetime, any spelling `datetime.fromisoformat` accepts (any one character between the date
+  and the clock, `T`, `t`, a space or another, a week date, `Z` or an offset, minutes or
+  seconds left out), read as Python reads it, its date found as Python finds it
+  (`_date_length`), with the digits past the sixth of the fraction ending its clock (after `.` or `,`, wherever the clock stops, so `09:30.5` is
   09:30:00.5) added rather than cut, and a fraction inside an offset (`+01:00:00.5`) the
   offset's; for a time, any spelling `time.fromisoformat` accepts, likewise; for a
   duration, the text `temporal_text` writes. `moment_nanoseconds(text)` is a date or
