@@ -230,4 +230,24 @@ test.describe("A save writes only the parts that were edited", () => {
     expect(written).toContain('"output_column": "browser_factor"')
     expect(written).toContain('"default_value": 1.0')
   })
+  test("keeps a Rating Step's numbers when it is grouped into a submodel and saved", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+    expect(readRating()).toContain('"default_value": 1.0')
+
+    // A graph change gives the node a new place; it finds its saved settings through the one
+    // it came from (CGEN-09).
+    await page.getByRole("button", { name: /browser_mixed_banding/i }).click()
+    await page.getByRole("button", { name: /browser_rating/i }).click({
+      modifiers: [process.platform === "darwin" ? "Meta" : "Control"],
+    })
+    await dispatchAppShortcut(page, "g")
+    await expect(page.getByText("Create Submodel")).toBeVisible()
+    await page.getByPlaceholder("e.g. model_scoring").fill("browser_group")
+    await page.getByRole("button", { name: "Create" }).click()
+    await expect(page.getByRole("button", { name: /browser_group/i })).toBeVisible()
+    await save(page)
+
+    expect(readRating()).toContain('"default_value": 1.0')
+  })
 })

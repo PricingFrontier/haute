@@ -18,6 +18,7 @@
  */
 import type { Edge, Node } from "@xyflow/react"
 import type { GraphPayload } from "../api/types"
+import type { MovedNode } from "../generated/api-contracts.generated"
 import { isSubmodelDefinition, type SubmodelDefinition } from "../types/node"
 import { canonicalJson } from "./canonicalJson"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
@@ -74,6 +75,44 @@ function heldNode(baseline: Document | null, submodel: string | null, nodeId: st
   return nodes?.find((candidate) => candidate.id === nodeId) ?? null
 }
 
+/** Where a node sits: a graph's scope (a definition's id, or null) and the node's id. */
+interface Address {
+  submodel: string | null
+  nodeId: string
+}
+
+function savedAddressOf(node: Node): Address | null {
+  const address = (node.data as { _savedAddress?: unknown } | undefined)?._savedAddress
+  if (address === null || typeof address !== "object") return null
+  const { submodel, nodeId } = address as { submodel?: unknown; nodeId?: unknown }
+  return (submodel === null || typeof submodel === "string") && typeof nodeId === "string"
+    ? { submodel, nodeId }
+    : null
+}
+
+function nodeTypeOf(node: Node): string {
+  return String((node.data as { nodeType?: unknown } | undefined)?.nodeType)
+}
+
+/**
+ * The node of `baseline` that `node`, of the graph `submodel` names, is saved as, and where it
+ * is: the baseline's node of the same type at the node's own place, else at the place a graph
+ * change moved it from (`data._savedAddress`). Its own place comes first, so once a save makes
+ * the moved document the baseline, the node is found where it now is.
+ */
+function baselineNodeFor(
+  baseline: Document | null,
+  submodel: string | null,
+  node: Node,
+  recorded: Address | null = savedAddressOf(node),
+): { held: Node; address: Address } | null {
+  for (const address of [{ submodel, nodeId: node.id }, ...(recorded === null ? [] : [recorded])]) {
+    const held = heldNode(baseline, address.submodel, address.nodeId)
+    if (held !== null && nodeTypeOf(held) === nodeTypeOf(node)) return { held, address }
+  }
+  return null
+}
+
 /**
  * What the node `nodeId` of the graph `submodel` names in `document` is rendered against: the
  * edges into it, by source and handles, and in a definition the input ports that reach it.
@@ -108,9 +147,11 @@ export function savedFormsFor(
   document: Document,
   submodel: string | null,
   node: Node,
+  recorded: Address | null = savedAddressOf(node),
 ): SavedForms {
-  const held = heldNode(baseline, submodel, node.id)
-  if (baseline === null || held === null) return {}
+  const found = baselineNodeFor(baseline, submodel, node, recorded)
+  if (baseline === null || found === null) return {}
+  const { held, address } = found
   const config = nodeConfig(node)
   const heldConfig = nodeConfig(held)
   const saved = editorState(held)
@@ -121,7 +162,7 @@ export function savedFormsFor(
     && canonicalJson(config.steps) === canonicalJson(heldConfig.steps)
     && (
       !steppedSurfaceAllowsInputReferences(nodeType)
-      || inputsOf(document, submodel, node.id) === inputsOf(baseline, submodel, node.id)
+      || inputsOf(document, submodel, node.id) === inputsOf(baseline, address.submodel, address.nodeId)
     )
   ) {
     if (typeof saved.saved_code === "string") forms.saved_code = saved.saved_code
@@ -183,8 +224,50 @@ function mapNodes<T extends Document>(document: T, give: (submodel: string | nul
  * too, never the live node's own copy, a cache Undo and Redo restore with whatever rendering
  * it held. What a save sends and keeps as its next baseline.
  */
-export function withSavedForms<T extends Document>(document: T, baseline: Document | null): T {
-  return mapNodes(document, (submodel, node) => withForms(node, savedFormsFor(baseline, document, submodel, node)))
+export function withSavedForms<T extends Document>(
+  document: T,
+  baseline: Document | null,
+  recorded: ReadonlyMap<string, Address> = new Map(),
+): T {
+  return mapNodes(document, (submodel, node) => withForms(
+    node,
+    savedFormsFor(baseline, document, submodel, node, recorded.get(placeKey(submodel, node.id)) ?? savedAddressOf(node)),
+  ))
+}
+
+function placeKey(submodel: string | null, nodeId: string): string {
+  return canonicalJson([submodel, nodeId])
+}
+
+/** The place each node of `document` that a graph change moved records for its baseline. */
+function savedAddressesIn(document: Document): Map<string, Address> {
+  const found = new Map<string, Address>()
+  mapNodes(document, (submodel, node) => {
+    const address = savedAddressOf(node)
+    if (address !== null) found.set(placeKey(submodel, node.id), address)
+    return node
+  })
+  return found
+}
+
+/**
+ * `document`, a graph change's answer, with each node it `moved` given the place the saved
+ * baseline holds it (`data._savedAddress`): the place it was moved from in `before`, the
+ * document the change was asked of, or the place that node already recorded, for a node moved
+ * twice before a save. An address, never a copy: `savedFormsFor` follows it after the node's
+ * own place.
+ */
+export function withSavedAddresses<T extends Document>(document: T, moved: readonly MovedNode[], before: Document): T {
+  if (moved.length === 0) return document
+  const arrived = new Map(moved.map((move) => [placeKey(move.to_submodel, move.to_node_id), move]))
+  return mapNodes(document, (submodel, node) => {
+    const move = arrived.get(placeKey(submodel, node.id))
+    if (move === undefined) return node
+    const from = heldNode(before, move.from_submodel, move.from_node_id)
+    const savedAddress = (from !== null ? savedAddressOf(from) : null)
+      ?? { submodel: move.from_submodel, nodeId: move.from_node_id }
+    return { ...node, data: { ...node.data, _savedAddress: savedAddress } }
+  })
 }
 
 /** `document` with no saved form on any node: the live document's copy. */
@@ -203,7 +286,9 @@ export function documentRequestGraph(
   input: Parameters<typeof toCanonicalGraphPayload>[0],
   baseline: Document | null,
 ): ReturnType<typeof toCanonicalGraphPayload> {
-  return withSavedForms(toCanonicalGraphPayload(input), baseline) satisfies GraphPayload
+  // The canonical payload leaves out the editor's own fields, a moved node's saved address
+  // among them, so each node's address is read from the input.
+  return withSavedForms(toCanonicalGraphPayload(input), baseline, savedAddressesIn(input as Document)) satisfies GraphPayload
 }
 
 /** `document` with each part in `saved`, which a save read from its request, given the saved form it wrote. */

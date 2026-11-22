@@ -3001,6 +3001,7 @@ export interface SavedNodeParts {
 }
 export interface CreateSubmodelResponse {
   graph: PipelineGraph;
+  moved: MovedNode[];
   parent_file: string;
   source_revision: string;
   status: string;
@@ -4878,10 +4879,24 @@ export interface SubmodelOutputPort {
   name: string;
   source: SubmodelEndpoint;
 }
+/**
+ * A node a graph change moved: its scope and id in the request and in the answer.
+ *
+ * A scope is a submodel definition's id, ``None`` for the pipeline's own nodes. The editor
+ * finds a moved node's saved baseline through it (codegen high-level, "Which parts a
+ * request reads").
+ */
+export interface MovedNode {
+  from_node_id: string;
+  from_submodel: string | null;
+  to_node_id: string;
+  to_submodel: string | null;
+}
 export interface CreateNodeInstanceResponse {
   definition_id: string;
   graph: PipelineGraph;
   instance_name: string;
+  moved: MovedNode[];
   owner_name: string;
   source_revision: string;
   status: string;
@@ -4897,6 +4912,7 @@ export interface DissolveSubmodelResponse {
   definition_id: string;
   graph: PipelineGraph;
   instance_id: string;
+  moved: MovedNode[];
   source_revision: string;
   status: string;
 }

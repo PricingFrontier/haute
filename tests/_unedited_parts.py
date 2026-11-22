@@ -16,7 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -290,8 +290,17 @@ class BrowserDocument:
             for node in definition["graph"]["nodes"]:
                 self.baseline[(definition_id, node["recovery_id"])] = node
 
-    def request_graph(self, live: dict[str, Any] | None = None) -> dict[str, Any]:
-        """*live* (the browser's live graph by default) as a request sends it."""
+    def request_graph(
+        self,
+        live: dict[str, Any] | None = None,
+        *,
+        moved_from: Mapping[NodeRef, NodeRef] | None = None,
+    ) -> dict[str, Any]:
+        """*live* (the browser's live graph by default) as a request sends it.
+
+        *moved_from* gives, for a node a graph change moved, the place the baseline holds it
+        (``data._savedAddress`` in the editor, :func:`follow_moves`): a node's baseline node
+        is the one of its type at its own place, else there."""
         from haute._edited_parts import node_inputs
         from haute._polars_steps import stepped_surface_allows_input_references
         from haute._types import PipelineGraph
@@ -304,7 +313,15 @@ class BrowserDocument:
             editor = data.setdefault("editor", {})
             for key in SAVED_FORM_KEYS:
                 editor.pop(key, None)
-            held = self.baseline.get(ref)
+            held, held_ref = None, ref
+            for candidate in [
+                ref,
+                *([moved_from[ref]] if moved_from and ref in moved_from else []),
+            ]:
+                found = self.baseline.get(candidate)
+                if found is not None and found.get("node_type") == data.get("nodeType"):
+                    held, held_ref = found, candidate
+                    break
             if held is None or held.get("config") is None:
                 continue
             config = data.get("config") or {}
@@ -315,7 +332,7 @@ class BrowserDocument:
                 and _canonical(steps) == _canonical(held["config"].get("steps"))
                 and (
                     not stepped_surface_allows_input_references(data["nodeType"])
-                    or inputs[ref] == held_inputs.get(ref)
+                    or inputs[ref] == held_inputs.get(held_ref)
                 )
             ):
                 if isinstance(saved.get("saved_code"), str):
@@ -345,3 +362,16 @@ class BrowserDocument:
             "source_file": self.py_path.relative_to(self.root).as_posix(),
             "base_revision": current_source_revision(self.py_path, self.root),
         }
+
+
+def follow_moves(
+    moved_from: Mapping[NodeRef, NodeRef], moved: list[dict[str, Any]]
+) -> dict[NodeRef, NodeRef]:
+    """*moved_from* after a graph change whose answer *moved* the nodes it names: each moved
+    node keeps the place the baseline holds it, through a second move, as
+    ``documentRequest.withSavedAddresses`` does."""
+    after = dict(moved_from)
+    for move in moved:
+        before: NodeRef = (move["from_submodel"], move["from_node_id"])
+        after[(move["to_submodel"], move["to_node_id"])] = moved_from.get(before, before)
+    return after

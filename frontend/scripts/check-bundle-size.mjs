@@ -293,9 +293,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // actions and the options answer's generated validator bring the total to 1,819.7 KiB
 // (initial 304.0 KiB); 1,822 KiB (approved) restores about 2.3 KiB headroom.
 // Numbers keep their spelling (CGEN-09, 22 November 2026): the step editor's spelling rule
-// (`polarsSteps/numberSpelling.ts`, lazy) and the edited settings' saved form in the request
-// gateway bring the total to 1,822.6 KiB (initial 305.4 KiB); 1,824 KiB restores about
-// 1.4 KiB headroom. The initial limit is unchanged.
+// (`polarsSteps/numberSpelling.ts`, lazy), the edited settings' saved form and the saved
+// address a graph change gives a moved node (`utils/documentRequest.ts`, eager) bring the
+// total to 1,823.4 KiB (initial 305.8 KiB); 1,824 KiB restores about 0.6 KiB headroom. The
+// initial limit is unchanged.
 const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1824
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205

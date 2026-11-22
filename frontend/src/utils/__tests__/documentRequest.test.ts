@@ -9,6 +9,7 @@ import {
   savedCodeForSteps,
   savedFormsFor,
   withoutSavedForms,
+  withSavedAddresses,
   withSavedForms,
   withSavedParts,
 } from "../documentRequest"
@@ -194,5 +195,63 @@ describe("the one way a request carries the document", () => {
       .filter((path) => !BUILDERS.has(path))
 
     expect(callers).toEqual([])
+  })
+})
+
+describe("a node a graph change moved", () => {
+  // The rating Transform `t` moved into the definition `grouped` (Create Submodel), keeping its
+  // id; then out again under a runtime id (Dissolve).
+  const moved = (node: Node, submodel: string | null, nodeId: string): Node => ({
+    ...node, data: { ...node.data, _savedAddress: { submodel, nodeId } },
+  })
+
+  it("finds its saved baseline through the place it was moved from", () => {
+    const node = moved(transform("t", { steps, code: "", rate: 1 }, live), null, "t")
+    const document = { nodes: [], submodels: { grouped: { ...definition([node]), definitionId: "grouped" } } }
+
+    // Its inputs are as saved (none in either place), so its steps keep their saved form too.
+    expect(savedFormsFor(baseline, document, "grouped", node)).toEqual({ saved_code: savedCode, saved_settings: '{"rate":1.0}' })
+    const edited = moved(transform("t", { steps, code: "", rate: 2 }, live), null, "t")
+    expect(savedFormsFor(baseline, document, "grouped", edited)).toEqual({ saved_code: savedCode, settings_edited_from: '{"rate":1.0}' })
+    expect(savedFormsFor(baseline, document, "grouped", transform("t", { steps, code: "", rate: 1 }, live))).toEqual({})
+  })
+
+  it("is found at its own place first, and only as a node of its type", () => {
+    // Once a save makes the moved document the baseline, the node is found where it now is.
+    const node = moved(transform("plain", { code: "df = quotes" }, live), null, "t")
+    expect(savedFormsFor(baseline, baseline, null, node)).toEqual({ saved_settings: "{}" })
+    const occurrence: Node = {
+      id: "t", position: { x: 0, y: 0 },
+      data: { nodeType: "submodel", label: "t", config: { definition_id: "grouped" }, editor: { ...live, saved_settings: "{}" } },
+    }
+    const held = { nodes: [occurrence], submodels: {} }
+    expect(savedFormsFor(held, held, null, moved(transform("x", { rate: 1 }, live), null, "t"))).toEqual({})
+  })
+
+  it("records where the baseline holds each node an answer moved, through a second move", () => {
+    const before = { nodes: [transform("t", { steps, code: "", rate: 1 }, live)], submodels: {} }
+    const grouped = {
+      nodes: [],
+      submodels: { grouped: { ...definition([transform("t", { steps, code: "", rate: 1 }, live)]), definitionId: "grouped" } },
+    }
+
+    const placed = withSavedAddresses(
+      grouped,
+      [{ from_submodel: null, from_node_id: "t", to_submodel: "grouped", to_node_id: "t" }],
+      before,
+    )
+
+    const inner = (placed.submodels.grouped as ReturnType<typeof definition>).graph.nodes[0]
+    expect(inner.data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
+    const dissolved = withSavedAddresses(
+      { nodes: [transform("submodel_runtime/grouped/t", { steps, code: "", rate: 1 }, live)], submodels: {} },
+      [{ from_submodel: "grouped", from_node_id: "t", to_submodel: null, to_node_id: "submodel_runtime/grouped/t" }],
+      placed,
+    )
+    expect(dissolved.nodes[0].data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
+    // An address, never sent: the request carries the saved forms it finds.
+    const sent = documentRequestGraph({ nodes: dissolved.nodes, edges: [] }, baseline)
+    expect(JSON.stringify(sent)).not.toContain("_savedAddress")
+    expect(editor(sent.nodes[0])?.saved_settings).toBe('{"rate":1.0}')
   })
 })

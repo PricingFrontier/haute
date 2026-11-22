@@ -498,8 +498,16 @@ a part sent without one is read from the request.
   A node the baseline does not hold, or holds without a saved form for that part, is sent
   with every such part read. A transform of the graph whose answer the editor adopts as an
   unsaved edit (create submodel, create instance, dissolve) is built with no baseline, so
-  every part is read and the answer holds the nodes as they were sent; the next save
-  compares them with the baseline as any edit is.
+  every part is read and the answer holds the nodes as they were sent. The answer names
+  each node it moves, by its scope and id in the request and in the answer (`moved`),
+  since a moved node has a new place and, after a dissolve or a create instance, a new id.
+  The editor records on the moved node where the saved baseline holds it
+  (`data._savedAddress`, an address, never a copy: carried through a second move, kept by
+  Undo and Redo, never sent). A node's baseline node is the baseline's node of the same type
+  at the node's own scope and id, else at the address it records, so a node moved keeps its
+  saved forms, and with them its settings' spelling (CGEN-09), and once a save makes the
+  moved document the baseline its own place is found first. The next save then compares it
+  with that baseline node as any edit is.
 - **The server.** One base model, `haute.schemas.DocumentRequest`, carries the document and
   applies the rule before any node is built (`haute._edited_parts.graph_as_read`): a node
   sent with a saved code is built from that code with its step list taken off, since

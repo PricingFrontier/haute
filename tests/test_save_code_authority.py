@@ -34,6 +34,7 @@ from tests._unedited_parts import (
     as_javascript_holds_it,
     examples,
     files,
+    follow_moves,
     make_project,
     node_at,
     pipeline_file,
@@ -147,6 +148,112 @@ def test_two_rating_tables_swapped_keep_their_numbers(tmp_path: Path) -> None:
     assert json.loads(_rated_file(root))["tables"] == list(reversed(tables))
     assert "9007199254740993" in _rated_file(root)
     assert '"default_value": 1.0' in _rated_file(root)
+
+
+def _rating_defaults(root: Path) -> list[object]:
+    """Every Rating Step table's default, as each settings file holds it."""
+    found: list[object] = []
+    for path in sorted((root / "config" / "rating_step").glob("*.json")):
+        found.extend(
+            table["default_value"] for table in json.loads(path.read_text("utf-8"))["tables"]
+        )
+    return found
+
+
+def _graph_change(
+    client: Any, document: BrowserDocument, change: str, graph: dict[str, Any]
+) -> dict[str, Any]:
+    """The answer to *change* of *graph*, the document as the editor holds it."""
+    common = {
+        "source_file": "main.py",
+        "base_revision": current_source_revision(document.py_path, document.root),
+        "pipeline_name": "main",
+        "graph": graph,
+    }
+    if change == "create":
+        body = {**common, "name": "grouped", "node_ids": ["rated", "explored"]}
+        answer = client.post("/api/submodel/create", json=body)
+    elif change == "dissolve":
+        answer = client.post("/api/submodel/dissolve", json={**common, "instance_id": "grouped"})
+    else:
+        answer = client.post("/api/submodel/instance", json={**common, "node_id": "rated"})
+    assert answer.status_code == 200, answer.text
+    return answer.json()
+
+
+def test_each_graph_change_names_the_nodes_it_moved(client: Any, tmp_path: Path) -> None:
+    """The editor finds a moved node's saved baseline through it: Dissolve and Create
+    Instance give the node a new id as well as a new place."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+
+    created = _graph_change(client, document, "create", document.live)
+    dissolved = _graph_change(client, document, "dissolve", created["graph"])
+    wrapped = _graph_change(client, document, "instance", document.live)
+
+    assert created["moved"] == [
+        {"from_submodel": None, "from_node_id": name, "to_submodel": "grouped", "to_node_id": name}
+        for name in ("rated", "explored")
+    ]
+    assert sorted(
+        (move["from_submodel"], move["from_node_id"], move["to_node_id"])
+        for move in dissolved["moved"]
+    ) == [("grouped", name, f"submodel_runtime/grouped/{name}") for name in ("explored", "rated")]
+    (move,) = wrapped["moved"]
+    assert (move["from_submodel"], move["from_node_id"]) == (None, "rated")
+    assert move["to_submodel"] == wrapped["definition_id"]
+    held = dict(scoped(wrapped["graph"]))
+    assert (move["to_submodel"], move["to_node_id"]) in held
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param(("create",), id="grouped"),
+        pytest.param(("create", "dissolve"), id="grouped-then-dissolved"),
+        pytest.param(("instance",), id="made-an-instance"),
+    ],
+)
+def test_a_node_a_graph_change_moved_keeps_its_settings_numbers(
+    client: Any, tmp_path: Path, changes: tuple[str, ...]
+) -> None:
+    """Codex r4: a moved node is found in the saved baseline through the place it came
+    from, so its settings keep their saved form and the save writes `1.0`, not `1`."""
+    root = make_project(tmp_path)
+    assert _rating_defaults(root) == [1.0]
+    document = BrowserDocument(root, root / "main.py")
+    graph, moved_from = document.live, {}
+    for change in changes:
+        answer = _graph_change(client, document, change, graph)
+        graph, moved_from = answer["graph"], follow_moves(moved_from, answer["moved"])
+
+    _browser_save(document, document.request_graph(graph, moved_from=moved_from))
+
+    defaults = _rating_defaults(root)
+    assert defaults and all(type(value) is float for value in defaults), defaults
+
+
+def test_a_moved_node_saved_then_edited_keeps_its_other_numbers(
+    client: Any, tmp_path: Path
+) -> None:
+    """After a save the baseline holds the node where it now is, which is found first."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    answer = _graph_change(client, document, "create", document.live)
+    moved_from = follow_moves({}, answer["moved"])
+    _browser_save(document, document.request_graph(answer["graph"], moved_from=moved_from))
+    assert _rating_defaults(root) == [1.0]
+
+    saved = BrowserDocument(root, root / "main.py")
+    rated = node_at(saved.live, ("grouped", "rated"))["data"]["config"]
+    rated["combined_outputs"][0]["output_column"] = "rated_premium"
+    _browser_save(saved, saved.request_graph(saved.live, moved_from=moved_from))
+
+    assert _rating_defaults(root) == [1.0]
+    assert type(_rating_defaults(root)[0]) is float
+    assert '"output_column": "rated_premium"' in "".join(
+        path.read_text("utf-8") for path in (root / "config" / "rating_step").glob("*.json")
+    )
 
 
 def test_without_the_settings_an_edit_began_from_the_browsers_numbers_are_written(

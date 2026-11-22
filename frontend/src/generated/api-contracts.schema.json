@@ -3385,6 +3385,13 @@
           "title": "Instance Name",
           "type": "string"
         },
+        "moved": {
+          "items": {
+            "$ref": "#/$defs/MovedNode"
+          },
+          "title": "Moved",
+          "type": "array"
+        },
         "owner_name": {
           "title": "Owner Name",
           "type": "string"
@@ -3408,7 +3415,8 @@
         "owner_name",
         "instance_name",
         "definition_id",
-        "source_revision"
+        "source_revision",
+        "moved"
       ],
       "title": "CreateNodeInstanceResponse",
       "type": "object"
@@ -3417,6 +3425,13 @@
       "properties": {
         "graph": {
           "$ref": "#/$defs/PipelineGraph"
+        },
+        "moved": {
+          "items": {
+            "$ref": "#/$defs/MovedNode"
+          },
+          "title": "Moved",
+          "type": "array"
         },
         "parent_file": {
           "default": "",
@@ -3446,7 +3461,8 @@
         "submodel_file",
         "parent_file",
         "source_revision",
-        "graph"
+        "graph",
+        "moved"
       ],
       "title": "CreateSubmodelResponse",
       "type": "object"
@@ -4538,6 +4554,13 @@
           "title": "Instance Id",
           "type": "string"
         },
+        "moved": {
+          "items": {
+            "$ref": "#/$defs/MovedNode"
+          },
+          "title": "Moved",
+          "type": "array"
+        },
         "source_revision": {
           "maxLength": 512,
           "minLength": 1,
@@ -4556,7 +4579,8 @@
         "graph",
         "source_revision",
         "instance_id",
-        "definition_id"
+        "definition_id",
+        "moved"
       ],
       "title": "DissolveSubmodelResponse",
       "type": "object"
@@ -15250,6 +15274,50 @@
         "editor"
       ],
       "title": "ModellingNodeData",
+      "type": "object"
+    },
+    "MovedNode": {
+      "additionalProperties": false,
+      "description": "A node a graph change moved: its scope and id in the request and in the answer.\n\nA scope is a submodel definition's id, ``None`` for the pipeline's own nodes. The editor\nfinds a moved node's saved baseline through it (codegen high-level, \"Which parts a\nrequest reads\").",
+      "properties": {
+        "from_node_id": {
+          "title": "From Node Id",
+          "type": "string"
+        },
+        "from_submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "From Submodel"
+        },
+        "to_node_id": {
+          "title": "To Node Id",
+          "type": "string"
+        },
+        "to_submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "To Submodel"
+        }
+      },
+      "required": [
+        "from_submodel",
+        "from_node_id",
+        "to_submodel",
+        "to_node_id"
+      ],
+      "title": "MovedNode",
       "type": "object"
     },
     "NodeAddressEntry": {

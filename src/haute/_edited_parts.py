@@ -155,11 +155,11 @@ def _spelled_list(sent: list[Any], saved: list[Any]) -> list[Any]:
     # A changed element, and the saved ones left, by the matched element before it.
     after_sent: dict[int, deque[int]] = {}
     neighbour = -1
-    for position, index in enumerate(stands_for):
-        if index is None:
+    for position, stood in enumerate(stands_for):
+        if stood is None:
             after_sent.setdefault(neighbour, deque()).append(position)
         else:
-            neighbour = index
+            neighbour = stood
     after_saved: dict[int, deque[int]] = {}
     neighbour = -1
     for index in range(len(saved)):
@@ -174,15 +174,15 @@ def _spelled_list(sent: list[Any], saved: list[Any]) -> list[Any]:
     unpaired = deque(sorted(i for queue in after_saved.values() for i in queue))
     out: list[Any] = []
     for position, item in enumerate(sent):
-        index = stands_for[position]
-        if index is None and unpaired:
-            index = unpaired.popleft()
-        if index is None:
+        paired = stands_for[position]
+        if paired is None and unpaired:
+            paired = unpaired.popleft()
+        if paired is None:
             out.append(item)
-        elif index in matched and keys[position] == held[index]:
-            out.append(saved[index])
+        elif paired in matched and keys[position] == held[paired]:
+            out.append(saved[paired])
         else:
-            out.append(spelled_as(item, saved[index]))
+            out.append(spelled_as(item, saved[paired]))
     return out
 
 

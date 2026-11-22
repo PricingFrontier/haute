@@ -117,6 +117,10 @@ export interface HauteNodeData extends Record<string, unknown> {
   _defaultInputName?: string | null
   _sourceHandleInputNames?: Record<string, string>
   _configReference?: string
+  /** Where the saved baseline holds this node, when a graph change moved it (its answer's
+   * `moved`): an address, never a copy, which `utils/documentRequest.savedFormsFor` follows
+   * after the node's own place. Kept by Undo and Redo, never sent. */
+  _savedAddress?: { submodel: string | null; nodeId: string }
   _sourceFile?: string
   _sourceSpan?: {
     start_line: number
