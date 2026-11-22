@@ -236,7 +236,7 @@ def test_a_node_a_graph_change_moved_keeps_its_settings_numbers(
 def test_a_moved_node_saved_then_edited_keeps_its_other_numbers(
     client: Any, tmp_path: Path
 ) -> None:
-    """After a save the baseline holds the node where it now is, which is found first."""
+    """After a save the baseline holds the node where it now is, keeping its identity."""
     root = make_project(tmp_path)
     document = BrowserDocument(root, root / "main.py")
     answer = _graph_change(client, document, "create", document.live)
@@ -244,7 +244,7 @@ def test_a_moved_node_saved_then_edited_keeps_its_other_numbers(
     _browser_save(document, document.request_graph(answer["graph"], moved_from=moved_from))
     assert _rating_defaults(root) == [1.0]
 
-    saved = BrowserDocument(root, root / "main.py")
+    saved = BrowserDocument(root, root / "main.py", identities=moved_from)
     rated = node_at(saved.live, ("grouped", "rated"))["data"]["config"]
     rated["combined_outputs"][0]["output_column"] = "rated_premium"
     _browser_save(saved, saved.request_graph(saved.live, moved_from=moved_from))
@@ -254,6 +254,32 @@ def test_a_moved_node_saved_then_edited_keeps_its_other_numbers(
     assert '"output_column": "rated_premium"' in "".join(
         path.read_text("utf-8") for path in (root / "config" / "rating_step").glob("*.json")
     )
+
+
+@pytest.mark.parametrize("then", ["dissolve", "undo"])
+def test_a_moved_node_saved_then_moved_back_keeps_its_numbers(
+    client: Any, tmp_path: Path, then: str
+) -> None:
+    """Codex r5: grouped and saved, then dissolved, or the grouping undone, and saved again.
+    The node keeps the identity the load gave it, and so does the baseline the first save
+    made, so it is found by it whatever its place."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    answer = _graph_change(client, document, "create", document.live)
+    moved_from = follow_moves({}, answer["moved"])
+    _browser_save(document, document.request_graph(answer["graph"], moved_from=moved_from))
+    saved = BrowserDocument(root, root / "main.py", identities=moved_from)
+
+    if then == "dissolve":
+        answer = _graph_change(client, saved, "dissolve", saved.live)
+        graph, moved_from = answer["graph"], follow_moves(moved_from, answer["moved"])
+    else:
+        # Undo restores the graph as it stood before the grouping, its nodes where they were.
+        graph, moved_from = document.live, {}
+    _browser_save(saved, saved.request_graph(graph, moved_from=moved_from))
+
+    defaults = _rating_defaults(root)
+    assert defaults and all(type(value) is float for value in defaults), defaults
 
 
 def test_without_the_settings_an_edit_began_from_the_browsers_numbers_are_written(

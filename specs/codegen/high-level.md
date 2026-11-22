@@ -501,13 +501,16 @@ a part sent without one is read from the request.
   every part is read and the answer holds the nodes as they were sent. The answer names
   each node it moves, by its scope and id in the request and in the answer (`moved`),
   since a moved node has a new place and, after a dissolve or a create instance, a new id.
-  The editor records on the moved node where the saved baseline holds it
-  (`data._savedAddress`, an address, never a copy: carried through a second move, kept by
-  Undo and Redo, never sent). A node's baseline node is the baseline's node of the same type
-  at the node's own scope and id, else at the address it records, so a node moved keeps its
-  saved forms, and with them its settings' spelling (CGEN-09), and once a save makes the
-  moved document the baseline its own place is found first. The next save then compares it
-  with that baseline node as any edit is.
+  The editor gives each node an identity, where it was when the document was loaded: a
+  node a graph change moves records it (`data._savedAddress`, an address, never a copy),
+  carried through later moves and kept by Undo and Redo, never sent; a node it leaves in
+  place keeps the one it had, which the answer, built on the server, does not carry; any
+  other node's is where it is. A save makes its baseline from the document, so each of the
+  baseline's nodes keeps its identity too. A node's baseline node is the baseline's node of
+  the same type and identity, the one at the node's own place if two are, so a node moved
+  keeps its saved forms, and with them its settings' spelling (CGEN-09), before a save,
+  after one, after a second move and after an Undo past one. The next save then compares
+  it with that baseline node as any edit is.
 - **The server.** One base model, `haute.schemas.DocumentRequest`, carries the document and
   applies the rule before any node is built (`haute._edited_parts.graph_as_read`): a node
   sent with a saved code is built from that code with its step list taken off, since

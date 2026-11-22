@@ -216,16 +216,37 @@ describe("a node a graph change moved", () => {
     expect(savedFormsFor(baseline, document, "grouped", transform("t", { steps, code: "", rate: 1 }, live))).toEqual({})
   })
 
-  it("is found at its own place first, and only as a node of its type", () => {
-    // Once a save makes the moved document the baseline, the node is found where it now is.
-    const node = moved(transform("plain", { code: "df = quotes" }, live), null, "t")
-    expect(savedFormsFor(baseline, baseline, null, node)).toEqual({ saved_settings: "{}" })
+  it("is found by its identity after a save, after an Undo past one, and only as a node of its type", () => {
+    // A save makes the moved document the baseline: its nodes keep their identity.
+    const grouped = moved(transform("t", { steps, code: savedCode, rate: 1 }, { ...live, saved_code: savedCode, saved_settings: '{"rate":1.0}' }), null, "t")
+    const saved = { nodes: [], submodels: { grouped: { ...definition([grouped]), definitionId: "grouped" } } }
+    const movedLive = moved(transform("t", { steps, code: "", rate: 1 }, live), null, "t")
+    expect(savedFormsFor(saved, saved, "grouped", movedLive).saved_settings).toBe('{"rate":1.0}')
+    // Undo past that save restores the node where it was loaded, with no recorded place.
+    const undone = transform("t", { steps, code: "", rate: 1 }, live)
+    expect(savedFormsFor(saved, { nodes: [undone], submodels: {} }, null, undone).saved_settings).toBe('{"rate":1.0}')
+    // Dissolved after the save: the identity goes with it.
+    const dissolved = moved(transform("submodel_runtime/grouped/t", { steps, code: "", rate: 1 }, live), null, "t")
+    expect(savedFormsFor(saved, { nodes: [dissolved], submodels: {} }, null, dissolved).saved_settings).toBe('{"rate":1.0}')
+    // Only a node of its type.
     const occurrence: Node = {
       id: "t", position: { x: 0, y: 0 },
       data: { nodeType: "submodel", label: "t", config: { definition_id: "grouped" }, editor: { ...live, saved_settings: "{}" } },
     }
     const held = { nodes: [occurrence], submodels: {} }
-    expect(savedFormsFor(held, held, null, moved(transform("x", { rate: 1 }, live), null, "t"))).toEqual({})
+    expect(savedFormsFor(held, held, null, transform("t", { rate: 1 }, live))).toEqual({})
+  })
+
+  it("keeps an earlier move's identity through a later graph change that leaves the node in place", () => {
+    const earlier = moved(transform("t", { steps, code: "", rate: 1 }, live), null, "t")
+    const before = { nodes: [], submodels: { grouped: { ...definition([earlier]), definitionId: "grouped" } } }
+    // The answer is built on the server: its nodes carry no identity of the editor's.
+    const answer = { nodes: [], submodels: { grouped: { ...definition([transform("t", { steps, code: "", rate: 1 }, live)]), definitionId: "grouped" } } }
+
+    const placed = withSavedAddresses(answer, [], before)
+
+    const inner = (placed.submodels.grouped as ReturnType<typeof definition>).graph.nodes[0]
+    expect(inner.data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
   })
 
   it("records where the baseline holds each node an answer moved, through a second move", () => {

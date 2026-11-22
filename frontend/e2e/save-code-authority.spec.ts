@@ -230,7 +230,7 @@ test.describe("A save writes only the parts that were edited", () => {
     expect(written).toContain('"output_column": "browser_factor"')
     expect(written).toContain('"default_value": 1.0')
   })
-  test("keeps a Rating Step's numbers when it is grouped into a submodel and saved", async ({ page }) => {
+  test("keeps a Rating Step's numbers when it is grouped into a submodel, saved, dissolved and saved", async ({ page }) => {
     test.slow()
     await openApp(page)
     expect(readRating()).toContain('"default_value": 1.0')
@@ -245,7 +245,20 @@ test.describe("A save writes only the parts that were edited", () => {
     await expect(page.getByText("Create Submodel")).toBeVisible()
     await page.getByPlaceholder("e.g. model_scoring").fill("browser_group")
     await page.getByRole("button", { name: "Create" }).click()
-    await expect(page.getByRole("button", { name: /browser_group/i })).toBeVisible()
+    const group = page.getByRole("button", { name: /browser_group/i })
+    await expect(group).toBeVisible()
+    await save(page)
+    expect(readRating()).toContain('"default_value": 1.0')
+
+    // Dissolved after that save, the node keeps the identity the load gave it, which the
+    // baseline the save made keeps too.
+    await group.click({ button: "right" })
+    const contextMenu = page.getByTestId("context-menu")
+    if (!(await contextMenu.isVisible({ timeout: 2000 }).catch(() => false))) {
+      await group.dispatchEvent("contextmenu")
+    }
+    await contextMenu.getByRole("menuitem", { name: "Dissolve Submodel" }).click()
+    await expect(group).toHaveCount(0)
     await save(page)
 
     expect(readRating()).toContain('"default_value": 1.0')

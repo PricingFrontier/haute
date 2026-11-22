@@ -267,12 +267,18 @@ class BrowserDocument:
     """The pipeline *py_path* as the editor holds it after loading it: its live graph,
     as the editor edits it, and its saved baseline, with each node's saved forms."""
 
-    def __init__(self, root: Path, py_path: Path) -> None:
+    def __init__(
+        self, root: Path, py_path: Path, *, identities: Mapping[NodeRef, NodeRef] | None = None
+    ) -> None:
+        """*identities* are those the editor's nodes kept through graph changes it saved
+        (``data._savedAddress``): a save makes the baseline from the document, so each of the
+        baseline's nodes keeps its identity too."""
         from haute._pipeline_recovery import load_pipeline_editor_document
         from haute.routes._helpers import parse_pipeline_to_graph
 
         self.root = root
         self.py_path = py_path
+        self.identities: dict[NodeRef, NodeRef] = dict(identities or {})
         self.graph = parse_pipeline_to_graph(py_path, project_root=root)
         live = self.graph.model_dump(mode="json", by_alias=True)
         for _ref, node in scoped(live):
@@ -313,15 +319,17 @@ class BrowserDocument:
             editor = data.setdefault("editor", {})
             for key in SAVED_FORM_KEYS:
                 editor.pop(key, None)
-            held, held_ref = None, ref
-            for candidate in [
-                ref,
-                *([moved_from[ref]] if moved_from and ref in moved_from else []),
-            ]:
-                found = self.baseline.get(candidate)
-                if found is not None and found.get("node_type") == data.get("nodeType"):
-                    held, held_ref = found, candidate
-                    break
+            # A node's baseline node is the one of its type and identity, the one at its own
+            # place if there are two (``documentRequest.baselineNodeFor``).
+            identity = (moved_from or {}).get(ref, ref)
+            matches = [
+                place
+                for place, found in self.baseline.items()
+                if self.identities.get(place, place) == identity
+                and found.get("node_type") == data.get("nodeType")
+            ]
+            held_ref = ref if ref in matches else (matches[0] if matches else ref)
+            held = self.baseline.get(held_ref) if matches else None
             if held is None or held.get("config") is None:
                 continue
             config = data.get("config") or {}
