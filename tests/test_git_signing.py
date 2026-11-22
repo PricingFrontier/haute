@@ -25,6 +25,7 @@ from haute._git import (
 from haute._git_core import GitBlockedError, _blocked_by, _rev_parse
 from tests import _git_engine_helpers
 from tests._git_engine_helpers import LEDGER, WORKING, _git, _write_and_save
+from tests._source_files import REPO_ROOT, source_files
 
 repo = _git_engine_helpers.repo
 unborn_repo = _git_engine_helpers.unborn_repo
@@ -201,10 +202,10 @@ def test_an_ssh_key_s_words_are_a_signing_failure_only_from_a_commit() -> None:
 def test_every_commit_tree_goes_through_the_one_that_signs() -> None:
     """``commit-tree`` is named only in the git core: a commit made any other way would
     skip the signature a team set git to require."""
-    source = Path(__file__).resolve().parents[1] / "src" / "haute"
+    source = REPO_ROOT / "src" / "haute"
     naming = {
         path.relative_to(source).as_posix()
-        for path in source.rglob("*.py")
+        for path in source_files(source)
         if re.search(r"[\"']commit-tree[\"']", path.read_text(encoding="utf-8"))
     }
     assert naming == {"_git_core.py"}
