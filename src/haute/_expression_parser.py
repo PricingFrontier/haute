@@ -173,10 +173,10 @@ _BLOCK_KEYWORDS: Mapping[type[ast.stmt], str] = {
 _BLOCK_STATEMENT_TYPES = tuple(_BLOCK_KEYWORDS)
 
 
-def _block_keyword(stmt: ast.stmt | None) -> str | None:
+def _block_keyword(stmt: ast.stmt) -> str | None:
     """The keyword of the block *stmt* is (``if`` for its ``elif`` and ``else`` too), or
     ``None`` for a statement that is no block."""
-    return None if stmt is None else _BLOCK_KEYWORDS.get(type(stmt))
+    return _BLOCK_KEYWORDS.get(type(stmt))
 
 
 @lru_cache(maxsize=256)
