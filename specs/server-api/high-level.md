@@ -713,14 +713,15 @@ detail, and the assistant shows the same message.
   removals and capture do; it is removed once the removals are made and captured. Each
   committed save that names an operation leaves a receipt under `.haute/saves/receipts/`, the
   newest 256 kept, so a repeat of it is answered with its answer after a restart too. A record
-  names the commit the project's checkout was on when the save began, and is settled when the
-  server starts, and before the next save of its pipeline, only on a checkout whose history
-  holds that commit, since its files are that line's: a save on another line, or on a branch
-  made again under an old name from elsewhere, neither finishes one, which could remove a file
-  that line needs, nor replaces it. One naming no commit (outside a repository, or written
-  before records named theirs) is settled where the project is, and what remains of it is
-  anchored there; one made where git refused to say is never finished, only its staging files
-  removed. A committed one
+  names what the pipeline's code files hold while it is the checkout's (what each held before
+  the save or was being written, then what the save left in it once it commits), and is
+  settled when the server starts, and before the next save of its pipeline, only while they
+  hold it, since its removals and capture are that code's: a save on another branch, however
+  much history the two share, or on a branch made again under an old name, neither finishes
+  one, which could remove a file that branch needs, nor replaces it, and the record waits for
+  its code to be checked out again. A pipeline file's records change in one write, so a save
+  that rolls back leaves the ones it found. One naming no code (written before records named
+  theirs) is settled where the project is. A committed one
   has its removals finished, its capture made and its receipt written; one that never
   committed, left by a server that died part-way or a rollback that failed, has its staging
   files removed, so no Commit takes them, and is reported on the pipeline's document as a

@@ -276,26 +276,3 @@ def test_a_refusal_over_many_files_names_five_and_counts_the_rest() -> None:
         "rating/files/data/0.csv, rating/files/data/1.csv, rating/files/data/2.csv, "
         "rating/files/data/3.csv, rating/files/data/4.csv and 2 more have changed on disk"
     )
-
-
-def test_the_checkout_a_record_is_anchored_to(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No history outside a repository; the commit in one; unknown where git refuses."""
-    from haute._save_records import UNKNOWN_AT, checkout_anchor, holds_here
-
-    root = _blocked_project(tmp_path)
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-
-    assert checkout_anchor(outside) is None
-    assert checkout_anchor(root) == head
-    assert holds_here(root, head, None) is False
-    monkeypatch.setattr(git_core, "git_binary_available", lambda: False)
-    assert checkout_anchor(root) is None
-    monkeypatch.undo()
-    _block(root, "damaged-config", monkeypatch)
-    assert checkout_anchor(root) == UNKNOWN_AT

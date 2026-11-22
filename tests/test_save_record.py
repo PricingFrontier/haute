@@ -13,11 +13,13 @@ answered from its receipt when repeated.
 from __future__ import annotations
 
 import errno
+import json
 import os
 import shutil
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +184,13 @@ def _staging_files(root: Path) -> list[Path]:
     return [path for path in (root / "rating").rglob("*.tmp")]
 
 
+def _record(root: Path, source_file: str) -> save_records.SaveRecord | None:
+    """The one record of a save of *source_file* still to settle, or None."""
+    records = save_records.records_of(root, source_file)
+    assert len(records) <= 1, records
+    return records[0] if records else None
+
+
 def _interruption(document: PipelineEditorDocument) -> list[str]:
     return [d.message for d in document.diagnostics if d.code == "save_interrupted"]
 
@@ -329,12 +338,7 @@ def test_a_stale_file_that_cannot_be_removed_leaves_the_save_saved_and_the_next_
             f"{answer['git_sha']}..{next_save.json()['git_sha']}",
         )
         assert f"D\t{OLD}" in captured.splitlines()
-        assert (
-            save_records.read_record(
-                project, "rating/main.py", save_records.checkout_anchor(project)
-            )
-            is None
-        )
+        assert _record(project, "rating/main.py") is None
     finally:
         unsubscribe()
 
@@ -380,7 +384,6 @@ def test_a_ready_document_reporting_an_interrupted_save_can_be_saved_and_the_rep
 ) -> None:
     record = save_records.SaveRecord(
         source_file="rating/main.py",
-        at=save_records.checkout_anchor(project),
         writes=("rating/main.py", "rating/config/banding/Bands.json"),
     )
     save_records.write_record(project, record)
@@ -395,10 +398,7 @@ def test_a_ready_document_reporting_an_interrupted_save_can_be_saved_and_the_rep
     _service(project).save(_request(project, {"Bands": "35"}, "op-after-report-0001"))
 
     assert _interruption(_document(project)) == []
-    assert (
-        save_records.read_record(project, "rating/main.py", save_records.checkout_anchor(project))
-        is None
-    )
+    assert _record(project, "rating/main.py") is None
 
 
 def test_receipts_beyond_the_limit_forget_the_oldest(
@@ -454,9 +454,7 @@ def test_a_rollback_that_fails_leaves_the_save_reported(
 
 
 def test_an_unreadable_record_is_reported_and_the_next_save_replaces_it(project: Path) -> None:
-    name = save_records._record_path(
-        project, "rating/main.py", save_records.checkout_anchor(project)
-    ).name
+    name = save_records._record_path(project, "rating/main.py").name
     path = project / ".haute" / "saves" / "records" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{ not json", encoding="utf-8")
@@ -506,7 +504,6 @@ def test_a_record_naming_a_path_outside_the_project_removes_nothing_there(
     save_records.write_record(
         project,
         save_records.SaveRecord(
-            at=save_records.checkout_anchor(project),
             source_file="rating/main.py",
             removes=(save_records.Removal("../outside/config.json", digest),),
             committed=True,
@@ -534,11 +531,7 @@ def test_a_removal_reached_through_a_link_out_of_the_project_is_left_alone(
     with monkeypatch.context() as patch:
         patch.setattr(Path, "unlink", removal_held)
         _service(project).save(_the_save(project))
-    # Anchored where the save began; the checkout, moved on by its capture, holds it.
-    assert (
-        save_records.owned_record(project, "rating/main.py", save_records.checkout_anchor(project))
-        is not None
-    )
+    assert save_records.held_records(project, "rating/main.py") != []
 
     # The folder the removal names becomes a link to another folder holding the same bytes.
     outside = tmp_path / "outside-banding"
@@ -576,7 +569,6 @@ def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
     save_records.write_record(
         project,
         save_records.SaveRecord(
-            at=save_records.checkout_anchor(project),
             source_file="rating/main.py",
             writes=("rating/config/banding/Bands.json",),
         ),
@@ -613,25 +605,19 @@ def test_a_staging_file_still_held_is_removed_once_free_and_no_commit_takes_it(
     settle_saves(project)
 
     assert not staged.exists()
-    assert (
-        save_records.read_record(project, "rating/main.py", save_records.checkout_anchor(project))
-        is None
-    )
+    assert _record(project, "rating/main.py") is None
 
 
 def test_a_record_is_read_by_any_spelling_of_its_file(project: Path) -> None:
     save_records.write_record(
         project,
         save_records.SaveRecord(
-            at=save_records.checkout_anchor(project),
             source_file="rating/main.py",
             writes=("rating/main.py",),
         ),
     )
 
-    record = save_records.read_record(
-        project, "Rating/Main.py", save_records.checkout_anchor(project)
-    )
+    record = _record(project, "Rating/Main.py")
 
     assert record is not None and record.readable
     assert record.source_file == "rating/main.py"
@@ -693,12 +679,7 @@ def test_a_module_deletion_a_stopped_save_made_is_captured_by_the_next_save(
         snapshot
         for snapshot in steps.snapshots
         if not any((snapshot / path).exists() for path in module)
-        and (
-            record := save_records.read_record(
-                snapshot, "main.py", save_records.checkout_anchor(snapshot)
-            )
-        )
-        is not None
+        and (record := _record(snapshot, "main.py")) is not None
         and not record.committed
     )
     use_project(stopped)
@@ -716,7 +697,6 @@ def test_a_file_a_stopped_save_never_created_does_not_stop_the_next_capture(
     save_records.write_record(
         project,
         save_records.SaveRecord(
-            at=save_records.checkout_anchor(project),
             source_file="rating/main.py",
             writes=("rating/main.py", "rating/config/banding/Never.json"),
         ),
@@ -755,7 +735,63 @@ def test_a_deletion_staged_before_the_capture_stopped_is_committed_by_the_settle
     settle_saves(project)  # the server's start
 
     assert OLD not in _git(project, "ls-tree", "-r", "--name-only", f"{WORKING}-save").splitlines()
-    assert (
-        save_records.read_record(project, "rating/main.py", save_records.checkout_anchor(project))
-        is None
+    assert _record(project, "rating/main.py") is None
+
+
+def test_a_pipeline_file_keeps_its_newest_records_and_forgets_the_oldest_committed(
+    project: Path,
+) -> None:
+    """Beyond the limit, the oldest committed records go (each a stale file left behind);
+    one that never committed, the report of files that may hold two saves, stays."""
+    stopped = save_records.SaveRecord(source_file="rating/main.py", writes=("rating/main.py",))
+    save_records.write_record(project, stopped)
+    committed = [
+        save_records.SaveRecord(source_file="rating/main.py", committed=True)
+        for _ in range(save_records.MAX_RECORDS_PER_FILE)
+    ]
+    for record in committed:
+        save_records.write_record(project, record)
+
+    kept = save_records.records_of(project, "rating/main.py")
+
+    assert len(kept) == save_records.MAX_RECORDS_PER_FILE
+    assert kept[0] == stopped
+    assert committed[0] not in kept and kept[-1] == committed[-1]
+
+
+def test_an_unreadable_record_beside_readable_ones_is_reported_and_they_are_kept(
+    project: Path,
+) -> None:
+    kept = save_records.SaveRecord(source_file="rating/main.py", committed=True)
+    save_records.write_record(project, kept)
+    path = save_records._record_path(project, "rating/main.py")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["saves"].append({"source_file": "rating/main.py", "writes": "not a list"})
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    records = save_records.records_of(project, "rating/main.py")
+
+    assert records[0] == kept
+    assert not records[1].readable and records[1].writes == ()
+    assert save_records.saved_records(project) == [kept]
+    assert "A save stopped part-way" in _interruption(_document(project))[0]
+
+
+def test_a_record_holding_a_file_outside_the_project_or_unreadable_is_not_the_checkout_s(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    here = save_records.file_digest(project / "rating" / "main.py")
+    holding = save_records.SaveRecord(
+        source_file="rating/main.py",
+        holds=(save_records.Held("rating/main.py", (here,)),),
     )
+    assert save_records.holds_here(project, holding)
+
+    outside = replace(holding, holds=(save_records.Held("../outside.py", (None,)),))
+    assert not save_records.holds_here(project, outside)
+
+    def unreadable(_self: Path) -> bytes:
+        raise PermissionError(errno.EACCES, "denied")
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    assert not save_records.holds_here(project, holding)

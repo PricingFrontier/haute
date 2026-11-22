@@ -1,21 +1,24 @@
 """A pipeline save's progress and outcome, on disk under the clone's ``.haute/saves/``.
 
-A save writes its record (``records/``, one per pipeline file and line of history) before it
-replaces its first file: the operation it names and its request's digest, the revision it
-replaces, and every file it writes or removes. It marks the record committed once its files
-are written and parsed back, with its answer as it stands, and removes the record once its
-removals are made and captured. A committed save that named an operation leaves a receipt
-(``receipts/``) of its answer, the newest :data:`MAX_SAVE_RECEIPTS` kept, so a repeat of it is
-answered with what it did after a restart too.
+A save writes its record (``records/``, one file per pipeline file, holding each of its saves
+still to settle) before it replaces its first file: the operation it names and its request's
+digest, the revision it replaces, and every file it writes or removes. It marks the record
+committed once its files are written and parsed back, with its answer as it stands, and
+removes the record once its removals are made and captured. A committed save that named an
+operation leaves a receipt (``receipts/``) of its answer, the newest :data:`MAX_SAVE_RECEIPTS`
+kept, so a repeat of it is answered with what it did after a restart too.
 
-A record names the commit the project's checkout was on when the save began
-(:func:`checkout_anchor`): its files are that line of history's, so only a save or a start on
-a checkout whose history holds that commit settles it (:func:`holds_here`). A save on another
-line neither finishes its work, which could remove a file that line needs, nor replaces it,
-and a branch made again under an old name from elsewhere does not hold its commit. A record
-made where git refused to say (:data:`UNKNOWN_AT`) never has its work finished; one naming
-none (outside a repository, or written before records named their commit) is settled where
-the project is.
+A record names the bytes the pipeline's code files hold while it is the checkout's
+(*holds*): what each held before the save or was being written, for a save that stopped
+part-way; what the save left in each, once it committed. Only a save or a start on a checkout
+whose code still holds them settles it (:func:`holds_here`), since its removals and capture
+are that code's: a save on another branch, whatever history the two share, neither finishes
+its work, which could remove a file that branch needs, nor replaces it, and it waits for its
+files to be checked out again. Nothing of git is asked, so a folder git refuses to work in
+changes nothing. A record naming none (one that cannot be read, or one written before
+records named theirs) is the checkout's wherever the project is. Every change to a pipeline
+file's records is one write of its file, so a save that rolls back leaves the records it
+found.
 
 A record no save of this process is running (:func:`saving`) is one a server died in, or one
 whose rollback failed, or whose removals did not all succeed: the save route and the server's
@@ -30,7 +33,8 @@ import hashlib
 import json
 import os
 import threading
-from collections.abc import Iterator
+import uuid
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -45,6 +49,10 @@ logger = get_logger(component="save_records")
 
 #: How many committed saves a repeat can still be answered for.
 MAX_SAVE_RECEIPTS = 256
+
+#: How many records one pipeline file keeps: beyond it, the oldest committed ones, whose work
+#: is only removals and a capture, are forgotten (each a stale file left behind, harmless).
+MAX_RECORDS_PER_FILE = 16
 
 _SAVES = (".haute", "saves")
 _RECORDS = "records"
@@ -88,6 +96,23 @@ class Removal:
 
 
 @dataclass(frozen=True, slots=True)
+class Held:
+    """A file a save's record names with the bytes it holds while the record is the
+    checkout's: each a digest, None for no file there."""
+
+    file: str
+    digests: tuple[str | None, ...]
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex
+
+
+#: The name a record kept before a pipeline file kept several is read under.
+_LEGACY_ID = "legacy"
+
+
+@dataclass(frozen=True, slots=True)
 class SaveRecord:
     """A save of the pipeline file *source_file* (project-relative, ``/``-separated).
 
@@ -99,12 +124,11 @@ class SaveRecord:
     beside them and the files the record writes, and they are never captured. *removes* are
     the stale files it removes once committed. *answer* is the response as it stood when the
     save committed, a ``SavePipelineResponse`` in JSON. A record that cannot be read is still
-    a save that stopped: *readable* is False and it names no files."""
+    a save that stopped: *readable* is False and it names no files. *id* names it among its
+    pipeline file's records, from the save's start to its finish; *holds* are the bytes its
+    pipeline's code files hold while it is the checkout's (:func:`holds_here`)."""
 
     source_file: str
-    # The commit the checkout was on (checkout_anchor), UNKNOWN_AT where git refused to say,
-    # None outside a repository and for a record written before records named their commit.
-    at: str | None = None
     operation: str | None = None
     digest: str | None = None
     base_revision: str | None = None
@@ -114,11 +138,14 @@ class SaveRecord:
     committed: bool = False
     answer: dict[str, object] | None = field(default=None, compare=False)
     readable: bool = True
+    id: str = field(default_factory=_new_id)
+    holds: tuple[Held, ...] = ()
 
     def to_json(self) -> dict[str, object]:
         return {
+            "id": self.id,
             "source_file": self.source_file,
-            "at": self.at,
+            "holds": [{"file": h.file, "digests": list(h.digests)} for h in self.holds],
             "operation": self.operation,
             "digest": self.digest,
             "base_revision": self.base_revision,
@@ -149,12 +176,23 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
     writes, leftover = raw.get("writes"), raw.get("leftover")
     removes, answer = raw.get("removes"), raw.get("answer")
     recorded = raw.get("source_file")
+    # A record kept before a pipeline file kept several names neither: it holds nothing.
+    record_id, holds = raw.get("id", _LEGACY_ID), raw.get("holds", [])
     if not (
         _project_file(recorded)
         and isinstance(recorded, str)
         # One file, however a case-insensitive file system spells it (the record's key).
         and recorded.casefold() == source_file.casefold()
-        and _optional_str(raw.get("at"))
+        and isinstance(record_id, str)
+        and record_id
+        and isinstance(holds, list)
+        and all(
+            isinstance(h, dict)
+            and _project_file(h.get("file"))
+            and isinstance(h.get("digests"), list)
+            and all(_optional_str(d) for d in h["digests"])
+            for h in holds
+        )
         and _optional_str(raw.get("operation"))
         and _optional_str(raw.get("digest"))
         and _optional_str(raw.get("base_revision"))
@@ -173,7 +211,8 @@ def _parse_record(raw: object, source_file: str) -> SaveRecord | None:
         return None
     return SaveRecord(
         source_file=recorded,
-        at=raw.get("at"),
+        id=record_id,
+        holds=tuple(Held(h["file"], tuple(h["digests"])) for h in holds),
         operation=raw["operation"],
         digest=raw["digest"],
         base_revision=raw["base_revision"],
@@ -202,119 +241,138 @@ def _key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
-#: A record made where git refused to say what the checkout was on (a folder it does not
-#: trust): nothing can show which line of history it belongs to, so its work is never done.
-UNKNOWN_AT = "unknown"
+def _record_path(project_root: Path, source_file: str) -> Path:
+    # One case, so the spellings a case-insensitive file system gives one file share it.
+    return _saves_folder(project_root, _RECORDS) / f"{_key(source_file.casefold())}.json"
 
 
-def _record_path(project_root: Path, source_file: str, at: str | None) -> Path:
-    # One case, so the spellings a case-insensitive file system gives one file share it. A
-    # record naming no commit is kept under its file alone, as records were before.
-    file = source_file.casefold()
-    key = _key(file) if at is None else _key(f"{at}\0{file}")
-    return _saves_folder(project_root, _RECORDS) / f"{key}.json"
-
-
-def checkout_anchor(project_root: Path) -> str | None:
-    """The commit the project's checkout is on, which a save's record is anchored to;
-    :data:`UNKNOWN_AT` where git refuses to work in the repository; None without git,
-    outside a repository and before its first commit, where there is no history to follow."""
-    from haute._git_core import GitBlockedError, _is_git_repo, _rev_parse, git_binary_available
-
-    if not git_binary_available():
-        return None
-    try:
-        if not _is_git_repo(project_root):
-            return None
-        return _rev_parse("HEAD", cwd=project_root)
-    except GitBlockedError:
-        return UNKNOWN_AT
-
-
-def holds_here(project_root: Path, at: str | None, here: str | None) -> bool:
-    """Whether a record anchored *at* is the checkout's, anchored *here* now: its commit is
-    in the checkout's history (the same line, saved to since, archived or renamed). One
-    naming no commit is settled wherever the project is; one or a checkout git refused to
-    say of holds nowhere, its work deferred until its line can be shown."""
-    if at is None:
-        return True
-    if at == UNKNOWN_AT or here is None or here == UNKNOWN_AT:
-        return False
-    from haute._git_core import _is_ancestor
-
-    return at == here or _is_ancestor(at, here, cwd=project_root)
-
-
-def write_record(project_root: Path, record: SaveRecord) -> None:
-    """Write *record*, replacing the one its pipeline file had at its commit."""
-    path = _record_path(project_root, record.source_file, record.at)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(record.to_json(), indent=2) + "\n")
-
-
-def read_record(project_root: Path, source_file: str, at: str | None) -> SaveRecord | None:
-    """The record of a save of *source_file* anchored *at*, or None when there is none."""
-    path = _record_path(project_root, source_file, at)
+def _read_records(path: Path, source_file: str) -> list[SaveRecord]:
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return None
+        return []
     try:
-        record = _parse_record(json.loads(text), source_file)
+        raw = json.loads(text)
     except json.JSONDecodeError:
-        record = None
-    if record is None:
-        logger.warning("save_record_unreadable", path=str(path))
-        return SaveRecord(source_file=source_file, at=at, readable=False)
-    return record
+        raw = None
+    # A record kept before a pipeline file kept several is the file itself.
+    entries = raw.get("saves") if isinstance(raw, dict) and "saves" in raw else [raw]
+    if not isinstance(entries, list):
+        entries = [None]
+    records: list[SaveRecord] = []
+    for number, entry in enumerate(entries):
+        record = _parse_record(entry, source_file)
+        if record is None:
+            logger.warning("save_record_unreadable", path=str(path))
+            record = SaveRecord(source_file=source_file, readable=False, id=f"unreadable-{number}")
+        records.append(record)
+    return records
 
 
-def owned_record(project_root: Path, source_file: str, here: str | None) -> SaveRecord | None:
-    """The record of a save of *source_file* the checkout, anchored *here*, holds: the one
-    anchored here itself (read even when it cannot be parsed, to be reported), else one
-    anchored at a commit of its history, else None."""
-    # One made where git would not say is never the checkout's, even while it still will not.
-    exact = None if here == UNKNOWN_AT else read_record(project_root, source_file, here)
-    if exact is not None:
-        return exact
-    folded = source_file.casefold()
-    for record in saved_records(project_root):
-        if record.source_file.casefold() == folded and holds_here(project_root, record.at, here):
-            return record
-    return None
+def records_of(project_root: Path, source_file: str) -> list[SaveRecord]:
+    """The records of the saves of *source_file* still to settle, oldest first; one that
+    cannot be read is a record naming no files, *readable* False."""
+    return _read_records(_record_path(project_root, source_file), source_file)
 
 
-def clear_record(project_root: Path, source_file: str, at: str | None) -> None:
-    """Forget the record of a save of *source_file* anchored *at*: it finished, it was put
-    back, or a later save carries it."""
-    _record_path(project_root, source_file, at).unlink(missing_ok=True)
+def read_record(project_root: Path, source_file: str, record_id: str) -> SaveRecord | None:
+    """The record *record_id* of a save of *source_file*, or None when there is none."""
+    return next((r for r in records_of(project_root, source_file) if r.id == record_id), None)
+
+
+def put_records(
+    project_root: Path,
+    source_file: str,
+    records: Sequence[SaveRecord] = (),
+    *,
+    dropping: Collection[str] = (),
+) -> None:
+    """In one write of *source_file*'s records: forget those *dropping* names and the ones
+    *records* replace, and put *records* after the others. Beyond
+    :data:`MAX_RECORDS_PER_FILE`, the oldest committed records go."""
+    path = _record_path(project_root, source_file)
+    replaced = {*dropping, *(record.id for record in records)}
+    kept = [record for record in _read_records(path, source_file) if record.id not in replaced]
+    excess = len(kept) + len(records) - MAX_RECORDS_PER_FILE
+    for record in [record for record in kept if record.committed][: max(excess, 0)]:
+        kept.remove(record)
+        logger.warning("save_record_forgotten", source_file=record.source_file, id=record.id)
+    every = [*kept, *records]
+    if not every:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"source_file": every[-1].source_file, "saves": [r.to_json() for r in every]}
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+
+
+def write_record(
+    project_root: Path, record: SaveRecord, *, replacing: Collection[str] = ()
+) -> None:
+    """Write *record*, in the one write replacing the records *replacing* names."""
+    put_records(project_root, record.source_file, [record], dropping=replacing)
+
+
+def clear_record(project_root: Path, source_file: str, record_id: str) -> None:
+    """Forget the record *record_id* of a save of *source_file*: it finished, or it was put
+    back."""
+    put_records(project_root, source_file, dropping=[record_id])
+
+
+def file_digest(path: Path) -> str | None:
+    """sha256 of *path*'s bytes, or None when it is no file."""
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def holds_here(project_root: Path, record: SaveRecord) -> bool:
+    """Whether *record* is the checkout's: each file it holds holds one of the bytes it names,
+    so its removals and capture are made against the code they were planned for. One that
+    names none is the checkout's wherever the project is; one naming a file that cannot be
+    read, or that leaves the project, is not."""
+    from haute._sandbox import is_contained
+
+    root = project_root.resolve()
+    for held in record.holds:
+        path = root / held.file
+        try:
+            if not is_contained(root, path) or file_digest(path) not in held.digests:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def held_records(project_root: Path, source_file: str) -> list[SaveRecord]:
+    """The records of saves of *source_file* the checkout holds (:func:`holds_here`)."""
+    return [r for r in records_of(project_root, source_file) if holds_here(project_root, r)]
 
 
 def saved_records(project_root: Path) -> list[SaveRecord]:
-    """Every readable record in the project. One that cannot be read names no pipeline file,
-    so it is left for its pipeline's document to report."""
+    """Every readable record in the project. A file of records that names no pipeline file is
+    left for its pipeline's document to report."""
     folder = _saves_folder(project_root, _RECORDS)
     records: list[SaveRecord] = []
     try:
-        entries = sorted(folder.glob("*.json"))
+        paths = sorted(folder.glob("*.json"))
     except OSError:
         return records
-    for path in entries:
+    for path in paths:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("save_record_unreadable", path=str(path))
             continue
         source_file = raw.get("source_file") if isinstance(raw, dict) else None
-        record = (
-            _parse_record(raw, source_file)
-            if isinstance(source_file, str) and _project_file(source_file)
-            else None
-        )
-        if record is None or _record_path(project_root, record.source_file, record.at) != path:
+        if not (
+            isinstance(source_file, str)
+            and _project_file(source_file)
+            and _record_path(project_root, source_file) == path
+        ):
             logger.warning("save_record_unreadable", path=str(path))
             continue
-        records.append(record)
+        records.extend(r for r in _read_records(path, source_file) if r.readable)
     return records
 
 
@@ -350,21 +408,16 @@ def is_running(project_root: Path, source_file: str) -> bool:
 
 def interrupted_save(project_root: Path, source_file: str) -> SaveRecord | None:
     """The record of a save of *source_file* the checkout holds that stopped before it
-    committed, or None. Git is asked where the checkout is only while some record is kept."""
+    committed, or None."""
     if is_running(project_root, source_file):
         return None
     try:
-        folder = _saves_folder(project_root, _RECORDS)
-        if not any(folder.glob("*.json")):
-            return None
-        record = owned_record(project_root, source_file, checkout_anchor(project_root))
+        held = held_records(project_root, source_file)
     except SaveRecordsUnavailableError:
         # A folder reached through a link holds no record a save of Haute's wrote: the load
         # reports none, and the next Save refuses with the link named.
         return None
-    if record is None or record.committed:
-        return None
-    return record
+    return next((record for record in held if not record.committed), None)
 
 
 def interruption_words(record: SaveRecord) -> tuple[str, str]:

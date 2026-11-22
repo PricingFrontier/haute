@@ -292,7 +292,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Server-admitted repairs (19 November 2026): the repair-options question, the shared repair
 // actions and the options answer's generated validator bring the total to 1,819.7 KiB
 // (initial 304.0 KiB); 1,822 KiB (approved) restores about 2.3 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1822
+// Git integration (22 November 2026): the Record / Put back question over files changed
+// outside Haute, the toolbar's Git refused state, branch changes told to every tab and the
+// save naming its branch bring the total to 1,822.8 KiB (initial 305.8 KiB); 1,823 KiB
+// (approved).
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1823
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

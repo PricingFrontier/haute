@@ -59,15 +59,16 @@ from haute._pipeline_recovery import (
 )
 from haute._sandbox import contained_path, is_contained
 from haute._save_records import (
-    UNKNOWN_AT,
+    Held,
     Removal,
     SaveRecord,
-    checkout_anchor,
     clear_record,
+    file_digest,
+    held_records,
     holds_here,
     is_running,
     keep_receipt,
-    owned_record,
+    put_records,
     read_record,
     replay_receipt,
     save_request_digest,
@@ -228,9 +229,12 @@ class _DefinitionFile(NamedTuple):
 
 def _artifact_digest(path: Path) -> str | None:
     """sha256 of *path*'s bytes, or ``None`` when it does not exist as a file."""
-    if not path.is_file():
-        return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return file_digest(path)
+
+
+def _bytes_digest(text: str) -> str:
+    """The digest :func:`_artifact_digest` gives a file once *text* is written to it."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _recorded_digest_for_same_file(
@@ -609,6 +613,15 @@ def _remove_staging(root: Path, writes: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(left))
 
 
+def _holding_now(root: Path, holds: Sequence[Held]) -> tuple[Held, ...]:
+    """*holds*, each file named by the bytes it holds now: what a save left in its code."""
+    return tuple(
+        Held(held.file, (_artifact_digest(path),))
+        for held in holds
+        if (path := _recorded_path(root, held.file)) is not None
+    )
+
+
 def _finish_committed(
     root: Path, record: SaveRecord, *, commit_message: str | None = None
 ) -> FinishedSave:
@@ -652,18 +665,21 @@ def _finish_committed(
         if record.operation is not None and record.digest is not None:
             keep_receipt(root, record.operation, record.digest, response)
     if removals.remaining or staging_left:
+        # What is still to do waits for the code the save left, as it stands after the
+        # capture (a commit hook may have rewritten it).
         write_record(
             root,
             SaveRecord(
                 source_file=record.source_file,
-                at=record.at,
+                id=record.id,
+                holds=_holding_now(root, record.holds),
                 leftover=tuple(staging_left),
                 removes=tuple(removals.remaining),
                 committed=True,
             ),
         )
     else:
-        clear_record(root, record.source_file, record.at)
+        clear_record(root, record.source_file, record.id)
     return FinishedSave(response, removals.removed, payload)
 
 
@@ -677,14 +693,14 @@ class _Settled(NamedTuple):
 
 
 def _settle_record(root: Path, record: SaveRecord | None) -> _Settled:
-    """Settle *record*, left by a save before this one on the branch the project is on:
-    finish a committed one, and remove the staging files of one that never committed, so no
-    Commit takes them."""
+    """Settle *record*, left by a save before this one, which the checkout holds: finish a
+    committed one, and remove the staging files of one that never committed, so no Commit
+    takes them."""
     if record is None or is_running(root, record.source_file):
         return _Settled(None, None)
     if record.committed:
         finished = _finish_committed(root, record)
-        return _Settled(read_record(root, record.source_file, record.at), finished)
+        return _Settled(read_record(root, record.source_file, record.id), finished)
     _remove_staging(root, [*record.writes, *record.leftover])
     return _Settled(record, None)
 
@@ -693,29 +709,15 @@ def settle_saves(project_root: Path) -> None:
     """Settle every record a save left in the project that the checkout holds: the server
     runs it as it starts, so a save it died in is finished, or its staging files are gone and
     it is reported, before any request or Commit meets it. No canvas is open yet to be sent
-    what it finishes.
-
-    A record anchored on another line of history waits for a start or a save there. One
-    naming no commit (outside a repository, or written before records named theirs) is
-    settled where the project is, and what remains of it is anchored here, so the saves after
-    find it. One made where git would not say where the checkout was has its staging files
-    removed and is forgotten: nothing shows which line its removals and capture belong to."""
+    what it finishes. A record whose code is not checked out (a save on another branch, say)
+    waits for a start or a save where it is."""
     root = project_root.resolve()
     with repository_mutation(root):
-        here = checkout_anchor(root)
         for record in saved_records(root):
-            if record.at == UNKNOWN_AT:
-                _remove_staging(root, [*record.writes, *record.leftover])
-                clear_record(root, record.source_file, record.at)
-                logger.warning("save_record_line_unknown", source_file=record.source_file)
-                continue
-            if not holds_here(root, record.at, here):
-                logger.info("save_record_on_another_line", source_file=record.source_file)
-                continue
-            settled = _settle_record(root, record)
-            if record.at is None and here not in (None, UNKNOWN_AT) and settled.remaining:
-                write_record(root, replace(settled.remaining, at=here))
-                clear_record(root, record.source_file, None)
+            if holds_here(root, record):
+                _settle_record(root, record)
+            else:
+                logger.info("save_record_not_checked_out", source_file=record.source_file)
 
 
 class SavePipelineService:
@@ -917,14 +919,15 @@ class SavePipelineService:
                 return replayed
             if body.working_branch is not None:
                 refuse_another_branch(self._root, body.working_branch)
-            # The records this save reads, settles and writes are this checkout's line of
-            # history's: one left on another is neither finished here nor replaced.
-            here = checkout_anchor(self._root)
-            left = owned_record(self._root, source_file, here)
-            settled = _settle_record(self._root, left)
-            if left is not None and settled.finished is not None and left.answer is not None:
-                self.recovered = self._recovered_document(py_path, left, settled.finished)
-            carried = settled.remaining
+            # The records this save settles and carries are those whose code is checked out:
+            # one left where other code is (another branch's) is neither finished nor replaced.
+            carried: list[SaveRecord] = []
+            for left in held_records(self._root, source_file):
+                settled = _settle_record(self._root, left)
+                if settled.finished is not None and left.answer is not None:
+                    self.recovered = self._recovered_document(py_path, left, settled.finished)
+                if settled.remaining is not None:
+                    carried.append(settled.remaining)
             if (replayed := receipt()) is not None:
                 self.replayed = True
                 return replayed
@@ -934,8 +937,7 @@ class SavePipelineService:
                     commit_message=commit_message,
                     source_file=source_file,
                     digest=digest,
-                    carried=carried,
-                    at=here,
+                    carried=tuple(carried),
                 )
 
     def _recovered_document(
@@ -963,8 +965,7 @@ class SavePipelineService:
         commit_message: str | None,
         source_file: str,
         digest: str | None,
-        carried: SaveRecord | None,
-        at: str | None,
+        carried: tuple[SaveRecord, ...],
     ) -> SavePipelineResponse:
         graph = body.graph
 
@@ -1048,18 +1049,26 @@ class SavePipelineService:
         # the file.
         planned_folded = {self._project_file(path).casefold() for path in [*planned, *deletes]}
         removes = {removal.file.casefold(): removal for removal in self._stale_config_files()}
-        if carried is not None:
-            for removal in carried.removes:
-                if removal.file.casefold() not in planned_folded:
-                    removes.setdefault(removal.file.casefold(), removal)
+        for removal in (removal for left in carried for removal in left.removes):
+            if removal.file.casefold() not in planned_folded:
+                removes.setdefault(removal.file.casefold(), removal)
         # A record left before: the files of a save that never committed, which may hold
         # either save until this one commits and are captured with it (a deletion it made is
         # still to record), and those whose staging is still to remove, never captured.
-        carried_writes = () if carried is None else carried.writes
-        leftover = () if carried is None else carried.leftover
+        carried_writes = [rel for left in carried for rel in left.writes]
+        leftover = [rel for left in carried for rel in left.leftover]
+        # Until it commits, the code holds what it held before or what this save writes.
+        holds = {
+            rel.casefold(): Held(rel, (_artifact_digest(path), _bytes_digest(code)))
+            for path, code in code_files
+            if (rel := self._project_file(path))
+        }
+        for target in deletes:
+            rel = self._project_file(target)
+            holds.setdefault(rel.casefold(), Held(rel, (_artifact_digest(target), None)))
         record = SaveRecord(
             source_file=source_file,
-            at=at,
+            holds=tuple(holds.values()),
             operation=body.operation,
             digest=digest,
             base_revision=body.base_revision,
@@ -1075,11 +1084,8 @@ class SavePipelineService:
             leftover=tuple(dict.fromkeys(leftover)),
             removes=tuple(removes.values()),
         )
-        write_record(self._root, record)
-        if carried is not None and carried.at != at:
-            # The record carried is this save's now: kept under the commit it was anchored
-            # to, it would be found and settled again by every save after.
-            clear_record(self._root, source_file, carried.at)
+        # The records carried are this save's now: they go in the one write that puts it.
+        write_record(self._root, record, replacing=[left.id for left in carried])
 
         touched: list[_TouchedFile] = []
         try:
@@ -1129,15 +1135,18 @@ class SavePipelineService:
                 warnings=warnings,
                 saved_parts=self._saved_parts(graph, edited, body.edited_settings),
             )
-            record = replace(record, committed=True, answer=answer.model_dump(mode="json"))
+            record = replace(
+                record,
+                committed=True,
+                answer=answer.model_dump(mode="json"),
+                holds=_holding_now(self._root, record.holds),
+            )
             write_record(self._root, record)
         except BaseException:
             if not _rollback_artifacts(touched):
-                # Nothing of this save is left on disk: the record before it stands again.
-                if carried is None:
-                    clear_record(self._root, source_file, at)
-                else:
-                    write_record(self._root, carried)
+                # Nothing of this save is left on disk: the records before it stand again,
+                # in the one write that forgets this save's.
+                put_records(self._root, source_file, carried, dropping=[record.id])
             raise
 
         # The file-watcher skips self-written paths before invalidating the
