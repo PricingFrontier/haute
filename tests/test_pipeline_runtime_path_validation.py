@@ -886,23 +886,25 @@ def test_a_save_writes_nothing_with_an_absolute_path_in_a_submodel(tmp_path: Pat
     assert not (tmp_path / "config").exists()
 
 
+@pytest.mark.parametrize(
+    "written", [r"C:\Users\analyst\pricing\outputs\priced.parquet", "C:priced.parquet"]
+)
 def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_project(
-    tmp_path: Path,
+    tmp_path: Path, written: str
 ) -> None:
     """Joined to the project root on Linux and macOS, ``C:\\...`` would be a folder named
-    ``C:`` inside it; on Windows it is outside the project. It is refused everywhere."""
+    ``C:`` inside it; on Windows it is outside the project. A bare ``C:priced.parquet``
+    keeps its drive though the writer puts a bare name in ``outputs/``. Each is refused
+    everywhere."""
     from haute.executor import resolve_data_output_path
 
-    config = {
-        "output_type": "file",
-        "format": "parquet",
-        "path": r"C:\Users\analyst\pricing\outputs\priced.parquet",
-    }
+    config = {"output_type": "file", "format": "parquet", "path": written}
 
     with pytest.raises(RuntimePathOutsideProjectError):
         resolve_data_output_path(PipelineGraph(), config, project_root=tmp_path)
 
     assert not (tmp_path / "C:").exists()
+    assert not (tmp_path / "outputs").exists()
 
 
 @pytest.mark.parametrize(
@@ -912,6 +914,8 @@ def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_proj
         ({"format": "csv", "path": "data/Quotes"}, "Write data/quotes.csv."),
         ({"format": "parquet", "path": "Priced"}, "Write outputs/priced.parquet."),
         ({"format": "parquet", "path": "Outputs/new.parquet"}, "Write outputs/new.parquet."),
+        ({"format": "csv", "path": "C:priced.csv"}, "was written on Windows"),
+        ({"format": "csv", "path": "NUL.csv"}, "reserved device name 'NUL.csv'"),
         ({"format": "parquet", "path": "outputs/priced.parquet"}, None),
         ({"format": "parquet", "path": "exports/new.parquet"}, None),
         ({"format": "database", "uri": "sqlite:///out.db"}, None),
@@ -921,6 +925,8 @@ def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_proj
         "extension-added",
         "bare-name",
         "folder-case",
+        "drive-relative",
+        "device-name",
         "as-on-disk",
         "new-folder",
         "database",

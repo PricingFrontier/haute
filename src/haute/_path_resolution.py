@@ -101,6 +101,14 @@ def _contained_candidate(candidate: Path, project_root: Path) -> Path | None:
     return spelling_preserved
 
 
+def reject_unportable_path_text(raw_path: str | Path, *, project_root: Path) -> None:
+    """Refuse *raw_path* for what its text says on its own, before anything anchors or
+    extends it: an embedded null byte, a reserved device name, and a drive letter where the
+    path is not absolute. Every read path and every Data Output's path go through it."""
+    _reject_reserved_device_components(raw_path, Path(_normalise_path_text(raw_path)))
+    reject_windows_drive_path(raw_path, project_root=project_root)
+
+
 def reject_windows_drive_path(raw_path: str | Path, *, project_root: Path) -> None:
     """Refuse *raw_path* when it starts with a drive letter and is not absolute here.
 
@@ -155,8 +163,7 @@ def _anchored_candidates(
     root = current_project().root if project_root is None else Path(project_root).resolve()
     normalised_path = _normalise_path_text(raw_path)
     raw = Path(normalised_path)
-    _reject_reserved_device_components(raw_path, raw)
-    reject_windows_drive_path(raw_path, project_root=root)
+    reject_unportable_path_text(raw_path, project_root=root)
 
     if raw.is_absolute():
         anchored = [raw]
@@ -397,7 +404,8 @@ def _matches_on_disk(
     Comparing the folders' listings, never asking the filesystem whether a spelling
     exists, gives the same answer on every system.
     """
-    found: list[tuple[str, ...]] = []
+    # Insertion-ordered and hashed: a pattern over a folder of many files stays linear.
+    found: dict[tuple[str, ...], None] = {}
 
     def same(entry: str, part: str) -> bool:
         if fold:
@@ -408,8 +416,7 @@ def _matches_on_disk(
 
     def walk(folder: Path, index: int, names: tuple[str, ...]) -> None:
         if index == len(parts):
-            if names not in found:
-                found.append(names)
+            found[names] = None
             return
         try:
             with os.scandir(folder) as listing:
@@ -427,7 +434,7 @@ def _matches_on_disk(
                 walk(folder / entry.name, index + 1, (*names, entry.name))
 
     walk(project_root, 0, ())
-    return found
+    return list(found)
 
 
 def _letter_case_refusal(
@@ -497,7 +504,7 @@ def portable_path_refusal(
         )
     for candidate in candidates:
         parts = _inside(candidate, root)
-        exact = _matches_on_disk(root, parts, fold=False)
+        exact = set(_matches_on_disk(root, parts, fold=False))
         extra = [match for match in _matches_on_disk(root, parts, fold=True) if match not in exact]
         if extra:
             return _letter_case_refusal(
@@ -514,15 +521,17 @@ def portable_output_path_refusal(
     """Why a node writing *written* (its setting *raw_path* as the writer reads it, from
     the project root) would write another file in another checkout; ``None`` when not.
 
-    A drive-letter path, a path outside the project and an absolute one are refused as a
-    read path is, and so is one whose folders, or the file itself, exist on disk in
-    another letter case: Windows and macOS write into them, and Linux makes new ones.
+    The setting's own text is held to :func:`reject_unportable_path_text` first; a path
+    outside the project and an absolute one are refused as a read path is, and so is one
+    whose folders, or the file itself, exist on disk in another letter case: Windows and
+    macOS write into them, and Linux makes new ones.
     """
     root = Path(project_root).resolve()
     shown = repr(raw_path) if raw_path == written else f"{raw_path!r}, which writes {written!r},"
     try:
-        reject_windows_drive_path(written, project_root=root)
-    except RuntimePathWrittenOnWindowsError as exc:
+        # The setting as written: ``C:priced.csv`` loses its drive once put in ``outputs/``.
+        reject_unportable_path_text(raw_path, project_root=root)
+    except RuntimePathError as exc:
         return str(exc)
     normalised = Path(_normalise_path_text(written))
     target = Path(os.path.abspath(normalised if normalised.is_absolute() else root / normalised))

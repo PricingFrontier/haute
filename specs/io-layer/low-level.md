@@ -195,8 +195,12 @@ platforms, and on Windows with long paths on, nothing is renamed.
    not absolute where it is read (`C:\\Users\\...` on Linux or macOS, or `C:file.csv`) raises
    `RuntimePathWrittenOnWindowsError`, a `RuntimePathOutsideProjectError`, saying it was
    written on Windows and naming the longest tail of it found under the project root as the
-   path to write (`_path_resolution.reject_windows_drive_path`); a file Data Output's path is
-   refused the same way, never joined to the root as a folder named `C:`. The preview
+   path to write (`_path_resolution.reject_windows_drive_path`). A file Data Output's path is
+   refused the same way, never joined to the root as a folder named `C:`: its setting as
+   written, before the writer puts a bare name in `outputs/` (where `C:priced.csv` would
+   lose its drive), goes through `reject_unportable_path_text`, the check of a path's own
+   text that every read path's candidates go through too (a null byte, a reserved device
+   name, a drive letter). The preview
    request's path check names the node whose path it refuses, since every node's request
    checks the whole graph.
 
