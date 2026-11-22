@@ -241,6 +241,40 @@ def test_a_fraction_past_six_digits_is_read_whole() -> None:
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        # Python reads a fraction as a fraction of a second wherever the clock stops.
+        "2024-03-01T09:30.5",
+        "2024-03-01T0930.5",
+        "2024-03-01 09:30:00,5",
+        "20240301T093000.5",
+        "2024-03-01T09:30:00.5+01:00",
+        # An offset's own fraction is the offset's, not the clock's.
+        "2024-03-01T09:00:00+01:00:00.5",
+        "2024-03-01T09:00:00.25+01:00:00.5",
+    ],
+)
+def test_a_spelling_python_reads_is_read_as_python_reads_it(text: str) -> None:
+    from datetime import datetime
+
+    dtype = pl.Datetime("us", "UTC") if "+" in text else pl.Datetime("us")
+    moment = datetime.fromisoformat(text)
+
+    assert pl.select(temporal_literal(text, dtype)).item() == moment
+
+
+def test_digits_past_six_of_a_fraction_after_minutes_are_kept_and_held_to_the_unit() -> None:
+    nanoseconds = pl.Datetime("ns")
+    base = temporal_physical("2024-03-01T09:30:00", nanoseconds)
+
+    assert temporal_physical("2024-03-01T09:30.0000001", nanoseconds) == base + 100
+    assert temporal_physical("09:30.0000002", pl.Time()) == (9 * 60 + 30) * 60 * 10**9 + 200
+    with pytest.raises(TemporalTextError) as refused:
+        temporal_physical("2024-03-01T09:30.0000001", pl.Datetime("us"))
+    assert refused.value.reason == "finer"
+
+
+@pytest.mark.parametrize(
     ("text", "dtype", "reason"),
     [
         ("2024-03-01T09:00:00.000000100", pl.Datetime("us"), "finer"),
@@ -305,3 +339,23 @@ def test_exact_text_writes_every_temporal_value_and_leaves_the_rest() -> None:
     assert exact_text(frame.lazy()).collect().to_dicts() == rows
     plain = frame.select("amount", "day")
     assert exact_text(plain) is plain
+
+
+def test_a_frame_of_multidimensional_arrays_reads_back_whole() -> None:
+    from haute._temporal_text import frame_from_exact_rows
+
+    frame = pl.DataFrame(
+        {
+            "moments": pl.Series(
+                [[[100, 200], [300, 400]], None], dtype=pl.Array(pl.Int64, (2, 2))
+            ).cast(pl.Array(pl.Datetime("ns"), (2, 2)), strict=False),
+            "grid": pl.Series(
+                [[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=pl.Array(pl.Int64, (2, 2))
+            ),
+        }
+    )
+
+    back = frame_from_exact_rows(exact_rows(frame), frame.schema)
+
+    assert back.schema == frame.schema
+    assert back.equals(frame)

@@ -19,6 +19,7 @@ import polars as pl
 from haute._temporal_text import (
     TemporalTextError,
     is_temporal,
+    moment_nanoseconds,
     temporal_physical,
     temporal_text,
 )
@@ -55,8 +56,8 @@ def _boundary(value: object, name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be an ISO date or datetime")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
+        moment_nanoseconds(value)
+    except TemporalTextError as error:
         raise HauteValidationError(f"{name} must be an ISO date or datetime") from error
     return value
 
@@ -150,26 +151,27 @@ def _json_key(value: object) -> str:
     return canonical_json_bytes(value).decode("utf-8")
 
 
-def _parsed_dates(values: Sequence[object]) -> list[datetime]:
+def _parsed_dates(values: Sequence[object]) -> list[int]:
+    """*values*, dates or date-times, as nanoseconds from 1970 that order them exactly: an
+    aware one's instant in UTC, a naive one's wall clock, ISO text read whole to nine
+    digits (``moment_nanoseconds``), so two inside one microsecond order apart."""
     if not values:
         return []
-    parsed: list[datetime] = []
+    parsed: list[int] = []
     aware: bool | None = None
     for value in values:
-        if isinstance(value, datetime):
-            parsed_value = value
-        elif isinstance(value, date):
-            parsed_value = datetime.combine(value, time.min)
+        if isinstance(value, date):
+            text = value.isoformat()
         elif isinstance(value, str):
-            parsed_value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            text = value
         else:
             raise TypeError("date values must be ISO strings or native date/datetime values")
-        this_aware = parsed_value.tzinfo is not None
+        nanoseconds, this_aware = moment_nanoseconds(text)
         if aware is None:
             aware = this_aware
         elif aware != this_aware:
             raise HauteValidationError("date values must not mix timezone awareness")
-        parsed.append(parsed_value)
+        parsed.append(nanoseconds)
     return parsed
 
 

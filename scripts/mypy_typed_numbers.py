@@ -36,6 +36,12 @@ OWN_TEXT = frozenset({"builtins.str", "builtins.repr"})
 #: The one reader, where the language's own readers are called on text it has checked.
 READER = "haute._typed_numbers"
 
+#: Digits a temporal value's text holds, matched by a regular expression first.
+_REGEX_TEMPORAL_DIGITS = (
+    "digits a regular expression matched in a date-time, time or duration: no sign, "
+    "separator or exponent to read"
+)
+
 #: ``module.function::call`` -> why the text that call reads as a number is not typed by
 #: anyone. Each exception covers its one call (a second of the same call in one function is
 #: ``call#2``), so another conversion beside it is still refused.
@@ -58,23 +64,15 @@ NOT_TYPED: dict[str, str] = {
     "haute._env.int_env::int(raw)": (
         "an environment variable, set by whoever runs Haute, not typed into a field"
     ),
-    'haute._temporal_text._split_fraction::int( digits.ljust(9, "0") )': (
-        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    'haute._temporal_text._below_a_microsecond::int(digits[6:].ljust(3, "0"))': (
+        _REGEX_TEMPORAL_DIGITS
     ),
-    'haute._temporal_text._duration_physical::int(match["hours"])': (
-        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
-    ),
-    'haute._temporal_text._duration_physical::int(match["minutes"])': (
-        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
-    ),
-    'haute._temporal_text._duration_physical::int(match["seconds"])': (
-        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
-    ),
-    'haute._temporal_text._duration_physical::int(match["days"] or 0)': (
-        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
-    ),
+    'haute._temporal_text._duration_physical::int(match["hours"])': (_REGEX_TEMPORAL_DIGITS),
+    'haute._temporal_text._duration_physical::int(match["minutes"])': (_REGEX_TEMPORAL_DIGITS),
+    'haute._temporal_text._duration_physical::int(match["seconds"])': (_REGEX_TEMPORAL_DIGITS),
+    'haute._temporal_text._duration_physical::int(match["days"] or 0)': (_REGEX_TEMPORAL_DIGITS),
     'haute._temporal_text._duration_physical::int((match["digits"] or "").ljust(9, "0"))': (
-        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+        _REGEX_TEMPORAL_DIGITS
     ),
     "haute._source_layout.number_spelling::int(mantissa)": (
         "a step's number as Python source spells it (its ``text``), already held to Python's "

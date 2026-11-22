@@ -61,8 +61,8 @@ from haute._rating import (
 from haute._rating_step_config import normalise_rating_tables
 from haute._temporal_text import (
     TemporalTextError,
-    is_temporal,
-    temporal_literal,
+    frame_from_exact_rows,
+    holds_temporal,
     wall_clock_nanoseconds,
 )
 
@@ -1428,9 +1428,11 @@ def _chain_feed(
         return row.drop(target, strict=False)
     dtype = step.output_row.schema.get(target) if step.output_row is not None else None
     value = shown["result_value"]
-    if dtype is not None and isinstance(value, str) and is_temporal(dtype):
-        # A datetime, time or duration result is its exact text: read back exactly.
-        return row.with_columns(temporal_literal(value, dtype).alias(target))
+    if dtype is not None and holds_temporal(dtype):
+        # A datetime, time or duration result, nested ones included, is its exact text:
+        # read back exactly, through the one way exact rows become a frame again.
+        fed = frame_from_exact_rows([{target: value}], {target: dtype})
+        return row.with_columns(fed.get_column(target))
     return row.with_columns(pl.Series(target, [value], dtype=dtype))
 
 

@@ -10,6 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute.errors import HauteValidationError
 from haute.modelling._evaluation import (
     EVALUATION_SCHEMA_VERSION,
     MAX_VALIDATION_FITS,
@@ -145,6 +146,28 @@ def test_evaluation_config_canonicalises_all_validation_modes_and_fit_counts() -
         }
     )
     assert temporal.to_plain_data()["validation"]["window"] == "expanding"
+
+
+def _single_temporal(validation_start: str, test_start: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "strategy": "temporal",
+        "date_column": "date",
+        "test": {"start": test_start},
+        "validation": {"method": "single", "start": validation_start},
+    }
+
+
+def test_temporal_boundaries_inside_one_microsecond_are_ordered_exactly() -> None:
+    earlier, later = "2025-01-01T00:00:00.000000100", "2025-01-01T00:00:00.000000200"
+
+    config = EvaluationConfig.from_plain_data(_single_temporal(earlier, later))
+
+    assert config.to_plain_data()["test"] == {"start": later}
+    with pytest.raises(HauteValidationError, match="validation.start must precede test.start"):
+        EvaluationConfig.from_plain_data(_single_temporal(later, earlier))
+    with pytest.raises(HauteValidationError, match="must be an ISO date or datetime"):
+        EvaluationConfig.from_plain_data(_single_temporal(earlier, later + "1"))
 
 
 def test_random_regression_plan_assigns_test_first_and_never_leaks_it() -> None:

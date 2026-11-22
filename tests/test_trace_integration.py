@@ -747,6 +747,32 @@ class TestNanosecondTimestamps:
         for step in result.steps:
             assert step.output_values["at"] == texts[row], step.node_id
 
+    def test_a_chain_reads_a_nested_nanosecond_intermediate_exactly(self, tmp_path):
+        p = tmp_path / "events.parquet"
+        pl.DataFrame(
+            {"at": pl.Series([self.BASE + 100], dtype=pl.Int64).cast(pl.Datetime("ns"))}
+        ).write_parquet(p)
+        code = (
+            "df = src\n"
+            "df = df.with_columns(event=pl.struct("
+            "later=pl.col('at') + pl.duration(nanoseconds=100)))\n"
+            "df = df.with_columns(last=pl.col('event').struct.field('later'))\n"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="last")
+
+        # Polars builds no struct from text: the intermediate is read back from it exactly.
+        event, last = _step_by_id(result, "t").calculation["expression_chain"]
+        assert event["result_value"] == {"later": self.TEXTS[2]}
+        assert event.get("error") is None, event
+        assert last["result_value"] == self.TEXTS[2]
+
 
 class TestRatingStepMultiplyTables:
     """C.2: data_source -> rating_step(multiple tables, multiply) -> output

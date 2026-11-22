@@ -9,6 +9,7 @@ and give back all nine digits.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from pathlib import Path
 
 import polars as pl
@@ -285,7 +286,8 @@ def test_a_numpy_date_time_in_a_hand_built_table_keeps_its_nanoseconds() -> None
 # Every module that reads a frame's values into Python is driven or exempted
 # ---------------------------------------------------------------------------
 
-#: The calls that read a frame's (or a series') values into Python objects.
+#: The calls that read a frame's (or a series') values into Python objects, and
+#: ``to_dict(as_series=False)``, which does too.
 _READING_METHODS = frozenset(
     {"iter_rows", "to_dicts", "rows", "row", "rows_by_key", "to_list", "item"}
 )
@@ -429,27 +431,269 @@ _NOT_DRIVEN: dict[str, str] = {
 }
 
 
-def _reads_values(source: str) -> bool:
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _READING_METHODS
-        for node in ast.walk(ast.parse(source))
-    )
+#: Every call of src/haute that reads values into Python, by module, then by the function
+#: it sits in and its method, with how many there are. A call added anywhere, inside a
+#: module already listed too, changes this, and the test below names it: route it through
+#: ``haute._temporal_text`` or, if it never reads a datetime, time or duration value, pin
+#: it here, its module driven or exempted above.
+_READING_CALLS: dict[str, dict[str, int]] = {
+    "src/haute/_binning.py": {
+        "equal_width_bins:item": 3,
+        "equal_width_bins:iter_rows": 1,
+    },
+    "src/haute/_chunked_writes.py": {
+        "_ChunkJoin._write_split:to_list": 1,
+        "_ChunkJoin.write:item": 1,
+        "row_count:item": 1,
+    },
+    "src/haute/_databricks_output.py": {
+        "write_databricks_output:item": 1,
+    },
+    "src/haute/_frame_profile.py": {
+        "_build_frame_stats:row": 1,
+        "_build_histograms:row": 1,
+        "_count_unique_rows:item": 2,
+    },
+    "src/haute/_graph_walker.py": {
+        "_Walk._collect_row:row": 1,
+    },
+    "src/haute/_mlflow_io.py": {
+        "_python_scalar:item": 1,
+    },
+    "src/haute/_model_explainability.py": {
+        "_single_glm_contribution_record:to_dicts": 1,
+    },
+    "src/haute/_optimiser_apply_explainability.py": {
+        "_explain_ratebook:row": 1,
+        "_python_match_ratebook_input_row:iter_rows": 1,
+    },
+    "src/haute/_output_assembler.py": {
+        "_rows_from_dataframe:iter_rows": 1,
+    },
+    "src/haute/_polars_dtypes.py": {
+        "_integer_range:row": 1,
+    },
+    "src/haute/_polars_utils.py": {
+        "bounded_collect_batches:item": 1,
+        "key_prefix_python_scan.produce:to_list": 1,
+    },
+    "src/haute/_rating.py": {
+        "_apply_rating_miss_guard._check:to_dicts": 1,
+        "_duration_key_series:to_list": 1,
+        "_parsed_text:to_list": 1,
+        "_text_as_number:to_list": 5,
+        "_typed_keys:to_list": 5,
+    },
+    "src/haute/_temporal_text.py": {
+        "exact_row:row": 1,
+        "exact_rows:to_dicts": 1,
+    },
+    "src/haute/_trace_correlation.py": {
+        "RowScopeResolver.count_rows:item": 1,
+        "_candidate_payload:to_list": 1,
+        "_identical_candidate_count:row": 1,
+        "_match_rows_vectorized:item": 1,
+    },
+    "src/haute/_workbench_input.py": {
+        "check_request_keys:to_list": 1,
+    },
+    "src/haute/_workbench_output.py": {
+        "_fitted:to_list": 1,
+        "workbench_response.produce:row": 1,
+        "workbench_response.produce:to_dicts": 1,
+    },
+    "src/haute/_workbench_params.py": {
+        "param_file_from_bytes:to_list": 1,
+    },
+    "src/haute/assistant/_tools.py": {
+        "_column_profile:row": 1,
+        "_column_profile:to_dicts": 1,
+    },
+    "src/haute/deploy/_batch_scoring.py": {
+        "_parquet_row_count:item": 1,
+    },
+    "src/haute/deploy/_impact.py": {
+        "_segment_breakdown:iter_rows": 1,
+    },
+    "src/haute/deploy/_model_code.py": {
+        "_plain:item": 1,
+    },
+    "src/haute/deploy/_request_rows.py": {
+        "check_lookups:item": 1,
+    },
+    "src/haute/deploy/_response_json.py": {
+        "first_non_finite:to_list": 1,
+    },
+    "src/haute/executor.py": {
+        "prepare_data_output:item": 1,
+    },
+    "src/haute/modelling/_evaluation.py": {
+        "evaluation_key_values:to_list": 4,
+    },
+    "src/haute/modelling/_metrics.py": {
+        "_ave_categorical_bins:iter_rows": 1,
+        "compute_pdp:to_list": 2,
+    },
+    "src/haute/modelling/_native_encoding.py": {
+        "encode_frame:to_list": 2,
+        "fit_categorical_levels:to_list": 1,
+    },
+    "src/haute/modelling/_shap.py": {
+        "_beeswarm_feature:to_list": 2,
+        "_categorical_curve:to_list": 1,
+    },
+    "src/haute/modelling/_split.py": {
+        "_group_mask:to_list": 2,
+    },
+    "src/haute/modelling/_target_check.py": {
+        "_has_fractional_values:item": 1,
+    },
+    "src/haute/modelling/_training_job.py": {
+        "TrainingJob._prepare_data:item": 1,
+        "TrainingJob._require_positive_log_link_offset:item": 1,
+        "TrainingJob._resolve_class_labels:to_list": 1,
+    },
+    "src/haute/routes/_banding_stats.py": {
+        "BandingStatsService._compute:item": 2,
+        "BandingStatsService._with_rule_counts:iter_rows": 1,
+    },
+    "src/haute/routes/_explore_relationships.py": {
+        "ExploreRelationshipsService._between:item": 1,
+        "ExploreRelationshipsService._categorical_levels:item": 7,
+        "ExploreRelationshipsService._categorical_levels:to_list": 2,
+        "ExploreRelationshipsService._compute:item": 8,
+        "ExploreRelationshipsService._key_check:item": 2,
+        "ExploreRelationshipsService._numeric_levels:iter_rows": 1,
+    },
+    "src/haute/routes/_frontier_point_summary.py": {
+        "frontier_point_rows:to_dicts": 1,
+    },
+    "src/haute/routes/_optimiser_frontier.py": {
+        "OptimiserFrontierService._point_apply_estimate:item": 1,
+    },
+    "src/haute/routes/_optimiser_input.py": {
+        "AutoRangeValueCheck.add:row": 1,
+        "AutoRangeValueCheck.raise_if_invalid:item": 1,
+        "_non_finite_detail_from_counts:item": 2,
+        "_null_value_detail_from_counts:item": 1,
+        "estimate_input_metrics:row": 1,
+        "forecast_solve_memory_from_input:item": 1,
+        "quote_layout_fault:item": 2,
+        "scenario_step_count:item": 1,
+        "validate_input_value_contracts:item": 1,
+    },
+    "src/haute/routes/_optimiser_outcomes.py": {
+        "ChoiceQueryService._run:item": 1,
+        "_key_fingerprint:row": 1,
+        "_require_constant_within_quote:item": 1,
+        "_require_constant_within_quote:row": 1,
+        "histogram_of_frame:item": 1,
+        "write_quote_analysis:row": 1,
+    },
+    "src/haute/routes/_optimiser_quotes.py": {
+        "QuotePage.run:item": 1,
+    },
+    "src/haute/routes/_optimiser_segments.py": {
+        "AnalysisSegments._numeric:iter_rows": 1,
+        "AnalysisSegments._numeric:row": 1,
+        "_categorical_levels:iter_rows": 1,
+        "segments_response:to_dicts": 1,
+    },
+    "src/haute/routes/_optimiser_service.py": {
+        "_ScenarioFrontierRangeAccumulator._carry_batch:item": 4,
+        "_ScenarioFrontierRangeAccumulator._carry_batch:row": 1,
+        "_ScenarioFrontierRangeAccumulator._fallback_totals:row": 1,
+        "_ScenarioFrontierRangeAccumulator._row_values:row": 1,
+        "_ScenarioFrontierRangeAccumulator.add_batch:item": 1,
+    },
+    "src/haute/routes/_optimiser_solver.py": {
+        "_counted_level_keys:to_list": 2,
+        "_json_records:to_dicts": 1,
+        "frontier_point_history_payload:to_dicts": 1,
+        "ratebook_factor_level_labels:to_list": 1,
+    },
+    "src/haute/routes/_pivot_service.py": {
+        "PivotService._cardinalities:item": 2,
+        "PivotService._member_options:item": 1,
+        "_exact_rows:iter_rows": 1,
+    },
+    "src/haute/routes/_point_analysis.py": {
+        "most_common_values:item": 1,
+        "most_common_values:iter_rows": 1,
+    },
+    "src/haute/routes/_rating_levels.py": {
+        "RatingLevelsService._compute:item": 2,
+    },
+    "src/haute/routes/files.py": {
+        "_read_schema_blocking:item": 1,
+    },
+    "src/haute/trace.py": {
+        "_assemble_steps:row": 1,
+        "_typed_input_row:row": 1,
+    },
+}
 
 
-def _readers() -> set[str]:
+def _method_read(node: ast.Call) -> str | None:
+    """The method a call reads values into Python with, if it does."""
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    method = node.func.attr
+    if method in _READING_METHODS:
+        return method
+    if method == "to_dict" and any(keyword.arg == "as_series" for keyword in node.keywords):
+        return method
+    return None
+
+
+def _reading_calls(source: str) -> Counter[str]:
+    """Each call of *source* reading values into Python, as ``<function>:<method>`` (the
+    dotted path of classes and functions it sits in, ``<module>`` at the top), counted."""
+    found: Counter[str] = Counter()
+
+    def walk(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                walk(child, f"{scope}.{child.name}" if scope else child.name)
+                continue
+            if isinstance(child, ast.Call) and (method := _method_read(child)) is not None:
+                found[f"{scope or '<module>'}:{method}"] += 1
+            walk(child, scope)
+
+    walk(ast.parse(source), "")
+    return found
+
+
+def _inventory() -> dict[str, dict[str, int]]:
     root = _REPO / "src" / "haute"
-    return {
-        path.relative_to(_REPO).as_posix()
-        for path in root.rglob("*.py")
-        if _reads_values(path.read_text(encoding="utf-8"))
-    }
+    found = {}
+    for path in sorted(root.rglob("*.py")):
+        calls = _reading_calls(path.read_text(encoding="utf-8"))
+        if calls:
+            found[path.relative_to(_REPO).as_posix()] = dict(sorted(calls.items()))
+    return found
+
+
+@pytest.mark.meta
+def test_every_call_reading_values_into_python_is_pinned() -> None:
+    found = _inventory()
+    changes = sorted(
+        f"{module} {call}: {pinned.get(call, 0)} pinned, {held.get(call, 0)} found"
+        for module in set(found) | set(_READING_CALLS)
+        for held, pinned in [(found.get(module, {}), _READING_CALLS.get(module, {}))]
+        for call in set(held) | set(pinned)
+        if held.get(call, 0) != pinned.get(call, 0)
+    )
+    assert not changes, (
+        "A call reading values into Python was added, moved or removed. Route a new one "
+        "through haute._temporal_text, or pin it in _READING_CALLS if it never reads a "
+        f"datetime, time or duration value: {changes}"
+    )
 
 
 @pytest.mark.meta
 def test_every_module_reading_values_into_python_is_driven_or_exempted() -> None:
-    readers = _readers()
+    readers = set(_READING_CALLS)
     undriven = sorted(readers - set(_DRIVEN) - set(_NOT_DRIVEN))
     assert not undriven, (
         "Each module that reads a frame's values into Python gets a test sending it datetime, "
@@ -480,14 +724,31 @@ def test_every_driver_named_is_a_test() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source", "reads"),
+    ("source", "found"),
     [
-        ("frame.to_dicts()", True),
-        ("frame.row(0, named=True)", True),
-        ("series.to_list()", True),
-        ("exact_rows(frame)", False),
-        ("frame.to_dict(as_series=False)", False),
+        ("frame.to_dicts()", {"<module>:to_dicts": 1}),
+        ("frame.row(0, named=True)", {"<module>:row": 1}),
+        ("def f(s):\n    return s.to_list() + s.to_list()", {"f:to_list": 2}),
+        ("class C:\n    def g(self, f):\n        return f.item()", {"C.g:item": 1}),
+        ("frame.to_dict(as_series=False)", {"<module>:to_dict": 1}),
+        ("exact_rows(frame)", {}),
+        ("frame.to_dict()", {}),
     ],
 )
-def test_a_reader_is_found_by_the_method_it_calls(source: str, reads: bool) -> None:
-    assert _reads_values(source) is reads
+def test_a_reading_call_is_found_by_its_function_and_method(
+    source: str, found: dict[str, int]
+) -> None:
+    assert _reading_calls(source) == found
+
+
+def test_a_reading_call_added_to_a_listed_module_or_function_is_caught() -> None:
+    module = "src/haute/routes/_banding_stats.py"
+    source = (_REPO / module).read_text(encoding="utf-8")
+    added = source + "\n\ndef extra(frame):\n    return frame.to_dicts()\n"
+
+    assert dict(_reading_calls(source)) == _READING_CALLS[module]
+    assert dict(_reading_calls(added)) != _READING_CALLS[module]
+    # A second call inside a function already pinned changes its count.
+    one = "def f(frame):\n    return frame.item()\n"
+    two = "def f(frame):\n    frame.to_dicts()\n    return frame.item()\n"
+    assert _reading_calls(one) != _reading_calls(two)

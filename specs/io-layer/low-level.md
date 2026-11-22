@@ -1101,9 +1101,14 @@ is no eager dataframe or collect-then-write fallback.
   values, never by their text, which a duration's or an offset's spelling does not order.
 - Back: `temporal_physical(text, dtype)` is the column's physical integer for *text*: for a
   datetime, any spelling `datetime.fromisoformat` accepts (a space or `T`, `Z` or an offset,
-  minutes or seconds left out), its fraction of a second (after `.` or `,`) read whole to
-  nine digits rather than cut at six; for a time, any spelling `time.fromisoformat` accepts,
-  likewise; for a duration, the text `temporal_text` writes. An aware datetime names its
+  minutes or seconds left out), read as Python reads it, with the digits past the sixth of
+  the fraction ending its clock (after `.` or `,`, wherever the clock stops, so `09:30.5` is
+  09:30:00.5) added rather than cut, and a fraction inside an offset (`+01:00:00.5`) the
+  offset's; for a time, any spelling `time.fromisoformat` accepts, likewise; for a
+  duration, the text `temporal_text` writes. `moment_nanoseconds(text)` is a date or
+  date-time text's moment so read, in nanoseconds from 1970 (an aware one's instant in UTC,
+  a naive one's wall clock), and whether it is aware, which orders boundaries no column
+  types yet (an evaluation's). An aware datetime names its
   instant through its offset, so the physical value is UTC and each occurrence of a local
   time the clocks repeat keeps its own. `temporal_literal(text, dtype)` is the literal of
   the column's own type holding that physical value. Each refuses with
@@ -1117,16 +1122,19 @@ is no eager dataframe or collect-then-write fallback.
   builds the value, or the match, from `temporal_physical` or `temporal_literal`, never
   from a Python object. `frame_from_exact_rows(rows, schema)` is the same for rows read as
   `exact_rows` reads them (an OUTPUT document's): each temporal value, nested ones included,
-  its physical integer, the frame cast to *schema*. `wall_clock_nanoseconds(text)` is the
+  its physical integer (a multidimensional array keeping its shape), the frame cast to
+  *schema*. `wall_clock_nanoseconds(text)` is the
   wall-clock time a date or date-time text names, its offset left aside, in nanoseconds from
   1970, as a date-time breakpoint compares a zoned value.
-- `tests/test_temporal_values.py` finds every module of `src/haute` that calls a method
-  reading a frame's values into Python (`iter_rows`, `to_dicts`, `rows`, `row`,
-  `rows_by_key`, `to_list`, `item`) and requires each either to be driven by a named test
-  (in that file or beside the module's own) sending it datetime, time and duration values
-  that differ below a microsecond, which must keep them apart and give back all nine digits,
-  or to be listed with the reason it never reads such a value. A new module that reads values
-  without either fails it, and so does a listed module that no longer reads any.
+- `tests/test_temporal_values.py` finds every call in `src/haute` that reads a frame's values
+  into Python (`iter_rows`, `to_dicts`, `rows`, `row`, `rows_by_key`, `to_list`, `item`, and
+  `to_dict(as_series=False)`) and holds them to a pinned inventory, by module, then by the
+  function each sits in and its method, with their count: a call added anywhere, inside a
+  module or a function already listed too, or one moved or removed, fails it, naming the
+  call, until it goes through this module or is pinned. Each module in the inventory is
+  either driven by a named test (in that file or beside the module's own) sending it
+  datetime, time and duration values that differ below a microsecond, which must keep them
+  apart and give back all nine digits, or listed with the reason it never reads such a value.
 
 ### Map columns
 

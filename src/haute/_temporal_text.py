@@ -236,7 +236,8 @@ def _physical_dtype(held: pl.DataType | DataTypeClass) -> pl.DataType:
     if isinstance(dtype, pl.List):
         return pl.List(_physical_dtype(dtype.inner))
     if isinstance(dtype, pl.Array):
-        return pl.Array(_physical_dtype(dtype.inner), dtype.shape)
+        # The inner type holds the dimensions past the first, so it takes the outer width.
+        return pl.Array(_physical_dtype(dtype.inner), dtype.size)
     return dtype
 
 
@@ -277,7 +278,12 @@ def frame_from_exact_rows(
         for row in rows
     ]
     physical_schema = {name: _physical_dtype(dtype) for name, dtype in schema.items()}
-    return pl.DataFrame(physical, schema=physical_schema).cast(pl.Schema(dict(schema)))
+    # Not strict: every integer temporal_physical gives is a value of its type (a datetime
+    # or duration any Int64, a time one inside its day), so nothing is nulled, and Polars'
+    # strict cast refuses a multidimensional array holding a null row it would cast whole.
+    return pl.DataFrame(physical, schema=physical_schema).cast(
+        pl.Schema(dict(schema)), strict=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +301,11 @@ class TemporalTextError(ValueError):
         self.reason: Refusal = reason
 
 
-#: A clock's seconds and the fraction after them, ``.`` or ``,`` and any number of digits.
-_FRACTION = re.compile(r"(?P<seconds>[0-9]{2}:?[0-9]{2}:?[0-9]{2})[.,](?P<digits>[0-9]+)")
+#: The fraction ending a clock, ``.`` or ``,`` and its digits: Python reads it as a fraction
+#: of a second wherever the clock stops (``09:30.5`` is 09:30:00.5).
+_CLOCK_FRACTION = re.compile(r"[.,](?P<digits>[0-9]+)\Z")
+#: Where a time's offset begins: ``Z`` or a sign, neither of which a clock holds.
+_OFFSET_START = re.compile(r"[Zz+-]")
 #: A duration as :func:`temporal_text` writes one.
 _DURATION = re.compile(
     r"(?:(?P<days>-?[0-9]+) days?, )?(?P<hours>[0-9]+):(?P<minutes>[0-5][0-9]):"
@@ -304,22 +313,50 @@ _DURATION = re.compile(
 )
 
 
-def _split_fraction(text: str, kind: str) -> tuple[str, int]:
-    """*text* without its fraction of a second, and that fraction in nanoseconds."""
-    found = list(_FRACTION.finditer(text))
-    if not found:
+def _below_a_microsecond(text: str, kind: str, *, clock_start: int) -> tuple[str, int]:
+    """*text* with its clock's fraction cut to the six digits Python reads, and the
+    nanoseconds the digits past them add.
+
+    The clock runs from *clock_start* (the character after a date-time's ``T`` or space, the
+    start of a time) to its offset, if any, so a fraction inside an offset
+    (``+01:00:00.5``) is the offset's, read by Python as it stands. A fraction of more than
+    nine digits is finer than any column holds.
+    """
+    if clock_start >= len(text):
         return text, 0
-    if len(found) > 1:
-        raise TemporalTextError(f"{text!r} is not a {kind}.", reason="malformed")
-    match = found[0]
-    digits = match["digits"]
+    offset = _OFFSET_START.search(text, clock_start)
+    clock_end = len(text) if offset is None else offset.start()
+    fraction = _CLOCK_FRACTION.search(text[clock_start:clock_end])
+    if fraction is None:
+        return text, 0
+    digits = fraction["digits"]
     if len(digits) > 9:
         raise TemporalTextError(
             f"{text!r} is finer than a nanosecond, which no {kind} holds.", reason="malformed"
         )
-    return text[: match.start("digits") - 1] + text[match.end("digits") :], int(
-        digits.ljust(9, "0")
-    )
+    if len(digits) <= 6:
+        return text, 0
+    cut = clock_start + fraction.start("digits") + 6
+    return text[:cut] + text[clock_end:], int(digits[6:].ljust(3, "0"))
+
+
+def _date_time_parts(text: str) -> tuple[datetime, int]:
+    """*text*, a date or date-time in any spelling ``datetime.fromisoformat`` accepts, as the
+    moment Python reads to the microsecond and the nanoseconds below it."""
+    separator = next((place for place, char in enumerate(text) if char in "T "), len(text))
+    whole, below = _below_a_microsecond(text, "date-time", clock_start=separator + 1)
+    try:
+        return datetime.fromisoformat(whole), below
+    except ValueError:
+        raise TemporalTextError(f"{text!r} is not a date-time.", reason="malformed") from None
+
+
+def _nanoseconds_from(moment: datetime, below: int) -> int:
+    """*moment*'s nanoseconds from 1970, its instant in UTC when it is aware, its wall clock
+    when it is naive, with *below* added: counted in whole microseconds, exactly."""
+    epoch = _NAIVE_EPOCH if moment.tzinfo is None else _AWARE_EPOCH
+    microseconds = (moment - epoch) // timedelta(microseconds=1)
+    return microseconds * _NANOSECONDS_PER_MICROSECOND + below
 
 
 def _finer(text: str, dtype: pl.DataType, unit: str) -> TemporalTextError:
@@ -341,7 +378,7 @@ def temporal_physical(text: str, dtype: pl.DataType) -> int:
     if kind == "datetime":
         return _datetime_physical(text, cast(pl.Datetime, dtype))
     if kind == "time":
-        whole, fraction = _split_fraction(text, "time")
+        whole, below = _below_a_microsecond(text, "time", clock_start=0)
         try:
             clock = time.fromisoformat(whole)
         except ValueError:
@@ -351,7 +388,11 @@ def temporal_physical(text: str, dtype: pl.DataType) -> int:
                 f"{text!r} has a time zone, which a time has not.", reason="zone"
             )
         seconds = (clock.hour * 60 + clock.minute) * 60 + clock.second
-        return seconds * _NANOSECONDS_PER_SECOND + fraction
+        return (
+            seconds * _NANOSECONDS_PER_SECOND
+            + clock.microsecond * _NANOSECONDS_PER_MICROSECOND
+            + below
+        )
     if kind == "duration":
         return _duration_physical(text, cast(pl.Duration, dtype))
     raise SchemaMismatchError(
@@ -360,11 +401,7 @@ def temporal_physical(text: str, dtype: pl.DataType) -> int:
 
 
 def _datetime_physical(text: str, dtype: pl.Datetime) -> int:
-    whole, fraction = _split_fraction(text, "date-time")
-    try:
-        moment = datetime.fromisoformat(whole)
-    except ValueError:
-        raise TemporalTextError(f"{text!r} is not a date-time.", reason="malformed") from None
+    moment, below = _date_time_parts(text)
     if moment.tzinfo is None and dtype.time_zone is not None:
         raise TemporalTextError(
             f"{text!r} has no time zone, which a {dtype} column has.", reason="zone"
@@ -373,16 +410,13 @@ def _datetime_physical(text: str, dtype: pl.Datetime) -> int:
         raise TemporalTextError(
             f"{text!r} has a time zone, which a {dtype} column has not.", reason="zone"
         )
-    per_second = _UNITS_PER_SECOND[dtype.time_unit]
-    step = _NANOSECONDS_PER_SECOND // per_second
-    if fraction % step:
-        raise _finer(text, dtype, dtype.time_unit)
     # An aware value names its instant through its offset, so both occurrences of a
     # local time the clocks repeat keep their own: the physical value is UTC.
-    epoch = _NAIVE_EPOCH if moment.tzinfo is None else _AWARE_EPOCH
-    # Whole seconds exactly: a timedelta's own seconds are a float past 2**53 µs.
-    seconds = (moment - epoch) // timedelta(seconds=1)
-    return _in_range(seconds * per_second + fraction // step, text, dtype)
+    nanoseconds = _nanoseconds_from(moment, below)
+    step = _NANOSECONDS_PER_SECOND // _UNITS_PER_SECOND[dtype.time_unit]
+    if nanoseconds % step:
+        raise _finer(text, dtype, dtype.time_unit)
+    return _in_range(nanoseconds // step, text, dtype)
 
 
 def _in_range(physical: int, text: str, dtype: pl.DataType) -> int:
@@ -414,12 +448,17 @@ def wall_clock_nanoseconds(text: str) -> int:
     """The nanoseconds from 1970 to the wall-clock time a date or date-time *text* names,
     any offset it carries left aside, as a breakpoint compares a zoned column's values;
     the fraction read whole to nine digits. :class:`TemporalTextError` for other text."""
-    whole, fraction = _split_fraction(text, "date-time")
-    try:
-        moment = datetime.fromisoformat(whole).replace(tzinfo=None)
-    except ValueError:
-        raise TemporalTextError(f"{text!r} is not a date-time.", reason="malformed") from None
-    return ((moment - _NAIVE_EPOCH) // timedelta(seconds=1)) * _NANOSECONDS_PER_SECOND + fraction
+    moment, below = _date_time_parts(text)
+    return _nanoseconds_from(moment.replace(tzinfo=None), below)
+
+
+def moment_nanoseconds(text: str) -> tuple[int, bool]:
+    """The moment a date or date-time *text* names, in nanoseconds from 1970, and whether it
+    is aware: an aware one's instant in UTC, a naive one's wall clock, the fraction read
+    whole to nine digits, so two moments inside one microsecond order apart.
+    :class:`TemporalTextError` for other text."""
+    moment, below = _date_time_parts(text)
+    return _nanoseconds_from(moment, below), moment.tzinfo is not None
 
 
 def temporal_literal(text: str, dtype: pl.DataType) -> pl.Expr:
@@ -440,6 +479,7 @@ __all__ = [
     "frame_from_exact_rows",
     "holds_temporal",
     "is_temporal",
+    "moment_nanoseconds",
     "temporal_literal",
     "temporal_physical",
     "temporal_text",

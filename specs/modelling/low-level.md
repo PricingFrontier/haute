@@ -1376,7 +1376,11 @@ potentially large copy on its threadpool.
   after a date falls between it and the next. A boundary the column cannot hold (finer
   than its unit, a time zone where the column has none, none where it has one) is
   refused naming the boundary. A time or duration column is no date column and is
-  refused by type. Dates and ISO text are read with `datetime.fromisoformat` as before.
+  refused by type. A date column of dates or ISO text, and the configuration's own check
+  that `validation.start` precedes `test.start`, order their values by
+  `moment_nanoseconds` (an aware one's instant, a naive one's wall clock, the fraction
+  read whole to nine digits), so two inside one microsecond order apart; a boundary that
+  is no ISO date or date-time, a fraction past nine digits included, is refused.
 - Random classification planning is target-stratified; random regression remains seeded
   but unstratified. `_development_reserve` gives the rows of every class the development
   set keeps for what follows the test: `fold_count` for cross-validation, 2 for a single

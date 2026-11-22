@@ -61,6 +61,8 @@ def _framed(dtype: pl.DataType, value: object) -> Any:
         # A pandas Timestamp for a date column: midnight, without a zone.
         (pl.Date(), datetime(2024, 5, 1), date(2024, 5, 1)),
         (pl.Datetime("us"), "2024-05-01T10:30:00", datetime(2024, 5, 1, 10, 30)),
+        # A fraction after the minutes is a fraction of a second, as Python reads it.
+        (pl.Datetime("us"), "2024-05-01T10:30.5", datetime(2024, 5, 1, 10, 30, 0, 500_000)),
         (pl.Null(), None, None),
     ],
 )
@@ -99,6 +101,7 @@ def test_a_value_its_type_holds_exactly_is_accepted(
         (pl.Datetime("us"), "yesterday"),
         (pl.Datetime("us"), "2024-05-01T10:30:00+01:00"),
         (pl.Datetime("us", "UTC"), "2024-05-01T10:30:00"),
+        (pl.Datetime("us"), "2024-05-01T10:30.0000001"),
         (pl.Null(), 1),
     ],
 )
@@ -114,6 +117,9 @@ def test_a_value_its_type_does_not_hold_is_refused_naming_the_column(
 def test_a_zoned_date_time_keeps_its_instant() -> None:
     framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00")
     assert framed.isoformat() == "2024-05-01T09:30:00+00:00"
+    # An offset's own fraction moves the instant, never the clock's fraction.
+    framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00:00.5")
+    assert framed.isoformat() == "2024-05-01T09:29:59.500000+00:00"
 
 
 @pytest.mark.parametrize(
