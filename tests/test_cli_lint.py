@@ -210,3 +210,63 @@ class TestLintAppliesTheEditorsSave:
 
         assert result.exit_code == 1
         assert "Found 2 issue(s)" in result.output
+
+
+class TestLintRefusesAPathAnotherCheckoutReadsOtherwise:
+    """A node path that runs here and fails on another computer or system is refused by
+    ``haute lint`` as the save refuses it, naming the node, the path and what to write."""
+
+    def _project(self, tmp_path: Path, written: str) -> Path:
+        from tests.conftest import write_data_input_config
+
+        data = tmp_path / "data" / "synthetic.csv"
+        data.parent.mkdir(parents=True)
+        data.write_text("x\n1\n2\n", encoding="utf-8")
+        config = write_data_input_config(tmp_path, "quotes", "data/synthetic.csv")
+        sidecar = tmp_path / config
+        sidecar.write_text(
+            sidecar.read_text(encoding="utf-8").replace('"data/synthetic.csv"', json_text(written)),
+            encoding="utf-8",
+        )
+        pipeline = tmp_path / "main.py"
+        pipeline.write_text(
+            "import haute\nimport polars as pl\n\n"
+            'pipeline = haute.Pipeline("carried")\n\n\n'
+            f'@pipeline.data_input(config="{config}")\n'
+            "def quotes(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return pipeline
+
+    @pytest.mark.parametrize(
+        ("written", "remedy"),
+        [
+            ("<absolute>", "Write it from the project root: data/synthetic.csv."),
+            ("data/Synthetic.csv", "Write data/synthetic.csv."),
+            (r"C:\Users\analyst\pricing\data\synthetic.csv", "from the project root"),
+        ],
+        ids=["absolute", "letter-case", "another-windows-computer"],
+    )
+    def test_the_node_the_path_and_what_to_write_are_named(
+        self, runner: CliRunner, tmp_path: Path, written: str, remedy: str
+    ) -> None:
+        if written == "<absolute>":
+            written = str(tmp_path / "data" / "synthetic.csv")
+        pipeline = self._project(tmp_path, written)
+
+        result = runner.invoke(cli, ["lint", str(pipeline)])
+
+        assert result.exit_code == 1, result.output
+        assert f"Data Input node 'quotes' (path): Path {written!r}" in result.output
+        assert remedy in result.output
+
+        self._project(tmp_path / "fixed", "data/synthetic.csv")
+        fixed = runner.invoke(cli, ["lint", str(tmp_path / "fixed" / "main.py")])
+        assert fixed.exit_code == 0, fixed.output
+
+
+def json_text(value: str) -> str:
+    import json
+
+    return json.dumps(value)

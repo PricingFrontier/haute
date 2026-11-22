@@ -50,7 +50,11 @@ carries as its remediation (for the file path, `from modules import rates`, then
   directly (`receiver=`), so no name in the node's own code is rewritten. It preserves
   identity, description, position and authored connections, but replaces that node's
   settings and function body. Existing config references are preserved and their content
-  replaced only when exclusively owned by this node. Unknown types, nodes refused for a
+  replaced only when exclusively owned by this node. A node's config reference is the
+  file its decorator's `config=` names (the default `config/<type>/<name>.json` only
+  when it names none), read the same way whether its file passed the strict parse or
+  not, and every node of the root pipeline and of each submodel file that resolves to
+  the same file is another owner. Unknown types, nodes refused for a
   removed node-level instance form, submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
   node produces the normal explicit incomplete-code template; it never invents a
   passthrough. The confirmation explains that configuration/code may be needed before running.
@@ -73,7 +77,10 @@ carries as its remediation (for the file path, `from modules import rates`, then
   audited default only where that default is structurally valid; a top-level field the
   saved configuration lacks (one added or renamed since it was written) takes its palette
   default, reported as `defaulted`, so the node comes back as a new node would with the
-  unchanged fields kept. The palette is used only when it belongs to the configuration's
+  unchanged fields kept. A default the kept settings exclude is left out: when the
+  engine refuses the filled configuration and accepts it without one filled default, that
+  key stays absent and is not reported (a Model Score that follows an `alias` keeps no
+  `version`). The palette is used only when it belongs to the configuration's
   branch: the discriminant (`input_type`, `output_type`, `source_type`, `algorithm`, `mode`)
   is present and equals the palette's, and for Data Input/Output so do a present `format`
   and `mode`; recovery never fills a default from a different provider/format/mode
@@ -90,7 +97,11 @@ carries as its remediation (for the file path, `from modules import rates`, then
   `constant_frame`, a Model Score's `parse_model_source` and an External File's
   `validate_external_file_config`. Every issue path is a JSON pointer into the config
   (`/how`, `/input_scenario_map/quotes`, `/factors/0`), and the empty pointer for a
-  whole-config issue; an engine refusal sits at the setting it names. Authored
+  whole-config issue; an engine refusal sits at the setting it names. A refusal and a
+  completeness gap that name one setting give it one pointer, a nested one included
+  (a Source Switch input's `input_scenario_map.quotes` is `/input_scenario_map/quotes`,
+  a Constant's `values[1].value` is `/values/1/value`), and a refusal's code is
+  `required` when the value there is absent or empty and `invalid_value` otherwise. Authored
   code in a declared code slot is retained when the function has its node type's current
   form: a declaration, or a hook (first parameter `df`; an External File's keyword-only
   `obj`). A body the decorator never calls — code on a type that carries none, or code
@@ -211,7 +222,10 @@ code slots). The server resolves spans and affected files itself, revalidates
 eligibility under the shared save lock, refuses a configuration key the node type does
 not declare with HTTP 400 (`node_config_undeclared_keys`, naming the node and listing the
 keys in `unrecognized_config_keys`) before any other check or write, requires the
-candidate to remain loadable (completeness gaps allowed), rewrites only that node's settings and code through the
+candidate to remain loadable (completeness gaps allowed), refuses a path setting another
+checkout would read otherwise with HTTP 400 (`node_path_not_portable`, naming the node, the
+path and what to write; [IO layer](../io-layer/low-level.md), "A path every checkout reads
+alike"), rewrites only that node's settings and code through the
 existing LibCST and staged-write boundaries (regenerating the `contract=` annotation and
 omitting a sidecar `contract` copy exactly as Recover settings does, so a settings edit
 cannot leave a stale annotation, and adding `import polars as pl` below `import haute`

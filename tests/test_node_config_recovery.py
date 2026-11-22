@@ -8,6 +8,7 @@ import pytest
 from haute._edge_join import build_edge_join_kwargs
 from haute._model_source import parse_model_source
 from haute._node_apply import constant_frame, scenario_step_count, validate_external_file_config
+from haute._node_config_models import NODE_CONFIG_MODELS
 from haute._node_config_recovery import (
     reconcile_config,
     validate_recovery_config,
@@ -83,6 +84,19 @@ def test_validation_uses_exact_live_switch_input_names() -> None:
     }
 
 
+def test_the_engine_and_completeness_point_at_one_nested_setting_alike() -> None:
+    """A Source Switch input is one setting whichever check names it: the engine's
+    refusal of its empty source and the completeness gap of its lost connection."""
+    refused = validate_recovery_config(
+        NodeType.LIVE_SWITCH, {"input_scenario_map": {"gone": ""}}, input_names=["quotes"]
+    )
+    unconnected = validate_recovery_config(
+        NodeType.LIVE_SWITCH, {"input_scenario_map": {"gone": "live"}}, input_names=["quotes"]
+    )
+    assert [issue.path for issue in refused] == [issue.path for issue in unconnected]
+    assert [issue.path for issue in refused] == ["/input_scenario_map/gone"]
+
+
 @pytest.mark.parametrize(
     ("config", "path", "allowed"),
     [
@@ -149,11 +163,19 @@ def _engine_refusal(check: Callable[[], object]) -> str:
         ),
         pytest.param(
             NodeType.CONSTANT,
-            {"values": [{"name": "rate", "value": "nan"}]},
+            {"values": [{"name": "rate", "value": "1"}, {"name": "cap", "value": "inf"}]},
             lambda config: constant_frame(config["values"]),
-            "/values/0/value",
+            "/values/1/value",
             "invalid_value",
-            id="constant-value-no-column-holds",
+            id="constant-nested-value",
+        ),
+        pytest.param(
+            NodeType.LIVE_SWITCH,
+            {"input_scenario_map": {"quotes": ""}},
+            NODE_CONFIG_MODELS[NodeType.LIVE_SWITCH].check,
+            "/input_scenario_map/quotes",
+            "required",
+            id="source-switch-empty-source",
         ),
         pytest.param(
             NodeType.MODEL_SCORE,
@@ -655,3 +677,18 @@ def test_a_load_file_naming_catboost_is_an_unsupported_file_type() -> None:
         NodeType.EXTERNAL_FILE, {"path": "model.cbm", "file_type": "catboost"}
     )
     assert [(issue.path, issue.code) for issue in issues] == [("/file_type", "invalid_value")]
+
+
+def test_a_default_the_kept_settings_exclude_is_neither_filled_nor_reported() -> None:
+    """A Model Score that follows an alias gets the palette's other missing keys, not its
+    version, which the alias excludes."""
+    result = reconcile_config(
+        NodeType.MODEL_SCORE,
+        {"source_type": "registered", "registered_model": "motor_freq", "alias": "champion"},
+    )
+    assert result.config["alias"] == "champion"
+    assert "version" not in result.config
+    defaulted = {change.path for change in result.changes if change.outcome == "defaulted"}
+    assert "/version" not in defaulted
+    assert "/output_column" in defaulted
+    assert not [issue for issue in result.issues if issue.severity == "error"]

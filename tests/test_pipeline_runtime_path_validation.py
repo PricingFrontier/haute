@@ -837,3 +837,130 @@ def test_nfc_nfd_input_path_spelling_is_never_normalized(tmp_path: Path) -> None
         # Normalization-sensitive filesystem (ext4/NTFS): the NFD spelling
         # misses, and haute must NOT quietly resolve it to the NFC file.
         assert not resolved.exists()
+
+
+# ---------------------------------------------------------------------------
+# A path another checkout of the project reads otherwise
+# ---------------------------------------------------------------------------
+
+
+def _input_reading(path: str) -> PipelineGraph:
+    node = _config_node("quotes", "quotes")
+    return PipelineGraph(nodes=[node.with_config({**node.data.config, "path": path})], edges=[])
+
+
+def _carried_project(tmp_path: Path) -> Path:
+    data = tmp_path / "data" / "synthetic.csv"
+    data.parent.mkdir(parents=True)
+    data.write_text("x\n1\n", encoding="utf-8")
+    return data
+
+
+def test_validate_runtime_input_paths_names_the_node_whose_path_it_refuses() -> None:
+    """Every node's request checks the whole graph's paths: the refusal says whose it is."""
+    with pytest.raises(RequestRefusedError) as refused:
+        _validate_runtime_input_paths(_input_reading("../escape.csv"))
+
+    assert refused.value.status_code == 403
+    assert "Node 'quotes': Path '../escape.csv' resolves outside" in refused.value.detail
+
+
+def test_a_save_writes_nothing_with_an_absolute_path_in_a_submodel(tmp_path: Path) -> None:
+    """The save refuses before it writes, naming the node inside the submodel too."""
+    data = _carried_project(tmp_path)
+    graph = _module_graph("inputs", "modules/inputs.py")
+    inner = _config_node("rates", "rates")
+    inner = inner.with_config({**inner.data.config, "path": str(data)})
+    graph.submodels["inputs"].graph.nodes.append(inner)
+
+    with pytest.raises(RequestRefusedError) as refused:
+        SavePipelineService(tmp_path).save(_submodel_save_request(graph, project_root=tmp_path))
+
+    assert refused.value.status_code == 400
+    assert f"Data Input node 'rates' (path): Path {str(data)!r} is absolute" in (
+        refused.value.detail
+    )
+    assert "Write it from the project root: data/synthetic.csv." in refused.value.detail
+    assert "Nothing was saved." in refused.value.detail
+    assert not (tmp_path / "main.py").exists()
+    assert not (tmp_path / "config").exists()
+
+
+@pytest.mark.parametrize(
+    "written", [r"C:\Users\analyst\pricing\outputs\priced.parquet", "C:priced.parquet"]
+)
+def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_project(
+    tmp_path: Path, written: str
+) -> None:
+    """Joined to the project root on Linux and macOS, ``C:\\...`` would be a folder named
+    ``C:`` inside it; on Windows it is outside the project. A bare ``C:priced.parquet``
+    keeps its drive though the writer puts a bare name in ``outputs/``. Each is refused
+    everywhere."""
+    from haute.executor import resolve_data_output_path
+
+    config = {"output_type": "file", "format": "parquet", "path": written}
+    before = sorted(tmp_path.rglob("*"))
+
+    with pytest.raises(RuntimePathOutsideProjectError):
+        resolve_data_output_path(PipelineGraph(), config, project_root=tmp_path)
+
+    # Nothing named ``C:`` or ``outputs`` appeared in the project (on Windows ``C:`` joined
+    # to a folder names a drive, so the project's listing is the one test of every system).
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+@pytest.mark.parametrize(
+    ("config", "remedy"),
+    [
+        ({"format": "parquet", "path": "<absolute>"}, "root: outputs/priced.parquet."),
+        ({"format": "csv", "path": "data/Quotes"}, "Write data/quotes.csv."),
+        ({"format": "parquet", "path": "Priced"}, "Write outputs/priced.parquet."),
+        ({"format": "parquet", "path": "Outputs/new.parquet"}, "Write outputs/new.parquet."),
+        ({"format": "csv", "path": "C:priced.csv"}, "was written on Windows"),
+        ({"format": "csv", "path": "NUL.csv"}, "reserved device name 'NUL.csv'"),
+        ({"format": "parquet", "path": "outputs/priced.parquet"}, None),
+        ({"format": "parquet", "path": "exports/new.parquet"}, None),
+        ({"format": "database", "uri": "sqlite:///out.db"}, None),
+    ],
+    ids=[
+        "absolute",
+        "extension-added",
+        "bare-name",
+        "folder-case",
+        "drive-relative",
+        "device-name",
+        "as-on-disk",
+        "new-folder",
+        "database",
+    ],
+)
+def test_a_save_holds_the_file_a_data_output_writes_to_one_spelling(
+    tmp_path: Path, config: dict[str, object], remedy: str | None
+) -> None:
+    """A file Data Output is checked on the file its writer writes: a bare name in
+    ``outputs/`` and the format's extension added. A folder or file on disk in another
+    letter case is refused, since Windows and macOS write into it and Linux makes another;
+    a folder not there yet is the writer's to make. A database destination names no file."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "quotes.csv").write_text("x\n1\n", encoding="utf-8")
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "priced.parquet").write_bytes(b"")
+    if config.get("path") == "<absolute>":
+        config = {**config, "path": str(tmp_path / "outputs" / "priced.parquet")}
+    sink = GraphNode(
+        id="priced",
+        data=NodeData(
+            label="priced",
+            nodeType=NodeType.DATA_OUTPUT,
+            config={"output_type": "file", **config},
+        ),
+    )
+    svc = SavePipelineService(tmp_path)
+
+    if remedy is None:
+        svc._validate_portable_paths(PipelineGraph(nodes=[sink]), tmp_path / "main.py")
+        return
+    with pytest.raises(RequestRefusedError) as refusal:
+        svc._validate_portable_paths(PipelineGraph(nodes=[sink]), tmp_path / "main.py")
+    assert f"Data Output node 'priced' (path): Path {config['path']!r}" in refusal.value.detail
+    assert remedy in refusal.value.detail

@@ -3773,7 +3773,7 @@
           "type": "string"
         },
         "path": {
-          "description": "The file, relative to the project root or absolute.",
+          "description": "The file, written from the project root: a save refuses an absolute path.",
           "title": "Path",
           "type": "string"
         },
@@ -4245,7 +4245,7 @@
           "type": "string"
         },
         "path": {
-          "description": "The file written, relative to the project root or absolute.",
+          "description": "The file written, from the project root: a save refuses an absolute path.",
           "title": "Path",
           "type": "string"
         },

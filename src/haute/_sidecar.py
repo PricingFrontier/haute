@@ -85,14 +85,15 @@ class SidecarReadResult:
 
 
 def with_unfinished_steps(
-    nodes: list[GraphNode], unfinished: Any, placeholders: Collection[str] = frozenset()
+    nodes: list[GraphNode], unfinished: Any, placeholders: Collection[str]
 ) -> list[GraphNode]:
     """*nodes* with each stepped node saved with an unfinished step list given its steps
-    from the sidecar (READ-22, READ-44): one whose body is the placeholder, which loads
-    with no code and no steps. A node in *placeholders*, whose body the parse found to be
-    that placeholder, is marked ``steps_recorded``: its steps are its program. An entry
-    for any other node is ignored; the next save drops it. Every loader of a pipeline
-    file applies it, the editor's document included."""
+    from the sidecar (READ-22, READ-44): one in *placeholders*, whose body the parse found
+    to be the raising placeholder, which loads with no code and no steps. It is marked
+    ``steps_recorded``: its steps are its program. An entry for any other node is ignored,
+    a body written over the placeholder by hand included, even one that yields no code
+    (``return df``, ``...``); the next save drops it. Every loader of a pipeline file
+    applies it, the editor's document included."""
     if not isinstance(unfinished, dict) or not unfinished:
         return nodes
     given: list[GraphNode] = []
@@ -100,15 +101,13 @@ def with_unfinished_steps(
         steps = unfinished.get(node.id)
         config = node.data.config
         if (
-            node.data.nodeType in STEPS_FROM_CODE
+            node.id in placeholders
+            and node.data.nodeType in STEPS_FROM_CODE
             and isinstance(steps, list)
             and not config.get("code")
             and "steps" not in config
         ):
             recorded = node.with_config({**config, "steps": steps})
-            if node.id not in placeholders:
-                given.append(recorded)
-                continue
             editor = recorded.data.editor.recorded()
             given.append(
                 recorded.model_copy(
