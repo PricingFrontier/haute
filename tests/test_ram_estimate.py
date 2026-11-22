@@ -782,6 +782,49 @@ class TestWidthsFollowTheLineage:
         carried = estimate("df = src.select('description', pl.col('n'))")
         recomputed = estimate("df = src.select('description', (pl.col('n') + 1).alias('n'))")
         assert recomputed == carried
+        # A column filled from the wide one can hold its values, so it is sized as it.
+        filled = estimate(
+            "df = src.select(pl.col('n').cast(pl.String), 'description')"
+            ".fill_null(pl.col('description')).select(pl.col('n').alias('result'))"
+        )
+        assert filled >= 4097 * rows
+
+    def test_a_column_filled_from_a_wider_one_keeps_its_name_and_takes_its_width(
+        self, tmp_path: Path
+    ) -> None:
+        """EXE-08: ``fill_null`` from a column can give a column kept under its own name the
+        other column's values, so it is sized as the wider of the two."""
+        rows = self.ROWS
+        pl.DataFrame(
+            {
+                "short": [None if i % 2 else "abc" for i in range(rows)],
+                "description": [f"{i:04d}" + "x" * 4093 for i in range(rows)],
+            }
+        ).write_parquet(tmp_path / "quotes.parquet")
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / "quotes.parquet"),
+        )
+        filled = _make_transform_node(
+            node_id="t",
+            label="t",
+            config={"code": "df = src.fill_null(pl.col('description')).select('short')"},
+        )
+        distinct = _make_transform_node(node_id="u", label="u", config={"code": "df = t.unique()"})
+        graph = PipelineGraph(
+            nodes=[source, filled, distinct],
+            edges=[
+                GraphEdge(id="e1", source="src", target="t"),
+                GraphEdge(id="e2", source="t", target="u"),
+            ],
+        )
+
+        peak = _boundary_estimate(graph, "u").estimated_peak_bytes
+
+        assert peak is not None
+        assert peak >= 4097 * rows
 
     def test_a_nested_column_is_measured(self, tmp_path: Path) -> None:
         path = tmp_path / "nested.parquet"

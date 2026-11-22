@@ -3902,6 +3902,8 @@ def test_carried_proof_reports_the_input_an_input_mapping_alias_stands_for() -> 
         ("df = src.sort('d').rename({'n': 'k'})", "k", {"n"}),
         ("df = src.group_by('d').agg(pl.col('n').sum().alias('total'))", "total", {"n"}),
         ("df = src.with_columns(pl.col('d').alias('n'))", "n", {"d"}),
+        ("df = src.fill_null(pl.col('d')).select(pl.col('n').alias('r'))", "r", {"n", "d"}),
+        ("df = src.fill_null(0).select(pl.col('n').alias('r'))", "r", {"n"}),
     ],
 )
 def test_value_dependencies_name_only_what_a_column_is_computed_from(
@@ -3916,3 +3918,30 @@ def test_value_dependencies_name_only_what_a_column_is_computed_from(
     assert value.supported, value.reason
     assert value.demands_by_input["src"] == frozenset(reads)
     assert value.demands_by_input["src"] <= executed.demands_by_input["src"]
+
+
+def test_a_join_s_value_dependencies_leave_out_its_keys() -> None:
+    """EXE-08: a computed column after a join comes from its own side's columns; the join
+    keys are what executing the join reads, not what the column holds."""
+    inputs = {"left": frozenset({"n", "d"}), "right": frozenset({"d", "x"})}
+    code = (
+        "df = left.join(right, on='d', how='left', validate='m:1')"
+        ".select((pl.col('n') + 1).alias('n'), pl.col('x'))"
+    )
+
+    value = analyze_polars_lineage(code, inputs, {"n"}, value_dependencies=True)
+    executed = analyze_polars_lineage(code, inputs, {"n"})
+
+    assert value.supported, value.reason
+    assert dict(value.demands_by_input) == {"left": frozenset({"n"}), "right": frozenset()}
+    assert executed.demands_by_input["left"] >= {"n", "d"}
+
+
+def test_a_column_fill_null_fills_from_another_is_recomputed() -> None:
+    """A ``fill_null`` from a column can give every column that column's values."""
+    result = analyze_polars_lineage(
+        "df = src.fill_null(pl.col('d'))", {"src": frozenset({"n", "d"})}
+    )
+
+    assert result.supported, result.reason
+    assert result.recomputed_columns >= {"n", "d"}

@@ -3059,8 +3059,13 @@ def analyze_polars_lineage(
     demands_by_input: dict[str, set[str]] = {name: set() for name in normalised_inputs}
     for item in reversed(evaluated):
         operation = item.operation
-        if value_dependencies and operation.kind is not LineageOperationKind.JOIN:
-            demand = _value_demand_before(operation, demand, item.before_schema)
+        value_demand = (
+            _value_demand_before(operation, demand, item.before_schema)
+            if value_dependencies
+            else None
+        )
+        if value_demand is not None:
+            demand = value_demand
             continue
         if operation.kind is LineageOperationKind.SELECT:
             mapping = dict(operation.output_to_inputs)
@@ -3139,6 +3144,7 @@ def analyze_polars_lineage(
                 right_schema=set(right_schema),
                 how=operation.how or "",
                 suffix=operation.suffix or "",
+                value_only=value_dependencies,
             )
             if routed is None:
                 # The shared router refuses a suffixed name that is also a real
@@ -3194,13 +3200,16 @@ def analyze_polars_lineage(
 
 def _value_demand_before(
     operation: LineageOperation, demand: set[str], before_schema: frozenset[str] | None
-) -> set[str]:
-    """The columns before *operation* that the values of *demand* after it come from.
+) -> set[str] | None:
+    """The columns before *operation* that the values of *demand* after it come from, or
+    ``None`` to take the execution demand, a safe superset, for an operation not modelled
+    here (a join routes its own, ``value_only``).
 
     A computed output comes from what its own expression reads, an unpivot's value from
-    any of its ``on`` columns, a renamed column from its source, and a generated row
-    index from nothing. Everything else carries its columns' values unchanged: a filter,
-    a sort, a ``unique`` or a drop of nulls reads columns only to choose rows.
+    any of its ``on`` columns, a renamed column from its source, a ``fill_null`` value
+    from the column or from what fills it, and a generated row index from nothing. A
+    filter, a sort, a ``unique``, a drop of nulls, a drop and a row-only step carry their
+    columns' values unchanged: they read columns only to choose rows.
     """
     mapping = dict(operation.output_to_inputs)
     kind = operation.kind
@@ -3225,7 +3234,17 @@ def _value_demand_before(
         return (demand & set(operation.index_columns)) | (
             on if demand - set(operation.index_columns) else set()
         )
-    return demand
+    if kind is LineageOperationKind.READ_COLUMNS and operation.method == "fill_null":
+        return demand | set(operation.referenced_columns) if demand else demand
+    if (kind is LineageOperationKind.READ_COLUMNS and operation.method == "filter") or kind in {
+        LineageOperationKind.SORT,
+        LineageOperationKind.UNIQUE,
+        LineageOperationKind.DROP_NULLS,
+        LineageOperationKind.DROP,
+        LineageOperationKind.ROW_ONLY,
+    }:
+        return demand
+    return None
 
 
 def _recomputed_columns(evaluated: Sequence[_EvaluatedOperation]) -> frozenset[str]:
@@ -3240,6 +3259,13 @@ def _recomputed_columns(evaluated: Sequence[_EvaluatedOperation]) -> frozenset[s
         )
         names.update(target for _source, target in operation.renamed_columns)
         names.update(operation.produced_columns)
+        if (
+            operation.kind is LineageOperationKind.READ_COLUMNS
+            and operation.method == "fill_null"
+            and operation.referenced_columns
+        ):
+            # Filled from columns: every column may now hold another column's values.
+            names.update(item.after_schema or ())
     return frozenset(names)
 
 

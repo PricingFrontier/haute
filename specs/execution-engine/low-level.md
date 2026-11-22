@@ -203,11 +203,13 @@
   columns (`_resolve_code_node_columns`). A column it carries unchanged under an input
   column's name is sized as that column. A column the code computes
   (`ColumnLineageAnalysis.recomputed_columns`: a `select`/`with_columns` output that is not
-  the unchanged input column, an aggregate, a rename's target or a produced column), under
+  the unchanged input column, an aggregate, a rename's target, a produced column, or every
+  column after a `fill_null` from a column), under
   a new name or an input column's, and any other output (a join's suffixed column) is sized
   as the widest input column its value is computed from (`analyze_polars_lineage(...,
-  value_dependencies=True)`, which leaves out what a `select`'s other expressions, a filter
-  or a sort read to run), so
+  value_dependencies=True)`, which leaves out what a `select`'s other expressions, a filter,
+  a sort or a join's keys read to run, keeps what a `fill_null` fills from, and takes the
+  execution demand for an operation it does not model), so
   `pl.col("description").alias("risk_text")` is as wide as `description`, never as the
   `risk_text` it replaced. None is less than one 8-byte value, since a computed column can
   be wider than what it reads (a one-byte column cast to eight bytes). Only computed
