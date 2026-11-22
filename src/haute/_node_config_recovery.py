@@ -329,17 +329,40 @@ def _engine_issues(
         setting = _refused_setting(node_type, exc)
         if setting is None:
             return [_issue("", "invalid_group", message)]
-        code = "required" if config.get(setting) in (None, "") else "invalid_value"
-        return [_issue(_pointer("", setting), code, message)]
+        code = "required" if _setting_value(config, setting) in (None, "") else "invalid_value"
+        return [_issue(gap_pointer(setting), code, message)]
     return []
+
+
+def _setting_segments(path: str) -> list[str]:
+    """A config path's keys and indexes: ``values[1].value`` is ``values``, ``1``, ``value``."""
+    return [part for part in path.replace("]", "").replace("[", ".").split(".") if part]
+
+
+def _setting_key(path: str | None) -> str | None:
+    """The top-level config key a config path starts at."""
+    segments = _setting_segments(path or "")
+    return segments[0] if segments else None
+
+
+def _setting_value(config: Mapping[str, Any], path: str) -> Any:
+    """The value at config path *path*, or ``None`` where the path leads nowhere."""
+    value: Any = config
+    for segment in _setting_segments(path):
+        if isinstance(value, Mapping):
+            value = value.get(segment)
+        elif isinstance(value, list):
+            value = next((item for index, item in enumerate(value) if str(index) == segment), None)
+        else:
+            return None
+    return value
 
 
 def gap_pointer(path: str) -> str:
     """A config path (``input_scenario_map.quotes``, ``factors[0].banding``) as a JSON pointer."""
     pointer = ""
-    for part in path.replace("]", "").replace("[", ".").split("."):
-        if part:
-            pointer = _pointer(pointer, part)
+    for part in _setting_segments(path):
+        pointer = _pointer(pointer, part)
     return pointer
 
 
@@ -666,8 +689,7 @@ def _replace_refused_values(
         exc = refusal(candidate)
         if exc is None:
             return candidate
-        setting = _refused_setting(node_type, exc)
-        key = None if setting is None else setting.replace("[", ".").split(".")[0]
+        key = _setting_key(_refused_setting(node_type, exc))
         if key is None or key not in candidate:
             return candidate
         value = candidate[key]
@@ -734,8 +756,7 @@ def _isolate_refused_entries(
         exc = refusal({**candidate, key: alone})
         if exc is None:
             continue
-        setting = _refused_setting(node_type, exc)
-        if setting is not None and setting.replace("[", ".").split(".")[0] == key:
+        if _setting_key(_refused_setting(node_type, exc)) == key:
             refused[position] = exc
     if not refused:
         return None

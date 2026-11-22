@@ -90,7 +90,11 @@ carries as its remediation (for the file path, `from modules import rates`, then
   `constant_frame`, a Model Score's `parse_model_source` and an External File's
   `validate_external_file_config`. Every issue path is a JSON pointer into the config
   (`/how`, `/input_scenario_map/quotes`, `/factors/0`), and the empty pointer for a
-  whole-config issue; an engine refusal sits at the setting it names. Authored
+  whole-config issue; an engine refusal sits at the setting it names. A refusal and a
+  completeness gap that name one setting give it one pointer, a nested one included
+  (a Source Switch input's `input_scenario_map.quotes` is `/input_scenario_map/quotes`,
+  a Constant's `values[1].value` is `/values/1/value`), and a refusal's code is
+  `required` when the value there is absent or empty and `invalid_value` otherwise. Authored
   code in a declared code slot is retained when the function has its node type's current
   form: a declaration, or a hook (first parameter `df`; an External File's keyword-only
   `obj`). A body the decorator never calls — code on a type that carries none, or code

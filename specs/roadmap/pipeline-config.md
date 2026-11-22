@@ -4,12 +4,10 @@
 
 Node settings, their recovery and the project's `haute.toml`, as [the
 pipeline config specification](../pipeline-config/high-level.md) describes
-them: how an issue found in a settings file says where it is, and which
-paths a project saved on one system can open on another. `PCF-01` comes from
-the 9 November 2026 codebase review. It is read from the source; what the
-editor does with the two pointer forms was not traced. `PCF-05` comes from the plan's phase 4, which
-carried projects made on Windows to Linux on 12 November; the main session
-ran each case again on both systems.
+them: which paths a project saved on one system can open on another, and
+what recovery makes of a node's settings. `PCF-05` comes from the codebase
+review plan's phase 4, which carried projects made on Windows to Linux on
+12 November 2026; the main session ran each case again on both systems.
 
 `PCF-06` to `PCF-08` come from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
@@ -20,39 +18,12 @@ worker built each run and the main session ran each again on 14 November
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PCF-01 | Planned | P3 | A recovery issue points at a nested setting the same way whichever check found it. |
 | PCF-05 | Planned | P2 | A node's absolute path and a node's path in another letter case than its file are each refused or rewritten on Windows when saved and linted, instead of running there and failing on Linux. |
 | PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
 | PCF-07 | Planned | P3 | Recover settings rebuilds a Model Score that follows an alias, instead of refusing a version it added itself. |
 | PCF-08 | Planned | P2 | Reset node refuses to replace a settings file that a node inside a submodel shares. |
 
 ## Planned improvements
-
-### PCF-01 — One pointer form for a nested setting
-**Why:** Read from the source. Recovery reports each issue with a path into
-the node's settings. An issue from the completeness checks goes through
-`gap_pointer`, which splits a dotted setting into segments:
-`/input_scenario_map/quotes`. An issue the engine's own check raised is built
-with the whole dotted setting as one segment: `/input_scenario_map.quotes`.
-The same function decides whether the issue is a missing value or an invalid
-one by looking the dotted setting up as a single key, which is never present
-for a nested setting, so a nested issue is always reported as missing. The
-only nested setting an engine check names today is a Source Switch input
-mapped to an empty source, so the reach is one message in one editor.
-
-**Plan:** Build the engine issue's path with `gap_pointer` and walk the
-segments to decide its code.
-
-**Acceptance:** A Source Switch input mapped to an empty source is reported
-at `/input_scenario_map/<input>` with the invalid-value code, and a test
-holds the two routes to the same path for the same setting.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_node_config_recovery.py::_engine_issues`;
-`src/haute/_node_config_recovery.py::gap_pointer`;
-`src/haute/_node_config_models.py::_check_live_switch` raises with the
-dotted setting.
 
 ### PCF-05 — A path only the analyst's machine can open is said so when it is saved
 **Why:** Reproduced on 13 November 2026 by saving projects on Windows
