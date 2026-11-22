@@ -39,22 +39,29 @@ def normalise_edge_join_decorator_kwargs(kwargs: dict[str, Any]) -> dict[str, An
     return dict(kwargs)
 
 
+def decorator_value_written(key: str, value: object) -> bool:
+    """Whether a save writes the decorator keyword *key* holding *value*, for a node that
+    keeps its settings on its decorator (an Edge Join or a transform).
+
+    An empty value (``None``, ``""``, ``[]``) and an Edge Join's default suffix, which a
+    join reads for an absent one (READ-13), are the setting's absence: a save writes them
+    as no keyword, so the parse reads them as no setting, and parse, save and parse read
+    the same (CGEN-05).
+    """
+    if value is None or value == "" or value == []:
+        return False
+    return not (key == "suffix" and value == EDGE_JOIN_DEFAULT_SUFFIX)
+
+
 def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[str, Any]]:
     """The config's settings as decorator keywords, in a stable order."""
-    items: list[tuple[str, Any]] = []
     # Column metadata belongs to the node, rather than LazyFrame.join, but
     # must survive the same decorator round trip as the join settings.
-    for key in (*EDGE_JOIN_CONFIG_KEYS, *COLUMN_CONFIG_KEYS):
-        if key not in config:
-            continue
-        value = config[key]
-        if value is None or value == "" or value == []:
-            continue
-        if key == "suffix" and value == EDGE_JOIN_DEFAULT_SUFFIX:
-            # The default a join reads for an absent suffix (READ-13).
-            continue
-        items.append((key, value))
-    return items
+    return [
+        (key, config[key])
+        for key in (*EDGE_JOIN_CONFIG_KEYS, *COLUMN_CONFIG_KEYS)
+        if key in config and decorator_value_written(key, config[key])
+    ]
 
 
 def resolve_edge_join_role_indices(

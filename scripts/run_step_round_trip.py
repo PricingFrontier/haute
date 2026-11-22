@@ -49,7 +49,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from haute._polars_steps import PolarsStepError, render_node_steps  # noqa: E402
+from haute._polars_steps import (  # noqa: E402
+    PolarsStepError,
+    referenced_step_inputs,
+    render_node_steps,
+)
 from haute._polars_steps_lift import StepLiftError, lift_steps  # noqa: E402
 from haute._types import NodeType  # noqa: E402
 
@@ -154,7 +158,12 @@ def backend_read_backs(
         except PolarsStepError:
             return
         try:
-            read_backs.append({"node_type": node_type.value, "steps": lift_steps(node_type, code)})
+            read_backs.append(
+                {
+                    "node_type": node_type.value,
+                    "steps": lift_steps(node_type, code, inputs=referenced_step_inputs(steps)),
+                }
+            )
         except StepLiftError as exc:
             failures.append({"check": "backend read-back", "detail": str(exc), "example": steps})
 
@@ -187,7 +196,9 @@ def round_trips(
                 )
             continue
         try:
-            lifted = lift_steps(NodeType.POLARS, code)
+            lifted = lift_steps(
+                NodeType.POLARS, code, inputs=referenced_step_inputs(_numbered(program))
+            )
         except StepLiftError as exc:
             findings.append(
                 {

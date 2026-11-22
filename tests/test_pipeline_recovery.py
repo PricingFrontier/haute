@@ -153,6 +153,45 @@ def test_syntax_invalid_source_is_source_only_with_the_located_parse_error(
     assert document.capabilities.can_preview is False
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "\tdf = df.head(1)",  # a tab, as Notepad's Tab key leaves it
+        "     df = df.head(1)",  # a space too far: unexpected indent
+        "  df = df.head(1)",  # a space too few: unindent does not match
+        "df = df.head(1)",  # not indented: expected an indented block
+    ],
+)
+def test_a_mis_indented_line_is_a_syntax_error_at_its_line(tmp_path: Path, line: str) -> None:
+    """CGEN-08: Python gives no end, or -1, for an indentation error's span; the document
+    still carries the syntax error at its line, never an internal error."""
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("indented")\n\n\n'
+        "@pipeline.polars\n"
+        "def t(df):\n"
+        "    df = df.head(2)\n"
+        "    if df is not None:\n"
+        "        df = df.head(3)\n"
+        f"{line}\n"
+        "    return df\n"
+    )
+    with pytest.raises(SyntaxError) as python:
+        compile(source, "main.py", "exec")
+    pipeline_file = tmp_path / "main.py"
+    pipeline_file.write_text(source, encoding="utf-8")
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    assert document.load_status == "source_only"
+    [diagnostic] = document.diagnostics
+    assert diagnostic.code == "python_syntax_error"
+    assert diagnostic.incident_id is None
+    assert diagnostic.source_span is not None
+    assert diagnostic.source_span.start_line == python.value.lineno
+
+
 def test_a_source_that_is_not_utf8_is_source_only_and_its_save_is_refused(
     tmp_path: Path,
     client: TestClient,

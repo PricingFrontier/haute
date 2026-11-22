@@ -3385,6 +3385,13 @@
           "title": "Instance Name",
           "type": "string"
         },
+        "moved": {
+          "items": {
+            "$ref": "#/$defs/MovedNode"
+          },
+          "title": "Moved",
+          "type": "array"
+        },
         "owner_name": {
           "title": "Owner Name",
           "type": "string"
@@ -3408,7 +3415,8 @@
         "owner_name",
         "instance_name",
         "definition_id",
-        "source_revision"
+        "source_revision",
+        "moved"
       ],
       "title": "CreateNodeInstanceResponse",
       "type": "object"
@@ -3417,6 +3425,13 @@
       "properties": {
         "graph": {
           "$ref": "#/$defs/PipelineGraph"
+        },
+        "moved": {
+          "items": {
+            "$ref": "#/$defs/MovedNode"
+          },
+          "title": "Moved",
+          "type": "array"
         },
         "parent_file": {
           "default": "",
@@ -3446,7 +3461,8 @@
         "submodel_file",
         "parent_file",
         "source_revision",
-        "graph"
+        "graph",
+        "moved"
       ],
       "title": "CreateSubmodelResponse",
       "type": "object"
@@ -4538,6 +4554,13 @@
           "title": "Instance Id",
           "type": "string"
         },
+        "moved": {
+          "items": {
+            "$ref": "#/$defs/MovedNode"
+          },
+          "title": "Moved",
+          "type": "array"
+        },
         "source_revision": {
           "maxLength": 512,
           "minLength": 1,
@@ -4556,7 +4579,8 @@
         "graph",
         "source_revision",
         "instance_id",
-        "definition_id"
+        "definition_id",
+        "moved"
       ],
       "title": "DissolveSubmodelResponse",
       "type": "object"
@@ -15252,6 +15276,50 @@
       "title": "ModellingNodeData",
       "type": "object"
     },
+    "MovedNode": {
+      "additionalProperties": false,
+      "description": "A node a graph change moved: its scope and id in the request and in the answer.\n\nA scope is a submodel definition's id, ``None`` for the pipeline's own nodes. The editor\nfinds a moved node's saved baseline through it (codegen high-level, \"Which parts a\nrequest reads\").",
+      "properties": {
+        "from_node_id": {
+          "title": "From Node Id",
+          "type": "string"
+        },
+        "from_submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "From Submodel"
+        },
+        "to_node_id": {
+          "title": "To Node Id",
+          "type": "string"
+        },
+        "to_submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "To Submodel"
+        }
+      },
+      "required": [
+        "from_submodel",
+        "from_node_id",
+        "to_submodel",
+        "to_node_id"
+      ],
+      "title": "MovedNode",
+      "type": "object"
+    },
     "NodeAddressEntry": {
       "additionalProperties": false,
       "description": "The address of a key an answer names, with the node's authored label.",
@@ -15995,7 +16063,7 @@
     },
     "NodeEditorState": {
       "additionalProperties": false,
-      "description": "What the server knows about a node for its editor, carried beside the config.\n\nNone of it is a setting: it is never persisted, hashed or validated as config.\n``steps_error`` is derived from the node's ``steps`` whenever its data is\nbuilt; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is\nthe parse's finding. A request may carry the field back, as a transform of the\ngraph echoes it, but a save never reads the finding from it: it reparses the\nfile on disk.\n\n``steps_recorded`` is a finding of a parse on the server, never sent or read\nfrom a request: the node's body is the placeholder an unfinished step list is\nsaved with, and its steps are the list its ``.haute.json`` records.\n\n``saved_code`` (or, for a node saved with unfinished steps, ``saved_steps``) and\n``saved_settings`` are the saved form of the node's steps and of its settings, in a\nform a browser keeps exactly (``haute._edited_parts``,\nCGEN-13): an editor document gives them for each of its nodes, and a request that\ncarries the document sends them back for each part its editor did not edit. The\nrequest reads them before the node is built, so a built node never carries one.",
+      "description": "What the server knows about a node for its editor, carried beside the config.\n\nNone of it is a setting: it is never persisted, hashed or validated as config.\n``steps_error`` is derived from the node's ``steps`` whenever its data is\nbuilt; ``steps_discarded`` (why the parse dropped a stepped surface's steps) is\nthe parse's finding. A request may carry the field back, as a transform of the\ngraph echoes it, but a save never reads the finding from it: it reparses the\nfile on disk.\n\n``steps_recorded`` is a finding of a parse on the server, never sent or read\nfrom a request: the node's body is the placeholder an unfinished step list is\nsaved with, and its steps are the list its ``.haute.json`` records.\n\n``saved_code`` (or, for a node saved with unfinished steps, ``saved_steps``) and\n``saved_settings`` are the saved form of the node's steps and of its settings, in a\nform a browser keeps exactly (``haute._edited_parts``,\nCGEN-13): an editor document gives them for each of its nodes, and a request that\ncarries the document sends them back for each part its editor did not edit. The\nrequest reads them before the node is built, so a built node never carries one.\nEdited settings are sent with ``settings_edited_from``, the saved settings the edit began\nfrom, which keeps the spelling of each number the edit left as it was (CGEN-09).",
       "properties": {
         "saved_code": {
           "title": "Saved Code",
@@ -16007,6 +16075,10 @@
         },
         "saved_steps": {
           "title": "Saved Steps",
+          "type": "string"
+        },
+        "settings_edited_from": {
+          "title": "Settings Edited From",
           "type": "string"
         },
         "steps_discarded": {

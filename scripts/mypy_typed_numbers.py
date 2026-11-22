@@ -58,6 +58,18 @@ NOT_TYPED: dict[str, str] = {
     "haute._env.int_env::int(raw)": (
         "an environment variable, set by whoever runs Haute, not typed into a field"
     ),
+    "haute._source_layout.number_spelling::int(mantissa)": (
+        "a step's number as Python source spells it (its ``text``), already held to Python's "
+        "literal grammar by ``_NUMBER_TEXT``: the editor reads what is typed with the typed reader"
+    ),
+    "haute._source_layout.number_spelling::float(spelled)": (
+        "a step's number as Python source spells it (its ``text``), already held to Python's "
+        "literal grammar by ``_NUMBER_TEXT``: the editor reads what is typed with the typed reader"
+    ),
+    "haute._polars_steps._Renderer._spelling::float(spelling)": (
+        "a step's number as Python source spells it (its ``text``), already held to Python's "
+        "literal grammar by ``_NUMBER_TEXT``: the editor reads what is typed with the typed reader"
+    ),
     "haute._env.optional_int_env::int(raw)": (
         "an environment variable, set by whoever runs Haute, not typed into a field"
     ),

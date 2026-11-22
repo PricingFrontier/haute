@@ -27,12 +27,14 @@ from haute.routes._helpers import parse_pipeline_to_graph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import DocumentRequest, SavePipelineRequest
 from tests._unedited_parts import (
+    RATED,
     REPO,
     SPELLED,
     BrowserDocument,
     as_javascript_holds_it,
     examples,
     files,
+    follow_moves,
     make_project,
     node_at,
     pipeline_file,
@@ -62,6 +64,339 @@ def test_a_save_of_the_untouched_document_leaves_every_file_as_it_was(
     _browser_save(BrowserDocument(root, pipeline_file(root)))
 
     assert files(root) == before
+
+
+@pytest.mark.parametrize("source", [None, *examples()])
+def test_settings_read_from_a_browser_keep_every_number_the_edit_left(
+    tmp_path: Path, source: Path | None
+) -> None:
+    """CGEN-09: every node's settings read from the request after a browser held them, each
+    sent with the saved settings its edit began from, are written as each file holds them."""
+    root = make_project(tmp_path, source)
+    before = files(root)
+    document = BrowserDocument(root, pipeline_file(root))
+    sent = document.request_graph()
+    read = 0
+    for _ref, node in scoped(sent):
+        editor = node["data"]["editor"]
+        if "saved_settings" in editor:
+            editor["settings_edited_from"] = editor.pop("saved_settings")
+            read += 1
+    assert read
+
+    _browser_save(document, sent)
+
+    assert files(root) == before
+
+
+def _rated_file(root: Path) -> str:
+    return (root / "config" / "rating_step" / "rated.json").read_text(encoding="utf-8")
+
+
+def test_a_rating_step_whose_output_column_is_renamed_keeps_its_other_numbers(
+    tmp_path: Path,
+) -> None:
+    """CGEN-09: the rename is the edit; the default, the base value and the rows a browser
+    holds as whole numbers keep the spelling their file gave them."""
+    root = make_project(tmp_path)
+    assert '"default_value": 1.0' in _rated_file(root)
+    document = BrowserDocument(root, root / "main.py")
+    rated = node_at(document.live, (None, "rated"))["data"]["config"]
+    rated["combined_outputs"][0]["output_column"] = "rated_premium"
+    sent = document.request_graph()
+    editor = node_at(sent, (None, "rated"))["data"]["editor"]
+    assert "saved_settings" not in editor and "settings_edited_from" in editor
+
+    _browser_save(document, sent)
+
+    written = json.loads(_rated_file(root))
+    assert written["combined_outputs"][0] == {
+        **RATED["combined_outputs"][0],
+        "output_column": "rated_premium",
+    }
+    assert '"default_value": 1.0' in _rated_file(root)
+    assert '"base_value": 100.0' in _rated_file(root)
+    assert written["tables"] == RATED["tables"]
+    assert [type(value) for _, value in written["tables"][0]["rows"]] == [float, float]
+
+
+def test_two_rating_tables_swapped_keep_their_numbers(tmp_path: Path) -> None:
+    """Codex r4: a table moved is the saved table, its whole-number decimals and a factor
+    level past 2**53 spelt as its file spells them."""
+    root = make_project(tmp_path)
+    tables = [
+        {**RATED["tables"][0], "output_column": "band_factor"},
+        {
+            "factors": ["id"],
+            "output_column": "id_factor",
+            "default_value": 1.0,
+            "rows": [[9007199254740993, 2.0]],
+        },
+    ]
+    # Spelled from tmp_path, the project's root (`make_project`), for the sandbox lint.
+    rated = tmp_path / "project" / "config" / "rating_step" / "rated.json"
+    assert rated.parent.parent.parent == root
+    rated.write_text(json.dumps({**RATED, "tables": tables}), encoding="utf-8")
+    document = BrowserDocument(root, root / "main.py")
+    _browser_save(document)
+    before = _rated_file(root)
+    assert "9007199254740993" in before
+    document = BrowserDocument(root, root / "main.py")
+    config = node_at(document.live, (None, "rated"))["data"]["config"]
+    config["tables"] = list(reversed(config["tables"]))
+
+    _browser_save(document)
+
+    assert json.loads(_rated_file(root))["tables"] == list(reversed(tables))
+    assert "9007199254740993" in _rated_file(root)
+    assert '"default_value": 1.0' in _rated_file(root)
+
+
+def _rating_defaults(root: Path) -> list[object]:
+    """Every Rating Step table's default, as each settings file holds it."""
+    found: list[object] = []
+    for path in sorted((root / "config" / "rating_step").glob("*.json")):
+        found.extend(
+            table["default_value"] for table in json.loads(path.read_text("utf-8"))["tables"]
+        )
+    return found
+
+
+def _graph_change(
+    client: Any, document: BrowserDocument, change: str, graph: dict[str, Any]
+) -> dict[str, Any]:
+    """The answer to *change* of *graph*, the document as the editor holds it."""
+    common = {
+        "source_file": "main.py",
+        "base_revision": current_source_revision(document.py_path, document.root),
+        "pipeline_name": "main",
+        "graph": graph,
+    }
+    if change == "create":
+        body = {**common, "name": "grouped", "node_ids": ["rated", "explored"]}
+        answer = client.post("/api/submodel/create", json=body)
+    elif change == "dissolve":
+        answer = client.post("/api/submodel/dissolve", json={**common, "instance_id": "grouped"})
+    else:
+        answer = client.post("/api/submodel/instance", json={**common, "node_id": "rated"})
+    assert answer.status_code == 200, answer.text
+    return answer.json()
+
+
+def test_each_graph_change_names_the_nodes_it_moved(client: Any, tmp_path: Path) -> None:
+    """The editor finds a moved node's saved baseline through it: Dissolve and Create
+    Instance give the node a new id as well as a new place."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+
+    created = _graph_change(client, document, "create", document.live)
+    dissolved = _graph_change(client, document, "dissolve", created["graph"])
+    wrapped = _graph_change(client, document, "instance", document.live)
+
+    assert created["moved"] == [
+        {"from_submodel": None, "from_node_id": name, "to_submodel": "grouped", "to_node_id": name}
+        for name in ("rated", "explored")
+    ]
+    assert sorted(
+        (move["from_submodel"], move["from_node_id"], move["to_node_id"])
+        for move in dissolved["moved"]
+    ) == [("grouped", name, f"submodel_runtime/grouped/{name}") for name in ("explored", "rated")]
+    (move,) = wrapped["moved"]
+    assert (move["from_submodel"], move["from_node_id"]) == (None, "rated")
+    assert move["to_submodel"] == wrapped["definition_id"]
+    held = dict(scoped(wrapped["graph"]))
+    assert (move["to_submodel"], move["to_node_id"]) in held
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param(("create",), id="grouped"),
+        pytest.param(("create", "dissolve"), id="grouped-then-dissolved"),
+        pytest.param(("instance",), id="made-an-instance"),
+    ],
+)
+def test_a_node_a_graph_change_moved_keeps_its_settings_numbers(
+    client: Any, tmp_path: Path, changes: tuple[str, ...]
+) -> None:
+    """Codex r4: a moved node is found in the saved baseline through the place it came
+    from, so its settings keep their saved form and the save writes `1.0`, not `1`."""
+    root = make_project(tmp_path)
+    assert _rating_defaults(root) == [1.0]
+    document = BrowserDocument(root, root / "main.py")
+    graph, moved_from = document.live, {}
+    for change in changes:
+        answer = _graph_change(client, document, change, graph)
+        graph, moved_from = answer["graph"], follow_moves(moved_from, answer["moved"])
+
+    _browser_save(document, document.request_graph(graph, moved_from=moved_from))
+
+    defaults = _rating_defaults(root)
+    assert defaults and all(type(value) is float for value in defaults), defaults
+
+
+def test_a_moved_node_saved_then_edited_keeps_its_other_numbers(
+    client: Any, tmp_path: Path
+) -> None:
+    """After a save the baseline holds the node where it now is, keeping its identity."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    answer = _graph_change(client, document, "create", document.live)
+    moved_from = follow_moves({}, answer["moved"])
+    _browser_save(document, document.request_graph(answer["graph"], moved_from=moved_from))
+    assert _rating_defaults(root) == [1.0]
+
+    saved = BrowserDocument(root, root / "main.py", identities=moved_from)
+    rated = node_at(saved.live, ("grouped", "rated"))["data"]["config"]
+    rated["combined_outputs"][0]["output_column"] = "rated_premium"
+    _browser_save(saved, saved.request_graph(saved.live, moved_from=moved_from))
+
+    assert _rating_defaults(root) == [1.0]
+    assert type(_rating_defaults(root)[0]) is float
+    assert '"output_column": "rated_premium"' in "".join(
+        path.read_text("utf-8") for path in (root / "config" / "rating_step").glob("*.json")
+    )
+
+
+@pytest.mark.parametrize("then", ["dissolve", "undo"])
+def test_a_moved_node_saved_then_moved_back_keeps_its_numbers(
+    client: Any, tmp_path: Path, then: str
+) -> None:
+    """Codex r5: grouped and saved, then dissolved, or the grouping undone, and saved again.
+    The node keeps the identity the load gave it, and so does the baseline the first save
+    made, so it is found by it whatever its place."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    answer = _graph_change(client, document, "create", document.live)
+    moved_from = follow_moves({}, answer["moved"])
+    _browser_save(document, document.request_graph(answer["graph"], moved_from=moved_from))
+    saved = BrowserDocument(root, root / "main.py", identities=moved_from)
+
+    if then == "dissolve":
+        answer = _graph_change(client, saved, "dissolve", saved.live)
+        graph, moved_from = answer["graph"], follow_moves(moved_from, answer["moved"])
+    else:
+        # Undo restores the graph as it stood before the grouping, its nodes where they were.
+        graph, moved_from = document.live, {}
+    _browser_save(saved, saved.request_graph(graph, moved_from=moved_from))
+
+    defaults = _rating_defaults(root)
+    assert defaults and all(type(value) is float for value in defaults), defaults
+
+
+def test_without_the_settings_an_edit_began_from_the_browsers_numbers_are_written(
+    tmp_path: Path,
+) -> None:
+    """The control: the same edit read from the browser alone writes its whole numbers."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    rated = node_at(document.live, (None, "rated"))["data"]["config"]
+    rated["combined_outputs"][0]["output_column"] = "rated_premium"
+    sent = document.request_graph()
+    del node_at(sent, (None, "rated"))["data"]["editor"]["settings_edited_from"]
+
+    _browser_save(document, sent)
+
+    assert type(json.loads(_rated_file(root))["tables"][0]["default_value"]) is int
+
+
+@pytest.mark.parametrize(
+    ("sent", "saved", "read"),
+    [
+        pytest.param(1, 1.0, 1.0, id="a-whole-decimal"),
+        pytest.param(9007199254740992, 9007199254740993, 9007199254740993, id="a-long-integer"),
+        pytest.param(0, -0.0, -0.0, id="negative-zero"),
+        pytest.param(1e20, 1e20, 1e20, id="an-exponent"),
+        pytest.param(2, 1.0, 2, id="a-changed-number"),
+        pytest.param(1.5, 1.5, 1.5, id="a-fraction"),
+        pytest.param(1, True, 1, id="a-number-is-no-boolean"),
+        pytest.param(True, 1, True, id="a-boolean-is-no-number"),
+        pytest.param("1.0", 1.0, "1.0", id="text-is-no-number"),
+        pytest.param(
+            {"a": 1, "b": 2, "new": 3},
+            {"a": 1.0, "b": 2.5, "old": 4.0},
+            {"a": 1.0, "b": 2, "new": 3},
+            id="an-object-by-key",
+        ),
+        pytest.param(
+            [["new", 1], ["young", 1.2], ["experienced", 1]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["new", 1], ["young", 1.2], ["experienced", 1.0]],
+            id="a-row-added-above",
+        ),
+        pytest.param(
+            [["experienced", 1]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["experienced", 1.0]],
+            id="a-row-removed",
+        ),
+        pytest.param(
+            [["experienced", 1], ["young", 1.2]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["experienced", 1.0], ["young", 1.2]],
+            id="rows-moved",
+        ),
+        pytest.param(
+            [["experienced", 1], ["young", 3]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["experienced", 1.0], ["young", 3]],
+            id="a-row-moved-and-another-changed",
+        ),
+        pytest.param(
+            [["young", 3], ["experienced", 1]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["young", 3], ["experienced", 1.0]],
+            id="a-row-changed",
+        ),
+        pytest.param(
+            [{"output_column": "renamed", "base_value": 100}],
+            [{"output_column": "rated_result", "base_value": 100.0}],
+            [{"output_column": "renamed", "base_value": 100.0}],
+            id="a-changed-element-walked-against-the-one-it-replaced",
+        ),
+    ],
+)
+def test_a_number_the_edit_left_is_spelt_as_the_settings_it_began_from(
+    sent: Any, saved: Any, read: Any
+) -> None:
+    from haute._edited_parts import spelled_as
+
+    got = spelled_as(sent, saved)
+    assert json.dumps(got) == json.dumps(read)
+    assert type(got) is type(read)
+
+
+def test_an_edit_carries_one_form_of_its_settings() -> None:
+    """Saved settings say the settings were not edited; the settings an edit began from say
+    they were. Both, or either not an object of settings, is refused."""
+    from haute._edited_parts import config_as_read
+
+    with pytest.raises(ValueError, match="both saved settings and the settings an edit"):
+        config_as_read(
+            "polars",
+            {"code": "x"},
+            saved_code=None,
+            saved_settings="{}",
+            settings_edited_from="{}",
+            node="'n'",
+        )
+    with pytest.raises(ValueError, match="settings its edit began from of node 'n' are not"):
+        config_as_read(
+            "polars",
+            {"code": "x"},
+            saved_code=None,
+            saved_settings=None,
+            settings_edited_from="[]",
+            node="'n'",
+        )
+    assert config_as_read(
+        "ratingStep",
+        {"default": 1, "name": "x"},
+        saved_code=None,
+        saved_settings=None,
+        settings_edited_from='{"default": 1.0, "name": "y"}',
+        node="'n'",
+    ) == {"default": 1.0, "name": "x"}
 
 
 def test_the_hand_written_file_holds_values_the_browser_changes(tmp_path: Path) -> None:
@@ -149,8 +484,8 @@ def test_an_edited_node_is_written_from_its_steps_and_no_other_node_is(tmp_path:
 
     saved = (root / "main.py").read_text(encoding="utf-8")
     assert "df = df.head(5)" in saved
-    # The edited node is rendered, and with it its whole-number decimal: that is CGEN-09's.
-    assert 'pl.lit(1).alias("relativity")' in saved
+    # The edited steps are rendered, each number as it was written (CGEN-09).
+    assert 'pl.lit(1.0).alias("relativity")' in saved
     for untouched in SPELLED[1:]:
         assert untouched in saved
     assert "    one_id = 365\n" in saved
@@ -453,13 +788,34 @@ def test_a_scoped_save_keeps_an_unedited_nodes_settings_file(tmp_path: Path) -> 
     assert (tmp_path / "b.json").read_bytes() == settings
 
 
+#: The record a hand edit left behind: the steps of the code, lifted as if the node read no
+#: input, so it renders as the code does but binds a variable named after the node's input.
+_RECORD_WITHOUT_INPUTS = [
+    {"id": "source-1", "kind": "source", "input": "source_a"},
+    {
+        "id": "variable-2",
+        "kind": "variable",
+        "name": "source_a",
+        "value": {"kind": "literal", "type": "number", "value": 365},
+    },
+    {
+        "id": "with_column-3",
+        "kind": "with_column",
+        "name": "years",
+        "expr": {
+            "type": "binary",
+            "left": {"kind": "column", "name": "days"},
+            "op": "/",
+            "right": {"kind": "variable", "name": "source_a"},
+        },
+    },
+]
+
+
 def test_a_scoped_save_never_reads_a_record_a_hand_edit_left_behind(tmp_path: Path) -> None:
     """Working code written by hand over the placeholder leaves the record of its unfinished
     steps in ``.haute.json``; the load ignores it, and so does a scoped save of the node with
     nothing edited, even when the record renders as the code does without the node's inputs."""
-    from haute._polars_steps_lift import lift_steps
-    from haute._types import NodeType
-
     code = "\n".join(
         [
             "df = source_a",
@@ -472,7 +828,7 @@ def test_a_scoped_save_never_reads_a_record_a_hand_edit_left_behind(tmp_path: Pa
         tmp_path,
         "@pipeline.polars\n"
         f"def transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n{body}    return df\n",
-        {"unfinished_steps": {"transform": lift_steps(NodeType.POLARS, code)}},
+        {"unfinished_steps": {"transform": _RECORD_WITHOUT_INPUTS}},
     )
     target = next(node for node in document.nodes if node.authored_id == "transform")
 

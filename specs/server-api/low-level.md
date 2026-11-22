@@ -364,7 +364,9 @@ identity request. Before any node is built, its wrap validator reads each node's
 (`haute._edited_parts.graph_as_read`, [codegen](../codegen/high-level.md), "Which parts a
 request reads"): a node whose `editor.saved_code` is set is built from that code with its
 step list taken off, one whose `editor.saved_steps` is set from that list, one whose
-`editor.saved_settings` is set from those settings, and the saved forms are taken off the
+`editor.saved_settings` is set from those settings, one whose `editor.settings_edited_from`
+is set from the settings it carries, each number spelt as that form spells it where a browser
+holds the two alike (`haute._edited_parts.spelled_as`), and the saved forms are taken off the
 node's editor state; a malformed saved form, or one of the steps on a node holding no step
 list, is a 422. `edited_steps` and
 `edited_settings` are the nodes whose steps, and whose settings, were read from the request;
@@ -1834,7 +1836,9 @@ one node as a document request reads each of its nodes (`haute._edited_parts.con
 steps not read, or its file's record of unfinished steps while that code is the code the
 record loads as; `saved_steps`, sent in its place for a node saved with unfinished steps,
 is the list it is written from; `saved_settings`, sent when its settings were not edited, are the settings
-it is written from; without one, that part is read from `config`. A saved code for a node
+it is written from; `settings_edited_from`, sent in its place when they were, keeps the
+spelling of each number in `config` that the edit left as it was; without either, that part
+is read from `config`. A saved code for a node
 holding no step list, or saved settings that are not an object of settings, is a 422
 `node_saved_form_invalid` ([codegen](../codegen/high-level.md), "Which parts a request
 reads").

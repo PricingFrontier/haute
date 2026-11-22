@@ -36,6 +36,7 @@ from functools import partial
 from typing import Any, Literal
 
 from haute._code_extraction import normalise_user_code
+from haute._logging import get_logger
 from haute._polars_steps import (
     _OPERAND_ARGUMENT_LITERALS,
     _STRING_OPERATORS,
@@ -45,9 +46,14 @@ from haute._polars_steps import (
     FUNCTIONS,
     LITERAL_TYPES,
     PolarsStepError,
+    RenderedSteps,
     _code_bound_names,
     _decimal_text,
-    render_node_steps,
+    number_rendering,
+    number_spelling,
+    render_polars_steps,
+    spelled_number,
+    step_input_names,
     stepped_surface_for,
 )
 from haute._types import GLOBAL_CONSTANTS_NAME, NodeType
@@ -55,6 +61,8 @@ from haute._types import GLOBAL_CONSTANTS_NAME, NodeType
 __all__ = ["StepLiftError", "canonical_steps", "lift_steps"]
 
 Step = dict[str, Any]
+
+logger = get_logger(component="parser.polars_steps_lift")
 
 
 class StepLiftError(ValueError):
@@ -70,18 +78,23 @@ class _NoMatchError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def lift_steps(node_type: NodeType, code: str) -> list[Step]:
-    """Rebuild the steps of a stepped *node_type* from *code*, its body.
+def lift_steps(node_type: NodeType, code: str, *, inputs: Sequence[str]) -> list[Step]:
+    """Rebuild the steps of a stepped *node_type* from *code*, its body, whose node's
+    *inputs* are the names of its incoming edges (``step_input_names`` keeps those its
+    surface reads).
 
     Each statement a step renders becomes that step, keeping the comment above
     it; each run of other statements, with the comments and blank lines among
-    them, becomes one ``free_code`` step. The result renders to exactly *code*
-    without its trailing newlines, or :class:`StepLiftError` is raised.
+    them, becomes one ``free_code`` step. Each trial renders against the node's
+    inputs, as every later render does, so a statement such a render refuses (a
+    variable named after an input) stays code (CGEN-10). The result renders to
+    exactly *code* without its trailing newlines, or :class:`StepLiftError` is raised.
     """
     body = code.rstrip("\n")
-    steps = _assemble(node_type, _units(body), partial(_recognised, _Reader()))
+    names = step_input_names(node_type, inputs)
+    steps = _assemble(node_type, _units(body), partial(_recognised, _Reader()), names)
     try:
-        rendered = render_node_steps(node_type, steps).code
+        rendered = _render(node_type, steps, names).code
     except PolarsStepError as exc:
         raise StepLiftError(f"The code does not rebuild as steps: {exc}") from None
     if rendered != body:
@@ -89,8 +102,9 @@ def lift_steps(node_type: NodeType, code: str) -> list[Step]:
     return steps
 
 
-def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
-    """The canonical form of a stepped *node_type*'s *steps*: what their code rebuilds as.
+def canonical_steps(node_type: NodeType, steps: object, *, inputs: Sequence[str]) -> list[Step]:
+    """The canonical form of a stepped *node_type*'s *steps*: what their code rebuilds as,
+    for a node whose incoming edges are named *inputs*, as :func:`lift_steps` takes them.
 
     A structured step's canonical form comes from the rules the specification
     records, not from reading its code back; the rendering only settles which
@@ -99,7 +113,8 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
     statements are read as :func:`lift_steps` reads them. Invalid steps raise
     :class:`~haute._polars_steps.PolarsStepError`.
     """
-    rendered = render_node_steps(node_type, steps)
+    names = step_input_names(node_type, inputs)
+    rendered = _render(node_type, steps, names)
     assert isinstance(steps, list)
     if stepped_surface_for(node_type).start == "frame":
         # A frame surface's body is read through extraction's finaliser, which takes the
@@ -108,7 +123,7 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
         read = normalise_user_code(rendered.code, kind="polars")
         if read != rendered.code.strip():
             try:
-                return lift_steps(node_type, read)
+                return lift_steps(node_type, read, inputs=inputs)
             except StepLiftError:
                 pass
     owner: dict[int, Mapping[str, Any]] = {}
@@ -124,7 +139,12 @@ def canonical_steps(node_type: NodeType, steps: object) -> list[Step]:
         normal = _with_comment(_normal_step(step), unit)
         return normal if context.rendering(normal) == unit.text else None
 
-    return _assemble(node_type, _units(rendered.code), choose)
+    return _assemble(node_type, _units(rendered.code), choose, names)
+
+
+def _render(node_type: NodeType, steps: object, names: Sequence[str]) -> RenderedSteps:
+    """*steps* rendered for *node_type* against its eligible input *names*."""
+    return render_polars_steps(steps, names, start=stepped_surface_for(node_type).start)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +192,7 @@ def _units(code: str) -> tuple[list[_Unit], list[str]]:
     except SyntaxError as exc:
         message = f"The code is not valid Python: {exc.msg} (line {exc.lineno})."
         raise StepLiftError(message) from None
+    _keep_number_spellings(tree, code)
     lines = code.split("\n") if code else []
     spans: list[tuple[int, int, list[ast.stmt]]] = []
     for statement in tree.body:
@@ -190,6 +211,29 @@ def _units(code: str) -> tuple[list[_Unit], list[str]]:
         units.append(_Unit(start, tuple(above), tuple(lines[start - 1 : end]), tuple(nodes)))
         cursor = end + 1
     return units, _trivia(lines[cursor - 1 :])
+
+
+#: The attribute a number's syntax node keeps its source text in (:func:`_spelling`).
+_SPELLING = "_haute_spelling"
+
+
+def _keep_number_spellings(tree: ast.Module, code: str) -> None:
+    """Give each number literal in *tree*, a negated one too, the text *code* writes it as,
+    which its step keeps when a browser would write it otherwise (CGEN-09)."""
+    for node in ast.walk(tree):
+        number = node.operand if isinstance(node, ast.UnaryOp) else node
+        if (
+            isinstance(number, ast.Constant)
+            and type(number.value) in (int, float)
+            and (node is number or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub))
+        ):
+            setattr(node, _SPELLING, ast.get_source_segment(code, node))
+
+
+def _spelling(node: ast.AST) -> str | None:
+    """The source text of the number literal *node*, as :func:`_keep_number_spellings` kept it."""
+    text = getattr(node, _SPELLING, None)
+    return text if isinstance(text, str) else None
 
 
 def _trivia(lines: Sequence[str]) -> list[str]:
@@ -365,7 +409,7 @@ def _bare_literal(node: ast.AST) -> Step:
     if isinstance(value, bool):
         return _literal("boolean", value)
     if isinstance(value, int | float):
-        return _literal("number", value)
+        return spelled_number(value, _spelling(node))
     if isinstance(value, str):
         return _literal("text", value)
     raise _NoMatchError
@@ -427,13 +471,18 @@ def _decimal_value(text: str) -> int | float:
     """The number a decimal membership value's text renders from.
 
     A whole number reads as an integer, unless only a float renders its text
-    (``-0``); any other text reads as a float.
+    (``-0``); any other text reads as a float. Text no number's exact decimal is
+    (``1.50``) reads as its number, and its step keeps the text (CGEN-09). Text
+    that is not a number is no step's (CGEN-02).
     """
-    choices: list[int | float] = [float(text)] if "." in text else [int(text), float(text)]
+    try:
+        choices: list[int | float] = [float(text)] if "." in text else [int(text), float(text)]
+    except ValueError:
+        raise _NoMatchError from None
     for choice in choices:
         if _decimal_text(choice) == text:
             return choice
-    raise _NoMatchError
+    return choices[0]
 
 
 def _unify(pattern: ast.AST, node: ast.AST, bound: dict[str, ast.AST | str]) -> bool:
@@ -914,14 +963,19 @@ class _Reader:
             (kind,) = kinds
             if kind in ("integer", "float"):
                 condition["number_type"] = kind
-                kind = "number"
+                condition["values"] = [
+                    spelled_number(_number(item), _spelling(item), kind) for item in members.elts
+                ]
+                return condition
             condition["values"] = [_literal(kind, value) for value in values]
             return condition
         series = _only(_method(members, "implode")).receiver
         if _is_method(series, "to_decimal"):
             parse = _only(_namespace(series, "to_decimal", "str"), 0, ("scale",))
             texts = _texts(_only(_pl(parse.receiver, "Series"), 1).args[0])
-            condition["values"] = [_literal("number", _decimal_value(text)) for text in texts]
+            condition["values"] = [
+                spelled_number(_decimal_value(text), text, "decimal") for text in texts
+            ]
             condition["number_type"] = "decimal"
             return condition
         parse = _only(_namespace(series, "to_date", "str"))
@@ -1145,6 +1199,8 @@ class _Context:
 
     node_type: NodeType
     input_mode: bool
+    #: The input names the node's steps may read, which a trial renders against.
+    inputs: Sequence[str]
     position: int = 0
     source: Step | None = None
     variables: list[Step] = field(default_factory=list)
@@ -1164,7 +1220,7 @@ class _Context:
             program = [*([self.source] if self.source else []), *self.variables, step]
         numbered = [{**entry, "id": f"context-{i}"} for i, entry in enumerate(program)]
         try:
-            rendered = render_node_steps(self.node_type, numbered)
+            rendered = _render(self.node_type, numbered, self.inputs)
         except ValueError:  # a PolarsStepError, or a layout outside the vocabulary
             return None
         # Everything after the step before it: its comment, then its statement.
@@ -1183,10 +1239,24 @@ class _Context:
 
 
 def _recognised(reader: _Reader, unit: _Unit, context: _Context) -> Step | None:
-    """The step a unit's statement renders from, keeping its comment, or None for code."""
+    """The step a unit's statement renders from, keeping its comment, or None for code.
+
+    Every statement no step renders is kept as code, so a reader that fails on a
+    statement costs that statement its step and never the read (CGEN-02): the
+    failure is logged, for the reader's defect to be found.
+    """
     if unit.node is None:
         return None
-    for candidate in reader.candidates(unit.node):
+    try:
+        candidates = reader.candidates(unit.node)
+    except Exception as exc:  # noqa: BLE001 - a reader's defect keeps the statement as code
+        logger.warning(
+            "polars_step_reader_failed",
+            line=unit.first,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return None
+    for candidate in candidates:
         step = _with_comment(candidate, unit)
         if context.rendering(step) == unit.text:
             return step
@@ -1197,6 +1267,7 @@ def _assemble(
     node_type: NodeType,
     read: tuple[list[_Unit], list[str]],
     choose: Callable[[_Unit, _Context], Step | None],
+    inputs: Sequence[str],
 ) -> list[Step]:
     """A step for each unit *choose* recognises, and one code step for each run of the rest.
 
@@ -1204,7 +1275,9 @@ def _assemble(
     code step of their own.
     """
     units, below = read
-    context = _Context(node_type, input_mode=stepped_surface_for(node_type).start == "input")
+    context = _Context(
+        node_type, input_mode=stepped_surface_for(node_type).start == "input", inputs=inputs
+    )
     steps: list[Step] = []
     code: list[str] = []
     for unit in units:
@@ -1248,6 +1321,8 @@ def _normal_step(step: Mapping[str, Any]) -> Step:
     elif kind in ("select", "drop"):
         if not step.get("dtypes"):
             normal.pop("dtypes", None)
+    elif kind == "variable":
+        normal["value"] = _normal_literal(step["value"])
     elif kind == "fill_null" and step["fill"]["kind"] == "value":
         normal["fill"] = {"kind": "value", "value": _normal_operand(step["fill"]["value"], "value")}
     elif kind == "pivot":
@@ -1261,8 +1336,22 @@ def _normal_step(step: Mapping[str, Any]) -> Step:
 
 
 def _normal_literal(literal: Mapping[str, Any]) -> Step:
+    if literal["type"] == "number":
+        return _normal_number(literal["value"], literal, None)
     value = None if literal["type"] == "null" else literal["value"]
     return _literal(literal["type"], value)
+
+
+def _normal_number(value: int | float, literal: Mapping[str, Any], number_type: str | None) -> Step:
+    """A number literal of *value* in canonical form: written as its ``text`` spells it, or
+    else as the renderer writes *value*, and keeping that text exactly when a browser would
+    write the number otherwise (CGEN-09)."""
+    spelling = (
+        number_spelling(literal["text"])
+        if "text" in literal
+        else number_rendering(value, number_type)
+    )
+    return spelled_number(value, spelling, number_type)
 
 
 def _normal_group(group: Mapping[str, Any]) -> Step:
@@ -1284,7 +1373,7 @@ def _normal_condition(condition: Mapping[str, Any]) -> Step:
         normal["values"] = [
             _normal_literal(item)
             if number_type is None
-            else _literal("number", _member_number(item["value"], number_type))
+            else _normal_number(_member_number(item["value"], number_type), item, number_type)
             for item in condition["values"]
         ]
     return normal

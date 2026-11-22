@@ -16,8 +16,9 @@ provenance (what each binding binds), without importing anything, and reports:
 - anything that keeps the inventory from being complete, naming the
   statement: a computed ``__all__``, a binding under ``if``/``try`` (or any
   other block) at module level in a star-imported utility, a star import of a
-  module outside ``utility``, or a star import of a utility file that does
-  not exist.
+  module outside ``utility``, a star import of a utility file that does
+  not exist, or a name bound at run time (an ``exec`` or ``eval`` at module
+  level, or a write through ``globals()``, ``vars()`` or ``locals()``).
 
 Supported forms are ``import`` and ``from ... import`` (with aliases),
 top-level ``def``, ``class`` and assignment targets, and a star import of
@@ -177,6 +178,79 @@ def _module_level_nodes(stmt: ast.stmt) -> Iterator[ast.AST]:
                 pending.append(child)
 
 
+#: The builtins that run text as code, which can bind any name.
+_EVALUATORS = frozenset({"exec", "eval"})
+#: A namespace's methods that bind or unbind its names.
+_NAMESPACE_WRITES = frozenset(
+    {"update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"}
+)
+
+
+def _namespace_call(node: ast.AST, *, module_level: bool) -> str | None:
+    """The builtin *node* calls when it is the module's namespace: ``globals()``, which is
+    the module's wherever it is called, or, at module level, ``vars()`` or ``locals()``."""
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and not node.args
+        and not node.keywords
+    ):
+        return None
+    name = node.func.id
+    if name == "globals" or (module_level and name in {"vars", "locals"}):
+        return name
+    return None
+
+
+def _module_scope_nodes(stmt: ast.stmt) -> Iterator[ast.AST]:
+    """*stmt* and what it evaluates in the module's own scope: not a function's, a
+    lambda's or a class's body, though their decorators, defaults and bases."""
+    pending: list[ast.AST] = [stmt]
+    while pending:
+        node = pending.pop()
+        yield node
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            arguments = node.args
+            pending.extend(arguments.defaults)
+            pending.extend(default for default in arguments.kw_defaults if default is not None)
+            if not isinstance(node, ast.Lambda):
+                pending.extend(node.decorator_list)
+        elif isinstance(node, ast.ClassDef):
+            pending.extend([*node.decorator_list, *node.bases, *node.keywords])
+        else:
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _dynamic_binding(stmt: ast.stmt) -> tuple[int, str] | None:
+    """Where *stmt* binds a name the inventory cannot read without running it, and how
+    (CGEN-07): an ``exec`` or ``eval`` call at module level, an ``exec`` or ``eval`` given
+    ``globals()`` anywhere, or a write through the module's namespace anywhere (an item
+    assigned or deleted, a binding method called). A read of the namespace binds nothing.
+    """
+    module_level = {id(node) for node in _module_scope_nodes(stmt)}
+    for node in ast.walk(stmt):
+        at_module_level = id(node) in module_level
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in _EVALUATORS and (
+                at_module_level
+                or any(_namespace_call(arg, module_level=False) for arg in node.args)
+            ):
+                return node.lineno, f"calls `{node.func.id}`"
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store | ast.Del):
+            namespace = _namespace_call(node.value, module_level=at_module_level)
+            if namespace is not None:
+                return node.lineno, f"writes through `{namespace}()`"
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _NAMESPACE_WRITES
+        ):
+            namespace = _namespace_call(node.func.value, module_level=at_module_level)
+            if namespace is not None:
+                return node.lineno, f"writes through `{namespace}()`"
+    return None
+
+
 def _is_all(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and node.id == "__all__"
 
@@ -232,6 +306,13 @@ class _Inventory:
         """Inventory one source's bindings; *utility* applies a utility file's stricter rules."""
         bindings: list[SupportBinding] = []
         for stmt in tree.body:
+            dynamic = _dynamic_binding(stmt)
+            if dynamic is not None:
+                line, how = dynamic
+                self.result.unsupported.append(
+                    f"{label} line {line} {how}, which binds names that cannot be checked; "
+                    "bind each name with an ordinary assignment."
+                )
             bindings.extend(self._statement(stmt, label, utility=utility))
         return bindings
 

@@ -18,6 +18,10 @@ server issued in a form a browser keeps exactly, and the node is built from that
   wrote (:func:`settings_text`): the node is built from them, the settings it carries not
   read.
 
+Edited settings come with the saved settings the edit began from
+(``editor.settings_edited_from``): the node is built from the settings it carries, each
+number the edit left as it was spelt as that form spells it (:func:`spelled_as`, CGEN-09).
+
 A part sent without a saved form is read from the request: its editor edited it, or the
 sender's baseline does not hold the node. A node saved with an unfinished step list holds
 the raising placeholder in its file and the list in its ``.haute.json``; one whose steps are
@@ -28,6 +32,7 @@ carries.
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -47,8 +52,13 @@ STEPS_KEYS: frozenset[str] = frozenset({"steps", "code"})
 
 #: The fields of a node's editor state that carry the saved form of each of its parts: its
 #: steps' (the code saved for them, or the list itself for a node saved unfinished) and its
-#: settings'.
-SAVED_FORM_KEYS: tuple[str, str, str] = ("saved_code", "saved_steps", "saved_settings")
+#: settings' (unedited, or the form edited settings began from).
+SAVED_FORM_KEYS: tuple[str, ...] = (
+    "saved_code",
+    "saved_steps",
+    "saved_settings",
+    "settings_edited_from",
+)
 
 
 def exact_json(value: Any) -> str:
@@ -65,6 +75,115 @@ def settings_of(config: Mapping[str, Any]) -> dict[str, Any]:
 def settings_text(config: Mapping[str, Any]) -> str:
     """The saved form of *config*'s settings: their JSON text, which a browser keeps exactly."""
     return exact_json(settings_of(config))
+
+
+def _browser_held(value: Any) -> Any:
+    """*value* as a browser gives it back, every number one double read back as JSON is."""
+    from haute._polars_steps import js_held
+
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int | float):
+        return js_held(value)
+    if isinstance(value, Mapping):
+        return {key: _browser_held(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_browser_held(item) for item in value]
+    return value
+
+
+def _held_key(value: Any) -> str:
+    """*value*, as a browser holds it, as text that compares equal exactly when two values
+    are held alike."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=True)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def spelled_as(sent: Any, saved: Any) -> Any:
+    """*sent*, settings a request read from a browser, with each number spelt as *saved*, the
+    saved settings the edit began from, spells the number at the same place, where a browser
+    holds the two alike (CGEN-09).
+
+    An object's values are walked by key. A list's elements are matched by content first,
+    wherever they now stand, so a row added, removed or moved keeps its numbers and shifts
+    no other; a changed element is then walked against the saved one it replaced. A number
+    takes the saved number when a browser holds the saved number as the number sent, both
+    whole or both not (``1.0`` for ``1``, ``9007199254740993`` for ``9007199254740992``;
+    ``True`` never for ``1``). Every other value is *sent*'s: no value changes, only how one
+    a browser cannot hold is spelt.
+    """
+    if isinstance(sent, Mapping) and isinstance(saved, Mapping):
+        return {
+            key: spelled_as(value, saved[key]) if key in saved else value
+            for key, value in sent.items()
+        }
+    if isinstance(sent, list) and isinstance(saved, list):
+        return _spelled_list(sent, saved)
+    if _is_number(sent) and _is_number(saved):
+        held = _browser_held(saved)
+        return saved if type(held) is type(sent) and held == sent else sent
+    return sent
+
+
+def _spelled_list(sent: list[Any], saved: list[Any]) -> list[Any]:
+    """*sent*'s elements, each walked against the element of *saved* it stands for.
+
+    First, an element a browser holds as it holds a saved element is that element, wherever
+    it now stands: each saved element stands for one sent element, the first in order, so a
+    moved element keeps its numbers. Then each element left, which the edit changed, is
+    walked against a saved element left: the one after the same matched neighbour, as an
+    edit in place leaves it, else the first left in order. Pairing a changed element with
+    another saved element changes no value, as :func:`spelled_as` changes none, only how many
+    of its numbers keep a spelling.
+    """
+    held = [_held_key(_browser_held(item)) for item in saved]
+    keys = [_held_key(item) for item in sent]
+    if held == keys:
+        return list(saved)
+    by_content: dict[str, deque[int]] = {}
+    for index, key in enumerate(held):
+        by_content.setdefault(key, deque()).append(index)
+    stands_for: list[int | None] = []
+    for key in keys:
+        free = by_content.get(key)
+        stands_for.append(free.popleft() if free else None)
+    matched = {index for index in stands_for if index is not None}
+
+    # A changed element, and the saved ones left, by the matched element before it.
+    after_sent: dict[int, deque[int]] = {}
+    neighbour = -1
+    for position, stood in enumerate(stands_for):
+        if stood is None:
+            after_sent.setdefault(neighbour, deque()).append(position)
+        else:
+            neighbour = stood
+    after_saved: dict[int, deque[int]] = {}
+    neighbour = -1
+    for index in range(len(saved)):
+        if index in matched:
+            neighbour = index
+        else:
+            after_saved.setdefault(neighbour, deque()).append(index)
+    for anchor, positions in after_sent.items():
+        left = after_saved.get(anchor)
+        while positions and left:
+            stands_for[positions.popleft()] = left.popleft()
+    unpaired = deque(sorted(i for queue in after_saved.values() for i in queue))
+    out: list[Any] = []
+    for position, item in enumerate(sent):
+        paired = stands_for[position]
+        if paired is None and unpaired:
+            paired = unpaired.popleft()
+        if paired is None:
+            out.append(item)
+        elif paired in matched and keys[position] == held[paired]:
+            out.append(saved[paired])
+        else:
+            out.append(spelled_as(item, saved[paired]))
+    return out
 
 
 def holds_steps(node_type: object, config: Mapping[str, Any]) -> bool:
@@ -86,19 +205,22 @@ def config_as_read(
     saved_code: str | None,
     saved_settings: str | None,
     saved_steps: str | None = None,
+    settings_edited_from: str | None = None,
     node: str,
 ) -> dict[str, Any]:
     """*config*, a node's as a request carries it, as the request reads it: its steps from
     *saved_code* or *saved_steps* and its settings from *saved_settings*, when it carries
-    them.
+    them; edited settings with each number the edit left as it was spelt as
+    *settings_edited_from*, the saved settings the edit began from, spells it
+    (:func:`spelled_as`).
 
     A saved code is the node's code and takes its step list off; an empty one (steps that
     did not render when saved) leaves the list, then the only copy of the node's program.
     Saved steps replace the list it carries, and its code, which building the node renders
     from them. Saved settings replace every setting *config* carries. *node* names the node
     in a refusal (``ValueError``): a saved form of its steps on a node holding no step list,
-    both of them, saved steps that are not a list, or saved settings that are not a JSON
-    object of settings.
+    both of them, saved steps that are not a list, saved settings and the settings an edit
+    began from together, or either that is not a JSON object of settings.
     """
     read = dict(config)
     if saved_code is not None or saved_steps is not None:
@@ -118,12 +240,28 @@ def config_as_read(
             raise ValueError(f"The saved steps of node {node} are not a list.")
         read["steps"] = steps
         read["code"] = ""
+    if saved_settings is not None and settings_edited_from is not None:
+        raise ValueError(
+            f"Node {node} carries both saved settings and the settings an edit began from."
+        )
     if saved_settings is not None:
-        settings = _decoded(saved_settings, "saved settings", node)
-        if not isinstance(settings, dict) or not STEPS_KEYS.isdisjoint(settings):
-            raise ValueError(f"The saved settings of node {node} are not an object of settings.")
+        settings = _settings_form(saved_settings, "saved settings", node)
         read = {**settings, **{key: value for key, value in read.items() if key in STEPS_KEYS}}
+    if settings_edited_from is not None:
+        began = _settings_form(settings_edited_from, "settings its edit began from", node)
+        read = {
+            **spelled_as(settings_of(read), began),
+            **{key: value for key, value in read.items() if key in STEPS_KEYS},
+        }
     return read
+
+
+def _settings_form(text: str, what: str, node: str) -> dict[str, Any]:
+    """The settings *text*, a node's saved form of them, holds."""
+    settings = _decoded(text, what, node)
+    if not isinstance(settings, dict) or not STEPS_KEYS.isdisjoint(settings):
+        raise ValueError(f"The {what} of node {node} are not an object of settings.")
+    return settings
 
 
 def _describe(ref: NodeRef) -> str:
@@ -166,7 +304,7 @@ def graph_as_read(graph: Mapping[str, Any]) -> DocumentAsRead:
             if not isinstance(config, Mapping) or not isinstance(editor, Mapping):
                 out.append(node)
                 continue
-            saved = (saved_code, saved_steps, saved_settings) = tuple(
+            saved = (saved_code, saved_steps, saved_settings, settings_edited_from) = tuple(
                 editor.get(key) for key in SAVED_FORM_KEYS
             )
             if any(value is not None and not isinstance(value, str) for value in saved):
@@ -187,6 +325,7 @@ def graph_as_read(graph: Mapping[str, Any]) -> DocumentAsRead:
                 saved_code=saved_code,
                 saved_settings=saved_settings,
                 saved_steps=saved_steps,
+                settings_edited_from=settings_edited_from,
                 node=_describe(ref),
             )
             state = {key: value for key, value in editor.items() if key not in SAVED_FORM_KEYS}

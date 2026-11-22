@@ -308,6 +308,18 @@ A strict refusal that no element's diagnostic shows is listed as a pipeline-leve
 hides it. One counts as shown when a diagnostic carries its message, or when the recovery pass
 reports that refusal element by element in its own words (an unknown decorator, a duplicate
 node name, a dangling or duplicate connection, a missing submodel file:
-`_STRICT_FAILURE_SHOWN_AS`). A pipeline name or description that is not a literal is the
+`_STRICT_FAILURE_SHOWN_AS`). A constructor the parser cannot read in full is the
 constructor's failure, not a node's: the document loads around it with a
-`pipeline_constructor_invalid` diagnostic and the file's name as the pipeline's.
+`pipeline_constructor_invalid` diagnostic and the file's name as the pipeline's, and it cannot
+be saved over.
+
+**The constructor.** `haute.Pipeline(...)` and `haute.Submodel(...)`, assigned to their receiver
+with or without an annotation, are read by one binder, `_ast_helpers.constructor_arguments`, which
+binds each argument to the parameter Python binds it to, from the parameters each class's
+`__init__` declares (`CONSTRUCTOR_PARAMETERS`, held to the classes by a test). A name and a
+description are therefore read whether they are given by position or by keyword, and a save
+writes them back. A call the binder cannot account for in full is a `ParseError` naming its line,
+never read in part and saved without what it left out: an unpacked argument, a third positional
+argument, a parameter given twice, a keyword the class does not take, no name, or a name or a
+description that is not a string literal (CGEN-01). A call to anything else assigned to the
+receiver is no constructor.

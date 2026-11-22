@@ -509,6 +509,7 @@ class TestCreateSubmodel:
         """Happy path returns the transformed graph without saving it."""
         result = SimpleNamespace(
             sm_file="modules/pricing.py",
+            sm_name="pricing",
             graph=_graph_model(_graph_with_submodel()),
         )
 
@@ -536,6 +537,7 @@ class TestCreateSubmodel:
         """A read-only preflight configuration failure remains actionable."""
         result = SimpleNamespace(
             sm_file="modules/pricing.py",
+            sm_name="pricing",
             graph=_graph_model(_graph_with_submodel()),
         )
         detail = (
@@ -562,6 +564,7 @@ class TestCreateSubmodel:
         """Transform metadata cannot trigger the persistence service."""
         result = SimpleNamespace(
             sm_file="modules/pricing.py",
+            sm_name="pricing",
             graph=_graph_model(_graph_with_submodel()),
         )
         body = _create_body()
@@ -588,6 +591,7 @@ class TestCreateSubmodel:
         """Code generation is reserved for explicit Save."""
         result = SimpleNamespace(
             sm_file="modules/pricing.py",
+            sm_name="pricing",
             graph=_graph_model(_graph_with_submodel()),
         )
 
@@ -641,7 +645,9 @@ class TestCreateSubmodel:
                 },
             }
         )
-        result = SimpleNamespace(sm_file="modules/pricing.py", graph=result_graph)
+        result = SimpleNamespace(
+            sm_file="modules/pricing.py", sm_name="pricing", graph=result_graph
+        )
         committed = PipelineGraph(
             pipeline_name="main",
             source_revision=_SAVED_REVISION,
@@ -1225,6 +1231,7 @@ class TestTransformOnlySubmodelRoutes:
     ) -> None:
         result = SimpleNamespace(
             sm_file="modules/pricing.py",
+            sm_name="pricing",
             graph=_graph_model(_graph_with_submodel()),
         )
         parent = tmp_path / "pipeline.py"

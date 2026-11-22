@@ -369,6 +369,14 @@ Pydantic route models live in `src/haute/schemas.py`. `CreateSubmodelRequest`
 carries `name`, `node_ids`, the parent graph and support code, `source_file`,
 `base_revision`, and pipeline metadata; `CreateSubmodelResponse` returns both
 file paths, the revised graph, and the unchanged persisted `source_revision`.
+Each of the three graph changes' responses also carries `moved`: for every node of the
+request the revised graph holds elsewhere, its scope and id before and after
+(`MovedNode`: `from_submodel`, `from_node_id`, `to_submodel`, `to_node_id`; a scope is a
+definition id, `null` for the pipeline's own nodes). Create Submodel moves each selected
+node into the new definition, keeping its id; Create Instance moves its node into the new
+definition; Dissolve moves each of the definition's nodes to the root under its runtime id
+(`qualified_runtime_node_id`). The editor finds a moved node's saved baseline through it
+([codegen](../codegen/high-level.md), "Which parts a request reads").
 `CreateNodeInstanceRequest` carries `node_id`, the parent graph and support
 code, `source_file`, `base_revision`, and pipeline metadata.
 `CreateNodeInstanceResponse` returns the graph, `owner_name`, `instance_name`,

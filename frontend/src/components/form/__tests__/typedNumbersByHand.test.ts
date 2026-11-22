@@ -50,6 +50,8 @@ const NOT_TYPED: Record<string, string> = {
     "a select's or a slider's own option value, a point's index",
   "frontend/src/panels/editors/ExploreChartsConfig.tsx::ExploreChartsConfig::parse::Number(e.target.value)":
     "the label rotation select's own option value",
+  "frontend/src/panels/editors/polarsSteps/numberSpelling.ts::shortestDigits::parse::Number(power)":
+    "a number's own exponent, as toExponential writes it",
   "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(`0.${fraction}`)":
     "a date's or a time's digits, matched by its pattern",
   "frontend/src/panels/editors/banding/bandingUtils.ts::matchedDayNumber::parse::Number(day)":

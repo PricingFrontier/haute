@@ -19,7 +19,9 @@ to its documented step.
 
 from __future__ import annotations
 
+import ast
 import datetime as dt
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -51,11 +53,15 @@ from haute._polars_steps import (
     STEPPED_NODE_TYPES,
     WINDOW_AGGREGATIONS,
     PolarsStepError,
+    js_held,
+    referenced_step_inputs,
     render_node_steps,
+    render_polars_steps,
 )
 from haute._polars_steps_lift import StepLiftError, canonical_steps, lift_steps
 from haute._types import NodeType
 from tests._property_budget import pr_budget
+from tests._source_files import REPO_ROOT
 from tests.test_polars_steps_corpus import TRANSLATIONS
 
 Step = dict[str, Any]
@@ -73,10 +79,12 @@ FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%Y%m%d %H:%M")
 
 
 def assert_rebuilds(node_type: NodeType, steps: list[Step]) -> list[Step]:
-    """Both properties for one step list; returns the rebuilt steps."""
+    """Both properties for one step list, for a node whose inputs are those the steps
+    read; returns the rebuilt steps."""
     rendered = render_node_steps(node_type, steps).code
-    canonical = canonical_steps(node_type, steps)
-    lifted = lift_steps(node_type, rendered)
+    inputs = referenced_step_inputs(steps)
+    canonical = canonical_steps(node_type, steps, inputs=inputs)
+    lifted = lift_steps(node_type, rendered, inputs=inputs)
     assert lifted == canonical, rendered
     assert render_node_steps(node_type, lifted).code == rendered
     return lifted
@@ -762,6 +770,13 @@ def test_every_corpus_translation_rebuilds_without_code(snippet: str, steps: lis
 
 SOURCE: Step = {"kind": "source", "input": "quotes"}
 
+#: The step lists the backend hands the editor, one per vocabulary entry.
+_STEP_SHAPES_CASES: list[dict[str, Any]] = json.loads(
+    (
+        REPO_ROOT / "frontend/src/panels/editors/polarsSteps/__tests__/fixtures/stepShapes.json"
+    ).read_text(encoding="utf-8")
+)["cases"]
+
 
 def rebuilt(steps: list[Step], node_type: NodeType = NodeType.POLARS) -> list[Step]:
     """The rebuilt steps without their ids, after checking both properties."""
@@ -770,7 +785,7 @@ def rebuilt(steps: list[Step], node_type: NodeType = NodeType.POLARS) -> list[St
 
 
 def test_rebuilt_steps_carry_ids_from_kind_and_place_only() -> None:
-    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)")
+    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)", inputs=INPUTS)
     assert [step["id"] for step in lifted] == ["source-1", "limit-2"]
 
 
@@ -843,7 +858,7 @@ def test_a_run_of_unrecognised_statements_is_one_code_step_between_steps() -> No
             'df = df.drop("row")',
         ]
     )
-    lifted = lift_steps(NodeType.POLARS, code)
+    lifted = lift_steps(NodeType.POLARS, code, inputs=INPUTS)
     assert [step["kind"] for step in lifted] == [
         "source",
         "limit",
@@ -1029,6 +1044,327 @@ def test_membership_numbers_rebuild_as_their_number_type_writes_them() -> None:
     assert [type(v) for v in values[0] + values[1]] == [int, int, float, float]
 
 
+_REBINDS_ITS_INPUT = (
+    "import polars as pl\nimport haute\n\n"
+    'pipeline = haute.Pipeline("p")\n\n\n'
+    "@pipeline.polars\n"
+    "def exposure() -> pl.LazyFrame:\n"
+    '    return pl.LazyFrame({"days": [365.0, 730.0]})\n\n\n'
+    "@pipeline.polars\n"
+    "def years(exposure: pl.LazyFrame) -> pl.LazyFrame:\n"
+    "    df = exposure\n"
+    "    exposure = 365\n"
+    '    df = df.with_columns((pl.col("days") / exposure).alias("years"))\n'
+    "    return df\n"
+)
+
+
+def test_a_transform_that_rebinds_its_input_s_name_loads_that_statement_as_code() -> None:
+    """CGEN-10: the lift tried each step without the node's input names, so it read
+    ``exposure = 365`` as a Variable that a render against the inputs refuses, and a save
+    after any edit wrote the incomplete-steps placeholder in place of the code."""
+    from haute.codegen import graph_to_code
+    from haute.executor import execute_graph
+    from haute.parser import parse_pipeline_source
+
+    graph = parse_pipeline_source(_REBINDS_ITS_INPUT)
+    steps = graph.node_map["years"].data.config["steps"]
+    assert [step["kind"] for step in steps] == ["source", "free_code"]
+    assert steps[1]["code"] == (
+        'exposure = 365\ndf = df.with_columns((pl.col("days") / exposure).alias("years"))'
+    )
+    saved = graph_to_code(graph, pipeline_name="p")
+    assert "    exposure = 365\n" in saved and "NotImplementedError" not in saved
+    result = execute_graph(graph, target_node_id="years")["years"]
+    assert result.status == "ok", result.error
+    assert [row["years"] for row in result.preview] == [1.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    "case", _STEP_SHAPES_CASES, ids=[case["id"] for case in _STEP_SHAPES_CASES]
+)
+def test_every_lifted_list_renders_its_source_against_its_input_names(
+    case: dict[str, Any],
+) -> None:
+    """CGEN-10: what the lift accepts is what a render against the node's inputs accepts."""
+    inputs = referenced_step_inputs(case["steps"])
+    code = render_polars_steps(case["steps"], inputs, start="input").code
+    lifted = lift_steps(NodeType.POLARS, code, inputs=inputs)
+    assert render_polars_steps(lifted, inputs, start="input").code == code
+
+
+def _as_a_browser_holds_it(value: Any) -> Any:
+    """*value* after ``JSON.stringify`` and ``JSON.parse`` in a browser and back to Python:
+    every number one double, which JavaScript writes as its shortest digits."""
+    if isinstance(value, bool) or not isinstance(value, int | float | list | dict):
+        return value
+    if isinstance(value, list):
+        return [_as_a_browser_holds_it(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _as_a_browser_holds_it(item) for key, item in value.items()}
+    return js_held(value)
+
+
+#: Numbers a browser would write otherwise: whole-number decimals, exponent forms, negative
+#: zero and integers of 16 to 19 digits, beside ones it keeps.
+_SPELLED_NUMBERS = (
+    "1.0",
+    "-1.0",
+    "0.0",
+    "-0.0",
+    "2.50",
+    "1e20",
+    "1e21",
+    "1.5e-07",
+    "1000000000000000.0",
+    "9007199254740993",
+    "-9007199254740993",
+    "1234567890123456789",
+    "365",
+    "0.1",
+)
+_SPELLING_STATEMENTS = (
+    'df = df.with_columns(pl.lit({n}).alias("x"))',
+    'df = df.filter(pl.col("id") == {n})',
+    'df = df.with_columns((pl.col("v") * {n}).alias("v"))',
+    'df = df.with_columns(pl.col("v").fill_null({n}))',
+)
+
+
+@pytest.mark.parametrize("spelled", _SPELLED_NUMBERS)
+@pytest.mark.parametrize("statement", _SPELLING_STATEMENTS)
+def test_a_number_renders_as_it_was_written_after_a_browser_held_its_step(
+    statement: str, spelled: str
+) -> None:
+    """CGEN-09: ``pl.lit(1.0)`` came back ``pl.lit(1)``, a 32-bit integer column, and an
+    integer past 2**53 named another row."""
+    code = f"df = quotes\n{statement.format(n=spelled)}"
+    lifted = lift_steps(NodeType.POLARS, code, inputs=["quotes"])
+    assert len(lifted) == 2 and lifted[1]["kind"] != "free_code", lifted
+    held = _as_a_browser_holds_it(lifted)
+    assert render_polars_steps(held, ["quotes"], start="input").code == code
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'df = df.filter(pl.col("x").is_in([9007199254740993, 1]))',
+        'df = df.filter(pl.col("x").is_in([1.0, 2.50, -0.0]))',
+        "df = df.filter(\n"
+        '    pl.col("x").is_in(pl.Series(["1.50", "2"]).str.to_decimal(scale=2).implode())\n'
+        ")",
+    ],
+)
+def test_membership_numbers_render_as_they_were_written_after_a_browser(statement: str) -> None:
+    """CGEN-09: a whole number past 2**53 kept its digits, and a decimal list its scale."""
+    code = f"df = quotes\n{statement}"
+    lifted = lift_steps(NodeType.POLARS, code, inputs=["quotes"])
+    assert lifted[1]["kind"] == "filter"
+    held = _as_a_browser_holds_it(lifted)
+    assert render_polars_steps(held, ["quotes"], start="input").code == code
+
+
+def test_a_spelling_is_kept_only_where_a_browser_would_write_the_number_otherwise() -> None:
+    lifted = lift_steps(
+        NodeType.POLARS,
+        "df = quotes\n"
+        'df = df.with_columns(pl.lit(1.0).alias("a"))\n'
+        'df = df.with_columns(pl.lit(0.5).alias("b"))',
+        inputs=["quotes"],
+    )
+    spelled = {"kind": "literal", "type": "number", "value": 1.0, "text": "1.0"}
+    assert lifted[1]["expr"]["operand"] == spelled
+    assert lifted[2]["expr"]["operand"] == {"kind": "literal", "type": "number", "value": 0.5}
+    variable = {"kind": "variable", "name": "rate", "value": literal("number", 1.0)}
+    assert (
+        canonical_steps(NodeType.POLARS, numbered([SOURCE, variable]), inputs=INPUTS)[1]["value"]
+        == spelled
+    )
+
+
+@pytest.mark.parametrize(
+    ("operand", "fragment"),
+    [
+        pytest.param({"value": 2, "text": "1.0"}, "does not spell its value", id="stale"),
+        pytest.param({"value": 1, "text": "one"}, "not a number as Python writes", id="words"),
+        pytest.param({"value": 1, "text": "1_0"}, "not a number as Python writes", id="underscore"),
+        pytest.param({"value": 1, "text": "1e400"}, "not a number as Python writes", id="infinite"),
+    ],
+)
+def test_a_text_that_does_not_spell_its_number_is_refused(
+    operand: dict[str, Any], fragment: str
+) -> None:
+    """The renderer writes a text into the code only once it is a number literal that spells
+    the value the step holds: never a stale or a foreign one."""
+    steps = [
+        SOURCE,
+        {
+            "kind": "with_column",
+            "name": "x",
+            "expr": {
+                "type": "operand",
+                "operand": {"kind": "literal", "type": "number", **operand},
+            },
+        },
+    ]
+    with pytest.raises(PolarsStepError, match=fragment):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+
+
+@pytest.mark.parametrize(
+    ("number_type", "member", "fragment"),
+    [
+        pytest.param("integer", {"value": 1, "text": "1.0"}, "is not a whole number", id="integer"),
+        pytest.param("float", {"value": 1, "text": "1"}, "a whole number, not a float", id="float"),
+        pytest.param("decimal", {"value": 1e5, "text": "1e5"}, "has an exponent", id="decimal"),
+    ],
+)
+def test_a_members_text_must_be_its_lists_kind(
+    number_type: str, member: dict[str, Any], fragment: str
+) -> None:
+    condition = {
+        "column": "x",
+        "operator": "is_in",
+        "number_type": number_type,
+        "values": [{"kind": "literal", "type": "number", **member}],
+    }
+    steps = [SOURCE, {"kind": "filter", "match": "all", "conditions": [condition]}]
+    with pytest.raises(PolarsStepError, match=fragment):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+
+
+@pytest.mark.parametrize("text", ["2.0", "2e0", "2.", "0.2e1"])
+def test_a_whole_number_argument_takes_only_a_whole_spelling(text: str) -> None:
+    """Codex r1: Round's decimal places hold the whole number 2; a spelling that is not
+    whole would write ``.round(2.0)``, which Polars refuses."""
+    steps = [
+        SOURCE,
+        {
+            "kind": "with_column",
+            "name": "x",
+            "expr": {
+                "type": "function",
+                "fn": "round",
+                "operand": {"kind": "column", "name": "premium"},
+                "args": [{"kind": "literal", "type": "number", "value": 2, "text": text}],
+            },
+        },
+    ]
+    with pytest.raises(PolarsStepError, match="is not a whole number"):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+    whole = dict(steps[1])
+    whole["expr"] = {
+        **steps[1]["expr"],
+        "args": [{"kind": "literal", "type": "number", "value": 2}],
+    }
+    rendered = render_polars_steps(numbered([SOURCE, whole]), ["quotes"], start="input")
+    assert ".round(2)" in rendered.code
+
+
+def test_a_text_on_a_value_that_is_no_number_is_refused() -> None:
+    steps = [
+        SOURCE,
+        {
+            "kind": "with_column",
+            "name": "x",
+            "expr": {
+                "type": "operand",
+                "operand": {"kind": "literal", "type": "text", "value": "a", "text": "1.0"},
+            },
+        },
+    ]
+    with pytest.raises(PolarsStepError, match="has no text"):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+
+
+@pytest.mark.parametrize(
+    "case", _STEP_SHAPES_CASES, ids=[case["id"] for case in _STEP_SHAPES_CASES]
+)
+def test_every_step_shape_renders_its_code_after_a_browser_held_it(case: dict[str, Any]) -> None:
+    """CGEN-09: each lifted list, through a browser, renders the code it was lifted from."""
+    inputs = referenced_step_inputs(case["steps"])
+    code = render_polars_steps(case["steps"], inputs, start="input").code
+    lifted = lift_steps(NodeType.POLARS, code, inputs=inputs)
+    held = _as_a_browser_holds_it(lifted)
+    assert render_polars_steps(held, inputs, start="input").code == code
+
+
+def test_the_editors_case_file_of_number_renderings_is_the_servers() -> None:
+    """CGEN-09: the editor decides when a typed number keeps its ``text`` by the server's
+    own writing of the number it sends, held to this file by ``numberSpelling.test.ts``."""
+    import importlib.util
+
+    path = REPO_ROOT / "scripts" / "regen_number_renderings_fixture.py"
+    spec = importlib.util.spec_from_file_location("regen_number_renderings_fixture", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    on_disk = script.FIXTURE.read_text(encoding="utf-8")
+    assert on_disk == script.render(script.build_fixture()), (
+        "Run uv run python scripts/regen_number_renderings_fixture.py."
+    )
+
+
+@pytest.mark.parametrize("text", ["abc", "1e5", ""])
+def test_a_decimal_membership_of_text_that_is_not_a_number_stays_code(text: str) -> None:
+    """CGEN-02: the statement is kept as code, never a failure of the whole read."""
+    statement = (
+        f'df = df.filter(pl.col("x").is_in(pl.Series([{text!r}]).str.to_decimal(scale=2)'
+        ".implode()))"
+    )
+    lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{statement}", inputs=INPUTS)
+    assert [step["kind"] for step in lifted] == ["source", "free_code"]
+    assert lifted[1]["code"] == statement
+
+
+#: What no step's reader expects where a number, a name or a setting stands.
+_MALFORMED_LITERALS: tuple[str | int | float | bool | None, ...] = (
+    "abc",
+    "",
+    "1e5",
+    10**30,
+    -0.0,
+    True,
+    None,
+)
+
+
+@pytest.mark.parametrize(
+    "case", _STEP_SHAPES_CASES, ids=[case["id"] for case in _STEP_SHAPES_CASES]
+)
+def test_no_step_reader_raises_out_of_the_lift_on_a_malformed_literal(
+    case: dict[str, Any],
+) -> None:
+    """CGEN-02: each statement every step renders, with each of its literals replaced by
+    one no reader expects, is read as a step or kept as code; the lift never fails but
+    with :class:`StepLiftError`."""
+    code = render_node_steps(NodeType.POLARS, case["steps"]).code
+    literals = sum(isinstance(node, ast.Constant) for node in ast.walk(ast.parse(code)))
+    for index in range(literals):
+        tree = ast.parse(code)
+        constants = [node for node in ast.walk(tree) if isinstance(node, ast.Constant)]
+        constants[index].value = _MALFORMED_LITERALS[index % len(_MALFORMED_LITERALS)]
+        mutated = ast.unparse(tree)
+        try:
+            lift_steps(NodeType.POLARS, mutated, inputs=INPUTS)
+        except StepLiftError:
+            pass
+
+
+def test_a_reader_that_fails_costs_its_statement_the_step_and_not_the_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CGEN-02: a defect in one step reader keeps the statement as code."""
+    from haute import _polars_steps_lift
+
+    def broken(self: object, call: object) -> Step:
+        raise RuntimeError("a reader's defect")
+
+    monkeypatch.setattr(_polars_steps_lift._Reader, "_limit", broken)
+    lifted = lift_steps(NodeType.POLARS, "df = quotes\ndf = df.head(5)", inputs=INPUTS)
+    assert [step["kind"] for step in lifted] == ["source", "free_code"]
+
+
 def test_a_comment_belongs_to_the_step_below_it() -> None:
     """Comment lines above a step, wherever they were written, become its comment."""
     steps = [
@@ -1054,7 +1390,7 @@ def test_a_hand_edit_to_one_statement_keeps_the_other_steps_and_comments() -> No
     ]
     code = render_node_steps(NodeType.POLARS, numbered(steps)).code
     edited = code.replace("df = df.head(5)", "df = df.head(5).with_row_index()")
-    lifted = lift_steps(NodeType.POLARS, edited)
+    lifted = lift_steps(NodeType.POLARS, edited, inputs=INPUTS)
     assert [{k: v for k, v in s.items() if k != "id"} for s in lifted] == [
         SOURCE,
         {"kind": "free_code", "code": "# keep five\ndf = df.head(5).with_row_index()"},
@@ -1101,12 +1437,12 @@ def test_a_comment_that_is_not_ruff_s_stays_code() -> None:
     """A comment line ending in whitespace is no step's comment; its statement stays code."""
     code = "df = quotes\n# trailing space \ndf = df.head(5)"
     with pytest.raises(StepLiftError, match="do not render the code exactly"):
-        lift_steps(NodeType.POLARS, code)
+        lift_steps(NodeType.POLARS, code, inputs=INPUTS)
 
 
 def test_a_variable_whose_statement_stays_code_defines_nothing_after_it() -> None:
     code = 'df = quotes\nrate = 2  # two\ndf = df.with_columns(pl.lit(rate).alias("r"))'
-    lifted = lift_steps(NodeType.POLARS, code)
+    lifted = lift_steps(NodeType.POLARS, code, inputs=INPUTS)
     assert [step["kind"] for step in lifted] == ["source", "free_code"]
 
 
@@ -1117,10 +1453,10 @@ def test_a_variable_the_code_above_already_assigns_is_refused_and_rebuilt_as_cod
         {"kind": "variable", "name": "rate", "value": literal("number", 3)},
     ]
     with pytest.raises(PolarsStepError, match="Variable 'rate' is already assigned"):
-        canonical_steps(NodeType.POLARS, numbered(steps))
+        canonical_steps(NodeType.POLARS, numbered(steps), inputs=INPUTS)
     # Written by hand, the second assignment is code either way.
     for first in ("rate = 2", "rate = round(2.5)", "for rate in range(2):\n    pass"):
-        lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{first}\nrate = 3")
+        lifted = lift_steps(NodeType.POLARS, f"df = quotes\n{first}\nrate = 3", inputs=INPUTS)
         assert lifted[-1] == {
             "id": f"free_code-{len(lifted)}",
             "kind": "free_code",
@@ -1136,7 +1472,7 @@ def test_a_twenty_term_sum_is_one_step_and_round_trips() -> None:
     steps = [SOURCE, {"kind": "with_column", "name": "total", "expr": expr}]
     assert rebuilt(steps)[1] == steps[1]
     code = render_node_steps(NodeType.POLARS, numbered(steps)).code
-    lifted = lift_steps(NodeType.POLARS, code)
+    lifted = lift_steps(NodeType.POLARS, code, inputs=INPUTS)
     assert len(lifted) == 2
     assert render_node_steps(NodeType.POLARS, lifted).code == code
 
@@ -1147,20 +1483,25 @@ def test_a_twenty_deep_mix_of_operators_written_by_hand_stays_code() -> None:
     for index in range(1, 21):
         formula = f'{formula} {"+-"[index % 2]} pl.col("c{index}")'
     code = f'df = quotes\ndf = df.with_columns(({formula}).alias("t"))'
-    assert [step["kind"] for step in lift_steps(NodeType.POLARS, code)] == ["source", "free_code"]
+    assert [step["kind"] for step in lift_steps(NodeType.POLARS, code, inputs=INPUTS)] == [
+        "source",
+        "free_code",
+    ]
 
 
 def test_a_body_ending_in_newlines_rebuilds_as_without_them() -> None:
     code = render_node_steps(NodeType.POLARS, numbered([SOURCE, {"kind": "limit", "n": 2}])).code
-    assert lift_steps(NodeType.POLARS, code + "\n\n") == lift_steps(NodeType.POLARS, code)
-    assert lift_steps(NodeType.DATA_INPUT, "\n") == []
+    assert lift_steps(NodeType.POLARS, code + "\n\n", inputs=INPUTS) == lift_steps(
+        NodeType.POLARS, code, inputs=INPUTS
+    )
+    assert lift_steps(NodeType.DATA_INPUT, "\n", inputs=INPUTS) == []
 
 
 def test_a_frame_surface_rebuilds_its_start_as_code() -> None:
     """A frame surface has no start step, so ``df = <name>`` there is code."""
     steps: list[Step] = [{"kind": "free_code", "code": "df = quotes"}, {"kind": "limit", "n": 2}]
     assert rebuilt(steps, NodeType.EXTERNAL_FILE) == steps
-    assert lift_steps(NodeType.DATA_INPUT, "") == []
+    assert lift_steps(NodeType.DATA_INPUT, "", inputs=INPUTS) == []
 
 
 @pytest.mark.parametrize(
@@ -1177,4 +1518,4 @@ def test_code_that_does_not_render_back_is_refused(
     node_type: NodeType, code: str, fragment: str
 ) -> None:
     with pytest.raises(StepLiftError, match=fragment):
-        lift_steps(node_type, code)
+        lift_steps(node_type, code, inputs=INPUTS)

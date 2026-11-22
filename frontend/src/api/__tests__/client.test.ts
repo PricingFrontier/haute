@@ -285,6 +285,7 @@ function makeSubmodelCreateResponse(overrides: Record<string, unknown> = {}) {
     submodel_file: "pricing.py",
     parent_file: "main.py",
     source_revision: "revision-create",
+    moved: [],
     graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")], source_revision: "revision-create" }),
     ...overrides,
   }
@@ -307,6 +308,7 @@ function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
     instance_id: "pricing",
     definition_id: "definition_pricing",
     source_revision: "revision-dissolve",
+    moved: [],
     graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")], source_revision: "revision-dissolve" }),
     ...overrides,
   }
@@ -991,13 +993,13 @@ describe("endpoint contracts", () => {
     const payload = { node_id: "calc", graph: dummyGraph, source_file: "pipe.py", base_revision: "revision-parent",
       preamble: "", pipeline_name: "main", preserved_blocks: [] }
     const response = { status: "ok", graph: makeCanonicalGraph({ nodes: [makeCanonicalNode("n1")] }), owner_name: "calc", instance_name: "calc_2",
-      definition_id: "calc", source_revision: "revision-parent" }
+      definition_id: "calc", source_revision: "revision-parent", moved: [] }
     mockFetch.mockReturnValue(jsonResponse(response))
     expect(await createNodeInstance(payload)).toEqual(expect.objectContaining(response))
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/submodel/instance")
     expect(JSON.parse(opts.body)).toEqual(payload)
-    for (const field of ["graph", "owner_name", "instance_name", "definition_id", "source_revision"]) {
+    for (const field of ["graph", "owner_name", "instance_name", "definition_id", "source_revision", "moved"]) {
       mockFetch.mockReturnValue(jsonResponse({ ...response, [field]: undefined }))
       await expect(createNodeInstance(payload)).rejects.toThrow()
     }
@@ -2003,6 +2005,7 @@ describe("no request carries streaming_chunk_size", () => {
       savedCode: "df = df",
       savedSteps: null,
       savedSettings: null,
+      settingsEditedFrom: '{"path":"data/old.parquet","rate":1.0}',
     })
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/node/save")
     expect(JSON.parse(mockFetch.mock.calls.at(-1)?.[1].body)).toEqual({
@@ -2014,6 +2017,7 @@ describe("no request carries streaming_chunk_size", () => {
       saved_code: "df = df",
       saved_steps: null,
       saved_settings: null,
+      settings_edited_from: '{"path":"data/old.parquet","rate":1.0}',
     })
     expect(document.document_kind).toBe("haute.pipeline_editor_document")
     expect(documentFingerprint).toBe("fp-saved")
@@ -2021,7 +2025,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it.each([
     ["saveNodeScoped", () => import("../client").then(({ saveNodeScoped }) => saveNodeScoped({
-      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {}, savedCode: null, savedSteps: null, savedSettings: null,
+      sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "node@10", config: {}, savedCode: null, savedSteps: null, savedSettings: null, settingsEditedFrom: null,
     }))],
     ["applyRemoveUnavailableNode", () => applyRemoveUnavailableNode({
       sourceFile: "main.py", sourceRevision: "rev-1", targetSourceFile: "main.py", targetRecoveryId: "broken@10", deleteConfig: false,

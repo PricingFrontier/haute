@@ -21,6 +21,7 @@
  * Expression types text cannot express (windows, conditionals, text joins)
  * make `formulaText` return null, and the structured editor takes over.
  */
+import { numberShown, numberSpelling, spelledNumber } from "./numberSpelling"
 import { CAST_DTYPES, FORMULA_FUNCTIONS, FUNCTIONS, OPERAND_ARGUMENT_LITERALS, VARIADIC_FUNCTIONS, isOperandArgument, literal, type FunctionArg, type VariadicType } from "./catalogue"
 import type { BinaryOperator, CastDtype, Expr, FunctionArgValue, FunctionName, LiteralOperand, Operand } from "./types"
 
@@ -237,7 +238,8 @@ class Parser {
       this.take()
       const operand = this.unary()
       if (operand.type === "operand" && operand.operand.kind === "literal" && operand.operand.type === "number") {
-        return { type: "operand", operand: literal("number", -(operand.operand.value as number)) }
+        const spelling = numberSpelling(`-${numberShown(operand.operand)}`)
+        return { type: "operand", operand: spelledNumber(-(operand.operand.value as number), spelling) }
       }
       return { type: "binary", left: literal("number", 0), op: "-", right: asOperand(operand) }
     }
@@ -250,7 +252,7 @@ class Parser {
 
   private primary(): Expr {
     const token = this.take()
-    if (token.kind === "number") return { type: "operand", operand: literal("number", token.value) }
+    if (token.kind === "number") return { type: "operand", operand: spelledNumber(token.value, numberSpelling(token.text)) }
     if (token.kind === "string") return { type: "operand", operand: literal("text", token.value) }
     if (token.kind === "constant") return { type: "operand", operand: { kind: "constant", name: token.value } }
     if (token.kind === "punct" && token.value === "(") {
@@ -486,7 +488,7 @@ function nameText(name: string, variables: ReadonlySet<string>, isVariable: bool
 export function literalText(operand: LiteralOperand): string {
   switch (operand.type) {
     case "number":
-      return String(operand.value)
+      return numberShown(operand)
     case "text":
       return quoteText(String(operand.value))
     case "boolean":

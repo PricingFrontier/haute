@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { normalizeEdges } from "../utils/graphHelpers"
-import { documentRequestGraph } from "../utils/documentRequest"
+import { documentRequestGraph, withSavedAddresses } from "../utils/documentRequest"
 import { serializeSnapshot } from "../utils/graphSnapshot"
 import { resolveCanonicalGraphIdentities } from "../utils/editorIdentities"
 import { createNodeInstance, createSubmodel, dissolveSubmodel } from "../api/client"
@@ -274,9 +274,17 @@ export default function useSubmodelNavigation({
             reservedApiInputFrameLabels,
           }), {
             ok: (resolved) => {
+              // Each moved node keeps the place the saved baseline holds it (CGEN-09): the
+              // store still holds the document the change was asked of.
+              const asked = useGraphStore.getState()
+              const placed = withSavedAddresses(
+                { nodes: resolved.nodes, submodels: resolved.submodels },
+                data.moved,
+                { nodes: asked.nodes, submodels: asked.submodels },
+              )
               const committedNodes = "instance_name" in data
-                ? resolved.nodes.map(node => ({ ...node, selected: node.id === data.instance_name }))
-                : resolved.nodes
+                ? placed.nodes.map(node => ({ ...node, selected: node.id === data.instance_name }))
+                : placed.nodes
               const selected = "instance_name" in data
                 ? committedNodes.find(node => node.id === data.instance_name)
                 : undefined
@@ -287,7 +295,7 @@ export default function useSubmodelNavigation({
               useGraphStore.getState().setNodesAndEdgesAndSubmodels(
                 committedNodes,
                 resolved.edges,
-                resolved.submodels,
+                placed.submodels,
                 nextPreamble,
               )
               if (selected) {
@@ -506,10 +514,17 @@ export default function useSubmodelNavigation({
         }), {
           ok: (resolved) => {
             preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
+            // Each dissolved node keeps the place the saved baseline holds it (CGEN-09).
+            const asked = useGraphStore.getState()
+            const placed = withSavedAddresses(
+              { nodes: resolved.nodes, submodels: resolved.submodels },
+              data.moved,
+              { nodes: asked.nodes, submodels: asked.submodels },
+            )
             useGraphStore.getState().setNodesAndEdgesAndSubmodels(
-              resolved.nodes,
+              placed.nodes,
               resolved.edges,
-              resolved.submodels,
+              placed.submodels,
               nextPreamble,
             )
             addToast("success", `Submodel "${displayName}" dissolved - save to apply`)

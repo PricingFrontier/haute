@@ -164,15 +164,34 @@ def test_with_nothing_edited_each_request_computes_what_the_file_computes(
         assert dict(columns)["relativity"] == "Float64"
 
 
+def _without_spellings(value: Any) -> Any:
+    """*value* with no number literal carrying its spelling: a step's numbers as a browser
+    holds them, which keep their spelling only through their ``text`` (CGEN-09)."""
+    if isinstance(value, dict):
+        literal = value.get("kind") == "literal" and value.get("type") == "number"
+        return {
+            key: _without_spellings(item)
+            for key, item in value.items()
+            if not (literal and key == "text")
+        }
+    if isinstance(value, list):
+        return [_without_spellings(item) for item in value]
+    return value
+
+
 def test_the_requests_tell_apart_what_a_browser_held(client: Any, tmp_path: Path) -> None:
     """The fixture's comparison sees the difference the rule removes: the same requests
-    sent with every part read from the browser's copy compute something else."""
+    sent with every part read from the browser's copy, its numbers without their spelling,
+    compute something else; with their spelling, an edited node's steps compute what the
+    file does (CGEN-09)."""
     root = make_project(tmp_path)
     document = BrowserDocument(root, root / "main.py")
-    held, exact = document.live, _exact(document)
+    held, exact = _without_spellings(document.live), _exact(document)
 
     _status, _error, columns, _rows = _preview(client, held, "relativity")
     assert dict(columns)["relativity"] == "Int32"
+    _status, _error, columns, _rows = _preview(client, document.live, "relativity")
+    assert dict(columns)["relativity"] == "Float64"
     assert _explore(client, held) != _explore_point(client, exact)
     assert _estimate(client, held, "train") != _estimate(client, exact, "train")
 

@@ -68,6 +68,7 @@ from haute._polars_steps import (
     stepped_surface_allows_input_references,
     stepped_surface_for,
     validate_polars_steps,
+    without_number_text,
 )
 from haute._polars_steps_lift import canonical_steps
 from haute._project_settings import settings_path
@@ -547,7 +548,7 @@ def _apply_add_node(
             fix="Choose another name.",
         )
     _check_stepped_write(op.node_type, node_id, None, op.config)
-    written = _resolve_output_rows(op.node_type, op.config, refs, graph)
+    written = _without_spellings(_resolve_output_rows(op.node_type, op.config, refs, graph))
     node = GraphNode(
         id=node_id,
         type=op.node_type.value,
@@ -754,7 +755,7 @@ def _apply_update_node(
         operation="update_node",
         removable_keys=set(node.data.config),
     )
-    written = _resolve_output_rows(node.data.nodeType, op.config, refs, graph)
+    written = _without_spellings(_resolve_output_rows(node.data.nodeType, op.config, refs, graph))
     if visibility is not None:
         _refuse_blind_rewrite(node, written, new_node_ids, visibility)
 
@@ -778,6 +779,15 @@ def _assigned_step_id(kind: object, taken: Sequence[object]) -> str:
     while f"{prefix}_{number}" in taken:
         number += 1
     return f"{prefix}_{number}"
+
+
+def _without_spellings(config: Mapping[str, Any]) -> dict[str, Any]:
+    """*config* as the assistant writes it, its steps' numbers carrying no ``text``: the
+    server holds them exactly, and the reload gives each the spelling a browser needs
+    (CGEN-09)."""
+    if "steps" not in config:
+        return dict(config)
+    return {**config, "steps": without_number_text(config["steps"])}
 
 
 def _apply_edit_steps(
@@ -842,7 +852,7 @@ def _apply_edit_steps(
             del edited[position_of(edit.remove)]
             changed.append(edit.remove)
             continue
-        step = deepcopy(edit.step)
+        step = without_number_text(deepcopy(edit.step))
         if isinstance(edit, StepReplace):
             position = position_of(edit.replace)
             step.setdefault("id", edit.replace)
@@ -3235,6 +3245,7 @@ def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
     postconditions are what the committed graph holds. Steps that cannot render yet are
     saved whole beside the code, and stay as they are."""
     nodes: list[GraphNode] = []
+    nodes_by_id = {node.id: node for node in graph.nodes}
     changed = False
     for node in graph.nodes:
         steps = node.data.config.get("steps")
@@ -3244,7 +3255,11 @@ def _transform_steps_as_reloaded(graph: PipelineGraph) -> PipelineGraph:
             and node.data.editor.steps_error is None
         ):
             try:
-                reloaded = canonical_steps(NodeType(node.data.nodeType), steps)
+                reloaded = canonical_steps(
+                    NodeType(node.data.nodeType),
+                    steps,
+                    inputs=_incoming_input_names(graph, node.id, nodes_by_id),
+                )
             except PolarsStepError:
                 reloaded = steps
             if reloaded != steps:

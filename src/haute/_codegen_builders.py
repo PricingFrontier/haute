@@ -46,7 +46,11 @@ from haute._code_extraction import (
 )
 from haute._config_io import config_path_for_node
 from haute._config_validation import validate_optimiser_input_selectors
-from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    decorator_value_written,
+    edge_join_config_to_decorator_kwargs,
+)
 from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
@@ -250,12 +254,8 @@ def render_node_source(
 
 
 def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[tuple[str, object]]:
-    """Decorator keywords for present config keys, skipping ``None``, ``""`` and ``[]``."""
-    return [
-        (key, config[key])
-        for key in keys
-        if config.get(key) is not None and config.get(key) != "" and config.get(key) != []
-    ]
+    """Decorator keywords for the config keys a save writes (``decorator_value_written``)."""
+    return [(key, config[key]) for key in keys if decorator_value_written(key, config.get(key))]
 
 
 def _params(names: Sequence[str], annotation: str | None = None) -> tuple[Param, ...]:

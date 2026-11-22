@@ -111,16 +111,22 @@ through the LibCST boundary rather than a token splice or substring mutation.
 ## Rebuilding steps from code (READ-21)
 
 `haute._polars_steps_lift` is the inverse of the step renderer
-(`haute._polars_steps.render_node_steps`). `lift_steps(node_type, code)` rebuilds a stepped
-node's steps from its body, and `canonical_steps(node_type, steps)` gives the steps that a
-list's rendering rebuilds as. `READ-22` rebuilds every stepped node's steps from its code on
-load with `lift_steps`.
+(`haute._polars_steps.render_polars_steps`). `lift_steps(node_type, code, inputs=...)`
+rebuilds a stepped node's steps from its body, and `canonical_steps(node_type, steps,
+inputs=...)` gives the steps that a list's rendering rebuilds as. `inputs` is required: the
+names the node's incoming edges take in its function (its positional parameters), of which
+the surface's eligible ones (`step_input_names`) are what each trial renders against.
+`READ-22` rebuilds every stepped node's steps from its code on load with `lift_steps`.
 
 This fits the boundary above. The standard-library AST is used only to propose steps.
 Nothing is unparsed over authored code, and LibCST is not needed, since nothing is
 rewritten. A statement becomes a step only when the renderer, given that step after the
-steps rebuilt before it, prints exactly the statement's text. Every other statement keeps
-its text as code. The rebuilt steps never take authority over Python they cannot describe,
+steps rebuilt before it and the node's input names, prints exactly the statement's text.
+Every other statement keeps its text as code. The trial renders against the input names as
+every later render does (the editor's, a save's), so what the lift accepts and what such a
+render accepts are one rule: a statement that rebinds an input's name (`exposure = 365` in a
+node reading `exposure`) stays code, never a Variable step that a render against the inputs
+refuses and a save after any edit replaces with the incomplete-steps placeholder (CGEN-10). The rebuilt steps never take authority over Python they cannot describe,
 and a save writes a node from its steps only when they were edited: a list that has been
 held elsewhere since the load is not read for a node nobody edited ("Which steps a write
 renders" in [high-level](high-level.md)).
@@ -140,6 +146,10 @@ renders" in [high-level](high-level.md)).
 - **Code.** A statement is code unless a step renders exactly its text where it stands. A
   run of code statements, with the comments and blank lines among them, is one
   `free_code` step, however many statements it holds.
+- **A reader's failure is code.** A statement whose reading fails, for text no step's
+  reader expects (a decimal membership value such as `"abc"`, `"1e5"` or `""`) or for a
+  defect in a reader, is code: the failure costs the statement its step, never the read of
+  the file, and is logged as `polars_step_reader_failed` with its line (CGEN-02).
 - **A step stands only where it renders the same.** A variable whose statement stays code
   defines nothing for the steps after it, so a step that reads it is code too. This
   arises only in hand-written code, such as `rate = 2  # two`, since a step never renders
@@ -217,6 +227,39 @@ another comment line.
 - **The editor.** The step editor shows no control for the comment and keeps it through
   every edit of the step. The assistant neither writes nor reads it, and `step_fields()`
   does not list it, as it does not list `id`.
+
+### A number's `text` (CGEN-09)
+
+A browser has one kind of number: a step list it held carries `1.0` as `1`, `1e20` as a
+whole number of 21 digits, `-0.0` as `0` and an integer past 2^53 as its nearest double, and
+the renderer would write each back as another literal, a 32-bit integer column for a
+decimal one or a filter on another id. So a number literal, `{"kind": "literal", "type":
+"number", "value": ...}`, a membership list's members too, may carry `text`: its spelling as
+Python writes it.
+
+- **When it is carried.** Exactly when the renderer, given the number as a browser sends it
+  back (`_polars_steps.js_held`: one double, written as JavaScript writes its shortest
+  digits, read back as Python reads JSON), would write it otherwise
+  (`_polars_steps.number_rendering`, as a bare literal or as a member of a list of whole
+  numbers, floats or decimals): `spelled_number` decides. The lift gives it from the
+  statement's own text; `canonical_steps` from the text a literal carries, or else the
+  number's rendering, by the same rule; the editor gives a typed number one by the same rule
+  (`polarsSteps/numberSpelling.ts`, held to the server's by the case file
+  `numberRenderings.json`, which `scripts/regen_number_renderings_fixture.py` writes). So
+  `0.5` carries none and `1.0` carries `"1.0"`.
+- **Rendering.** A literal with `text` is written as that text, in `ruff format`'s form
+  (`_source_layout.number_spelling`: a lowercase exponent without a plus sign, a digit on
+  each side of a decimal point, a whole number without leading zeros), once the text is a
+  number literal that spells the literal's value as a double: one that is not, or that
+  spells another number, is refused with the step's index, never written. In a list the text
+  must be the list's kind: whole for whole numbers, with a point or an exponent for floats,
+  without an exponent for decimals, whose scale it then sets; in an argument that takes a
+  whole number (Round's decimal places, a text slice's start and length) it must be whole,
+  since Polars refuses `.round(2.0)`. A text on a value that is not a number is refused. The layout's restyling keeps each number as the statement writes it.
+- **The editor.** A number field shows the text, and a typed number keeps its spelling as
+  typed, without its group separators, currency sign or plus sign, except that a field of
+  whole numbers keeps only a whole spelling (`slotSpelling`: `2.0` there is written `2`); a
+  number moved into a list keeps its spelling where that list can write it.
 
 ### Chains of one operator (READ-22)
 

@@ -33,6 +33,8 @@ __all__ = [
     "_strip_docstring",
     "_dedent",
     "_extract_connect_calls",
+    "CONSTRUCTOR_PARAMETERS",
+    "constructor_arguments",
     "_extract_meta",
     "_extract_pipeline_meta",
     "_extract_submodel_meta",
@@ -549,30 +551,112 @@ def _eval_meta_value(var_name: str, field: str, node: ast.expr) -> Any:
         ) from exc
 
 
+#: The parameters of each constructor the parser reads, by its receiver, as its class
+#: declares them in ``haute.pipeline``: the positional ones in order, then the keyword-only
+#: ones. ``tests/test_parser.py`` holds this table to the classes' signatures.
+CONSTRUCTOR_PARAMETERS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "pipeline": (("name", "description"), (GLOBAL_CONSTANTS_NAME,)),
+    "submodel": (
+        ("name", "description"),
+        ("definition_id", "input_ports", "output_ports", "pipeline_dir"),
+    ),
+}
+
+#: Keywords a constructor does not take that an author may still write, with what to
+#: write instead.
+_REFUSED_CONSTRUCTOR_KEYWORDS: dict[str, dict[str, str]] = {
+    "submodel": {
+        "outputs": "Submodel outputs is not supported; declare input_ports and output_ports.",
+        GLOBAL_CONSTANTS_NAME: (
+            "A submodel does not declare global constants: it reads the constants of "
+            "the pipeline that registers it. Remove the global_constants= keyword."
+        ),
+    },
+}
+
+
+def constructor_arguments(tree: ast.Module, receiver: str) -> dict[str, ast.expr] | None:
+    """The ``<receiver>`` constructor's arguments, each by the parameter Python binds it
+    to (:data:`CONSTRUCTOR_PARAMETERS`), or None when the module constructs none.
+
+    Every reader of the constructor takes its arguments from here, so a name or a
+    description is read whether it is given by position or by keyword. A call the
+    parser cannot account for in full is a :class:`ParseError` naming its line, never
+    read in part and then written back without what it left out (CGEN-01): an unpacked
+    argument, more positional arguments than the class takes, one parameter given twice,
+    a keyword the class does not take, or no name.
+    """
+    call = _constructor_call(tree, receiver)
+    if call is None:
+        return None
+    title = f"haute.{receiver.title()}(...)"
+    positional, keyword_only = CONSTRUCTOR_PARAMETERS[receiver]
+    if any(isinstance(argument, ast.Starred) for argument in call.args) or any(
+        keyword.arg is None for keyword in call.keywords
+    ):
+        raise ParseError(
+            f"{title} takes no unpacked arguments: give each one as itself.", line=call.lineno
+        )
+    if len(call.args) > len(positional):
+        raise ParseError(
+            f"{title} takes at most {len(positional)} positional arguments "
+            f"({', '.join(positional)}): got {len(call.args)}.",
+            line=call.args[len(positional)].lineno,
+        )
+    bound: dict[str, ast.expr] = dict(zip(positional, call.args, strict=False))
+    refused = _REFUSED_CONSTRUCTOR_KEYWORDS.get(receiver, {})
+    for keyword in call.keywords:
+        name = str(keyword.arg)
+        if name in refused:
+            raise ParseError(refused[name], field=name, line=keyword.value.lineno)
+        if name not in (*positional, *keyword_only):
+            raise ParseError(
+                f"{title} has an unknown keyword {name!r}: it takes "
+                f"{', '.join((*positional, *keyword_only))}.",
+                field=name,
+                line=keyword.value.lineno,
+            )
+        if name in bound:
+            raise ParseError(
+                f"{title} is given {name!r} twice.",
+                field=name,
+                line=keyword.value.lineno,
+            )
+        bound[name] = keyword.value
+    if "name" not in bound:
+        raise ParseError(
+            f'{title} needs its name, such as haute.{receiver.title()}("motor").',
+            field="name",
+            line=call.lineno,
+        )
+    return bound
+
+
 def _extract_meta(
     tree: ast.Module,
     var_name: str,
     default_name: str = "main",
 ) -> tuple[str, str]:
-    """Find ``<var_name> = haute.<Class>("name", description="...")`` at module level."""
-    name = default_name
-    description = ""
-    call = _constructor_call(tree, var_name)
-    if call is None:
-        return name, description
-
-    if call.args:
-        val = _eval_meta_value(var_name, "name", call.args[0])
-        if isinstance(val, str):
-            name = val
-
-    for kw in call.keywords:
-        if kw.arg == "description":
-            val = _eval_meta_value(var_name, "description", kw.value)
-            if isinstance(val, str):
-                description = val
-
-    return name, description
+    """The name and description of the module's ``<var_name> = haute.<Class>(...)``,
+    given by position or by keyword (:func:`constructor_arguments`), each a string
+    literal; *default_name* and no description when the module constructs none."""
+    arguments = constructor_arguments(tree, var_name)
+    if arguments is None:
+        return default_name, ""
+    texts: dict[str, str] = {}
+    for field in ("name", "description"):
+        if field not in arguments:
+            continue
+        node = arguments[field]
+        value = _eval_meta_value(var_name, field, node)
+        if not isinstance(value, str):
+            raise ParseError(
+                f"{var_name} {field} must be a string literal: got {value!r}",
+                field=field,
+                line=node.lineno,
+            )
+        texts[field] = value
+    return texts["name"], texts.get("description", "")
 
 
 def _extract_pipeline_meta(tree: ast.Module) -> tuple[str, str]:
@@ -586,16 +670,36 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 
 
 def _constructor_call(tree: ast.Module, var_name: str) -> ast.Call | None:
-    """The first module-level ``<var_name> = <call>``: the constructor every reader uses."""
-    for node in ast.iter_child_nodes(tree):
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == var_name
-            and isinstance(node.value, ast.Call)
+    """The first module-level call assigned to *var_name*, annotated or not: the
+    constructor every reader uses, or None when the module assigns it none.
+
+    The call must be ``haute.<Class>(...)``, or the class imported from ``haute``, as the
+    module's boundaries find it. Any other call (a factory) is a :class:`ParseError`
+    naming its line: a save would write the constructor in its place.
+    """
+    title = var_name.title()
+    is_constructor = _module_boundaries(
+        tree, line_count=0, receiver=var_name, constructor_name=title
+    ).is_constructor
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        value = node.value
+        if not isinstance(value, ast.Call) or not any(
+            isinstance(target, ast.Name) and target.id == var_name for target in targets
         ):
-            return node.value
+            continue
+        if not is_constructor(value):
+            raise ParseError(
+                f"{var_name} is assigned {_describe_expr(value)!r}, not haute.{title}(...): "
+                f"a save writes the {var_name} as haute.{title}(...), so assign it that.",
+                line=value.lineno,
+            )
+        return value
     return None
 
 
@@ -607,27 +711,18 @@ def _extract_global_constants_declaration(tree: ast.Module, *, receiver: str) ->
     constants are its pipeline's, so a submodel constructor that names one
     is a ``ParseError`` too.
     """
-    call = _constructor_call(tree, receiver)
-    if call is None:
+    arguments = constructor_arguments(tree, receiver)
+    node = None if arguments is None else arguments.get(GLOBAL_CONSTANTS_NAME)
+    if node is None:
         return False
-    for kw in call.keywords:
-        if kw.arg != GLOBAL_CONSTANTS_NAME:
-            continue
-        if receiver != "pipeline":
-            raise ParseError(
-                "A submodel does not declare global constants: it reads the constants of "
-                "the pipeline that registers it. Remove the global_constants= keyword.",
-                line=kw.value.lineno,
-            )
-        value = _eval_meta_value(receiver, GLOBAL_CONSTANTS_NAME, kw.value)
-        if value != GLOBAL_CONSTANTS_FILE:
-            raise ParseError(
-                f"pipeline global_constants must be {GLOBAL_CONSTANTS_FILE!r}, the one place "
-                f"a pipeline's global constants live: got {value!r}.",
-                line=kw.value.lineno,
-            )
-        return True
-    return False
+    value = _eval_meta_value(receiver, GLOBAL_CONSTANTS_NAME, node)
+    if value != GLOBAL_CONSTANTS_FILE:
+        raise ParseError(
+            f"pipeline global_constants must be {GLOBAL_CONSTANTS_FILE!r}, the one place "
+            f"a pipeline's global constants live: got {value!r}.",
+            line=node.lineno,
+        )
+    return True
 
 
 def _is_receiver_node_def(statement: ast.stmt, receiver: str) -> bool:
@@ -770,11 +865,10 @@ def _module_boundaries(
 
     for statement in tree.body:
         if isinstance(statement, ast.Import):
-            imported_names = {alias.name for alias in statement.names}
             for alias in statement.names:
                 if alias.name == "haute":
                     haute_module_aliases.add(alias.asname or "haute")
-            if imported_names and imported_names <= {"haute", "polars"}:
+            if _is_standard_import(statement, constructor_name):
                 last_standard_line = max(
                     last_standard_line,
                     statement.end_lineno or statement.lineno,
@@ -902,12 +996,21 @@ def _is_docstring(statement: ast.stmt) -> bool:
 def _is_standard_import(statement: ast.stmt, constructor_name: str) -> bool:
     """An import codegen's ``import haute`` / ``import polars as pl`` stands in for.
 
-    ``from haute import <constructor>`` qualifies, because codegen spells the
-    constructor ``haute.<constructor>``; any other ``from haute import`` binds a
-    name the regenerated imports do not, so it is kept only as preamble.
+    ``import haute``, under any name, qualifies: the module boundaries read the
+    constructor through its alias, and codegen spells it ``haute.<constructor>``.
+    Polars qualifies only as ``import polars as pl``: node code reads Polars by its
+    name, so ``import polars`` or ``import polars as plr`` binds a name a save would
+    not write, and is kept as preamble below the standard imports and reported above
+    them, as any other import is (CGEN-06). ``from haute import <constructor>``
+    qualifies, because codegen spells the constructor ``haute.<constructor>``; any
+    other ``from haute import`` binds a name the regenerated imports do not, so it is
+    kept only as preamble.
     """
     if isinstance(statement, ast.Import):
-        return all(alias.name in {"haute", "polars"} for alias in statement.names)
+        return all(
+            alias.name == "haute" or (alias.name == "polars" and alias.asname == "pl")
+            for alias in statement.names
+        )
     if isinstance(statement, ast.ImportFrom) and statement.module == "haute":
         imported_names = {alias.name for alias in statement.names}
         return bool(imported_names) and imported_names <= {constructor_name}

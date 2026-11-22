@@ -71,7 +71,7 @@ describe("useNodeHandlers", () => {
       } },
     }
     vi.mocked(createNodeInstance).mockResolvedValue({ status: "ok", graph: wrapped,
-      owner_name: "rate_calc", instance_name: "rate_calc_2", definition_id: "rate_calc", source_revision: "rev-1" })
+      owner_name: "rate_calc", moved: [], instance_name: "rate_calc_2", definition_id: "rate_calc", source_revision: "rev-1" })
     const sourceRevisionRef = { current: "rev-1" }
     const resolveCanonicalIdentities = vi.fn(async (graph: Parameters<NonNullable<Parameters<typeof useSubmodelNavigation>[0]["resolveCanonicalIdentities"]>>[0]) => ({ ...graph, edges: normalizeEdges([...graph.edges]), submodels: graph.submodels as Record<string, SubmodelDefinition>,
       nodes: graph.nodes.map(n => ({ ...n, data: { ...n.data, _functionName: n.id,

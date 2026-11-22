@@ -252,9 +252,9 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
         1,
         "the submodel file's receiver name",
     ),
-    ("_ast_helpers.py", "_module_boundaries", "polars", "compare:imported_names"): (
-        1,
-        "the polars module",
+    ("_ast_helpers.py", "<module>", "submodel", "dict-key"): (
+        2,
+        "the Submodel constructor's receiver: its parameters and the keywords it refuses",
     ),
     ("_ast_helpers.py", "_is_generated_call", "submodel", "compare:method"): (
         1,

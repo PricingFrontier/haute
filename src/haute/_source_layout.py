@@ -218,6 +218,33 @@ def quote_string(value: str) -> str:
     return f"{quote}{body}{quote}"
 
 
+#: A number literal as Python source writes one: digits with a decimal point or an exponent,
+#: or neither, and no sign but a leading minus.
+_NUMBER_TEXT = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+
+
+def number_spelling(text: object) -> str | None:
+    """*text*, a number literal's ``text``, as the renderer writes it, the way ``ruff format``
+    leaves it: a lowercase exponent with no plus sign, a decimal point with a digit on each
+    side, a whole number without leading zeros; ``None`` for text that is not a finite number
+    as Python writes one."""
+    if not isinstance(text, str) or not _NUMBER_TEXT.fullmatch(text):
+        return None
+    sign, body = ("-", text[1:]) if text.startswith("-") else ("", text)
+    mantissa, _, exponent = body.lower().partition("e")
+    if "." not in mantissa and not exponent:
+        spelled = str(int(mantissa))
+    else:
+        if mantissa.startswith("."):
+            mantissa = f"0{mantissa}"
+        if mantissa.endswith("."):
+            mantissa = f"{mantissa}0"
+        spelled = f"{mantissa}e{exponent.lstrip('+')}" if exponent else mantissa
+    if not math.isfinite(float(spelled)):
+        return None
+    return sign + spelled
+
+
 def float_literal(value: float) -> str:
     """A finite float as ``ruff format`` writes it: its ``repr`` without an exponent's ``+``.
 
@@ -228,6 +255,12 @@ def float_literal(value: float) -> str:
 
 
 _PYTHON_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
+
+
+def text_column(line: str, ast_column: int) -> int:
+    """The index in *line* of a column ``ast`` reports, which it counts in UTF-8 bytes:
+    the two differ once the line holds text outside ASCII before the column (CGEN-03)."""
+    return len(line.encode("utf-8")[:ast_column].decode("utf-8"))
 
 
 def python_lines(text: str, *, keepends: bool = False) -> list[str]:

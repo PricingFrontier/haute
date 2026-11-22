@@ -170,7 +170,13 @@ Out of scope (owned by neighbouring components):
     or augmented assignment, any binding inside a block), or one naming what the module does
     not bind, a utility file that is not valid Python, a binding inside a block at module level in a
     star-imported utility, a star import of a module outside `utility`, a star import of a
-    utility file that does not exist, or a cycle of utility star imports.
+    utility file that does not exist, a cycle of utility star imports, or a name bound at run
+    time, which the inventory cannot read without running the code (CGEN-07): an `exec` or
+    `eval` call in the module's own scope, one given `globals()` anywhere, or a write through
+    the module's namespace anywhere (`globals()["RATE"] = 2`, `globals().update(...)`, or
+    `vars()` or `locals()` written in the module's own scope). The refusal names the line and
+    says to bind the name with an ordinary assignment; reading the namespace
+    (`globals().get(...)`) binds nothing and is not refused.
 
   Save, the strict parse (so `haute run` and deploy), the editor load (expression-parsing
   and server-api) and the editor identity request apply it, and saving a utility file checks
@@ -229,6 +235,17 @@ Out of scope (owned by neighbouring components):
   Edge Join and Explore, an Edge Join's `suffix` left out at its default `_right` while
   `how` and `maintain_order` are always written), and the decorator itself performs that behaviour when
   the file runs on its own (see [pipeline-config](../pipeline-config/high-level.md)).
+  A node that keeps its settings on its decorator, an Edge Join or a transform, reads every
+  keyword into its config, so its type's config model refuses one it does not declare by
+  name ("Node 't' has polars config keys the node type does not declare: 'selected_colums'"),
+  whatever its value, empty too, rather than the parse dropping it and the next save deleting
+  it; a node with a settings
+  file refuses any keyword beside `config=`, and one without it names its keywords in the
+  refusal that asks for the file. What the function holds (`code`, `steps`, the keyword
+  parameters) is never a keyword. One rule, `_edge_join.decorator_value_written`, decides
+  which values of a declared keyword a save writes: an empty value (`None`, `""`, `[]`) and
+  an Edge Join's default suffix are the setting's absence, written as no keyword and read as no setting, so
+  parse, save and parse read the same (CGEN-05).
   Codegen therefore emits no loader, scoring, join, switch or assembly call:
   - A configured node without user code is a **declaration**,
     `def <name>(<inputs>): ...`. Its parameters name its inputs, carry no
@@ -361,13 +378,19 @@ Out of scope (owned by neighbouring components):
   save overwrites). `haute init` scaffolds `main.py` with codegen's docstring, so a new
   project's first save leaves it as it is.
 
-  Regeneration keeps only the docstring, the `haute`/`polars` imports (and `from haute import
+  Regeneration keeps only the docstring, the imports it writes itself, `import haute` and
+  `import polars as pl` (Polars under exactly that name; and `from haute import
   <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
   and from the constructor on the constructor, the `global_constants` binding, node functions,
   `pipeline.submodel(...)` registrations and `connect` chains. Any other module statement (an
   import above `import haute`, a constant, helper or trailing code after the constructor) would
   be dropped, and so would any other `from haute import ...` outside the preamble, since
-  the regenerated `import haute` does not bind its names. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
+  the regenerated `import haute` does not bind its names. An import of Polars under another
+  name (`import polars`, `import polars as plr`) binds a name the regenerated imports do not,
+  so it is no standard import: below them it is preamble, which a save keeps and every run
+  executes, and above them it is reported like any other statement a save would drop
+  (CGEN-06). `import haute` under another name stays standard, its alias read for the
+  constructor. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
   reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
   it between the imports and the constructor, or wrap it in preserve markers), which degrades
   the document, so the file is never regenerated without it. A save regenerates each
@@ -469,22 +492,45 @@ a part sent without one is read from the request.
   it, by source and handles, and in a definition the input ports that reach it, since its
   steps render against them. Its settings are unedited when they equal the baseline's. Each
   unedited part is sent with its saved form, the steps' in `editor.saved_code` (and as the
-  node's `code`) or `editor.saved_steps`, the settings' in `editor.saved_settings`.
+  node's `code`) or `editor.saved_steps`, the settings' in `editor.saved_settings`. Edited
+  settings whose node the baseline holds with saved settings are sent with those as the
+  settings the edit began from, in `editor.settings_edited_from`.
   A node the baseline does not hold, or holds without a saved form for that part, is sent
   with every such part read. A transform of the graph whose answer the editor adopts as an
   unsaved edit (create submodel, create instance, dissolve) is built with no baseline, so
-  every part is read and the answer holds the nodes as they were sent; the next save
-  compares them with the baseline as any edit is.
+  every part is read and the answer holds the nodes as they were sent. The answer names
+  each node it moves, by its scope and id in the request and in the answer (`moved`),
+  since a moved node has a new place and, after a dissolve or a create instance, a new id.
+  The editor gives each node an identity, where it was when the document was loaded: a
+  node a graph change moves records it (`data._savedAddress`, an address, never a copy),
+  carried through later moves and kept by Undo and Redo, never sent; a node it leaves in
+  place keeps the one it had, which the answer, built on the server, does not carry; any
+  other node's is where it is. A node a graph change copies, whose original the answer
+  still holds where it was (dissolving one occurrence of a definition others use), is
+  another node: it takes a fresh identity, a token no place can be, so no two nodes share
+  one, not even a copy made where a deleted one was, and it records
+  the identity of what it was copied from (`data._savedOrigins`, nearest first), which gives
+  it that node's saved forms until a save holds its own. A save makes its baseline from the
+  document, so each of the baseline's nodes keeps its identity too. A node's baseline node is
+  the baseline's node of the same type and identity, the one at the node's own place if two
+  are, else, for a copy, the node it was copied from, so a node moved keeps its saved forms,
+  and with them its settings' spelling (CGEN-09), before a save, after one, after a second
+  move and after an Undo past one, and a copy edited and saved is never another node's. The
+  next save then compares it with that baseline node as any edit is.
 - **The server.** One base model, `haute.schemas.DocumentRequest`, carries the document and
   applies the rule before any node is built (`haute._edited_parts.graph_as_read`): a node
   sent with a saved code is built from that code with its step list taken off, since
   building a node renders its steps into its code (`NodeData`); a node sent with saved steps
   is built from that list, so a run refuses it as unfinished, naming the step, as the file
   does; a node sent with saved settings is built from them, the settings it carries not
-  read. A saved code of `""` (steps that did not render when saved) leaves the steps read,
+  read; a node sent with the settings its edit began from is built from the settings it
+  carries, each number in them taken from that form where a browser holds it as it holds
+  the number at the same place there (`haute._edited_parts.spelled_as`, below). A saved code
+  of `""` (steps that did not render when saved) leaves the steps read,
   being then their only copy. A saved form of the steps on a node that holds no step list,
-  a saved code and saved steps together, saved steps that are not a list, and saved
-  settings that are not a JSON object or that hold `steps` or `code`, are a 422. Every request model that carries the document
+  a saved code and saved steps together, saved steps that are not a list, saved settings
+  and the settings an edit began from together, and either that is not a JSON object or
+  that holds `steps` or `code`, are a 422. Every request model that carries the document
   derives from it, the save included, and records which parts it read from the request
   (`steps_read`, `settings_read`). A built node never carries a saved form: `NodeData`
   refuses one, so a request model that went round the base model fails loudly. `POST
@@ -499,9 +545,23 @@ a part sent without one is read from the request.
   for a write alike; settings read are run as sent and written to the node's settings
   file. A part not read keeps the file's spelling and meaning: an untouched node's code is
   written byte for byte and its settings file is left as it was, and a run computes the
-  column types and values the file computes. Within a part read, a number the browser held
-  is still written as the browser held it: carrying it as its kind and its digits is
-  `CGEN-09`'s.
+  column types and values the file computes. Within a part read, a number keeps its
+  spelling too (CGEN-09). A step's number literal carries it as its `text` ("A number's
+  `text`" in [the structured syntax boundary](structured-syntax-boundary.md)). In edited
+  settings each number the edit left as it was takes it from the settings the edit began
+  from, so renaming a Rating Step's output column keeps its `default_value: 1.0`. Only a
+  number the edit changed is written as the browser sent it, a whole number as an integer.
+- **The same place.** `spelled_as` walks the settings sent and the settings the edit began
+  from together: an object's value by its key, and a list's elements by their content first
+  (an element a browser holds as it holds an element of the saved list is that element,
+  wherever it now stands, so a row added, removed or moved keeps its numbers and shifts no
+  other); an element the edit changed is then walked against a saved element left, the one
+  after the same matched neighbour, as an edit in place leaves it, else the first left. A number takes the saved
+  number's spelling when a browser holds the saved number as the number sent, both whole
+  or both not: one double, read back as Python reads JSON (`_polars_steps.js_held`), so
+  `1.0` matches `1` and `9007199254740993` matches `9007199254740992`, and `true` never
+  matches `1`. Any other value is read as sent. The rule changes no value, only how a value
+  the browser cannot hold is spelt.
 
 A node saved with unfinished steps has the raising placeholder for a body and its list in
 `.haute.json`. Unless its steps are read from the request, a save writes it from that

@@ -51,6 +51,7 @@ from haute._polars_steps import (  # noqa: E402
     NUMBER_TYPES,
     PIVOT_AGGREGATIONS,
     WINDOW_AGGREGATIONS,
+    referenced_step_inputs,
     render_node_steps,
 )
 from haute._polars_steps_lift import lift_steps  # noqa: E402
@@ -787,7 +788,7 @@ def read_back(steps: list[Step]) -> list[Step]:
     """*steps* as the editor receives them: rendered to code, then read back from it."""
     numbered = [{"id": f"s{index}", **step} for index, step in enumerate(steps)]
     code = render_node_steps(NodeType.POLARS, numbered).code
-    return lift_steps(NodeType.POLARS, code)
+    return lift_steps(NodeType.POLARS, code, inputs=referenced_step_inputs(numbered))
 
 
 def build_fixture() -> dict[str, Any]:

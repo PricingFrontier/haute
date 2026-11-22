@@ -109,6 +109,110 @@ pipeline = haute.Pipeline("my_pricing", description="Motor pricing")
         graph = parse_pipeline_file(p)
         assert graph.pipeline_name == "my_pricing"
 
+    @pytest.mark.parametrize(
+        "construction",
+        [
+            'pipeline = haute.Pipeline("motor", "Motor pricing")',
+            'pipeline = haute.Pipeline("motor", description="Motor pricing")',
+            'pipeline = haute.Pipeline(name="motor", description="Motor pricing")',
+            'pipeline = haute.Pipeline(description="Motor pricing", name="motor")',
+            'pipeline: haute.Pipeline = haute.Pipeline("motor", "Motor pricing")',
+        ],
+    )
+    def test_the_name_and_description_are_read_however_the_constructor_gives_them(
+        self, construction: str
+    ) -> None:
+        """CGEN-01: by position or by keyword, as ``Pipeline.__init__`` takes them, and
+        from an annotated assignment as from a plain one; a save writes them back."""
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        graph = parse_pipeline_source(f"import haute\n\n{construction}\n")
+        assert (graph.pipeline_name, graph.pipeline_description) == ("motor", "Motor pricing")
+        regenerated = graph_to_code(
+            graph, pipeline_name=graph.pipeline_name, description=graph.pipeline_description
+        )
+        again = parse_pipeline_source(regenerated)
+        assert (again.pipeline_name, again.pipeline_description) == ("motor", "Motor pricing")
+
+    @pytest.mark.parametrize(
+        ("construction", "fragment"),
+        [
+            ('haute.Pipeline("motor", colour="red")', "unknown keyword 'colour'"),
+            ('haute.Pipeline("motor", "Motor", "extra")', "takes at most 2 positional"),
+            ('haute.Pipeline("motor", name="other")', "'name' twice"),
+            ("haute.Pipeline()", "needs its name"),
+            ("haute.Pipeline(*names)", "unpacked"),
+            ("haute.Pipeline(**settings)", "unpacked"),
+            ("haute.Pipeline(NAME)", "name must be a string literal"),
+        ],
+    )
+    def test_a_constructor_the_reader_cannot_account_for_is_refused_at_its_line(
+        self, construction: str, fragment: str
+    ) -> None:
+        """CGEN-01: refused naming the line, never read as ``main`` and saved over."""
+        from haute.parser import parse_pipeline_source
+
+        with pytest.raises(ParseError, match=fragment) as refused:
+            parse_pipeline_source(f'import haute\n\nNAME = "x"\npipeline = {construction}\n')
+        assert refused.value.context["line"] == 4
+
+    def test_the_reader_takes_each_constructor_s_parameters_from_its_class(self) -> None:
+        """CGEN-01: the parameters the parser binds are the ones ``__init__`` declares."""
+        import inspect
+
+        from haute._ast_helpers import CONSTRUCTOR_PARAMETERS
+        from haute.pipeline import Pipeline, Submodel
+
+        for receiver, cls in (("pipeline", Pipeline), ("submodel", Submodel)):
+            parameters = list(inspect.signature(cls.__init__).parameters.values())[1:]
+            positional = tuple(
+                p.name for p in parameters if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+            keyword_only = tuple(
+                p.name for p in parameters if p.kind is inspect.Parameter.KEYWORD_ONLY
+            )
+            assert CONSTRUCTOR_PARAMETERS[receiver] == (positional, keyword_only), receiver
+
+    def test_a_refused_constructor_loads_around_it_and_cannot_be_saved(self, tmp_path):
+        """CGEN-01: the editor shows the refusal and offers no save over the file."""
+        p = _write_pipeline(
+            tmp_path, 'import haute\n\npipeline = haute.Pipeline("m", colour="red")\n'
+        )
+        document = load_pipeline_editor_document(p, project_root=tmp_path)
+        assert [d.code for d in document.diagnostics] == ["pipeline_constructor_invalid"]
+        assert "unknown keyword 'colour'" in document.diagnostics[0].message
+        assert document.capabilities.can_save is False
+
+    def test_a_misspelt_transform_keyword_is_refused_naming_the_node_and_the_keyword(
+        self,
+    ) -> None:
+        """CGEN-05: it was read without a word, the node passed every column, and the
+        next save deleted the setting from the file."""
+        from haute.parser import parse_pipeline_source
+
+        source = (
+            "import polars as pl\nimport haute\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def src() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"k": [1], "x": [2]})\n\n\n'
+            '@pipeline.polars(selected_colums=["k"])\n'
+            "def t(src: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return src\n"
+        )
+        with pytest.raises(
+            ConfigError, match=r"Node 't' has polars config keys .*'selected_colums'"
+        ):
+            parse_pipeline_source(source)
+        spelt = source.replace("selected_colums", "selected_columns")
+        from haute.codegen import graph_to_code
+
+        graph = parse_pipeline_source(spelt)
+        assert graph.node_map["t"].data.config["selected_columns"] == ["k"]
+        again = parse_pipeline_source(graph_to_code(graph, pipeline_name="p"))
+        assert again.node_map["t"].data.config == graph.node_map["t"].data.config
+
     def test_edges_from_connect_calls(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "a", "data.parquet")
         code = f"""\
@@ -557,7 +661,7 @@ class TestDecoratorsWithoutPipelineConstructor:
 import polars as pl
 import haute
 
-pipeline = object()  # not haute.Pipeline(...)
+pipeline = None  # not haute.Pipeline(...)
 
 
 @pipeline.polars

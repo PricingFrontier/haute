@@ -292,7 +292,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Server-admitted repairs (19 November 2026): the repair-options question, the shared repair
 // actions and the options answer's generated validator bring the total to 1,819.7 KiB
 // (initial 304.0 KiB); 1,822 KiB (approved) restores about 2.3 KiB headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1822
+// Numbers keep their spelling (CGEN-09, 22 November 2026): the step editor's spelling rule
+// (`polarsSteps/numberSpelling.ts`, lazy), the edited settings' saved form and the saved
+// address a graph change gives a moved node (`utils/documentRequest.ts`, eager) bring the
+// total to 1,823.5 KiB (initial 305.9 KiB); 1,825 KiB restores about 1.5 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1825
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -445,7 +449,11 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // forms put in the next baseline), which the request gateway, the save and the graph
 // store's load use. Nothing lazy became eager. The merged initial bundle is 305.3 KiB;
 // 306 KiB (approved) restores ~0.7 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 306
+// Moved nodes keep their saved forms (CGEN-09, 22 November 2026): the identity a graph change
+// gives a moved node or a copy and the baseline lookup by it (`utils/documentRequest.ts`, which the
+// request gateway, the save and the graph store's load use) bring the merged initial bundle
+// to 306.1 KiB; 307 KiB restores ~0.9 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 307
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
