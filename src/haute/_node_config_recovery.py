@@ -329,9 +329,23 @@ def _engine_issues(
         setting = _refused_setting(node_type, exc)
         if setting is None:
             return [_issue("", "invalid_group", message)]
-        code = "required" if config.get(setting) in (None, "") else "invalid_value"
-        return [_issue(_pointer("", setting), code, message)]
+        code = "required" if _setting_value(config, setting) in (None, "") else "invalid_value"
+        return [_issue(gap_pointer(setting), code, message)]
     return []
+
+
+def _setting_value(config: Mapping[str, Any], setting: str) -> object:
+    """The value at a config path (``step_count``, ``values[1].name``), or None where absent."""
+    value: object = config
+    for part in setting.replace("]", "").replace("[", ".").split("."):
+        if isinstance(value, Mapping):
+            value = value.get(part)
+        elif isinstance(value, list):
+            # The path's index is written by the engine, `values[1]`: matched as written.
+            value = next((item for index, item in enumerate(value) if str(index) == part), None)
+        else:
+            return None
+    return value
 
 
 def gap_pointer(path: str) -> str:

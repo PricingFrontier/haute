@@ -670,7 +670,9 @@ shape key by key, a list item by item, a map entry by entry), and a value is val
 annotation's strict `TypeAdapter` accepts it. A discriminant (`input_type`, `output_type`,
 `source_type`, `algorithm`, `mode`) is the tag of the model's union or its `Literal`; an unknown
 one is never replaced with a default. The engine issues of a candidate are the model's `check`,
-`check_inputs` and `completeness` refusals, each at the setting it names. Recovery keeps no
+`check_inputs` and `completeness` refusals, each at the setting it names, a nested setting
+(`values[1].name`) as its JSON pointer (`/values/1/name`), `required` where the value there is
+absent or empty. Recovery keeps no
 rule of its own for any node type.
 
 Modelling's malformed-value check is
