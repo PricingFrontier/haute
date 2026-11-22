@@ -763,6 +763,33 @@ def test_a_project_builds_a_release_that_prices_as_its_pipeline(project: Path) -
     assert build_release(project, project / "elsewhere").release.id == built.id
 
 
+def test_an_output_column_nothing_fills_is_built_and_answered_null_alone(project: Path) -> None:
+    """WB-47, decided 22 November 2026: a Workbench Output column no frame fills, or fills
+    with a type that does not fit, is null in the app's answer, every other field priced,
+    and the release builds."""
+    pricing = form_table(
+        "pricing",
+        outputs=[
+            ("premium", "float"),
+            ("limit", "float"),
+            ("referral", "int"),
+            ("loading", "float"),
+        ],
+    )
+    write_sheets(project, [*PROJECT_TABLES[:2], pricing, PROJECT_TABLES[3]])
+
+    build_release(project, project / "build" / "app")
+
+    client = _client(project / "build" / "app", local_principal="analyst@example.com")
+    priced = _price(client, {**PROJECT_VALUES, **IDENTITY})
+    assert priced.status_code == 200, priced.text
+    # The frame holds referral as text, which an Integer does not take, and no loading.
+    assert priced.json()["tables"]["pricing"] == [
+        {"quote_reference": "A-1", "quote_option": 1, "premium": 100.0, "limit": 1000.0}
+    ]
+    assert len(priced.json()["tables"]["item_prices"]) == 2
+
+
 def test_a_project_naming_an_edit_role_builds_a_release_that_records_it(project: Path) -> None:
     toml = project / "haute.toml"
     toml.write_text(

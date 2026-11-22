@@ -2595,8 +2595,11 @@ Out of scope:
     whose type does not fit its declared type (below) and every column of a table nothing is
     connected to are filled with nulls, and the panel flags each, so the pipeline runs while
     it is being built: a one-row table nothing is connected to holds one row of nulls and a
-    many-row one no rows. None of them stops a run; an index filled with nulls fails pricing
-    a quote instead (Each output row on its input row, below). A table leading with the quote's
+    many-row one no rows. None of them stops a run, nor a release: `haute app build` builds
+    one, and the app answers that field null and every other priced (decided 22 November
+    2026: a renamed or retyped column upstream blanks its own field, not the quote); an index
+    filled with nulls fails pricing a quote instead (Each output row on its input row,
+    below). A table leading with the quote's
     reference and option holds the quote's on every row whatever its frame holds, read from
     the `quote_details` of the Workbench Input the node reads from: in the editor, `haute run`
     and a trace the sample's, under the stand-in identity, `PREVIEW` and 1, and where it is

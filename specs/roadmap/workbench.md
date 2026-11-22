@@ -59,7 +59,6 @@ session ran each again on 16 November 2026.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
@@ -481,39 +480,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-47 — A release with a Workbench Output column nothing fills
-**Why:** Read from the source. While an analyst edits, a declared output
-column the connected frame lacks, or holds with a type that does not fit, is
-filled with nulls, and a table nothing is connected to likewise; the
-specification says none of these stops a run and the panel flags each. No
-check looks on the way to a release: the deploy's form validation tests
-identity clashes, key collisions and unresolved references only, and the
-functions that judge whether a frame's column fits are used by trace alone.
-Building a release treats a test quote whose answer moved, a price that
-became null included, as a change to report, not a failure, and a project
-need not hold a test quote that covers the column. So a rename or a type
-change upstream ships an app that answers a blank price; only a column
-marked required stops such a quote, and only at Mark final.
-
-**Plan:** Decide whether a release may be built in that state. The
-recommended rule: refuse a release whose Workbench Output declares a column
-no connected frame fills with a fitting type, naming the table, the column
-and the node, unless the form marks the column as allowed to be empty. The
-deploy's dry run already holds the schemas the check needs.
-
-**Acceptance:** With an output column renamed upstream, building a release
-stops and names the table, the column and the Workbench Output; restoring
-the name, or marking the column as allowed to be empty, lets it build. The
-editor's behaviour while editing is unchanged.
-
-**Dependencies:** The decision above; it changes what a release accepts.
-
-**Evidence:** `src/haute/_workbench_output.py::_filled`;
-`src/haute/_workbench_output.py::_unconnected`;
-`src/haute/deploy/_validators.py::_workbench_form_errors`;
-`src/haute/_workbench_app.py::build_release`;
-`src/haute/_quote_store/_book.py::_missing`; `specs/workbench/high-level.md`.
 
 ### WB-49 — The hosted check retries its probes
 **Why:** Read from the source. After a rollout, the hosted check polls the
