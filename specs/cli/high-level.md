@@ -188,7 +188,11 @@ Out of scope, owned elsewhere:
   changes in tracked files is left for review and the next Commit.
 - `haute ci registry-host` prints the host of the registry a container target, or a
   workbench project's app image, pushes to, for the login step its generated jobs run
-  before `haute deploy` or `haute app build --push`.
+  before `haute deploy` or `haute app build --push`. Where that push needs a registry, a
+  workbench project's app image and a build-and-push-only target's scoring image, an empty
+  `[deploy.container] registry` is refused in the push's own words, so the job stops at its
+  login step; a `container` target's image without one stays local, and it prints an empty
+  line.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a
@@ -295,10 +299,14 @@ Invariants that hold across every command:
   chose its encoding or it is a terminal of another encoding, keeps that encoding and shows
   a mark it cannot hold as `?`. None of it raises.
 - Command handlers use exit code 1 for their handled operational failures; Click uses exit
-  code 2 for argument/choice/range parsing errors. Two informational outcomes intentionally
-  succeed: ordinary `status` reports a missing registered model and exits 0, and `impact`
-  warns and exits 0 for a target whose transport is not implemented. `status --version-only`
-  makes the same missing-model case an exit-1 `ClickException` for scripts.
+  code 2 for argument/choice/range parsing errors. One informational outcome intentionally
+  succeeds: ordinary `status` reports a missing registered model and exits 0.
+  `status --version-only` makes the same missing-model case an exit-1 `ClickException` for
+  scripts.
+- Every command that reads the project's deploy settings refuses a `[deploy] target` no
+  deploy can go to (one Haute does not know, a typo say, or one planned and not yet
+  implemented) in the same words, naming the key as it is written (`HAUTE_TARGET` when the
+  environment set it) and the targets there are, as `haute deploy --dry-run` does.
 
 ## Design rationale
 
@@ -390,8 +398,8 @@ exit 1, as below.
 A missing `haute.toml` where the command requires one (`smoke`/`impact`), an unresolvable
 required model name, a missing frontend build, a missing training `job` variable, a failed
 validation, or a deploy exception is terminal. Ordinary
-`status`-not-found and unsupported-target `impact` are the two deliberate informational success
-paths described above, not deploy or scoring successes.
+`status`-not-found is the one deliberate informational success path described above, not a
+deploy or scoring success.
 
 Exceptions are handled with narrow, explicit catches rather than blanket `except Exception` used as
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,

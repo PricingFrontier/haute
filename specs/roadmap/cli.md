@@ -29,7 +29,6 @@ signals and pipes. The main session ran each case again on 15 November
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CLI-03 | Planned | P3 | `haute ci registry-host` refuses an empty registry by name, and a mistyped deploy target is named where it is. |
 | CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
@@ -38,32 +37,6 @@ signals and pipes. The main session ran each case again on 15 November
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
-
-### CLI-03 — The CI commands name the setting that is wrong
-**Why:** Reproduced on 11 November 2026. A workbench project as
-`haute init --workbench` leaves it has `registry = ""`. Its generated
-release job runs `haute ci registry-host` to log in to the registry before
-it pushes the app's image. The command exits 0 and prints nothing, so the
-job logs in to an empty host. `haute app build --push` refuses the same
-file: "[deploy.container] registry is empty: name the registry the app's
-image is pushed to in haute.toml."
-
-One more answer names the wrong place. With `[deploy] target` mistyped as
-`databrick`, `haute ci update` answers "Unknown target: databrick in [ci]
-provider of haute.toml.", though the `[ci]` table is right.
-
-**Plan:** Have `haute ci registry-host` refuse an empty registry in the
-words `haute app build --push` uses. Name `[deploy] target` in the unknown
-target's message.
-
-**Acceptance:** `haute ci registry-host` on a project with no registry exits
-non-zero naming `[deploy.container] registry`. A mistyped `[deploy] target`
-is named as it is written.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_ci.py::registry_host_command`;
-`src/haute/_scaffold.py`; `src/haute/cli/_app.py`.
 
 ### CLI-04 — A new project passes the lint its own CI runs
 **Why:** Reproduced on 11 November 2026. `haute init` writes a pipeline file

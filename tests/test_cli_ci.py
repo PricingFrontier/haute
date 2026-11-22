@@ -9,6 +9,7 @@ haute kept that haute's workflows; ``haute ci update`` rewrites them.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -709,6 +710,120 @@ def test_registry_host_prints_an_empty_line_without_a_registry(
 
     assert result.exit_code == 0, result.output
     assert result.stdout.endswith("\n\n") or result.stdout == "\n"
+
+
+#: What ``haute app build --push`` says of a workbench project naming no registry.
+_APP_REGISTRY_EMPTY = (
+    "[deploy.container] registry is empty: name the registry the app's image is pushed to "
+    "in haute.toml."
+)
+
+
+def test_registry_host_refuses_a_workbench_project_naming_no_registry(
+    runner, workbench_project: Path
+) -> None:
+    """CLI-03: the release job logs in to the host this prints before it pushes the app's
+    image, so an empty registry is refused in the words the push refuses it in."""
+    from haute._workbench_app import WorkbenchAppError, image_reference
+
+    assert 'registry = ""' in (workbench_project / "haute.toml").read_text(encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    assert result.exit_code == 1
+    assert f"Error: {_APP_REGISTRY_EMPTY}" in result.stderr
+    with pytest.raises(WorkbenchAppError) as pushed:
+        image_reference(workbench_project)
+    assert str(pushed.value) == _APP_REGISTRY_EMPTY
+
+
+@pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
+def test_registry_host_refuses_a_platform_target_naming_no_registry(
+    runner, tmp_path: Path, target: str
+) -> None:
+    # A build-and-push-only target's deploy refuses an empty registry; so does the login
+    # step before it, in the deploy's words.
+    use_project(tmp_path)
+    assert runner.invoke(cli, ["init", "--target", target, "--ci", "github"]).exit_code == 0
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    assert result.exit_code == 1
+    assert (
+        f"Error: Target '{target}' pushes the scoring image for a manual service update, so "
+        "it needs a registry: set [deploy.container] registry in haute.toml."
+    ) in result.stderr
+
+
+def test_the_generated_login_step_stops_on_the_refusal(
+    runner, workbench_project: Path, tmp_path: Path
+) -> None:
+    """The release job's login lines end the step on the refusal, its message in the log,
+    instead of logging in to an empty host."""
+    import shutil
+    import sys
+
+    from haute._scaffold import _registry_login_script
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash to run the generated step")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # `uv run haute ...` as the job runs it, on this interpreter; `docker` records a login.
+    (bin_dir / "uv").write_text(
+        f'#!/usr/bin/env bash\nshift\n"{Path(sys.executable).as_posix()}" -m "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (bin_dir / "docker").write_text(
+        '#!/usr/bin/env bash\necho "docker $*" >> logins.txt\n', encoding="utf-8", newline="\n"
+    )
+    for name in ("uv", "docker"):
+        (bin_dir / name).chmod(0o755)
+    git_run(workbench_project, "init", "-q")
+    step = _registry_login_script("azure-container-apps", "")
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    ran = subprocess.run(
+        [bash, "-c", step], cwd=workbench_project, env=env, capture_output=True, text=True
+    )
+
+    assert ran.returncode != 0
+    assert _APP_REGISTRY_EMPTY in ran.stderr
+    assert not (workbench_project / "logins.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["ci", "update"],
+        ["ci", "secrets", "--check"],
+        ["ci", "registry-host"],
+        ["smoke"],
+        ["impact"],
+        ["deploy", "--dry-run"],
+    ],
+    ids=" ".join,
+)
+def test_a_mistyped_target_is_named_where_it_is_written(
+    runner, project: Path, command: list[str]
+) -> None:
+    """CLI-03: every command that reads ``[deploy] target`` refuses one it does not know in
+    the same words, naming the key it is written under."""
+    toml = project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert text.count('target = "databricks"') == 1
+    toml.write_text(text.replace('target = "databricks"', 'target = "databrick"'), "utf-8")
+
+    result = runner.invoke(cli, command)
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "[deploy] target 'databrick' is not a deploy target. Targets: aws-ecs, "
+        "azure-container-apps, container, databricks, gcp-run."
+    ) in result.output
+    assert "[ci] provider" not in result.output
 
 
 def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:

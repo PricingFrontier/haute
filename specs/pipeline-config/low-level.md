@@ -849,8 +849,10 @@ first (BUG-24): after `uv sync --frozen`, a **Log in to the registry** step (Git
 Azure DevOps) or script entry (GitLab), given the deploy step's secrets, runs
 `_registry_login_script`. `uv run haute ci registry-host` prints the host of
 `[deploy.container] registry` as its last line, which the step reads since a log line
-may come first, and an empty line when the registry is empty (a `container` image then
-stays local, and a platform target's deploy refuses it). With `set -eo pipefail` (no
+may come first, and an empty line when the registry is empty and the push needs none (a
+`container` image then stays local); where it needs one, a platform target's scoring image
+or a workbench project's app image, the command exits 1 in the push's own words
+(`push_registry_problem`), which ends the step before any login. With `set -eo pipefail` (no
 `-u`: on GitLab the lines share the job's shell), a failed command fails the step, and the
 target's `registry_login` command pipes its credential to `docker login "$registry"
 --password-stdin`: for `container` the `DOCKER_USERNAME`/`DOCKER_PASSWORD` pair; for

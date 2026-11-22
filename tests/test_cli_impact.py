@@ -14,8 +14,7 @@ import polars as pl
 import pytest
 
 from haute.cli import cli
-from haute.cli._helpers import TransportInfo
-from haute.cli._impact import ImpactConfig, _impact_databricks, handle_impact
+from haute.cli._impact import _impact_databricks
 from tests._project import use_project
 
 if TYPE_CHECKING:
@@ -509,56 +508,6 @@ class TestImpactDatasetStaysInTheProject:
         assert f"[safety] impact_dataset {named!r} is not a file in the project" in result.output
         read_parquet.assert_not_called()
         mock_db.assert_not_called()
-
-
-def _write_min_project(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Minimal haute.toml + impact dataset rooted at *tmp_path*."""
-    import polars as pl
-
-    use_project(tmp_path)
-    toml = (
-        '[project]\nname = "t"\npipeline = "main.py"\n'
-        '[deploy]\nmodel_name = "test-model"\nendpoint_name = "test-ep"\n'
-        'target = "databricks"\n'
-        '[safety]\nimpact_dataset = "data/impact.parquet"\n'
-        '[ci]\nprovider = "github"\n'
-        '[ci.staging]\nendpoint_suffix = "-staging"\n'
-    )
-    (tmp_path / "haute.toml").write_text(toml)
-    (tmp_path / ".git").mkdir()
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    pl.DataFrame({"VehPower": [5, 6], "premium": [100.0, 200.0]}).write_parquet(
-        data_dir / "impact.parquet"
-    )
-
-
-@pytest.mark.sandbox_strict
-class TestUnsupportedTarget:
-    def test_unsupported_transport_warns_and_returns(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """A transport with an unknown ``kind`` should warn and return early
-        without writing any report."""
-        _write_min_project(tmp_path, monkeypatch)
-
-        with patch(
-            "haute.cli._impact.resolve_transport",
-            return_value=TransportInfo(kind="unsupported"),
-        ):
-            result = handle_impact(ImpactConfig(endpoint_suffix=None, sample=0, batch_size=500))
-
-        assert result is None
-        captured = capsys.readouterr()
-        assert "not yet implemented" in captured.err
-        # Early return → no report artifact written.
-        assert not (tmp_path / "impact_report.md").exists()
 
 
 @pytest.mark.sandbox_strict

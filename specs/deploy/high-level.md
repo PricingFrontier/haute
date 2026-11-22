@@ -503,7 +503,8 @@ never because it could not be reached.
   platform's compute pricing — and it lets the implemented container-platform targets
   share one build instead of requiring a bespoke packaging pipeline per platform.
   SageMaker and Azure ML (`sagemaker`, `azure-ml`) are named future targets only:
-  `haute init` does not offer them, and a `haute.toml` naming one is refused by
+  `haute init` does not offer them, and a `haute.toml` naming one is refused as its deploy
+  settings are read (`DeployConfig.from_settings`, by every command that reads them) and by
   resolution's settings check (`check_deploy_settings`), a dry run included, which makes no
   promise about their eventual packaging design. `haute init` labels Azure Container Apps, AWS
   ECS and GCP Cloud Run build and push only in its generated files and `--target` help,
@@ -608,7 +609,8 @@ most: a silent wrong answer here mis-prices real policies.
 - **Settings no deploy can use** are refused by resolution's first step
   (`check_deploy_settings`), before the pipeline is parsed, so `haute deploy --dry-run`
   refuses what a deploy would, exiting 1 and naming the setting: a target that is not one
-  (naming the targets) or is only planned, an empty model name (in `haute.toml`, or
+  (naming the targets) or is only planned (`check_deploy_target`, which reading the
+  settings runs first, so every command refuses such a target in these words), an empty model name (in `haute.toml`, or
   `--model-name ""`, which is applied rather than replaced by the file's), a negative
   `[safety.approval] min_approvers`, and the target's own settings: a container target's
   unpinned `base_image` or a `port` outside 1 to 65535, and a Databricks

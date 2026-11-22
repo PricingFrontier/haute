@@ -250,11 +250,23 @@ def registry_host(registry: str) -> str:
 def handle_ci_registry_host() -> None:
     """Print the host of the project's ``[deploy.container] registry`` as the last line.
 
-    A container-based target's generated deploy jobs log in to it before ``haute deploy``
-    pushes, reading the last line, since a log line may come first. An empty registry
-    prints an empty line: the image then stays local.
+    A container-based target's generated deploy jobs, and a workbench project's release job,
+    log in to it before ``haute deploy`` or ``haute app build --push`` pushes, reading the
+    last line, since a log line may come first. An empty registry is refused in the push's
+    words where the push needs one (``push_registry_problem``), so the job stops at its login
+    step; a ``container`` target's prints an empty line, its image then staying local.
     """
-    _, deploy_config = _project()
+    from haute._workbench_config import WorkbenchConfigError, read_workbench_config
+    from haute.deploy._config import push_registry_problem
+
+    project_dir, deploy_config = _project()
+    try:
+        workbench = read_workbench_config(project_dir).enabled
+    except WorkbenchConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+    problem = push_registry_problem(deploy_config, workbench=workbench)
+    if problem is not None:
+        raise click.ClickException(problem)
     click.echo(registry_host(deploy_config.container.registry))
 
 

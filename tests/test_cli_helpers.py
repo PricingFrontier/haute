@@ -242,9 +242,10 @@ class TestResolveTransport:
         with pytest.raises(click.ClickException, match="Set \\[ci.staging\\] endpoint_url"):
             resolve_transport(config)
 
-    def test_unsupported_target(self) -> None:
+    def test_a_target_no_deploy_can_go_to_has_no_transport(self) -> None:
         from haute.cli._helpers import resolve_transport
+        from haute.errors import DeployError
 
         config = self._make_config(target="sagemaker")
-        info = resolve_transport(config)
-        assert info.kind == "unsupported"
+        with pytest.raises(DeployError, match="planned but not yet implemented"):
+            resolve_transport(config)

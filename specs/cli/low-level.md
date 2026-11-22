@@ -50,7 +50,7 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 
 Other notable types:
 - `TransportInfo` (`src/haute/cli/_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
-  `kind` (`"databricks" | "http" | "unsupported"`), `staging_url`, `prod_url`. `smoke` and `impact`
+  `kind` (`"databricks" | "http"`), `staging_url`, `prod_url`. `smoke` and `impact`
   both switch on `.kind` to pick a backend. A container-based target without
   `[ci.staging] endpoint_url` raises `click.ClickException` naming the setting (exit 1).
 - `_Closable` (`_serve.py`) — a `typing.Protocol` describing the socket-like object the TCP
@@ -94,7 +94,7 @@ reported. The CLI does not print schema warnings.
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--keep-build` (passed to `deploy_resolved(keep_build=True)`, the kept directory printed); `--endpoint-suffix TEXT`. | In a project whose `haute.toml` enables its workbench it exits 1 before anything else, a dry run included, naming `haute app build`; an unreadable `[workbench]` table exits 1 naming what is wrong. Non-dry-run outside recognised CI exits 1. A non-dry-run deploy whose target's credentials are not all set (`haute.deploy.check_credentials`) exits 1 before parsing, naming each. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
 | `haute ci secrets` | `--check` (report, set nothing); `--no-verify` (skip the Databricks check). | GitHub only, through `gh`: another provider exits 1 naming the secrets to add and its guide; no `gh` on `PATH` exits 1 saying where to get it. A secret unset in `.env` and the environment, or still `.env.example`'s placeholder, exits 1 before anything is set, as does a Databricks pair the workspace refuses (its token redacted from the message). A `gh` failure, or a `gh` call still running after `GH_TIMEOUT_SECONDS`, exits 1 with its message. `--check` exits 1 naming each missing secret, 0 when all are set. Values are never printed. |
 | `haute ci update` | None. | Exits 1 without `haute.toml`, for an unreadable Python declaration or `[workbench]` table, a workbench project whose `[workbench.app]` names no `host`, an unknown `[ci] provider`, a `[ci.staging] endpoint_suffix` that cannot name a staging endpoint (empty, not a string, or holding anything but ASCII letters, digits, `-` and `_`), or a `[ci.production] environment` that cannot name an environment, writing nothing. Otherwise rewrites the generated CI files, whose staging deploy steps pass that suffix, as a Databricks project's smoke and impact steps do (a container-based target's smoke and impact steps pass none and call the `[ci.staging]` and `[ci.production]` `endpoint_url` addresses), and whose production job runs under that environment when one is named, and `.env.example`, writes `.python-version` with the project's Python on a GitHub project that has none, since its generated jobs run the Python uv reads there, reports each updated or unchanged, records those Git does not track yet, a GitHub project's existing `.python-version` among them, as a save on the working branch's ledger (`capture_new_files`) or names them as not yet in version history, and exits 0: a capture it cannot make is never a failure. A workbench project's are the workbench's set, which reads neither the suffix nor the environment, so neither is checked. |
-| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, a missing serving pair (named before any request), an endpoint update Databricks reports failed or cancelled (with its state message and build and server log tails), an endpoint that does not exist (at once), missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
+| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, a missing serving pair (named before any request), an endpoint update Databricks reports failed or cancelled (with its state message and build and server log tails), an endpoint that does not exist (at once), missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, a target no deploy can go to (refused as the settings are read), readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
 | `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix, a named `impact_dataset` outside the project root (`contained_path`, refused before it is read) or that does not exist, no test quotes to compare without one, a missing serving pair or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
 | `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
@@ -324,6 +324,15 @@ catalog/schema from `haute.toml` if the finder found one (`DeployConfig.from_set
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no
 version is registered.
 
+**Reading the deploy settings.** `DeployConfig.from_settings` checks the target it read,
+after the `HAUTE_` environment overrides, with `check_deploy_target`, the check resolution
+(`check_deploy_settings`) also runs: a planned target and one Haute does not know are a
+`DeployError` naming `[deploy] target`, or `HAUTE_TARGET` when the environment set it, and
+the targets there are. Every command that reads the project's deploy (`ci`'s three,
+`deploy`, `smoke`, `impact`, `status`) therefore ends on such a target in those words,
+at the `haute` group, before anything else. `resolve_transport` runs the same check, so it has
+no kind for a target without a transport.
+
 **`ci secrets`**: `handle_ci_secrets` reads the project's `haute.toml`; the `ci_secret_names`
 of its CI credentials (`ci_credentials`) are the secrets its generated steps read: an
 automated project's deploy target's, which its deploy, registry login, smoke, impact and tag
@@ -403,7 +412,14 @@ reached or used) or a quote staging failed on, having printed each step.
 the project's `haute.toml` and prints the host a `docker login` before the push takes: the
 registry's first `/` segment when Docker reads it as a host (it holds a `.` or a `:`, or is
 `localhost`), `docker.io` when the registry is a Docker Hub namespace such as `myteam`, and
-an empty line when the registry is empty. The host is the last line it prints: a log line
+an empty line when the registry is empty and the push needs none, a `container` target's,
+whose image then stays local. Whether the push needs one is
+`haute.deploy._config.push_registry_problem` (the project's `[workbench] enabled` and its
+target), which `haute app build --push` (`image_reference`) and a build-and-push-only
+target's deploy (`deploy_to_platform_container`) refuse by too: an empty registry for a
+workbench project's app image or such a target's scoring image exits 1 with the push's own
+message, before any host is printed, and the generated login step, `set -eo pipefail` and the
+command substitution, ends there with it in the job's log. The host is the last line it prints: a log line
 may come first (on Windows, the CPU QoS line), so a container-based target's generated
 deploy jobs read the last line in their login step
 ([pipeline-config](../pipeline-config/low-level.md)).
@@ -500,8 +516,7 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 - Explicitly handled operational failures use `SystemExit(1)` (normally after
   `click.echo(..., err=True)`); Click argument parsing uses exit 2. This is not universal:
-  normal `status` treats a missing registry model as an informational exit 0, and `impact`
-  warns then returns 0 when the configured target has no transport implementation.
+  normal `status` treats a missing registry model as an informational exit 0.
   `status --version-only` deliberately converts its not-found/no-version case to
   `click.ClickException` (exit 1) so scripts cannot mistake absence for version `0`.
   The formatting catches take only `EXPECTED_FAILURES` (`HauteError`, `ValueError`,
@@ -564,8 +579,7 @@ Key files and what they cover:
   budget) versus the `handle_*` function doing the real work.
 - `test_cli_helpers.py` — `_open_browser` (including the `webbrowser.open` failure path) and
   `_find_frontend_dir` walking-up-parents behaviour.
-- `test_cli_impact.py` / `test_cli_impact.py` — `impact` end-to-end and edge cases: unsupported
-  target, Databricks SDK not installed, "not found" vs. genuine-error classification for the
+- `test_cli_impact.py` — `impact` end-to-end and edge cases: Databricks SDK not installed, "not found" vs. genuine-error classification for the
   first-deploy check, and, with no portfolio sample, the test quotes compared (their requests,
   segmented by their text fields) or, with none, a refusal.
 - `test_cli_status.py` — `status` output formatting and that catalog/schema from `haute.toml` are
@@ -575,7 +589,7 @@ Key files and what they cover:
 - `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), the client
   built from the serving pair alone (BUG-22) and refused before any request without it, a failed
   update or a missing endpoint failing at once, HTTP smoke
-  path, the unsupported-target error, each test quote sent as a request of its own on both
+  path, a planned target refused naming its key, each test quote sent as a request of its own on both
   transports, an expected output checked within tolerance into a Workbench Output's tables
   (and refused for two rows or a non-object answer), a failed request reported by its row
   while the rest are priced, and an unreadable file.
@@ -584,6 +598,10 @@ Key files and what they cover:
   a pair Databricks refuses (its token redacted) and a `gh` failure each setting nothing or
   failing, `--no-verify`, `--check` either way, no `gh`, and another provider given the names;
   `ci update` rewriting edited and missing generated files and following a change of provider;
+  `ci registry-host` printing each host, an empty line for a local container image, and
+  refusing an empty registry for a workbench project or a build-and-push-only target in the
+  push's words, the generated login step stopping on it; a mistyped `[deploy] target` refused
+  in one sentence naming it by every command that reads it;
   `init` naming the secrets the first deploy needs.
 - `test_ci_secrets.py` — the deploy's secrets on Push, through `POST /api/git/push` and
   `POST /api/git/ci-secrets` against a local bare remote that `remote_secrets` is told is a

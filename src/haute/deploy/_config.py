@@ -394,7 +394,12 @@ class DeployConfig:
             ci=ci_config,
         )
 
-        return _apply_env_overrides(config)
+        config = _apply_env_overrides(config)
+        # Every command that reads the project's deploy refuses a target no deploy could use,
+        # in the words resolution refuses it in, naming where it was set.
+        setting = "HAUTE_TARGET" if os.environ.get("HAUTE_TARGET") is not None else None
+        check_deploy_target(config.target, setting=setting or "[deploy] target")
+        return config
 
     @classmethod
     def from_cli_args(cls, **kwargs: Any) -> DeployConfig:
@@ -696,6 +701,51 @@ def _validate_python_versions(config: DeployConfig, project_root: Path) -> None:
         )
 
 
+def check_deploy_target(target: str, *, setting: str = "[deploy] target") -> None:
+    """Refuse *target* unless a deploy can go to it, naming *setting*, where it was set: a
+    planned target, and one Haute does not know (a typo), each with the targets there are.
+
+    :meth:`DeployConfig.from_settings` checks it for every command that reads the project's
+    deploy, and resolution (:func:`check_deploy_settings`) for a deploy built otherwise.
+    """
+    implemented = ", ".join(sorted(_SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS))
+    if target in _PLANNED_TARGETS:
+        raise DeployError(
+            f"{setting} {target!r} is planned but not yet implemented. "
+            f"Supported targets: {implemented}.",
+            target=target,
+        )
+    if target not in _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS:
+        raise DeployError(
+            f"{setting} {target!r} is not a deploy target. Targets: {implemented}.",
+            target=target,
+        )
+
+
+def push_registry_problem(config: DeployConfig, *, workbench: bool) -> str | None:
+    """Why the project's image cannot be pushed: ``[deploy.container] registry`` is empty
+    where the push needs a registry, a workbench project's app image (``haute app build
+    --push``) and a build-and-push-only target's scoring image; None otherwise. A
+    ``container`` target needs none: without one its image stays local.
+
+    The push and ``haute ci registry-host``, which its job's login step runs first, refuse in
+    these words.
+    """
+    if config.container.registry.rstrip("/"):
+        return None
+    if workbench:
+        return (
+            "[deploy.container] registry is empty: name the registry the app's image is "
+            "pushed to in haute.toml."
+        )
+    if config.target in _CONTAINER_PLATFORM_TARGETS:
+        return (
+            f"Target '{config.target}' pushes the scoring image for a manual service update, "
+            "so it needs a registry: set [deploy.container] registry in haute.toml."
+        )
+    return None
+
+
 def check_deploy_settings(config: DeployConfig) -> None:
     """Refuse a setting no deploy of *config* could use, naming the setting.
 
@@ -705,20 +755,8 @@ def check_deploy_settings(config: DeployConfig) -> None:
     port, a Databricks endpoint's workload size). Settings a CI job may supply from
     its environment, such as a registry, are left to the deploy that reads them.
     """
-    implemented = _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS
     target = config.target
-    if target in _PLANNED_TARGETS:
-        raise DeployError(
-            f"[deploy] target {target!r} is planned but not yet implemented. "
-            f"Supported targets: {', '.join(sorted(implemented))}.",
-            target=target,
-        )
-    if target not in implemented:
-        raise DeployError(
-            f"[deploy] target {target!r} is not a deploy target. "
-            f"Targets: {', '.join(sorted(implemented))}.",
-            target=target,
-        )
+    check_deploy_target(target)
     if not config.model_name.strip():
         raise DeployError(
             "The model name is empty: set [deploy] model_name in haute.toml, "

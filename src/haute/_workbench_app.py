@@ -572,16 +572,14 @@ def image_reference(project_dir: Path) -> str:
     one, a name an image cannot take, or a project whose commit git cannot name, since the
     tag says which commit was published."""
     from haute._git_core import _run_git_ok, git_binary_available
-    from haute.deploy._config import DeployConfig
+    from haute.deploy._config import DeployConfig, push_registry_problem
     from haute.deploy._container import _validate_model_name
 
     config = DeployConfig.from_project(project_dir)
+    problem = push_registry_problem(config, workbench=True)
+    if problem is not None:
+        raise WorkbenchAppError(problem)
     registry = config.container.registry.rstrip("/")
-    if not registry:
-        raise WorkbenchAppError(
-            "[deploy.container] registry is empty: name the registry the app's image is "
-            "pushed to in haute.toml."
-        )
     try:
         _validate_model_name(config.model_name)
     except ValueError as exc:
