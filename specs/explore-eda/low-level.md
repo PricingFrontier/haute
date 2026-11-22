@@ -180,10 +180,22 @@
   Selected formula cards use the same pointer and Up/Down keyboard reorder affordances as ordinary
   Values, but their drag targets are restricted to Values; Filters, Columns, Rows, and Left-arrow
   movement out of Values remain blocked.
-  Numeric operations first map floating NaN to null, for a float of any width (the `float`
-  column kind); a filter, row or column field is one of the integer, float, decimal, boolean,
-  text, category, date, datetime, time and null kinds. `sum`/`average`/`median` require numeric
-  fields; `min`/`max` also accept supported scalar non-numeric fields. Empty aggregates return
+  Numeric operations first map floating NaN to null and take a float of any width (the `float`
+  column kind) as Float64, so a Float16 Sum does not overflow to infinity and a Float32 Sum
+  is not rounded to the column's width; a filter, row or column field is one of the integer,
+  float, decimal, boolean, text, category, date, datetime, time and null kinds.
+  `sum`/`average`/`median` require numeric fields; `min`/`max` also accept supported scalar
+  non-numeric fields.
+  **A Sum is the total of its rows.** Polars sums Int32, UInt32, Int64 and UInt64 in their own
+  type and wraps round past its range, so `_integer_sum_dtype` first casts an integer column to
+  the narrower of Int64 and Int128 whose range holds `_SUM_EXACT_ROWS` (2^31) values at either
+  end of the column type's own range (`integer_range`): every integer narrower than 64 bits
+  sums in Int64 and a 64-bit one in Int128, read from the types rather than listed. A Sum of an
+  integer type that neither holds (Int128, UInt128) is refused before any aggregation as
+  `invalid_pivot_field` naming the column, rather than shown wrapped. A Decimal Sum keeps
+  Polars' 38-digit precision, which fails the calculation on an overflow instead of wrapping.
+  A formula's own `sum()` is the analyst's Polars expression and keeps Polars' arithmetic.
+  Empty aggregates return
   null, while `count` and `distinct_count` return integer zero. Result normalisation preserves
   finite JSON scalar types, renders Decimal exactly, renders integers beyond JavaScript's exact
   range (|value| > 2^53 − 1) as canonical decimal strings so a JS client cannot silently round
@@ -648,6 +660,13 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   Explore node served the first node's cached matrix is answered under its own id. The four hard
   bounds (row groups, column groups, displayed cells, and filter members) are each pinned at and
   immediately above their limit.
+  Its Sums are checked against Python's own arithmetic, never against Polars, which wraps the
+  same way: Int32, UInt32, Int64 and UInt64 columns whose totals pass their type's range, and
+  Float16 and Float32 columns whose totals their width cannot hold, give every cell and grand
+  total the sum of the rows, a total past 2^53 − 1 as its decimal string; and a Sum of a
+  128-bit integer column is refused naming it. Beside them, every integer type Polars defines
+  sums two values at each end of its range to their Python total, or is refused when no wider
+  type holds it, so an integer type a later Polars adds is covered without a list.
   It also pins the data the calculation reads: a pivot on an unbuilt point asks for the build
   rather than computing on stale data, a rebuild between two pivot runs is never served the
   previous data version's matrix, a pivot holds the point leased for its whole calculation so a

@@ -151,7 +151,10 @@ Out of scope (owned elsewhere):
   remain last and Columns paths retain deterministic ascending typed order. Values support `sum`, `count`,
   `average`, `min`, `max`, `median`, and `distinct_count`; numeric-only aggregations reject
   incompatible dtypes, Count counts non-null/non-NaN values, and Distinct count excludes
-  null/NaN. Repeated Values are legal because placement ids, not field names, identify measures.
+  null/NaN. A Sum is the total of its rows whatever the column's width: an integer is summed in
+  a wider integer type and a float in Float64, so a total past the column type's range is shown
+  in full rather than wrapped round, and the Sum of a 128-bit integer column, which no wider
+  type holds, is refused naming the column. Repeated Values are legal because placement ids, not field names, identify measures.
   Each Value also owns a stable, unique formula reference derived from its field followed by its
   aggregation (for example `total_claims_sum` and `total_claims_mean`). Repeating the exact same
   field/aggregation appends a numeric suffix.

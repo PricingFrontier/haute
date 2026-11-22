@@ -48,7 +48,7 @@ from haute._node_config_models import (
     ExplorePivotValuePlacement,
 )
 from haute._node_snapshots import NodeSnapshotStore
-from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind
+from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind, integer_range
 from haute._polars_utils import cancellable_streaming_collect
 from haute._project_context import context_thread, current_project
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
@@ -556,10 +556,37 @@ def _compile_formulas(
     return compiled
 
 
+#: A Sum is exact over at least this many rows: an integer column is summed in a type that
+#: holds this many values at either end of the column type's range.
+_SUM_EXACT_ROWS = 2**31
+#: The integer types a Sum is taken in, narrowest first.
+_SUM_INTEGER_DTYPES: tuple[type[pl.DataType], ...] = (pl.Int64, pl.Int128)
+
+
+def _integer_sum_dtype(dtype: pl.DataType | type[pl.DataType]) -> type[pl.DataType] | None:
+    """The type an integer column's Sum is taken in, or ``None`` when no type holds its total.
+
+    Polars sums Int32, UInt32, Int64 and UInt64 in their own type and wraps round past its
+    range, so a comparison with Polars cannot prove a total. The width is read from the
+    types' ranges, so every integer type Polars has, or adds, is summed wide or refused.
+    """
+    least, greatest = integer_range(dtype)
+    for candidate in _SUM_INTEGER_DTYPES:
+        candidate_least, candidate_greatest = integer_range(candidate)
+        if (
+            candidate_least <= least * _SUM_EXACT_ROWS
+            and greatest * _SUM_EXACT_ROWS <= candidate_greatest
+        ):
+            return candidate
+    return None
+
+
 def _valid_value_expression(field: str, dtype: pl.DataType) -> pl.Expr:
     expression = pl.col(field)
     if column_kind(dtype) == "float":
-        expression = expression.fill_nan(None)
+        # Float64 whatever the width: a Float16 Sum overflows to infinity past 65,504 and
+        # a Float32 Sum drops what its 24-bit mantissa cannot hold.
+        expression = expression.fill_nan(None).cast(pl.Float64)
     return expression
 
 
@@ -575,7 +602,13 @@ def _aggregation_expression(
     if aggregation == "distinct_count":
         return valid.drop_nulls().n_unique().alias(alias)
     if aggregation == "sum":
-        return pl.when(valid.count() > 0).then(valid.sum()).otherwise(None).alias(alias)
+        summed = valid
+        if column_kind(dtype) == "integer":
+            sum_dtype = _integer_sum_dtype(dtype)
+            if sum_dtype is None:
+                raise AssertionError(f"_validate_schema refuses a Sum of {dtype}")
+            summed = valid.cast(sum_dtype)
+        return pl.when(valid.count() > 0).then(summed.sum()).otherwise(None).alias(alias)
     if aggregation == "average":
         return valid.mean().alias(alias)
     if aggregation == "min":
@@ -991,6 +1024,19 @@ class PivotService:
                     "invalid_pivot_field",
                     "Aggregation requires a numeric field.",
                     "Choose a numeric value field.",
+                    field=value["field"],
+                )
+            if (
+                aggregation == "sum"
+                and column_kind(dtype) == "integer"
+                and _integer_sum_dtype(dtype) is None
+            ):
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    f"The Sum of '{value['field']}' cannot be calculated: no integer type is "
+                    f"wider than {dtype} to hold its total.",
+                    "Cast the column to Int64 or Float64 before the Explore node, "
+                    "or choose another aggregation.",
                     field=value["field"],
                 )
             if aggregation in {"min", "max"} and (

@@ -1372,6 +1372,131 @@ def test_pivot_renders_integers_beyond_js_safe_range_as_decimal_strings(
     assert isinstance(small, int)
 
 
+def _json_total(total: int) -> int | str:
+    """A total as the pivot answers it: an integer past JavaScript's exact range is text."""
+    return total if abs(total) <= 2**53 - 1 else str(total)
+
+
+def test_a_sum_is_the_total_of_its_rows_whatever_the_columns_width(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """XPL-01: a total past the column type's range is shown in full, not wrapped round.
+
+    Polars sums these types in their own width and wraps the same way, so the oracle is
+    Python's own arithmetic, never Polars.
+    """
+    path = tmp_path / "wide-sums.parquet"
+    regions = ["East", "East", "West", "West"]
+    integers = {
+        "i32": (pl.Int32, [2_000_000_000, 2_000_000_000, 2_147_483_647, 1]),
+        "u32": (pl.UInt32, [4_000_000_000, 4_000_000_000, 3_000_000_000, 7]),
+        "i64": (pl.Int64, [2**62, 2**62, -(2**63), -(2**63)]),
+        "u64": (pl.UInt64, [2**63, 2**63, 2**64 - 1, 2**64 - 1]),
+    }
+    floats = {
+        # Float16 holds at most 65,504: its own Sum overflows to infinity.
+        "f16": (pl.Float16, [60_000.0, 60_000.0, 1_024.0, 2_048.0]),
+        # Float32 has 24 bits of mantissa: 2**24 + 1 is not one of its values.
+        "f32": (pl.Float32, [16_777_216.0, 1.0, 16_777_216.0, 3.0]),
+    }
+    pl.DataFrame(
+        {
+            "region": regions,
+            "year": [2024] * 4,
+            **{
+                name: pl.Series(values, dtype=dtype)
+                for name, (dtype, values) in {**integers, **floats}.items()
+            },
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    columns = {**integers, **floats}
+    pivot = _pivot(
+        values=[
+            {
+                "id": f"sum_{name}",
+                "field": name,
+                "aggregation": "sum",
+                "reference": f"{name}_sum",
+                "display_name": name,
+            }
+            for name in columns
+        ]
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert result["warnings"] == []
+    year = [("integer", "2024")]
+    for name, (_dtype, values) in columns.items():
+        by_region = {
+            region: sum(value for value, row in zip(values, regions, strict=True) if row == region)
+            for region in ("East", "West")
+        }
+        expected = _json_total if name in integers else float
+        for region, total in by_region.items():
+            for column in (year, None):
+                cell = _cell(result, [("string", region)], column, f"sum_{name}")
+                assert cell == expected(total), (name, region, column)
+        grand = sum(values)
+        for column in (year, None):
+            assert _cell(result, None, column, f"sum_{name}") == expected(grand), name
+
+
+@pytest.mark.parametrize("dtype", [pl.Int128, pl.UInt128])
+def test_a_sum_no_wider_integer_type_holds_is_refused_naming_its_column(
+    client: TestClient,
+    tmp_path: Path,
+    dtype: type[pl.DataType],
+) -> None:
+    path = tmp_path / f"{dtype.__name__}.parquet"
+    pl.DataFrame(
+        {"region": ["A"], "year": [2024], "claims": pl.Series([1], dtype=dtype)}
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    final, result = _run_pivot(client, graph, _pivot())
+
+    assert result is None
+    assert final["status"] == "contract_error", final
+    failure = final["failure"]
+    assert failure["reason_code"] == "invalid_pivot_field"
+    assert failure["dimensions"] == {"field": "claims"}
+    assert "'claims'" in failure["message"]
+    assert dtype.__name__ in failure["message"]
+
+
+def test_every_integer_type_polars_defines_sums_to_its_python_total() -> None:
+    """Every integer type, read from Polars, sums exactly or is refused: no list to keep."""
+    from haute._polars_dtypes import integer_range, polars_type_kinds
+    from haute.routes._pivot_service import _aggregation_expression, _integer_sum_dtype
+
+    integer_types = [
+        getattr(pl, name) for name, kind in polars_type_kinds().items() if kind == "integer"
+    ]
+    assert len(integer_types) >= 10
+    for dtype in integer_types:
+        least, greatest = integer_range(dtype)
+        if _integer_sum_dtype(dtype) is None:
+            assert least <= -(2**127) or greatest >= 2**127 - 1, dtype
+            continue
+        for extreme in (least, greatest):
+            frame = pl.DataFrame({"value": pl.Series([extreme, extreme], dtype=dtype)})
+            placement: Any = {
+                "id": "total",
+                "field": "value",
+                "aggregation": "sum",
+                "reference": "total",
+            }
+            total = frame.select(_aggregation_expression(placement, dtype)).item()
+            assert total == 2 * extreme, (dtype, extreme)
+
+
 def test_pivot_result_cache_ignores_name_visibility_and_value_display_name(
     client: TestClient, tmp_path: Path
 ) -> None:
