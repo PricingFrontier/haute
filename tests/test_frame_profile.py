@@ -769,6 +769,51 @@ def test_build_frame_stats_survives_duration_column(
     assert values == {"2:00:00": 2, "1 day, 0:00:00": 1, None: 1}
 
 
+def test_temporal_values_the_column_holds_apart_are_counted_and_shown_apart(
+    explore_execution_context,
+) -> None:
+    """XPL-03: a Time's fraction (which Polars' String cast drops) and a nanosecond value's
+    last three digits (which a Python value drops) survive the profile."""
+    from datetime import time
+
+    from haute._frame_profile import _build_frame_stats
+
+    nine_am = 1_709_283_600 * 1_000_000_000
+    lf = pl.DataFrame(
+        {
+            "clock": [time(0, 0, 1, 500_000), time(0, 0, 1, 700_000), time(0, 0, 1, 700_000)],
+            "moment": pl.Series([nine_am + 100, nine_am + 200, nine_am + 200]).cast(
+                pl.Datetime("ns")
+            ),
+            "wait": pl.Series([100, 200, 200]).cast(pl.Duration("ns")),
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    )
+
+    stats = {column.name: column for column in frame_stats.columns}
+    profiles = {
+        profile.field: {item.value: item.count for item in profile.values}
+        for profile in frame_stats.overview_summary.categorical_summary
+    }
+    expected = {
+        "clock": ("00:00:01.500000", "00:00:01.700000", "0:00:00.200000"),
+        "moment": (
+            "2024-03-01 09:00:00.000000100",
+            "2024-03-01 09:00:00.000000200",
+            "0:00:00.000000100",
+        ),
+        "wait": ("0:00:00.000000100", "0:00:00.000000200", "0:00:00.000000100"),
+    }
+    for name, (least, greatest, span) in expected.items():
+        assert stats[name].distinct_count == 2, name
+        assert profiles[name] == {least: 1, greatest: 2}, name
+        assert (stats[name].min_value, stats[name].max_value) == (least, greatest), name
+        assert stats[name].temporal_span == span, name
+
+
 def test_build_frame_stats_expands_high_cardinality_categorical_columns_with_top_50_values(
     explore_execution_context,
 ) -> None:

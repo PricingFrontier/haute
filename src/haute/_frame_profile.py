@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,7 @@ from haute._polars_dtypes import (
     column_kind,
 )
 from haute._polars_utils import cancellable_streaming_collect
+from haute._temporal_text import TEMPORAL_TEXT_KINDS, temporal_text
 from haute.schemas import (
     ExploreCategoricalColumnProfile,
     ExploreColumnKind,
@@ -122,6 +122,14 @@ def _format_numeric_profile_value(value: Any) -> str | None:
     if isinstance(value, float):
         return f"{value:.6g}"
     return _format_display_value(value)
+
+
+def _exact_display(aggregate: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """A min or max as it is shown: a datetime, time or duration as its exact text."""
+
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return temporal_text(aggregate, dtype, separator=" ")
+    return aggregate
 
 
 def _supports_categorical_value_counts(dtype: pl.DataType) -> bool:
@@ -414,20 +422,6 @@ def _lossy_decode_binary(value: bytes | None) -> str | None:
     return value.decode("utf-8", errors="replace")
 
 
-def _format_duration(value: timedelta | None) -> str | None:
-    """Format a Duration value as text, matching ``str(timedelta)``.
-
-    Mirrors the min/max path, which leaves Duration uncast and lets
-    ``_format_display_value`` apply ``str(timedelta)``, so a Duration column's
-    value-count labels read identically to its min/max ("2:00:00",
-    "1 day, 0:00:00").
-    """
-
-    if value is None:
-        return None
-    return str(value)
-
-
 def categorical_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     """Return the String-typed expression whose distinct values are counted.
 
@@ -438,18 +432,17 @@ def categorical_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     materialisation. Decode Binary leniently instead so undecodable bytes
     surface as the Unicode replacement character rather than crashing.
 
-    Duration columns are temporal, so they reach this branch too, but Polars
-    cannot ``cast(pl.Duration, pl.String)`` at all — the strict cast raises
-    ``InvalidOperationError`` and aborts the same collect. Format Duration
-    element-wise instead. Every other text-like dtype is already valid UTF-8
-    and casts cheaply.
+    A datetime, time or duration is written by ``temporal_text``, as its min and
+    max are: Polars cannot cast a Duration to String at all, its Time cast drops
+    the whole fraction, and a Python value holds only microseconds, so any of
+    them would count values the column holds apart as one. Every other text-like
+    dtype is already valid UTF-8 and casts cheaply.
     """
 
-    base = dtype.base_type()
-    if base == pl.Binary:
+    if dtype.base_type() == pl.Binary:
         return pl.col(name).map_elements(_lossy_decode_binary, return_dtype=pl.String)
-    if base == pl.Duration:
-        return pl.col(name).map_elements(_format_duration, return_dtype=pl.String)
+    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        return temporal_text(pl.col(name), dtype, separator=" ")
     return pl.col(name).cast(pl.String)
 
 
@@ -831,15 +824,19 @@ def _build_frame_stats(
             aggregations.append(pl.col(name).n_unique().alias(f"unique::{name}"))
         if _supports_min_max(dtype):
             min_max_expr = _min_max_column_expr(name, dtype)
-            aggregations.append(min_max_expr.min().alias(f"min::{name}"))
-            aggregations.append(min_max_expr.max().alias(f"max::{name}"))
+            aggregations.append(_exact_display(min_max_expr.min(), dtype).alias(f"min::{name}"))
+            aggregations.append(_exact_display(min_max_expr.max(), dtype).alias(f"max::{name}"))
         if column_kind(dtype) in _TEXT_LIKE_KINDS:
             text_expr = categorical_label_expr(name, dtype).str.len_chars()
             aggregations.append(text_expr.min().alias(f"text_min_length::{name}"))
             aggregations.append(text_expr.mean().alias(f"text_mean_length::{name}"))
             aggregations.append(text_expr.max().alias(f"text_max_length::{name}"))
         if dtype.is_temporal():
-            aggregations.append((pl.col(name).max() - pl.col(name).min()).alias(f"span::{name}"))
+            span = pl.col(name).max() - pl.col(name).min()
+            span_dtype = pl.LazyFrame(schema={name: dtype}).select(span).collect_schema()[name]
+            aggregations.append(
+                temporal_text(span, span_dtype, separator=" ").alias(f"span::{name}")
+            )
         if dtype.is_numeric():
             numeric_expr = pl.col(name)
             aggregations.append(
@@ -1001,7 +998,7 @@ def _build_frame_stats(
                 }
             )
         if dtype.is_temporal():
-            profile_stats["temporal_span"] = _format_duration(aggregate_row[f"span::{name}"])
+            profile_stats["temporal_span"] = aggregate_row[f"span::{name}"]
 
         stats.append(
             ExploreColumnStat(

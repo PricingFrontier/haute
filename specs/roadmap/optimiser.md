@@ -13,6 +13,10 @@ every assignment enumerated. The main session ran each finding again
 through the routes, the solver ones on books of 3,000 and 5,000 quotes with
 the node's default settings.
 
+`OPM-06` comes from the 22 November 2026 sweep of `src/haute` for
+the cause `XPL-03` removed from Explore, a temporal value read into Python;
+the [temporal values root cause](root-cause-temporal-values.md) is taken before it.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -20,6 +24,7 @@ the node's default settings.
 | OPM-01 | Planned | P2 | Scenario values that do not rise with the step, and a quote whose scenario values differ from the others', are refused naming the column, the step and the values, not "Grid construction failed. Check the server logs for details." |
 | OPM-02 | Planned | P2 | A solve with one binding constraint converges and meets its bound, as point 0 of its own frontier does. |
 | OPM-03 | Decision | P2 | A ratebook solve that ends short of a bound says so in its status and warning, not only in the Summary table. |
+| OPM-06 | Planned | P3 | Ratebook factor levels that differ below a microsecond are counted as two levels, not refused as a column that mixes value types. |
 | OPM-04 | Planned | P2 | Solving a node again ends the solver process of its earlier solve, so tuning a constraint does not hold one process per press for fifteen minutes. |
 
 ## Planned improvements
@@ -202,3 +207,34 @@ their Quotes pages answers as it does after the retention window.
 
 **Evidence:** `src/haute/routes/_optimiser_session.py::SolverSession`;
 `src/haute/routes/_job_store.py`; `specs/optimiser/high-level.md`.
+
+### OPM-06 — Ratebook factor levels that differ below a microsecond are counted apart
+**Why:** Read on 22 November 2026, not reproduced. A ratebook solve groups
+each factor's levels in Polars, reads them with `to_dicts` and keys each
+through `_ratebook_factor_level_key` from the Python values. Two datetime
+levels 100 ns apart become one key, and the solve refuses with "the source
+column mixes value types. Cast it to a single type upstream", which is
+neither the cause nor the remedy. The optimiser's segment and outcome
+breakdowns key their levels the same way
+(`_optimiser_segments.py`, `_optimiser_outcomes.py`), and a categorical
+breakdown of an analysis column labels each level with `cast(pl.String)`,
+which drops a `Time`'s whole fraction, so times within one second are one
+level. The apply explainability reads its matched row through
+`_jsonify_row` at microseconds. Only a temporal factor or analysis column
+reaches any of them.
+
+**Plan:** Key a level by its column's own value, written through `IOL-08`'s
+`temporal_text`, before the levels are read. Update the optimiser
+specification first.
+
+**Acceptance:** A ratebook solve over a `Datetime("ns")` factor whose
+levels differ by 100 ns counts two levels and solves, its segment and
+outcome breakdowns show both, and a categorical breakdown of a `Time`
+column keeps 1.5 s and 1.7 s apart.
+
+**Dependencies:** `IOL-08` (the [temporal values root cause](root-cause-temporal-values.md)) first.
+
+**Evidence:** `src/haute/routes/_optimiser_solver.py::_ratebook_factor_level_key`;
+`src/haute/routes/_optimiser_solver.py`; `src/haute/routes/_optimiser_segments.py`;
+`src/haute/routes/_optimiser_outcomes.py`;
+`src/haute/_optimiser_apply_explainability.py`; `specs/optimiser/low-level.md`.

@@ -139,6 +139,13 @@ about 40 seconds at 10 million rows, and the list is ten million Python
 objects (several hundred megabytes for a string key) inside the
 memory-limited training worker, which the training estimate does not count.
 
+The same walk keys a value by its Python object (read on 22 November 2026,
+not reproduced): `_json_key` writes a datetime with `isoformat()`, so two
+group values of a `Datetime("ns")` column 100 ns apart are one group, and
+`_date_codes` counts the distinct dates the same way; a `Duration` group
+column fails `json.dumps`. The cause is shared with other sites, in
+the [temporal values root cause](root-cause-temporal-values.md).
+
 **Plan:** Key groups and strata in Polars: take the distinct values with
 their row codes from the frame, key only the distinct values in Python, and
 map codes to memberships with arrays. Keep the plan's bytes identical for
@@ -147,9 +154,10 @@ the existing fixtures.
 **Acceptance:** A group plan over 2 million rows with 50,000 groups builds in
 under a second on the review machine and allocates no per-row Python
 objects, asserted by a peak-allocation bound; every existing plan fixture
-hashes as before.
+hashes as before. A group or date column whose values differ below a
+microsecond keeps them as separate groups and dates.
 
-**Dependencies:** None.
+**Dependencies:** `IOL-08` for the keys' exact text.
 
 **Evidence:** `src/haute/modelling/_training_job.py::TrainingJob._build_evaluation_plan`;
 `src/haute/modelling/_evaluation.py::_json_key`;

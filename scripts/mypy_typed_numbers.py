@@ -239,6 +239,9 @@ NOT_TYPED: dict[str, str] = {
     "haute.routes._pivot_service._member_sort_key::Decimal(cast(str, value))": (
         "a pivot member's value, an exact decimal Haute wrote"
     ),
+    'haute.routes._pivot_service._temporal_literal::int((parts["fraction"] or "").ljust(9, "0"))': (
+        "a datetime or time member's fraction, the digits Haute wrote and _TIME_PATTERN matched"
+    ),
     "haute.routes.mlflow.<module>::int(v.version)": "a model version, MLflow's own digits",
     "haute.routes.project_files._plan_write::int(length_header)": (
         "an upload's Content-Length header"

@@ -899,6 +899,22 @@ def test_validate_explore_pivots_rejects_malformed_formulas(
         validate_explore_pivots([_pivot(**updates)], context="test")
 
 
+@pytest.mark.parametrize(
+    "member",
+    [
+        {"kind": "time", "value": "09:00:00.0000001000"},
+        {"kind": "datetime", "value": "2024-03-01T09:00:00.0000000001"},
+    ],
+)
+def test_validate_explore_pivots_refuses_a_fraction_past_nanoseconds(
+    member: dict[str, object],
+) -> None:
+    pivot = _pivot(filters=[{"id": "filter_1", "field": "value", "members": [member]}])
+
+    with pytest.raises(ConfigError, match="does not match its kind"):
+        validate_explore_pivots([pivot], context="test")
+
+
 def test_validate_explore_pivots_accepts_canonical_typed_filter_members() -> None:
     members = [
         {"kind": "null", "value": None},
@@ -910,6 +926,8 @@ def test_validate_explore_pivots_accepts_canonical_typed_filter_members() -> Non
         {"kind": "date", "value": "2024-02-29"},
         {"kind": "datetime", "value": "2024-02-29T12:30:00Z"},
         {"kind": "time", "value": "12:30:00.123456+01:00"},
+        {"kind": "datetime", "value": "2024-03-01T09:00:00.000000100+00:00"},
+        {"kind": "time", "value": "09:00:00.000000200"},
         {"kind": "decimal", "value": "123.4500E-2"},
     ]
     pivot = _pivot(filters=[{"id": "filter_1", "field": "value", "members": members}])

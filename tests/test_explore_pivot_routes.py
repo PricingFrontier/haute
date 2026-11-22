@@ -25,7 +25,7 @@ def test_infinite_pivot_dimension_has_a_public_remediation(value: float) -> None
     from haute.routes._pivot_service import PivotContractError, _member_key
 
     with pytest.raises(PivotContractError) as caught:
-        _member_key(value)
+        _member_key(value, "float")
     assert caught.value.failure.reason_code == "invalid_pivot_member"
     assert "infinite" in caught.value.failure.remediation
 
@@ -1372,6 +1372,131 @@ def test_pivot_renders_integers_beyond_js_safe_range_as_decimal_strings(
     assert isinstance(small, int)
 
 
+def _json_total(total: int) -> int | str:
+    """A total as the pivot answers it: an integer past JavaScript's exact range is text."""
+    return total if abs(total) <= 2**53 - 1 else str(total)
+
+
+def test_a_sum_is_the_total_of_its_rows_whatever_the_columns_width(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """XPL-01: a total past the column type's range is shown in full, not wrapped round.
+
+    Polars sums these types in their own width and wraps the same way, so the oracle is
+    Python's own arithmetic, never Polars.
+    """
+    path = tmp_path / "wide-sums.parquet"
+    regions = ["East", "East", "West", "West"]
+    integers = {
+        "i32": (pl.Int32, [2_000_000_000, 2_000_000_000, 2_147_483_647, 1]),
+        "u32": (pl.UInt32, [4_000_000_000, 4_000_000_000, 3_000_000_000, 7]),
+        "i64": (pl.Int64, [2**62, 2**62, -(2**63), -(2**63)]),
+        "u64": (pl.UInt64, [2**63, 2**63, 2**64 - 1, 2**64 - 1]),
+    }
+    floats = {
+        # Float16 holds at most 65,504: its own Sum overflows to infinity.
+        "f16": (pl.Float16, [60_000.0, 60_000.0, 1_024.0, 2_048.0]),
+        # Float32 has 24 bits of mantissa: 2**24 + 1 is not one of its values.
+        "f32": (pl.Float32, [16_777_216.0, 1.0, 16_777_216.0, 3.0]),
+    }
+    pl.DataFrame(
+        {
+            "region": regions,
+            "year": [2024] * 4,
+            **{
+                name: pl.Series(values, dtype=dtype)
+                for name, (dtype, values) in {**integers, **floats}.items()
+            },
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    columns = {**integers, **floats}
+    pivot = _pivot(
+        values=[
+            {
+                "id": f"sum_{name}",
+                "field": name,
+                "aggregation": "sum",
+                "reference": f"{name}_sum",
+                "display_name": name,
+            }
+            for name in columns
+        ]
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert result["warnings"] == []
+    year = [("integer", "2024")]
+    for name, (_dtype, values) in columns.items():
+        by_region = {
+            region: sum(value for value, row in zip(values, regions, strict=True) if row == region)
+            for region in ("East", "West")
+        }
+        expected = _json_total if name in integers else float
+        for region, total in by_region.items():
+            for column in (year, None):
+                cell = _cell(result, [("string", region)], column, f"sum_{name}")
+                assert cell == expected(total), (name, region, column)
+        grand = sum(values)
+        for column in (year, None):
+            assert _cell(result, None, column, f"sum_{name}") == expected(grand), name
+
+
+@pytest.mark.parametrize("dtype", [pl.Int128, pl.UInt128])
+def test_a_sum_no_wider_integer_type_holds_is_refused_naming_its_column(
+    client: TestClient,
+    tmp_path: Path,
+    dtype: type[pl.DataType],
+) -> None:
+    path = tmp_path / f"{dtype.__name__}.parquet"
+    pl.DataFrame(
+        {"region": ["A"], "year": [2024], "claims": pl.Series([1], dtype=dtype)}
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    final, result = _run_pivot(client, graph, _pivot())
+
+    assert result is None
+    assert final["status"] == "contract_error", final
+    failure = final["failure"]
+    assert failure["reason_code"] == "invalid_pivot_field"
+    assert failure["dimensions"] == {"field": "claims"}
+    assert "'claims'" in failure["message"]
+    assert dtype.__name__ in failure["message"]
+
+
+def test_every_integer_type_polars_defines_sums_to_its_python_total() -> None:
+    """Every integer type, read from Polars, sums exactly or is refused: no list to keep."""
+    from haute._polars_dtypes import integer_range, polars_type_kinds
+    from haute.routes._pivot_service import _aggregation_expression, _integer_sum_dtype
+
+    integer_types = [
+        getattr(pl, name) for name, kind in polars_type_kinds().items() if kind == "integer"
+    ]
+    assert len(integer_types) >= 10
+    for dtype in integer_types:
+        least, greatest = integer_range(dtype)
+        if _integer_sum_dtype(dtype) is None:
+            assert least <= -(2**127) or greatest >= 2**127 - 1, dtype
+            continue
+        for extreme in (least, greatest):
+            frame = pl.DataFrame({"value": pl.Series([extreme, extreme], dtype=dtype)})
+            placement: Any = {
+                "id": "total",
+                "field": "value",
+                "aggregation": "sum",
+                "reference": "total",
+            }
+            total = frame.select(_aggregation_expression(placement, dtype)).item()
+            assert total == 2 * extreme, (dtype, extreme)
+
+
 def test_pivot_result_cache_ignores_name_visibility_and_value_display_name(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -2096,6 +2221,204 @@ def test_pivot_runtime_members_and_exact_filters_cover_all_persisted_kinds(
         ("datetime", "2024-02-29T12:30:00"),
         ("time", "12:30:00.123456"),
     } <= observed_keys
+
+
+#: Nanoseconds from 1970 to 09:00:00 UTC on 1 March 2024.
+_NINE_AM = 1_709_283_600 * 1_000_000_000
+
+
+@pytest.mark.parametrize(
+    ("dtype", "texts"),
+    [
+        (
+            pl.Datetime("ns"),
+            [
+                "2024-03-01T09:00:00.000000100",
+                "2024-03-01T09:00:00.000000200",
+                "2024-03-01T09:00:01",
+            ],
+        ),
+        (
+            pl.Datetime("ns", "Europe/London"),
+            [
+                "2024-03-01T09:00:00.000000100+00:00",
+                "2024-03-01T09:00:00.000000200+00:00",
+                "2024-03-01T09:00:01+00:00",
+            ],
+        ),
+        (pl.Time(), ["09:00:00.000000100", "09:00:00.000000200", "09:00:01"]),
+    ],
+    ids=["naive", "aware", "time"],
+)
+def test_a_pivot_keeps_the_rows_of_values_that_differ_below_a_microsecond(
+    client: TestClient,
+    tmp_path: Path,
+    dtype: pl.DataType,
+    texts: list[str],
+) -> None:
+    """XPL-03: a pandas-written nanosecond timestamp, grouped as Polars groups it."""
+    physical = [_NINE_AM + 100, _NINE_AM + 200, _NINE_AM + 1_000_000_000]
+    if dtype == pl.Time:
+        physical = [value % (86_400 * 1_000_000_000) for value in physical]
+    path = tmp_path / "nanoseconds.parquet"
+    pl.DataFrame(
+        {
+            "moment": pl.Series(physical, dtype=pl.Int64).cast(dtype),
+            "claims": [100, 200, 300],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    kind = "time" if dtype == pl.Time else "datetime"
+    pivot = _pivot(columns=[], rows=[{"id": "row_1", "field": "moment"}])
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    rows = [path for path in result["row_paths"] if not path["is_grand_total"]]
+    assert [path["members"] for path in rows] == [[{"kind": kind, "value": t}] for t in texts]
+    cells = [_cell(result, [(kind, text)], [], "sum_claims") for text in texts]
+    assert cells == [100, 200, 300]
+    assert _cell(result, None, [], "sum_claims") == sum(cells) == 600
+
+    members = client.post(
+        "/api/explore/pivots/members",
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "moment"},
+    ).json()
+    assert members["status"] == "ok", members
+    assert sorted(
+        (member["key"]["value"], member["label"], member["count"]) for member in members["members"]
+    ) == [(text, text, 1) for text in texts]
+    for text, claims in zip(texts, cells, strict=True):
+        final, filtered = _run_pivot(
+            client,
+            graph,
+            _pivot(
+                filters=[
+                    {
+                        "id": "filter_moment",
+                        "field": "moment",
+                        "members": [{"kind": kind, "value": text}],
+                    }
+                ],
+                columns=[],
+                rows=[{"id": "row_1", "field": "moment"}],
+            ),
+        )
+        assert final["status"] == "completed", final
+        assert filtered is not None
+        assert _cell(filtered, [(kind, text)], [], "sum_claims") == claims
+        assert _cell(filtered, None, [], "sum_claims") == claims
+
+    searched = client.post(
+        "/api/explore/pivots/members",
+        json={
+            "graph": graph,
+            "target": _EXPLORE_TARGET,
+            "source": "live",
+            "field": "moment",
+            "search": "00.0000002",
+        },
+    ).json()
+    assert [member["label"] for member in searched["members"]] == [texts[1]]
+
+
+def test_a_min_or_max_of_a_nanosecond_value_keeps_its_nine_digits(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "nanosecond-values.parquet"
+    pl.DataFrame(
+        {
+            "region": ["All", "All"],
+            "year": [2024, 2024],
+            "moment": pl.Series([_NINE_AM + 100, _NINE_AM + 200]).cast(pl.Datetime("ns")),
+            "clock": pl.Series([100, 1_000_000_200]).cast(pl.Time),
+            "wait": pl.Series([100, -86_400_000_000_100]).cast(pl.Duration("ns")),
+            "day": [date(2024, 3, 1), date(2024, 2, 29)],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    values = [
+        {
+            "id": f"{aggregation}_{field}",
+            "field": field,
+            "aggregation": aggregation,
+            "reference": f"{field}_{aggregation}",
+            "display_name": f"{aggregation} {field}",
+        }
+        for field in ("moment", "clock", "wait", "day")
+        for aggregation in ("min", "max")
+    ]
+    formula = {
+        "id": "latest",
+        "display_name": "Latest",
+        "reference": "latest",
+        "expression": 'pl.col("moment").max()',
+    }
+
+    final, result = _run_pivot(client, graph, _pivot(values=values, formulas=[formula]))
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    cell_of = {
+        value_id: _cell(result, [("string", "All")], [("integer", "2024")], value_id)
+        for value_id in [*(value["id"] for value in values), "latest"]
+    }
+    assert cell_of == {
+        "min_moment": "2024-03-01T09:00:00.000000100",
+        "max_moment": "2024-03-01T09:00:00.000000200",
+        "min_clock": "00:00:00.000000100",
+        "max_clock": "00:00:01.000000200",
+        "min_wait": "-2 days, 23:59:59.999999900",
+        "max_wait": "0:00:00.000000100",
+        "min_day": "2024-02-29",
+        "max_day": "2024-03-01",
+        "latest": "2024-03-01T09:00:00.000000200",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "member", "reason"),
+    [
+        ("moment", {"kind": "datetime", "value": "2024-03-01T09:00:00.000000100"}, "finer than"),
+        ("clock", {"kind": "time", "value": "09:00:00+01:00"}, "has a time zone"),
+    ],
+    ids=["finer-than-its-unit", "time-with-an-offset"],
+)
+def test_a_filter_member_no_value_of_its_column_could_equal_is_refused(
+    client: TestClient,
+    tmp_path: Path,
+    field: str,
+    member: dict[str, Any],
+    reason: str,
+) -> None:
+    path = tmp_path / "microseconds.parquet"
+    pl.DataFrame(
+        {
+            "moment": pl.Series([datetime(2024, 3, 1, 9)]).dt.cast_time_unit("us"),
+            "clock": [datetime_time(9)],
+            "claims": [1.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    final, _ = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            filters=[{"id": f"filter_{field}", "field": field, "members": [member]}],
+            rows=[],
+            columns=[],
+        ),
+    )
+
+    assert final["status"] == "contract_error", final
+    assert final["failure"]["reason_code"] == "invalid_pivot_filter_member"
+    assert reason in final["failure"]["message"]
 
 
 def test_a_member_of_a_time_zone_aware_datetime_filters_its_rows(

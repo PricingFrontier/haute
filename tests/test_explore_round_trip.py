@@ -200,7 +200,15 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "id": "filter_1",
                     "field": "status",
                     "members": [{"kind": "string", "value": "Open"}],
-                }
+                },
+                {
+                    "id": "filter_2",
+                    "field": "reported_at",
+                    "members": [
+                        {"kind": "datetime", "value": "2024-03-01T09:00:00.000000100+00:00"},
+                        {"kind": "time", "value": "09:00:00.000000200"},
+                    ],
+                },
             ],
             "columns": [
                 {

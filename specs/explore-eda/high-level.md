@@ -139,7 +139,9 @@ Out of scope (owned elsewhere):
   result computed for one data version is never returned for another.
 - Pivot filters are conjunctions of exact member sets. A member is persisted as a typed
   `{kind, value}` scalar so null, NaN, booleans, integers, finite floats, strings, dates,
-  datetimes, times, and decimals do not collapse into display text. Empty member sets mean that
+  datetimes, times, and decimals do not collapse into display text. A datetime or time member
+  keeps its column's whole fraction, to the nanosecond, so values that differ below a
+  microsecond are separate rows, members and filters. Empty member sets mean that
   the placed filter is not restricting the field. Float NaN is treated as missing by numeric
   aggregations but remains independently selectable as a filter/group member.
 - Rows and Columns retain configured field order. One optional `sort_by` target selects a placed
@@ -151,7 +153,10 @@ Out of scope (owned elsewhere):
   remain last and Columns paths retain deterministic ascending typed order. Values support `sum`, `count`,
   `average`, `min`, `max`, `median`, and `distinct_count`; numeric-only aggregations reject
   incompatible dtypes, Count counts non-null/non-NaN values, and Distinct count excludes
-  null/NaN. Repeated Values are legal because placement ids, not field names, identify measures.
+  null/NaN. A Sum is the total of its rows whatever the column's width: an integer is summed in
+  a wider integer type and a float in Float64, so a total past the column type's range is shown
+  in full rather than wrapped round, and the Sum of a 128-bit integer column, which no wider
+  type holds, is refused naming the column. Repeated Values are legal because placement ids, not field names, identify measures.
   Each Value also owns a stable, unique formula reference derived from its field followed by its
   aggregation (for example `total_claims_sum` and `total_claims_mean`). Repeating the exact same
   field/aggregation appends a numeric suffix.
@@ -343,11 +348,13 @@ Out of scope (owned elsewhere):
   unbounded in size. `values_truncated` follows the number of display-label groups emitted by
   that same expression, not raw-value cardinality, and is false when no value counts ran (for
   example, `List` columns).
-- **Lenient text formatting for Binary/Duration.** A strict `cast(pl.String)` on `Binary` raises
-  on the first non-UTF-8 byte sequence, and Polars cannot `cast` `Duration` to `String` at all;
-  either would abort profiling and take down the whole report, not just that
-  column. Both are formatted element-wise instead so one problematic column cannot break the
-  report for every other column.
+- **Lenient text formatting for Binary, exact text for temporals.** A strict `cast(pl.String)` on
+  `Binary` raises on the first non-UTF-8 byte sequence, so Binary is decoded leniently
+  element-wise and one problematic column cannot break the report for every other column.
+  Polars cannot `cast` `Duration` to `String` at all and its `Time` cast drops the whole
+  fraction, while a Python value holds only microseconds, so datetimes, times and durations
+  are written as text inside the query at their column's own precision: value counts, min,
+  max and span never merge or shorten values the column holds apart.
 - **Unknown display keys.** The overview, pivot and chart validators reject a key they do not
   know, naming it, under the canonical-input rule: there is no forward-compatibility
   passthrough, so a config written by a newer editor fails loudly instead of being carried

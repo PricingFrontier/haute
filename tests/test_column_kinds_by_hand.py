@@ -60,6 +60,10 @@ _NAMED_TYPES: dict[str, str] = {
     "src/haute/_polars_steps.py::CAST_DTYPES::list": (
         "the Change types targets the editor offers, each one type a cast names"
     ),
+    "src/haute/routes/_pivot_service.py::_SUM_INTEGER_DTYPES::list": (
+        "the two cast targets a pivot's integer Sum widens to; which one a column takes is read "
+        "from integer_range, not from the column's type name (XPL-01)"
+    ),
     "src/haute/_polars_steps.py::DATE_PARSE_TARGETS::list": (
         "the two cast targets a text column reaches by parsing, each with its parse function"
     ),
