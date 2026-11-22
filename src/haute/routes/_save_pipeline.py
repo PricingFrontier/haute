@@ -1321,6 +1321,7 @@ class SavePipelineService:
         self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
+        self._validate_portable_paths(graph, py_path)
         warnings: list[str] = []
         self._validate_api_inputs_have_schemas(graph, warnings)
         self._validate_transforms_are_runnable(graph, warnings)
@@ -1697,6 +1698,28 @@ class SavePipelineService:
                         f"Invalid {node.data.nodeType.value} config for "
                         f"node {node.data.label!r}: {exc}"
                     ) from exc
+
+    def _validate_portable_paths(self, graph: PipelineGraph, py_path: Path) -> None:
+        """Refuse a node's path that another checkout of the project would not read as this
+        one does (:func:`haute._path_resolution.portable_path_refusal`): one outside the
+        project, an absolute one, one with a Windows drive letter, and one spelled in
+        another letter case than the file on disk. Every path setting of every node, the
+        root graph's and each submodel's, is checked, and each refusal names its node and
+        what to write. A save that stored such a path would run here and fail on a
+        computer or system that reads it otherwise, a Linux CI job among them.
+        """
+        from haute.execution import node_path_refusals
+
+        problems = [
+            problem
+            for scoped_graph in [graph, *self._iter_embedded_submodel_graphs(graph)]
+            for node in scoped_graph.nodes
+            for problem in node_path_refusals(
+                node, pipeline_dir=py_path.parent, project_root=self._root
+            )
+        ]
+        if problems:
+            raise InvalidRequestError(" ".join([*problems, "Nothing was saved."]))
 
     @staticmethod
     def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:

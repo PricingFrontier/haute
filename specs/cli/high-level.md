@@ -155,8 +155,10 @@ Out of scope, owned elsewhere:
   to save. It strictly parses the pipeline and exits non-zero on syntax, configuration,
   topology, or other parse failures; then reports, all in one run, the editor document's
   diagnostics with file and line (a statement or comment a save would drop among them),
-  what the editor's save-time validation refuses (names, global constants, joins, selectors
-  and the rest, each with the save's own message), and structural problems of the flattened
+  what the editor's save-time validation refuses (names, global constants, joins, selectors,
+  a node path another checkout would read otherwise, such as an absolute path or one in
+  another letter case than its file, and the rest, each with the save's own message), and
+  structural problems of the flattened
   graph (edges pointing at missing nodes and orphan nodes). The save's warnings are printed
   without failing. A pipeline with no nodes, the one `haute init` writes, passes, its summary
   saying it has none yet: the editor loads it ready and saves it, so a new project passes its

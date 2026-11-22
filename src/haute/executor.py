@@ -55,6 +55,7 @@ from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     _normalise_path_text,
+    reject_unportable_path_text,
 )
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import current_project, graph_pipeline_dir, installed_project
@@ -2098,12 +2099,7 @@ def resolve_data_output_path(
     land under ``outputs/``. File outputs are project-root-relative. The default
     extension comes from the format registry; explicit extensions are preserved.
     """
-    from haute._polars_io_registry import (
-        default_output_extension,
-        format_for_config,
-        format_group,
-        is_databricks_output,
-    )
+    from haute._polars_io_registry import format_for_config, format_group, is_databricks_output
 
     if is_databricks_output(config):
         return None, str(config.get("table", ""))
@@ -2120,17 +2116,30 @@ def resolve_data_output_path(
                 project_root=root,
             )
         return None, str(config.get("table", ""))
+    path = data_output_written_path(config)
+    if format_group(fmt_entry) == "file":
+        # The setting as written: joined to the root, a drive-letter path would land in a
+        # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``outputs/``.
+        reject_unportable_path_text(config["path"], project_root=root)
+    target = str(root / _normalise_path_text(path)) if format_group(fmt_entry) == "file" else path
+    return _contain_output_path(graph, target, project_root=root), path
+
+
+def data_output_written_path(config: Mapping[str, Any]) -> str:
+    """A Data Output's ``path`` as its writer reads it, from the project root: a bare file
+    name goes in ``outputs/``, and the format's extension is added when it names none."""
+    from haute._polars_io_registry import default_output_extension, format_for_config
+
     raw = config.get("path", "")
     if not isinstance(raw, str) or not raw:
         raise ValueError("Data output node has no output path configured")
     path = raw
     if "/" not in path and "\\" not in path:
         path = f"outputs/{path}"
-    ext = default_output_extension(fmt_entry)
+    ext = default_output_extension(format_for_config(config))
     if ext is not None and not Path(path).suffix:
         path = f"{path}{ext}"
-    target = str(root / _normalise_path_text(path)) if format_group(fmt_entry) == "file" else path
-    return _contain_output_path(graph, target, project_root=root), path
+    return path
 
 
 def _data_output_config(graph: PipelineGraph, output_node_id: str) -> dict[str, Any]:

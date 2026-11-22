@@ -170,7 +170,8 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
     names the upstream commit/seam it guards so a regression localises.
     """
     client, data_path = project
-    api_config = _api_input_config(data_path)
+    # Written from the project root, as a save stores it: a save refuses an absolute path.
+    api_config = _api_input_config(Path("data/data_model_example.json"))
     graph = _graph_json(api_config)
 
     # STAGE 1 — SAVE the multi-port graph (guards graph + sourceHandle

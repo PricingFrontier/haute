@@ -709,7 +709,8 @@ sidecar holds (the editor's, `haute run`'s and a deploy's parse, a degraded docu
 Recover alike); a save of the one node keeps them in its
 file's sidecar as a whole save does; once every step is complete the next save renders
 them into the body and drops them from the sidecar. A sidecar entry for a node whose body is not the
-placeholder is ignored, and the next save drops it.
+placeholder is ignored, and the next save drops it: a body written over the placeholder by hand is
+the node's program, one that yields no code (`return df`, or `...` to start afresh) included.
 
 **Stepped surfaces.** The same step list authors the Polars code of every surface
 that has one: a Data Input's post-load code, an External File's code over the loaded

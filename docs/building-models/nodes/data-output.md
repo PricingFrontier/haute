@@ -16,7 +16,7 @@ A Data Output cannot be reused with **Create Instance**: two writers to the same
 | **PROVIDER** | Where the data goes: **File** (the default), **Database**, **Lakehouse** or **Databricks**. Changing it keeps only the settings the new provider uses. |
 | **FORMAT** | The format to write, from the formats the provider supports (see the table below). A format whose writer needs a package that is not installed is listed with **needs one of:** and the package, and a format Polars marks as unstable is listed with **(unstable)**. |
 | **MODE** | **sink** (streaming) or **write** (in memory). Shown when the format supports more than one mode, or once a mode is set (a new node starts on **sink**). Each format offers only the modes Polars supports for it. |
-| **FILENAME OR PATH** | File provider: the file to write. Type a name or pick one from the file browser. Paths are resolved from your project folder, not from the pipeline file's folder. A bare file name goes in the project's `outputs/` folder, and the format's extension is added when the name has none: `scored_policies` with Parquet selected writes `outputs/scored_policies.parquet`. A relative path such as `exports/scored.parquet` is taken from the project folder, and an absolute path must stay inside the project. Missing folders are created. |
+| **FILENAME OR PATH** | File provider: the file to write. Type a name or pick one from the file browser. Paths are resolved from your project folder, not from the pipeline file's folder. A bare file name goes in the project's `outputs/` folder, and the format's extension is added when the name has none: `scored_policies` with Parquet selected writes `outputs/scored_policies.parquet`. A relative path such as `exports/scored.parquet` is taken from the project folder. Saving refuses an absolute path, and the message gives the path from the project folder to write instead. Missing folders are created. |
 | **TABLE LOCATOR** | Lakehouse provider: the table to write. |
 | **CONNECTION ENVIRONMENT REFERENCE** | Database provider: the name of an environment variable that holds the database URI. |
 | **CREDENTIAL-FREE URI** | Database provider: a database URI without credentials, used instead of the connection reference. |
@@ -117,7 +117,7 @@ Writing a scored dataset to parquet:
     | `mode` | `"sink"` or `"write"` | Whether the frame is streamed to the destination (`sink`) or collected and written (`write`). With `output_type` `"file"`, `"database"`, `"lakehouse"`. |
     | `output_type` | `"file"` | The destination: a file. |
     | `format` | text | The file format, such as `parquet` or `csv`. With `output_type` `"file"`, `"database"`, `"lakehouse"`. |
-    | `path` | text | The file written, relative to the project root or absolute. With `output_type` `"file"`, `"lakehouse"`. |
+    | `path` | text | The file written, from the project root: a save refuses an absolute path. With `output_type` `"file"`, `"lakehouse"`. |
     | `connection` | text | The named connection in `connections.toml`; exactly one of `connection` and `uri`. With `output_type` `"database"`. |
     | `uri` | text | A credential-free database URI; exactly one of `connection` and `uri`. With `output_type` `"database"`. |
     | `table` | text | The table written. With `output_type` `"database"`, `"databricks"`. |

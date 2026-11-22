@@ -56,6 +56,10 @@ _EXPECTED_DEBT_IDS = {
     # case apart; on Windows and macOS (CI's platform smoke) the same module renames the
     # folders for real. See tests/test_git_letter_case.py.
     "926269bfd5231f6c",
+    # The same holds for a node path naming one of two such files: on Windows and macOS
+    # the module's cross-system verdict test covers the case-folding side.
+    # See tests/test_path_resolution.py.
+    "6b48cc35b453bbbe",
     # A file held open with open() blocks its replacement only on Windows, where
     # the git tree fence's real case lives; other platforms run the same fence
     # through a faked half-swap (tests/test_git_working_tree.py::TestTreeFence).

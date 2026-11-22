@@ -595,7 +595,10 @@ setting's, repaired in its turn; a refused scalar takes its own branch's
 palette default where that default passes (`defaulted`, with a warning) and is otherwise
 removed (`needs_input`). A top-level field the saved configuration lacks takes its
 palette default, reported as `defaulted`, when the palette belongs to the configuration's branch
-(an Edge Join's absent `maintain_order` the order of its join type), as a new node would; a stepped
+(an Edge Join's absent `maintain_order` the order of its join type), as a new node would, except
+one the kept settings exclude: when the engine's `check` refuses the filled configuration and
+accepts it without one filled default, that key stays absent (a Model Score's `version` beside the
+`alias` it kept); a stepped
 node's absent `steps` stays absent, and recover never takes a default from another provider branch
 ([node recovery actions](../server-api/node-recovery-actions.md)). The candidate must then pass
 the model's shape and `check`, so a recovered config always loads: one that does not (an unknown
@@ -636,7 +639,7 @@ Every boundary calls it, and no boundary has a per-type list:
 |---|---|
 | Parse (`_config_builder._resolve_node_config`, every node of the pipeline and its submodels) | `require_complete=False` |
 | Save (`SavePipelineService.validate_graph`, every node of the root graph and each embedded submodel graph, with each node's connected input names) | `require_complete=False`; a refusal is a 400 naming the node, before anything is staged |
-| Node-scoped save (`apply_scoped_node_save`) | `require_complete=False`; an undeclared key keeps its 400 `node_config_undeclared_keys`, any other refusal its 409 `repair_action_unsupported` |
+| Node-scoped save (`apply_scoped_node_save`) | `require_complete=False`; an undeclared key keeps its 400 `node_config_undeclared_keys`, any other refusal its 409 `repair_action_unsupported`; a path another checkout reads otherwise is then refused with 400 `node_path_not_portable` |
 | Sidecar write (`_config_io._prepare_config_for_sidecar`) | `require_complete=False`, a backstop: save has refused such a graph already |
 | Recovery (`_node_config_recovery.validate_recovery_config`, `reconcile_config`) | the model's shape per field, then its hooks; see below |
 | Building a node to run it: `_builders._build_node_fn` (preview, trace, run, training and optimiser input, the assistant's data check) and `_node_builder.wrap_builder`, which checks before its interception hook and tells the base builder the config is checked, so a deploy scorer's intercepted build is checked once | `persisted=False`, `require_complete=False`, `at_run=True`: the whole model, the Rating Step's `check` applied by its builder as its first step; a builder reports an incomplete setting when it runs, as before. `persisted=False` also admits the deploy scorer's private transport keys on its annotated graph copy (`_contracts.DEPLOY_PRIVATE_CONFIG_KEYS`): on a Model Score, the served model's required and optional input columns, and on a file-sourced Optimiser Apply, its artifact's input columns, each a list of distinct non-empty column names; and on a Quote Response, `__haute_deploy_answer_per_row` (`true`: a batch answered as one frame keeps one answer per row). A persisted config never holds them, and a key admitted on one node type is undeclared on another |

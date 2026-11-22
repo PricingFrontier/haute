@@ -271,7 +271,11 @@ File Data Output destinations are relative to the project root, independent of t
 pipeline's directory and process working directory. A bare filename goes in the root's
 `outputs/` folder: `output` or `output.parquet` with Parquet selected resolves to
 `outputs/output.parquet`. An explicit relative path such as `exports/output.parquet`
-is project-relative; an absolute path must remain inside the project. Missing extensions
+is project-relative; an absolute path must remain inside the project, and a save and
+`haute lint` refuse one, naming the path from the project root to write, as they refuse
+every node path another checkout would read otherwise (a Windows drive letter, another
+letter case than the file on disk; see "A path every checkout reads alike" in the
+[low-level specification](low-level.md)). Missing extensions
 come from the selected format; explicit extensions are preserved. Destination preview
 and writing use the same resolution, and writing creates missing parent directories.
 Database and lakehouse locators retain their provider-specific resolution.

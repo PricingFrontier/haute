@@ -184,7 +184,7 @@ class DataInputFileConfig(_DataInputPolarsCommon, total=False):
     format: str
     """The file format, such as `parquet`, `csv` or `ndjson`."""
     path: str
-    """The file, relative to the project root or absolute."""
+    """The file, written from the project root: a save refuses an absolute path."""
 
 
 @closed
@@ -273,7 +273,7 @@ class DataOutputFileConfig(_DataOutputPolarsCommon, total=False):
     format: str
     """The file format, such as `parquet` or `csv`."""
     path: str
-    """The file written, relative to the project root or absolute."""
+    """The file written, from the project root: a save refuses an absolute path."""
 
 
 @closed

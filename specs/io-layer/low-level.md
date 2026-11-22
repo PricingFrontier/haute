@@ -191,7 +191,43 @@ platforms, and on Windows with long paths on, nothing is renamed.
    resolver takes no preference, so no caller can put the pipeline directory first; outside
    `_path_resolution.py` only the places `tests/test_path_anchoring_by_hand.py` lists, each
    with its reason, anchor a relative path on the pipeline directory themselves (a node's
-   config sidecar and a SQLite URI among them).
+   config sidecar and a SQLite URI among them). A path with a Windows drive letter that is
+   not absolute where it is read (`C:\\Users\\...` on Linux or macOS, or `C:file.csv`) raises
+   `RuntimePathWrittenOnWindowsError`, a `RuntimePathOutsideProjectError`, saying it was
+   written on Windows and naming the longest tail of it found under the project root as the
+   path to write (`_path_resolution.reject_windows_drive_path`). A file Data Output's path is
+   refused the same way, never joined to the root as a folder named `C:`: its setting as
+   written, before the writer puts a bare name in `outputs/` (where `C:priced.csv` would
+   lose its drive), goes through `reject_unportable_path_text`, the check of a path's own
+   text that every read path's candidates go through too (a null byte, a reserved device
+   name, a drive letter). The preview
+   request's path check names the node whose path it refuses, since every node's request
+   checks the whole graph.
+
+   **A path every checkout reads alike.** A node's path settings
+   (its local runtime inputs from `execution._RUNTIME_INPUTS`, and a file Data Output's
+   `path` from the `execution._WRITTEN_PATHS` table) must name the same file in every checkout of the
+   project, on any computer or system. `_path_resolution.portable_path_refusal` says why a
+   path a node reads would not, and what to write instead: a path outside the project; an
+   absolute path, which names this computer's folders (write the path from the project root,
+   spelled as on disk); a drive-letter path as above; and a path that names something only
+   where letter case is ignored, as Windows and macOS read it and Linux does not (write the
+   spelling on disk, or the pattern in the files' letter case). Letter case is judged from
+   the folders' listings, never by asking the filesystem, so the verdict is the same on every
+   system: each part is matched exactly and with case ignored, a glob part as a pattern and
+   `**` at any depth, and the anchoring rule's candidates are taken in order, the first that
+   matches something only with case ignored refused and the first that matches as written
+   accepted. A path that matches as written and also, with case ignored, another entry (two
+   files differing only in case, which Windows and macOS hold as one) is refused too. A
+   written path is checked as its writer reads it (`executor.data_output_written_path`: a
+   bare name in `outputs/`, the format's extension added, from the project root) by
+   `portable_output_path_refusal`: outside the project, absolute, a drive letter, or a folder
+   or file on disk in another letter case (Windows and macOS write into it, Linux makes
+   another); a folder not there yet is the writer's to make. A whole save (`SavePipelineService.validate_graph`, which
+   `haute lint` runs), one node's save (`apply_scoped_node_save`, HTTP 400
+   `node_path_not_portable`) and therefore `haute lint` refuse each, naming the node, the
+   setting, the path and what to write, with nothing saved (`execution.node_path_refusals`).
+   A run reads an absolute path inside the project as before.
 3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
    effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
    No cache-mode field is stored — validation rejects a config still carrying the removed

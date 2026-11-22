@@ -666,7 +666,9 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
             try:
                 resolve_node_input_path(raw_path, source_file=graph.source_file)
             except RuntimePathError as exc:
-                raise failure_refusal(exc) from None
+                # Every node's request checks the whole graph: say whose path it is.
+                named = type(exc)(f"Node '{node_display_name(graph, node.id)}': {exc}")
+                raise failure_refusal(named) from None
 
 
 def _validate_data_output_path(
