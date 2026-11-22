@@ -899,12 +899,14 @@ def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_proj
     from haute.executor import resolve_data_output_path
 
     config = {"output_type": "file", "format": "parquet", "path": written}
+    before = sorted(tmp_path.rglob("*"))
 
     with pytest.raises(RuntimePathOutsideProjectError):
         resolve_data_output_path(PipelineGraph(), config, project_root=tmp_path)
 
-    assert not (tmp_path / "C:").exists()
-    assert not (tmp_path / "outputs").exists()
+    # Nothing named ``C:`` or ``outputs`` appeared in the project (on Windows ``C:`` joined
+    # to a folder names a drive, so the project's listing is the one test of every system).
+    assert sorted(tmp_path.rglob("*")) == before
 
 
 @pytest.mark.parametrize(
