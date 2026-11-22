@@ -2017,6 +2017,23 @@ class TestAProjectBelowTheRepositorysRoot:
         )
         return listed.split()[:2]
 
+    def test_a_project_in_a_folder_the_repository_ignores_stages_nothing(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # A scratch project inside a checkout that ignores it (the browser tests' own): git
+        # would never take its hook, so it is not forced in and the init goes ahead.
+        git_run(tmp_path, "init", "-q", "-b", "main")
+        (tmp_path / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        project = tmp_path / "scratch"
+        project.mkdir()
+        use_project(project)
+
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert (project / ".githooks" / "pre-commit").is_file()
+        assert git_run(tmp_path, "ls-files", "--", "scratch") == ""
+
     def test_the_hooks_repair_changes_the_projects_entry_alone(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:

@@ -487,7 +487,8 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   (`core.fileMode=false`), and on every system records it executable in git's index inside a
   repository (`_record_executable_files` → `haute._git_core.record_executable_files`: a
   tracked hook's mode alone, `git update-index --cacheinfo 100755,<its staged blob>,<its path from the repository's root>` (`--chmod=+x` would stage the file's content too, and git names index entries from the root, which the project may sit below), its staged content kept; an
-  untracked one staged through `stage_paths`, `git add --chmod=+x`). Git keeps an index
+  untracked one staged through `stage_paths`, `git add --chmod=+x`, unless an ignore rule covers it, as
+  in a scratch project inside a checkout that ignores its folder, which git would never take). Git keeps an index
   entry's mode through every later `git add` where it reads no bit, so a person's own first
   commit, the editor's first-commit seed and a re-run's capture (both through `stage_paths`
   and an index-built save commit) all record 100755; `haute._scaffold_files.EXECUTABLE_FILES`

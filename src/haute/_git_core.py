@@ -985,8 +985,9 @@ def record_executable_files(cwd: Path) -> list[str]:
     """Record each of the project's executable files at *cwd*, its root, as executable in
     git's index, and return those it recorded: a tracked one's mode alone (its staged content
     kept, so what changed in it is still left for review), an untracked one staged by
-    :func:`stage_paths`. Git then keeps the mode through every later ``git add`` of it,
-    a person's own included, where the file system has no executable bit."""
+    :func:`stage_paths` unless an ignore rule covers it, which git would never take. Git then
+    keeps the mode through every later ``git add`` of it, a person's own included, where the
+    file system has no executable bit."""
     from haute._scaffold_files import EXECUTABLE_FILES
 
     present = sorted(path for path in EXECUTABLE_FILES if (cwd / path).is_file())
@@ -1005,8 +1006,21 @@ def record_executable_files(cwd: Path) -> list[str]:
             # The index's own blob with the mode changed: `update-index --chmod=+x <path>`
             # would stage the file's content from disk too.
             _run_git("update-index", "--cacheinfo", f"100755,{blob},{full_name}", cwd=cwd)
-    stage_paths(untracked, cwd)
-    return present
+    addable: list[str] = []
+    if untracked:
+        # Only what git would take: a path an ignore rule covers (the project's folder
+        # ignored by the repository around it) is never forced in, as the seed's are not.
+        addable = _run_git(
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            *(f":(literal){path}" for path in untracked),
+            cwd=cwd,
+        ).split("\0")
+        stage_paths([path for path in untracked if path in addable], cwd)
+    return [path for path in present if path not in untracked or path in addable]
 
 
 def _is_git_repo(cwd: Path | None = None) -> bool:
