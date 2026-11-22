@@ -275,12 +275,17 @@ def handle_app_test(config: AppTestConfig) -> None:
     import os
 
     from haute._quote_store import SignIn
+    from haute._workbench_app import RELEASE_FILE
     from haute._workbench_app_test import run_app_test, server_store, sqlite_store
     from haute._workbench_test_quotes import read_test_quotes
     from haute.deploy._config import DeployConfig
 
     project_dir = current_project().root
     release_dir = config.release.resolve()
+    if not (release_dir / RELEASE_FILE).is_file():
+        raise click.ClickException(
+            f"{config.release} holds no release: build one with 'haute app build' first."
+        )
     with _said():
         folder = DeployConfig.from_project(project_dir).test_quotes_dir
         quotes = [
@@ -415,7 +420,8 @@ def impact_command(sample: int) -> None:
 @app.command(name="test", need="project")
 @click.argument(
     "release",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    # Checked once the project is found, so outside one the refusal is the project's.
+    type=click.Path(file_okay=False, path_type=Path),
     default=RELEASE_DIR,
 )
 @click.option(

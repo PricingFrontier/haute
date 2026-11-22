@@ -193,6 +193,10 @@ def test_haute_app_test_takes_the_projects_test_quotes_through_the_built_app(
     assert "✓ A store of the release's tables made on SQLite for the run" in passed.output
     assert '✓ Fleet: exported by "Slip"' in passed.output
 
+    unbuilt = CliRunner().invoke(cli, ["app", "test", "elsewhere"])
+    assert unbuilt.exit_code == 1
+    assert "elsewhere holds no release: build one with 'haute app build' first." in unbuilt.output
+
     _sheets(project, _export([_cell("items", "value", "B1")]))
     assert CliRunner().invoke(cli, ["app", "build", "out"]).exit_code == 0
     failed = CliRunner().invoke(cli, ["app", "test", "out"])
