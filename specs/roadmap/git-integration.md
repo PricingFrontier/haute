@@ -7,7 +7,7 @@ specification](../git-integration/high-level.md) describes it: the working
 branch and its save ledger, catching up from a remote, and what a failed git
 command leaves behind. The packages below come from the review plan's runs
 of 10 November 2026. Each was reproduced on Windows in a scratch
-repository: `VCS-02` and `VCS-03` with nothing injected into Haute, and
+repository: `VCS-03` with nothing injected into Haute, and
 `VCS-05` in a browser with two pages open on one project.
 `VCS-06` and `VCS-07` come from the main session's runs of 11 November
 behind the plan's sweep of damaged requests: folders and files renamed on
@@ -22,7 +22,6 @@ tabs and with a terminal.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| VCS-02 | Planned | P2 | Commit and Restore succeed when a deletion or a rename is already staged, instead of failing every time with "Check the server logs". |
 | VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "Git refused this". |
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
 | VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
@@ -31,56 +30,6 @@ tabs and with a terminal.
 | VCS-09 | Planned | P2 | An open tab learns when the project changes branch, and a save made from a tab that shows another branch is refused naming both, instead of landing on the other branch, moving the checkout back or leaving its files uncommitted with "see server log". |
 
 ## Planned improvements
-
-### VCS-02 — Commit and Restore work with a deletion or rename already staged
-**Why:** Reproduced on 10 November 2026, with nothing injected. An analyst
-removes a tracked file with `git rm`, renames one with `git mv`, or stages a
-deletion in an editor's git panel; `git add .` after deleting a file does
-the same. From then on Commit answers "Operation failed. Check the server
-logs for details." every time, Restore answers the same, and the capture
-route answers "Changes saved; version capture failed (git error — see
-server log)." Pipeline saves keep working, because each commits only its own
-files, and readiness reads `ready`, so nothing in the editor points at the
-staged change. The file can be anywhere in the repository: a staged deletion
-of `README.txt` did the same. The log holds git's words: `fatal: pathspec
-':(literal)rating/files/data/old.csv' did not match any files`.
-
-Before a milestone or a restore, the sweep lists every tracked path that
-differs from the last save, deleted paths included, and passes the list to
-the save capture, which runs `git add` on each path. Git refuses to add a
-path that is in neither the folder nor its index. A staged deletion is such
-a path, and so is the old name of a staged rename. A file deleted in the
-file manager is recorded as it should be, because its deletion is not staged
-yet and the same `git add` stages it. The comment beside the command says
-"the explicit-path add also stages deletions of tracked paths", which holds
-only until something else has staged them.
-
-Haute reaches the state without help. Deleting a Pipeline file stages the
-deletion and then commits it. With the process killed between the two, the
-restart found the deletion staged and the file still in version history,
-readiness `ready`, no pending change shown, and Commit failing as above. A
-restore cut short no longer reaches it: its record keeps Commit refused
-until Retry has written the restored files.
-
-**Plan:** In the save capture, stage each path by what it is. A path that is
-in neither the folder nor the index needs no `git add`: its removal is
-already staged, and the path-scoped commit that follows records it (checked
-with git in a scratch repository, for a deletion and for both names of a
-rename). Keep the rule in that one function, so the milestone's sweep, the
-restore's sweep, the capture route and a file delete share it.
-
-**Acceptance:** After `git rm` of a tracked file, after `git mv`, and after
-a staged deletion outside the pipeline folder, Commit succeeds and the
-milestone holds the deletion or the rename; Restore succeeds; `POST
-/api/git/capture` takes a deleted path. A Pipeline file delete whose commit
-did not happen is recorded by the next Commit.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_git_transactions.py::commit_save`;
-`src/haute/_git_transactions.py::_residual_tracked_changes`;
-`src/haute/_git_transactions.py::_unrecorded_project_files`;
-`src/haute/routes/project_files.py::_delete`.
 
 ### VCS-03 — A git command that git refuses is reported with git's reason
 **Why:** Reproduced on 10 November 2026 with four everyday causes, none
@@ -112,7 +61,7 @@ injected into Haute.
   save answers the "Git refused this" warning, and Commit and Restore answer
   "Git refused this", each naming an incident, so version history stops and
   nothing mentions signing. Each failed save leaves its
-  files staged, which for a deleted file is the state `VCS-02` describes.
+  files staged.
 
 In the second and third cases the repository exists and holds the project's
 history, and `git init` repairs neither. The readiness check asks git

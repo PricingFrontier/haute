@@ -529,6 +529,24 @@ def test_files_left_uncaptured_are_captured_once_an_identity_is_set(
     )
 
 
+def test_a_capture_takes_a_deletion_git_has_already_staged(
+    client: TestClient, project: Path
+) -> None:
+    """`git rm` leaves the path in neither the folder nor the index: the capture records the
+    deletion git staged instead of refusing the path."""
+    assert _put(client, "pipeline", "data/old.csv", b"old\n").status_code == 200
+    git_run(project, "rm", "-q", "rating/files/data/old.csv")
+
+    captured = client.post("/api/git/capture", json={"paths": ["rating/files/data/old.csv"]})
+
+    assert captured.status_code == 200, captured.text
+    assert captured.json()["git_sha"] and captured.json()["warnings"] == []
+    assert (
+        "rating/files/data/old.csv"
+        not in git_run(project, "ls-tree", "-r", "--name-only", f"{WORKING}-save").splitlines()
+    )
+
+
 def test_a_capture_still_skipped_names_the_files_again(
     client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -268,7 +268,7 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 (a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
 merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
-current: the `open-ledger` operation, nothing when both are so already) → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion an earlier `git add` staged before the process stopped: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
+current: the `open-ledger` operation, nothing when both are so already) → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion or a rename's old name already staged (`git rm`, `git mv`, an editor's git panel, or an earlier `git add` before the process stopped), which the path-scoped commit records as staged: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
 never reads as no change) → `git add -- <the paths git add takes>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
 <paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
@@ -1072,7 +1072,9 @@ process failures, and precise ref-movement races deterministic.
   naming each rule and git deciding one the rules let through, the milestone sweep of the pipeline
   folder (a new file there recorded, a new file outside it, an ignored file, `__pycache__/`,
   `.haute_build/`, bytecode and the names the Files panels hide left out, and a file over the
-  limit refusing the Commit by name), the milestone's run of the project's hooks (the
+  limit refusing the Commit by name), a milestone and a restore after `git rm`, `git mv` and
+  a staged deletion outside the pipeline folder, and a file delete stopped before its commit
+  recorded by the next Commit, the milestone's run of the project's hooks (the
   pre-commit hook seeing only the milestone's changes and its rewrite recorded before the
   milestone, a refusing hook refusing it with HEAD back on the ledger, a commit-msg hook
   rewriting the message), the project's tracked hook installed in a clone and an analyst's

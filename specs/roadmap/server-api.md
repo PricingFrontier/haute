@@ -229,8 +229,7 @@ answers 4xx naming the path and the rule, and the folder holds no new file
 afterwards. A file with a device name that is already in the pipeline
 folder can be deleted from the Files panel, and Commit then succeeds.
 
-**Dependencies:** `SRV-04` for the wording of a write that fails. `VCS-02`
-for a Commit that names the file it could not add.
+**Dependencies:** `SRV-04` for the wording of a write that fails.
 
 **Evidence:** `src/haute/routes/optimiser.py::save_result`;
 `src/haute/routes/modelling.py::save_model`;

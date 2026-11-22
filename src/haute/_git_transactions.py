@@ -123,8 +123,10 @@ def commit_save(
     if not _run_git("status", "--porcelain", "--", *pathspecs, cwd=cwd):
         return None
 
-    # New files must be known to git before a pathspec'd commit can include
-    # them; the explicit-path add also stages deletions of tracked paths.
+    # New files must be known to git before a pathspec'd commit can include them, and the add
+    # stages the deletion of a tracked file removed from disk. A deletion or a rename's old
+    # name already staged (`git rm`, `git mv`, an editor's git panel) is in neither the folder
+    # nor the index, so it is not added: the path-scoped commit records it as staged.
     if addable:
         _run_git("add", "--", *map(_literal, addable), cwd=cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
