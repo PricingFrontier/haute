@@ -303,6 +303,18 @@ stale the same way: each named `Float32` and `Float64` as the floats, none named
 decides a kind from a type's name, on the server and in the browser, so the next list
 fails a test instead of a reader.
 
+A datetime, time or duration value reaches Haute's own Python code only as its exact
+text, through one module, because Python's `datetime`, `time` and `timedelta` hold
+microseconds while a `Datetime("ns")` (the unit pandas writes to Parquet), a
+`Duration("ns")` and every `Time` hold nanoseconds. Read into Python, two values 100 ns
+apart become one and a value loses its last three digits, and every site that read
+them so lost them the same way: an OUTPUT document merging two events, a preview
+showing six digits, a trace failing to find its own row, a ratebook counting two
+factor levels as one. Text comes back to a column through the same module, as a
+literal of the column's own type, refused when it is finer than the column holds. A
+test finds every module that reads a frame's values into Python and requires each to
+be sent such values or to say why it never reads one.
+
 Parquet is the shared snapshot boundary because it is lazy-scannable, schema-bearing, and
 can be written in bounded batches. Publication computes SHA-256 and seeds a process-local
 verification memo. The first open of a generation not already in that memo rechecks SHA-256;

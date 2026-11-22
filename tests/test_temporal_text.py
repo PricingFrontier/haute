@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import random
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import polars as pl
 import pytest
 
-from haute._temporal_text import temporal_text
+from haute._temporal_text import (
+    TemporalTextError,
+    exact_row,
+    exact_rows,
+    exact_text,
+    temporal_literal,
+    temporal_physical,
+    temporal_text,
+)
 from haute.errors import SchemaMismatchError
 
 _SEED = 20261122
@@ -138,3 +146,162 @@ def test_a_duration_below_a_microsecond_keeps_all_nine_digits() -> None:
 def test_a_value_of_another_kind_is_refused_by_its_type() -> None:
     with pytest.raises(SchemaMismatchError, match="Int64 is not a datetime, time or duration"):
         temporal_text(pl.col("value"), pl.Int64())
+
+
+# ---------------------------------------------------------------------------
+# Rows read through exact text, and text read back as a value
+# ---------------------------------------------------------------------------
+
+
+def _physical(series: pl.Series) -> list[int | None]:
+    return series.to_physical().to_list()
+
+
+def _read_back(series: pl.Series) -> list[int]:
+    return [temporal_physical(text, series.dtype) for text in _written(series) if text is not None]
+
+
+@pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+@pytest.mark.parametrize("zone", [None, "UTC", "Europe/London", "Asia/Kolkata"])
+def test_a_datetimes_text_reads_back_as_its_own_value(unit: str, zone: str | None) -> None:
+    rng = random.Random(f"{_SEED}back{unit}{zone}")
+    per_second = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}[unit]
+    first, last = (
+        (-_NANOSECOND_SECONDS, _NANOSECOND_SECONDS)
+        if unit == "ns"
+        else (_FIRST_SECOND, _LAST_SECOND)
+    )
+    if zone not in (None, "UTC"):
+        first, last = max(first, _ZONED_FIRST_SECOND), min(last, _ZONED_LAST_SECOND)
+    values = [
+        rng.randint(first, last) * per_second + rng.randrange(per_second) for _ in range(_COUNT)
+    ]
+    series = pl.Series(values, dtype=pl.Int64).cast(pl.Datetime(unit, zone))  # type: ignore[arg-type]
+
+    assert _read_back(series) == values
+    frame = series.to_frame("v").with_columns(
+        same=pl.col("v") == temporal_literal(_written(series)[0] or "", series.dtype)
+    )
+    assert frame["same"].to_list() == [value == values[0] for value in values]
+
+
+def test_each_occurrence_of_a_repeated_local_time_reads_back_as_its_own_instant() -> None:
+    series = (
+        pl.Series([datetime(2024, 10, 27, 0, 30), datetime(2024, 10, 27, 1, 30)])
+        .dt.replace_time_zone("UTC")
+        .dt.convert_time_zone("Europe/London")
+        .dt.cast_time_unit("ns")
+    )
+
+    assert _read_back(series) == _physical(series)
+
+
+def test_a_times_and_a_durations_text_reads_back_as_its_own_value() -> None:
+    rng = random.Random(f"{_SEED}clock")
+    clocks = [rng.randrange(86_400 * 1_000_000_000) for _ in range(_COUNT)] + [
+        0,
+        100,
+        1_500_000_000,
+    ]
+    times = pl.Series(clocks, dtype=pl.Int64).cast(pl.Time)
+    spans = [rng.randint(-(2**62), 2**62) for _ in range(_COUNT)] + [0, 100, -100, -1]
+    for unit, step in (("ns", 1), ("us", 1_000), ("ms", 1_000_000)):
+        physical = [span // step for span in spans]
+        durations = pl.Series(physical, dtype=pl.Int64).cast(pl.Duration(unit))  # type: ignore[arg-type]
+        assert _read_back(durations) == physical, unit
+
+    assert _read_back(times) == clocks
+
+
+@pytest.mark.parametrize(
+    ("text", "dtype", "expected"),
+    [
+        # What datetime.fromisoformat accepts reads as it would, its fraction read whole.
+        ("2024-03-01 09:00:00", pl.Datetime("us"), datetime(2024, 3, 1, 9)),
+        ("2024-03-01T09:00", pl.Datetime("us"), datetime(2024, 3, 1, 9)),
+        ("2024-03-01T09:00:00,5", pl.Datetime("ms"), datetime(2024, 3, 1, 9, 0, 0, 500_000)),
+        ("2024-03-01T09:00:00Z", pl.Datetime("us", "UTC"), datetime(2024, 3, 1, 9, tzinfo=UTC)),
+        ("2024-03-01", pl.Datetime("us"), datetime(2024, 3, 1)),
+        ("09:30", pl.Time(), time(9, 30)),
+    ],
+)
+def test_a_value_is_read_from_any_spelling_isoformat_reads(
+    text: str, dtype: pl.DataType, expected: datetime | time
+) -> None:
+    assert pl.select(temporal_literal(text, dtype)).item() == expected
+
+
+def test_a_fraction_past_six_digits_is_read_whole() -> None:
+    dtype = pl.Datetime("ns")
+    base = temporal_physical("2024-03-01T09:00:00", dtype)
+
+    assert temporal_physical("2024-03-01T09:00:00.000000100", dtype) == base + 100
+    assert temporal_physical("2024-03-01T09:00:00.0000001", dtype) == base + 100
+    assert temporal_physical("09:00:00.000000100", pl.Time()) == 9 * 3_600 * 10**9 + 100
+
+
+@pytest.mark.parametrize(
+    ("text", "dtype", "reason"),
+    [
+        ("2024-03-01T09:00:00.000000100", pl.Datetime("us"), "finer"),
+        ("2024-03-01T09:00:00.0001", pl.Datetime("ms"), "finer"),
+        ("0:00:00.000000100", pl.Duration("us"), "finer"),
+        ("2024-03-01T09:00:00", pl.Datetime("us", "UTC"), "zone"),
+        ("2024-03-01T09:00:00+01:00", pl.Datetime("us"), "zone"),
+        ("09:00:00+01:00", pl.Time(), "zone"),
+        ("2024-03-01T09:00:00.0000000001", pl.Datetime("ns"), "malformed"),
+        ("yesterday", pl.Datetime("us"), "malformed"),
+        ("1 hour", pl.Duration("us"), "malformed"),
+        ("9999-01-01T00:00:00", pl.Datetime("ns"), "range"),
+    ],
+)
+def test_text_its_column_cannot_hold_is_refused_saying_why(
+    text: str, dtype: pl.DataType, reason: str
+) -> None:
+    with pytest.raises(TemporalTextError) as refused:
+        temporal_physical(text, dtype)
+
+    assert refused.value.reason == reason
+    assert text in str(refused.value)
+
+
+def test_exact_text_writes_every_temporal_value_and_leaves_the_rest() -> None:
+    moment = pl.Series([10**18 + 100, None], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    clock = pl.Series([1_000_000_200, None], dtype=pl.Int64).cast(pl.Time)
+    frame = pl.DataFrame(
+        {
+            "moment": moment,
+            "clock": clock,
+            "span": pl.Series([100, None], dtype=pl.Int64).cast(pl.Duration("ns")),
+            "amount": [1.5, None],
+            "day": [date(2024, 3, 1), None],
+            "event": pl.DataFrame({"at": moment, "n": [1, 2]}).to_struct(),
+            "events": [[10**18 + 100, 10**18 + 200], None],
+            "pair": pl.Series([[100, 200], None], dtype=pl.Array(pl.Int64, 2)),
+        }
+    ).with_columns(
+        pl.col("events").cast(pl.List(pl.Datetime("ns"))),
+        pl.col("pair").cast(pl.Array(pl.Duration("ns"), 2)),
+        pl.when(pl.col("amount").is_null()).then(None).otherwise(pl.col("event")).alias("event"),
+    )
+    at = "2001-09-09T01:46:40.000000100"
+
+    rows = exact_rows(frame)
+
+    assert rows == [
+        {
+            "moment": at,
+            "clock": "00:00:01.000000200",
+            "span": "0:00:00.000000100",
+            "amount": 1.5,
+            "day": date(2024, 3, 1),
+            "event": {"at": at, "n": 1},
+            "events": [at, "2001-09-09T01:46:40.000000200"],
+            "pair": ["0:00:00.000000100", "0:00:00.000000200"],
+        },
+        dict.fromkeys(frame.columns),
+    ]
+    assert exact_row(frame, 0) == rows[0]
+    assert exact_text(frame.lazy()).collect().to_dicts() == rows
+    plain = frame.select("amount", "day")
+    assert exact_text(plain) is plain

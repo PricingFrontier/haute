@@ -58,6 +58,24 @@ NOT_TYPED: dict[str, str] = {
     "haute._env.int_env::int(raw)": (
         "an environment variable, set by whoever runs Haute, not typed into a field"
     ),
+    'haute._temporal_text._split_fraction::int( digits.ljust(9, "0") )': (
+        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    ),
+    'haute._temporal_text._duration_physical::int(match["hours"])': (
+        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    ),
+    'haute._temporal_text._duration_physical::int(match["minutes"])': (
+        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    ),
+    'haute._temporal_text._duration_physical::int(match["seconds"])': (
+        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    ),
+    'haute._temporal_text._duration_physical::int(match["days"] or 0)': (
+        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    ),
+    'haute._temporal_text._duration_physical::int((match["digits"] or "").ljust(9, "0"))': (
+        "digits a regular expression matched in a date-time, time or duration: no sign, separator or exponent to read"
+    ),
     "haute._source_layout.number_spelling::int(mantissa)": (
         "a step's number as Python source spells it (its ``text``), already held to Python's "
         "literal grammar by ``_NUMBER_TEXT``: the editor reads what is typed with the typed reader"
@@ -238,9 +256,6 @@ NOT_TYPED: dict[str, str] = {
     ),
     "haute.routes._pivot_service._member_sort_key::Decimal(cast(str, value))": (
         "a pivot member's value, an exact decimal Haute wrote"
-    ),
-    'haute.routes._pivot_service._temporal_literal::int((parts["fraction"] or "").ljust(9, "0"))': (
-        "a datetime or time member's fraction, the digits Haute wrote and _TIME_PATTERN matched"
     ),
     "haute.routes.mlflow.<module>::int(v.version)": "a model version, MLflow's own digits",
     "haute.routes.project_files._plan_write::int(length_header)": (

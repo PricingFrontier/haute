@@ -20,6 +20,7 @@
 | `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists; `rename_directory` renames a directory, retrying for about four seconds while Windows refuses it because a scanner holds a file just written inside, and raising `FolderInUseError`, still a permission error, when the wait runs out; `remove_tree` removes a tree best-effort with the same retry; `PathTooLongError` and `path_too_long_error`, which name a path Windows refused for its length. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
+| `src/haute/_temporal_text.py` | The one way a datetime, time or duration value reaches Haute's own Python code and the one way its text becomes a value again (*Temporal values reaching Python* under Edge cases and invariants): `temporal_text` writes a value's exact text inside the query, `exact_text` writes every temporal value of a frame so, nested ones included, `exact_rows` and `exact_row` read rows through it, and `temporal_physical` and `temporal_literal` read text back as the column's physical value and as a literal of its own type, refusing with `TemporalTextError`. |
 | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
 
 `src/haute/_source_cache.py` is consumed directly by the caching component; that shared
@@ -1071,6 +1072,47 @@ is no eager dataframe or collect-then-write fallback.
   descriptor kinds), a deploy request's types (`_json_values.REQUEST_DTYPES`) and the
   Change types targets (`_polars_steps.CAST_DTYPES`).
 
+### Temporal values reaching Python
+
+- Python's `datetime`, `time` and `timedelta` hold microseconds; a `Datetime("ns")`, a
+  `Duration("ns")` and every `Time` hold nanoseconds. So Haute's own code never reads a
+  datetime, time or duration value into Python as one of those objects, and never writes
+  one back from one: `_temporal_text` is the one way either way.
+- Out: `temporal_text(expression, dtype, separator="T")` writes a value's exact text inside
+  the query, at the column's own precision, in Python's spelling extended to nanoseconds:
+  no fraction for a whole second, six digits for a whole microsecond and nine otherwise;
+  an aware datetime carries its offset (with its seconds when it has any), and a duration
+  reads as `str(timedelta)` does, with three more digits for a part-microsecond. Polars'
+  own `cast(pl.String)` is never used for it: it drops a `Time`'s whole fraction and
+  refuses a `Duration`. `exact_text(frame)` gives the frame, lazy or not, with every
+  datetime, time and duration value written so (separator `"T"`, as `isoformat()` writes
+  a datetime), at its top level or inside a struct, list or array, a null kept null and
+  every other value untouched; `exact_rows(frame)` and `exact_row(frame, index)` read a
+  frame's rows through it, as `to_dicts()` and `row(index, named=True)` would. For a value
+  Python holds exactly (a whole microsecond or coarser) the text is the one
+  `isoformat()` or `str(timedelta)` writes, so millisecond and microsecond data read as
+  before.
+- A reader that keys, groups or counts values takes the distinct values in Polars first
+  and writes text only for those, never a text copy of a whole column. Text is for
+  showing and keying: a reader orders and compares values in Polars, by the column's own
+  values, never by their text, which a duration's or an offset's spelling does not order.
+- Back: `temporal_physical(text, dtype)` is the column's physical integer for *text*: for a
+  datetime, any spelling `datetime.fromisoformat` accepts (a space or `T`, `Z` or an offset,
+  minutes or seconds left out), its fraction of a second (after `.` or `,`) read whole to
+  nine digits rather than cut at six; for a time, any spelling `time.fromisoformat` accepts,
+  likewise; for a duration, the text `temporal_text` writes. An aware datetime names its
+  instant through its offset, so the physical value is UTC and each occurrence of a local
+  time the clocks repeat keeps its own. `temporal_literal(text, dtype)` is the literal of
+  the column's own type holding that physical value. Each refuses with
+  `TemporalTextError` (a `ValueError`) whose `reason` is `malformed` (text that is no such
+  value, a fraction of more than nine digits included), `finer` (a fraction the column's
+  unit does not hold, 100 ns for a microsecond column) or `zone` (an offset where the
+  column has no zone, or none where it has one) or `range` (a value the column's 64-bit
+  physical integer cannot hold, a year 9999 for a nanosecond column), and whose message says
+  which.
+- A reader that takes a temporal value from a request, a filter member or a traced row
+  builds the value, or the match, from `temporal_physical` or `temporal_literal`, never
+  from a Python object.
 ### Map columns
 
 - Polars 2 reads an Arrow or Parquet map as its `Map` dtype, and its Parquet reader keeps
