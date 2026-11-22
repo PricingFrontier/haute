@@ -8,9 +8,11 @@ import json
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
@@ -39,6 +41,7 @@ from haute._workbench_form import (
 from haute._workbench_params import ParamFileError
 from haute.deploy._utils import shipped_graph
 from haute.execution import ExecutionProfile
+from tests._failure_assertions import incident_in
 from tests._git_helpers import git_run, init_repo
 from tests._project import use_project
 from tests._store_servers import Target
@@ -553,24 +556,81 @@ def test_pricings_holding_every_place_refuse_another_at_once_until_one_ends(
     assert served.status_code == 200, served.text
 
 
-def test_a_pipeline_failing_on_the_quote_answers_why(
-    release: Any, monkeypatch: pytest.MonkeyPatch
+#: What a node's failure can carry: a secret, a token and a path on the analyst's machine.
+_SECRETS = "password=hunter2 token=sk-live-123 at C:/Users/analyst/secrets/db.ini"
+
+
+@pytest.mark.parametrize(
+    ("raised", "node", "hidden"),
+    [
+        pytest.param(lambda: RuntimeError(f"connection failed: {_SECRETS}"), "priced", "hunter2"),
+        pytest.param(
+            lambda: FileNotFoundError(2, "No such file", "/srv/release/models/rates.cbm"),
+            "priced",
+            "rates.cbm",
+            id="missing-file",
+        ),
+        pytest.param(
+            lambda: pl.exceptions.ColumnNotFoundError('unable to find column "vehicle_factor"'),
+            None,
+            "vehicle_factor",
+            id="polars",
+        ),
+        pytest.param(lambda: KeyError("vehicle_factor"), "priced", "vehicle_factor", id="key"),
+        pytest.param(lambda: RuntimeError(_SECRETS), None, "hunter2", id="unnamed"),
+    ],
+)
+def test_a_pipeline_failing_on_the_quote_names_an_incident_never_what_it_raised(
+    release: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Callable[[], BaseException],
+    node: str | None,
+    hidden: str,
 ) -> None:
-    """A node's own code failing on the values typed names the node and what it raised, as
-    every edge names it, so the underwriter can tell the analyst what broke."""
+    """WB-53: as the deployed pricing API answers it, a fixed sentence naming an incident,
+    under which the log holds what the node raised: its text can hold paths, names and
+    secrets the underwriter must not be shown."""
+    from structlog.testing import capture_logs
+
     from haute.errors import mark_failing_node
 
     def fail(**_: Any) -> None:
-        raised = KeyError("vehicle_factor")
-        mark_failing_node(raised, "priced")
-        raise raised
+        failure = raised()
+        if node is not None:
+            mark_failing_node(failure, node)
+        raise failure
 
     monkeypatch.setattr(workbench_app, "score_graph", fail)
+
+    with capture_logs() as logs:
+        answered = _price(_client(release()))
+
+    assert answered.status_code == 500
+    detail = answered.json()["detail"]
+    incident = incident_in(detail)
+    assert (detail["error_code"], detail["incident"]) == ("pricing_failed", incident)
+    assert detail["message"] == (
+        f"The pipeline failed on this quote (incident {incident}). Pass the incident to "
+        "whoever looks after this app: what failed is recorded under it."
+    )
+    assert hidden not in answered.text and "priced" not in answered.text
+    assert hidden in str([entry for entry in logs if entry.get("incident") == incident])
+
+
+def test_a_quote_a_contract_refuses_is_answered_422_with_its_message(
+    release: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._workbench_input import WorkbenchInputError
+
+    def refuse(**_: Any) -> None:
+        raise WorkbenchInputError("The quote's policy table is not an object of its columns.")
+
+    monkeypatch.setattr(workbench_app, "score_graph", refuse)
 
     answered = _price(_client(release()))
 
     assert answered.status_code == 422
-    assert answered.json()["detail"]["message"] == "'priced' failed: 'vehicle_factor'"
+    assert "policy table is not an object" in answered.text
 
 
 def test_the_admission_is_held_until_the_answer_is_the_tables_sent_back(

@@ -1786,8 +1786,9 @@ no longer has; and `InputSource` in
     app and its status and reason. Opening: 404 is `not_compared`, any other answer but 200
     `baseline_failed`. Production's pricing other than 200 is `baseline_failed`; staging's
     422 is `refused` and any other but 200 `failed`, each with a reason that is the status
-    and what it means (413 too large, 422 values refused, 500 the pipeline failed, 504 too
-    long, 507 too much memory; otherwise the app's own error), never the answer's body. An
+    and what it means (413 too large, 422 values refused, 500 the pipeline failed, with the
+    incident the answer names and the app whose log holds it, `_INCIDENT`, 504 too
+    long, 507 too much memory; otherwise the app's own error), never the rest of the answer's body. An
     open answered 200 without a `values` object, or a pricing answered 200 whose `tables`
     is not an object of tables, each a row, a list of rows or null (production's held so
     before staging is asked), stops the run naming

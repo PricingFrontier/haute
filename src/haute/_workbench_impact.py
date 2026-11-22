@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -70,6 +71,8 @@ _QUOTE_FAILURES: Mapping[int, str] = {
     507: "the quote needed more memory than the app has",
 }
 
+#: An incident as an app names one, the one part of its answer to a failed quote said.
+_INCIDENT = re.compile(r"[0-9a-f]{12}")
 #: The most quotes the quotes route lists in one page.
 _PAGE_LIMIT = 200
 #: The wait before a busy app is asked again: its ``Retry-After``, five seconds without one,
@@ -201,10 +204,16 @@ def _reason(answer: HttpAnswer) -> str:
     return f"HTTP {answer.status}: {detail}" if isinstance(detail, str) else f"HTTP {answer.status}"
 
 
-def _quote_reason(answer: HttpAnswer) -> str:
-    """Why an app refused or failed a quote, said without the app's own words, which may
-    quote the values typed: its status and what the status means."""
-    return f"HTTP {answer.status}: " + _QUOTE_FAILURES.get(answer.status, "the app's own error")
+def _quote_reason(answer: HttpAnswer, side: Side) -> str:
+    """Why *side*'s app refused or failed a quote, said without the app's own words, which
+    may quote the values typed: its status and what the status means, and for a pipeline
+    failing on the quote the incident under which that app's log holds what failed."""
+    said = f"HTTP {answer.status}: " + _QUOTE_FAILURES.get(answer.status, "the app's own error")
+    detail = _body(answer).get("detail")
+    incident = detail.get("incident") if isinstance(detail, Mapping) else None
+    if answer.status == 500 and isinstance(incident, str) and _INCIDENT.fullmatch(incident):
+        said += f" (incident {incident} in {side.environment}'s log)"
+    return said
 
 
 class _StoppedError(WorkbenchError):
@@ -386,21 +395,25 @@ def _quote(
     if opened.status == 404:
         return QuoteImpact(reference, option, "not_compared", reason="gone since it was listed")
     if opened.status != 200:
-        return QuoteImpact(reference, option, "baseline_failed", reason=_quote_reason(opened))
+        return QuoteImpact(
+            reference, option, "baseline_failed", reason=_quote_reason(opened, baseline)
+        )
     values = _body(opened).get("values")
     if not isinstance(values, Mapping):
         raise _StoppedError("prod's app answered a quote it opened without its values.")
     before = _priced(baseline, values, send, budget)
     if before.status != 200:
-        return QuoteImpact(reference, option, "baseline_failed", reason=_quote_reason(before))
+        return QuoteImpact(
+            reference, option, "baseline_failed", reason=_quote_reason(before, baseline)
+        )
     # Production's answer is held to its shape before staging is asked: whatever staging
     # answers, a malformed baseline stops the run.
     baseline_tables = _tables(baseline, before)
     after = _priced(candidate, values, send, budget)
     if after.status == 422:
-        return QuoteImpact(reference, option, "refused", reason=_quote_reason(after))
+        return QuoteImpact(reference, option, "refused", reason=_quote_reason(after, candidate))
     if after.status != 200:
-        return QuoteImpact(reference, option, "failed", reason=_quote_reason(after))
+        return QuoteImpact(reference, option, "failed", reason=_quote_reason(after, candidate))
     compared = compare_quote(
         fields, baseline_tables, _tables(candidate, after), sides=("on production", "on staging")
     )

@@ -41,7 +41,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from haute._env import int_env
 from haute._execution_admission import ExecutionAdmissionError
-from haute._failure_answers import answer_failure, answer_pipeline_failure
+from haute._failure_answers import answer_app_pricing_failure, answer_failure
 from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
 from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddleware
@@ -929,10 +929,11 @@ def create_app(
                 headers={"Retry-After": str(BUSY_RETRY_SECONDS)},
             ) from None
         except Exception as exc:
-            # A node's own code failing on the values typed is named with its node, as the
-            # deployed pricing API names it, so the underwriter can tell the analyst what
-            # broke; memory and the pipeline's own contracts are said as every edge says them.
-            raise answer_pipeline_failure(exc, operation="workbench_app_price").refusal() from exc
+            # As the deployed pricing API answers: a quote a public contract refuses and memory
+            # in words, the pipeline failing on the quote as an incident whose log holds why.
+            raise answer_app_pricing_failure(
+                exc, operation="workbench_app_price"
+            ).refusal() from exc
         return Pricing(
             tables=priced_tables(document), request=to_json_safe(request), document=document
         )

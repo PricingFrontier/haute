@@ -2007,7 +2007,12 @@ Out of scope:
   as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
-  request priced. The app prices at most a bounded number of quotes at once, four unless
+  request priced. A pricing the pipeline fails on is answered as the deployed pricing API
+  answers one: 500 with a fixed sentence naming an incident, under which the app's log holds
+  what failed, never what the node raised, whose text can hold paths, internal names and
+  secrets; `haute app impact` names that incident and the app whose log holds it. A quote a
+  public contract refuses (values the Workbench Input does not take, a rating factor
+  missing) is answered 422 in its words, and one past the app's memory 507. The app prices at most a bounded number of quotes at once, four unless
   `HAUTE_APP_PRICING_WORKERS` says otherwise, a save's pricing among them: a pricing past
   its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
   and a pricing asked for while every place is held is refused at once (503, `Retry-After`

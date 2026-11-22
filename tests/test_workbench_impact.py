@@ -541,16 +541,24 @@ def test_each_quote_outcome_is_named_and_a_staging_failure_fails_the_run() -> No
     apps = _apps(count=5)
     refusal = _refused(422, f"exposure: {DISTINCTIVE!r} is not a number")
     apps.prod.values.pop(("Q-000005", 1))
+
+    def failed(incident: str) -> HttpAnswer:
+        # As the app answers a pipeline failing on a quote: a fixed sentence and its incident.
+        message = f"The pipeline failed on this quote (incident {incident}). {DISTINCTIVE}"
+        return _refused(
+            500, {"error_code": "pricing_failed", "message": message, "incident": incident}
+        )
+
     apps.prod.queued["/api/app/price"] = [
         _ok({"tables": {"pricing_output": [{"premium": 500.0}]}}),
-        _refused(500, f"The pipeline failed on this quote: {DISTINCTIVE}"),
+        failed("0123456789ab"),
         _ok({"tables": {"pricing_output": [{"premium": 1500.0}]}}),
         _ok({"tables": {"pricing_output": [{"premium": 2000.0}]}}),
     ]
     apps.staging.queued["/api/app/price"] = [
         _ok({"tables": {"pricing_output": [{"premium": 500.0}]}}),
         refusal,
-        _refused(500, f"The pipeline failed on this quote: {DISTINCTIVE}"),
+        failed("ba9876543210"),
     ]
 
     report = _run(apps)
@@ -568,8 +576,15 @@ def test_each_quote_outcome_is_named_and_a_staging_failure_fails_the_run() -> No
     text = render_report(report)
     assert "**The run fails:** staging failed on a quote production prices." in text
     assert "`Q-000003/1`: HTTP 422: the release refuses the quote's values" in text
-    assert "`Q-000004/1`: HTTP 500: the pipeline failed on the quote" in text
-    assert "`Q-000002/1`: HTTP 500: the pipeline failed on the quote" in text
+    # The incident each app's log holds the failure under, which the analyst reads there.
+    assert (
+        "`Q-000004/1`: HTTP 500: the pipeline failed on the quote (incident ba9876543210 in "
+        "staging's log)" in text
+    )
+    assert (
+        "`Q-000002/1`: HTTP 500: the pipeline failed on the quote (incident 0123456789ab in "
+        "prod's log)" in text
+    )
     assert "`Q-000005/1`: gone since it was listed" in text
     # No app's own words, which may quote the values typed, and no input value.
     assert DISTINCTIVE not in text

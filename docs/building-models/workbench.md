@@ -880,6 +880,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   - the quotes that no longer compare, those the new release refuses, and those production
     could not price.
 
+  When the pipeline fails on a quote, the app tells the underwriter that it failed and gives
+  an incident id, never the error itself, which can name files and settings. The report
+  names that incident and the app whose log holds what failed, so you can find it there.
+
   A price that moves never fails the run. The run fails when staging fails on a quote
   production prices, or when an app can't be reached. Before production's first release
   there is nothing to compare against, and the report says so. The report names quotes by
