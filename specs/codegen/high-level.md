@@ -505,12 +505,17 @@ a part sent without one is read from the request.
   node a graph change moves records it (`data._savedAddress`, an address, never a copy),
   carried through later moves and kept by Undo and Redo, never sent; a node it leaves in
   place keeps the one it had, which the answer, built on the server, does not carry; any
-  other node's is where it is. A save makes its baseline from the document, so each of the
-  baseline's nodes keeps its identity too. A node's baseline node is the baseline's node of
-  the same type and identity, the one at the node's own place if two are, so a node moved
-  keeps its saved forms, and with them its settings' spelling (CGEN-09), before a save,
-  after one, after a second move and after an Undo past one. The next save then compares
-  it with that baseline node as any edit is.
+  other node's is where it is. A node a graph change copies, whose original the answer
+  still holds where it was (dissolving one occurrence of a definition others use), is
+  another node: its identity is its own place, so no two nodes share one, and it records
+  the identity of what it was copied from (`data._savedOrigins`, nearest first), which gives
+  it that node's saved forms until a save holds its own. A save makes its baseline from the
+  document, so each of the baseline's nodes keeps its identity too. A node's baseline node is
+  the baseline's node of the same type and identity, the one at the node's own place if two
+  are, else, for a copy, the node it was copied from, so a node moved keeps its saved forms,
+  and with them its settings' spelling (CGEN-09), before a save, after one, after a second
+  move and after an Undo past one, and a copy edited and saved is never another node's. The
+  next save then compares it with that baseline node as any edit is.
 - **The server.** One base model, `haute.schemas.DocumentRequest`, carries the document and
   applies the rule before any node is built (`haute._edited_parts.graph_as_read`): a node
   sent with a saved code is built from that code with its step list taken off, since

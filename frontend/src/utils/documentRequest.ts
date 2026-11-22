@@ -81,24 +81,51 @@ interface Address {
   nodeId: string
 }
 
-function savedAddressOf(node: Node): Address | null {
-  const address = (node.data as { _savedAddress?: unknown } | undefined)?._savedAddress
-  if (address === null || typeof address !== "object") return null
-  const { submodel, nodeId } = address as { submodel?: unknown; nodeId?: unknown }
+function asAddress(value: unknown): Address | null {
+  if (value === null || typeof value !== "object") return null
+  const { submodel, nodeId } = value as { submodel?: unknown; nodeId?: unknown }
   return (submodel === null || typeof submodel === "string") && typeof nodeId === "string"
     ? { submodel, nodeId }
     : null
+}
+
+/** What a node records of its saved baseline: its identity once a graph change has moved it
+ * (`data._savedAddress`), and, for a copy one made, the identities of what it was copied
+ * from, nearest first (`data._savedOrigins`). */
+interface Recorded {
+  address: Address | null
+  origins: Address[]
+}
+
+function recordedOf(node: Node): Recorded {
+  const data = node.data as { _savedAddress?: unknown; _savedOrigins?: unknown } | undefined
+  const origins = Array.isArray(data?._savedOrigins) ? data._savedOrigins : []
+  return {
+    address: asAddress(data?._savedAddress),
+    origins: origins.map(asAddress).filter((origin): origin is Address => origin !== null),
+  }
+}
+
+function withRecorded(node: Node, recorded: Recorded): Node {
+  const data: Record<string, unknown> = { ...node.data }
+  delete data._savedAddress
+  delete data._savedOrigins
+  if (recorded.address !== null) data._savedAddress = recorded.address
+  if (recorded.origins.length > 0) data._savedOrigins = recorded.origins
+  return { ...node, data }
 }
 
 function nodeTypeOf(node: Node): string {
   return String((node.data as { nodeType?: unknown } | undefined)?.nodeType)
 }
 
-/** Where a node was when the document was loaded: the place it records once a graph change
- * has moved it (`data._savedAddress`), else where it is. A node keeps it through every move,
- * save and Undo, and so does each node of a baseline a save makes from the document. */
-function identityOf(submodel: string | null, node: Node, recorded: Address | null = savedAddressOf(node)): string {
-  const identity = recorded ?? { submodel, nodeId: node.id }
+/** A node's identity: where it was when the document was loaded, or, for a copy a graph
+ * change made, where the copy was made. The place it records once a graph change has moved
+ * it (`data._savedAddress`), else where it is. A node keeps it through every move, save and
+ * Undo, and so does each node of a baseline a save makes from the document. Two nodes never
+ * share one: a copy takes its own. */
+function identityOf(submodel: string | null, node: Node, address: Address | null = recordedOf(node).address): string {
+  const identity = address ?? { submodel, nodeId: node.id }
   return placeKey(identity.submodel, identity.nodeId)
 }
 
@@ -120,22 +147,28 @@ function baselineIndex(baseline: Document): BaselineIndex {
 /**
  * The node of `baseline` that `node`, of the graph `submodel` names, is saved as, and where it
  * is: the baseline's node of the same type and identity, the one at the node's own place if
- * there are two. Identity, not place, so a node moved by a graph change is found before a save
- * and after one, and after an Undo past one.
+ * there are two, else, for a copy not saved since it was made, the node it was copied from.
+ * Identity, not place, so a node moved by a graph change is found before a save and after one,
+ * and after an Undo past one.
  */
 function baselineNodeFor(
   baseline: Document | null,
   submodel: string | null,
   node: Node,
-  recorded: Address | null = savedAddressOf(node),
+  recorded: Recorded = recordedOf(node),
   index?: BaselineIndex,
 ): { held: Node; address: Address } | null {
   if (baseline === null) return null
-  const candidates = ((index ?? baselineIndex(baseline)).get(identityOf(submodel, node, recorded)) ?? [])
-    .filter(({ held }) => nodeTypeOf(held) === nodeTypeOf(node))
-  return candidates.find(({ address }) => address.submodel === submodel && address.nodeId === node.id)
-    ?? candidates[0]
-    ?? null
+  const held = index ?? baselineIndex(baseline)
+  const ofType = (key: string) => (held.get(key) ?? []).filter((entry) => nodeTypeOf(entry.held) === nodeTypeOf(node))
+  const own = ofType(identityOf(submodel, node, recorded.address))
+  const found = own.find(({ address }) => address.submodel === submodel && address.nodeId === node.id) ?? own[0]
+  if (found !== undefined) return found
+  for (const origin of recorded.origins) {
+    const copied = ofType(placeKey(origin.submodel, origin.nodeId))[0]
+    if (copied !== undefined) return copied
+  }
+  return null
 }
 
 /**
@@ -172,7 +205,7 @@ export function savedFormsFor(
   document: Document,
   submodel: string | null,
   node: Node,
-  recorded: Address | null = savedAddressOf(node),
+  recorded: Recorded = recordedOf(node),
   index?: BaselineIndex,
 ): SavedForms {
   const found = baselineNodeFor(baseline, submodel, node, recorded, index)
@@ -253,12 +286,12 @@ function mapNodes<T extends Document>(document: T, give: (submodel: string | nul
 export function withSavedForms<T extends Document>(
   document: T,
   baseline: Document | null,
-  recorded: ReadonlyMap<string, Address> = new Map(),
+  recorded: ReadonlyMap<string, Recorded> = new Map(),
 ): T {
   const index = baseline === null ? undefined : baselineIndex(baseline)
   return mapNodes(document, (submodel, node) => withForms(
     node,
-    savedFormsFor(baseline, document, submodel, node, recorded.get(placeKey(submodel, node.id)) ?? savedAddressOf(node), index),
+    savedFormsFor(baseline, document, submodel, node, recorded.get(placeKey(submodel, node.id)) ?? recordedOf(node), index),
   ))
 }
 
@@ -266,37 +299,48 @@ function placeKey(submodel: string | null, nodeId: string): string {
   return canonicalJson([submodel, nodeId])
 }
 
-/** The place each node of `document` that a graph change moved records for its baseline. */
-function savedAddressesIn(document: Document): Map<string, Address> {
-  const found = new Map<string, Address>()
+/** What each node of `document` that a graph change moved or made records of its baseline. */
+function recordsIn(document: Document): Map<string, Recorded> {
+  const found = new Map<string, Recorded>()
   mapNodes(document, (submodel, node) => {
-    const address = savedAddressOf(node)
-    if (address !== null) found.set(placeKey(submodel, node.id), address)
+    const recorded = recordedOf(node)
+    if (recorded.address !== null || recorded.origins.length > 0) found.set(placeKey(submodel, node.id), recorded)
     return node
   })
   return found
 }
 
 /**
- * `document`, a graph change's answer, with each node keeping its identity
- * (`data._savedAddress`, where it was when the document was loaded): a node it `moved` takes
- * that of the node it was in `before`, the document the change was asked of (the place it
- * was moved from, unless it had moved before), and a node it left in place, of the same type,
- * keeps the one it had, which the answer, built on the server, does not carry. An address,
- * never a copy: `savedFormsFor` finds a node's baseline node by it.
+ * `document`, a graph change's answer, with each node keeping its identity and what it records
+ * of its baseline (`identityOf`), which the answer, built on the server, does not carry. For a
+ * node of the same type in `before`, the document the change was asked of:
+ * - a node the change left in place keeps what it had;
+ * - a node it `moved` is the node it was, so it takes that node's identity (the place it moved
+ *   from, unless it had moved before);
+ * - a node it copied, whose original the answer still holds where it was (a dissolve of one
+ *   occurrence of a definition others use), is another node: its identity is its own place,
+ *   and it records the identity of what it was copied from, so it finds that node's saved
+ *   forms until a save holds its own.
+ * An address, never a copy of a form: `savedFormsFor` finds a node's baseline node by it.
  */
 export function withSavedAddresses<T extends Document>(document: T, moved: readonly MovedNode[], before: Document): T {
   const arrived = new Map(moved.map((move) => [placeKey(move.to_submodel, move.to_node_id), move]))
   return mapNodes(document, (submodel, node) => {
     const move = arrived.get(placeKey(submodel, node.id))
-    const from = move === undefined
-      ? heldNode(before, submodel, node.id)
-      : heldNode(before, move.from_submodel, move.from_node_id)
-    const kept = from !== null && nodeTypeOf(from) === nodeTypeOf(node) ? savedAddressOf(from) : null
-    const savedAddress = move === undefined
-      ? kept
-      : kept ?? { submodel: move.from_submodel, nodeId: move.from_node_id }
-    return savedAddress === null ? node : { ...node, data: { ...node.data, _savedAddress: savedAddress } }
+    const fromPlace = move === undefined
+      ? { submodel, nodeId: node.id }
+      : { submodel: move.from_submodel, nodeId: move.from_node_id }
+    const from = heldNode(before, fromPlace.submodel, fromPlace.nodeId)
+    const had: Recorded = from !== null && nodeTypeOf(from) === nodeTypeOf(node)
+      ? recordedOf(from)
+      : { address: null, origins: [] }
+    if (move === undefined) return withRecorded(node, had)
+    const identity = had.address ?? fromPlace
+    const original = heldNode(document, fromPlace.submodel, fromPlace.nodeId)
+    const copied = original !== null && nodeTypeOf(original) === nodeTypeOf(node)
+    return withRecorded(node, copied
+      ? { address: null, origins: [identity, ...had.origins] }
+      : { address: identity, origins: had.origins })
   })
 }
 
@@ -318,7 +362,7 @@ export function documentRequestGraph(
 ): ReturnType<typeof toCanonicalGraphPayload> {
   // The canonical payload leaves out the editor's own fields, a moved node's saved address
   // among them, so each node's address is read from the input.
-  return withSavedForms(toCanonicalGraphPayload(input), baseline, savedAddressesIn(input as Document)) satisfies GraphPayload
+  return withSavedForms(toCanonicalGraphPayload(input), baseline, recordsIn(input as Document)) satisfies GraphPayload
 }
 
 /** `document` with each part in `saved`, which a save read from its request, given the saved form it wrote. */

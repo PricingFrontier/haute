@@ -450,9 +450,9 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // store's load use. Nothing lazy became eager. The merged initial bundle is 305.3 KiB;
 // 306 KiB (approved) restores ~0.7 KiB of headroom.
 // Moved nodes keep their saved forms (CGEN-09, 22 November 2026): the identity a graph change
-// gives a moved node and the baseline lookup by it (`utils/documentRequest.ts`, which the
+// gives a moved node or a copy and the baseline lookup by it (`utils/documentRequest.ts`, which the
 // request gateway, the save and the graph store's load use) bring the merged initial bundle
-// to 305.9 KiB; 307 KiB restores ~1.1 KiB of headroom.
+// to 306.1 KiB; 307 KiB restores ~0.9 KiB of headroom.
 const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 307
 
 // Chunks that should only be fetched when their preview or editor is needed.

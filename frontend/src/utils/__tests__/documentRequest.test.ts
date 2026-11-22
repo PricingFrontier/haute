@@ -249,6 +249,38 @@ describe("a node a graph change moved", () => {
     expect(inner.data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
   })
 
+  it("gives a copy its own identity, so an edited copy saved is never another node's", () => {
+    // Codex r6: a definition two occurrences use. Dissolving one copies its node; the copy is
+    // edited and saved; then the other occurrence, the last, is dissolved, which moves the node.
+    const child = moved(transform("rated_node", { rate: 1 }, { ...live, saved_settings: '{"rate":1.0}' }), null, "rated")
+    const shared = { ...definition([child]), definitionId: "rated" }
+    const loaded = { nodes: [], submodels: { rated: shared } }
+    const copyPlace = "submodel_runtime/rated_2/rated_node"
+    const copied = withSavedAddresses(
+      { nodes: [transform(copyPlace, { rate: 1 }, live)], submodels: { rated: shared } },
+      [{ from_submodel: "rated", from_node_id: "rated_node", to_submodel: null, to_node_id: copyPlace }],
+      loaded,
+    )
+    const copy = copied.nodes[0]
+    expect(copy.data._savedAddress).toBeUndefined()
+    expect(copy.data._savedOrigins).toEqual([{ submodel: null, nodeId: "rated" }])
+    // Before a save the copy finds the node it was copied from.
+    expect(savedFormsFor(loaded, copied, null, copy).saved_settings).toBe('{"rate":1.0}')
+
+    // Edited and saved: the baseline holds the copy, with its own identity, beside the original.
+    const edited: Node = { ...copy, data: { ...copy.data, config: { rate: 2 }, editor: { ...live, saved_settings: '{"rate":2}' } } }
+    const saved = { nodes: [edited], submodels: { rated: shared } }
+    const ownerPlace = "submodel_runtime/rated/rated_node"
+    const dissolved = withSavedAddresses(
+      { nodes: [edited, transform(ownerPlace, { rate: 1 }, live)], submodels: {} },
+      [{ from_submodel: "rated", from_node_id: "rated_node", to_submodel: null, to_node_id: ownerPlace }],
+      saved,
+    )
+    const owner = dissolved.nodes[1]
+    expect(owner.data._savedAddress).toEqual({ submodel: null, nodeId: "rated" })
+    expect(savedFormsFor(saved, dissolved, null, owner)).toEqual({ saved_settings: '{"rate":1.0}' })
+  })
+
   it("records where the baseline holds each node an answer moved, through a second move", () => {
     const before = { nodes: [transform("t", { steps, code: "", rate: 1 }, live)], submodels: {} }
     const grouped = {

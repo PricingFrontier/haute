@@ -122,6 +122,10 @@ export interface HauteNodeData extends Record<string, unknown> {
    * too, by which `utils/documentRequest.savedFormsFor` finds its baseline node. An address,
    * never a copy. Kept through later moves, saves, Undo and Redo; never sent. */
   _savedAddress?: { submodel: string | null; nodeId: string }
+  /** For a copy a graph change made (a dissolve of one occurrence of a definition others use),
+   * the identities of what it was copied from, nearest first: its saved forms until a save
+   * holds its own. Kept like `_savedAddress`; never sent. */
+  _savedOrigins?: { submodel: string | null; nodeId: string }[]
   _sourceFile?: string
   _sourceSpan?: {
     start_line: number

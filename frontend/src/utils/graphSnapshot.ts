@@ -43,6 +43,7 @@ const LIVE_HISTORY_NODE_METADATA_FIELDS = new Set([
   "_recoveryId",
   "_sourceFile",
   "_savedAddress",
+  "_savedOrigins",
   "_defaultInputName",
   "_sourceHandleInputNames",
   "_configReference",
