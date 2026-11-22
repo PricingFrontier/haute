@@ -162,21 +162,6 @@ NOT_TYPED: dict[str, str] = {
     'haute._rating._duration_key_to_physical::int(match.group("minutes") or 0)': (
         "a duration key's day, hour and minute digits, matched by its pattern"
     ),
-    'haute._trace_correlation._parse_duration::int(match.group("days") or 0)': (
-        "a duration's digits, matched by its pattern"
-    ),
-    'haute._trace_correlation._parse_duration::int(match.group("hours"))': (
-        "a duration's digits, matched by its pattern"
-    ),
-    'haute._trace_correlation._parse_duration::int(match.group("minutes"))': (
-        "a duration's digits, matched by its pattern"
-    ),
-    'haute._trace_correlation._parse_duration::int(match.group("seconds"))': (
-        "a duration's digits, matched by its pattern"
-    ),
-    "haute._trace_correlation._parse_duration::int(micros)": (
-        "a duration's digits, matched by its pattern"
-    ),
     "haute._trace_correlation._typed_value_match_expr::int(value)": (
         "a traced value's canonical whole-number text, matched by its pattern"
     ),
