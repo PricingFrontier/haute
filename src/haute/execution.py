@@ -994,18 +994,22 @@ def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
     return () if inputs is None else inputs.local_paths(node.data.config)
 
 
-def _writes_no_file(config: Mapping[str, Any]) -> tuple[str, ...]:
+def _writes_no_file(config: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     return ()
 
 
-def _data_output_file(config: Mapping[str, Any]) -> tuple[str, ...]:
+def _data_output_file(config: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     from haute._polars_io_registry import (
         PolarsIoConfigError,
         format_for_config,
         format_group,
         is_databricks_output,
     )
+    from haute.executor import data_output_written_path
 
+    raw = config.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        return ()
     try:
         writes_a_file = not is_databricks_output(config) and (
             format_group(format_for_config(config)) == "file"
@@ -1013,35 +1017,38 @@ def _data_output_file(config: Mapping[str, Any]) -> tuple[str, ...]:
     except PolarsIoConfigError:
         # A format the registry does not know names no file; its config is refused apart.
         return ()
-    return ("path",) if writes_a_file else ()
+    return (("path", data_output_written_path(config)),) if writes_a_file else ()
 
 
-#: The config fields naming a file of the project each node type writes, given its config.
-_WRITTEN_PATHS: Mapping[NodeType, Callable[[Mapping[str, Any]], tuple[str, ...]]] = node_type_table(
-    "written paths",
-    {
-        NodeType.API_INPUT: _writes_no_file,
-        NodeType.WORKBENCH_INPUT: _writes_no_file,
-        NodeType.WORKBENCH_OUTPUT: _writes_no_file,
-        NodeType.DATA_INPUT: _writes_no_file,
-        NodeType.DATA_OUTPUT: _data_output_file,
-        NodeType.POLARS: _writes_no_file,
-        NodeType.EDGE_JOIN: _writes_no_file,
-        NodeType.MODEL_SCORE: _writes_no_file,
-        NodeType.BANDING: _writes_no_file,
-        NodeType.RATING_STEP: _writes_no_file,
-        NodeType.OUTPUT: _writes_no_file,
-        NodeType.EXPLORE: _writes_no_file,
-        NodeType.EXTERNAL_FILE: _writes_no_file,
-        NodeType.LIVE_SWITCH: _writes_no_file,
-        NodeType.MODELLING: _writes_no_file,
-        NodeType.OPTIMISER: _writes_no_file,
-        NodeType.SCENARIO_EXPANDER: _writes_no_file,
-        NodeType.OPTIMISER_APPLY: _writes_no_file,
-        NodeType.CONSTANT: _writes_no_file,
-        NodeType.SUBMODEL: _writes_no_file,
-        NodeType.SUBMODEL_PORT: _writes_no_file,
-    },
+#: Each file of the project a node type writes, given its config: the setting naming it,
+#: and the path its writer reads that setting as, from the project root.
+_WRITTEN_PATHS: Mapping[NodeType, Callable[[Mapping[str, Any]], tuple[tuple[str, str], ...]]] = (
+    node_type_table(
+        "written paths",
+        {
+            NodeType.API_INPUT: _writes_no_file,
+            NodeType.WORKBENCH_INPUT: _writes_no_file,
+            NodeType.WORKBENCH_OUTPUT: _writes_no_file,
+            NodeType.DATA_INPUT: _writes_no_file,
+            NodeType.DATA_OUTPUT: _data_output_file,
+            NodeType.POLARS: _writes_no_file,
+            NodeType.EDGE_JOIN: _writes_no_file,
+            NodeType.MODEL_SCORE: _writes_no_file,
+            NodeType.BANDING: _writes_no_file,
+            NodeType.RATING_STEP: _writes_no_file,
+            NodeType.OUTPUT: _writes_no_file,
+            NodeType.EXPLORE: _writes_no_file,
+            NodeType.EXTERNAL_FILE: _writes_no_file,
+            NodeType.LIVE_SWITCH: _writes_no_file,
+            NodeType.MODELLING: _writes_no_file,
+            NodeType.OPTIMISER: _writes_no_file,
+            NodeType.SCENARIO_EXPANDER: _writes_no_file,
+            NodeType.OPTIMISER_APPLY: _writes_no_file,
+            NodeType.CONSTANT: _writes_no_file,
+            NodeType.SUBMODEL: _writes_no_file,
+            NodeType.SUBMODEL_PORT: _writes_no_file,
+        },
+    )
 )
 
 
@@ -1051,28 +1058,32 @@ def node_file_path_settings(node: GraphNode) -> tuple[str, ...]:
     file Data Output's ``path``). Each must name the same file in every checkout
     (:func:`haute._path_resolution.portable_path_refusal`)."""
     written = _WRITTEN_PATHS[node.data.nodeType](node.data.config)
-    return (*_local_runtime_input_path_fields(node), *written)
+    return (*_local_runtime_input_path_fields(node), *(setting for setting, _path in written))
 
 
 def node_path_refusals(node: GraphNode, *, pipeline_dir: Path, project_root: Path) -> list[str]:
-    """Each path setting of *node* that another checkout of the project would not read as
-    this one does (:func:`haute._path_resolution.portable_path_refusal`), naming the node
-    and the setting. A whole save, one node's save and ``haute lint`` refuse them."""
+    """Each path setting of *node* that another checkout of the project would not read or
+    write as this one does, naming the node and the setting: a path it reads by
+    :func:`haute._path_resolution.portable_path_refusal`, and one it writes, as its writer
+    reads it, by :func:`haute._path_resolution.portable_output_path_refusal`. A whole save,
+    one node's save and ``haute lint`` refuse them."""
     from haute._node_specs import node_spec
-    from haute._path_resolution import portable_path_refusal
+    from haute._path_resolution import portable_output_path_refusal, portable_path_refusal
 
-    refusals: list[str] = []
-    for key in node_file_path_settings(node):
-        raw = node.data.config.get(key)
-        if not isinstance(raw, str) or not raw.strip():
-            continue
-        refusal = portable_path_refusal(raw, pipeline_dir=pipeline_dir, project_root=project_root)
-        if refusal is not None:
-            label = node.data.label or node.id
-            refusals.append(
-                f"{node_spec(node.data.nodeType).display_name} node {label!r} ({key}): {refusal}"
-            )
-    return refusals
+    config = node.data.config
+    found: list[tuple[str, str | None]] = []
+    for key in _local_runtime_input_path_fields(node):
+        raw = config.get(key)
+        if isinstance(raw, str) and raw.strip():
+            read = portable_path_refusal(raw, pipeline_dir=pipeline_dir, project_root=project_root)
+            found.append((key, read))
+    for key, written in _WRITTEN_PATHS[node.data.nodeType](config):
+        found.append(
+            (key, portable_output_path_refusal(config[key], written, project_root=project_root))
+        )
+    label = node.data.label or node.id
+    kind = node_spec(node.data.nodeType).display_name
+    return [f"{kind} node {label!r} ({key}): {refusal}" for key, refusal in found if refusal]
 
 
 def _runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:

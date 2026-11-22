@@ -201,16 +201,25 @@ platforms, and on Windows with long paths on, nothing is renamed.
    checks the whole graph.
 
    **A path every checkout reads alike.** A node's path settings
-   (`execution.node_file_path_settings`: its local runtime inputs and a file Data Output's
-   `path`) must name the same file in every checkout of the project, on any computer or
-   system. `_path_resolution.portable_path_refusal` says why one would not, and what to
-   write instead: a path outside the project; an absolute path, which names this computer's
-   folders (write the path from the project root, spelled as on disk); a drive-letter path as
-   above; and a path spelled in another letter case than its entries on disk, which Windows
-   and macOS read and Linux does not (write the spelling on disk). For letter case the
-   candidates are walked in the anchoring rule's order, refused at the first one on disk in
-   another case, and accepted at the first one on disk as written, so a path gets the same
-   verdict on every system. A whole save (`SavePipelineService.validate_graph`, which
+   (`execution.node_file_path_settings`: its local runtime inputs, and a file Data Output's
+   `path` from the `_WRITTEN_PATHS` table) must name the same file in every checkout of the
+   project, on any computer or system. `_path_resolution.portable_path_refusal` says why a
+   path a node reads would not, and what to write instead: a path outside the project; an
+   absolute path, which names this computer's folders (write the path from the project root,
+   spelled as on disk); a drive-letter path as above; and a path that names something only
+   where letter case is ignored, as Windows and macOS read it and Linux does not (write the
+   spelling on disk, or the pattern in the files' letter case). Letter case is judged from
+   the folders' listings, never by asking the filesystem, so the verdict is the same on every
+   system: each part is matched exactly and with case ignored, a glob part as a pattern and
+   `**` at any depth, and the anchoring rule's candidates are taken in order, the first that
+   matches something only with case ignored refused and the first that matches as written
+   accepted. A path that matches as written and also, with case ignored, another entry (two
+   files differing only in case, which Windows and macOS hold as one) is refused too. A
+   written path is checked as its writer reads it (`executor.data_output_written_path`: a
+   bare name in `outputs/`, the format's extension added, from the project root) by
+   `portable_output_path_refusal`: outside the project, absolute, a drive letter, or a folder
+   or file on disk in another letter case (Windows and macOS write into it, Linux makes
+   another); a folder not there yet is the writer's to make. A whole save (`SavePipelineService.validate_graph`, which
    `haute lint` runs), one node's save (`apply_scoped_node_save`, HTTP 400
    `node_path_not_portable`) and therefore `haute lint` refuse each, naming the node, the
    setting, the path and what to write, with nothing saved (`execution.node_path_refusals`).

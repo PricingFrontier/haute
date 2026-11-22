@@ -356,7 +356,8 @@ def _spelled_on_disk(project_root: Path, parts: tuple[str, ...]) -> tuple[str, .
 
     A part no entry of its folder matches exactly takes the one entry it matches in
     another letter case. The walk stops at a glob pattern, at a folder that cannot be
-    listed, and at a part that matches no entry or more than one.
+    listed, and at a part that matches no entry or more than one: the folders a writer
+    would make, and the suggestion for an absolute path, are spelled as far as they exist.
     """
     spelled: list[str] = []
     folder = project_root
@@ -385,6 +386,77 @@ def _inside(path: Path, project_root: Path) -> tuple[str, ...]:
         return path.resolve().relative_to(project_root).parts
 
 
+def _matches_on_disk(
+    project_root: Path, parts: tuple[str, ...], *, fold: bool
+) -> list[tuple[str, ...]]:
+    """Every entry under *project_root* that *parts* names, each as its names on disk.
+
+    Each part is compared with the entries of its folder exactly, or with letter case
+    ignored (*fold*) as Windows and macOS compare it; a glob part (``*``, ``?``, ``[...]``)
+    matches as a pattern and ``**`` any depth of folders, symbolic links not followed.
+    Comparing the folders' listings, never asking the filesystem whether a spelling
+    exists, gives the same answer on every system.
+    """
+    found: list[tuple[str, ...]] = []
+
+    def same(entry: str, part: str) -> bool:
+        if fold:
+            entry, part = entry.casefold(), part.casefold()
+        if any(marker in part for marker in _GLOB_MARKERS):
+            return fnmatch.fnmatchcase(entry, part)
+        return entry == part
+
+    def walk(folder: Path, index: int, names: tuple[str, ...]) -> None:
+        if index == len(parts):
+            if names not in found:
+                found.append(names)
+            return
+        try:
+            with os.scandir(folder) as listing:
+                entries = sorted(listing, key=lambda entry: entry.name)
+        except OSError:
+            return
+        if parts[index] == "**":
+            walk(folder, index + 1, names)
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    walk(folder / entry.name, index, (*names, entry.name))
+            return
+        for entry in entries:
+            if same(entry.name, parts[index]):
+                walk(folder / entry.name, index + 1, (*names, entry.name))
+
+    walk(project_root, 0, ())
+    return found
+
+
+def _letter_case_refusal(
+    raw_path: str, own: tuple[str, ...], match: tuple[str, ...], *, found_as_written: bool
+) -> str:
+    """The refusal of *raw_path* (its own parts *own*), which names *match* only where
+    letter case is ignored; *found_as_written* when it also names something as written."""
+    pattern = any(marker in part for part in own for marker in _GLOB_MARKERS)
+    if found_as_written:
+        return (
+            f"Path {raw_path!r} also matches {'/'.join(match)!r} where letter case is ignored, "
+            "as Windows and macOS read it, and not on Linux, so the systems read different "
+            "files. Rename the files apart, or write the path to match one spelling."
+        )
+    if pattern:
+        return (
+            f"Path {raw_path!r} matches {'/'.join(match)!r} only where letter case is ignored, "
+            "as Windows and macOS read it, so a checkout on Linux finds nothing. Write the "
+            "pattern in the letter case of the files it reads."
+        )
+    tail = len(own) <= len(match) and not any(part in {".", ".."} for part in own)
+    spelled = "/".join(match[len(match) - len(own) :] if tail else match)
+    return (
+        f"Path {raw_path!r} is spelled {spelled!r} on disk. Windows and macOS read it in "
+        "either letter case and Linux only as it is spelled, so a checkout on Linux cannot "
+        f"find it. Write {spelled}."
+    )
+
+
 def portable_path_refusal(
     raw_path: str,
     *,
@@ -392,15 +464,17 @@ def portable_path_refusal(
     pipeline_dir: str | Path | None = None,
     project_root: str | Path | None = None,
 ) -> str | None:
-    """Why *raw_path*, a node's path setting, would not name the same file in another
+    """Why *raw_path*, a path a node reads, would not name the same file in another
     checkout of the project, on another computer or system; ``None`` when it would.
 
-    A path that leaves the project, an absolute one, one with a Windows drive letter
-    and one spelled in another letter case than its entries on disk are each refused,
-    saying what to write: the path from the project root, or the spelling on disk.
-    Windows and macOS read a file in any letter case and Linux only in its own, so a
-    path spelled otherwise runs on the first and fails on the second. The save and
-    ``haute lint`` ask this of every path setting of every node.
+    A path that leaves the project, an absolute one, one with a Windows drive letter and
+    one that names something only where letter case is ignored are each refused, saying
+    what to write: the path from the project root, or the spelling on disk. Windows and
+    macOS read a file in any letter case and Linux only in its own. The anchoring rule's
+    candidates are taken in its order: one that names an entry only with letter case
+    ignored is refused, and the first that names one as written is the file every system
+    reads. A glob pattern is judged by what it matches. The save and ``haute lint`` ask
+    this of every path a node reads (:func:`portable_output_path_refusal` for one it writes).
     """
     root = current_project().root if project_root is None else Path(project_root).resolve()
     try:
@@ -421,25 +495,55 @@ def portable_path_refusal(
             f"Path {raw_path!r} is absolute: it names folders on this computer, which another "
             f"checkout of the project does not have. Write it from the project root: {inside}."
         )
-    # In the rule's order: a candidate on disk in another letter case is the file a system
-    # that ignores case reads, and a candidate on disk as written is the one every system reads.
-    own = written.parts
     for candidate in candidates:
         parts = _inside(candidate, root)
-        spelled = _spelled_on_disk(root, parts)
-        corrected = (
-            "/".join(spelled[len(spelled) - len(own) :])
-            if not any(part in {".", ".."} for part in own)
-            else "/".join(spelled)
-        )
-        if spelled != parts and corrected != "/".join(own):
-            return (
-                f"Path {raw_path!r} is spelled {corrected!r} on disk. Windows and macOS read it "
-                "in either letter case and Linux only as it is spelled, so a checkout on Linux "
-                f"cannot find it. Write {corrected}."
+        exact = _matches_on_disk(root, parts, fold=False)
+        extra = [match for match in _matches_on_disk(root, parts, fold=True) if match not in exact]
+        if extra:
+            return _letter_case_refusal(
+                raw_path, written.parts, extra[0], found_as_written=bool(exact)
             )
-        if _exists_or_matches(candidate):
+        if exact:
             return None
+    return None
+
+
+def portable_output_path_refusal(
+    raw_path: str, written: str, *, project_root: str | Path
+) -> str | None:
+    """Why a node writing *written* (its setting *raw_path* as the writer reads it, from
+    the project root) would write another file in another checkout; ``None`` when not.
+
+    A drive-letter path, a path outside the project and an absolute one are refused as a
+    read path is, and so is one whose folders, or the file itself, exist on disk in
+    another letter case: Windows and macOS write into them, and Linux makes new ones.
+    """
+    root = Path(project_root).resolve()
+    shown = repr(raw_path) if raw_path == written else f"{raw_path!r}, which writes {written!r},"
+    try:
+        reject_windows_drive_path(written, project_root=root)
+    except RuntimePathWrittenOnWindowsError as exc:
+        return str(exc)
+    normalised = Path(_normalise_path_text(written))
+    target = Path(os.path.abspath(normalised if normalised.is_absolute() else root / normalised))
+    if not is_contained(root, target.resolve()):
+        return (
+            f"Path {shown} resolves outside the project root. Write a path inside the "
+            "project, from its root."
+        )
+    parts = _inside(target, root)
+    spelled = "/".join(_spelled_on_disk(root, parts))
+    if normalised.is_absolute():
+        return (
+            f"Path {shown} is absolute: it names folders on this computer, which another "
+            f"checkout of the project does not have. Write it from the project root: {spelled}."
+        )
+    if spelled != "/".join(parts):
+        return (
+            f"Path {shown} is spelled {spelled!r} on disk. Windows and macOS write into it in "
+            "either letter case and Linux makes another, so a checkout on Linux writes "
+            f"elsewhere. Write {spelled}."
+        )
     return None
 
 

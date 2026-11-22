@@ -906,30 +906,53 @@ def test_a_data_output_path_with_a_drive_letter_is_never_written_inside_the_proj
 
 
 @pytest.mark.parametrize(
-    ("config", "refused"),
+    ("config", "remedy"),
     [
-        ({"output_type": "file", "format": "parquet", "path": "<absolute>"}, True),
-        ({"output_type": "file", "format": "parquet", "path": "outputs/priced.parquet"}, False),
-        ({"output_type": "file", "format": "database", "uri": "sqlite:///out.db"}, False),
+        ({"format": "parquet", "path": "<absolute>"}, "root: outputs/priced.parquet."),
+        ({"format": "csv", "path": "data/Quotes"}, "Write data/quotes.csv."),
+        ({"format": "parquet", "path": "Priced"}, "Write outputs/priced.parquet."),
+        ({"format": "parquet", "path": "Outputs/new.parquet"}, "Write outputs/new.parquet."),
+        ({"format": "parquet", "path": "outputs/priced.parquet"}, None),
+        ({"format": "parquet", "path": "exports/new.parquet"}, None),
+        ({"format": "database", "uri": "sqlite:///out.db"}, None),
     ],
-    ids=["file-absolute", "file-relative", "database"],
+    ids=[
+        "absolute",
+        "extension-added",
+        "bare-name",
+        "folder-case",
+        "as-on-disk",
+        "new-folder",
+        "database",
+    ],
 )
-def test_a_save_holds_a_data_output_file_path_to_the_input_rule(
-    tmp_path: Path, config: dict[str, object], refused: bool
+def test_a_save_holds_the_file_a_data_output_writes_to_one_spelling(
+    tmp_path: Path, config: dict[str, object], remedy: str | None
 ) -> None:
-    """A file Data Output's path is a project file a save writes, held to the rule its
-    inputs are; a database destination names no file."""
+    """A file Data Output is checked on the file its writer writes: a bare name in
+    ``outputs/`` and the format's extension added. A folder or file on disk in another
+    letter case is refused, since Windows and macOS write into it and Linux makes another;
+    a folder not there yet is the writer's to make. A database destination names no file."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "quotes.csv").write_text("x\n1\n", encoding="utf-8")
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "priced.parquet").write_bytes(b"")
     if config.get("path") == "<absolute>":
         config = {**config, "path": str(tmp_path / "outputs" / "priced.parquet")}
     sink = GraphNode(
-        id="priced", data=NodeData(label="priced", nodeType=NodeType.DATA_OUTPUT, config=config)
+        id="priced",
+        data=NodeData(
+            label="priced",
+            nodeType=NodeType.DATA_OUTPUT,
+            config={"output_type": "file", **config},
+        ),
     )
     svc = SavePipelineService(tmp_path)
 
-    if not refused:
+    if remedy is None:
         svc._validate_portable_paths(PipelineGraph(nodes=[sink]), tmp_path / "main.py")
         return
     with pytest.raises(RequestRefusedError) as refusal:
         svc._validate_portable_paths(PipelineGraph(nodes=[sink]), tmp_path / "main.py")
-    assert "Data Output node 'priced' (path)" in refusal.value.detail
-    assert "Write it from the project root: outputs/priced.parquet." in refusal.value.detail
+    assert f"Data Output node 'priced' (path): Path {config['path']!r}" in refusal.value.detail
+    assert remedy in refusal.value.detail
