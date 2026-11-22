@@ -744,6 +744,45 @@ class TestWidthsFollowTheLineage:
         assert estimate.estimated_peak_bytes is not None
         assert estimate.estimated_peak_bytes >= 4097 * rows
 
+    def test_a_recomputed_column_is_not_charged_what_the_other_expressions_read(
+        self, tmp_path: Path
+    ) -> None:
+        """EXE-08: a ``select`` evaluates every expression, but a recomputed numeric column
+        is sized from its own value's input, never as wide as a text column beside it."""
+        rows = self.ROWS
+        pl.DataFrame(
+            {
+                "n": list(range(rows)),
+                "description": [f"{i:04d}" + "x" * 4093 for i in range(rows)],
+            }
+        ).write_parquet(tmp_path / "quotes.parquet")
+
+        def estimate(code: str) -> int:
+            source = _make_source_node(
+                node_id="src",
+                label="src",
+                node_type="dataInput",
+                config=_ready_file_input_config(tmp_path / "quotes.parquet"),
+            )
+            selected = _make_transform_node(node_id="t", label="t", config={"code": code})
+            distinct = _make_transform_node(
+                node_id="u", label="u", config={"code": "df = t.unique()"}
+            )
+            graph = PipelineGraph(
+                nodes=[source, selected, distinct],
+                edges=[
+                    GraphEdge(id="e1", source="src", target="t"),
+                    GraphEdge(id="e2", source="t", target="u"),
+                ],
+            )
+            peak = _boundary_estimate(graph, "u").estimated_peak_bytes
+            assert peak is not None
+            return peak
+
+        carried = estimate("df = src.select('description', pl.col('n'))")
+        recomputed = estimate("df = src.select('description', (pl.col('n') + 1).alias('n'))")
+        assert recomputed == carried
+
     def test_a_nested_column_is_measured(self, tmp_path: Path) -> None:
         path = tmp_path / "nested.parquet"
         self._frames()["nested"].write_parquet(path)

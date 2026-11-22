@@ -2997,8 +2997,14 @@ def analyze_polars_lineage(
     selector_aliases: frozenset[str] = frozenset(),
     df_input: str | None = None,
     value_names: frozenset[str] = frozenset(),
+    value_dependencies: bool = False,
 ) -> ColumnLineageAnalysis:
     """Prove exact output schema and per-input demand for linear Polars code.
+
+    By default the demand is what execution reads: every expression a ``select``
+    evaluates, a filter's predicate, a sort's keys. With ``value_dependencies`` it is
+    only the input columns the demanded outputs' values are computed from (a join's keys
+    included), which is what sizes a computed column; it is never a projection.
 
     ``None`` input schemas are allowed for operations whose ownership does not
     depend on the complete schema.  A join requires exact schemas on both sides
@@ -3053,6 +3059,9 @@ def analyze_polars_lineage(
     demands_by_input: dict[str, set[str]] = {name: set() for name in normalised_inputs}
     for item in reversed(evaluated):
         operation = item.operation
+        if value_dependencies and operation.kind is not LineageOperationKind.JOIN:
+            demand = _value_demand_before(operation, demand, item.before_schema)
+            continue
         if operation.kind is LineageOperationKind.SELECT:
             mapping = dict(operation.output_to_inputs)
             # Exact-output validation (or the forward SELECT transfer) proves
@@ -3157,13 +3166,18 @@ def analyze_polars_lineage(
     # carry; a joined port always demands its keys).
     root_demand = demands_by_input[program.root_input]
     root_schema = normalised_inputs.get(program.root_input)
-    if root_schema and not _ensure_root_carrier(
-        program,
-        evaluated,
-        normalised_inputs,
-        root_schema,
-        root_demand,
-        input_dtypes,
+    # A value's dependencies are no projection, so they need no carrier.
+    if (
+        root_schema
+        and not value_dependencies
+        and not _ensure_root_carrier(
+            program,
+            evaluated,
+            normalised_inputs,
+            root_schema,
+            root_demand,
+            input_dtypes,
+        )
     ):
         return _unsupported("carrier_unresolvable", program.operations[-1].method)
     return ColumnLineageAnalysis(
@@ -3176,6 +3190,42 @@ def analyze_polars_lineage(
         unsupported_operation=None,
         recomputed_columns=_recomputed_columns(evaluated),
     )
+
+
+def _value_demand_before(
+    operation: LineageOperation, demand: set[str], before_schema: frozenset[str] | None
+) -> set[str]:
+    """The columns before *operation* that the values of *demand* after it come from.
+
+    A computed output comes from what its own expression reads, an unpivot's value from
+    any of its ``on`` columns, a renamed column from its source, and a generated row
+    index from nothing. Everything else carries its columns' values unchanged: a filter,
+    a sort, a ``unique`` or a drop of nulls reads columns only to choose rows.
+    """
+    mapping = dict(operation.output_to_inputs)
+    kind = operation.kind
+    if kind in {LineageOperationKind.SELECT, LineageOperationKind.GROUP_BY_AGG}:
+        return {column for output in demand for column in mapping.get(output, ())}
+    if kind is LineageOperationKind.WITH_COLUMNS:
+        return (demand - set(mapping)) | {
+            column for output in demand & set(mapping) for column in mapping[output]
+        }
+    if kind is LineageOperationKind.RENAME:
+        reverse = {target: source for source, target in operation.renamed_columns}
+        return {reverse.get(column, column) for column in demand}
+    if kind is LineageOperationKind.WITH_ROW_INDEX:
+        return demand - set(operation.produced_columns)
+    if kind is LineageOperationKind.UNPIVOT:
+        assert operation.index_columns is not None
+        on = (
+            set(operation.subset_columns)
+            if operation.subset_columns is not None
+            else set(before_schema or ()) - set(operation.index_columns)
+        )
+        return (demand & set(operation.index_columns)) | (
+            on if demand - set(operation.index_columns) else set()
+        )
+    return demand
 
 
 def _recomputed_columns(evaluated: Sequence[_EvaluatedOperation]) -> frozenset[str]:

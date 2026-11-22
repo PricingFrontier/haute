@@ -586,7 +586,18 @@ class InteractiveWorkerPool:
             # once; the request is answered as such, and the next runs on the new worker.
             exitcode = slot.process.exitcode
             logger.warning("interactive_worker_died_idle", worker_index=index, exitcode=exitcode)
-            raise self._replace_slot(slot, WorkerRestartedError(exitcode))
+            self._close_slot(slot, graceful=False)
+            try:
+                replacement = self._start_slot(index=index, generation=slot.generation + 1)
+            except (WorkerStartError, WorkerHostError) as start_error:
+                # No worker is running: the start's own failure is the answer, and the
+                # closed slot is started again by the next request.
+                start_error.add_note(
+                    f"The worker it replaces had stopped while idle (exit code {exitcode})."
+                )
+                raise
+            self._install(slot, replacement)
+            raise WorkerRestartedError(exitcode)
         replacement = self._start_slot(index=index, generation=slot.generation + 1)
         self._install(slot, replacement)
         return replacement

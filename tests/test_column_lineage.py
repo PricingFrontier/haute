@@ -3892,3 +3892,27 @@ def test_carried_proof_reports_the_input_an_input_mapping_alias_stands_for() -> 
     assert proof.join_keys == {"scores": frozenset({"id"})}
     assert implicit is not None
     assert implicit.root_input == "Edge_Join_3"
+
+
+@pytest.mark.parametrize(
+    ("code", "column", "reads"),
+    [
+        ("df = src.select('d', (pl.col('n') + 1).alias('n'))", "n", {"n"}),
+        ("df = src.filter(pl.col('d') == 'x').with_columns(m=pl.col('n') * 2)", "m", {"n"}),
+        ("df = src.sort('d').rename({'n': 'k'})", "k", {"n"}),
+        ("df = src.group_by('d').agg(pl.col('n').sum().alias('total'))", "total", {"n"}),
+        ("df = src.with_columns(pl.col('d').alias('n'))", "n", {"d"}),
+    ],
+)
+def test_value_dependencies_name_only_what_a_column_is_computed_from(
+    code: str, column: str, reads: set[str]
+) -> None:
+    """EXE-08: a column's value dependencies leave out what execution reads to evaluate
+    other expressions or choose rows; what it reads to run is still the default."""
+    inputs = {"src": frozenset({"n", "d"})}
+    value = analyze_polars_lineage(code, inputs, {column}, value_dependencies=True)
+    executed = analyze_polars_lineage(code, inputs, {column})
+
+    assert value.supported, value.reason
+    assert value.demands_by_input["src"] == frozenset(reads)
+    assert value.demands_by_input["src"] <= executed.demands_by_input["src"]

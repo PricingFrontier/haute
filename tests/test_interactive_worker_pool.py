@@ -303,6 +303,43 @@ def test_a_worker_that_died_idle_is_replaced_whatever_the_next_request_s_size(
     assert "started again" in answer.message
 
 
+def test_a_worker_that_died_idle_and_could_not_be_replaced_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EXE-07: when the replacement for a worker that died idle fails to start, the request
+    is answered that no worker could run it, never that one was started again, and the
+    next request starts the slot."""
+    from haute._failure_answers import answer_failure
+    from haute._worker_failures import WorkerStartError
+
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    real_start = pool._start_slot
+    failures = iter([True])
+
+    def start_failing_once(*, index: int, generation: int):
+        if next(failures, False):
+            raise WorkerStartError("Failed to start interactive worker 0: boom")
+        return real_start(index=index, generation=generation)
+
+    try:
+        before, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
+        idle = pool._slots[0].process
+        idle.kill()
+        idle.join(timeout=10)
+        monkeypatch.setattr(pool, "_start_slot", start_failing_once)
+        with pytest.raises(WorkerStartError) as unavailable:
+            pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
+        after, value = pool.run(_worker_identity, 4, affinity_key="lineage", timeout_seconds=30)
+    finally:
+        _within(30, pool.close)
+
+    answer = answer_failure(unavailable.value, operation="preview")
+    assert (answer.status, answer.code) == (503, "worker_unavailable")
+    assert "started again" not in answer.message
+    assert any("stopped while idle" in note for note in unavailable.value.__notes__)
+    assert (after != before, value) == (True, 4)
+
+
 def test_a_dead_worker_s_unsent_request_does_not_hold_its_replacement() -> None:
     """EXE-07: a request put to a worker that died before reading it is abandoned when the
     slot closes, rather than joined behind a pipe nothing reads."""

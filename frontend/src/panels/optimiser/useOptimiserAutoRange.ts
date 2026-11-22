@@ -185,9 +185,11 @@ type ActiveRun = {
   generation: number
   scopeKey: string
   targets: readonly string[]
+  /** The toolbar's source the run was started on, which its request sends. */
+  source: string
   /**
    * The run as asked: the newest run of the hook while it is mounted, on the
-   * structural version and under the document execution fence it started on.
+   * structural version, source and document execution fence it started on.
    */
   asked: Asked
   jobId: string | null
@@ -203,16 +205,18 @@ export type UseOptimiserAutoRangeOptions = {
 }
 
 /**
- * A run's scope, as the solve's fence: the node, the structural version and
- * the document's execution identity. A save, which advances only the source
+ * A run's scope, as the solve's fence: the node, the structural version, the
+ * toolbar's source (ranges found on one source are not another's) and the
+ * document's execution identity. A save, which advances only the source
  * revision, never retires a run.
  */
 function autoRangeScopeKey(
   nodeId: string,
   graphVersion: number,
+  activeSource: string,
   documentKey: string,
 ): string {
-  return JSON.stringify([nodeId, graphVersion, documentKey])
+  return JSON.stringify([nodeId, graphVersion, activeSource, documentKey])
 }
 
 /**
@@ -227,8 +231,9 @@ export function useOptimiserAutoRange({
 }: UseOptimiserAutoRangeOptions) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const graphVersion = useGraphStore((current) => current.structuralVersion)
+  const activeSource = useSettingsStore((current) => current.activeSource)
   const currentDocumentKey = useDocumentStatusStore(documentExecutionKey)
-  const scopeKey = autoRangeScopeKey(nodeId, graphVersion, currentDocumentKey)
+  const scopeKey = autoRangeScopeKey(nodeId, graphVersion, activeSource, currentDocumentKey)
   const generationRef = useRef(0)
   const activeRef = useRef<ActiveRun | null>(null)
   const runs = useRequestKind()
@@ -307,6 +312,7 @@ export function useOptimiserAutoRange({
       const publishedScopeKey = autoRangeScopeKey(
         nodeId,
         useGraphStore.getState().structuralVersion,
+        useSettingsStore.getState().activeSource,
         documentExecutionKey(useDocumentStatusStore.getState()),
       )
       dispatch({
@@ -321,7 +327,7 @@ export function useOptimiserAutoRange({
         return startOptimiserFrontierAutoRange({
           graph: target.graph,
           target: target.node,
-          source: useSettingsStore.getState().activeSource,
+          source: active.source,
           signal,
         })
       }, {
@@ -367,10 +373,12 @@ export function useOptimiserAutoRange({
       generation: ++generationRef.current,
       scopeKey,
       targets: [...targets],
+      source: activeSource,
       asked: ask([
         newest(runs),
         documentFence,
         watch(useGraphStore, (current) => current.structuralVersion, (_, now) => now === graphVersion),
+        watch(useSettingsStore, (current) => current.activeSource, (_, now) => now === activeSource),
       ]),
       jobId: null,
       cancelledJobId: null,
@@ -378,7 +386,7 @@ export function useOptimiserAutoRange({
     activeRef.current = active
     dispatch({ type: "begin", generation: active.generation, scopeKey, targets: active.targets })
     void executeRun(active)
-  }, [executeRun, graphVersion, retire, runs, scopeKey])
+  }, [activeSource, executeRun, graphVersion, retire, runs, scopeKey])
 
   const visibleState = state.scopeKey === scopeKey ? state : initialState
   return {

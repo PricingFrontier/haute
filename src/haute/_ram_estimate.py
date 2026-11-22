@@ -1924,7 +1924,7 @@ def _resolve_code_node_columns(
         keys = [*width_keys, _COMPUTED_WIDTH_KEY.format(column)]
         return max(keys, key=lambda key: widths.get(key, float(_BYTES_PER_COL)))
 
-    def lineage(demanded: set[str] | None) -> Any:
+    def lineage(demanded: set[str] | None, *, value_dependencies: bool = False) -> Any:
         return _analyse_polars_node_lineage(
             node,
             edges,
@@ -1940,6 +1940,7 @@ def _resolve_code_node_columns(
                 )
                 for edge in edges
             },
+            value_dependencies=value_dependencies,
         )
 
     analysed = lineage(None)
@@ -1963,10 +1964,11 @@ def _resolve_code_node_columns(
         if kept and column not in result.recomputed_columns:
             pairs.append((column, widest(kept, column)))
             continue
-        # A computed column is as wide as what it alone reads, whatever its name: one
+        # A computed column is as wide as what its value is computed from (not what the
+        # node's other expressions read), whatever its name: one
         # replaced under an input column's name (``pl.col("description").alias(
         # "risk_text")``) is sized as ``description``, never as the column it replaced.
-        alone = lineage({column})
+        alone = lineage({column}, value_dependencies=True)
         read = (
             [
                 by_name[name].width_columns.get(read_column, read_column)

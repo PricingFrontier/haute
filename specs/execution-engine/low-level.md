@@ -205,7 +205,9 @@
   (`ColumnLineageAnalysis.recomputed_columns`: a `select`/`with_columns` output that is not
   the unchanged input column, an aggregate, a rename's target or a produced column), under
   a new name or an input column's, and any other output (a join's suffixed column) is sized
-  as the widest input column the lineage says it alone reads, so
+  as the widest input column its value is computed from (`analyze_polars_lineage(...,
+  value_dependencies=True)`, which leaves out what a `select`'s other expressions, a filter
+  or a sort read to run), so
   `pl.col("description").alias("risk_text")` is as wide as `description`, never as the
   `risk_text` it replaced. None is less than one 8-byte value, since a computed column can
   be wider than what it reads (a one-byte column cast to eight bytes). Only computed
@@ -1359,7 +1361,9 @@ by the system when memory ran short) is found by `_current_slot` before any requ
 sent to it: the slot is closed and replaced under its lock, and the request that found it
 raises `WorkerRestartedError` (503 `worker_restarted`: the background process had
 stopped while idle and was started again, try again), so the next request runs on the
-new worker; `run_preemptible` refuses such a slot as not running and leaves it to the
+new worker; when the replacement fails to start, the request ends with that start's own
+failure (503 `worker_unavailable`, noting the idle death) and the next request starts the
+slot again; `run_preemptible` refuses such a slot as not running and leaves it to the
 next interactive request. Closing a slot whose worker is dead never waits on the request
 queue's feeder: a request the worker never read is still in that thread, blocked writing
 into a pipe whose only reader left is the parent's own end, so `_close_slot` cancels the
@@ -1433,7 +1437,11 @@ there is no such source: `BatchSourceAmbiguousError` (a `ConfigError`, public co
 the sources and saying to choose one in the toolbar. The settings check accepts any source
 names; no rule asks switches to agree. A solve records the source it ran on as its
 `input_provenance.data_source`, and the estimate's `total_rows` reads the same source as its
-counts.
+counts. An auto-range resolves its source when it starts and records it as the job's
+`data_source`: a start reuses a running auto-range on the node only for the same source, and
+one for another source is the node's setup conflict (409). The editor's auto-range run
+carries the source it started on and is retired when the toolbar's source changes, so ranges
+found on one source are never written while another is active.
 
 ### Pipeline settings
 
