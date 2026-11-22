@@ -52,7 +52,15 @@ _REGEX_SYNTAX = re.compile(r"[\\()\[\]|?*+^${}]")
 
 #: ``path::scope::rule`` -> why the place names a type. The scope is the enclosing
 #: function, class or module-level assignment.
+#: Why _temporal_text names nested types: it walks one to the temporal values it holds.
+_TEMPORAL_WALK = (
+    "a nested type walked to its temporal leaves: a list and an array hold one inner type "
+    "alike, which column_kind calls nested with a struct"
+)
 _NAMED_TYPES: dict[str, str] = {
+    "src/haute/_temporal_text.py::_holds_temporal::isinstance": _TEMPORAL_WALK,
+    "src/haute/_temporal_text.py::_can_be_finer::isinstance": _TEMPORAL_WALK,
+    "src/haute/_temporal_text.py::_physical_value::isinstance": _TEMPORAL_WALK,
     "src/haute/_json_values.py::REQUEST_DTYPES::list": (
         "the types a deploy request's JSON can carry exactly; any other refuses the deploy "
         "naming its type (deploy/_request_frame.py)"

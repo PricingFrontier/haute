@@ -15,6 +15,8 @@ import ast
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from tests._source_files import source_files
 
 SOURCE = Path(__file__).resolve().parent.parent / "src" / "haute"
@@ -262,6 +264,7 @@ def kept(frame):
     }
 
 
+@pytest.mark.meta
 def test_every_row_read_writes_temporal_columns_as_text_or_says_why_it_holds_none() -> None:
     found = _readers()
     unlisted = {
