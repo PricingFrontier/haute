@@ -6,12 +6,11 @@ The local server's routes and live sync, as [the server API
 specification](../server-api/high-level.md) describes them: what a route
 answers when a node of the analyst's own fails, what a save answers when it cannot write its files, and what
 a Data Output's Write and a model save leave when they are cut short.
-`SRV-04` and `SRV-05` come from the review
+`SRV-05` comes from the review
 plan's sweep of failed writes on 10 November, which failed every step of 17
 writing operations in turn, held their files open and killed the server at
-three points, and were reproduced on that day; the main session added the Data Output's case to
-`SRV-04`, the sweep of the frontend's logic added the too-long path, the
-main session's run of 11 November added the read-only file, and `SRV-06`
+three points, and was reproduced on that day; the main session's run of 11
+November added the read-only file, and `SRV-06`
 comes from the main session's own runs of 10 November. `SRV-07`
 comes from the plan's sweep of damaged requests and the main session's
 runs behind it on 11 November. `SRV-19` and `SRV-20` come from the 22 November 2026
@@ -25,7 +24,6 @@ is retired.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SRV-04 | Planned | P2 | A node or submodel name that makes its file's path too long for Windows is refused when it is typed, naming the node and the limit, not by the save. |
 | SRV-05 | Planned | P3 | A Data Output's Write and a model save leave no staged copy beside their file, and no other writer's staging file outlives a restart. |
 | SRV-06 | Planned | P2 | A pipeline file that is missing is shown on the editor's page in the words the load answers with, not as "HTTP <status>". |
 | SRV-19 | Planned | P1 | An OUTPUT document keeps two objects whose keys differ below a microsecond, in the preview and in the deployed answer, and carries every digit of a nanosecond timestamp. |
@@ -33,39 +31,6 @@ is retired.
 | SRV-07 | Planned | P2 | A typed file name that Windows cannot hold is refused naming the path and the rule by the optimiser's save, the model save and a Data Output's Write, and a file with a device name can be deleted from the Files panel. |
 
 ## Planned improvements
-
-### SRV-04 — A name that makes its file's path too long is refused when it is typed
-**Why:** Reproduced on 10 and 11 November 2026. A node's settings file is
-named from the node's name, with every character outside ASCII written as
-six or seven (a Cyrillic or Greek letter as six, a Japanese or Chinese
-character as seven). A name of 36 Japanese characters is accepted by the
-editor's rename rule, which allows 200 characters and looks only at their
-shape, and makes a file name of 257 characters; some 42 Cyrillic or Greek
-letters do the same by that arithmetic (measured on the encoding, not
-saved). The save is then refused: Windows refuses the path for its length,
-and the answer names the settings file and the remedy (move the project,
-enable long paths), not the node whose name made it, so the analyst is not
-told what to rename. On Windows without long paths the whole path counts, so
-fewer characters are already too many. A submodel's name reaches the same
-refusal through its module file: a name of 200 letters makes the box, the
-create route answering 200, and the Save is then refused with the box still
-on the canvas (run on 11 November).
-
-**Plan:** Have the rename rule count a name as its file will hold it, and
-refuse a node name, or a submodel's, whose file's path would be too long for
-the platform, naming the node and the limit, when it is typed and when the
-submodel is made.
-
-**Acceptance:** A node name that makes its settings file's path too long is
-refused when it is typed, in a message naming the node and the limit, and a
-submodel's name that does so to its module file is refused when the
-submodel is made.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_graph_utils.py::_sanitize_func_name`;
-`src/haute/_file_ops.py::PathTooLongError`;
-`src/haute/routes/submodel.py::create_submodel`.
 
 ### SRV-05 — A cut-short write and a model save leave no staged copy behind
 **Why:** Reproduced on 10 November 2026. The pipeline save's own leftovers
@@ -187,7 +152,7 @@ before anything is written: refuse the characters Windows does not allow in
 a name, a trailing dot or space, the device names and a name too long for
 the disk, each time naming the path and the rule, as the model save does
 for a device name. Answer a failure that still reaches the write with the
-path and the reason (`SRV-04`). Let the Files panel delete any file it
+path and the reason. Let the Files panel delete any file it
 lists, whatever its name.
 
 **Acceptance:** Each name above, typed into each of the three paths,
@@ -195,7 +160,7 @@ answers 4xx naming the path and the rule, and the folder holds no new file
 afterwards. A file with a device name that is already in the pipeline
 folder can be deleted from the Files panel, and Commit then succeeds.
 
-**Dependencies:** `SRV-04` for the wording of a write that fails.
+**Dependencies:** None. The length rule is `_file_ops.written_file_length_problem`.
 
 **Evidence:** `src/haute/routes/optimiser.py::save_result`;
 `src/haute/routes/modelling.py::save_model`;

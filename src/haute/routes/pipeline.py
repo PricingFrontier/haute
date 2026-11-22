@@ -400,7 +400,14 @@ async def resolve_pipeline_editor_identities(
             graph = None
         else:
             named, graph = await run_in_threadpool(
-                name_candidates, body.graph, candidates, read_utility, allocate=body.allocate
+                partial(
+                    name_candidates,
+                    allocate=body.allocate,
+                    pipeline_root=current_project().pipeline_dir,
+                ),
+                body.graph,
+                candidates,
+                read_utility,
             )
         identities: list[EditorIdentityResponseNode] = []
         for node, name in zip(body.nodes, named, strict=True):

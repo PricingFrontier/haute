@@ -107,6 +107,45 @@ def windows_long_paths_enabled() -> bool:
     return bool(value == 1)
 
 
+#: The longest file name the filesystems Haute writes to hold (NTFS, ext4, APFS); a name
+#: Haute makes from a node's is ASCII, so its characters are its bytes.
+MAX_FILE_NAME_CHARS = 255
+
+
+def written_file_length_problem(targets: Iterable[Path]) -> str | None:
+    """Why files written at *targets* cannot be held for their length, or ``None``.
+
+    Counts each file as a write of it is made: an atomic write stages it under a longer
+    sibling name first (:func:`_temp_path_for`), so the limit a target's own name or path
+    must meet is the platform's less that difference. A file name may have at most
+    ``MAX_FILE_NAME_CHARS`` characters everywhere; on Windows without long paths, a path
+    at most ``WINDOWS_MAX_PATH_CHARS``. The words name the first target past a limit and
+    that limit, for a caller to say which name made it.
+    """
+    staging_extra = {
+        target: max(0, len(_temp_path_for(target).name) - len(target.name)) for target in targets
+    }
+    # A name too long is too long everywhere, so it is told before a path.
+    for target, extra in staging_extra.items():
+        name_limit = MAX_FILE_NAME_CHARS - extra
+        if len(target.name) > name_limit:
+            return (
+                f"its file name would have {len(target.name)} characters, more than the "
+                f"{name_limit} a saved file's name may have"
+            )
+    if not _IS_WINDOWS or windows_long_paths_enabled():
+        return None
+    for target, extra in staging_extra.items():
+        path = os.path.abspath(target)
+        path_limit = WINDOWS_MAX_PATH_CHARS - extra
+        if len(path) > path_limit:
+            return (
+                f"its path would have {len(path)} characters, more than the {path_limit} "
+                "Windows allows a saved file's path while long paths are disabled"
+            )
+    return None
+
+
 def path_too_long_error(exc: BaseException) -> PathTooLongError | None:
     """The :class:`PathTooLongError` behind *exc*, or ``None`` when no path was too long.
 

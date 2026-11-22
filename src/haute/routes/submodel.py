@@ -8,6 +8,7 @@ from typing import Final, Literal
 from fastapi import APIRouter, Query
 from fastapi.concurrency import run_in_threadpool
 
+from haute._file_ops import written_file_length_problem
 from haute._logging import get_logger
 from haute._node_specs import node_spec
 from haute._project_context import current_project
@@ -241,6 +242,18 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             result = create_submodel_graph(submitted_graph, body.node_ids, body.name)
         except SubmodelValidationError as exc:
             raise RequestRefusedError(exc.detail, status_code=exc.status_code) from None
+
+        # The module's file, and its sidecar beside it, are named from the submodel's
+        # name: one too long for the platform is refused now, by name, not by the Save.
+        module_file = parent_path.parent / result.sm_file
+        too_long = written_file_length_problem(
+            [module_file, module_file.with_suffix(".haute.json")]
+        )
+        if too_long is not None:
+            raise InvalidRequestError(
+                f"Submodel {body.name.strip()!r} would keep its module in {result.sm_file}, "
+                f"and {too_long}. Choose a shorter name."
+            )
 
         _refuse_new_name_violations(
             submitted_graph,

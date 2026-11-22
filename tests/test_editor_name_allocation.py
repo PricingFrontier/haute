@@ -257,6 +257,51 @@ def test_a_free_rename_has_no_collision(project: Path, client: TestClient) -> No
     assert body["identities"][0]["label"] == "renamed"
 
 
+def test_a_name_too_long_for_its_settings_file_is_refused_when_it_is_typed(
+    project: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SRV-04: a node's settings file is named from its name, a Japanese character written
+    as seven; a name whose file would be past what a file name may hold is refused by the
+    rename rule, naming the node and the limit."""
+    from haute import _file_ops
+
+    # The file name's limit alone: a path's own limit is the next test's.
+    monkeypatch.setattr(_file_ops, "_IS_WINDOWS", False)
+    graph = PipelineGraph(nodes=[_node("rates", "rates", "banding")], edges=[])
+    fits, too_long = "日" * 34, "日" * 36
+
+    accepted = _post(client, graph, [_candidate("rates", fits, "banding")], allocate=False)
+    refused = _post(client, graph, [_candidate("rates", too_long, "banding")], allocate=False)
+
+    assert accepted["identities"][0]["collision"] is None
+    collision = refused["identities"][0]["collision"]
+    assert collision.startswith(f"Node {too_long!r} would keep its settings in config/banding/")
+    # {name}.json is staged as {name}.<8 hex>.tmp: 8 longer than 255 allows.
+    assert "its file name would have 257 characters, more than the 247" in collision
+
+
+def test_a_name_too_long_for_its_settings_path_on_windows_is_refused(
+    project: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SRV-04: on Windows without long paths the whole path counts, so fewer characters
+    are already too many."""
+    from haute import _file_ops
+
+    monkeypatch.setattr(_file_ops, "_IS_WINDOWS", True)
+    monkeypatch.setattr(_file_ops, "windows_long_paths_enabled", lambda: False)
+    graph = PipelineGraph(nodes=[_node("rates", "rates", "banding")], edges=[])
+    folder = len(str((project / "config" / "banding").resolve())) + 1
+    label = "r" * (_file_ops.WINDOWS_MAX_PATH_CHARS - 8 - folder - len(".json") + 1)
+
+    body = _post(client, graph, [_candidate("rates", label, "banding")], allocate=False)
+
+    collision = body["identities"][0]["collision"]
+    assert collision.startswith(f"Node {label!r} would keep its settings in config/banding/")
+    assert "more than the 251 Windows allows a saved file's path" in collision
+    shorter = _post(client, graph, [_candidate("rates", label[:-1], "banding")], allocate=False)
+    assert shorter["identities"][0]["collision"] is None
+
+
 def test_saving_a_utility_turns_a_rename_from_accepted_to_refused(
     project: Path, client: TestClient
 ) -> None:
