@@ -141,6 +141,12 @@ def _duration_text(expression: pl.Expr, unit: str) -> pl.Expr:
 # ---------------------------------------------------------------------------
 
 
+def is_temporal(dtype: pl.DataType) -> bool:
+    """Whether a column of *dtype* is a datetime, time or duration, whose values reach Python
+    only as their exact text."""
+    return column_kind(dtype) in TEMPORAL_TEXT_KINDS
+
+
 def holds_temporal(dtype: pl.DataType) -> bool:
     """Whether a column of *dtype* holds a datetime, time or duration value, at its top level
     or inside a struct, list or array."""
@@ -176,6 +182,22 @@ def _exact_expression(expression: pl.Expr, held: pl.DataType | DataTypeClass) ->
         inner = _exact_expression(pl.element(), dtype.inner)
         return None if inner is None else expression.arr.eval(inner)
     return None
+
+
+def exact_text_expression(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """*expression*, of *dtype*, with every temporal value in it written as its exact text,
+    nested ones included; *expression* itself when it holds none."""
+    written = _exact_expression(expression, dtype)
+    return expression if written is None else written
+
+
+def exact_text_dtype(dtype: pl.DataType) -> pl.DataType:
+    """The type :func:`exact_text_expression` gives a column of *dtype*: each temporal type
+    in it a ``String``."""
+    written = pl.LazyFrame(schema={"value": dtype}).select(
+        exact_text_expression(pl.col("value"), dtype)
+    )
+    return written.collect_schema()["value"]
 
 
 def exact_text(frame: FrameT) -> FrameT:
@@ -333,6 +355,18 @@ def _duration_physical(text: str, dtype: pl.Duration) -> int:
     return _in_range(nanoseconds // step, text, dtype)
 
 
+def wall_clock_nanoseconds(text: str) -> int:
+    """The nanoseconds from 1970 to the wall-clock time a date or date-time *text* names,
+    any offset it carries left aside, as a breakpoint compares a zoned column's values;
+    the fraction read whole to nine digits. :class:`TemporalTextError` for other text."""
+    whole, fraction = _split_fraction(text, "date-time")
+    try:
+        moment = datetime.fromisoformat(whole).replace(tzinfo=None)
+    except ValueError:
+        raise TemporalTextError(f"{text!r} is not a date-time.", reason="malformed") from None
+    return ((moment - _NAIVE_EPOCH) // timedelta(seconds=1)) * _NANOSECONDS_PER_SECOND + fraction
+
+
 def temporal_literal(text: str, dtype: pl.DataType) -> pl.Expr:
     """*text* as a literal of *dtype*, a datetime, time or duration, holding exactly the value
     it names (:func:`temporal_physical`); never through a Python ``datetime``, ``time`` or
@@ -346,8 +380,12 @@ __all__ = [
     "exact_row",
     "exact_rows",
     "exact_text",
+    "exact_text_dtype",
+    "exact_text_expression",
     "holds_temporal",
+    "is_temporal",
     "temporal_literal",
     "temporal_physical",
     "temporal_text",
+    "wall_clock_nanoseconds",
 ]

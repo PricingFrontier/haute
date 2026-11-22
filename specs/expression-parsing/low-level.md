@@ -143,7 +143,8 @@ literal preamble constants, reports an unresolved free name, classifies the expr
 with `_sandbox.validate_user_code`, evaluates its source under `safe_globals(pl=pl, <preamble names>)`
 (a non-`Expr` result becomes `pl.lit`), reports a root column missing from the row
 (`column_unavailable: <column>`), and selects it on the one-row frame as a native value
-(`to_list()[0]`, so a List cell is a list, not a Series) → for
+(`exact_rows`, so a List cell is a list, not a Series, and a datetime, time or duration value
+is its exact text, all nine digits of a nanosecond one) → for
 `expression_type == "conditional"`, `_branch_selection` evaluates each condition the same way in
 source order and records the taken arm, recursing into a taken arm that is itself a `when` chain for
 `nested_branches`.

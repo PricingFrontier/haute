@@ -29,7 +29,7 @@ import dataclasses
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -59,6 +59,12 @@ from haute._rating import (
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
+from haute._temporal_text import (
+    TemporalTextError,
+    is_temporal,
+    temporal_literal,
+    wall_clock_nanoseconds,
+)
 
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode
@@ -292,8 +298,8 @@ def _match_interval_rule(
     for op, threshold in comparators:
         fn = SUPPORTED_BANDING_OPERATORS[op]
         if isinstance(threshold, date):
-            observed = _temporal_trace_value(input_value, threshold)
-            if observed is None or not fn(observed, threshold):
+            pair = _temporal_trace_pair(input_value, threshold)
+            if pair is None or not fn(*pair):
                 return False
             continue
         try:
@@ -306,24 +312,37 @@ def _match_interval_rule(
     return True
 
 
-def _temporal_trace_value(value: Any, threshold: date) -> date | None:
-    """*value* as a date or date-and-time boundary compares it, as the runtime does.
+_EPOCH_DAY = date(1970, 1, 1)
+_NANOSECONDS_PER_DAY = 86_400 * 1_000_000_000
+
+
+def _temporal_trace_pair(value: Any, threshold: date) -> tuple[Any, Any] | None:
+    """*value* and *threshold* as a date or date-and-time boundary compares them, as the
+    runtime does.
 
     A date boundary compares the calendar date and a date-and-time boundary the
     wall-clock time, both in the column's own time zone, which is the zone a
-    traced time-zoned value already carries. A value of the wrong kind (a plain
-    date against a time) is one the runtime refuses, so it matches nothing.
+    traced time-zoned value already carries. The wall-clock time is compared in
+    nanoseconds, read from the value's exact text (``wall_clock_nanoseconds``), so a
+    value inside a boundary's microsecond falls on its own side of it. A value of the
+    wrong kind (a plain date against a time) is one the runtime refuses, so it matches
+    nothing.
     """
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value)
-        except ValueError:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        if isinstance(threshold, datetime):
             return None
+        value = value.isoformat()
+    elif isinstance(value, datetime):
+        value = value.isoformat()
+    if not isinstance(value, str):
+        return None
+    try:
+        observed = wall_clock_nanoseconds(value)
+    except TemporalTextError:
+        return None
     if isinstance(threshold, datetime):
-        return value.replace(tzinfo=None) if isinstance(value, datetime) else None
-    if isinstance(value, datetime):
-        return value.date()
-    return value if isinstance(value, date) else None
+        return observed, wall_clock_nanoseconds(threshold.replace(tzinfo=None).isoformat())
+    return _EPOCH_DAY + timedelta(days=observed // _NANOSECONDS_PER_DAY), threshold
 
 
 def _values_equivalent(left: Any, right: Any) -> bool:
@@ -1408,7 +1427,11 @@ def _chain_feed(
     ):
         return row.drop(target, strict=False)
     dtype = step.output_row.schema.get(target) if step.output_row is not None else None
-    return row.with_columns(pl.Series(target, [shown["result_value"]], dtype=dtype))
+    value = shown["result_value"]
+    if dtype is not None and isinstance(value, str) and is_temporal(dtype):
+        # A datetime, time or duration result is its exact text: read back exactly.
+        return row.with_columns(temporal_literal(value, dtype).alias(target))
+    return row.with_columns(pl.Series(target, [value], dtype=dtype))
 
 
 def _typed_values(step: TraceStep) -> pl.DataFrame | None:

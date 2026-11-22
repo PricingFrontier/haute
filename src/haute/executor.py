@@ -88,6 +88,7 @@ from haute._seed_plans import (
 )
 from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
+from haute._temporal_text import exact_rows
 from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
 from haute.errors import (
@@ -613,7 +614,9 @@ def _frame_preview(
 
 
 def _frame_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
-    return frame.to_dicts()
+    """A frame's preview rows, each datetime, time and duration value its exact text, so a
+    value below a microsecond shows all nine digits and a trace finds its row by it."""
+    return exact_rows(frame)
 
 
 #: How each node type's preview frame becomes its preview rows. The OUTPUT node

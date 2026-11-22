@@ -624,6 +624,85 @@ class TestRatingStepSingleTable:
         assert serialized_detail["combined_outputs"][0]["value"] == 108.0
 
 
+class TestNanosecondTimestamps:
+    """Rows told apart only below a microsecond are traced by their own values.
+
+    Python's datetime holds microseconds; a pandas-written Parquet timestamp holds
+    nanoseconds. Each row of a three-node pipeline keyed by such a timestamp is traced to
+    its own source row, shows all nine digits, and its Rating Step's level is the one the
+    run matched.
+    """
+
+    BASE = 10**18  # 2001-09-09 01:46:40 UTC
+    TEXTS = (
+        "2001-09-09T01:46:40",
+        "2001-09-09T01:46:40.000000100",
+        "2001-09-09T01:46:40.000000200",
+    )
+
+    def _graph(self, tmp_path):
+        p = tmp_path / "events.parquet"
+        pl.DataFrame(
+            {
+                "at": pl.Series([self.BASE, self.BASE + 100, self.BASE + 200], dtype=pl.Int64).cast(
+                    pl.Datetime("ns")
+                ),
+                "amount": [10, 10, 10],
+            }
+        ).write_parquet(p)
+        rating = {
+            "tables": [
+                {
+                    "factors": ["at"],
+                    "output_column": "at_factor",
+                    "default_value": "9.0",
+                    "entries": [
+                        {"at": text, "value": value}
+                        for text, value in zip(self.TEXTS, (1.1, 1.2, 1.3), strict=True)
+                    ],
+                }
+            ],
+            "combined_outputs": [],
+        }
+        return _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "priced", "df = src.with_columns(premium=pl.col('amount') * 2)"
+                    ),
+                    GraphNode(
+                        id="rating",
+                        data=NodeData(label="rating", nodeType=NodeType.RATING_STEP, config=rating),
+                    ),
+                ],
+                "edges": [_edge("src", "priced"), _edge("priced", "rating")],
+            }
+        )
+
+    @pytest.mark.parametrize("row", [0, 1, 2])
+    def test_each_row_is_traced_to_its_own_rows_and_level(self, tmp_path, row):
+        graph = self._graph(tmp_path)
+        text = self.TEXTS[row]
+
+        result = execute_trace(
+            graph,
+            row_index=row,
+            target_node_id="rating",
+            column="at_factor",
+            row_values={"at": text, "amount": 10, "premium": 20},
+        )
+
+        assert _step_ids(result) == ["src", "priced", "rating"]
+        for step in result.steps:
+            assert step.output_values["at"] == text, step.node_id
+        assert result.output_value == (1.1, 1.2, 1.3)[row]
+        table = _step_by_id(result, "rating").node_detail["tables"][0]
+        assert table["factors"] == [{"column": "at", "value": text}]
+        assert table["status"] == "matched"
+        assert table["selected_value"] == (1.1, 1.2, 1.3)[row]
+
+
 class TestRatingStepMultiplyTables:
     """C.2: data_source -> rating_step(multiple tables, multiply) -> output
 

@@ -27,6 +27,7 @@ from typing import Any, cast
 import polars as pl
 
 from haute._polars_dtypes import column_kind, numpy_float_type
+from haute._temporal_text import exact_rows
 
 __all__ = [
     "AssignmentPhases",
@@ -2848,7 +2849,8 @@ def _row_value(node: ast.AST, row: pl.DataFrame, namespace: Mapping[str, Any]) -
         return _RowValue(reason=f"column_unavailable: {missing[0]}")
     # ``to_list`` gives native values: ``item()`` would return a Series for a
     # List or Array cell.
-    value = row.select(expression.alias(_TRACE_VALUE_COLUMN)).to_series().to_list()[0]
+    # A datetime, time or duration result is its exact text, all nine digits of it.
+    value = exact_rows(row.select(expression.alias(_TRACE_VALUE_COLUMN)))[0][_TRACE_VALUE_COLUMN]
     return _RowValue(value=value)
 
 

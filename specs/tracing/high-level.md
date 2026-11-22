@@ -282,7 +282,10 @@ Out of scope (owned elsewhere, linked where relevant):
   Breakpoint banding enrichment uses the rating runtime's shared interval-eligibility
   parser, so a rule with no usable operator/value pair cannot be credited, and
   compares a date or date-and-time band the way the runtime does: by calendar date
-  or wall-clock time in the column's own time zone.
+  or wall-clock time in the column's own time zone, the wall-clock time to the
+  nanosecond. A traced row's datetime, time and duration values are their exact text,
+  to the nanosecond, so a row is found by its own values, shows all nine digits, and a
+  Rating Step keyed by such a column is explained by the level the run matched.
   Enrichment never patches an individual output cell or invents model features.
   A row that cannot be selected atomically remains unresolved.
 - **Relevant correlation gaps remain first-class evidence.** A node on the
