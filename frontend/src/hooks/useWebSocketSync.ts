@@ -12,6 +12,7 @@ import useGraphStore from "../stores/useGraphStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import { pendingSavesSettled } from "../stores/pendingSaves"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import { gitBranchMayHaveChanged } from "../stores/useGitStore"
 import { constantDrafts } from "../utils/globalConstants"
 import { answer, requestKind, under, type Part } from "../utils/answers"
 import {
@@ -236,6 +237,10 @@ export default function useWebSocketSync({
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const wsUrl = `${protocol}//${window.location.host}/ws/sync`
     let ws: WebSocket | null = null
+    // Whether a socket of this effect has opened before: the branch can have moved while
+    // none was open to be told, so a reconnect reads it again (the first open has the
+    // startup's own read).
+    let connectedBefore = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
     // The socket's life: a session probe answered once the hook has gone does nothing.
@@ -354,6 +359,8 @@ export default function useWebSocketSync({
         setStatus("connected")
         // The form's folder may have changed while no frame could say so.
         formMayHaveChanged()
+        if (connectedBefore) void gitBranchMayHaveChanged()
+        connectedBefore = true
         sendResync(true)
       }
 
@@ -531,6 +538,13 @@ export default function useWebSocketSync({
 
         if (msg.type === "workbench_form_changed") {
           formMayHaveChanged()
+          return
+        }
+
+        if (msg.type === "git_branch_changed") {
+          // Another tab or a terminal moved the project's branch: read it as after this
+          // tab's own git actions, so the toolbar and the branch dialog follow.
+          void gitBranchMayHaveChanged()
           return
         }
 

@@ -358,6 +358,20 @@ const useGitStore = create<GitState>()((set, get) => ({
  *  branch loader's). Async because the loader import must stay dynamic, like
  *  `loadBranches`' — a static import would fold the split chunk back into the
  *  main bundle. */
+/**
+ * The project's branch may have moved, whoever moved it: live sync's `git_branch_changed`
+ * (another tab, a terminal) or a save refused as `branch_changed`. The readiness is read
+ * again as after this tab's own git actions, so the toolbar follows; a project moved off its
+ * working branch opens the dialog that asks what to do, unless another dialog is open; and
+ * the history and the branch list are read again.
+ */
+export async function gitBranchMayHaveChanged(): Promise<void> {
+  const status = await useGitStore.getState().loadStatus({ refresh: true })
+  const store = useGitStore.getState()
+  if (status?.state === "divergent" && store.modal === null) store.openModal("divergence")
+  store.notifyHistoryChanged()
+}
+
 export const resetGitStoreForTests = async (): Promise<void> => {
   resetGitStatusRequestForTests()
   const { resetGitBranchLoaderForTests } = await import("./gitBranchLoader")

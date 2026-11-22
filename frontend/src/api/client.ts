@@ -1176,6 +1176,9 @@ export function savePipeline(
     connection_id: string | null
     /** Makes a repeat of this save, after its answer was lost, write once. */
     operation: string
+    /** The working branch this tab shows: the server refuses the save, writing nothing, when
+     *  the project has moved to another branch since the tab learned of it. */
+    working_branch: string | null
   },
   ticket: KeyedTicket,
   options?: MutationOptions,

@@ -149,6 +149,11 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
 
     Lazy spawn: the ledger is created at the working branch's current tip on
     first use. Returns the ledger branch name.
+
+    Only from the working branch itself, where the ledger's checkout changes no file: a
+    checkout anywhere else (another branch, a detached HEAD) is one the analyst moved the
+    project to, in a terminal or through another tab, and a save never checks out a branch
+    they left, so it is refused naming where the project is.
     """
     _assert_git_repo(cwd)
     _validate_ref_name(working)
@@ -156,11 +161,23 @@ def resolve_ledger(working: str, cwd: Path | None = None) -> str:
 
     if _rev_parse(working, cwd=cwd) is None:
         raise GitDomainError(f"Working branch '{working}' does not exist.")
+    current = _get_current_branch(cwd)
+    if current not in (working, ledger_name(working)):
+        raise GitDomainError(_checkout_elsewhere(current, working))
 
     opening = Operation("open-ledger", cwd or current_project().root, cwd)
     ledger = _open_ledger(opening, working)
     opening.run()
     return ledger
+
+
+def _checkout_elsewhere(current: str, working: str) -> str:
+    """Where the project is checked out, when it is on neither *working* nor its ledger."""
+    where = "an earlier version (a detached HEAD)" if current == "HEAD" else f"'{current}'"
+    return (
+        f"The project is checked out on {where}, not on '{working}', so nothing was recorded "
+        f"on '{working}'. Go back to '{working}', or make {where} the working branch."
+    )
 
 
 def _open_ledger(operation: Operation, working: str) -> str:

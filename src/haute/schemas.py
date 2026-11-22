@@ -2038,6 +2038,14 @@ class SavePipelineRequest(DocumentRequest):
             "that committed is answered with that save's response."
         ),
     )
+    working_branch: BoundedName | None = Field(
+        default=None,
+        description=(
+            "The working branch the saving tab shows. A save naming one is refused before "
+            "anything is written when the project records another, or is checked out on "
+            "neither it nor its ledger; a save from no tab (the assistant's) names none."
+        ),
+    )
 
     @model_validator(mode="after")
     def _active_source_is_a_source(self) -> SavePipelineRequest:

@@ -1575,3 +1575,76 @@ class TestFilesChangedOutsideHaute:
 
         assert refused.status_code == 400
         assert (tmp_path / "rates.csv").read_text() == "rate\n9\n"
+
+
+# ---------------------------------------------------------------------------
+# Open tabs learn when the project changes branch, whoever changed it
+# ---------------------------------------------------------------------------
+
+
+class TestOpenTabsLearnTheBranch:
+    _DEV = "pricing/test-user/dev"
+    _OTHER = "pricing/test-user/other"
+
+    def test_a_switch_through_a_route_tells_the_open_tabs(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute._git import create_working_branch, set_working_branch
+
+        set_working_branch(self._DEV, tmp_path, create=True, cwd=tmp_path)
+        create_working_branch(self._OTHER, tmp_path, cwd=tmp_path)
+        monkeypatch.setattr(server, "_branch_told", None)
+        server._tell_branch_change()  # the baseline the branch watcher reads at startup
+        told: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("git.branch.changed", told.append)
+        try:
+            switched = client.post("/api/git/working-branch", json={"branch": self._OTHER})
+            assert switched.status_code == 200, switched.text
+            server._tell_branch_change()  # nothing more has changed: nothing more is told
+        finally:
+            unsubscribe()
+
+        assert told == [
+            {"checkout": f"refs/heads/{self._OTHER}-save", "working_branch": self._OTHER}
+        ]
+
+    def test_a_checkout_in_a_terminal_tells_the_open_tabs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`git switch -c` changes no file the file watcher sees: the branch watcher reads
+        the git directory's HEAD."""
+        import asyncio
+
+        from haute import server
+        from haute._event_bus import default_bus
+
+        monkeypatch.setattr(server, "_branch_told", None)
+        told: list[dict[str, object]] = []
+
+        async def watch_while_switching() -> None:
+            watcher = asyncio.create_task(server._branch_watcher())
+            try:
+                while server._branch_told is None:
+                    await asyncio.sleep(0.02)
+                # The watch starts after the baseline: switch until it has seen one.
+                for attempt in range(40):
+                    if told:
+                        return
+                    if attempt == 0:
+                        _git(tmp_path, "switch", "-q", "-c", "mine")
+                    else:
+                        _git(tmp_path, "switch", "-q", "main" if attempt % 2 else "mine")
+                    await asyncio.sleep(0.25)
+            finally:
+                watcher.cancel()
+
+        unsubscribe = default_bus.subscribe("git.branch.changed", told.append)
+        try:
+            asyncio.run(watch_while_switching())
+        finally:
+            unsubscribe()
+
+        assert told, "no branch change was told"
+        assert told[0]["checkout"] in ("refs/heads/mine", "refs/heads/main")

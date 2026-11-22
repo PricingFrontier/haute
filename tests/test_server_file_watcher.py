@@ -2126,8 +2126,12 @@ class TestFileWatcherRecovery:
                 restarted.set()
                 await asyncio.Future()
 
+            async def _no_branch_watcher() -> None:
+                return
+
             with (
                 patch("haute.server._file_watcher", _flaky_file_watcher),
+                patch("haute.server._branch_watcher", _no_branch_watcher),
                 patch("haute.server._WATCHER_RESTART_DELAY_SECONDS", 0),
             ):
                 task = asyncio.create_task(_watcher_forever())
@@ -2152,7 +2156,13 @@ class TestFileWatcherRecovery:
             nonlocal calls
             calls += 1
 
-        with patch("haute.server._file_watcher", _clean_file_watcher):
+        async def _no_branch_watcher() -> None:
+            return
+
+        with (
+            patch("haute.server._file_watcher", _clean_file_watcher),
+            patch("haute.server._branch_watcher", _no_branch_watcher),
+        ):
             asyncio.run(_watcher_forever())
 
         assert calls == 1

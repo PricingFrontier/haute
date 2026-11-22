@@ -802,7 +802,10 @@ be read or built, the server sends a `parse_error` holding that failure's answer
 or an incident under which the exception is logged); that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents. A change on disk to a file of the workbench's form
 folder is announced as `workbench_form_changed`, naming the folder; the workbench reads
-it again.
+it again. A change of the project's checked-out branch, or of the working branch the clone
+records, is announced as `git_branch_changed`, whoever made it: a git route once it has
+answered, another tab, or a checkout in a terminal, which the server sees on the git
+directory's HEAD although it may change no file. Each tab reads its git readiness again.
 
 ## Minimal transactional pipeline repair
 

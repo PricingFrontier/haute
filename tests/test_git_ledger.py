@@ -84,6 +84,32 @@ class TestResolveLedger:
 
 
 class TestCommitSave:
+    @pytest.mark.parametrize("elsewhere", ["colleague", None], ids=["another-branch", "detached"])
+    def test_a_save_never_checks_out_a_branch_the_analyst_left(
+        self, repo: Path, elsewhere: str | None
+    ) -> None:
+        """The analyst moved the project in a terminal (`git checkout colleague`, or to an
+        earlier version): the save is refused naming where the project is, and the
+        checkout, the ledger and the file written stay as they are."""
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        ledger_tip = _git(repo, "rev-parse", LEDGER)
+        if elsewhere is None:
+            _git(repo, "checkout", "-q", "--detach", LEDGER)
+        else:
+            _git(repo, "checkout", "-q", "-b", elsewhere, "main")
+        head = _git(repo, "rev-parse", "--symbolic-full-name", "HEAD")
+
+        with pytest.raises(GitDomainError) as refused:
+            _write_and_save(repo, WORKING, {"rating.py": "# written while elsewhere\n"})
+
+        where = "an earlier version (a detached HEAD)" if elsewhere is None else f"'{elsewhere}'"
+        assert str(refused.value).startswith(
+            f"The project is checked out on {where}, not on '{WORKING}'"
+        )
+        assert _git(repo, "rev-parse", "--symbolic-full-name", "HEAD") == head
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip
+        assert (repo / "rating.py").read_text() == "# written while elsewhere\n"
+
     def test_one_save_one_commit_on_ledger(self, repo: Path) -> None:
         sha = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         assert sha is not None
@@ -660,10 +686,10 @@ class TestBaton:
 
         # the designed move-then-edit sequence (S13): materialise M1 first,
         # THEN edit, then save — the spawn checkout is tree-identical to M1 so
-        # the freshly-written save content survives it
+        # the freshly-written save content survives it. A save opens the ledger only
+        # from its working branch, never from a checkout elsewhere.
         child = "pricing-child"
-        _git(repo, "checkout", m1)
-        _git(repo, "branch", child, m1)
+        _git(repo, "checkout", "-b", child, m1)
         c1 = _write_and_save(repo, child, {"rating.py": "# child edit\n"})
         assert c1 is not None
 
@@ -676,7 +702,7 @@ class TestBaton:
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         m1 = merge_to_working(WORKING, "M1", cwd=repo)
         child = "pricing-child"
-        _git(repo, "branch", child, m1)
+        _git(repo, "checkout", "-b", child, m1)
         _write_and_save(repo, child, {"rating.py": "# child\n"})
         assert check_invariants(child, cwd=repo) == []
         merge_to_working(child, "child M1", cwd=repo)

@@ -128,6 +128,10 @@ deleting, and restoring do, each behind role-appropriate confirmation (switch ha
 persistable "don't ask again", and a preference that cannot be saved is reported in an
 error toast while the switch goes ahead; archiving the current branch with tracked project
 changes not yet saved redirects to "commit a milestone first" instead of proceeding).
+An open tab follows the project's branch when another tab or a terminal moves it: the
+server says so over live sync, and the tab reads its readiness again, so the toolbar shows
+the new branch and a project moved off its working branch opens its dialog without a reload.
+A save from a tab that has not heard yet is refused naming both branches, the edits kept.
 A switch, opening a new branch, Catch up, Spin off a copy or an archive refused over files
 changed outside Haute (a CSV saved in Excel, or a file copied in where the destination has
 one) asks, naming the files, whether to record them as a save or put them back as version

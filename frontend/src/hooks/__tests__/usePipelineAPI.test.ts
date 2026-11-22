@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { makeSavePipelineResponse } from "../../test-utils/factories"
+import { makeGitWorkingBranch, makeSavePipelineResponse } from "../../test-utils/factories"
+import useGitStore from "../../stores/useGitStore"
 import type { PreviewNodeResponse } from "../../api/types"
 import { makePreviewInputsResponse, makePreviewResponse, nodeTarget, rootAddresses, targetNodeId } from "../../test-utils/factories"
 import type { Mock } from "vitest"
@@ -45,11 +46,16 @@ vi.mock("../../api/client", () => ({
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
+    body?: unknown
+    rawDetail?: unknown
 
-    constructor(message: string, status: number, detail?: string) {
+    // As the real client's: a structured refusal's detail, parsed, is its rawDetail.
+    constructor(message: string, status: number, detail?: string, body?: unknown, rawDetail?: unknown) {
       super(message)
       this.status = status
       this.detail = detail
+      this.body = body
+      this.rawDetail = rawDetail
     }
   },
   ApiTimeoutError: class ApiTimeoutError extends Error {
@@ -638,6 +644,32 @@ describe("usePipelineAPI", () => {
       expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ connection_id: "tab-1" }), expect.anything())
     } finally {
       setSyncConnectionId(null)
+    }
+  })
+
+  it("names the working branch the tab shows, and a save refused as branch_changed keeps the edit and reads the branch again", async () => {
+    mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], source_revision: "revision-load" }))
+    const moved = "This tab shows the branch 'dev', but the project is on 'other' now, so nothing was saved. Your changes are still here."
+    mockSave.mockRejectedValue(new ApiError("HTTP 409", 409, JSON.stringify({ error_code: "branch_changed", message: moved }), undefined, { error_code: "branch_changed", message: moved }))
+    const { status, loadStatus } = useGitStore.getState()
+    const readStatus = vi.fn(async () => null)
+    useGitStore.setState({ status: { ...makeGitWorkingBranch(), working_branch: "dev" }, loadStatus: readStatus })
+    try {
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.getState().setNodes([makeNode("n1")])
+
+      let saved: boolean | undefined
+      await act(async () => { saved = await result.current.handleSave() })
+
+      expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ working_branch: "dev" }), expect.anything())
+      expect(saved).toBe(false)
+      expect(useGraphStore.getState().isDirty()).toBe(true)
+      expect(readStatus).toHaveBeenCalledWith({ refresh: true })
+      expect(useToastStore.getState().toasts.map((t) => t.text)).toContain(`Failed to save pipeline: ${moved}`)
+    } finally {
+      useGitStore.setState({ status, loadStatus })
     }
   })
 

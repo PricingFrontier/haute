@@ -148,3 +148,14 @@ names them. It also names a file you copied in where the other branch has one of
 
 Recording before **Catch up** makes a save the shared branch does not have, so Catch up then
 asks you to **Spin off a copy**, which keeps your save on a copy beside the shared line.
+
+## Another tab or a terminal changes branch
+
+When another tab switches the project's branch, or you check out a branch in a terminal, every
+open tab follows: its toolbar shows the new branch without a reload. A project moved off its
+working branch, as by `git checkout` in a terminal, opens the dialog that asks whether to go
+back to your working branch or make the new one your working branch.
+
+A save made from a tab before it has followed is refused, naming both branches. Nothing is
+written, and your changes stay in the tab. Look at the branch the toolbar now shows, then save
+again.

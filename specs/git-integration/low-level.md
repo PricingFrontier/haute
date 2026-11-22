@@ -304,7 +304,13 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 (a pathspec commit would otherwise fail with git's "cannot do a partial commit during a
 merge") → `resolve_ledger(working)` (find-or-
 lazily-spawn the ledger at the working branch's current tip, checkout if not already
-current: the `open-ledger` operation, nothing when both are so already) → each path given
+current: the `open-ledger` operation, nothing when both are so already; only from the working
+branch itself, where the checkout changes no file: with HEAD on another branch or detached,
+which the analyst moved it to in a terminal or another tab, it refuses, "The project is
+checked out on '<branch>' | an earlier version (a detached HEAD), not on '<working>', so
+nothing was recorded on '<working>'. Go back to '<working>', or make '<branch>' the working
+branch.", which a save's capture answers as its warning, so a save never checks out a branch
+the analyst left; a restore refuses the same way) → each path given
 git's spelling (`_git_spelling`): git on Windows and macOS ignores letter case on disk but
 compares paths letter for letter, so after `rating` is renamed `Rating` it keeps `rating` and
 finds nothing under `Rating/main.py`; one `ls-files --cached` of `:(icase,literal)<top
@@ -579,6 +585,20 @@ equals the last-merged ledger commit's tree, not an ancestor relationship.
     out the new ledger (its tree matches old HEAD's, so uncommitted edits carry across
     untouched), rewinds the spawning branch's ledger to the fork point, and records the new
     working branch.
+
+**Open tabs and the branch.** The server's branch watcher (`server._branch_watcher`) watches
+the git directory's `HEAD` (`rev-parse --absolute-git-dir`, not recursively), which every
+checkout rewrites, a terminal's `git switch -c` included, which changes no file the file
+watcher sees, and which that watcher skips with `.git`. `_tell_branch_change` reads the
+checkout (`symbolic-ref -q HEAD`, else HEAD's commit) and the recorded working branch, and
+publishes `git.branch.changed` (`{checkout, working_branch}`) when they differ from what it
+last told; its first reading, at startup, is the baseline. A change while a git route holds
+the watcher pause is skipped there and told once the route has answered (`_broadcast_tree_change`
+calls it), so a tab never reads an operation half done. A project that has no repository
+when the server starts is not watched. Each tab then reads its readiness again
+([frontend-git-ui](../frontend-git-ui/low-level.md)). The pipeline save names the branch the
+saving tab shows and is refused before anything is written when the project has moved
+([server-api](../server-api/low-level.md), `POST /api/pipeline/save`).
 
 **Files changed outside Haute (`_assert_way_clear`, `GitUnrecordedFilesError`,
 `settle_unrecorded`).** Every operation that replaces the project's files runs one check
@@ -1256,6 +1276,14 @@ process failures, and precise ref-movement races deterministic.
   `settle` recording the file, and a settled path outside the project refused 400. In
   `tests/test_git_operations.py`, Create & Move carrying the analyst's edit with none of it
   in its record or touched by a put-back, and a switch refusing it before any record.
+- **Open tabs and the branch** — in `tests/test_git_ledger.py`, a save with HEAD on another
+  branch or detached refused naming where the project is, with the checkout, the ledger and
+  the file as they were; in `tests/test_save_git_serialization.py`, a save from a tab after
+  another tab switched, a terminal checkout and a terminal `git switch -c`, each refused
+  `branch_changed` naming both, writing nothing and leaving the checkout alone, and one from
+  a tab on the project's branch recorded; in `tests/test_git_routes.py`, a switch through a
+  route told once to the open tabs, and a `git switch -c` in a terminal told by the branch
+  watcher.
 - **`tests/test_git_letter_case.py`** — a save after the pipeline folder is renamed to other
   letter case, an upload into a renamed data folder, a replace of a renamed data file and a
   request naming a folder in other capitals, each recorded under git's spelling with nothing

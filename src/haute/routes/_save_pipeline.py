@@ -376,6 +376,43 @@ def resolve_definition_file(
         raise ForbiddenError("Cannot access paths outside the project root") from None
 
 
+def _refuse_another_branch(root: Path, shown: str) -> None:
+    """Refuse, before anything is written, a save from a tab showing the working branch
+    *shown* when the project has moved on: another tab or a terminal switched it, so the
+    save would land on another branch than the tab names, or the checkout is on neither the
+    branch nor its ledger, where the capture would have to check out a branch the analyst
+    left. The unsaved work stays in the tab."""
+    from haute._git_core import _get_current_branch, _is_git_repo, ledger_name
+    from haute._git_state import read_working_branch
+
+    recorded = read_working_branch(root)
+    if recorded is None and not _is_git_repo(root):
+        return
+    if recorded != shown:
+        now = "has no working branch" if recorded is None else f"is on '{recorded}'"
+        raise ConflictError(
+            {
+                "error_code": "branch_changed",
+                "message": (
+                    f"This tab shows the branch '{shown}', but the project {now} now, so "
+                    "nothing was saved. Your changes are still here."
+                ),
+            }
+        )
+    current = _get_current_branch(root)
+    if current not in (recorded, ledger_name(recorded)):
+        where = "an earlier version (a detached HEAD)" if current == "HEAD" else f"'{current}'"
+        raise ConflictError(
+            {
+                "error_code": "branch_changed",
+                "message": (
+                    f"The project is checked out on {where}, not on '{recorded}', so nothing "
+                    "was saved. Your changes are still here."
+                ),
+            }
+        )
+
+
 def capture_save_in_ledger(
     root: Path, rel_paths: list[str], warnings: list[str], message: str | None = None
 ) -> LedgerCapture:
@@ -819,6 +856,8 @@ class SavePipelineService:
         self.replayed = False
         self.recovered = None
         with repository_mutation(self._root):
+            if body.working_branch is not None:
+                _refuse_another_branch(self._root, body.working_branch)
             py_path = self._resolve_source_file(body.source_file)
             source_file = py_path.relative_to(self._root).as_posix()
             left = read_record(self._root, source_file)

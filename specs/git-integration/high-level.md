@@ -298,6 +298,16 @@ and refuses: "<files> are open in another program, so Haute could not replace th
 them and try again." A file held so tightly git cannot even read it, as Excel holds an open
 CSV, cannot be checked until it is closed, so the clone reads as interrupted until Retry.
 
+**Open tabs and the branch.** Every open tab learns when the project changes branch, whoever
+changed it: a switch in another tab, or a checkout in a terminal, which the server sees on
+the git directory's HEAD although it may change no file. The tab reads its readiness again,
+so its toolbar follows, and a project moved off its working branch opens the dialog that
+asks whether to go back or adopt where it is. A save from a tab names the working branch the
+tab shows, and is refused before anything is written, naming both, when the project records
+another or is checked out on neither that branch nor its ledger; the unsaved work stays in
+the tab. A save never checks out a branch the analyst left: its capture is made only from the
+working branch or its ledger, as `haute ci update`'s is.
+
 **Files changed outside Haute.** A file edited by hand, a rate changed in Excel, is on disk
 as version history does not have it, and the editor's Save, which writes only what the canvas
 and the form hold, never records it. So every operation that replaces the project's files (a

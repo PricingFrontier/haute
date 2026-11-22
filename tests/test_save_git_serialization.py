@@ -496,3 +496,73 @@ def test_a_save_runs_none_of_the_projects_hooks(project: Path, refuses: bool) ->
     assert response.git_sha is not None
     assert _blob(project, response.git_sha, "main.py") == written.rstrip("\n")
     assert not [warning for warning in response.warnings if "capture" in warning]
+
+
+# ---------------------------------------------------------------------------
+# A save from a tab that shows another branch than the project is on
+# ---------------------------------------------------------------------------
+
+
+def _refusal(exc: pytest.ExceptionInfo[Exception]) -> dict[str, Any]:
+    detail = getattr(exc.value, "detail", None)
+    assert isinstance(detail, dict), exc.value
+    return detail
+
+
+@pytest.mark.parametrize(
+    ("moved", "said"),
+    [
+        (
+            "switched",
+            f"This tab shows the branch '{WORKING}', but the project is on 'other' now, so "
+            "nothing was saved. Your changes are still here.",
+        ),
+        (
+            "checked-out",
+            f"The project is checked out on 'colleague', not on '{WORKING}', so nothing was "
+            "saved. Your changes are still here.",
+        ),
+        (
+            "new-branch",
+            f"The project is checked out on 'mine', not on '{WORKING}', so nothing was saved. "
+            "Your changes are still here.",
+        ),
+    ],
+)
+def test_a_save_from_a_tab_the_project_moved_away_from_writes_nothing(
+    project: Path, moved: str, said: str
+) -> None:
+    """Another tab switched the project, or the analyst checked out another branch or made
+    one in a terminal: the save names both, writes nothing and leaves the checkout alone."""
+    from haute._git import create_working_branch
+
+    # The tab's request, made while it showed the project as it was.
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    if moved == "switched":
+        create_working_branch("other", project, cwd=project)
+        set_working_branch("other", project, cwd=project)
+    elif moved == "checked-out":
+        _git(project, "checkout", "-q", "-b", "colleague", "main")
+    else:
+        _git(project, "switch", "-q", "-c", "mine")
+    head = _git(project, "rev-parse", "--symbolic-full-name", "HEAD")
+    tips = _git(project, "for-each-ref", "refs/heads/")
+    on_disk = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+
+    with pytest.raises(save_pipeline.ConflictError) as refused:
+        SavePipelineService(project_root=project).save(request)
+
+    assert _refusal(refused) == {"error_code": "branch_changed", "message": said}
+    after = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+    assert after == on_disk
+    assert _git(project, "rev-parse", "--symbolic-full-name", "HEAD") == head
+    assert _git(project, "for-each-ref", "refs/heads/") == tips
+
+
+def test_a_save_from_a_tab_on_the_project_s_branch_is_recorded(project: Path) -> None:
+    tip = _git(project, "rev-parse", f"{WORKING}-save")
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+
+    SavePipelineService(project_root=project).save(request)
+
+    assert _git(project, "rev-parse", f"{WORKING}-save") != tip
