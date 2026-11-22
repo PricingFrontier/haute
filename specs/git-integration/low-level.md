@@ -66,7 +66,23 @@ used as a branch name: <rule>. Use letters, numbers, dashes and slashes.". A nam
 types (create, adopt-create, undelete under its own or another name) also passes
 `_assert_new_branch_name` first: the same rules, then `git check-ref-format --branch` as the
 authority, a name it refuses that the rules let through answering "git does not accept it as
-a branch name". Both run before any git command can fail on the name.
+a branch name". It then refuses, on every platform, a name with a part Windows keeps for a
+device (`is_windows_reserved_filename`: `con`, `aux.v2`), "'<name>' can't be used as a branch
+name: Windows keeps '<device>' for a device, so the branch could not exist there. Choose
+another name.", and a name that cannot exist beside a local branch (`_branch_in_the_way`): git
+keeps each branch as a file under `refs/heads/`, so a branch named as a folder of the name or
+of its ledger (`motor` for `motor/renewal`), or one inside a folder either would be
+(`team/home` for `team`), compared in any letter case as git on Windows and macOS keeps those
+files, answers "'<name>' can't be used as a branch name: the branch '<existing>' exists, and
+git can't keep both it and '<name>', since one would be a folder of the other. Choose another
+name." Both refusals say "another name", which is what opens the branch manager's name box
+for an undelete. A branch of exactly the name is each caller's "already exists". Un-archive
+refuses a branch in the way of the restored name the same way ("Cannot restore '<name>':
+… Delete '<existing>' first: Deleted keeps it, to restore under another name."), and
+`_free_pair_name` (archive's `archive/<X>`, Spin off's aside) passes over a dated candidate
+with a branch beneath it and refuses, naming it, a branch named as a folder of the stem
+(`archive`), which is in the way of every candidate. All of these run before any git command
+can fail on the name.
 
 **Content-addressed cache keys**: every `@lru_cache`-decorated inner function
 (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
@@ -1065,7 +1081,9 @@ process failures, and precise ref-movement races deterministic.
   serialized mutator.
 - **`tests/test_git_ledger.py`**, **`tests/test_git_working_branches.py`**, **`tests/test_git_working_tree.py`**, **`tests/test_git_remotes.py`** and **`tests/test_git_core_commands.py`** — the primary unit suite for the Git facade and domain
   modules, organized into
-  focused test classes covering: branch-category naming, ledger
+  focused test classes covering: branch-category naming, a typed name beside a branch git
+  cannot keep with it (beneath, above, in another case, through the ledger) and a device
+  name refused by name, an un-archive, an archive and an undelete into such a name, ledger
   resolve/spawn, `commit_save` (including idempotent-no-op saves, a
   filename with glob characters committing only itself, a save during a merge refused with
   the reason and a status check git cannot answer raising), a typed branch name refused

@@ -39,6 +39,7 @@ from haute._git import (
     restore_version,
     restore_working_pair,
     set_working_branch,
+    undelete_working_pair,
     working_branch_status,
     working_branches,
     working_milestones,
@@ -1067,6 +1068,49 @@ class TestBranchManager:
         with pytest.raises(GitDomainError, match="already exists"):
             restore_working_pair(archived, repo, cwd=repo)
 
+    def test_restore_refuses_a_branch_in_the_way_naming_it(self, repo: Path) -> None:
+        """``squad/home`` archived, then a branch ``squad`` made: the restore cannot put
+        ``squad/home`` back beside it, and says so instead of "Operation failed"."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("squad/home", repo, cwd=repo)
+        archived = archive_working_pair("squad/home", repo, cwd=repo).archived_as
+        _git(repo, "branch", "squad", "main")
+        with pytest.raises(GitDomainError) as refused:
+            restore_working_pair(archived, repo, cwd=repo)
+        assert str(refused.value) == (
+            "Cannot restore 'squad/home': the branch 'squad' exists, and git can't keep both "
+            "it and 'squad/home', since one would be a folder of the other. Delete 'squad' "
+            "first: Deleted keeps it, to restore under another name."
+        )
+        assert self._branch_exists(repo, archived)
+
+    def test_archive_beside_a_branch_named_archive_is_refused_naming_it(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _git(repo, "branch", "archive", "main")
+        with pytest.raises(GitDomainError, match="the branch 'archive' exists"):
+            archive_working_pair(WORKING, repo, cwd=repo)
+        assert self._branch_exists(repo, WORKING)
+
+    def test_archive_takes_a_dated_name_past_a_branch_beneath_its_own(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _git(repo, "branch", f"archive/{WORKING}/old", "main")
+        result = archive_working_pair(WORKING, repo, cwd=repo)
+        assert result.archived_as.startswith(f"archive/{WORKING}-")
+        assert self._branch_exists(repo, result.archived_as)
+
+    @pytest.mark.parametrize("as_name", [None, "grp/y"])
+    def test_undelete_into_a_name_beside_a_branch_offers_another_name(
+        self, repo: Path, as_name: str | None
+    ) -> None:
+        """The branch manager opens its name box when the refusal says "another name"."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("grp/x", repo, cwd=repo)
+        entry = delete_working_pair("grp/x", repo, confirm=True, cwd=repo).trash_id
+        _git(repo, "branch", "grp", "main")
+        with pytest.raises(GitDomainError, match="the branch 'grp' exists.*another name"):
+            undelete_working_pair(entry, repo, as_name=as_name, cwd=repo)
+        assert undelete_working_pair(entry, repo, as_name="grp-x", cwd=repo).branch == "grp-x"
+
     def test_restore_refuses_non_archived(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
         with pytest.raises(GitDomainError, match="not an archived branch"):
@@ -1338,6 +1382,45 @@ class TestCreateWorkingBranch:
             "Use letters, numbers, dashes and slashes."
         )
         assert _git(repo, "for-each-ref", "refs/heads/") == before
+
+    @pytest.mark.parametrize(
+        ("existing", "name"),
+        [
+            ("motor", "motor/renewal"),
+            ("team/home", "team"),
+            ("Motor", "motor/renewal"),
+            ("cover-save/x", "cover"),
+        ],
+        ids=["beneath", "above", "another-case", "the-ledger"],
+    )
+    def test_a_name_that_cannot_exist_beside_a_branch_is_refused_naming_it(
+        self, repo: Path, existing: str, name: str
+    ) -> None:
+        """Git keeps each branch as a file, so ``motor`` and ``motor/renewal`` cannot both
+        exist; git's "cannot lock ref" reached the analyst as "Operation failed"."""
+        _fork_setup(repo)
+        _git(repo, "branch", existing, "main")
+        before = _git(repo, "for-each-ref", "refs/heads/")
+        with pytest.raises(GitDomainError) as refused:
+            create_working_branch(name, repo, cwd=repo)
+        assert str(refused.value) == (
+            f"'{name}' can't be used as a branch name: the branch '{existing}' exists, and "
+            f"git can't keep both it and '{name}', since one would be a folder of the other. "
+            "Choose another name."
+        )
+        assert _git(repo, "for-each-ref", "refs/heads/") == before
+
+    @pytest.mark.parametrize(("name", "device"), [("con", "con"), ("team/aux.v2", "aux")])
+    def test_a_name_windows_keeps_for_a_device_is_refused_by_name(
+        self, repo: Path, name: str, device: str
+    ) -> None:
+        _fork_setup(repo)
+        with pytest.raises(GitDomainError) as refused:
+            create_working_branch(name, repo, cwd=repo)
+        assert str(refused.value) == (
+            f"'{name}' can't be used as a branch name: Windows keeps '{device}' for a device, "
+            "so the branch could not exist there. Choose another name."
+        )
 
     def test_git_decides_a_typed_name_the_named_rules_let_through(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch

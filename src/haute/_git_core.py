@@ -942,12 +942,23 @@ def _refuse_too_large_for_history(paths: list[str], root: Path, retry: str) -> N
 def _free_pair_name(stem: str, *, bare_first: bool, cwd: Path | None = None) -> str:
     """The first of ``<stem>`` (when *bare_first*), ``<stem>-<YYYYMMDD>``,
     ``<stem>-<YYYYMMDD>-2``, … for which BOTH the name and its ledger are free, so the pair
-    collides with no existing branch on either ref."""
+    collides with no existing branch on either ref, nor sits beside one git cannot keep
+    with it.
+
+    A branch named as a folder of *stem* (``archive`` for ``archive/<X>``) is in the way of
+    every candidate, since they differ only in their last part: that is refused, naming it."""
+    above = _branch_in_the_way(stem, cwd, above_only=True)
+    if above is not None:
+        raise GitDomainError(
+            f"Haute can't make the branch '{stem}': {_clash_words(stem, above)}. "
+            f"Delete '{above}' first: Deleted keeps it, to restore under another name."
+        )
 
     def taken(name: str) -> bool:
         return (
             _rev_parse(name, cwd=cwd) is not None
             or _rev_parse(ledger_name(name), cwd=cwd) is not None
+            or _branch_in_the_way(name, cwd) is not None
         )
 
     if bare_first and not taken(stem):
@@ -1176,10 +1187,14 @@ def _branch_name_refused(name: str, problem: str) -> GitDomainError:
 
 
 def _assert_new_branch_name(name: str, cwd: Path | None = None) -> None:
-    """Refuse a typed branch name git cannot use, naming the rule it breaks.
+    """Refuse a typed branch name git cannot use, or could not keep beside the branches
+    there are, naming the rule it breaks or the branch in its way.
 
-    ``git check-ref-format --branch`` is the authority: a name the in-process rules let
-    through is still refused, in words, if git would not take it."""
+    ``git check-ref-format --branch`` is the authority on the name's form: a name the
+    in-process rules let through is still refused, in words, if git would not take it. It
+    says nothing of the branches that exist, so the clash is checked here too."""
+    from haute._config_io import is_windows_reserved_filename
+
     problem = _branch_name_problem(name)
     if problem is None:
         accepted, checked = _run_git_ok("check-ref-format", "--branch", name, cwd=cwd)
@@ -1187,6 +1202,52 @@ def _assert_new_branch_name(name: str, cwd: Path | None = None) -> None:
             problem = "git does not accept it as a branch name"
     if problem is not None:
         raise _branch_name_refused(name, problem)
+    # Every git keeps a branch as a file, so a part Windows keeps for a device cannot name
+    # one there: refused on every platform, as a file of that name is, to keep the project
+    # one a colleague on Windows can fetch.
+    device = next((part for part in name.split("/") if is_windows_reserved_filename(part)), None)
+    if device is not None:
+        raise GitDomainError(
+            f"'{name}' can't be used as a branch name: Windows keeps "
+            f"'{device.split('.', 1)[0]}' for a device, "
+            "so the branch could not exist there. Choose another name."
+        )
+    in_the_way = _branch_in_the_way(name, cwd)
+    if in_the_way is not None:
+        raise GitDomainError(
+            f"'{name}' can't be used as a branch name: {_clash_words(name, in_the_way)}. "
+            "Choose another name."
+        )
+
+
+def _local_branch_names(cwd: Path | None) -> list[str]:
+    raw = _run_git("for-each-ref", "--format=%(refname:strip=2)", "refs/heads/", cwd=cwd)
+    return raw.splitlines()
+
+
+def _branch_in_the_way(name: str, cwd: Path | None, *, above_only: bool = False) -> str | None:
+    """The local branch a new branch *name* and its ledger cannot exist beside: one named as
+    a folder of either (``motor`` for ``motor/renewal``), or, unless *above_only*, one inside
+    a folder either would be (``team/home`` for ``team``).
+
+    Git keeps each branch as a file under ``refs/heads/``, so a name cannot be a file and a
+    folder at once, and git's own refusal ("cannot lock ref") reaches the analyst only as an
+    operation that failed. Compared in any letter case, as git on Windows and macOS keeps
+    those files. A branch of exactly the name is "already exists", the callers' own check."""
+    wanted = [candidate.casefold() for candidate in (name, ledger_name(name))]
+    for existing in _local_branch_names(cwd):
+        folded = existing.casefold()
+        for want in wanted:
+            if want.startswith(f"{folded}/") or (not above_only and folded.startswith(f"{want}/")):
+                return existing
+    return None
+
+
+def _clash_words(name: str, existing: str) -> str:
+    return (
+        f"the branch '{existing}' exists, and git can't keep both it and '{name}', since one "
+        "would be a folder of the other"
+    )
 
 
 def _assert_eligible_working(branch: str) -> None:

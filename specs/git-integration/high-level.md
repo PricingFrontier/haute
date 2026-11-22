@@ -123,7 +123,12 @@ denylist of characters that could be interpreted as a CLI flag or contain contro
 characters, closing an argument-injection path from user input into the `git` CLI. A
 branch name the analyst types is refused before any ref is made when git could not use
 it, naming the rule it breaks (a space, `..`, a part starting with `.` or ending in
-`.lock`, `//`, a trailing `/`, `@{`); git's own `check-ref-format --branch` decides.
+`.lock`, `//`, a trailing `/`, `@{`); git's own `check-ref-format --branch` decides. A name
+git could not keep beside a branch that exists is refused naming that branch: git keeps
+each branch as a file, so `motor` and `motor/renewal` cannot both exist, in any letter case.
+So is a name Windows keeps for a device (`con`), on every platform. Restoring an archived
+or deleted branch into such a name is refused in the same words, and a deleted branch is
+then offered another name.
 While a merge, rebase, cherry-pick or revert started outside Haute is in progress, a save's
 capture, a milestone, a restore, Catch up and Spin off each refuse with that reason rather
 than git's own; the save itself still lands on disk, its capture warning saying why.

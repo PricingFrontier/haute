@@ -16,6 +16,8 @@ from haute._git_core import (
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _branch_in_the_way,
+    _clash_words,
     _free_pair_name,
     _get_current_branch,
     _list_branches_with_tips,
@@ -336,6 +338,12 @@ def restore_working_pair(
     restored_ledger = ledger_name(restored)
     if _rev_parse(restored_ledger, cwd=cwd) is not None:
         raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
+    in_the_way = _branch_in_the_way(restored, cwd)
+    if in_the_way is not None:
+        raise GitDomainError(
+            f"Cannot restore '{restored}': {_clash_words(restored, in_the_way)}. "
+            f"Delete '{in_the_way}' first: Deleted keeps it, to restore under another name."
+        )
 
     ledger_tip = _rev_parse(ledger_name(archived_working), cwd=cwd)
     unarchive = Operation("unarchive", project_root, cwd)

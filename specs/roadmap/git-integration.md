@@ -9,9 +9,9 @@ command leaves behind. The packages below come from the review plan's runs
 of 10 November 2026. Each was reproduced on Windows in a scratch
 repository: `VCS-03` with nothing injected into Haute, and
 `VCS-05` in a browser with two pages open on one project.
-`VCS-06` and `VCS-07` come from the main session's runs of 11 November
-behind the plan's sweep of damaged requests: folders and files renamed on
-disk, and branch names typed through the routes, with nothing injected.
+`VCS-06` comes from the main session's runs of 11 November behind the
+plan's sweep of damaged requests: folders and files renamed on disk, with
+nothing injected.
 `VCS-08` comes from the main session's runs of the same day: a tracked
 file edited by hand, then each operation that replaces working files.
 `VCS-09` comes from the plan's browser sweep of what happens around an
@@ -25,7 +25,6 @@ tabs and with a terminal.
 | VCS-03 | Planned | P2 | A leftover git lock, a folder git does not trust, a damaged git config and a commit that cannot be signed are each reported with their cause, not as "Not a git repository", a missing identity or "Git refused this". |
 | VCS-05 | Planned | P3 | A branch delete is refused when the branch is no longer as its confirmation described it. |
 | VCS-06 | Planned | P2 | A save, an upload and a replace reach version history after their folder or file is renamed to another letter case, and a capture that records nothing for a changed file says so. |
-| VCS-07 | Planned | P2 | A branch name that cannot exist beside another branch is refused naming the clash, when a branch is created, restored or brought back from Deleted. |
 | VCS-08 | Planned | P2 | A switch, a catch-up, an archive and a new branch that meet a file edited by hand name it and offer to record it or put it back, instead of "Operation failed" or advice that does not apply. |
 | VCS-09 | Planned | P2 | An open tab learns when the project changes branch, and a save made from a tab that shows another branch is refused naming both, instead of landing on the other branch, moving the checkout back or leaving its files uncommitted with "see server log". |
 
@@ -198,59 +197,6 @@ and names the file.
 `src/haute/_git_transactions.py::_literal`;
 `src/haute/routes/_save_pipeline.py::capture_save_in_ledger`;
 `src/haute/_git_setup.py::set_working_branch`.
-
-### VCS-07 — A branch name that clashes with another is refused in words
-**Why:** Reproduced on 11 November 2026 through the routes, with nothing
-injected. Git keeps each branch as a file, so a branch named `motor` and one
-named `motor/renewal` cannot both exist: `motor` would have to be a file and
-a folder at once. Haute's own advice for a branch name is "Use letters,
-numbers, dashes and slashes." With a branch `motor`, creating
-`motor/renewal` answers "Operation failed. Check the server logs for
-details." So does creating `team` beside `team/home`, and creating `archive`
-once any branch has been archived. Git's own words stay in the server log:
-"cannot lock ref 'refs/heads/motor/renewal': 'refs/heads/motor' exists;
-cannot create 'refs/heads/motor/renewal'". Nothing changes in the
-repository, and the analyst is not told why, or that another name would
-work.
-
-Bringing a branch back fails the same way, and there it stands between the
-analyst and their work. `squad/home` is archived, a branch `squad` is made,
-and Restore of the archived branch answers the generic text. `grp/x` is
-deleted, a branch `grp` is made, and bringing `grp/x` back from Deleted
-answers the generic text, as does bringing it back as `grp/y`; as `grp-x`
-it works. The branch manager offers to bring a branch back under another
-name only when the refusal says "another name" (read from the source), so
-here it offers nothing.
-
-A name Windows keeps for a device (`con`, `aux.v2`) is answered the same
-way; git's words there are "cannot lock ref 'refs/heads/con'" and "Invalid
-argument". The same name in another letter case is refused well: "Branch
-'Motor' already exists." The check that runs before a branch is made
-promises more than it does: "a name the in-process rules let through is
-still refused, in words, if git would not take it". It asks git whether the
-name is well formed, which says nothing about the branches that exist.
-
-**Plan:** Before creating, restoring or bringing back a branch, compare its
-name and its ledger's name with the branches that exist. Refuse a name that
-has a branch above it or beneath it, naming that branch and saying that the
-two cannot both exist, and refuse the device names by name as the file
-routes do. Word the two refusals for bringing a branch back so that the
-branch manager offers another name.
-
-**Acceptance:** Creating `motor/renewal` beside `motor`, `team` beside
-`team/home` and `con` each answer naming the clash or the rule. Restoring an
-archived branch and bringing back a deleted one into such a name answer the
-same, and the branch manager offers another name. None of them answers
-"Operation failed."
-
-**Dependencies:** None. `VCS-03` words git's other refusals.
-
-**Evidence:** `src/haute/_git_core.py::_assert_new_branch_name`;
-`src/haute/_git_core.py::_branch_name_problem`;
-`src/haute/_git_transactions.py::create_working_branch`;
-`src/haute/_git_archive.py::restore_working_pair`;
-`src/haute/_git_archive.py::undelete_working_pair`;
-`frontend/src/components/BranchManager.tsx`.
 
 ### VCS-08 — A file edited by hand does not strand the analyst
 **Why:** Reproduced on 11 November 2026 through the routes, with nothing
