@@ -110,7 +110,9 @@
   profile, part of its key in the analysis-result store, so an incompatible statistics payload is
   recomputed rather than served. The current version includes NaN counts, valid-values-only
   distinct counts, categorical truncation based on display-label groups, column quality profiles,
-  and exact duplicate-row statistics.
+  exact duplicate-row statistics, and (version 3) datetime, time and duration labels, min, max and
+  span written to the nanosecond by `temporal_text`, so a profile stored before them, which
+  merged times within a second, is recomputed.
 
 ## Pivot calculation invariants
 

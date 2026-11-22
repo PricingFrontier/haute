@@ -214,17 +214,27 @@ each factor's levels in Polars, reads them with `to_dicts` and keys each
 through `_ratebook_factor_level_key` from the Python values. Two datetime
 levels 100 ns apart become one key, and the solve refuses with "the source
 column mixes value types. Cast it to a single type upstream", which is
-neither the cause nor the remedy. Only a temporal ratebook factor reaches
-it.
+neither the cause nor the remedy. The optimiser's segment and outcome
+breakdowns key their levels the same way
+(`_optimiser_segments.py`, `_optimiser_outcomes.py`), and a categorical
+breakdown of an analysis column labels each level with `cast(pl.String)`,
+which drops a `Time`'s whole fraction, so times within one second are one
+level. The apply explainability reads its matched row through
+`_jsonify_row` at microseconds. Only a temporal factor or analysis column
+reaches any of them.
 
 **Plan:** Key a level by its column's own value, written through `IOL-08`'s
 `temporal_text`, before the levels are read. Update the optimiser
 specification first.
 
 **Acceptance:** A ratebook solve over a `Datetime("ns")` factor whose
-levels differ by 100 ns counts two levels and solves.
+levels differ by 100 ns counts two levels and solves, its segment and
+outcome breakdowns show both, and a categorical breakdown of a `Time`
+column keeps 1.5 s and 1.7 s apart.
 
 **Dependencies:** `IOL-08` (the [temporal values root cause](root-cause-temporal-values.md)) first.
 
 **Evidence:** `src/haute/routes/_optimiser_solver.py::_ratebook_factor_level_key`;
-`src/haute/routes/_optimiser_solver.py`; `specs/optimiser/low-level.md`.
+`src/haute/routes/_optimiser_solver.py`; `src/haute/routes/_optimiser_segments.py`;
+`src/haute/routes/_optimiser_outcomes.py`;
+`src/haute/_optimiser_apply_explainability.py`; `specs/optimiser/low-level.md`.

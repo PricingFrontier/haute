@@ -395,7 +395,8 @@ def _cached_by_another_build(store: NodeSnapshotStore, identity: SourceCacheIden
 
 
 PROFILE_ANALYSIS_KIND = "profile"
-PROFILE_ANALYSIS_VERSION = 2
+#: 3: datetime, time and duration labels, min, max and span are exact to the nanosecond.
+PROFILE_ANALYSIS_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)

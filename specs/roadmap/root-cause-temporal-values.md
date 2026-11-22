@@ -53,8 +53,11 @@ Python 3.11 drops digits past the sixth without refusing (`SRV-20`, the
 request reproduced). A trace matches its row again by values that went
 through JSON at microseconds (`TRC-15`). A ratebook factor's levels and an
 evaluation plan's group and date keys are made from Python values
-(`OPM-06`, `MDL-04`). Each is planned as its own fix at its own site. The
-next site that collects a temporal column will lose the digits again.
+(`OPM-06`, `MDL-04`). The assistant's value profiles write a temporal
+bound through `json_safe_scalar`, `str()` of a Python value, so a provider
+is shown six digits; that site has no package of its own and is part of
+this one. Each is planned as its own fix at its own site. The next site
+that collects a temporal column will lose the digits again.
 
 **Plan:** Make `haute._temporal_text` the one way Haute's own code turns a
 temporal value into Python and back. `temporal_text` writes a value out,
@@ -69,8 +72,9 @@ name. Update the IO layer specification first.
 **Acceptance:** A test runs each site in the table over a frame whose
 `Datetime("ns")`, `Time` and `Duration("ns")` columns hold values that
 differ below a microsecond. It requires each site to keep those values
-apart and to give back all nine digits. The pivot reads its member
-literals through the shared builder. The acceptance of each package marked
+apart and to give back all nine digits, and the assistant's value
+profiles to show them. The pivot reads its member literals through the
+shared builder. The acceptance of each package marked
 Resolves is met.
 
 **Dependencies:** None. Deliver before the packages its table names.
@@ -82,4 +86,5 @@ Resolves is met.
 `src/haute/_trace_correlation.py::_typed_value_match_expr`;
 `src/haute/routes/_optimiser_solver.py`;
 `src/haute/modelling/_evaluation.py::_json_key`;
+`src/haute/_column_summary.py::json_safe_scalar`; `src/haute/assistant/_tools.py`;
 `specs/explore-eda/low-level.md`.

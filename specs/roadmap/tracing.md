@@ -105,18 +105,26 @@ those values, compared exactly with the column's own integer. A row whose
 `Datetime("ns")` or `Time` value has digits below a microsecond never
 equals its own match. The trace then reports that row correlation failed,
 or a relaxed match leaves the column out and can take another row as the
-parent.
+parent. The enrichment reads the same JSON values: it keys a Rating Step's
+lookup with `normalise_rating_key` of the traced value, and compares a
+date-time breakpoint with `datetime.fromisoformat` of it, so a traced value
+can be shown the default for a level the run matched, or the other side of
+a breakpoint inside its microsecond. A traced value is shown with six digits
+(`_expression_parser.py`).
 
 **Plan:** Carry the traced row's temporal values as their exact text and
 build each match from it, through `IOL-08`'s shared literal builder.
 Update the tracing specification first.
 
 **Acceptance:** A three-node pipeline over a `Datetime("ns")` column whose
-rows differ by 100 ns traces each row to its own parent rows.
+rows differ by 100 ns traces each row to its own parent rows, shows its
+value with nine digits, and explains a Rating Step keyed by that column
+with the level the run matched.
 
 **Dependencies:** `IOL-08` (the [temporal values root cause](root-cause-temporal-values.md)) first.
 
 **Evidence:** `src/haute/_trace_correlation.py::_correlate_rows_posthoc`;
 `src/haute/_trace_correlation.py::_typed_value_match_expr`;
 `src/haute/_trace_correlation.py::_jsonify_row`;
+`src/haute/_trace_enrichment.py`; `src/haute/_expression_parser.py`;
 `specs/tracing/low-level.md`.

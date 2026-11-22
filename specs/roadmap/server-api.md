@@ -307,5 +307,6 @@ than its column is refused naming the field.
 **Evidence:** `src/haute/executor.py::_frame_rows`;
 `src/haute/_json_safe.py`; `src/haute/routes/files.py`;
 `src/haute/deploy/_response_json.py`; `src/haute/deploy/_batch_scoring.py`;
-`src/haute/deploy/_impact.py`; `src/haute/_json_values.py::_datetime`;
+`src/haute/deploy/_impact.py`; `src/haute/deploy/_schema.py`;
+`src/haute/_json_values.py::_datetime`;
 `specs/deploy/low-level.md`.
