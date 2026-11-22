@@ -120,10 +120,11 @@ function nodeTypeOf(node: Node): string {
 }
 
 /** A node's identity: where it was when the document was loaded, or, for a copy a graph
- * change made, where the copy was made. The place it records once a graph change has moved
- * it (`data._savedAddress`), else where it is. A node keeps it through every move, save and
- * Undo, and so does each node of a baseline a save makes from the document. Two nodes never
- * share one: a copy takes its own. */
+ * change made, a fresh token no place can be (`freshIdentity`), so a copy never takes a
+ * place another node had, a deleted one among them. The identity it records once a graph
+ * change has moved or made it (`data._savedAddress`), else where it is. A node keeps it
+ * through every move, save and Undo, and so does each node of a baseline a save makes from
+ * the document. */
 function identityOf(submodel: string | null, node: Node, address: Address | null = recordedOf(node).address): string {
   const identity = address ?? { submodel, nodeId: node.id }
   return placeKey(identity.submodel, identity.nodeId)
@@ -318,9 +319,9 @@ function recordsIn(document: Document): Map<string, Recorded> {
  * - a node it `moved` is the node it was, so it takes that node's identity (the place it moved
  *   from, unless it had moved before);
  * - a node it copied, whose original the answer still holds where it was (a dissolve of one
- *   occurrence of a definition others use), is another node: its identity is its own place,
- *   and it records the identity of what it was copied from, so it finds that node's saved
- *   forms until a save holds its own.
+ *   occurrence of a definition others use), is another node: it takes a fresh identity, and
+ *   records the identity of what it was copied from, so it finds that node's saved forms
+ *   until a save holds its own.
  * An address, never a copy of a form: `savedFormsFor` finds a node's baseline node by it.
  */
 export function withSavedAddresses<T extends Document>(document: T, moved: readonly MovedNode[], before: Document): T {
@@ -339,9 +340,15 @@ export function withSavedAddresses<T extends Document>(document: T, moved: reado
     const original = heldNode(document, fromPlace.submodel, fromPlace.nodeId)
     const copied = original !== null && nodeTypeOf(original) === nodeTypeOf(node)
     return withRecorded(node, copied
-      ? { address: null, origins: [identity, ...had.origins] }
+      ? { address: freshIdentity(), origins: [identity, ...had.origins] }
       : { address: identity, origins: had.origins })
   })
+}
+
+/** An identity no node has had: the token a copy a graph change makes is known by, which no
+ * place can be, since a node's id never starts with it. */
+function freshIdentity(): Address {
+  return { submodel: null, nodeId: `copy:${globalThis.crypto.randomUUID()}` }
 }
 
 /** `document` with no saved form on any node: the live document's copy. */

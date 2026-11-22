@@ -262,7 +262,7 @@ describe("a node a graph change moved", () => {
       loaded,
     )
     const copy = copied.nodes[0]
-    expect(copy.data._savedAddress).toBeUndefined()
+    expect((copy.data._savedAddress as { nodeId: string }).nodeId).toMatch(/^copy:/)
     expect(copy.data._savedOrigins).toEqual([{ submodel: null, nodeId: "rated" }])
     // Before a save the copy finds the node it was copied from.
     expect(savedFormsFor(loaded, copied, null, copy).saved_settings).toBe('{"rate":1.0}')
@@ -279,6 +279,28 @@ describe("a node a graph change moved", () => {
     const owner = dissolved.nodes[1]
     expect(owner.data._savedAddress).toEqual({ submodel: null, nodeId: "rated" })
     expect(savedFormsFor(saved, dissolved, null, owner)).toEqual({ saved_settings: '{"rate":1.0}' })
+  })
+
+  it("gives each copy a fresh identity, so one made where a deleted copy was finds its original", () => {
+    // Codex r7: a copy dissolved, edited and saved, then deleted; another occurrence made and
+    // dissolved before a save reuses its alias, and so its place.
+    const child = moved(transform("rated_node", { rate: 1 }, { ...live, saved_settings: '{"rate":1.0}' }), null, "rated")
+    const shared = { ...definition([child]), definitionId: "rated" }
+    const place = "submodel_runtime/rated_2/rated_node"
+    const make = (before: { nodes: Node[]; submodels: Record<string, unknown> }) => withSavedAddresses(
+      { nodes: [transform(place, { rate: 1 }, live)], submodels: { rated: shared } },
+      [{ from_submodel: "rated", from_node_id: "rated_node", to_submodel: null, to_node_id: place }],
+      before,
+    ).nodes[0]
+    const first = make({ nodes: [], submodels: { rated: shared } })
+    const edited: Node = { ...first, data: { ...first.data, config: { rate: 2 }, editor: { ...live, saved_settings: '{"rate":2}' } } }
+    // Saved, the baseline holds the edited copy under its identity; then the copy is deleted.
+    const saved = { nodes: [edited], submodels: { rated: shared } }
+    const again = make({ nodes: [], submodels: { rated: shared } })
+
+    expect(again.data._savedAddress).not.toEqual(first.data._savedAddress)
+    expect(savedFormsFor(saved, { nodes: [again], submodels: { rated: shared } }, null, again))
+      .toEqual({ saved_settings: '{"rate":1.0}' })
   })
 
   it("records where the baseline holds each node an answer moved, through a second move", () => {

@@ -507,7 +507,8 @@ a part sent without one is read from the request.
   place keeps the one it had, which the answer, built on the server, does not carry; any
   other node's is where it is. A node a graph change copies, whose original the answer
   still holds where it was (dissolving one occurrence of a definition others use), is
-  another node: its identity is its own place, so no two nodes share one, and it records
+  another node: it takes a fresh identity, a token no place can be, so no two nodes share
+  one, not even a copy made where a deleted one was, and it records
   the identity of what it was copied from (`data._savedOrigins`, nearest first), which gives
   it that node's saved forms until a save holds its own. A save makes its baseline from the
   document, so each of the baseline's nodes keeps its identity too. A node's baseline node is
