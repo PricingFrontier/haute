@@ -55,6 +55,7 @@ from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute._temporal_text import (
     TEMPORAL_TEXT_KINDS,
     TemporalTextError,
+    exact_text,
     temporal_literal,
     temporal_text,
 )
@@ -227,14 +228,10 @@ def _exact_rows(frame: pl.DataFrame) -> Iterator[dict[str, Any]]:
 
     Python's ``datetime``, ``time`` and ``timedelta`` hold microseconds, so a nanosecond
     value read into one would merge with its neighbours: two rows of a pivot would become
-    one key, and a cell would lose digits. Every row a pivot reads goes through here.
+    one key, and a cell would lose digits. Every row a pivot reads goes through here, and
+    here through the shared reader (``haute._temporal_text.exact_text``).
     """
-    exact = frame.with_columns(
-        temporal_text(pl.col(name), dtype).alias(name)
-        for name, dtype in frame.schema.items()
-        if column_kind(dtype) in TEMPORAL_TEXT_KINDS
-    )
-    return exact.iter_rows(named=True)
+    return exact_text(frame).iter_rows(named=True)
 
 
 def _path_tuple(

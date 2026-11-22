@@ -1582,7 +1582,7 @@ def test_limited_level_without_ancestor_keys_reads_every_row() -> None:
     assert limited is level
 
 
-# ─── Values that differ below a microsecond (SRV-19) ───────────────
+# ─── Values that differ below a microsecond ───────────────
 
 
 def _events() -> dict[str, pl.LazyFrame]:

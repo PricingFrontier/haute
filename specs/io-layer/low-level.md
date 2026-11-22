@@ -1088,7 +1088,10 @@ is no eager dataframe or collect-then-write fallback.
   datetime, time and duration value written so (separator `"T"`, as `isoformat()` writes
   a datetime), at its top level or inside a struct, list or array, a null kept null and
   every other value untouched; `exact_rows(frame)` and `exact_row(frame, index)` read a
-  frame's rows through it, as `to_dicts()` and `row(index, named=True)` would. For a value
+  frame's rows through it, as `to_dicts()` and `row(index, named=True)` would;
+  `exact_text_expression(expression, dtype)` and `exact_text_dtype(dtype)` are the same for one
+  column and its type, and `is_temporal` and `holds_temporal` say whether a type is, or holds, a
+  datetime, time or duration. For a value
   Python holds exactly (a whole microsecond or coarser) the text is the one
   `isoformat()` or `str(timedelta)` writes, so millisecond and microsecond data read as
   before.
@@ -1112,7 +1115,19 @@ is no eager dataframe or collect-then-write fallback.
   which.
 - A reader that takes a temporal value from a request, a filter member or a traced row
   builds the value, or the match, from `temporal_physical` or `temporal_literal`, never
-  from a Python object.
+  from a Python object. `frame_from_exact_rows(rows, schema)` is the same for rows read as
+  `exact_rows` reads them (an OUTPUT document's): each temporal value, nested ones included,
+  its physical integer, the frame cast to *schema*. `wall_clock_nanoseconds(text)` is the
+  wall-clock time a date or date-time text names, its offset left aside, in nanoseconds from
+  1970, as a date-time breakpoint compares a zoned value.
+- `tests/test_temporal_values.py` finds every module of `src/haute` that calls a method
+  reading a frame's values into Python (`iter_rows`, `to_dicts`, `rows`, `row`,
+  `rows_by_key`, `to_list`, `item`) and requires each either to be driven by a named test
+  (in that file or beside the module's own) sending it datetime, time and duration values
+  that differ below a microsecond, which must keep them apart and give back all nine digits,
+  or to be listed with the reason it never reads such a value. A new module that reads values
+  without either fails it, and so does a listed module that no longer reads any.
+
 ### Map columns
 
 - Polars 2 reads an Arrow or Parquet map as its `Map` dtype, and its Parquet reader keeps
