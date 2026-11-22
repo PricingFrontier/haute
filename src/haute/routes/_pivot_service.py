@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import ast
 import math
-import re
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import Decimal
 from functools import cmp_to_key, reduce
@@ -53,7 +52,13 @@ from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind, integer_ra
 from haute._polars_utils import cancellable_streaming_collect
 from haute._project_context import context_thread, current_project
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
-from haute._temporal_text import TEMPORAL_TEXT_KINDS, temporal_text
+from haute._temporal_text import (
+    TEMPORAL_TEXT_KINDS,
+    TemporalTextError,
+    temporal_literal,
+    temporal_text,
+    with_temporal_text,
+)
 from haute.errors import ConfigError, InvalidRequestError, NotFoundError
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -225,12 +230,7 @@ def _exact_rows(frame: pl.DataFrame) -> Iterator[dict[str, Any]]:
     value read into one would merge with its neighbours: two rows of a pivot would become
     one key, and a cell would lose digits. Every row a pivot reads goes through here.
     """
-    exact = frame.with_columns(
-        temporal_text(pl.col(name), dtype).alias(name)
-        for name, dtype in frame.schema.items()
-        if column_kind(dtype) in TEMPORAL_TEXT_KINDS
-    )
-    return exact.iter_rows(named=True)
+    return with_temporal_text(frame).iter_rows(named=True)
 
 
 def _path_tuple(
@@ -399,16 +399,6 @@ def _member_literal(member: ExplorePivotMember) -> Any:
 
 #: A datetime or time member ``validate_explore_pivots`` accepted: its whole seconds, the
 #: fraction's digits, and an offset.
-_TEMPORAL_MEMBER = re.compile(
-    r"(?P<whole>.*?[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.(?P<fraction>[0-9]{1,9}))?"
-    r"(?P<offset>Z|[+-][0-9]{2}:[0-9]{2})?"
-)
-_NAIVE_EPOCH = datetime(1970, 1, 1)
-_AWARE_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-_UNITS_PER_SECOND = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
-_NANOSECONDS_PER_SECOND = 1_000_000_000
-
-
 def _filter_member_refusal(field: str, kind: str, message: str) -> PivotContractError:
     return PivotContractError(
         "invalid_pivot_filter_member",
@@ -420,47 +410,16 @@ def _filter_member_refusal(field: str, kind: str, message: str) -> PivotContract
 
 
 def _temporal_literal(field: str, dtype: pl.DataType, member: ExplorePivotMember) -> pl.Expr:
-    """A datetime or time member as a literal of its column's own type, exactly.
-
-    The literal is the column's physical integer, read from the member's text, never a
-    Python ``datetime`` or ``time``: those hold microseconds and would drop a nanosecond
-    member's last three digits, matching a neighbour or nothing.
-    """
-    kind = member["kind"]
-    text = cast(str, member["value"])
-    parts = _TEMPORAL_MEMBER.fullmatch(text)
-    if parts is None:
-        raise AssertionError(f"validate_explore_pivots accepted {kind} member {text!r}")
-    fraction = int((parts["fraction"] or "").ljust(9, "0"))
-    if kind == "time":
-        if parts["offset"]:
-            raise _filter_member_refusal(
-                field, kind, f"Filter member {text} has a time zone, which field '{field}' has not."
-            )
-        clock = datetime_time.fromisoformat(parts["whole"])
-        seconds = (clock.hour * 60 + clock.minute) * 60 + clock.second
-        return pl.lit(seconds * _NANOSECONDS_PER_SECOND + fraction, dtype=pl.Int64).cast(pl.Time)
-    datetime_dtype = cast(pl.Datetime, dtype)
-    moment = datetime.fromisoformat(parts["whole"] + (parts["offset"] or ""))
-    if (moment.tzinfo is None) != (datetime_dtype.time_zone is None):
+    """A datetime or time member as a literal of its column's own type, exactly, through
+    the shared builder (:func:`haute._temporal_text.temporal_literal`): never a Python
+    ``datetime`` or ``time``, which hold microseconds and would drop a nanosecond member's
+    last three digits, matching a neighbour or nothing."""
+    try:
+        return temporal_literal(cast(str, member["value"]), dtype)
+    except TemporalTextError as exc:
         raise _filter_member_refusal(
-            field, kind, f"Filter member {text} does not match the time zone of field '{field}'."
-        )
-    per_second = _UNITS_PER_SECOND[datetime_dtype.time_unit]
-    step = _NANOSECONDS_PER_SECOND // per_second
-    if fraction % step:
-        raise _filter_member_refusal(
-            field,
-            kind,
-            f"Filter member {text} is finer than field '{field}' holds "
-            f"({datetime_dtype.time_unit}).",
-        )
-    # An aware member names its instant through its offset, so both occurrences of a
-    # local time the clocks repeat keep their own: the physical value is UTC.
-    epoch = _NAIVE_EPOCH if moment.tzinfo is None else _AWARE_EPOCH
-    seconds = (moment - epoch) // timedelta(seconds=1)
-    physical = seconds * per_second + fraction // step
-    return pl.lit(physical, dtype=pl.Int64).cast(datetime_dtype)
+            field, member["kind"], f"Filter member for field '{field}': {exc}"
+        ) from None
 
 
 def _filter_member_expression(
