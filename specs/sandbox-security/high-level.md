@@ -362,7 +362,7 @@ Out of scope (owned elsewhere, linked where relevant):
   syntax mistake would normally produce, not a guard rejection.
 - **Runtime execution errors are re-raised, never swallowed**; `_exec_user_code`
   only annotates the exception with the offending line number
-  (`exc._user_code_line`) extracted from the `<string>` frame of the traceback,
+  (`exc._user_code_line`) extracted from the node code's own frame of the traceback,
   purely for error-message quality — it does not alter control flow.
 - **Blocked pickle/joblib globals raise `pickle.UnpicklingError`** (in `_sandbox.py`)
   with a message

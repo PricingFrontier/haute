@@ -35,10 +35,14 @@
   whose `__dict__` is the namespace) while node code or the preamble runs, and removes
   it afterwards. `dataclasses` and `typing.get_type_hints` resolve string annotations
   through that entry; removing it keeps a long-lived server from accumulating modules.
-- **`compile_project_code(code)`** (`_sandbox.py`) — compiles node code and the
+- **`compile_project_code(code, *, filename)`** (`_sandbox.py`) — compiles node code and the
   preamble for `exec()` with `dont_inherit=True`, so haute's own `from __future__
   import annotations` does not postpone the project's annotations (a dataclass
   `ClassVar` default and `get_type_hints` on an imported type work as in a module).
+  The preamble is compiled as `PREAMBLE_FILENAME` (`<haute preamble>`) and node code as
+  `NODE_CODE_FILENAME` (`<haute node code>`), never `<string>`, which code a library
+  generates also carries, so a traceback's frames tell the preamble, node code and a
+  library apart by exact name.
 - **`_ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]]`** — exact
   `(module, qualname)` pairs for scaffolding *functions* (NumPy 2 `_core`
   reconstruction helpers, `copyreg` helpers, `_codecs.encode`, pandas block/index
@@ -99,14 +103,14 @@
    `SyntaxError`, re-raise the bare `SyntaxError` instead — this normalizes the error
    type callers see for a plain typo versus a guard rejection.
 3. Build one fresh execution namespace from `safe_globals(pl=pl, **extra_ns)` and
-   `exec` `compile_project_code(code)` in it inside `project_code_module`
+   `exec` `compile_project_code(code, filename=NODE_CODE_FILENAME)` in it inside `project_code_module`
    and then overlay the local dataframe bindings before calling `exec`. Input
    names therefore take precedence over same-named preamble globals and remain
    visible inside comprehensions and nested helpers, matching normal generated
    function semantics. The reserved `df` key is omitted from `extra_ns` so it
    cannot masquerade as a transform output.
 4. On any exception, walk `exc.__traceback__` in reverse for the last frame whose
-   `filename == "<string>"` and stash its `lineno` on `exc._user_code_line` before
+   `filename == NODE_CODE_FILENAME` and stash its `lineno` on `exc._user_code_line` before
    re-raising unchanged.
 5. Read `execution_ns["df"]` as the result and coerce an eager
    `pl.DataFrame` to `.lazy()`. If the executed code never assigned `df`,
@@ -117,7 +121,8 @@
    assigned `df` to a non-Polars value.
 
 **Preamble and training-script distinction.** `executor._compile_preamble` calls
-`validate_user_code(preamble)` and then `exec()`s `compile_project_code(preamble)`
+`validate_user_code(preamble)` and then `exec()`s
+`compile_project_code(preamble, filename=PREAMBLE_FILENAME)`
 with `safe_globals(pl=pl)` inside `project_code_module`, the same guard, compilation and
 namespace as node code. `cli/_train.py`
 executes the training script through `importlib`'s ordinary `exec_module()` path in

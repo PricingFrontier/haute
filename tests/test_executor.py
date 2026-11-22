@@ -13,7 +13,7 @@ import pytest
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._project_context import context_thread
-from haute._user_exec import _exec_user_code
+from haute._user_exec import _exec_user_code, user_code_line
 from haute.errors import BatchSourceAmbiguousError, ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
     PreambleError,
@@ -365,6 +365,59 @@ class TestCompilePreamble:
             _compile_preamble("from utility.helpers import *\n")
         assert "utility" in str(exc_info.value)
         assert "helpers" in str(exc_info.value)
+
+    def test_a_library_failure_is_the_preamble_line_under_a_utility_named_folder(
+        self, tmp_path, monkeypatch
+    ):
+        """EXE-03: a project folder named ``utility-pricing`` puts its libraries under a
+        path that contains ``utility``; a preamble line failing inside one is still
+        reported as that line, and a failure inside the real utility module at its own."""
+        root = tmp_path / "utility-pricing"
+        library_dir = root / ".venv" / "site-packages"
+        library_dir.mkdir(parents=True)
+        (library_dir / "exe03_pricing_lib.py").write_text(
+            "def explode():\n    raise ValueError('library failed')\n"
+        )
+        monkeypatch.syspath_prepend(str(library_dir))
+        (root / "utility").mkdir()
+        (root / "utility" / "__init__.py").write_text("")
+        (root / "utility" / "rates.py").write_text("x = 1\nraise ValueError('rates failed')\n")
+        use_project(root)
+
+        with pytest.raises(PreambleError) as from_library:
+            _compile_preamble("import exe03_pricing_lib\nexe03_pricing_lib.explode()\n")
+        assert str(from_library.value).startswith("Preamble line 2: library failed")
+        assert from_library.value.source_line == 2
+
+        with pytest.raises(PreambleError) as from_utility:
+            _compile_preamble("y = 1\nfrom utility.rates import *\n")
+        assert str(from_utility.value).startswith(
+            f"Error in {Path('utility', 'rates.py')} line 2: rates failed"
+        )
+
+    def test_a_failure_in_code_a_library_generated_is_the_preamble_line(self):
+        """EXE-03: a dataclass's generated ``__init__`` runs as ``<string>`` code; its
+        failure is reported at the preamble line that called it."""
+        preamble = (
+            "from dataclasses import dataclass, field\n"
+            "\n"
+            "@dataclass\n"
+            "class Rates:\n"
+            "    table: int = field(default_factory=int.from_bytes)\n"
+            "\n"
+            "RATES = Rates()\n"
+        )
+        with pytest.raises(PreambleError) as exc_info:
+            _compile_preamble(preamble)
+        assert str(exc_info.value).startswith("Preamble line 7:")
+
+    def test_node_code_calling_a_failing_preamble_helper_reports_its_own_line(self):
+        """EXE-03: the preamble and node code are compiled under their own names, so a
+        helper's failing line is never taken for the node code's."""
+        preamble_ns = _compile_preamble("def bad():\n    x = 1\n    return x / 0\n")
+        with pytest.raises(ZeroDivisionError) as exc_info:
+            _exec_user_code("y = 1\ndf = bad()\n", ["source"], (), extra_ns=preamble_ns)
+        assert user_code_line(exc_info.value) == 2
 
 
 # ---------------------------------------------------------------------------

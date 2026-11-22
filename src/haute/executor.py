@@ -61,12 +61,14 @@ from haute._project_context import current_project, graph_pipeline_dir, installe
 from haute._project_imports import (
     bind_project_utility,
     evict_utility_modules,
+    is_bound_utility_file,
     project_utility_bound,
     unbind_project_utility,
     utility_bound_to,
 )
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
+    PREAMBLE_FILENAME,
     compile_project_code,
     is_contained,
     project_code_module,
@@ -263,10 +265,11 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     base_keys = set(ns.keys())
     try:
         with project_code_module(ns):
-            exec(compile_project_code(preamble), ns)  # noqa: S102  — single dict = shared globals
+            # Single dict = shared globals.
+            exec(compile_project_code(preamble, filename=PREAMBLE_FILENAME), ns)  # noqa: S102
     except Exception as exc:
-        # Extract the most useful line number and source file from
-        # the traceback or exception attributes.
+        # Report the innermost line of the project's own code: a utility module's,
+        # else the preamble's. A library frame is neither, wherever it lives.
         import traceback as _tb
         from pathlib import Path as _Path
 
@@ -278,19 +281,19 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
             source_file = exc.filename
             source_line = exc.lineno
 
-        # For runtime errors, walk the traceback to find the utility frame
         if source_file is None and exc.__traceback__:
             for frame in reversed(_tb.extract_tb(exc.__traceback__)):
-                if "utility" in frame.filename:
+                if frame.filename == PREAMBLE_FILENAME:
+                    source_file = frame.filename
+                    source_line = frame.lineno
+                    break
+                if is_bound_utility_file(frame.filename):
                     source_line = frame.lineno
                     source_file = frame.filename
                     break
-                if frame.filename == "<string>":
-                    source_line = frame.lineno
-                    break
 
         msg = f"Import/preamble error: {exc}"
-        if source_file and source_file != "<string>":
+        if source_file and source_file != PREAMBLE_FILENAME:
             try:
                 rel: str | Path = _Path(source_file).relative_to(current_project().root)
             except ValueError:

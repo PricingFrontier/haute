@@ -179,15 +179,24 @@ def project_code_module(namespace: dict[str, Any]) -> Iterator[None]:
         sys.modules.pop(name, None)
 
 
-def compile_project_code(code: str) -> CodeType:
+#: The file names project code is compiled under. Each is its own, never ``<string>``,
+#: which code a library generates (a dataclass's ``__init__``) also carries: a failure's
+#: traceback is read for the frame of the code that raised it, and only an exact name
+#: tells a preamble's line from a node's and from a library's.
+PREAMBLE_FILENAME = "<haute preamble>"
+NODE_CODE_FILENAME = "<haute node code>"
+
+
+def compile_project_code(code: str, *, filename: str) -> CodeType:
     """Compile project code for ``exec()`` as an ordinary module would be.
 
+    *filename* is :data:`PREAMBLE_FILENAME` or :data:`NODE_CODE_FILENAME`.
     ``dont_inherit`` keeps haute's own ``from __future__`` imports (postponed
     annotations) out of the project's code, so a dataclass or a
     ``get_type_hints`` call in node code sees the annotations Python gives a
     module that does not ask for postponement.
     """
-    return compile(code, "<string>", "exec", dont_inherit=True)
+    return compile(code, filename, "exec", dont_inherit=True)
 
 
 class UnsafeCodeError(HauteError):
