@@ -24,7 +24,6 @@ import contextvars
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
-from urllib.parse import quote as url_quoted
 
 from fastapi import APIRouter, Response
 from fastapi.concurrency import run_in_threadpool
@@ -41,6 +40,7 @@ from haute._workbench_export import (
     XLSX_MEDIA_TYPE,
     ExportRefusedError,
     StaleExportError,
+    attachment,
     preview_export,
 )
 from haute._workbench_folder import (
@@ -392,14 +392,6 @@ async def store_sql(body: WorkbenchStoreSqlRequest) -> WorkbenchStoreSqlResponse
     return await run_in_threadpool(_store_sql, config, body)
 
 
-def _attachment(file_name: str) -> str:
-    """A ``Content-Disposition`` naming *file_name*: whole in ``filename*``, and in
-    ``filename`` with each character outside printable ASCII written ``_``, for a client
-    that reads only that."""
-    plain = "".join(char if " " <= char <= "~" else "_" for char in file_name)
-    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{url_quoted(file_name, safe='')}"
-
-
 @router.post(
     "/export",
     response_class=Response,
@@ -423,7 +415,7 @@ async def export_workbench_file(body: WorkbenchExportRequest) -> Response:
     return Response(
         content=data,
         media_type=XLSX_MEDIA_TYPE,
-        headers={"Content-Disposition": _attachment(file_name)},
+        headers={"Content-Disposition": attachment(file_name)},
     )
 
 

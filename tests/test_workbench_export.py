@@ -896,11 +896,11 @@ def test_a_sample_other_than_the_one_priced_is_refused_as_stale() -> None:
     [
         (
             "w_csv",
-            "csv is not an Export to an Excel workbook of cells, the only export Preview runs.",
+            "csv is not an Export to an Excel workbook of cells, the only export that runs.",
         ),
         (
             "w_secret",
-            "secret is not an Export to an Excel workbook of cells, the only export Preview runs.",
+            "secret is not an Export to an Excel workbook of cells, the only export that runs.",
         ),
         ("w_gone", "The form has no component 'w_gone' to export."),
     ],

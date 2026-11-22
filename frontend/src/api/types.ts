@@ -202,7 +202,6 @@ export type {
   SchemaTable,
   Section,
   ShowWhen,
-  SqlExport,
   SqlImport,
   TableInputWidget,
   Theme,

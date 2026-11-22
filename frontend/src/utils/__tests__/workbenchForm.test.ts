@@ -112,7 +112,6 @@ import {
   setSchemaTableRows,
   setSectionHeight,
   setSectionShowWhen,
-  setTableName,
   setTableRows,
   setThemeColour,
   SHEET_NAME_LIMIT,
@@ -2698,9 +2697,7 @@ describe("Imports and Exports", () => {
     spec = updateExportTarget(spec, "w_out", { file_name: "{insured}", headers: "labels" })
     spec = setExportFormat(spec, "w_out", "excel")
     expect(exported(spec).target).toEqual({ file_name: "{insured}", headers: "labels", values: "raw", format: "excel" })
-    spec = setExportFormat(spec, "w_out", "sql")
-    expect(exported(spec).target).toEqual({ format: "sql", connection: "", table_names: [] })
-    expect(updateExportTarget(spec, "w_out", { connection: "" })).toBe(spec)
+    expect(updateExportTarget(spec, "w_out", { file_name: "{insured}" })).toBe(spec)
   })
 
   it("drops an Import's column names as its table changes and takes a blank name away", () => {
@@ -2782,13 +2779,8 @@ describe("Imports and Exports", () => {
     expect(problems(setExportFormat(spec, "w_out", "excel"), "w_out")).toEqual(['Export "Export" names its file by {broker}, which is not a column of quote_details'])
     expect(fileNameTokens("{a}-{b}{a}")).toEqual(["a", "b", "a"])
 
-    spec = setExportFormat(spec, "w_out", "sql")
-    expect(problems(spec, "w_out")).toEqual(['Export "Export" names no connection'])
-    spec = setTableName(spec, "w_out", "layers", "quote_layers")
-    expect(exported(spec).target).toEqual({ format: "sql", connection: "", table_names: [{ table: "layers", name: "quote_layers" }] })
-    expect(() => setTableName(spec, "w_out", "premiums", "p")).toThrow("does not export premiums")
     spec = toggleExportTable(spec, "w_out", "layers")
-    expect(exported(spec)).toMatchObject({ tables: [QUOTE_DETAILS_NAME], target: { table_names: [] } })
+    expect(exported(spec).tables).toEqual([QUOTE_DETAILS_NAME])
   })
 
   it("finds the Imports and Exports a table or a column is used by, and removing it takes it out of them", () => {
@@ -2797,7 +2789,7 @@ describe("Imports and Exports", () => {
     spec = setImportQuery(spec, "w_in", "select :ref, :ins")
     spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_NAME, column: "quote_reference" })
     spec = bindParameter(spec, "w_in", "ins", { table: QUOTE_DETAILS_NAME, column: "insured" })
-    spec = setTableName(setExportFormat(toggleExportTable(spec, "w_out", "layers"), "w_out", "sql"), "w_out", "layers", "quote_layers")
+    spec = setExportFormat(toggleExportTable(spec, "w_out", "layers"), "w_out", "excel")
 
     expect(buttonUses(spec, "layers").map((w) => w.id)).toEqual(["w_in", "w_out"])
     expect(buttonUses(spec, "layers", "excess").map((w) => w.id)).toEqual(["w_in", "w_out"])
@@ -2808,7 +2800,7 @@ describe("Imports and Exports", () => {
     expect(imported(removeSchemaColumn(spec, "layers", "excess")).column_names).toEqual([])
     const noLayers = removeSchemaTable(spec, "layers")
     expect(imported(noLayers)).toMatchObject({ table: null, column_names: [] })
-    expect(exported(noLayers)).toMatchObject({ tables: [], target: { table_names: [] } })
+    expect(exported(noLayers)).toMatchObject({ tables: [] })
     expect(parameters(removeSchemaTable(spec, QUOTE_DETAILS_NAME))).toEqual([])
   })
 

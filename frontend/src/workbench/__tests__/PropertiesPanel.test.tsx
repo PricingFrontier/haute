@@ -1310,15 +1310,10 @@ describe("PropertiesPanel", () => {
     expect(screen.queryByRole("combobox", { name: "Delimiter" })).not.toBeInTheDocument()
     expect(exported().target).toEqual({ file_name: "{quote_reference}-{quote_option}", headers: "labels", values: "formatted", format: "excel" })
 
-    fireEvent.click(screen.getByRole("radio", { name: "SQL" }))
-    const written = screen.getByRole("textbox", { name: "premiums is written to" })
-    expect(written).toHaveAttribute("placeholder", "premiums")
-    fireEvent.change(written, { target: { value: "quote_premiums" } })
-    fireEvent.blur(written)
-    expect(screen.queryByRole("textbox", { name: "equipment is written to" })).not.toBeInTheDocument()
-    expect(exported().target).toEqual({ format: "sql", connection: "", table_names: [{ table: "premiums", name: "quote_premiums" }] })
+    // An Export writes a file: a saved quote is in the store's database already.
+    expect(screen.queryByRole("radio", { name: "SQL" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("checkbox", { name: "premiums" }))
-    expect(exported()).toMatchObject({ tables: ["policy"], target: { table_names: [] } })
+    expect(exported()).toMatchObject({ tables: ["policy"] })
   })
 
   it("lays an Export's Excel out as cells, a row for each with its field, sheet, address and label's address, one added under the last", () => {

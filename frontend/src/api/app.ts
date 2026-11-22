@@ -11,7 +11,8 @@
 
 import type { SampleRow } from "../utils/workbenchForm"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
-import { post, request, sendKeyed } from "./client"
+import { post, postRawStream, request, sendKeyed } from "./client"
+import { exportedFile, type ExportedFile } from "./workbench"
 import type { KeyedTicket } from "./keyedWrites"
 import type {
   WorkbenchAppFormResponse,
@@ -147,6 +148,15 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
 export async function createAppQuote(creation: QuoteCreation, source: QuoteSource | null, reference: string | null, ticket: KeyedTicket): Promise<WorkbenchAppQuoteResponse> {
   const body: WorkbenchAppQuoteCreateRequest = { ...creation, source, reference }
   return quoteResponse(await heard(sendKeyed<unknown>("/api/app/quotes", body, ticket, { timeout: PRICE_TIMEOUT_MS })))
+}
+
+/**
+ * The workbook the Export `componentId` writes of the final quote `reference`/`option` at
+ * `version`, from its values and prices as the store keeps them, recorded in its activity
+ * (POST /api/app/quotes/{reference}/{option}/export): a refusal throws with its reason.
+ */
+export async function exportAppQuote(reference: string, option: number, componentId: string, version: number): Promise<ExportedFile> {
+  return exportedFile(await postRawStream(`${quoteRoute(reference, option)}/export`, { component: componentId, version }))
 }
 
 /** The quote `reference`/`option`, with what it holds. */

@@ -89,8 +89,9 @@ Out of scope:
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
 - Running an Import or an Export: reading a file or a database into a table
   ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
-  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)), but
-  for an Export to an Excel workbook of cells in Preview.
+  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)), but
+  for an Export to an Excel workbook of cells, in Preview and on a final quote in the
+  underwriter app.
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -506,9 +507,8 @@ Out of scope:
   the `table` by name, its `columns` by name in the order chosen, the cell `cell` of the
   sheet named `sheet` at the block's top-left corner, and its `header`, its columns headed
   by their `labels`, their `names` or, with `none`, not at all; and no `tables`, since its
-  cells and blocks say what it writes; or a database (`sql`,
-  its `connection` and its `table_names`, the tables written to a table named otherwise,
-  each by `table`, one it exports, with that `name`, never blank, one each at most)),
+  cells and blocks say what it writes), an Export writing a file alone, since a saved quote
+  is in the store's database already (decided 22 November 2026),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
   corner and inside it, its `y` plus its `h` at most the section's `height` and its `x` plus
   its `w` at most the sheet's `width`, and with a
@@ -1468,9 +1468,7 @@ Out of scope:
   index among them) that it does not hold yet. Under them Add a table, a select of the
   schema's tables, a table chosen adding a block of it with no columns, headed by labels,
   at `A1` of a sheet named by the table. Otherwise Tables, a
-  checkbox per schema table, ticked in order, and, to a database, beside
-  each one ticked the name of the table it is written to, showing the table's own while
-  it has none; unticking a table drops its name; and a table it exports that is no longer
+  checkbox per schema table, ticked in order; and a table it exports that is no longer
   in the schema a row of its own, "Missing table", with a cross. Each change is one undo
   step. While building, the showing sheet's tab has a settings
   mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
@@ -1766,18 +1764,28 @@ Out of scope:
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
 - **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
-  box, its label centred beside its format's mark (a CSV's, a workbook's or a
-  database's), with no label its mark alone, in a frame of the sheets' border colour on the
+  box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
+  Import, a database's), with no label its mark alone, in a frame of the sheets' border colour on the
   components' background, in their font, and is a button to a screen reader, named by its
   label. Neither shows schema columns nor takes anything typed. They are laid out and
   their settings chosen before anything runs them: reading a file or a database into a
   table is [WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)'s and
-  writing the quote's tables out [WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)'s,
+  writing the quote's tables out [WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)'s,
   so in Preview and in the underwriter app each is drawn disabled, faded, and a press does
-  nothing, but for an Export to an Excel workbook of cells in Preview, which runs. It can
+  nothing, but for an Export to an Excel workbook of cells, which runs in Preview and on a
+  final quote in the app. In Preview it can
   be pressed while it has no problems and the sample's price is the price of the sample as
-  it stands, not out of date; otherwise, and while a
-  press is answered, it is drawn disabled. A press sends the form as the view holds it,
+  it stands, not out of date; in the app while it has no problems and the quote open is
+  final, so the workbook is of a quote that does not change; otherwise, and while a
+  press is answered, it is drawn disabled. In the app a press sends the Export and the
+  quote's version: the server writes the workbook from the quote's values and prices as
+  the store keeps them, as Preview's from its sample, the quote's own reference and option
+  among them, names the release that priced it in the workbook's `Haute release` custom
+  property, and records the export in the quote's activity, by who pressed it, moving no
+  version (anyone signed in may export, as anyone may read the quote); a draft is refused
+  (409, `quote_not_ready`, "Mark Q-000001/1 final before exporting it.") and a quote
+  changed since it was opened refused as a stale change is, nothing recorded. Preview's
+  run: a press sends the form as the view holds it,
   the Export and what that pricing gave (the sample as the server typed it and the priced
   tables), and the browser downloads the workbook the server writes, named by its file
   name with `.xlsx`; a refusal shows as an error naming why, as when the sample changed
@@ -1832,7 +1840,7 @@ Out of scope:
   And an Export's: no label; no tables, but to a workbook of cells; a table no longer in
   the schema; more than one
   table to a CSV, which holds one; a file with no name or naming a column `quote_details`
-  does not have; to a database, no connection; and to a workbook of cells, no cells and no
+  does not have; and to a workbook of cells, no cells and no
   blocks, a cell's column no longer in the schema or of a many-row table, which holds a
   value per row (a block writes its rows), a block's table or one of its columns no longer
   in the schema, a block with no columns or with one twice, a sheet name Excel refuses

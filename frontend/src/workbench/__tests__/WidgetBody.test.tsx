@@ -11,7 +11,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
-import type { ShowWhen } from "../../api/types"
+import type { ShowWhen, WorkbenchAppQuote } from "../../api/types"
+import { quoteExporter } from "../../app/useOpenQuoteStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
@@ -1603,12 +1604,12 @@ describe("WidgetBody", () => {
     expect(screen.getByRole("button", { name: "Import schedule" })).toHaveClass("opacity-60")
     act(() => useWorkbenchViewStore.setState({ mode: "build" }))
 
-    // With no label, its mark alone, named by its kind; a database's mark once it writes to one.
-    act(() => useWorkbenchFormStore.getState().change((spec) => setExportFormat(spec, "w_out", "sql")))
+    // With no label, its mark alone, named by its kind: a workbook's once it writes one.
+    act(() => useWorkbenchFormStore.getState().change((spec) => setExportFormat(spec, "w_out", "excel")))
     rerender(body("w_out"))
     const empty = screen.getByRole("button", { name: "Export" })
     expect(empty).toHaveTextContent("")
-    expect(empty.querySelector("svg.lucide-database")).not.toBeNull()
+    expect(empty.querySelector("svg.lucide-file-spreadsheet")).not.toBeNull()
   })
 
   describe("an Export to an Excel workbook of cells", () => {
@@ -1639,6 +1640,7 @@ describe("WidgetBody", () => {
 
     afterEach(() => {
       act(() => useWorkbenchViewStore.setState({ mode: "build", underwriterApp: false }))
+      useWorkbenchPreviewStore.setState({ exporter: null })
       useToastStore.setState({ toasts: [] })
     })
 
@@ -1676,6 +1678,30 @@ describe("WidgetBody", () => {
 
       await vi.waitFor(() => expect(useToastStore.getState().toasts).toMatchObject([{ type: "error", text: "The sample changed after it was priced: export once it is priced again." }]))
       expect(slip()).toBeEnabled()
+    })
+
+    it("in the app, runs on the quote open while it is final, downloading what the server writes of it", async () => {
+      cellsExport()
+      const clicked = downloads()
+      const fetch = vi.fn(async () => new Response("PK", { status: 200, headers: { "Content-Disposition": 'attachment; filename="Acme Q-1.xlsx"' } }))
+      vi.stubGlobal("fetch", fetch)
+      act(() => useWorkbenchViewStore.setState({ underwriterApp: true }))
+      const final = { reference: "Q 1", option: 2, stage: "final", version: 7 } as WorkbenchAppQuote
+      act(() => useWorkbenchPreviewStore.getState().setExporter(quoteExporter(final)))
+      const { rerender } = render(body("w_out", "quote"))
+
+      await act(async () => {
+        fireEvent.click(slip())
+      })
+
+      await vi.waitFor(() => expect(clicked).toEqual(["Acme Q-1.xlsx"]))
+      const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe("/api/app/quotes/Q%201/2/export")
+      expect(JSON.parse(init.body as string)).toEqual({ component: "w_out", version: 7 })
+      // A draft is exported nowhere.
+      act(() => useWorkbenchPreviewStore.getState().setExporter(quoteExporter({ ...final, stage: "draft" })))
+      rerender(body("w_out", "quote"))
+      expect(slip()).toBeDisabled()
     })
 
     it("is disabled while the price is not the sample's as it stands, it has a problem, the view is building or it is the app", () => {

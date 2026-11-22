@@ -531,5 +531,7 @@ export function activityText(entry: WorkbenchAppQuoteActivityEntry, source: Work
       return "marked it final"
     case "amended":
       return entry.reason ? `amended it: ${entry.reason}` : "amended it"
+    case "exported":
+      return "exported it"
   }
 }

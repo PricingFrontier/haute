@@ -1370,3 +1370,22 @@ def test_a_text_index_exceeding_the_utf16_budget_is_refused_without_writes(
             values={"sites": [{"site": "\U00020000" * 184}]},
         )
     assert store.read("SELECT site FROM sites") == []
+
+
+def test_an_export_is_recorded_only_on_the_final_quote_it_was_read_as(book: QuoteBook) -> None:
+    """WB-11: an export moves no version and is refused, nothing recorded, on a draft or a
+    quote changed since it was read for the export."""
+    draft = save(book, make(book))
+    with pytest.raises(QuoteNotReadyError, match="Mark A-1/1 final before exporting it"):
+        book.record_export("A-1", 1, version=draft.version, actor=JO)
+    final = book.finalise("A-1", 1, version=draft.version, actor=ANA, release=RELEASE)
+    with pytest.raises(StaleQuoteError, match="has changed since you opened it"):
+        book.record_export("A-1", 1, version=draft.version, actor=JO)
+
+    book.record_export("A-1", 1, version=final.version, actor=JO)
+
+    entries = book.activity("A-1", 1).entries
+    assert [entry.action for entry in entries].count("exported") == 1
+    exported = next(entry for entry in entries if entry.action == "exported")
+    assert (exported.actor, exported.version, exported.priced_release) == (JO, None, RELEASE)
+    assert book.get("A-1", 1).version == final.version

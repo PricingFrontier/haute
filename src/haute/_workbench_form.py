@@ -716,35 +716,14 @@ class ExcelCellsExport(_Strict):
     blocks: list[ExportBlock]
 
 
-class TableName(_Strict):
-    """A table an Export writes to a database, by name, and the name of the table it is
-    written to there."""
-
-    table: str
-    name: Annotated[str, Field(min_length=1, pattern=r"\S")]
-
-
-class SqlExport(_Strict):
-    """The tables an Export writes to a database on a named connection, each to the table
-    of its own name or the name given it, the quote's rows there written again."""
-
-    format: Literal["sql"]
-    #: The connection by name; empty while none is chosen.
-    connection: str
-    #: The tables written to a table named otherwise, in no set order.
-    table_names: list[TableName]
-
-
-ExportTarget = Annotated[
-    CsvExport | ExcelExport | ExcelCellsExport | SqlExport, Field(discriminator="format")
-]
+ExportTarget = Annotated[CsvExport | ExcelExport | ExcelCellsExport, Field(discriminator="format")]
 
 
 class ExportWidget(_Placed):
-    """An Export: a button an underwriter presses to take the quote's tables out to a file
-    or a database. It shows no schema columns and takes nothing typed. Only an Excel
-    workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
-    are used."""
+    """An Export: a button an underwriter presses to take the quote's tables out to a file;
+    a saved quote is in the store's database already. It shows no schema columns and takes
+    nothing typed. Only an Excel workbook of cells runs yet, in Preview and on a final quote
+    in the underwriter app; every other is drawn disabled where the sheets are used."""
 
     type: Literal["export"]
     #: The text on the button.
@@ -759,12 +738,6 @@ class ExportWidget(_Placed):
         _check_once(self.id, "tables", self.tables)
         if isinstance(self.target, ExcelCellsExport) and self.tables:
             raise ValueError(f"widget {self.id} writes cells, so it exports no tables")
-        if isinstance(self.target, SqlExport):
-            named = [entry.table for entry in self.target.table_names]
-            _check_once(self.id, "table names", named)
-            for table in named:
-                if table not in self.tables:
-                    raise ValueError(f"widget {self.id} names a table {table!r} it does not export")
         return self
 
 

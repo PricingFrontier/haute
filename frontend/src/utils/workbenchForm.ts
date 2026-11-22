@@ -26,7 +26,6 @@ import type {
   SchemaTable,
   Section,
   ShowWhen,
-  SqlExport,
   SqlImport,
   Theme,
 } from "../api/types"
@@ -449,7 +448,6 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
       if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map((given) => ({ ...given, table: renamed(given.table) }))
     } else if (widget.type === "export") {
       widget.tables = widget.tables.map(renamed)
-      if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.map((named) => ({ ...named, table: renamed(named.table) }))
       if (widget.target.format === "excel_cells") {
         widget.target.cells = widget.target.cells.map((cell) => ({ ...cell, table: renamed(cell.table) }))
         widget.target.blocks = widget.target.blocks.map((block) => ({ ...block, table: renamed(block.table) }))
@@ -563,7 +561,6 @@ const dropButtonUses = (widget: Widget, table: (id: string) => boolean, column: 
     if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.filter((given) => !table(given.table) && !column(given))
   } else if (widget.type === "export") {
     widget.tables = widget.tables.filter((id) => !table(id))
-    if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => !table(named.table))
     // An Export of cells keeps them, each named as a problem (`cellsProblems`).
   }
 }
@@ -1794,11 +1791,16 @@ export const removeSpacer = (spec: FormSpec, widgetId: string, at: number): Form
 export type ImportFormat = ImportWidget["source"]["format"]
 /** Where an Export writes to: a CSV, an Excel workbook of a sheet per table or of cells, or a database. */
 export type ExportFormat = ExportWidget["target"]["format"]
+/** The kinds of file an Export writes, as its Format offers them: a workbook of either layout is Excel. */
+export type ExportFileFormat = Exclude<ExportFormat, "excel_cells">
+/** The formats each kind of button offers: an Import reads a file or a database, an Export writes a file, a saved quote being in the store's database already. */
+export const IMPORT_FORMATS: readonly ImportFormat[] = ["csv", "excel", "sql"]
+export const EXPORT_FORMATS: readonly ExportFileFormat[] = ["csv", "excel"]
 /** How an Export's Excel workbook is laid out: a sheet per table, or chosen fields in cells. */
 export type ExcelLayout = "tables" | "cells"
 
 /** The format an Export's Format shows for its target: either Excel workbook is Excel. */
-export const exportFormatShown = (format: ExportFormat): ImportFormat => (format === "excel_cells" ? "excel" : format)
+export const exportFormatShown = (format: ExportFormat): ExportFileFormat => (format === "excel_cells" ? "excel" : format)
 
 /**
  * The furthest down a workbook's sheet an Import's header row can be, as the server's form
@@ -1821,7 +1823,6 @@ export const EXPORT_TARGETS: { readonly [F in ExportFormat]: Readonly<Extract<Ex
   csv: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "csv", delimiter: "comma" },
   excel: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "excel" },
   excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, cells: [], blocks: [] },
-  sql: { format: "sql", connection: "", table_names: [] },
 }
 
 /** The sheet a workbook's first cell is written to, as Excel names a new workbook's first sheet. */
@@ -1944,9 +1945,6 @@ export const importColumns = (table: SchemaTable): SchemaColumn[] =>
 /** The columns a query's parameter can be given: a one-row table's inputs. */
 export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? typedInputs(table) : [])
 
-/** Whether an Export writes a file: a CSV or an Excel workbook, of either layout. */
-const isFile = (target: ExportWidget["target"]): target is CsvExport | ExcelExport | ExcelCellsExport => target.format !== "sql"
-
 /** Whether an Export's file heads its tables' columns and fills them: a CSV or a workbook of a sheet per table. */
 const headsColumns = (target: ExportWidget["target"]): target is CsvExport | ExcelExport => target.format === "csv" || target.format === "excel"
 
@@ -1956,12 +1954,11 @@ const headsColumns = (target: ExportWidget["target"]): target is CsvExport | Exc
  * headers and values between a CSV and a workbook of a sheet per table. Choosing Excel for a
  * workbook of cells changes nothing.
  */
-export function setExportFormat(spec: FormSpec, id: string, format: ImportFormat): FormSpec {
+export function setExportFormat(spec: FormSpec, id: string, format: ExportFileFormat): FormSpec {
   const { target } = exportOf(spec, id)
   if (exportFormatShown(target.format) === format) return spec
   return edit(spec, (draft) => {
-    const next = structuredClone(EXPORT_TARGETS[format])
-    if (isFile(next) && isFile(target)) next.file_name = target.file_name
+    const next: ExportWidget["target"] = { ...structuredClone(EXPORT_TARGETS[format]), file_name: target.file_name }
     if (headsColumns(next) && headsColumns(target)) Object.assign(next, { headers: target.headers, values: target.values })
     exportOf(draft, id).target = next
   })
@@ -1986,16 +1983,15 @@ export function setExcelLayout(spec: FormSpec, id: string, layout: ExcelLayout):
 }
 
 /** The settings a format of an Export has of its own, beside the names of the tables it writes to and the cells it writes. */
-export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" | "values" | "delimiter"> & Pick<SqlExport, "connection">>
+export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" | "values" | "delimiter">>
 
 const TARGET_KEYS: Record<ExportFormat, readonly string[]> = {
   csv: ["file_name", "headers", "values", "delimiter"],
   excel: ["file_name", "headers", "values"],
   excel_cells: ["file_name"],
-  sql: ["connection"],
 }
 
-/** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter, a database's connection. */
+/** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter. */
 export function updateExportTarget(spec: FormSpec, id: string, patch: ExportTargetPatch): FormSpec {
   const { target } = exportOf(spec, id)
   const foreign = Object.keys(patch).find((key) => !TARGET_KEYS[target.format].includes(key))
@@ -2007,7 +2003,7 @@ export function updateExportTarget(spec: FormSpec, id: string, patch: ExportTarg
   })
 }
 
-/** Export a table, after those it exports, or stop exporting it, the name it was written to going too. */
+/** Export a table, after those it exports, or stop exporting it. */
 export const toggleExportTable = (spec: FormSpec, id: string, table: string): FormSpec =>
   edit(spec, (draft) => {
     const widget = exportOf(draft, id)
@@ -2016,28 +2012,7 @@ export const toggleExportTable = (spec: FormSpec, id: string, table: string): Fo
       return
     }
     widget.tables = widget.tables.filter((exported) => exported !== table)
-    if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => named.table !== table)
   })
-
-function sqlExportOf(spec: FormSpec, id: string): SqlExport {
-  const { target } = exportOf(spec, id)
-  if (target.format !== "sql") throw new Error(`Component ${id} exports to ${target.format}, which names no tables`)
-  return target
-}
-
-/** The name of the database table an Export writes one of its tables to; blank takes it away, the table then written to the table of its own name. */
-export function setTableName(spec: FormSpec, id: string, table: string, name: string): FormSpec {
-  if (!exportOf(spec, id).tables.includes(table)) throw new Error(`Component ${id} does not export ${table}`)
-  const named = sqlExportOf(spec, id).table_names.find((entry) => entry.table === table)
-  const blank = name.trim() === ""
-  if (blank ? named === undefined : named?.name === name) return spec
-  return edit(spec, (draft) => {
-    const target = sqlExportOf(draft, id)
-    if (blank) target.table_names = target.table_names.filter((entry) => entry.table !== table)
-    else if (named !== undefined) target.table_names = target.table_names.map((entry) => (entry.table === table ? { table, name } : entry))
-    else target.table_names.push({ table, name })
-  })
-}
 
 /** The `{name}`s a file name holds, in order. */
 export const fileNameTokens = (fileName: string): string[] => Array.from(fileName.matchAll(/\{([^{}]*)\}/g), (found) => found[1])
@@ -2629,8 +2604,8 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
 
 /**
  * What stops an Export doing what its settings say: no tables, one gone, more than one to
- * a CSV, a file with no name or naming a column quote_details does not have, to a database
- * no connection, and to a workbook of cells its own (`cellsProblems`).
+ * a CSV, a file with no name or naming a column quote_details does not have, and to a
+ * workbook of cells its own (`cellsProblems`).
  */
 function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
   const { target, tables } = widget
@@ -2638,10 +2613,6 @@ function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
   const problems: string[] = []
   if (tables.length === 0) problems.push("exports no tables")
   if (tables.some((id) => !spec.schema.tables.some((table) => table.name === id))) problems.push("exports a table that is no longer in the schema")
-  if (target.format === "sql") {
-    if (target.connection.trim() === "") problems.push("names no connection")
-    return problems
-  }
   if (target.format === "csv" && tables.length > 1) problems.push("exports more than one table to a CSV, which holds one")
   return [...problems, ...fileNameProblems(spec, target.file_name)]
 }

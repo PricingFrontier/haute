@@ -6104,10 +6104,10 @@ export interface QueryParameter {
   table: string;
 }
 /**
- * An Export: a button an underwriter presses to take the quote's tables out to a file
- * or a database. It shows no schema columns and takes nothing typed. Only an Excel
- * workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
- * are used.
+ * An Export: a button an underwriter presses to take the quote's tables out to a file;
+ * a saved quote is in the store's database already. It shows no schema columns and takes
+ * nothing typed. Only an Excel workbook of cells runs yet, in Preview and on a final quote
+ * in the underwriter app; every other is drawn disabled where the sheets are used.
  */
 export interface ExportWidget {
   h: number;
@@ -6116,7 +6116,7 @@ export interface ExportWidget {
   name: string;
   show_when: ShowWhen;
   tables: string[];
-  target: CsvExport | ExcelExport | ExcelCellsExport | SqlExport;
+  target: CsvExport | ExcelExport | ExcelCellsExport;
   type: 'export';
   w: number;
   x: number;
@@ -6181,23 +6181,6 @@ export interface ExportCell {
   column: string;
   label_cell: string;
   sheet: string;
-  table: string;
-}
-/**
- * The tables an Export writes to a database on a named connection, each to the table
- * of its own name or the name given it, the quote's rows there written again.
- */
-export interface SqlExport {
-  connection: string;
-  format: 'sql';
-  table_names: TableName[];
-}
-/**
- * A table an Export writes to a database, by name, and the name of the table it is
- * written to there.
- */
-export interface TableName {
-  name: string;
   table: string;
 }
 /**
@@ -6654,10 +6637,10 @@ export interface WorkbenchAppRelatedQuote {
 }
 /**
  * One thing done to a quote: what, by whom and when, the version it left the quote at
- * (none for a note), and what it carried.
+ * (none for a note or an export), and what it carried.
  */
 export interface WorkbenchAppQuoteActivityEntry {
-  action: 'created' | 'saved' | 'assigned' | 'archived' | 'restored' | 'finalised' | 'amended' | 'noted';
+  action: 'created' | 'saved' | 'assigned' | 'archived' | 'restored' | 'finalised' | 'amended' | 'noted' | 'exported';
   actor: string;
   assignee: string | null;
   at: string;

@@ -1071,11 +1071,6 @@ EXPORTS: dict[str, dict[str, Any]] = {
         "values": "raw",
         "format": "excel",
     },
-    "sql": {
-        "format": "sql",
-        "connection": "warehouse",
-        "table_names": [{"table": "layers", "name": "quote_layers"}],
-    },
 }
 
 
@@ -1133,12 +1128,19 @@ def _export(target: dict[str, Any], **rest: Any) -> dict[str, Any]:
 def test_an_import_and_an_export_of_each_format_read_and_write_as_they_are(
     format_: str,
 ) -> None:
-    form = _with_buttons(_import(IMPORTS[format_]), _export(EXPORTS[format_]))
+    form = _with_buttons(_import(IMPORTS[format_]), _export(EXPORTS.get(format_, EXPORTS["csv"])))
 
     written = json.loads(render_form(FormSpec.model_validate(form)))
     assert (
         written["pages"][0]["sections"][2]["widgets"] == form["pages"][0]["sections"][2]["widgets"]
     )
+
+
+def test_an_export_to_a_database_is_no_export_a_form_holds() -> None:
+    """A saved quote is in the store's database already, so an Export writes files alone."""
+    target = {"format": "sql", "connection": "warehouse", "table_names": []}
+    with pytest.raises(ValidationError, match="sql"):
+        FormSpec.model_validate(_with_buttons(_export(target)))
 
 
 def _without(fields: dict[str, Any], key: str) -> dict[str, Any]:

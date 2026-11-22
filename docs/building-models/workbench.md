@@ -347,15 +347,19 @@ one:
   with it.
 - An **Import** is a button that fills an input table from a CSV or an Excel workbook the
   underwriter picks, or from a database.
-- An **Export** is a button that takes the quote's tables out to a CSV, an Excel workbook
-  or a database, or writes chosen fields into the cells of an Excel workbook.
+- An **Export** is a button that takes the quote's tables out to a CSV or an Excel
+  workbook, or writes chosen fields into the cells of an Excel workbook. A saved quote is
+  in the quote store's database already, so an Export writes files only.
 
 For now you can lay Imports and Exports out and set what they will do, but most do not
 run yet: in Preview and the underwriter app they are greyed out and pressing one does
-nothing. The exception is an Export to Excel laid out as **Cells**, which runs in Preview:
-press it and your browser downloads the workbook of the sample as it was last priced. It is
-greyed out from the moment you change the sample until its new price arrives, and while the
-Export has a problem. In the underwriter app it is greyed out too, for now.
+nothing. The exception is an Export to Excel laid out as **Cells**. In Preview, press it
+and your browser downloads the workbook of the sample as it was last priced; it is greyed
+out from the moment you change the sample until its new price arrives. In the underwriter
+app it runs on a final quote: the workbook holds the quote as it was saved, records the
+release that priced it as the workbook's **Haute release** property, and the quote's
+history shows who exported it. It is greyed out while the quote is a draft, and anywhere
+while the Export has a problem.
 
 While building, **Display** in the toolbar opens the sheets' colours: the **Sheet
 background**, the **Component background** of framed Tables, Collections and Charts, their
@@ -424,9 +428,7 @@ a sheet per table.
   (one table) or **Excel** (a sheet per table) it has a file **Name**, where `{name}`
   stands for that column of quote_details (`{quote_reference}-{quote_option}` to start),
   **Headers** (the columns' names or labels) and **Values** (raw, or formatted as the
-  sheets show them), and a CSV a **Delimiter**. To **SQL** it has a **Connection**, and
-  beside each table you tick, the name of the database table it is written to (blank for
-  the table's own name).
+  sheets show them), and a CSV a **Delimiter**.
 - An Export to **Excel** has a **Layout**: **Sheet per table**, above, or **Cells**, which
   writes chosen fields into chosen cells of a workbook Haute makes. Under **Cells**, each
   row is a field of a one-row table, the **Sheet** it goes on, the **Cell** it goes in,

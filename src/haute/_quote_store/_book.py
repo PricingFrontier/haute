@@ -91,7 +91,15 @@ View = Literal["mine", "team", "archived"]
 Sort = Literal["saved", "reference", "insured"]
 #: What an activity row records.
 Action = Literal[
-    "created", "saved", "assigned", "archived", "restored", "finalised", "amended", "noted"
+    "created",
+    "saved",
+    "assigned",
+    "archived",
+    "restored",
+    "finalised",
+    "amended",
+    "noted",
+    "exported",
 ]
 
 #: The quotes one page holds, unless asked for fewer; and the most it holds.
@@ -1264,6 +1272,32 @@ class QuoteBook:
                         )
                         missing.append(f"{where}.{column.label or column.name}")
         return missing
+
+    def record_export(self, reference: str, option: int, *, version: int, actor: str) -> None:
+        """Record in the quote's activity that *actor* exported it at *version*, which moves
+        no version: refused, nothing recorded, when it has moved past *version* since it was
+        read for the export (:class:`StaleQuoteError`) or is no longer final
+        (:class:`QuoteNotReadyError`), since a quote is exported only while it is final and
+        so does not change."""
+        actor = _check_principal(actor, "Who exports a quote")
+        at = self._clock()
+        with writing(self._engine) as connection:
+            quote = self._get(connection, reference, option)
+            if quote.version != version:
+                raise StaleQuoteError(f"{quote.label} has changed since you opened it.")
+            if quote.stage != "final":
+                raise QuoteNotReadyError(f"Mark {quote.label} final before exporting it.")
+            self._record(
+                connection,
+                _server_key(),
+                reference,
+                option,
+                None,
+                at,
+                actor,
+                "exported",
+                priced_release=quote.priced_release,
+            )
 
     def set_note(self, reference: str, option: int, *, actor: str, note: str) -> AppQuote:
         """Put *note*, the handover note, on the quote with who wrote it and when; a blank one

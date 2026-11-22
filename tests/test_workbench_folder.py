@@ -291,9 +291,10 @@ PERILS_SECTION = {
             **place(760, 104, 160, 32),
             "label": "Export",
             "target": {
-                "format": "sql",
-                "connection": "warehouse",
-                "table_names": [{"table": "layers", "name": "quote_layers"}],
+                "format": "excel",
+                "file_name": "{quote_reference}",
+                "headers": "labels",
+                "values": "formatted",
             },
             "tables": ["layers", "pricing"],
         },
@@ -1058,9 +1059,8 @@ def test_files_name_tables_and_columns_by_name(project: Path) -> None:
         "BR_Perils",
         [{"column": "rate", "name": "Rate %"}],
     )
-    # An Export names its tables by name, a database's table names too.
+    # An Export names its tables by name.
     assert exporter["tables"] == ["layers", "pricing"]
-    assert exporter["target"]["table_names"] == [{"table": "layers", "name": "quote_layers"}]
     # No id is written anywhere: neither a table's nor a column's (READ-23), nor a sheet's, a
     # section's or a component's (READ-24).
     for path, data in files.items():
@@ -1719,9 +1719,8 @@ def _import(spec: FormSpec) -> tuple[str | None, list[str]]:
     return button.table, [named.column for named in button.column_names]
 
 
-def _export(spec: FormSpec) -> tuple[list[str], list[str]]:
-    button = component(spec, EXPORTER)
-    return button.tables, [named.table for named in button.target.table_names]
+def _export(spec: FormSpec) -> list[str]:
+    return component(spec, EXPORTER).tables
 
 
 REFERENCES: dict[str, Reference] = {
@@ -1853,20 +1852,12 @@ REFERENCES: dict[str, Reference] = {
         },
         None,
     ),
-    # An Export names tables only, and a table it writes to a database is one it exports.
-    "an Export's tables and table names": Reference(
+    # An Export names tables only.
+    "an Export's tables": Reference(
         "components/export.json",
-        {
-            "unknown table": {
-                ("tables", 0): "layerz",
-                ("target", "table_names", 0, "table"): "layerz",
-            },
-        },
+        {"unknown table": {("tables", 0): "layerz"}},
         _export,
-        {
-            "known": (["layers", "pricing"], ["layers"]),
-            "unknown table": (["layerz", "pricing"], ["layerz"]),
-        },
+        {"known": ["layers", "pricing"], "unknown table": ["layerz", "pricing"]},
         None,
     ),
 }

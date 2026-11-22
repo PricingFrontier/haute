@@ -44,10 +44,8 @@ from haute._workbench_form import (
     ImportWidget,
     Match,
     SchemaColumn,
-    SqlExport,
     SqlImport,
     TableInputWidget,
-    TableName,
     Theme,
     TotalKind,
     _condition_kind,
@@ -256,8 +254,6 @@ if TYPE_CHECKING:
     SqlImportFile = Any
     ColumnNameFile = Any
     ImportComponentFile = Any
-    TableNameFile = Any
-    SqlExportFile = Any
     ExcelCellsExportFile = Any
     ExportComponentFile = Any
     ComponentFile = Any
@@ -334,10 +330,6 @@ else:
             "column_names": (list[ColumnNameFile], ...),
         },
     )
-    TableNameFile = _derived("TableNameFile", TableName, replace={"table": (Name, ...)})
-    SqlExportFile = _derived(
-        "SqlExportFile", SqlExport, replace={"table_names": (list[TableNameFile], ...)}
-    )
     ExcelCellsExportFile = _derived(
         "ExcelCellsExportFile", ExcelCellsExport, replace={"cells": (list[ExportCellFile], ...)}
     )
@@ -349,7 +341,7 @@ else:
             "show_when": _SHOW_WHEN,
             "target": (
                 Annotated[
-                    CsvExport | ExcelExport | ExcelCellsExportFile | SqlExportFile,
+                    CsvExport | ExcelExport | ExcelCellsExportFile,
                     Field(discriminator="format"),
                 ],
                 ...,

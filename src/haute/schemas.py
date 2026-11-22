@@ -840,6 +840,13 @@ class WorkbenchAppQuoteAmend(WorkbenchAppQuoteChange):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class WorkbenchAppQuoteExport(WorkbenchAppQuoteChange):
+    """A final quote exported, at ``version`` of it, by its Export to an Excel workbook of
+    cells, by the Export's id (``component``)."""
+
+    component: BoundedName
+
+
 class WorkbenchAppQuoteNote(BaseModel):
     """The quote's handover note; blank clears it. A note moves no version, so it names none."""
 
@@ -854,10 +861,18 @@ class WorkbenchAppQuoteChangeResponse(BaseModel):
 
 class WorkbenchAppQuoteActivityEntry(BaseModel):
     """One thing done to a quote: what, by whom and when, the version it left the quote at
-    (none for a note), and what it carried."""
+    (none for a note or an export), and what it carried."""
 
     action: Literal[
-        "created", "saved", "assigned", "archived", "restored", "finalised", "amended", "noted"
+        "created",
+        "saved",
+        "assigned",
+        "archived",
+        "restored",
+        "finalised",
+        "amended",
+        "noted",
+        "exported",
     ]
     actor: str
     at: str

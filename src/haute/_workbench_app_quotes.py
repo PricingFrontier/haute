@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -61,6 +61,12 @@ from haute._quote_store import (
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._workbench_app import Pricing
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate
+from haute._workbench_export import (
+    XLSX_MEDIA_TYPE,
+    ExportRefusedError,
+    attachment,
+    quote_export,
+)
 from haute._workbench_form import QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, FormSpec
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -93,6 +99,7 @@ from haute.schemas import (
     WorkbenchAppQuoteChange,
     WorkbenchAppQuoteChangeResponse,
     WorkbenchAppQuoteCreateRequest,
+    WorkbenchAppQuoteExport,
     WorkbenchAppQuoteNote,
     WorkbenchAppQuoteResponse,
     WorkbenchAppQuoteSaveRequest,
@@ -521,6 +528,46 @@ def quote_router(app: QuoteApp) -> APIRouter:
         WorkbenchAppQuoteAmend,
         lambda book, r, o, b, a: book.amend(r, o, version=b.version, actor=a, reason=b.reason),
     )
+
+    @router.post(
+        "/quotes/{reference}/{option}/export",
+        response_class=Response,
+        responses={200: {"content": {XLSX_MEDIA_TYPE: {}}, "description": "The workbook."}},
+    )
+    async def export(reference: str, option: int, http: Request) -> Response:
+        """A final quote's Export to an Excel workbook of cells, run on its values and prices
+        as the store keeps them and recorded in its activity: the workbook, named by the
+        Export's file name. Anyone signed in may export, as anyone may read the quote."""
+        actor: str = http.state.principal
+        body = await _body(http, WorkbenchAppQuoteExport)
+        identity = (reference, option)
+        opened = await _call(app, lambda book: book.read(reference, option), identity)
+        quote = opened.quote
+        if quote.stage != "final" or quote.priced_release is None:
+            raise RequestRefusedError(
+                {
+                    "message": f"Mark {quote.label} final before exporting it.",
+                    "error_code": "quote_not_ready",
+                },
+                status_code=409,
+            )
+        release = quote.priced_release
+        try:
+            file_name, data = await run_in_threadpool(
+                quote_export, app.form, body.component, opened.values, opened.outputs or {}, release
+            )
+        except ExportRefusedError as exc:
+            raise UnprocessableError(exc.message) from None
+        await _call(
+            app,
+            lambda book: book.record_export(reference, option, version=body.version, actor=actor),
+            identity,
+        )
+        return Response(
+            content=data,
+            media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition": attachment(file_name)},
+        )
 
     @router.post(
         "/quotes/{reference}/{option}/note", response_model=WorkbenchAppQuoteChangeResponse

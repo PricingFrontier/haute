@@ -10149,7 +10149,7 @@
     },
     "ExportWidget": {
       "additionalProperties": false,
-      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file\nor a database. It shows no schema columns and takes nothing typed. Only an Excel\nworkbook of cells runs yet, in Preview; every other is drawn disabled where the sheets\nare used.",
+      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file;\na saved quote is in the store's database already. It shows no schema columns and takes\nnothing typed. Only an Excel workbook of cells runs yet, in Preview and on a final quote\nin the underwriter app; every other is drawn disabled where the sheets are used.",
       "properties": {
         "h": {
           "exclusiveMinimum": 0,
@@ -10188,9 +10188,6 @@
             },
             {
               "$ref": "#/$defs/ExcelCellsExport"
-            },
-            {
-              "$ref": "#/$defs/SqlExport"
             }
           ],
           "title": "Target"
@@ -24294,35 +24291,6 @@
       "title": "ShowWhen",
       "type": "object"
     },
-    "SqlExport": {
-      "additionalProperties": false,
-      "description": "The tables an Export writes to a database on a named connection, each to the table\nof its own name or the name given it, the quote's rows there written again.",
-      "properties": {
-        "connection": {
-          "title": "Connection",
-          "type": "string"
-        },
-        "format": {
-          "const": "sql",
-          "title": "Format",
-          "type": "string"
-        },
-        "table_names": {
-          "items": {
-            "$ref": "#/$defs/TableName"
-          },
-          "title": "Table Names",
-          "type": "array"
-        }
-      },
-      "required": [
-        "format",
-        "connection",
-        "table_names"
-      ],
-      "title": "SqlExport",
-      "type": "object"
-    },
     "SqlImport": {
       "additionalProperties": false,
       "description": "A query run on a named connection, whose credentials the environment holds, never\nthe form, each of its parameters given the value of the column bound to it.",
@@ -25024,28 +24992,6 @@
         "tables"
       ],
       "title": "TableListResponse",
-      "type": "object"
-    },
-    "TableName": {
-      "additionalProperties": false,
-      "description": "A table an Export writes to a database, by name, and the name of the table it is\nwritten to there.",
-      "properties": {
-        "name": {
-          "minLength": 1,
-          "pattern": "\\S",
-          "title": "Name",
-          "type": "string"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        }
-      },
-      "required": [
-        "table",
-        "name"
-      ],
-      "title": "TableName",
       "type": "object"
     },
     "TableV2": {
@@ -28153,7 +28099,7 @@
       "type": "object"
     },
     "WorkbenchAppQuoteActivityEntry": {
-      "description": "One thing done to a quote: what, by whom and when, the version it left the quote at\n(none for a note), and what it carried.",
+      "description": "One thing done to a quote: what, by whom and when, the version it left the quote at\n(none for a note or an export), and what it carried.",
       "properties": {
         "action": {
           "enum": [
@@ -28164,7 +28110,8 @@
             "restored",
             "finalised",
             "amended",
-            "noted"
+            "noted",
+            "exported"
           ],
           "title": "Action",
           "type": "string"

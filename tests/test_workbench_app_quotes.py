@@ -1052,6 +1052,106 @@ def test_a_store_the_app_cannot_write_to_is_reported_closed_naming_why(
     )
 
 
+def _slip_id(client: TestClient) -> str:
+    """The Export's id as the app's form holds it, which the page names it by."""
+    form = client.get("/api/app/form", headers=ANA).json()["form"]
+    (widget,) = [w for page in form["pages"] for s in page["sections"] for w in s["widgets"]]
+    return str(widget["id"])
+
+
+def _slip_form() -> dict[str, Any]:
+    """FORM with an Export to an Excel workbook of cells: the insured, the state, the premium
+    and the quote's reference, under a file name made of the quote's details."""
+    spec = json.loads(json.dumps(FORM))
+
+    def cell(table: str, column: str, address: str) -> dict[str, str]:
+        return {
+            "table": table,
+            "column": column,
+            "sheet": "Slip",
+            "cell": address,
+            "label_cell": "",
+        }
+
+    spec["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_slip",
+            "name": "slip",
+            "type": "export",
+            "x": 0,
+            "y": 0,
+            "w": 160,
+            "h": 40,
+            "label": "Slip",
+            "tables": [],
+            "target": {
+                "format": "excel_cells",
+                "file_name": "{insured} {quote_reference}",
+                "cells": [
+                    cell("quote_details", "insured", "B1"),
+                    cell("quote_details", "quote_reference", "B2"),
+                    cell("policy_details", "state", "B3"),
+                    cell("pricing_output", "premium", "B4"),
+                ],
+                "blocks": [],
+            },
+        }
+    ]
+    return spec
+
+
+def test_a_final_quote_exports_its_values_and_prices_naming_the_release(tmp_path: Path) -> None:
+    """WB-11: the app runs the Export the form holds on the quote the store keeps, names the
+    release that priced it, and records the export in the quote's activity."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    release = _write_release(tmp_path / "slip", _slip_form())
+    url = _prepared(tmp_path / "slip.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        page = Page(client)
+        quote = page.change(page.priced(), "final").json()["quote"]
+
+        exported = client.post(
+            f"{address(quote)}/export",
+            json={"component": _slip_id(client), "version": quote["version"]},
+            headers=JO,
+        )
+        assert exported.status_code == 200, exported.text
+        entries = page.activity(quote)["entries"]
+
+    assert 'filename="Acme Q-000001.xlsx"' in exported.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(exported.content))
+    slip = workbook["Slip"]
+    assert [slip[f"B{row}"].value for row in range(1, 5)] == ["Acme", "Q-000001", "NY", 500]
+    properties = {held.name: held.value for held in workbook.custom_doc_props.props}
+    assert properties == {"Haute release": page.release}
+    assert (entries[-1]["action"], entries[-1]["actor"]) == ("exported", "jo@example.com")
+    assert entries[-1]["priced_release"] == page.release
+
+
+def test_a_draft_is_not_exported_and_nothing_is_recorded(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "slip", _slip_form())
+    url = _prepared(tmp_path / "slip.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        page = Page(client)
+        quote = page.priced()
+        refused = client.post(
+            f"{address(quote)}/export",
+            json={"component": _slip_id(client), "version": quote["version"]},
+            headers=ANA,
+        )
+        actions = [entry["action"] for entry in page.activity(quote)["entries"]]
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == {
+        "message": "Mark Q-000001/1 final before exporting it.",
+        "error_code": "quote_not_ready",
+    }
+    assert "exported" not in actions
+
+
 # ── The app's guards and pages ────────────────────────────────────────────
 
 

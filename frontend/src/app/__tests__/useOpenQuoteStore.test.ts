@@ -935,3 +935,20 @@ describe("useOpenQuoteStore", () => {
     expect(createAppQuote).not.toHaveBeenCalled()
   })
 })
+
+describe("the quote open's Export", () => {
+  afterEach(() => {
+    useOpenQuoteStore.setState({ quote: null })
+    useWorkbenchPreviewStore.setState({ exporter: null })
+  })
+
+  it("runs on the sheets while the quote open is final, and on no other", () => {
+    useOpenQuoteStore.setState({ quote: appQuote({ stage: "final" }) })
+    expect(useWorkbenchPreviewStore.getState().exporter).not.toBeNull()
+
+    useOpenQuoteStore.setState({ quote: appQuote({ stage: "draft" }) })
+    expect(useWorkbenchPreviewStore.getState().exporter).toBeNull()
+    useOpenQuoteStore.setState({ quote: null })
+    expect(useWorkbenchPreviewStore.getState().exporter).toBeNull()
+  })
+})

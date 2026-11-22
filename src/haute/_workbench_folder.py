@@ -81,7 +81,6 @@ from haute._workbench_form import (
     ImportWidget,
     SchemaColumn,
     SchemaTable,
-    SqlExport,
     SqlImport,
     WorkbenchFormError,
     _condition_kind,
@@ -374,10 +373,6 @@ def _component_file(widget: Any) -> BaseModel:
             ]
     if widget.type == "export":
         data["tables"] = list(widget.tables)
-        if widget.target.format == "sql":
-            data["target"]["table_names"] = [
-                {"table": named.table, "name": named.name} for named in widget.target.table_names
-            ]
         if widget.target.format == "excel_cells":
             data["target"]["cells"] = [
                 {
@@ -826,10 +821,6 @@ def _component(component: Any, placed: PlacementFile) -> dict[str, Any]:
             ]
     if kind == "export":
         data["tables"] = list(component.tables)
-        if component.target.format == "sql":
-            data["target"]["table_names"] = [
-                {"table": named.table, "name": named.name} for named in component.target.table_names
-            ]
         if component.target.format == "excel_cells":
             data["target"]["cells"] = [
                 {
@@ -1290,8 +1281,6 @@ def unresolved_references(spec: FormSpec) -> list[str]:
                     refs += [(given.table, given.column) for given in widget.source.parameters]
                 if isinstance(widget, ExportWidget):
                     refs += [(table_id, None) for table_id in widget.tables]
-                    if isinstance(widget.target, SqlExport):
-                        refs += [(named.table, None) for named in widget.target.table_names]
                     if isinstance(widget.target, ExcelCellsExport):
                         refs += [(cell.table, cell.column) for cell in widget.target.cells]
                         for block in widget.target.blocks:

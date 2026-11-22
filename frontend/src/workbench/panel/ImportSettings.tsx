@@ -19,6 +19,7 @@ import {
   setImportQuery,
   setImportTable,
   updateImportSource,
+  IMPORT_FORMATS,
 } from "../../utils/workbenchForm"
 import { COLUMN_TYPES } from "../columnTypes"
 import { ButtonPanes, FormatToggle } from "./ButtonPanes"
@@ -54,7 +55,7 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
   const offered = inputs.some((candidate) => candidate.name === widget.table)
   return (
     <ButtonPanes form={form} widget={widget}>
-      <FormatToggle widget={widget} format={source.format} onChange={(format) => change((spec) => setImportFormat(spec, widget.id, format))} />
+      <FormatToggle widget={widget} formats={IMPORT_FORMATS} format={source.format} onChange={(format) => change((spec) => setImportFormat(spec, widget.id, format))} />
       {source.format === "csv" && (
         <Section title="File">
           <SelectRow
