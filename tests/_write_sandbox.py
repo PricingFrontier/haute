@@ -118,7 +118,16 @@ def _realpath(target: object) -> str | None:
     if isinstance(target, int):
         return None
     try:
-        return os.path.realpath(os.fsdecode(os.fspath(target)))
+        text = os.fsdecode(os.fspath(target))
+    except (TypeError, ValueError):
+        return None
+    # Windows' extended-length form names the same file as the path after it
+    # (``haute._file_ops.literal_path``): ``\\?\C:\...`` and ``\\?\UNC\server\...``.
+    if os.name == "nt" and text.startswith("\\\\?\\"):
+        rest = text[4:]
+        text = "\\\\" + rest[4:] if rest[:4].upper() == "UNC\\" else rest
+    try:
+        return os.path.realpath(text)
     except (TypeError, ValueError):
         return None
 

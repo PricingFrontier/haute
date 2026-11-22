@@ -1113,8 +1113,10 @@ def test_a_server_start_removes_the_staging_files_left_under_haute(
         haute_dir / "trash.0123abcd.tmp",
         haute_dir / "uploads" / "state.89abcdef.tmp",
     ]
+    (haute_dir / "pipeline-settings.3b78e6a0.tmp").write_text("{}")
+    (haute_dir / "trash.0123abcd.tmp").write_text("{}")
+    (haute_dir / "uploads" / "state.89abcdef.tmp").write_text("{}")
     for path in left:
-        path.write_text("{}")
         os.utime(path, (before_start, before_start))
     live = haute_dir / "state.fedcba98.tmp"
     kept = haute_dir / "state.json"

@@ -51,6 +51,7 @@ from haute.routes._isolated_worker_async import WorkerCancellationGate
 from haute.schemas import ExecutionMetricsPayload, WriteOutputResponse
 from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
+from tests._unportable_destinations import UNPORTABLE_DESTINATIONS, files_in, prepare_exports
 from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
@@ -1000,8 +1001,9 @@ class TestExecuteSinkDataOutput:
         before_start = _file_ops.PROCESS_STARTED - 60
         left = outputs / f".result.haute-stage-{'a' * 32}.parquet"
         other = outputs / f".other.haute-stage-{'c' * 32}.parquet"
+        left.write_bytes(b"a cut-short Write's copy")
+        other.write_bytes(b"a cut-short Write's copy")
         for leftover in (left, other):
-            leftover.write_bytes(b"a cut-short Write's copy")
             os.utime(leftover, (before_start, before_start))
         live = outputs / f".result.haute-stage-{'b' * 32}.parquet"
         live.write_bytes(b"a live Write's copy")
@@ -3017,6 +3019,7 @@ def test_the_write_route_removes_the_staged_copies_an_earlier_write_left(
 
     import haute.routes.pipeline as pipeline_route
     from haute import _file_ops
+
     use_project(haute_scratch)
     # A bare file name is written under outputs/.
     (haute_scratch / "outputs").mkdir()
@@ -3039,3 +3042,26 @@ def test_the_write_route_removes_the_staged_copies_an_earlier_write_left(
 
     assert response.status_code == 500, response.text
     assert not left.exists()
+
+
+@pytest.mark.parametrize(("typed", "rule"), UNPORTABLE_DESTINATIONS)
+def test_a_write_refuses_a_name_windows_cannot_hold_by_name_and_writes_nothing(
+    client, haute_scratch: Path, typed: str, rule: str
+) -> None:
+    """SRV-07: a Data Output's Write refuses a typed name a file cannot have, naming the
+    path and the rule, before anything is written."""
+    use_project(haute_scratch)
+    before = prepare_exports(haute_scratch)
+    path = typed.format(ext=".parquet")
+    graph = _sink_route_graph()
+    graph.nodes[1].data.config["path"] = path
+
+    response = client.post(
+        "/api/pipeline/write-output",
+        json={"graph": graph.model_dump(), "target": {"occurrence": None, "node_id": "sink"}},
+    )
+
+    assert response.status_code == 400, response.text
+    assert repr(path) in response.json()["detail"]
+    assert rule in response.json()["detail"]
+    assert files_in(haute_scratch) == before

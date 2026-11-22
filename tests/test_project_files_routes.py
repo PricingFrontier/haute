@@ -730,3 +730,31 @@ def test_the_panels_and_the_sweep_take_the_same_names(
         taken = False
 
     assert (swept, taken) == (versioned, versioned)
+
+
+@pytest.mark.parametrize("name", ["aux.csv", "notes.csv."])
+def test_a_file_a_project_file_cannot_be_named_can_still_be_deleted_and_commit_then_succeeds(
+    client: TestClient, project: Path, name: str
+) -> None:
+    """SRV-07: a file another program named after a device, or with a trailing dot, sits
+    in the pipeline folder; the Files panel lists it and deletes it, and Commit, which
+    versions that folder as a whole, then succeeds."""
+    from haute._file_ops import literal_path
+    from haute._git_transactions import commit_milestone
+
+    assert _put(client, "pipeline", "data/rates.csv", b"a,b\n").status_code == 200
+    exports = project / "rating" / "files" / "exports"
+    exports.mkdir(parents=True)
+    # Named as the other program named it: a trailing dot is kept only taken literally.
+    (exports / "written").write_bytes(b"rows")
+    (exports / "written").rename(literal_path(exports / name))
+    revision = _entries(_list(client, "pipeline", "exports"))[name]["revision"]
+
+    deleted = client.delete(
+        "/api/project-files/content",
+        params={"place": "pipeline", "path": f"exports/{name}", "revision": revision},
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert os.listdir(exports) == []
+    assert commit_milestone("After the delete", project, cwd=project, pipeline_folder="rating").sha

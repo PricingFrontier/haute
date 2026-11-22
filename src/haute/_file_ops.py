@@ -113,18 +113,49 @@ def windows_long_paths_enabled() -> bool:
 MAX_FILE_NAME_CHARS = 255
 
 
-def written_file_length_problem(targets: Iterable[Path]) -> str | None:
+def literal_path(path: Path) -> Path:
+    """*path*, absolute, in the form the operating system takes literally.
+
+    On Windows the extended-length form (``\\\\?\\C:\\...``, ``\\\\?\\UNC\\server\\...``),
+    which neither drops a name's trailing dot or space nor reads a device name in it: the
+    one way to reach a file that a program outside Haute gave such a name. Elsewhere the
+    path as it is.
+    """
+    text = str(path)
+    if not _IS_WINDOWS or text.startswith(_UNLIMITED_PATH_PREFIXES):
+        return path
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
+def atomic_write_names(target: Path) -> list[Path]:
+    """The sibling names an atomic write of *target* makes before its rename."""
+    return [_temp_path_for(target)]
+
+
+def atomic_copy_names(target: Path) -> list[Path]:
+    """The sibling names :func:`atomic_copy_files` makes for *target*: its staged copy and
+    the backup of the file it replaces."""
+    return [_temp_path_for(target), _backup_path_for(target)]
+
+
+def written_file_length_problem(
+    targets: Iterable[Path], *, staged_as: Callable[[Path], Sequence[Path]] = atomic_write_names
+) -> str | None:
     """Why files written at *targets* cannot be held for their length, or ``None``.
 
-    Counts each file as a write of it is made: an atomic write stages it under a longer
-    sibling name first (:func:`_temp_path_for`), so the limit a target's own name or path
-    must meet is the platform's less that difference. A file name may have at most
+    Counts each file as a write of it is made: a write stages it under longer sibling
+    names first (*staged_as*: an atomic write's, :func:`_temp_path_for`, unless the caller
+    writes another way), so the limit a target's own name or path must meet is the
+    platform's less the longest difference. A file name may have at most
     ``MAX_FILE_NAME_CHARS`` characters everywhere; on Windows without long paths, a path
     at most ``WINDOWS_MAX_PATH_CHARS``. The words name the first target past a limit and
     that limit, for a caller to say which name made it.
     """
     staging_extra = {
-        target: max(0, len(_temp_path_for(target).name) - len(target.name)) for target in targets
+        target: max([0, *(len(staged.name) - len(target.name) for staged in staged_as(target))])
+        for target in targets
     }
     # A name too long is too long everywhere, so it is told before a path.
     for target, extra in staging_extra.items():
@@ -218,6 +249,12 @@ def _temp_path_for(target: Path) -> Path:
     260-character path limit applies to it too.
     """
     return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
+
+
+def _backup_path_for(target: Path) -> Path:
+    """A unique hidden sibling that :func:`atomic_copy_files` moves *target* to while its
+    copy replaces it."""
+    return target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
 
 
 _STAGING_NAME = re.compile(r"(?P<stem>.+)\.[0-9a-f]{8}\.tmp")
@@ -463,7 +500,7 @@ def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
             shutil.copyfile(source, tmp)
         for tmp, target in staged:
             if target.exists() or target.is_symlink():
-                backup = target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
+                backup = _backup_path_for(target)
                 _replace_with_windows_contention_retry(target, backup)
                 backups.append((backup, target))
             _replace_with_windows_contention_retry(tmp, target)

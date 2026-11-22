@@ -33,6 +33,7 @@ from tests._optimiser_route_helpers import (
     _poll_until_done,
 )
 from tests._project import use_project
+from tests._unportable_destinations import UNPORTABLE_DESTINATIONS, files_in, prepare_exports
 from tests.job_store_support import replace_job, seed_job
 from tests.optimiser_fixtures import (
     SOLVE_SCENARIO_GRID,
@@ -805,6 +806,38 @@ class TestSaveResultUnit:
         )
         assert resp.status_code == 403
         assert "outside" in resp.json()["detail"].lower()
+
+    @pytest.mark.parametrize(("typed", "rule"), UNPORTABLE_DESTINATIONS)
+    def test_a_name_windows_cannot_hold_is_refused_by_name_and_writes_nothing(
+        self, client, clean_job_store, tmp_path, typed: str, rule: str
+    ):
+        """SRV-07: the optimiser's save refuses a typed name a file cannot have, naming
+        the path and the rule, before anything is written."""
+        seed_job(
+            clean_job_store,
+            "save_named",
+            {
+                "status": "completed",
+                "result": _anchor_result(),
+                "solve_result": MagicMock(),
+                "config": {"mode": "online", "objective": "income"},
+                "node_label": "opt",
+                "created_at": time.time(),
+                "completed_at": time.time(),
+            },
+        )
+        use_project(tmp_path)
+        before = prepare_exports(tmp_path)
+        output_path = typed.format(ext=".json")
+
+        resp = client.post(
+            "/api/optimiser/save", json={"job_id": "save_named", "output_path": output_path}
+        )
+
+        assert resp.status_code == 400, resp.text
+        assert repr(output_path) in resp.json()["detail"]
+        assert rule in resp.json()["detail"]
+        assert files_in(tmp_path) == before
 
     def test_save_completed_job_writes_json(self, client, clean_job_store, tmp_path):
         import json as json_mod

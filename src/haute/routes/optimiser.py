@@ -35,6 +35,7 @@ from haute._mlflow_utils import (
     registry_uri_for_tracking,
 )
 from haute._node_addresses import resolved_request
+from haute._path_resolution import reject_unportable_destination
 from haute._pipeline_settings import project_pipeline_settings
 from haute._project_context import current_project
 from haute._project_layout import default_model_folder
@@ -829,6 +830,8 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     if "/" not in output_path and "\\" not in output_path:
         output_path = f"{default_model_folder(project_root)}/{output_path}"
     out = contained_path(project_root, output_path)
+    # A name Windows cannot hold is refused by name before anything is written.
+    reject_unportable_destination(output_path, out, project_root=project_root)
     apply_path = Path(os.path.relpath(out, project_root)).as_posix()
 
     payload = _build_artifact_payload(

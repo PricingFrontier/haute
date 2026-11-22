@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 from typing import Literal
 
 from haute._config_io import is_windows_reserved_filename
+from haute._file_ops import literal_path
 from haute._pipeline_repair import PipelineRepairError
 from haute._sandbox import contained_path
 from haute.errors import PathOutsideProjectError
@@ -41,12 +43,15 @@ def conflict(message: str, code: str = "recovery_conflict") -> PipelineRepairErr
 
 
 def ordinary_path_problem(
-    root: Path, relative: str, *, private: bool = False
+    root: Path, relative: str, *, private: bool = False, any_name: bool = False
 ) -> tuple[Path, PathProblem | None]:
     """Resolve *relative* under *root* and report the first rule it breaks, if any.
 
     Rejects traversal and filesystem aliases, including Windows reparse points. Callers
-    word the refusal themselves.
+    word the refusal themselves. With *any_name*, for a file already there that a Files
+    panel lists and is asked to delete, a name no file should be given is taken as it
+    is: a device name, one ending with a dot or a space, and off Windows, where it names
+    no stream, a colon.
     """
     root = root.resolve()
     rel = Path(relative)
@@ -56,18 +61,23 @@ def ordinary_path_problem(
         or rel.is_absolute()
         or rel.drive
         or any(part == ".." or part.casefold() == ".git" for part in rel.parts)
-        or any(
-            part.endswith((".", " ")) or is_windows_reserved_filename(part) for part in rel.parts
+        or (
+            not any_name
+            and any(
+                part.endswith((".", " ")) or is_windows_reserved_filename(part)
+                for part in rel.parts
+            )
         )
         or (not private and any(part.casefold() == ".haute" for part in rel.parts))
-        or ":" in relative
+        or (":" in relative and (not any_name or os.name == "nt"))
     ):
         return root, "not_ordinary"
     current = root
     for part in rel.parts:
         current = current / part
         try:
-            info = current.lstat()
+            # Taken literally: a name ending with a dot or a space is found as it is.
+            info = (literal_path(current) if any_name else current).lstat()
         except (FileNotFoundError, NotADirectoryError):
             # Not there yet, or under a file (POSIX reports that as ENOTDIR, Windows as
             # not found): the caller refuses what it cannot create.

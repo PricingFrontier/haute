@@ -56,6 +56,7 @@ from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     _normalise_path_text,
+    reject_unportable_destination,
     reject_unportable_path_text,
 )
 from haute._pipeline_settings import project_pipeline_settings
@@ -2147,8 +2148,20 @@ def resolve_data_output_path(
         # The setting as written: joined to the root, a drive-letter path would land in a
         # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``outputs/``.
         reject_unportable_path_text(config["path"], project_root=root)
-    target = str(root / _normalise_path_text(path)) if format_group(fmt_entry) == "file" else path
-    return _contain_output_path(graph, target, project_root=root), path
+    if format_group(fmt_entry) != "file":
+        return _contain_output_path(graph, path, project_root=root), path
+    contained = _contain_output_path(
+        graph, str(root / _normalise_path_text(path)), project_root=root
+    )
+    # A name Windows cannot hold is refused by name before anything is written: the file is
+    # staged under a longer hidden sibling name first.
+    reject_unportable_destination(
+        path,
+        contained,
+        project_root=root,
+        staged_as=lambda target: [new_data_output_staging_path(target)],
+    )
+    return contained, path
 
 
 def data_output_written_path(config: Mapping[str, Any]) -> str:
