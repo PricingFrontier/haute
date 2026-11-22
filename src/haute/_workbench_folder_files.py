@@ -41,6 +41,7 @@ from haute._workbench_form import (
     ExcelImport,
     ExportWidget,
     HeadingWidget,
+    HttpImport,
     ImportWidget,
     Match,
     SchemaColumn,
@@ -252,6 +253,7 @@ if TYPE_CHECKING:
     ChartComponentFile = Any
     HeadingComponentFile = Any
     SqlImportFile = Any
+    HttpImportFile = Any
     ColumnNameFile = Any
     ImportComponentFile = Any
     ExcelCellsExportFile = Any
@@ -315,6 +317,9 @@ else:
     SqlImportFile = _derived(
         "SqlImportFile", SqlImport, replace={"parameters": (list[QueryParameterFile], ...)}
     )
+    HttpImportFile = _derived(
+        "HttpImportFile", HttpImport, replace={"parameters": (list[QueryParameterFile], ...)}
+    )
     ColumnNameFile = _derived("ColumnNameFile", ColumnName, replace={"column": (Name, ...)})
     ImportComponentFile = _derived(
         "ImportComponentFile",
@@ -323,11 +328,15 @@ else:
         replace={
             "show_when": _SHOW_WHEN,
             "source": (
-                Annotated[CsvImport | ExcelImport | SqlImportFile, Field(discriminator="format")],
+                Annotated[
+                    CsvImport | ExcelImport | SqlImportFile | HttpImportFile,
+                    Field(discriminator="format"),
+                ],
                 ...,
             ),
             "table": (Name | None, ...),
             "column_names": (list[ColumnNameFile], ...),
+            "lookup": (Dotted | None, None),
         },
     )
     ExcelCellsExportFile = _derived(

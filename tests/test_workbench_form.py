@@ -1056,6 +1056,14 @@ IMPORTS: dict[str, dict[str, Any]] = {
         "query": "select limit_ from layers where policy = :reference",
         "parameters": [{"name": "reference", "table": "policy_details", "column": "state"}],
     },
+    "http": {
+        "format": "http",
+        "connection": "crm",
+        "method": "GET",
+        "path": "/policies/{reference}/layers",
+        "parameters": [{"name": "reference", "table": "policy_details", "column": "state"}],
+        "rows": "data.layers",
+    },
 }
 EXPORTS: dict[str, dict[str, Any]] = {
     "csv": {
@@ -1109,6 +1117,7 @@ def _import(source: dict[str, Any], **rest: Any) -> dict[str, Any]:
         "table": "layers",
         "mode": "update",
         "column_names": [{"column": "limit", "name": "Limit (GBP)"}],
+        "lookup": None,
         **rest,
     }
 
@@ -1124,7 +1133,7 @@ def _export(target: dict[str, Any], **rest: Any) -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("format_", ["csv", "excel", "sql"])
+@pytest.mark.parametrize("format_", ["csv", "excel", "sql", "http"])
 def test_an_import_and_an_export_of_each_format_read_and_write_as_they_are(
     format_: str,
 ) -> None:

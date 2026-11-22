@@ -18,6 +18,15 @@ environment's name is::
     provider = "sqlite"
     database = "data/quotes.sqlite"   # the file's path from the project root
 
+    [warehouse]                       # an Import's source alone
+    provider = "databricks"
+    http_path = "/sql/1.0/warehouses/abc123"
+
+    [crm]                             # an Import's API
+    provider = "http"
+    base_url = "https://crm.example.com/api"
+    headers = { Authorization = "HAUTE_CRM_AUTHORIZATION" }
+
 A server's connection says how the analyst signs in, ``auth``, one of
 :data:`CONNECTION_SIGN_INS`, by the names of the variables that hold what it needs, whose
 values are read from the clone's ``.env``, which git ignores, or from the environment, which
@@ -26,6 +35,11 @@ in the browser; ``managed-identity``, a hosted app's, is refused. A key that wou
 secret's value is refused naming the key that names its variable, and any other key by name.
 A server or a database may be left empty, as ``haute init --workbench`` writes them: it is
 refused as the connection is used (``haute._quote_store._environment.connected_store``).
+
+A ``databricks`` connection names its warehouse's ``http_path``; the workspace's host and
+sign-in are the ``DATABRICKS_*`` variables a Databricks Data Input reads. An ``http`` one names
+its ``base_url``, the one host an Import's request reaches, and ``headers``, each header's name
+and the variable holding its value. Either is an Import's source alone, never a store's.
 
 A connection named as an environment ``[workbench.store.<name>]`` declares is that
 environment's. A hosted app and a release never read this file. It is read from disk each
@@ -52,6 +66,8 @@ from haute._workbench_config import (
 
 #: The file, at the project root.
 CONNECTIONS_FILE = "connections.toml"
+#: The providers of an Import's source alone, never a store's.
+SOURCE_PROVIDERS = frozenset({"databricks", "http"})
 #: How the analyst signs in to a server database, each with the keys naming the variables
 #: that hold what it needs: a password, a service principal, or their own Entra ID sign-in.
 CONNECTION_SIGN_INS: Mapping[str, tuple[str, ...]] = {
@@ -95,6 +111,12 @@ class Connection:
     #: Each of the sign-in's keys and the variable it names, ``password_env`` to
     #: ``HAUTE_DEV_PASSWORD``.
     variables: Mapping[str, str] = field(default_factory=dict)
+    #: A ``databricks`` connection's warehouse path.
+    http_path: str | None = None
+    #: An ``http`` connection's base URL, and each header's name and the variable holding its
+    #: value.
+    base_url: str | None = None
+    headers: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def where(self) -> str:
@@ -162,8 +184,11 @@ def _connection(name: str, settings: dict[str, object]) -> Connection:
                 f"variable that holds it ({_REFUSED_KEYS[key]}) instead"
             )
     provider = settings.get("provider")
-    if not isinstance(provider, str) or provider not in STORE_PROVIDERS:
-        raise ConnectionsError(f"{at}.provider must be one of {', '.join(sorted(STORE_PROVIDERS))}")
+    providers = {*STORE_PROVIDERS, *SOURCE_PROVIDERS}
+    if not isinstance(provider, str) or provider not in providers:
+        raise ConnectionsError(f"{at}.provider must be one of {', '.join(sorted(providers))}")
+    if provider in SOURCE_PROVIDERS:
+        return _source_connection(name, provider, settings, at)
     if provider in FILE_PROVIDERS:
         unknown = sorted(set(settings) - {"provider", "database"})
         if unknown:
@@ -208,6 +233,55 @@ def _connection(name: str, settings: dict[str, object]) -> Connection:
         auth=auth,
         variables=variables,
     )
+
+
+def _source_connection(
+    name: str, provider: str, settings: dict[str, object], at: str
+) -> Connection:
+    """A ``databricks`` or an ``http`` connection: its warehouse path, or its base URL, an
+    ``https`` (or, for a server on this machine, ``http``) address with no credential in it,
+    and its headers, each naming the variable that holds its value."""
+    keys = (
+        {"provider", "http_path"}
+        if provider == "databricks"
+        else {"provider", "base_url", "headers"}
+    )
+    unknown = sorted(set(settings) - keys)
+    if unknown:
+        raise ConnectionsError(
+            f"{at} has unknown key(s): {', '.join(unknown)}; a {provider} connection's keys are "
+            + ", ".join(sorted(keys))
+        )
+    if provider == "databricks":
+        return Connection(
+            name=name,
+            provider=provider,
+            database="",
+            http_path=_text(settings, "http_path", at, optional=False),
+        )
+    from urllib.parse import urlsplit
+
+    base_url = str(_text(settings, "base_url", at, optional=False))
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("https", "http") or not parts.hostname:
+        raise ConnectionsError(f"{at}.base_url must be an https address, as https://host/path")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise ConnectionsError(
+            f"{at}.base_url must hold no sign-in, query or fragment: name a header's variable "
+            "in headers instead"
+        )
+    headers = settings.get("headers", {})
+    if not isinstance(headers, dict):
+        raise ConnectionsError(f"{at}.headers must be a table of header names and variables")
+    named: dict[str, str] = {}
+    for header, variable in headers.items():
+        if not isinstance(variable, str) or not VARIABLE_NAME.fullmatch(variable):
+            raise ConnectionsError(
+                f"{at}.headers.{header} must name the environment variable that holds its "
+                "value, letters, digits and underscores"
+            )
+        named[str(header)] = variable
+    return Connection(name=name, provider=provider, database="", base_url=base_url, headers=named)
 
 
 def project_environ(project_root: Path) -> dict[str, str]:

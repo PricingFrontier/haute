@@ -610,7 +610,24 @@ class SqlImport(_Strict):
     parameters: list[QueryParameter]
 
 
-ImportSource = Annotated[CsvImport | ExcelImport | SqlImport, Field(discriminator="format")]
+class HttpImport(_Strict):
+    """A request to a named connection's API (``provider = "http"``), whose base URL is the
+    one host it reaches: its ``method``, its ``path`` after the base URL, each ``{name}`` in
+    it a parameter's value, its ``parameters`` as a query's, and ``rows``, where the
+    answer's rows are, a dotted path of keys, empty for the answer itself."""
+
+    format: Literal["http"]
+    #: The connection by name; empty while none is chosen.
+    connection: str
+    method: Literal["GET", "POST"]
+    path: str
+    parameters: list[QueryParameter]
+    rows: str
+
+
+ImportSource = Annotated[
+    CsvImport | ExcelImport | SqlImport | HttpImport, Field(discriminator="format")
+]
 
 
 class ColumnName(_Strict):
@@ -637,13 +654,16 @@ class ImportWidget(_Placed):
     #: The columns of its table read from a column named otherwise, in no set order; a column
     #: without one is read from the column of its own name or label, whatever its case.
     column_names: list[ColumnName]
+    #: A one-row table's column beside whose cell it is also offered, a lookup, one of its
+    #: parameters' columns; None for none.
+    lookup: FieldRef | None = None
 
     @model_validator(mode="after")
     def _names_each_once(self) -> ImportWidget:
         if self.column_names and self.table is None:
             raise ValueError(f"widget {self.id} names columns but fills no table")
         _check_once(self.id, "column names", [named.column for named in self.column_names])
-        if isinstance(self.source, SqlImport):
+        if isinstance(self.source, SqlImport | HttpImport):
             _check_once(self.id, "parameters", [given.name for given in self.source.parameters])
         return self
 

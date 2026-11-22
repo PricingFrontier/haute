@@ -87,11 +87,8 @@ Out of scope:
   ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
 - The underwriter app's host-side delivery: rolling a host to a release and checking it
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
-- Running an Import or an Export: reading a file or a database into a table
-  ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
-  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)), but
-  for an Export to an Excel workbook of cells, in Preview and on a final quote in the
-  underwriter app.
+- Running an Export but to an Excel workbook of cells, in Preview and on a final quote
+  in the underwriter app ([WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -509,12 +506,18 @@ Out of scope:
   first, and its `header_row`, 1 to 100, the row naming its columns) or a database (`sql`,
   its `connection`, a named connection whose credentials the environment holds, `""` for
   none chosen, its `query`, and its `parameters`, each a `:name` in the query, by `name`,
-  an identifier, given the value of a column by `table` and `column`, no name twice); the
+  an identifier, given the value of a column by `table` and `column`, no name twice) or an
+  API (`http`, its `connection`, a named connection of `provider = "http"`, its `method`,
+  `GET` or `POST`, its `path` after the connection's base URL, each `{name}` in it a
+  parameter's value, its `parameters` as a query's, each a `{name}` of the path or, for
+  `POST`, a key of the body, and `rows`, where the answer's rows are, a dotted path of
+  keys, empty for the answer itself); the
   input table it fills, `table` by name, or null for none; how it fills a many-row table,
-  `mode`, `replace`, `append` or `update` (its rows matched by the table's key); and
+  `mode`, `replace`, `append` or `update` (its rows matched by the table's key);
   `column_names`, the columns of that table read from a column named otherwise, each by
   `column` with that `name`, never blank, one each at most and none while it fills no
-  table) or an Export (`export`, a button an underwriter presses to take the quote's tables
+  table; and `lookup`, a column of a one-row table by `table` and `column` beside whose
+  cell it is also offered, one of its parameters' columns, or null for none) or an Export (`export`, a button an underwriter presses to take the quote's tables
   out: its `label`; the `tables` it exports, by name, in the order chosen, none twice; and its
   `target`, by `format`, a CSV (`csv`) or an Excel workbook of a sheet per table (`excel`),
   each with its
@@ -1791,13 +1794,13 @@ Out of scope:
   box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
   Import, a database's), with no label its mark alone, in a frame of the sheets' border colour on the
   components' background, in their font, and is a button to a screen reader, named by its
-  label. Neither shows schema columns nor takes anything typed. They are laid out and
-  their settings chosen before anything runs them: reading a file or a database into a
-  table is [WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)'s and
-  writing the quote's tables out [WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)'s,
-  so in Preview and in the underwriter app each is drawn disabled, faded, and a press does
-  nothing, but for an Export to an Excel workbook of cells, which runs in Preview and on a
-  final quote in the app. In Preview it can
+  label. Neither shows schema columns nor takes anything typed. While building each is
+  inert, as every component's picture is. In Preview and in the underwriter app an Import
+  runs (Running an Import, below), pressable while it has no problems and nothing it
+  fills is read only, and an Export to an Excel workbook of cells runs, in Preview and on a
+  final quote in the app; any other Export is drawn disabled, faded, and a press does
+  nothing ([WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)). An Export in
+  Preview can
   be pressed while it has no problems and the sample's price is the price of the sample as
   it stands, not out of date; in the app while it has no problems and the quote open is
   final, so the workbook is of a quote that does not change; otherwise, and while a
@@ -1858,9 +1861,12 @@ Out of scope:
   component's: no label; no table, a table no longer in the schema or a table with no
   inputs, which pricing fills; a column named that is no longer in the schema or that an
   underwriter does not type, an output among them; replacing or adding to the rows of a table with a row for
-  each allowed value, which only Update by key keeps; and, from a database, no
+  each allowed value, which only Update by key keeps; from a database, no
   connection, no query, a parameter given no column, a column no longer in the schema or
-  not an input of a one-row table, or a column given to a parameter its query does not hold.
+  not an input of a one-row table, or a column given to a parameter its query does not hold;
+  from an API the same of its path's `{name}`s and, for `POST`, of the parameters it sends,
+  and no connection; and a lookup on a column that is no longer in the schema or that is
+  none of its parameters' columns.
   And an Export's: no label; no tables, but to a workbook of cells; a table no longer in
   the schema; more than one
   table to a CSV, which holds one; a file with no name or naming a column `quote_details`
@@ -1879,6 +1885,70 @@ Out of scope:
   checked against all before it. None is refused: the form is saved as it is. The server
   refuses an export whose file name, cells or blocks have any of these problems, naming
   each.
+- **Running an Import.** Decided with the owner on 22 November 2026: an Import is declared,
+  never Python; it runs in Preview and in the underwriter app, never while building; it
+  runs on the server, under the identity of whoever runs the server (the analyst in the
+  editor and `haute app serve`, the hosted app's own identity), never the signed-in
+  underwriter's, so a database's row-level permissions are the server's; and no
+  credential reaches the browser, the form, `haute.toml`, an answer or a log. Its sources:
+  - **A file.** A CSV or an Excel workbook the underwriter picks as they press it, sent to
+    the server whole (at most the request body limit), read there: a CSV in UTF-8 (a byte
+    order mark dropped), split by its delimiter, found from its first line while Auto (the
+    one of comma, semicolon and tab it holds most of), its first row its columns' names; a
+    workbook's sheet named, else its first, its columns named by its header row and its
+    rows those under it, an empty row ending them.
+  - **A database.** Its query run on the named connection (below), on Databricks SQL, SQL
+    Server, PostgreSQL or a SQLite file: one statement, starting `SELECT` or `WITH`, with no
+    `;`, no comment and none of the words that change a database (`INSERT`, `UPDATE`,
+    `DELETE`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`,
+    `EXECUTE`, `CALL`, `INTO`), each refused naming why before anything is sent, and run
+    read-only where the engine holds a transaction so (PostgreSQL's `READ ONLY`, SQLite's
+    `query_only`), each `:name` bound to its parameter's value, never written into the
+    text.
+  - **An API.** A request to a named connection of `provider = "http"`, whose `base_url`
+    is the only host it reaches (an allow-list of one): its `method`, `GET` or `POST`, its
+    `path` after the base URL, each `{name}` in it the URL-encoded value of that parameter,
+    and for `POST` a JSON body of the parameters by name; answered within 30 seconds, a
+    redirect never followed, the answer JSON, its rows found at `rows`, a dotted path of
+    keys (`data.items`), empty for the answer itself: a list of objects, or one object as
+    one row.
+
+  A parameter is given the value its column, an input of a one-row table, holds as the
+  quote is typed, read as pricing reads it; one holding nothing is refused, naming the
+  field to fill. The rows read are at most 10,000, more refused naming the count. Each
+  column of the table the Import fills, an input an underwriter types, is read from the
+  column of the source named for it, else of its name or its label, whatever its case;
+  a column the source does not hold is left as it is, and one the table does not have is
+  never read. Each value becomes the cell text the sheets hold it as: a file's text as
+  written, trimmed; a database's or an API's value as a saved quote's comes back
+  (`1000.00` for one of a column's allowed values, else a number as its shortest text, a
+  date as ISO text, true a tick). Nothing is priced on the server for the Import: its rows
+  land on the sheets as typing does, priced as typing is, each cell marked where it breaks
+  its column's rules. A one-row table takes the first row's values, its other values
+  kept; a many-row table's rows are replaced, added after those typed, or updated by its
+  index (each source row's index value naming the row it updates, a row none names added
+  after them, but in a table with a row for each allowed value, whose rows are fixed,
+  where it is left out). Replacing rows already typed asks first. In Preview the rows land
+  in the sample, one undo step; in the app, in the quote open, which the underwriter then
+  saves. A refusal (no connection of that name, a query or a host refused, a source that
+  does not answer, more rows than the cap, a parameter with no value, a column of the
+  Import no longer in the schema) is said as an error naming why; a database's or an API's
+  own failure is said in the editor and `haute app serve`, where the analyst reads it, and
+  in a hosted app as an incident, its words in the app's log, as a failed pricing is.
+  - **Its connections.** In the editor and `haute app serve` a connection is a table of
+    `connections.toml` under the name the Import gives (Connections, below), which gains a
+    `databricks` provider (its `http_path`; the workspace's host and sign-in from the
+    `DATABRICKS_*` variables, as a Databricks Data Input reads them) and an `http` one (its
+    `base_url`, and `headers`, each header's name and the variable holding its value). A
+    hosted app reads a connection from the host's variables named for it alone,
+    `HAUTE_CONNECTION_<NAME>_URL` (a database's credential-free URL, a Databricks
+    `https://<host>/<http_path>`, an API's base URL), with `_USERNAME` and `_PASSWORD` for a
+    password sign-in, `_TOKEN` for a Databricks token or an API's bearer token: no file a
+    release carries says where a source is or how to sign in to it.
+  - **A lookup.** An Import that names a column of a one-row table as its `lookup`, one
+    of its parameters, is also offered beside that column's cell wherever the sheets show
+    it, a search button that runs the same Import, so an underwriter keys a reference and
+    looks it up where they keyed it.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
   the sheets as an underwriter uses them: the same sheets, their sections that show stacked
   one under the next and each component where it sits in its section, read and
