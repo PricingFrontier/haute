@@ -1885,7 +1885,12 @@ class TrainingJob:
                     0,
                     prepared.offset_dtype,
                 )
-            generated_plan = self._build_evaluation_plan(
+            reused_plan = (
+                self._stage_runtime.evaluation_plan(prepared)
+                if self._stage_runtime is not None
+                else None
+            )
+            generated_plan = reused_plan or self._build_evaluation_plan(
                 prepared,
                 execution_context=execution_context,
             )

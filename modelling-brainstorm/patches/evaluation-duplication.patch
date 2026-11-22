@@ -1,0 +1,107 @@
+diff --git a/src/haute/modelling/_staged_runtime.py b/src/haute/modelling/_staged_runtime.py
+index f4ed76dc1..d905cb778 100644
+--- a/src/haute/modelling/_staged_runtime.py
++++ b/src/haute/modelling/_staged_runtime.py
+@@ -618,6 +618,21 @@ class StageRuntime:
+             )
+         ).hexdigest()
+ 
++    def evaluation_plan(self, prepared: Any) -> EvaluationPlan | None:
++        """The bundle's canonical plan, when the job evaluates the bundle's own source.
++
++        The bundle verified that plan against its source when it opened, and the job's
++        evaluation settings are the bundle's (`finalize` enforces the fit configuration), so
++        rebuilding it would reproduce it exactly.
++        """
++        if (
++            self.bundle is None
++            or prepared.owns_tmp
++            or Path(prepared.data_path) != self.bundle.source
++        ):
++            return None
++        return self.bundle.plan
++
+     def cached_split(self, job: Any, prepared: Any) -> _SplitResult | None:
+         key = self._split_key(job, prepared)
+         if key is None or self.bundle is None or key not in self.bundle.path_splits:
+@@ -834,7 +849,9 @@ class StageRuntime:
+                 if selected == "pruned"
+                 else {}
+             ),
+-            **{name: copy.deepcopy(getattr(result, name)) for name in _DIAGNOSTICS},
++            # Shared, not copied: after finalisation a result's diagnostics are only read
++            # (serialised, split or returned), so the snapshot and the result cannot diverge.
++            **{name: getattr(result, name) for name in _DIAGNOSTICS},
+             **(
+                 {"table_summary": table_summary(result.tboost_tables)}
+                 if result.tboost_tables
+diff --git a/src/haute/modelling/_training_job.py b/src/haute/modelling/_training_job.py
+index 489811d57..e5748f007 100644
+--- a/src/haute/modelling/_training_job.py
++++ b/src/haute/modelling/_training_job.py
+@@ -1885,7 +1885,12 @@ class TrainingJob:
+                     0,
+                     prepared.offset_dtype,
+                 )
+-            generated_plan = self._build_evaluation_plan(
++            reused_plan = (
++                self._stage_runtime.evaluation_plan(prepared)
++                if self._stage_runtime is not None
++                else None
++            )
++            generated_plan = reused_plan or self._build_evaluation_plan(
+                 prepared,
+                 execution_context=execution_context,
+             )
+diff --git a/tests/test_staged_runtime.py b/tests/test_staged_runtime.py
+index 68e070570..25883be01 100644
+--- a/tests/test_staged_runtime.py
++++ b/tests/test_staged_runtime.py
+@@ -1419,3 +1419,47 @@ def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
+         output_dir=str(tmp_path / "prune"),
+     )
+     assert compared == [p["id"] for p in pruning.staged["paths"]["pruned"]["points"]]
++
++
++def test_path_points_reuse_the_bundles_evaluation_plan(tmp_path, monkeypatch):
++    """Each candidate is evaluated on the bundle's own canonical plan, not a rebuilt one."""
++    _, full = build(tmp_path)
++    with open_stage_bundle(full.stage_checkpoint_path) as bundle:
++        expected = bundle.plan.to_plain_data()
++    monkeypatch.setattr(
++        TrainingJob, "_build_evaluation_plan", lambda *a, **k: pytest.fail("plan rebuilt")
++    )
++    _, pruning = run_stage_job(
++        full.stage_checkpoint_path,
++        operation="pruned",
++        stages=full.staged["configuration"],
++        prepare_path=True,
++        output_dir=str(tmp_path / "prune"),
++    )
++    from types import SimpleNamespace
++
++    from haute.modelling._stage_paths import read_path_result
++    from haute.modelling._staged_runtime import StageRuntime
++
++    path = pruning.staged["paths"]["pruned"]
++    with open_stage_bundle(pruning.stage_checkpoint_path) as bundle:
++        assert bundle.plan.to_plain_data() == expected
++        digest = full.evaluation["plan_sha256"]
++        for point in path["points"]:  # every candidate's own evaluation used that plan
++            assert (
++                read_path_result(bundle, path["id"], point["id"]).evaluation["plan_sha256"]
++                == digest
++            )
++        # The bundle's plan serves only the bundle's own source, never another input.
++        runtime = StageRuntime(bundle=bundle, operation="pruned")
++        own = SimpleNamespace(owns_tmp=False, data_path=str(bundle.source))
++        assert runtime.evaluation_plan(own) is bundle.plan
++        assert (
++            runtime.evaluation_plan(SimpleNamespace(owns_tmp=True, data_path=str(bundle.source)))
++            is None
++        )
++        assert (
++            runtime.evaluation_plan(SimpleNamespace(owns_tmp=False, data_path="other.parquet"))
++            is None
++        )
++        runtime.close()

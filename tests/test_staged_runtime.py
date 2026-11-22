@@ -1419,3 +1419,47 @@ def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
         output_dir=str(tmp_path / "prune"),
     )
     assert compared == [p["id"] for p in pruning.staged["paths"]["pruned"]["points"]]
+
+
+def test_path_points_reuse_the_bundles_evaluation_plan(tmp_path, monkeypatch):
+    """Each candidate is evaluated on the bundle's own canonical plan, not a rebuilt one."""
+    _, full = build(tmp_path)
+    with open_stage_bundle(full.stage_checkpoint_path) as bundle:
+        expected = bundle.plan.to_plain_data()
+    monkeypatch.setattr(
+        TrainingJob, "_build_evaluation_plan", lambda *a, **k: pytest.fail("plan rebuilt")
+    )
+    _, pruning = run_stage_job(
+        full.stage_checkpoint_path,
+        operation="pruned",
+        stages=full.staged["configuration"],
+        prepare_path=True,
+        output_dir=str(tmp_path / "prune"),
+    )
+    from types import SimpleNamespace
+
+    from haute.modelling._stage_paths import read_path_result
+    from haute.modelling._staged_runtime import StageRuntime
+
+    path = pruning.staged["paths"]["pruned"]
+    with open_stage_bundle(pruning.stage_checkpoint_path) as bundle:
+        assert bundle.plan.to_plain_data() == expected
+        digest = full.evaluation["plan_sha256"]
+        for point in path["points"]:  # every candidate's own evaluation used that plan
+            assert (
+                read_path_result(bundle, path["id"], point["id"]).evaluation["plan_sha256"]
+                == digest
+            )
+        # The bundle's plan serves only the bundle's own source, never another input.
+        runtime = StageRuntime(bundle=bundle, operation="pruned")
+        own = SimpleNamespace(owns_tmp=False, data_path=str(bundle.source))
+        assert runtime.evaluation_plan(own) is bundle.plan
+        assert (
+            runtime.evaluation_plan(SimpleNamespace(owns_tmp=True, data_path=str(bundle.source)))
+            is None
+        )
+        assert (
+            runtime.evaluation_plan(SimpleNamespace(owns_tmp=False, data_path="other.parquet"))
+            is None
+        )
+        runtime.close()

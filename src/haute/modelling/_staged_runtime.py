@@ -618,6 +618,21 @@ class StageRuntime:
             )
         ).hexdigest()
 
+    def evaluation_plan(self, prepared: Any) -> EvaluationPlan | None:
+        """The bundle's canonical plan, when the job evaluates the bundle's own source.
+
+        The bundle verified that plan against its source when it opened, and the job's
+        evaluation settings are the bundle's (`finalize` enforces the fit configuration), so
+        rebuilding it would reproduce it exactly.
+        """
+        if (
+            self.bundle is None
+            or prepared.owns_tmp
+            or Path(prepared.data_path) != self.bundle.source
+        ):
+            return None
+        return self.bundle.plan
+
     def cached_split(self, job: Any, prepared: Any) -> _SplitResult | None:
         key = self._split_key(job, prepared)
         if key is None or self.bundle is None or key not in self.bundle.path_splits:
@@ -834,7 +849,9 @@ class StageRuntime:
                 if selected == "pruned"
                 else {}
             ),
-            **{name: copy.deepcopy(getattr(result, name)) for name in _DIAGNOSTICS},
+            # Shared, not copied: after finalisation a result's diagnostics are only read
+            # (serialised, split or returned), so the snapshot and the result cannot diverge.
+            **{name: getattr(result, name) for name in _DIAGNOSTICS},
             **(
                 {"table_summary": table_summary(result.tboost_tables)}
                 if result.tboost_tables
