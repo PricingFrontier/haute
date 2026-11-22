@@ -21,7 +21,6 @@ worker built each run and the main session ran each again on 14 November
 | PCF-05 | Planned | P2 | A node's absolute path and a node's path in another letter case than its file are each refused or rewritten on Windows when saved and linted, instead of running there and failing on Linux. |
 | PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
 | PCF-07 | Planned | P3 | Recover settings rebuilds a Model Score that follows an alias, instead of refusing a version it added itself. |
-| PCF-08 | Planned | P2 | Reset node refuses to replace a settings file that a node inside a submodel shares. |
 
 ## Planned improvements
 
@@ -114,25 +113,3 @@ key and keeps the model and its alias, with no version.
 
 **Evidence:** `src/haute/_node_config_recovery.py`;
 `src/haute/_config_validation.py`.
-
-### PCF-08 — Reset node leaves a settings file a submodel's node shares
-**Why:** Reproduced on 14 November 2026 through the editor's routes. A
-Data Input at the root and a Data Input inside a submodel both name
-`config/shared_input.json`. The root node's code is broken by a hand
-edit, and Reset node is pressed. The answer is 200, and the shared file is
-replaced by a new node's defaults, an empty path. The submodel's node,
-which was working, now fails: "Format 'parquet' requires a non-empty
-'path'". With both nodes at the root the same Reset is refused: "This
-config is shared by another node and cannot be reset independently." The
-search for sharers does not see a node inside a submodel.
-
-**Plan:** Include the nodes of every submodel file when looking for the
-nodes that share a settings file.
-
-**Acceptance:** The Reset above is refused with the sentence the root
-case gets, and the shared file is unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_recovery.py`;
-`specs/server-api/node-recovery-actions.md`.

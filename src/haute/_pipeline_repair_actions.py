@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Literal
 
+from haute._ast_helpers import authored_config_reference
 from haute._config_io import (
     config_path_for_node,
     node_config_json,
@@ -388,19 +389,7 @@ def _reset_node(
             f"This node cannot be generated from these settings and connections: {exc}"
         ) from exc
     edits: list[RepairArtifactEdit] = []
-    authored_reference = (
-        next(
-            (
-                kw.value.value
-                for kw in (decorator_call.keywords if decorator_call else [])
-                if kw.arg == "config"
-                and isinstance(kw.value, ast.Constant)
-                and isinstance(kw.value.value, str)
-            ),
-            None,
-        )
-        or target.config_reference
-    )
+    authored_reference = authored_config_reference(decorator) or target.config_reference
 
     def config_file(reference: str) -> Path:
         config_path = _resolve_config_reference(

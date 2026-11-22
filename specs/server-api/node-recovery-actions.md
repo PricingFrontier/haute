@@ -50,7 +50,11 @@ carries as its remediation (for the file path, `from modules import rates`, then
   directly (`receiver=`), so no name in the node's own code is rewritten. It preserves
   identity, description, position and authored connections, but replaces that node's
   settings and function body. Existing config references are preserved and their content
-  replaced only when exclusively owned by this node. Unknown types, nodes refused for a
+  replaced only when exclusively owned by this node. A node's config reference is the
+  file its decorator's `config=` names (the default `config/<type>/<name>.json` only
+  when it names none), read the same way whether its file passed the strict parse or
+  not, and every node of the root pipeline and of each submodel file that resolves to
+  the same file is another owner. Unknown types, nodes refused for a
   removed node-level instance form, submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
   node produces the normal explicit incomplete-code template; it never invents a
   passthrough. The confirmation explains that configuration/code may be needed before running.

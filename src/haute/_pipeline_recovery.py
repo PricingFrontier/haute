@@ -25,6 +25,7 @@ from haute._ast_helpers import (
     _get_decorator_kwargs,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
+    authored_config_reference,
     is_submodel_import,
     reject_removed_node_decorator,
     unkept_comments,
@@ -334,6 +335,27 @@ def _unavailable_candidate(
     )
 
 
+def _wire_config_reference(reference: str | None) -> str | None:
+    """A node's authored config reference as the document reports it, ``/``-separated."""
+    return reference.replace("\\", "/") if reference is not None else None
+
+
+def _authored_config_references(source: str) -> dict[str, str]:
+    """Each node of *source* whose decorator names its config file, with that reference."""
+    skeletons = _extract_decorated_node_skeletons(
+        ast.parse(source),
+        lambda decorator: (
+            _is_pipeline_authored_decorator(decorator) or _is_submodel_authored_decorator(decorator)
+        ),
+        source=source,
+    )
+    references = {
+        skeleton.authored_id: _wire_config_reference(authored_config_reference(skeleton.decorator))
+        for skeleton in skeletons
+    }
+    return {name: reference for name, reference in references.items() if reference is not None}
+
+
 def _candidate_from_ast(
     skeleton: PipelineNodeSkeleton,
     *,
@@ -348,23 +370,7 @@ def _candidate_from_ast(
         skeleton.end_line,
         skeleton.end_column,
     )
-    # Read on its own: an unrelated keyword the parse cannot evaluate must not
-    # hide which config file this node names, since sharing decides deletions.
-    raw_reference = next(
-        (
-            keyword.value.value
-            for keyword in (
-                skeleton.decorator.keywords if isinstance(skeleton.decorator, ast.Call) else []
-            )
-            if keyword.arg == "config"
-            and isinstance(keyword.value, ast.Constant)
-            and isinstance(keyword.value.value, str)
-        ),
-        None,
-    )
-    config_reference = (
-        raw_reference.replace("\\", "/") if raw_reference and raw_reference.strip() else None
-    )
+    config_reference = _wire_config_reference(authored_config_reference(skeleton.decorator))
 
     try:
         reject_removed_node_decorator(skeleton.decorator)
@@ -1254,6 +1260,8 @@ def _canonical_snapshot(
     positions = _sidecar_values(sidecar)[0]
     # The strict parse gave a node saved with unfinished steps its list from this sidecar.
     graph_nodes = graph.nodes
+    # The parsed graph keeps no file name: a node names the file its decorator names.
+    authored_references = _authored_config_references(captures.read_source(source_path))
 
     connected_handles_by_source: dict[str, list[str]] = {}
     for edge in graph.edges:
@@ -1289,6 +1297,7 @@ def _canonical_snapshot(
             node_type=node.data.nodeType,
             label=node.data.label,
             source_handles=source_handles,
+            config_reference_override=authored_references.get(node.id),
             instance_of=node.data.config.get("instance_of")
             if _is_occurrence(node.data.nodeType)
             else None,
