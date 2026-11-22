@@ -12,12 +12,16 @@ and named each fault with a trigger; the review then reproduced each on
 12 November 2026 by tracing one cell of a three-node pipeline through
 `execute_trace`. Both are explanations that contradict the value they
 explain. The value itself is right in each.
+`TRC-15` comes from the 22 November 2026 sweep of `src/haute` for
+the cause `XPL-03` removed from Explore, a temporal value read into Python;
+the [temporal values root cause](root-cause-temporal-values.md) is taken before it.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | TRC-01 | Planned | P2 | A column written inside an `if` is traced as not computable, never with the formula of the branch that did not run. |
+| TRC-15 | Planned | P2 | A traced row whose timestamp has digits below a microsecond is found by its own values, not reported uncorrelated or matched to another row. |
 | TRC-02 | Planned | P3 | A grouped row whose grouping column was dropped afterwards is no longer explained by the rows of every group that shares the columns left. |
 
 ## Planned improvements
@@ -91,3 +95,28 @@ grouping column kept it reports two, as it does today.
 `src/haute/_column_lineage.py::carried_column_proof`;
 `src/haute/_trace_correlation.py::RowScopeResolver`;
 `specs/tracing/high-level.md`.
+
+### TRC-15 — A traced row with nanoseconds is found by its own values
+**Why:** Read on 22 November 2026, not reproduced. Row correlation
+(`_correlate_rows_posthoc`) reads the traced row with `row(..., named=True)`
+and makes it JSON-safe (`_jsonify_row`), which holds a datetime to the microsecond, and then
+matches each upstream row again with `_typed_value_match_expr` built from
+those values, compared exactly with the column's own integer. A row whose
+`Datetime("ns")` or `Time` value has digits below a microsecond never
+equals its own match. The trace then reports that row correlation failed,
+or a relaxed match leaves the column out and can take another row as the
+parent.
+
+**Plan:** Carry the traced row's temporal values as their exact text and
+build each match from it, through `IOL-08`'s shared literal builder.
+Update the tracing specification first.
+
+**Acceptance:** A three-node pipeline over a `Datetime("ns")` column whose
+rows differ by 100 ns traces each row to its own parent rows.
+
+**Dependencies:** `IOL-08` (the [temporal values root cause](root-cause-temporal-values.md)) first.
+
+**Evidence:** `src/haute/_trace_correlation.py::_correlate_rows_posthoc`;
+`src/haute/_trace_correlation.py::_typed_value_match_expr`;
+`src/haute/_trace_correlation.py::_jsonify_row`;
+`specs/tracing/low-level.md`.
