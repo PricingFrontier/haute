@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote as url_quoted
@@ -241,29 +242,169 @@ def run_import(
     label = widget.label.strip() or widget.name
     table = _table(spec, widget, label)
     read = widget.source
+
+    def keep(names: Sequence[str]) -> list[int]:
+        return sorted({place for _, place in _matched(table, widget, names)})
+
     if isinstance(read, CsvImport | ExcelImport):
         if upload is None:
             raise ImportRefusedError(f'Pick the file Import "{label}" reads.')
+        what = "file"
         names, rows = (
-            _csv_rows(read, upload) if isinstance(read, CsvImport) else _excel_rows(read, upload)
+            _csv_rows(read, upload, keep)
+            if isinstance(read, CsvImport)
+            else _excel_rows(read, upload, keep)
         )
     elif isinstance(read, SqlImport):
         if not read.connection.strip():
             raise ImportRefusedError(f'Import "{label}" names no connection.')
         check_query(read.query)
-        held = _QUERY_PARAMETER.findall(read.query)
+        what = "query's answer"
+        held = query_parameters(read.query)
         parameters = _parameters(spec, read.parameters, held, values, label)
-        names, rows = _sql_rows(source(read.connection), read.query, parameters)
+        names, rows = _sql_rows(source(read.connection), read.query, parameters, keep)
     else:
         assert isinstance(read, HttpImport)
         if not read.connection.strip():
             raise ImportRefusedError(f'Import "{label}" names no connection.')
+        what = "API's answer"
         held = _PATH_PARAMETER.findall(read.path)
         if read.method == "POST":
             held = [*held, *(given.name for given in read.parameters)]
         parameters = _parameters(spec, read.parameters, held, values, label)
-        names, rows = _http_rows(source(read.connection), read, parameters)
+        names, rows = _http_rows(source(read.connection), read, parameters, keep)
+    # Nothing read would fill nothing, and a Replace would empty the table.
+    if not names and (rows or not isinstance(read, HttpImport)):
+        raise ImportRefusedError(
+            f'The {what} holds none of the columns Import "{label}" reads: name its columns as '
+            f"{table.name}'s are, or give each column the name it has there."
+        )
     return Imported(table.name, widget.mode, imported_rows(table, widget, names, rows))
+
+
+#: A token of a query, as SQL Server and the other engines read one: a string (``'it''s'``,
+#: ``N'...'``), a quoted name (``[a]]b]``, ``"a""b"``), a word, a parenthesis, space, or any
+#: other character. A quote that does not close is none of them.
+_TOKEN = re.compile(
+    r"(?P<string>N?'(?:[^']|'')*')"
+    r'|(?P<name>\[(?:[^\]]|\]\])*\]|"(?:[^"]|"")*")'
+    r"|(?P<word>[A-Za-z_@#$][A-Za-z0-9_@#$]*)"
+    r"|(?P<open>\()|(?P<close>\))|(?P<space>\s+)|(?P<other>.)",
+    re.DOTALL,
+)
+
+
+@dataclass(frozen=True)
+class _Token:
+    kind: str
+    text: str
+    start: int
+    end: int
+    #: How many parentheses are open before it.
+    depth: int
+
+
+def _tokens(query: str) -> list[_Token]:
+    """*query*'s tokens but its space, each with the parentheses open before it; refused
+    (:class:`ImportRefusedError`) for a quote that does not close and for parentheses that
+    do not balance."""
+    tokens: list[_Token] = []
+    depth = 0
+    for found in _TOKEN.finditer(query):
+        kind = str(found.lastgroup)
+        if kind == "space":
+            continue
+        if kind == "other" and found.group() in "'\"[":
+            raise ImportRefusedError("The Import's query has a quote that does not close.")
+        if kind == "close":
+            depth -= 1
+            if depth < 0:
+                raise ImportRefusedError("The Import's query closes a parenthesis it never opened.")
+        tokens.append(_Token(kind, found.group(), found.start(), found.end(), depth))
+        if kind == "open":
+            depth += 1
+    if depth:
+        raise ImportRefusedError("The Import's query leaves a parenthesis open.")
+    return tokens
+
+
+def query_parameters(query: str) -> list[str]:
+    """The parameters *query* holds, each ``:name`` outside its strings and quoted names and
+    not a ``::`` cast, once each in order: those the view gives a column (``queryParameters``
+    in ``frontend/src/utils/workbenchForm.ts``)."""
+    masked = list(query)
+    for found in _TOKEN.finditer(query):
+        if found.lastgroup in ("string", "name"):
+            masked[found.start() : found.end()] = " " * (found.end() - found.start())
+    return list(dict.fromkeys(_QUERY_PARAMETER.findall("".join(masked))))
+
+
+def one_query_check(query: str) -> str:
+    """The statement SQL Server compiles to prove *query* one query before it runs: the
+    query as the body of a derived table, ``SELECT TOP (0) * FROM (...) AS
+    haute_import_check``, after its list of named queries (``WITH name AS (...), ...``),
+    which a derived table cannot hold, and with ``OFFSET 0 ROWS`` after an ``ORDER BY``
+    ending it, which a derived table holds only so. SQL Server runs a batch of statements
+    with no ``;`` between them, and compiles a derived table only around one query; a batch
+    that does not compile runs none of it, and the query's parentheses balance
+    (:func:`_tokens`), so nothing in it closes the derived table early. Refused for a
+    ``WITH`` that is not such a list."""
+    tokens = _tokens(query)
+    split = 0
+    if tokens and tokens[0].kind == "word" and tokens[0].text.upper() == "WITH":
+        at = 1
+        while True:
+            if at >= len(tokens) or tokens[at].kind not in ("word", "name"):
+                raise ImportRefusedError(
+                    "The Import's query's WITH must name each query it defines."
+                )
+            at += 1
+            if at < len(tokens) and tokens[at].kind == "open":
+                at = _closing(tokens, at) + 1
+            if not (
+                at + 1 < len(tokens)
+                and tokens[at].text.upper() == "AS"
+                and tokens[at + 1].kind == "open"
+            ):
+                raise ImportRefusedError(
+                    "The Import's query's WITH must give each query it names as AS (...)."
+                )
+            at = _closing(tokens, at + 1)
+            split = tokens[at].end
+            at += 1
+            if at < len(tokens) and tokens[at].text == ",":
+                at += 1
+                continue
+            break
+    final = [token for token in tokens if token.start >= split and token.depth == 0]
+    words = [token.text.upper() for token in final]
+    ordered = next(
+        (
+            place
+            for place in range(len(words) - 2, -1, -1)
+            if words[place] == "ORDER" and words[place + 1] == "BY"
+        ),
+        None,
+    )
+    tail = (
+        " OFFSET 0 ROWS"
+        if ordered is not None and not {"OFFSET", "FOR"} & set(words[ordered:])
+        else ""
+    )
+    return (
+        f"{query[:split]} SELECT TOP (0) * FROM ({query[split:].strip()}{tail}) "
+        "AS haute_import_check"
+    ).lstrip()
+
+
+def _closing(tokens: Sequence[_Token], opening: int) -> int:
+    """The place of the parenthesis closing the one at *opening*."""
+    depth = tokens[opening].depth
+    return next(
+        place
+        for place in range(opening + 1, len(tokens))
+        if tokens[place].kind == "close" and tokens[place].depth == depth
+    )
 
 
 def check_query(query: str) -> None:
@@ -279,6 +420,7 @@ def check_query(query: str) -> None:
         raise ImportRefusedError("The Import's query must be one statement, with no ;.")
     if "--" in stripped or "/*" in stripped:
         raise ImportRefusedError("The Import's query must hold no comment.")
+    _tokens(stripped)
     changing = _CHANGING.search(stripped)
     if changing is not None:
         raise ImportRefusedError(
@@ -348,6 +490,17 @@ def _parameters(
 # ---------------------------------------------------------------------------
 
 Rows = list[list[Any]]
+#: The places among a source's column names of the columns an Import reads.
+Keep = Callable[[Sequence[str]], list[int]]
+
+
+def _kept(names: Sequence[str], keep: Keep) -> tuple[list[int], list[str]]:
+    places = keep(names)
+    return places, [names[place] for place in places]
+
+
+def _taken(row: Sequence[Any], places: Sequence[int]) -> list[Any]:
+    return [row[place] if place < len(row) else None for place in places]
 
 
 def _limited(rows: Iterator[list[Any]]) -> Rows:
@@ -362,7 +515,7 @@ def _limited(rows: Iterator[list[Any]]) -> Rows:
     return taken
 
 
-def _csv_rows(read: CsvImport, data: bytes) -> tuple[list[str], Rows]:
+def _csv_rows(read: CsvImport, data: bytes, keep: Keep) -> tuple[list[str], Rows]:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -376,11 +529,12 @@ def _csv_rows(read: CsvImport, data: bytes) -> tuple[list[str], Rows]:
     header = next(reader, None)
     if header is None:
         raise ImportRefusedError("The CSV is empty.")
-    rows = (row for row in reader if any(field.strip() for field in row))
-    return [name.strip() for name in header], _limited(iter(rows))
+    places, names = _kept([name.strip() for name in header], keep)
+    rows = (_taken(row, places) for row in reader if any(field.strip() for field in row))
+    return names, _limited(rows)
 
 
-def _excel_rows(read: ExcelImport, data: bytes) -> tuple[list[str], Rows]:
+def _excel_rows(read: ExcelImport, data: bytes, keep: Keep) -> tuple[list[str], Rows]:
     from openpyxl import load_workbook
 
     try:
@@ -394,26 +548,37 @@ def _excel_rows(read: ExcelImport, data: bytes) -> tuple[list[str], Rows]:
             sheet = workbook[read.sheet]
         else:
             sheet = workbook.worksheets[0]
-        rows = sheet.iter_rows(min_row=read.header_row, values_only=True)
-        header = next(rows, None)
+        header = next(
+            sheet.iter_rows(min_row=read.header_row, max_row=read.header_row, values_only=True),
+            None,
+        )
         if header is None:
             raise ImportRefusedError(f"The sheet has no row {read.header_row} to name its columns.")
-        names = ["" if name is None else str(name).strip() for name in header]
+        places, names = _kept(["" if name is None else str(name).strip() for name in header], keep)
+        if not places:
+            return names, []
+        # Only as wide as the columns read: a sheet can say it is as wide as Excel allows.
+        rows = sheet.iter_rows(
+            min_row=read.header_row + 1, max_col=places[-1] + 1, values_only=True
+        )
 
         def body() -> Iterator[list[Any]]:
             for row in rows:
-                if all(value is None or str(value).strip() == "" for value in row):
+                taken = _taken(row, places)
+                if all(value is None or str(value).strip() == "" for value in taken):
                     return
-                yield list(row)
+                yield taken
 
         return names, _limited(body())
     finally:
         workbook.close()
 
 
-def _sql_rows(source: Source, query: str, parameters: Mapping[str, Any]) -> tuple[list[str], Rows]:
+def _sql_rows(
+    source: Source, query: str, parameters: Mapping[str, Any], keep: Keep
+) -> tuple[list[str], Rows]:
     if source.provider == "databricks":
-        return _databricks_rows(source, query, parameters)
+        return _databricks_rows(source, query, parameters, keep)
     if source.provider not in ("sqlite", "sqlserver", "postgresql"):
         raise ImportRefusedError(f"{source.where} is no database: an Import's query runs on one.")
     from sqlalchemy import text
@@ -425,9 +590,11 @@ def _sql_rows(source: Source, query: str, parameters: Mapping[str, Any]) -> tupl
             # Held read-only where the engine holds a transaction so.
             if source.provider == "postgresql":
                 connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+            elif source.provider == "sqlserver":
+                connection.execute(text(one_query_check(query)), dict(parameters)).fetchall()
             result = connection.execute(text(query), dict(parameters))
-            names = [str(name) for name in result.keys()]
-            rows = _limited(list(row) for row in result)
+            places, names = _kept([str(name) for name in result.keys()], keep)
+            rows = _limited(_taken(row, places) for row in result)
             connection.rollback()
             return names, rows
     except SQLAlchemyError as exc:
@@ -460,24 +627,37 @@ def _source_engine(source: Source) -> Any:
 
 
 def _databricks_rows(
-    source: Source, query: str, parameters: Mapping[str, Any]
+    source: Source, query: str, parameters: Mapping[str, Any], keep: Keep
 ) -> tuple[list[str], Rows]:
-    from haute._databricks_credentials import resolve_databricks_credentials
+    from haute._databricks_credentials import (
+        DatabricksConfigError,
+        resolve_databricks_credentials,
+    )
     from haute._databricks_io import _sql_auth_kwargs
 
     if not source.http_path:
         raise ImportRefusedError(f"{source.where} names no http_path.")
+    if source.token is not None:
+        host, auth = source.url, {"access_token": source.token}
+    else:
+        try:
+            credentials = resolve_databricks_credentials()
+        except DatabricksConfigError as exc:
+            raise ImportRefusedError(str(exc)) from None
+        # A hosted connection names its workspace: credentials of another reach none of it.
+        if source.url and credentials.server_hostname.lower() != source.url.lower():
+            raise ImportRefusedError(
+                f"{source.where} names {source.url}, and the DATABRICKS_* credentials are "
+                f"{credentials.server_hostname}'s: give the connection a token "
+                f"({source.where.removesuffix('_URL')}_TOKEN), or credentials of its workspace."
+            )
+        host, auth = credentials.server_hostname, _sql_auth_kwargs(credentials)
     try:
         from databricks import sql as databricks_sql
     except ImportError:
         raise ImportRefusedError(
             "A Databricks connection needs the databricks extra: install haute[databricks]."
         ) from None
-    if source.token is not None:
-        host, auth = source.url, {"access_token": source.token}
-    else:
-        credentials = resolve_databricks_credentials()
-        host, auth = credentials.server_hostname, _sql_auth_kwargs(credentials)
     try:
         with (
             databricks_sql.connect(
@@ -486,8 +666,9 @@ def _databricks_rows(
             connection.cursor() as cursor,
         ):
             cursor.execute(query, parameters=dict(parameters))
-            names = [str(column[0]) for column in cursor.description or ()]
-            return names, _limited(list(row) for row in cursor.fetchmany(IMPORT_ROW_LIMIT + 1))
+            places, names = _kept([str(column[0]) for column in cursor.description or ()], keep)
+            fetched = cursor.fetchmany(IMPORT_ROW_LIMIT + 1)
+            return names, _limited(_taken(row, places) for row in fetched)
     except ImportRefusedError:
         raise
     except Exception as exc:
@@ -502,7 +683,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _http_rows(
-    source: Source, read: HttpImport, parameters: Mapping[str, Any]
+    source: Source, read: HttpImport, parameters: Mapping[str, Any], keep: Keep
 ) -> tuple[list[str], Rows]:
     if source.provider != "http":
         raise ImportRefusedError(f"{source.where} is no API: an Import's request reaches one.")
@@ -548,8 +729,8 @@ def _http_rows(
         raise ImportRefusedError(
             f"The {source.name} API's answer at {read.rows or 'its top'} is no list of objects."
         )
-    names = list(dict.fromkeys(str(key) for record in records for key in record))
-    return names, _limited([record.get(name) for name in names] for record in records)
+    _, names = _kept(list(dict.fromkeys(str(key) for record in records for key in record)), keep)
+    return names, _limited([record.get(name, _ABSENT) for name in names] for record in records)
 
 
 # ---------------------------------------------------------------------------
@@ -569,31 +750,58 @@ def read_columns(table: SchemaTable, widget: ImportWidget) -> list[SchemaColumn]
     ]
 
 
-def imported_rows(
-    table: SchemaTable, widget: ImportWidget, names: Sequence[str], rows: Rows
-) -> list[dict[str, Cell]]:
-    """*rows*, a source's rows under its columns' *names*, as *table*'s cells: each column the
-    Import reads (:func:`read_columns`) from the source's column named for it, else of its
-    name or its label, whatever its case; a column the source does not hold left out; text
-    trimmed, any other value as a saved quote's comes back (``sheet_cell``), an empty one
-    left out."""
+#: An API's object without a key the Import reads: its cell left as it is, not cleared.
+_ABSENT = object()
+
+
+def _matched(
+    table: SchemaTable, widget: ImportWidget, names: Sequence[str]
+) -> list[tuple[SchemaColumn, int]]:
+    """Each column the Import reads (:func:`read_columns`) the source holds, with the place
+    among *names* of the column it is read from: the one its ``column_names`` gives it, else
+    the one of its name, else of its label, whatever their case, the first so named."""
     places = {name.casefold(): place for place, name in reversed(list(enumerate(names)))}
     renamed = {named.column: named.name for named in widget.column_names}
-    taken: list[tuple[SchemaColumn, int]] = []
+    matched: list[tuple[SchemaColumn, int]] = []
     for column in read_columns(table, widget):
         wanted = [renamed[column.name]] if column.name in renamed else [column.name, column.label]
         place = next((places[w.casefold()] for w in wanted if w and w.casefold() in places), None)
         if place is not None:
-            taken.append((column, place))
+            matched.append((column, place))
+    return matched
+
+
+def _native(column: SchemaColumn, value: Any) -> Any:
+    """A source's *value* as *column* holds one: a date and time its day in a Date column, as
+    a workbook's date cell and a database's DATETIME are read; 0 and 1 false and true in a
+    True/false column, as SQLite and SQL Server's BIT give them."""
+    if column.type == "date" and isinstance(value, datetime):
+        return value.date()
+    if column.type == "bool" and type(value) is int and value in (0, 1):
+        return bool(value)
+    return value
+
+
+def imported_rows(
+    table: SchemaTable, widget: ImportWidget, names: Sequence[str], rows: Rows
+) -> list[dict[str, Cell]]:
+    """*rows*, a source's rows under its columns' *names*, as *table*'s cells: each column the
+    Import reads from the source's column :func:`_matched` finds for it, a column the source
+    does not hold left out; text trimmed, any other value as a saved quote's comes back
+    (``sheet_cell``), a date and time or a 0 or 1 as its column holds it (:func:`_native`);
+    and a value that is
+    empty, null or false an empty cell, unticked in a True/false column, so an update clears
+    what it held. An API's object without the key is left out, its cell as it is."""
+    matched = _matched(table, widget, names)
     cells: list[dict[str, Cell]] = []
     for row in rows:
         held: dict[str, Cell] = {}
-        for column, place in taken:
-            value = row[place] if place < len(row) else None
-            cell: Cell | None = (
-                value.strip() if isinstance(value, str) else sheet_cell(column, value)
-            )
-            if cell is not None and cell != "":
-                held[column.name] = cell
+        for column, place in matched:
+            value = row[place] if place < len(row) else _ABSENT
+            if value is _ABSENT:
+                continue
+            value = _native(column, value)
+            cell = value.strip() if isinstance(value, str) else sheet_cell(column, value)
+            held[column.name] = cell if cell is not None else False if column.type == "bool" else ""
         cells.append(held)
     return cells

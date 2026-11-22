@@ -354,8 +354,10 @@ one:
 In Preview and the underwriter app an Import runs. Press it: a file Import asks for the
 file, and one of a database or an API reads it. What it reads lands on the sheets as if
 typed, priced as typing is and marked where it breaks a column's rules. Replacing rows
-already typed asks first. In Preview the Import is one step of Undo; in the app it fills
-the quote open, which you then save. An Import reads at most 10,000 rows. It runs on the
+already typed asks first. A value the source leaves empty clears the cell it lands on;
+a column the source does not have leaves its cells as they are. In Preview the Import is
+one step of Undo; in the app it fills the quote open, which you then save. An Import reads
+at most 10,000 rows. It runs on the
 server, signed in as the server is: in the editor and `haute app serve` with your sign-in
 (its connections are in `connections.toml`, as [the underwriter app](#the-underwriter-app)
 says), in the hosted app with the
@@ -430,9 +432,10 @@ a sheet per table.
   whose value it takes. The query is one read: it starts `SELECT` or `WITH` and holds no
   `;`, no comment and no word that changes a database (`INSERT`, `UPDATE`, `DELETE`,
   `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`, `EXECUTE`,
-  `CALL`, `INTO`). From an **API**, the **Connection**, the **Method** (GET or POST), the
-  **Path** after the connection's address, where `{name}` takes a parameter's value, and
-  **Rows**, where the answer's rows are, keys joined by dots (`data.items`), or blank for the
+  `CALL`, `INTO`). Even so, give an Import's connection a login that may only read; on SQL
+  Server, Haute also has the server compile the query as one query before it runs it. From
+  an **API**, the **Connection**, the **Method** (GET or POST), the **Path** after the
+  connection's address, where `{name}` takes a parameter's value, and **Rows**, where the answer's rows are, keys joined by dots (`data.items`), or blank for the
   answer itself, a list of objects or one object. **Parameters** has a row for each
   `{name}` in the path; a POST sends its parameters as JSON, and **Send a field** adds
   another. From SQL or an API, **Lookup** offers the Import again beside one of its

@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 from haute import _workbench_import as imports
 from haute._quote_store._store import make_engine
-from haute._workbench_form import FormSpec
+from haute._workbench_form import ExcelImport, FormSpec
 from haute._workbench_import import (
     ImportRefusedError,
     ImportSourceError,
@@ -86,7 +86,8 @@ def test_a_csv_is_read_by_its_columns_names_or_labels_whatever_their_case() -> N
     assert (imported.table, imported.mode) == ("layers", "replace")
     assert imported.rows == [
         {"layer": "1", "limit": "1000", "excess": "500"},
-        {"layer": "2", "limit": "2000"},
+        # Its XS is empty, which clears the cell.
+        {"layer": "2", "limit": "2000", "excess": ""},
     ]
 
 
@@ -171,7 +172,7 @@ def test_a_query_runs_on_its_named_connection_its_parameter_bound_to_its_field(
 
     assert imported.rows == [
         {"layer": "1", "limit": "1000", "excess": "500"},
-        {"layer": "2", "limit": "2000.5"},
+        {"layer": "2", "limit": "2000.5", "excess": ""},
     ]
 
 
@@ -305,7 +306,8 @@ def test_a_request_reaches_its_connections_api_its_rows_found_where_it_says(
         _form(_http()), "w_in", VALUES, source=lambda n: project_source(tmp_path, n, environ)
     )
 
-    assert imported.rows == [{"layer": "1", "limit": "1000"}, {"layer": "2"}]
+    # A null clears its cell; a key an object does not hold leaves it as it is.
+    assert imported.rows == [{"layer": "1", "limit": "1000", "excess": ""}, {"layer": "2"}]
     assert _Api.seen == [{"path": "/api/policies/ABC%201/layers", "authorization": "Bearer sekret"}]
 
 
@@ -404,7 +406,7 @@ def test_preview_runs_an_import_of_the_form_the_view_holds(tmp_path: Path) -> No
         "mode": "replace",
         "rows": [
             {"layer": "1", "limit": "1000", "excess": "500"},
-            {"layer": "2", "limit": "2000.5"},
+            {"layer": "2", "limit": "2000.5", "excess": ""},
         ],
     }
     assert refused.status_code == 422
@@ -558,3 +560,192 @@ def test_an_apis_answer_past_its_limit_is_refused(
 
     with pytest.raises(ImportRefusedError, match="The crm API answered more than"):
         run_import(_form(_http()), "w_in", VALUES, source=lambda _n: reached)
+
+
+# ── One query, and the cells it gives ──────────────────────────────────────
+
+
+def test_sql_server_compiles_a_query_as_one_before_it_runs() -> None:
+    assert imports.one_query_check("SELECT a FROM t ORDER BY a") == (
+        "SELECT TOP (0) * FROM (SELECT a FROM t ORDER BY a OFFSET 0 ROWS) AS haute_import_check"
+    )
+    assert imports.one_query_check(
+        "WITH c (x) AS (SELECT 1 AS x), d AS (SELECT x FROM c) SELECT x FROM d"
+    ) == (
+        "WITH c (x) AS (SELECT 1 AS x), d AS (SELECT x FROM c) "
+        "SELECT TOP (0) * FROM (SELECT x FROM d) AS haute_import_check"
+    )
+    # A parenthesis in a string or a quoted name is no parenthesis.
+    assert imports.one_query_check("SELECT N'it''s )' AS [a]]b] FROM t").endswith(
+        "(SELECT N'it''s )' AS [a]]b] FROM t) AS haute_import_check"
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "said"),
+    [
+        ("SELECT 1 AS n) AS x DENY SELECT ON t TO u SELECT (1", "never opened"),
+        ("SELECT 'abc", "does not close"),
+        ("SELECT (1", "leaves a parenthesis open"),
+        ("WITH SELECT 1", "as AS (...)"),
+    ],
+)
+def test_a_query_whose_parentheses_or_quotes_do_not_balance_is_refused(
+    query: str, said: str
+) -> None:
+    with pytest.raises(ImportRefusedError, match=said):
+        imports.one_query_check(query)
+
+
+def test_a_parameter_is_found_outside_strings_and_quoted_names_as_the_view_finds_it() -> None:
+    query = "select ':no', [x:y], \"a:b\", :ref, a::int, :ref, :Day_1"
+
+    assert imports.query_parameters(query) == ["ref", "Day_1"]
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(name, marks=pytest.mark.store_servers)
+        for name in configured()
+        if name == "sqlserver"
+    ]
+)
+def sql_server(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    with database(request.param, tmp_path) as target:
+        yield target
+
+
+def test_on_sql_server_a_batch_of_statements_runs_none_of_them(sql_server: Target) -> None:
+    engine = make_engine(sql_server.url, sign_in=sql_server.sign_in)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE rates (ref VARCHAR(20), layer INT)"))
+            connection.execute(text("INSERT INTO rates VALUES ('ABC 1', 2), ('ABC 1', 1)"))
+    finally:
+        engine.dispose()
+    reached = Source("rates", "sqlserver", sql_server.url, "rates", sign_in=sql_server.sign_in)
+    # No ; between them, and none of the words an Import refuses.
+    batch = {**SQL, "query": "SELECT layer FROM rates DENY SELECT ON rates TO public"}
+    ordered = {
+        **SQL,
+        "query": "WITH held AS (SELECT layer FROM rates WHERE ref = :ref) "
+        "SELECT layer FROM held ORDER BY layer",
+    }
+
+    with pytest.raises(ImportSourceError, match="did not answer the Import's query"):
+        run_import(_form(batch), "w_in", VALUES, source=lambda _n: reached)
+    imported = run_import(_form(ordered), "w_in", VALUES, source=lambda _n: reached)
+
+    engine = make_engine(sql_server.url, sign_in=sql_server.sign_in)
+    try:
+        with engine.connect() as connection:
+            denied = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM sys.database_permissions "
+                    "WHERE major_id = OBJECT_ID('rates') AND state = 'D'"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    assert denied == 0
+    assert imported.rows == [{"layer": "1"}, {"layer": "2"}]
+
+
+DETAILS = {
+    "name": "policy",
+    "rows": "one",
+    "inputs": [
+        {"name": "inception", "type": "date"},
+        {"name": "enabled", "type": "bool"},
+        {"name": "note", "type": "str"},
+    ],
+}
+
+
+def _details_form(source: dict[str, Any]) -> FormSpec:
+    spec = form(DETAILS)
+    spec["pages"][0]["sections"] = [section("s", _import(source, table="policy", column_names=[]))]
+    return FormSpec.model_validate(spec)
+
+
+def test_a_sources_empty_false_and_null_values_clear_cells_and_its_dates_are_days(
+    tmp_path: Path,
+) -> None:
+    from datetime import datetime
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active.append(["Inception", "Enabled", "Note", "Ignored"])
+    workbook.active.append([datetime(2026, 11, 22), False, None, "x"])
+    saved = io.BytesIO()
+    workbook.save(saved)
+    rates = tmp_path / "rates.sqlite"
+    with sqlite3.connect(rates) as raw:
+        raw.execute("CREATE TABLE p (inception TEXT, enabled INTEGER, note TEXT)")
+        raw.execute("INSERT INTO p VALUES ('2026-01-02', 1, '')")
+    reached = Source("rates", "sqlite", f"sqlite:///{rates}", "rates")
+    sql = {
+        "format": "sql",
+        "connection": "rates",
+        "query": "SELECT inception, enabled, note FROM p",
+        "parameters": [],
+    }
+
+    from_file = run_import(
+        _details_form({"format": "excel", "sheet": "", "header_row": 1}),
+        "w_in",
+        {},
+        source=_no_source,
+        upload=saved.getvalue(),
+    )
+    from_database = run_import(_details_form(sql), "w_in", {}, source=lambda _n: reached)
+
+    assert from_file.rows == [{"inception": "2026-11-22", "enabled": False, "note": ""}]
+    assert from_database.rows == [{"inception": "2026-01-02", "enabled": True, "note": ""}]
+
+
+def test_a_source_holding_none_of_the_columns_read_is_refused() -> None:
+    with pytest.raises(ImportRefusedError, match="holds none of the columns"):
+        run_import(
+            _form({"format": "csv", "delimiter": "comma"}),
+            "w_in",
+            VALUES,
+            source=_no_source,
+            upload=b"other,more\n1,2\n",
+        )
+
+
+def test_a_workbook_is_read_only_as_wide_as_the_columns_read() -> None:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"], sheet["XFD1"] = "layer", "far"
+    sheet["A2"], sheet["XFD2"] = 3, "x"
+    saved = io.BytesIO()
+    workbook.save(saved)
+    seen: list[int] = []
+
+    def keep(names: Any) -> list[int]:
+        seen.append(len(names))
+        return [0]
+
+    names, rows = imports._excel_rows(
+        ExcelImport(format="excel", sheet="", header_row=1), saved.getvalue(), keep
+    )
+
+    assert (names, rows) == (["layer"], [[3]])
+    assert seen == [16384]
+
+
+def test_a_hosted_warehouse_without_a_token_takes_credentials_of_its_own_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-2.azuredatabricks.net")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "global")
+    environ = {"HAUTE_CONNECTION_WAREHOUSE_URL": "databricks://adb-1.azuredatabricks.net/sql/1"}
+    query = {**SQL, "connection": "warehouse"}
+
+    with pytest.raises(ImportRefusedError, match="credentials are adb-2.azuredatabricks.net's"):
+        run_import(_form(query), "w_in", VALUES, source=lambda n: hosted_source(n, environ))

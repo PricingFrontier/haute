@@ -241,3 +241,32 @@ def test_on_a_server_engine_the_run_makes_its_own_database_and_drops_it(
     finally:
         engine.dispose()
     assert made not in names
+
+
+def test_a_quote_not_ready_to_be_final_is_a_note_and_a_failed_finalising_fails_the_run(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._quote_store._book import QuoteBook
+    from haute._quote_store._store import QuoteNotReadyError
+
+    spec = _sheets(project, _export([_cell("pricing", "premium", "B2")]))
+
+    def not_ready(*_args: Any, **_kwargs: Any) -> Any:
+        raise QuoteNotReadyError("Fill in State first.", missing=["policy.state"])
+
+    monkeypatch.setattr(QuoteBook, "finalise", not_ready)
+    noted = _run(project, spec, [("Fleet", _request(spec))])
+
+    def failing(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("the store broke")
+
+    monkeypatch.setattr(QuoteBook, "finalise", failing)
+    failed = _run(project, spec, [("Fleet", _request(spec))])
+
+    assert noted.failed == []
+    assert noted.notes == [
+        "Fleet: not exported, as it was not marked final: HTTP 409: Fill in State first."
+    ]
+    assert len(failed.failed) == 1
+    assert failed.failed[0].startswith("Fleet: marked final, HTTP 500")
+    assert "the store broke" not in failed.failed[0]

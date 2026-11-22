@@ -13,6 +13,7 @@ import {
   formattedNumber,
   newQuoteValues,
   indexProblemCells,
+  KEPT_KEY,
   landedRows,
   presetRows,
   pricedRows,
@@ -592,9 +593,24 @@ describe("an Import's rows landing", () => {
     ])
   })
 
-  it("updates by a numbered index the row of each number, the number itself the sheets' to give", () => {
-    const held = [{ item: "Crane", value: "1" }, { item: "Truck", value: "2" }]
-    const landed = landedRows(equipment, held, { mode: "update", rows: [{ row_number: "2", value: "20" }, { row_number: "7", item: "Van" }] })
-    expect(landed).toEqual([{ item: "Crane", value: "1" }, { item: "Truck", value: "20" }, { item: "Van" }])
+  it("updates by a numbered index the row of each number on the sheet, the number itself the sheets' to give", () => {
+    // Row 2 is blank: row 3 is still row 3.
+    const held: SampleRow[] = [{ item: "Crane", value: "1" }, {}, { item: "Truck", value: "2" }, {}]
+    const landed = landedRows(equipment, held, { mode: "update", rows: [{ row_number: "3", value: "20" }, { row_number: "9", item: "Van" }] })
+    expect(landed).toEqual([{ item: "Crane", value: "1" }, {}, { item: "Truck", value: "20" }, { item: "Van" }])
+  })
+
+  it("keeps a row holding kept values alone, and asks before replacing it", () => {
+    const kept = { [KEPT_KEY]: { gone: "x" } } as unknown as SampleRow
+    const held: SampleRow[] = [{ item: "Crane" }, kept]
+    expect(landedRows(equipment, held, { mode: "append", rows: [{ item: "Van" }] })).toEqual([{ item: "Crane" }, kept, { item: "Van" }])
+    expect(replacesTyped(equipment, [kept], { mode: "replace", rows: [] })).toBe(true)
+  })
+
+  it("clears a cell with an empty one, in a one-row table and an update", () => {
+    expect(landedRows(policy, [{ state: "CA", years: "3" }], { mode: "replace", rows: [{ years: "" }] })).toEqual([{ state: "CA", years: "" }])
+    expect(landedRows(sites, [{ site_name: "Leeds", site_note: "old" }], { mode: "update", rows: [{ site_name: "Leeds", site_note: "" }] })).toEqual([
+      { site_name: "Leeds", site_note: "" },
+    ])
   })
 })

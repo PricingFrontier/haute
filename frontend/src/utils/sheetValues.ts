@@ -417,21 +417,41 @@ export interface ImportedRows {
 }
 
 /**
+ * The field of a row holding its values in store columns the form no longer holds, as the
+ * quote store opened them (specs/workbench). No sheet shows it: it stays on its row, through
+ * inserts, deletes and edits, and the save writes it back.
+ */
+export const KEPT_KEY = "$kept"
+
+/** Whether a row holds anything a save keeps: a value typed (`rowFilled`), or values in its kept field. */
+export const rowHolds = (table: SchemaTable, row: SampleRow | undefined): boolean => rowFilled(table, row) || (row !== undefined && KEPT_KEY in row)
+
+/** `rows`, copied, without the rows at their end holding nothing. */
+function withoutEmptyEnd(table: SchemaTable, rows: readonly SampleRow[]): SampleRow[] {
+  let end = rows.length
+  while (end > 0 && !rowHolds(table, rows[end - 1])) end -= 1
+  return rows.slice(0, end).map((row) => ({ ...row }))
+}
+
+/**
  * The rows `table` holds once an Import's rows land on `held`, as typing does (specs/workbench,
- * Running an Import): a one-row table's row taking the first row's values, its other values
- * kept; a many-row table's rows replaced, added after its filled rows, or updated by its index,
- * each row's index value, a number for a numbered index, naming the row it updates and a row
- * none names added after them, but in a table an index of values gives its rows, which are
- * fixed, where it is left out. A table with no index updates no row: each is added.
+ * Running an Import), each row of `held` kept in its place, its kept field too: a one-row
+ * table's row taking the first row's cells over its own; a many-row table's rows replaced,
+ * added after its last row holding anything (`rowHolds`), or updated by its index, each row's
+ * index value naming the row whose cells it takes over theirs (a numbered index its number on
+ * the sheet) and a row none names added after them, but in a table an index of values gives
+ * its rows, which are fixed, where it is left out. A table with no index updates no row: each
+ * is added. An empty cell in a row clears the cell it lands on.
  */
 export function landedRows(table: SchemaTable, held: readonly SampleRow[], imported: ImportedRows): SampleRow[] {
   const { mode, rows } = imported
   if (table.rows === "one") return rows.length === 0 ? held.slice(0, 1) : [{ ...(held[0] ?? {}), ...rows[0] }]
   if (mode === "replace") return rows.map((row) => ({ ...row }))
   const index = tableIndex(table)
-  if (mode === "append" || index === null) return [...held.filter((row) => rowFilled(table, row)), ...rows.map((row) => ({ ...row }))]
+  if (mode === "append" || index === null) return [...withoutEmptyEnd(table, held), ...rows.map((row) => ({ ...row }))]
   const fixed = valuesIndex(table) !== null
-  const landed: SampleRow[] = fixed ? presetRows(table, held).map((row) => ({ ...row })) : held.filter((row) => rowFilled(table, row)).map((row) => ({ ...row }))
+  const landed: SampleRow[] = (fixed ? presetRows(table, held) : held).map((row) => ({ ...row }))
+  const added: SampleRow[] = []
   const placeOf = (value: SampleValue | undefined): number => {
     if (index.index === "numbered") {
       const number = typeof value === "string" ? Number(trimTyped(value)) : Number.NaN
@@ -446,11 +466,11 @@ export function landedRows(table: SchemaTable, held: readonly SampleRow[], impor
     const cells: SampleRow = { ...row }
     if (index.index === "numbered") delete cells[index.name]
     if (place >= 0) landed[place] = { ...landed[place], ...cells }
-    else if (!fixed) landed.push(cells)
+    else if (!fixed) added.push(cells)
   }
-  return landed
+  return fixed ? landed : [...withoutEmptyEnd(table, landed), ...added]
 }
 
-/** Whether rows landing as `imported` says replace any of `held` an underwriter filled: a many-row table's Replace over a filled row asks first. */
+/** Whether rows landing as `imported` say replace any of `held` holding anything (`rowHolds`): a many-row table's Replace over such a row asks first. */
 export const replacesTyped = (table: SchemaTable, held: readonly SampleRow[], imported: ImportedRows): boolean =>
-  table.rows === "many" && imported.mode === "replace" && held.some((row) => rowFilled(table, row))
+  table.rows === "many" && imported.mode === "replace" && held.some((row) => rowHolds(table, row))

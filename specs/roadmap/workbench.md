@@ -61,6 +61,7 @@ built the run and the main session ran it again on 16 November 2026.
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
+| WB-77 | Planned | P3 | A PostgreSQL quote store whose server keeps the connection open but never answers is refused within the statement deadline, as one that stops acknowledging is. |
 
 ## Planned improvements
 
@@ -645,3 +646,30 @@ with no restart. A variable set outside `.env` still wins.
 
 **Evidence:** `src/haute/server.py`; `src/haute/_connections.py`;
 `specs/workbench/low-level.md`.
+
+### WB-77 — A PostgreSQL server that keeps the connection and never answers
+**Why:** Read from the source and libpq's documentation on 22 November 2026. A
+PostgreSQL connection's deadlines are libpq's
+connect timeout (a server that never finishes the sign-in), the TCP user timeout
+(data the host never acknowledges) and the server's own statement timeout. None
+bounds a statement on an established connection whose peer acknowledges what is
+sent and never replies: a server process stuck where its statement timeout cannot
+fire, or a proxy that keeps the socket and stops relaying. psycopg has no
+client-side read deadline, so the worker thread waits until the operating system
+closes the socket. A pooler's own wait queue (PgBouncer's `query_wait_timeout`)
+bounds the common case of a pooled server too busy to take the statement. SQL
+Server's query timeout is the driver's, client-side, so it has no such gap.
+
+**Plan:** A client-side deadline on each PostgreSQL statement and on the pool's
+ping: past the statement timeout and a grace, the connection is cancelled, then its
+socket shut, so the statement fails as unreachable. One watchdog serving every
+connection, not a thread per statement.
+
+**Acceptance:** Through a proxy that relays the sign-in and then stops relaying, a
+quote read is answered 503 within the statement deadline and its grace, and the
+connection is not handed out again.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_quote_store/_providers.py::deadline_hook`;
+`src/haute/_quote_store/_providers.py::make_server_engine`.

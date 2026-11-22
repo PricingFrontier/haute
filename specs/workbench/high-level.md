@@ -1901,11 +1901,18 @@ Out of scope:
     Server, PostgreSQL or a SQLite file: one statement, starting `SELECT` or `WITH`, with no
     `;`, no comment and none of the words that change a database (`INSERT`, `UPDATE`,
     `DELETE`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`,
-    `EXECUTE`, `CALL`, `INTO`), each refused naming why before anything is sent, and run
+    `EXECUTE`, `CALL`, `INTO`), its quotes closing and its parentheses balancing, each
+    refused naming why before anything is sent. SQL Server runs a batch of statements with
+    no `;` between them, so there the query is first compiled as the body of a derived
+    table (`SELECT TOP (0) * FROM (...) AS haute_import_check`, its list of named queries,
+    `WITH ... AS (...)`, kept before it and `OFFSET 0 ROWS` after an `ORDER BY` ending it),
+    which SQL Server compiles only around one query, and a batch that does not compile runs
+    none of it: the query runs only once that has compiled. It is run
     read-only where the engine allows (a PostgreSQL transaction `READ ONLY`, a SQLite file
     opened read-only, so nothing of it is written and a file not there is not made), within
     the statement deadline the quote store's connections keep, each `:name` bound to its
-    parameter's value, never written into the text.
+    parameter's value, never written into the text, a `:name` in a string or a quoted name
+    being none.
   - **An API.** A request to a named connection of `provider = "http"`, whose `base_url`
     is the only host it reaches (an allow-list of one): its `method`, `GET` or `POST`, its
     `path` after the base URL, each `{name}` in it the URL-encoded value of that parameter,
@@ -1920,16 +1927,24 @@ Out of scope:
   column of the table the Import fills, an input an underwriter types, is read from the
   column of the source named for it, else of its name or its label, whatever its case;
   a column the source does not hold is left as it is, and one the table does not have is
-  never read. Each value becomes the cell text the sheets hold it as: a file's text as
-  written, trimmed; a database's or an API's value as a saved quote's comes back
-  (`1000.00` for one of a column's allowed values, else a number as its shortest text, a
-  date as ISO text, true a tick). Nothing is priced on the server for the Import: its rows
+  never read, and a source holding none of the columns the Import reads is refused, since
+  it would fill nothing and a Replace would empty the table; only the columns read are
+  read, so a workbook saying it is as wide as Excel allows costs no more than its columns
+  read. Each value becomes the cell text the sheets hold it as: a file's text as written,
+  trimmed; a database's or an API's value as a saved quote's comes back (`1000.00` for one
+  of a column's allowed values, else a number as its shortest text, a date as ISO text,
+  true a tick), a date and time going into a Date column its day (as a workbook's date
+  cells are read) and 0 or 1 into a True/false column false or true; and a value that is
+  empty, null or false an empty cell, unticked in a True/false column, so an update clears
+  the cell it lands on, while a key an API's object does not hold leaves its cell as it is. Nothing is priced on the server for the Import: its rows
   land on the sheets as typing does, priced as typing is, each cell marked where it breaks
   its column's rules. A one-row table takes the first row's values, its other values
   kept; a many-row table's rows are replaced, added after those typed, or updated by its
   index (each source row's index value naming the row it updates, a row none names added
   after them, but in a table with a row for each allowed value, whose rows are fixed,
-  where it is left out). Replacing rows already typed asks first. In Preview the rows land
+  where it is left out), each row in its place on the sheet, a numbered index's number its
+  row there, blank rows and a row holding only values the store keeps outside the form
+  kept. Replacing rows holding anything asks first. In Preview the rows land
   in the sample, one undo step; in the app, in the quote open, which the underwriter then
   saves. A refusal (no connection of that name, a query or a host refused, a source that
   does not answer, more rows than the cap, a parameter with no value, a column of the
@@ -1939,7 +1954,8 @@ Out of scope:
   - **Its connections.** In the editor and `haute app serve` a connection is a table of
     `connections.toml` under the name the Import gives (Connections, below), which gains a
     `databricks` provider (its `http_path`; the workspace's host and sign-in from the
-    `DATABRICKS_*` variables, as a Databricks Data Input reads them) and an `http` one (its
+    `DATABRICKS_*` variables, as a Databricks Data Input reads them; a hosted app's,
+    without its own token, refused while those variables are another workspace's) and an `http` one (its
     `base_url`, and `headers`, each header's name and the variable holding its value). A
     hosted app reads a connection from the host's variables named for it alone,
     `HAUTE_CONNECTION_<NAME>_URL` (a database's credential-free URL, a Databricks
@@ -3316,7 +3332,9 @@ Out of scope:
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
   again loses nothing: in the sample, and in the app's quote while it stays open, saved or
   not, each kept value on the row it was typed on, which a table keyed by an index typed or
-  of values knows by its index, since a save answers such rows in the index's order. The
+  of values knows by its index, since a save answers such rows in the index's order, and
+  any other table by its place, a row holding hidden values alone staying in its place
+  though the save answers no row for it. The
   store keeps only what was priced, so a quote opened again starts a hidden cell
   at its default (decided 2026-11-05: what was typed is kept for the session, not in the
   database). The server leaves them out where it makes the quote, the one place

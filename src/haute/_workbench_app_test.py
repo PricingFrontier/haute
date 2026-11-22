@@ -212,6 +212,14 @@ def _body(answer: HttpAnswer) -> Any:
         return None
 
 
+def _error_code(answer: HttpAnswer) -> str | None:
+    """The error code of a refusal the app answered, None for none."""
+    body = _body(answer)
+    detail = body.get("detail") if isinstance(body, dict) else None
+    code = detail.get("error_code") if isinstance(detail, Mapping) else None
+    return code if isinstance(code, str) else None
+
+
 def _why(answer: HttpAnswer) -> str:
     """What the app said of a request it did not answer 200, for the analyst reading CI."""
     if answer.status == 0:
@@ -296,7 +304,11 @@ def _quote_run(
         return
     final = app.post(f"{address}/final", {"version": kept["quote"]["version"]})
     if final.status != 200:
-        report.notes.append(f"{name}: not exported, as it was not marked final: {_why(final)}")
+        # A test quote may lack what a final one needs; any other answer is the app failing.
+        if final.status == 409 and _error_code(final) == "quote_not_ready":
+            report.notes.append(f"{name}: not exported, as it was not marked final: {_why(final)}")
+        else:
+            report.failed.append(f"{name}: marked final, {_why(final)}")
         return
     version = _body(final)["quote"]["version"]
     for export in exports:

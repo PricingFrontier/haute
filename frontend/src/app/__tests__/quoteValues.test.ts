@@ -172,6 +172,19 @@ describe("a quote's identity and the details the app sets", () => {
 
     expect(withHiddenCells(form, answered, sent)).toEqual({ equipment: [{ item: "B", units: "1", limit: "200" }, { limit: "50" }] })
   })
+
+  it("keep a hidden cell of a numbered table on its own row past those answered, blank rows before it", () => {
+    const form = keyedForm("str")
+    form.schema.tables[1].inputs[0] = indexColumn("row_number", "numbered")
+    form.pages[0].sections[0].widgets.forEach((widget) => {
+      if (widget.type === "tableInput") widget.fields = widget.fields.filter((field) => field.column !== "item")
+    })
+    // Row 3 holds its hidden limit alone, so it is not sent; row 2 is blank.
+    const sent: Values = { equipment: [{ units: "1", limit: "200" }, {}, { limit: "300" }] }
+    const answered = { equipment: [{ units: "1" }] }
+
+    expect(withHiddenCells(form, answered, sent)).toEqual({ equipment: [{ units: "1", limit: "200" }, {}, { limit: "300" }] })
+  })
 })
 
 describe("the quote store's refusals", () => {
