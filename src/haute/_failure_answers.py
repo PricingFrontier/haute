@@ -734,7 +734,7 @@ def file_answer(exc: BaseException, *, named: str | None = None) -> FailureAnswe
     another program, read-only, a refused permission, a full disk, a path too long. The
     file is *named* as the caller names it when it knows it better (a request's own
     path), else as :func:`display_file` names the error's."""
-    from haute._file_ops import path_too_long_error
+    from haute._file_ops import FolderInUseError, path_too_long_error
     from haute._project import PipelineFileError
 
     if isinstance(exc, PipelineFileError):
@@ -747,6 +747,15 @@ def file_answer(exc: BaseException, *, named: str | None = None) -> FailureAnswe
         message = f"Haute could not write {named or display_file(too_long.filename)}: "
         return _plain(422, "path_too_long", f"{message}{too_long.strerror}.")
     refused = _os_error_in(exc)
+    if isinstance(refused, FolderInUseError):
+        # The folder is a staging or cache folder the user never sees, and the program
+        # holding it lets go by itself: a scanner or an indexer reading what was just written.
+        return _plain(
+            409,
+            "folder_in_use",
+            "Another program, such as an antivirus scanner or an indexer, has files Haute has "
+            "just written open. Try again in a moment.",
+        )
     if (
         refused is not None
         and refused.errno == errno.ENOSPC

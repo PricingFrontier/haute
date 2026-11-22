@@ -1990,6 +1990,102 @@ def test_a_requested_column_the_node_no_longer_produces_is_refused_as_without_a_
     assert response.json()["detail"] == "Requested preview column(s) not found on target: discard"
 
 
+def _join_chain(project: Path, joins: int, *, first: str = "pl.col('a')") -> PipelineGraph:
+    """One input, ``joins + 1`` branches of it, and ``joins`` left joins in a chain, each
+    of which a preview of the last captures; *first* is the first branch's column."""
+    nodes: list[tuple[str, NodeType, dict[str, Any]]] = [
+        ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet"))
+    ]
+    edges: list[tuple[str, str]] = []
+    for index in range(joins + 1):
+        column = first if index == 0 else "pl.col('a')"
+        nodes.append(
+            (
+                f"b{index}",
+                NodeType.POLARS,
+                _code(f"df = policies.select('id', {column}.alias('c{index}'))"),
+            )
+        )
+        edges.append(("policies", f"b{index}"))
+    previous = "b0"
+    for index in range(1, joins + 1):
+        nodes.append(
+            (
+                f"j{index}",
+                NodeType.POLARS,
+                _code(f"df = {previous}.join(b{index}, on='id', how='left', validate='m:1')"),
+            )
+        )
+        edges += [(previous, f"j{index}"), (f"b{index}", f"j{index}")]
+        previous = f"j{index}"
+    return _graph(project, nodes, edges)
+
+
+def test_a_preview_that_captures_many_joins_checks_the_budget_once(
+    project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget check walks the whole store, so one per capture made a preview below k
+    joins walk a store of k captures k times. A walk checks once, after its captures, and
+    that one check still brings the automatic captures within their budget."""
+    from haute._node_snapshots import BOUNDED_SEMANTICS_CLASS, NodeSnapshotSlot
+    from haute._pipeline_settings import update_pipeline_settings
+    from haute.executor import _preview_cache
+
+    joins = 8
+    walks: list[Path] = []
+    scan = NodeSnapshotStore._scan_usage
+
+    def counting(self: NodeSnapshotStore) -> Any:
+        walks.append(self.inputs_root)
+        return scan(self)
+
+    monkeypatch.setattr(NodeSnapshotStore, "_scan_usage", counting)
+
+    first = _post_preview(api, _join_chain(project, joins), f"j{joins}")
+    assert _plan_of(first) == [(f"j{index}", "captured") for index in range(1, joins + 1)]
+    assert len(walks) == 1
+    captured = store.usage().automatic_bytes
+
+    # Older captures of other nodes, which the next preview's captures push over budget.
+    older = []
+    for name in ("old0", "old1", "old2"):
+        identity = NodeSnapshotSlot(
+            pipeline_source_file=str(project / "main.py"),
+            node_id=name,
+            source="live",
+            semantics_class=BOUNDED_SEMANTICS_CLASS,
+        ).identity("s1")
+        artifact = store.stage_node_output(identity)
+        pl.DataFrame({"x": np.arange(5_000)}).write_parquet(artifact.part_path(0))
+        with store.publish_node_output(
+            identity,
+            artifact,
+            columns=NodeSnapshotColumns.all(),
+            dependencies={},
+            explicit=False,
+            profile=ExecutionProfile.NODE_SNAPSHOT,
+            owner=NodeSnapshotOwner(
+                occurrence=None, occurrence_label=None, node_id=name, label=name
+            ),
+        ) as publication:
+            assert publication.generation is not None
+            older.append(publication.generation)
+    old_size = older[0].generation.metadata.size_bytes
+    budget = captured + 3 * old_size // 2
+    update_pipeline_settings(project, {"cache_size_gb": budget / 1024**3})
+    walks.clear()
+    _preview_cache.clear()
+
+    # An edit to the first branch: every join is captured again.
+    edited = _post_preview(api, _join_chain(project, joins, first="(pl.col('a') + 1)"), f"j{joins}")
+
+    assert _plan_of(edited) == [(f"j{index}", "captured") for index in range(1, joins + 1)]
+    assert len(walks) == 1
+    usage = store.usage()
+    assert usage.automatic_bytes <= budget
+    assert usage.automatic_bytes >= captured
+
+
 def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
     project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

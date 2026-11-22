@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -655,7 +655,11 @@ class NodeBoundaryRunner:
 
 
 if TYPE_CHECKING:
-    from haute._node_snapshots import NodeSnapshotArtifact, NodeSnapshotColumns
+    from haute._node_snapshots import (
+        DeferredBudgetCheck,
+        NodeSnapshotArtifact,
+        NodeSnapshotColumns,
+    )
     from haute._seed_plans import CaptureDecision, SeedPlan, SeedPlanDecision
 
 
@@ -1244,6 +1248,21 @@ class _PlannedCaptures:
         self.incoming_edges_by_target = incoming_edges_by_target
         self.closures: dict[str, dict[str, str]] = {}
         self.published: dict[str, tuple[str, str]] = {}
+        self._budget_check: DeferredBudgetCheck | None = None
+
+    @contextlib.contextmanager
+    def budget_check(self) -> Iterator[None]:
+        """Check the automatic captures' budget once, as the block the walk's nodes run in
+        ends, rather than after each capture: each check walks the whole store."""
+        if self.plan is None:
+            yield
+            return
+        with self.plan.store.deferred_budget_check() as check:
+            self._budget_check = check
+            try:
+                yield
+            finally:
+                self._budget_check = None
 
     @property
     def _decision(self) -> SeedPlanDecision:
@@ -1452,6 +1471,7 @@ class _PlannedCaptures:
                     else None
                 ),
                 owner=NodeSnapshotOwner.of(self.graph, node_id),
+                budget_check=self._budget_check,
             )
         except SourceCacheCorruptError as exc:
             # The publication rule reports corruption rather than repairing it,
