@@ -108,11 +108,12 @@ def _scale() -> str:
 
 def _engine_versions() -> dict[str, str]:
     distributions = packages_distributions()
-    modules = ("polars", "numpy", "catboost", "xgboost", "lightgbm", "interpret", "t_boost")
+    modules = ("polars", "numpy", "catboost", "xgboost", "lightgbm", "interpret")
     versions = {module: version(distributions[module][0]) for module in modules}
-    # By distribution name: an editable RustyStats build has no top-level module
-    # record for packages_distributions to map.
+    # By distribution name: an editable RustyStats or t-boost build has no top-level
+    # module record for packages_distributions to map.
     versions["rustystats"] = version("rustystats")
+    versions["t_boost"] = version("t-boost")
     return versions
 
 

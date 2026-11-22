@@ -124,11 +124,7 @@ def _isolate_repository_source_cache(
     finally:
         try:
             for coordination in coordination_by_root.values():
-                handle = coordination.token_handle
-                if handle is not None:
-                    handle.close()
-                coordination.token = None
-                coordination.token_handle = None
+                coordination.tokens.close()
             coordination_by_root.clear()
         finally:
             patch.undo()

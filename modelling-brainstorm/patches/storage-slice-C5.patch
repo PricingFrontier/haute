@@ -1,0 +1,790 @@
+diff --git a/before/scripts/modelling_audit/audit_timing.py b/after/scripts/modelling_audit/audit_timing.py
+index 9aa2ef1..f0abde4 100644
+--- a/before/scripts/modelling_audit/audit_timing.py
++++ b/after/scripts/modelling_audit/audit_timing.py
+@@ -40,7 +40,6 @@ TARGETS: tuple[tuple[str, str], ...] = (
+     ("haute.modelling._stage_store:StageStore", "_collect"),
+     ("haute.modelling._stage_store:StageStore", "apply_path"),
+     ("haute.modelling._stage_store:StageStore", "cleanup"),
+-    ("haute.modelling._stage_objects:StoredRevision", "write_archive"),
+     ("haute.modelling._stage_objects:StageArchive", "stage_into"),
+     ("haute.modelling._stage_objects:StageObjects", "install"),
+ )
+diff --git a/before/specs/modelling/low-level.md b/after/specs/modelling/low-level.md
+index 5431b10..e33cf3c 100644
+--- a/before/specs/modelling/low-level.md
++++ b/after/specs/modelling/low-level.md
+@@ -3379,7 +3379,8 @@ for a store's object count.
+ 
+   A path result is a split envelope. Its diagnostic objects are in the revision's closure.
+ - Pointer records keep `revision`, `build_id`, `parent_revision` and `config_digest`.
+-  `sha256`/`size` describe the revision-manifest bytes.
++  `sha256`/`size` describe the revision-manifest bytes. Two private fields are never shown
++  publicly: `result_job_id`, and `view`, the compact view object's `{sha256, size}`.
+ 
+ **Limits, enforced at write:**
+ - the pointer manifest: 32 MiB;
+@@ -3411,7 +3412,9 @@ reads and restore-final.
+   Publication's new result is the one in memory and is never read back.
+ - Compact reads skip table objects and thin histories through `compact_response`.
+ - Only the revision-level compact view is persisted; there are no per-snapshot or
+-  per-point views.
++  per-point views. A compact status read verifies the view against the pointer record's
++  digest and parses only it, never the revision manifest. A damaged manifest is refused by
++  full reads, leases and collection.
+ - `staged.paths` is always derived on read (see "Path jobs without redundant writes").
+ - Evaluation member strings in path responses keep their present form.
+ - Hydrated responses must deep-equal the frozen goldens (`tests/test_stage_goldens.py`).
+@@ -3488,7 +3491,8 @@ is against process crashes; directory fsyncs are not performed.
+   publishes replaces the pointer and deletes the old layout's files (`*.hstage`,
+   `*.result.json`, `*.view.json`, `*.pending` and their leases).
+ 
+-**Apply** publishes a revision manifest:
++**Apply** publishes a revision manifest built in place (`StageStore.prepare_members`), with
++no archive written:
+ - it references the parent's closure plus the selected candidate objects;
+ - the result envelope carries the merged configuration (drafts, enabled phases, applied
+   recipe and path, saved configuration) and response metadata;
+diff --git a/before/src/haute/modelling/_stage_objects.py b/after/src/haute/modelling/_stage_objects.py
+index bbf90ac..56a811b 100644
+--- a/before/src/haute/modelling/_stage_objects.py
++++ b/after/src/haute/modelling/_stage_objects.py
+@@ -755,48 +755,8 @@ class StageObjects:
+             removed += remove_unheld_lock_file(lease_path)
+         return removed
+ 
+-    # -- portable and delta archives --------------------------------------------------------
+ 
+-    def write_archive(
+-        self, destination: Path, manifest: RevisionManifest, *, inherited: Iterable[str] = ()
+-    ) -> None:
+-        """A stored zip of *manifest* plus its objects, omitting *inherited* member names.
+-
+-        The header does not list inherited members: the reader derives them as the closure
+-        members whose objects the archive does not carry. An object also needed by a
+-        carried member is carried.
+-        """
+-        omitted = set(inherited)
+-        if omitted - set(manifest.objects):
+-            raise HauteValidationError("Inherited members must belong to the revision")
+-        carried = {ref.sha256 for name, ref in manifest.objects.items() if name not in omitted}
+-        with atomic_path(destination) as temporary, temporary.open("wb") as handle:
+-            with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
+-                archive.writestr(
+-                    zipfile.ZipInfo("archive.json", (1980, 1, 1, 0, 0, 0)),
+-                    canonical_json(
+-                        {
+-                            "format": ARCHIVE_FORMAT,
+-                            "version": VERSION,
+-                            "delta": manifest.digests() != carried,
+-                        }
+-                    ),
+-                )
+-                archive.writestr(
+-                    zipfile.ZipInfo("revision.json", (1980, 1, 1, 0, 0, 0)), manifest.encode()
+-                )
+-                written: set[str] = set()
+-                for _, ref in sorted(manifest.objects.items()):
+-                    if ref.sha256 not in carried or ref.sha256 in written:
+-                        continue
+-                    written.add(ref.sha256)
+-                    member = zipfile.ZipInfo(f"objects/{ref.sha256}", (1980, 1, 1, 0, 0, 0))
+-                    with (
+-                        self.open(ref.sha256, size=ref.size) as source,
+-                        archive.open(member, "w", force_zip64=True) as target,
+-                    ):
+-                        for chunk in iter(lambda: source.read(_CHUNK), b""):
+-                            target.write(chunk)
++# -- portable and delta archives ------------------------------------------------------------
+ 
+ 
+ @dataclass(frozen=True)
+@@ -1029,10 +989,6 @@ class StoredRevision:
+         with self.objects.open(ref.sha256, size=ref.size) as handle:
+             yield handle
+ 
+-    def write_archive(self, destination: Path) -> None:
+-        """A portable archive of this revision, for a worker or an exported artifact."""
+-        self.objects.write_archive(destination, self.manifest)
+-
+ 
+ @dataclass(frozen=True)
+ class DeltaRevision:
+diff --git a/before/src/haute/modelling/_stage_paths.py b/after/src/haute/modelling/_stage_paths.py
+index 2ec0a7f..470862f 100644
+--- a/before/src/haute/modelling/_stage_paths.py
++++ b/after/src/haute/modelling/_stage_paths.py
+@@ -496,6 +496,29 @@ def materialize_path_point(
+     *,
+     configuration: Mapping[str, Any] | None = None,
+ ) -> tuple[Path, Any]:
++    """Apply a path point as a portable bundle (scripted use; the store applies in place)."""
++    members, metadata, result = path_point_revision(
++        bundle, path_id, point_id, configuration=configuration
++    )
++    destination.mkdir(parents=True, exist_ok=True)
++    artifact = destination / "applied.hstage"
++    _pack(artifact, members, metadata)
++    result.stage_checkpoint_path = str(artifact)
++    return artifact, result
++
++
++def path_point_revision(
++    bundle: StageBundle,
++    path_id: str,
++    point_id: str,
++    *,
++    configuration: Mapping[str, Any] | None = None,
++) -> tuple[dict[str, Any], dict[str, Any], Any]:
++    """The applied revision of a path point: its members, metadata and point result.
++
++    Nothing is rewritten. The members are the parent's, so a revision read in place
++    inherits every one of them by reference.
++    """
+     result = read_path_result(bundle, path_id, point_id)
+     result.staged.pop("prepared_path", None)
+     if configuration is not None:
+@@ -504,7 +527,6 @@ def materialize_path_point(
+     point = require_point(path, point_id)
+     if point["status"] == "rejected":
+         raise HauteValidationError("This candidate was rejected by a retained fit's training guard")
+-    destination.mkdir(parents=True, exist_ok=True)
+     metadata = {
+         key: copy.deepcopy(value) for key, value in bundle.metadata.items() if key != "path"
+     }
+@@ -515,7 +537,4 @@ def materialize_path_point(
+     metadata["path"] = {**copy.deepcopy(path), "selected_point": point_id}
+     metadata["paths"][path["stage"]] = metadata["path"]
+     metadata["job_kwargs"]["stages"] = result.staged["configuration"]
+-    artifact = destination / "applied.hstage"
+-    _pack(artifact, revision_files(bundle, metadata), metadata)
+-    result.stage_checkpoint_path = str(artifact)
+-    return artifact, result
++    return revision_files(bundle, metadata), metadata, result
+diff --git a/before/src/haute/modelling/_stage_store.py b/after/src/haute/modelling/_stage_store.py
+index b65328f..60a4fde 100644
+--- a/before/src/haute/modelling/_stage_store.py
++++ b/after/src/haute/modelling/_stage_store.py
+@@ -57,6 +57,8 @@ _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
+ _MANIFEST_LIMIT = 32 * 1024 * 1024
+ _OPERATIONS = {"full", "pruned", "banded", "smoothed", "finalise"}
+ _POINTER = {"schema_version", "current", "preview", "final", "job", "checkpoints", "next_preview"}
++# Pointer-record fields the public stage state never shows.
++_PRIVATE = ("result_job_id", "view")
+ _RECORD = {
+     "revision",
+     "build_id",
+@@ -65,6 +67,7 @@ _RECORD = {
+     "size",
+     "config_digest",
+     "result_job_id",
++    "view",
+ }
+ 
+ 
+@@ -206,6 +209,11 @@ class StageStore:
+             or not _HEX64.fullmatch(str(record["config_digest"]))
+             or type(record["size"]) is not int
+             or not 0 <= record["size"] <= REVISION_LIMIT
++            or not isinstance(record["view"], dict)
++            or set(record["view"]) != {"sha256", "size"}
++            or not _HEX64.fullmatch(str(record["view"]["sha256"]))
++            or type(record["view"]["size"]) is not int
++            or record["view"]["size"] < 0
+         ):
+             raise HauteValidationError("Invalid stage revision record")
+         cls._check_result_job_id(record["result_job_id"])
+@@ -254,17 +262,19 @@ class StageStore:
+     ) -> dict[str, Any]:
+         """A record's store result, hydrated from its revision's objects.
+ 
+-        A compact read returns the revision's persisted compact view.
++        A compact read returns the revision's persisted compact view. The pointer record
++        carries the view's digest, so status reads verify and parse only the view, never
++        the revision manifest.
+         """
+         objects = self._objects(key)
+-        manifest = self._manifest(objects, record)
+         if compact:
+-            view = (
+-                objects.read_json(manifest.objects["view"]) if "view" in manifest.objects else None
++            view = objects.read_json(
++                ObjectRef(record["view"]["sha256"], record["view"]["size"], "json")
+             )
+             if not isinstance(view, dict):
+                 raise HauteValidationError("Stage revision has no valid compact view")
+             return view
++        manifest = self._manifest(objects, record)
+ 
+         def get(name: str) -> Any:
+             ref = manifest.objects.get(name)
+@@ -325,7 +335,8 @@ class StageStore:
+             if revision not in results:
+                 results[revision] = self._load_result(key, record, compact=compact)
+             record["result"] = results[revision]
+-            record.pop("result_job_id")
++            for private in _PRIVATE:
++                record.pop(private)
+         return hydrated
+ 
+     def _collect(self, key: str, value: Mapping[str, Any], *, reclaim: bool = False) -> None:
+@@ -354,6 +365,10 @@ class StageStore:
+             "size": prepared.size,
+             "config_digest": prepared.config_digest,
+             "result_job_id": self._result_job_id(prepared.result),
++            "view": {
++                "sha256": prepared.manifest.objects["view"].sha256,
++                "size": prepared.manifest.objects["view"].size,
++            },
+         }
+ 
+     # -- reads ------------------------------------------------------------------------------
+@@ -470,7 +485,7 @@ class StageStore:
+                         **{
+                             field: item
+                             for field, item in selected["record"].items()
+-                            if field != "result_job_id"
++                            if field not in _PRIVATE
+                         },
+                         "result": self._load_result(key, selected["record"]),
+                     }
+@@ -554,10 +569,79 @@ class StageStore:
+         if archive.inherited:
+             parent = self._parent_manifest(key, parent_revision)
+         staged = archive.stage_into(objects, parent=parent)
++        return self._revision(
++            key,
++            objects,
++            dict(archive.manifest.objects),
++            staged,
++            metadata=archive.manifest.metadata,
++            result=result,
++            config_digest=config_digest,
++        )
++
++    def prepare_members(
++        self,
++        key: str,
++        members: Mapping[str, ObjectRef | bytes],
++        *,
++        metadata: Mapping[str, Any],
++        result: Mapping[str, Any],
++        config_digest: str,
++        parent_revision: str,
++    ) -> PreparedStage:
++        """A revision built directly from *parent_revision*'s objects plus new JSON objects.
++
++        This is Apply: an `ObjectRef` member is inherited and must be in the parent's
++        verified closure with an identical reference; a bytes member is staged as a new
++        object. No archive is written or read.
++        """
++        if not _HEX64.fullmatch(config_digest):
++            raise HauteValidationError("Stage fit configuration needs a SHA-256 digest")
++        parent = self._parent_manifest(key, parent_revision)
++        objects = self._objects(key)
++        refs: dict[str, ObjectRef] = {}
++        staged: list[StagedObject] = []
++        try:
++            for name, value in sorted(members.items()):
++                if isinstance(value, ObjectRef):
++                    if parent.objects.get(name) != value:
++                        raise HauteValidationError(
++                            f"Stage revision inherits {name!r}, which its parent does not hold"
++                        )
++                    refs[name] = value
++                    continue
++                item = objects.stage_bytes(value)
++                staged.append(item)
++                refs[name] = ObjectRef(item.sha256, item.size, object_kind(name))
++        except BaseException:
++            for item in staged:
++                _discard(item.path)
++            raise
++        return self._revision(
++            key,
++            objects,
++            refs,
++            staged,
++            metadata=metadata,
++            result=result,
++            config_digest=config_digest,
++        )
++
++    def _revision(
++        self,
++        key: str,
++        objects: StageObjects,
++        refs: dict[str, ObjectRef],
++        staged: list[StagedObject],
++        *,
++        metadata: Mapping[str, Any],
++        result: Mapping[str, Any],
++        config_digest: str,
++    ) -> PreparedStage:
++        """Add the result's diagnostics and compact view to *refs*; build the revision."""
+         try:
+             payloads: dict[str, bytes] = {}
+             envelope = split(result, payloads.__setitem__)
+-            refs = dict(archive.manifest.objects)
+             # The revision's compact view: what status reads return, without decoding the
+             # complete histories they would otherwise thin.
+             payloads["view"] = canonical_json(compact_result(result))
+@@ -566,7 +650,7 @@ class StageStore:
+                 staged.append(item)
+                 refs[name] = ObjectRef(item.sha256, item.size, object_kind(name))
+             revision = uuid.uuid4().hex
+-            manifest = RevisionManifest(revision, refs, envelope, archive.manifest.metadata)
++            manifest = RevisionManifest(revision, refs, envelope, metadata)
+             encoded = manifest.encode()
+             return PreparedStage(
+                 key,
+@@ -580,7 +664,7 @@ class StageStore:
+             )
+         except BaseException:
+             for item in staged:
+-                item.path.unlink(missing_ok=True)
++                _discard(item.path)
+             raise
+ 
+     def _parent_manifest(self, key: str, revision: str | None) -> RevisionManifest:
+@@ -635,29 +719,6 @@ class StageStore:
+         )
+         return StoredRevision(objects, manifest)
+ 
+-    @contextmanager
+-    def preparing(
+-        self,
+-        key: str,
+-        source: Path,
+-        *,
+-        result: Mapping[str, Any],
+-        config_digest: str,
+-        parent_revision: str | None = None,
+-    ) -> Iterator[PreparedStage]:
+-        """Own an unpublished synchronous Apply revision until commit or abandonment."""
+-        prepared = self.prepare(
+-            key,
+-            source,
+-            result=result,
+-            config_digest=config_digest,
+-            parent_revision=parent_revision,
+-        )
+-        try:
+-            yield prepared
+-        finally:
+-            self.discard_prepared(prepared)
+-
+     def discard_prepared(self, prepared: PreparedStage) -> None:
+         """Remove an unpublished revision's staged objects; installed objects stay."""
+         for item in prepared.staged:
+diff --git a/before/src/haute/modelling/_staged_runtime.py b/after/src/haute/modelling/_staged_runtime.py
+index e96c6f3..f4ed76d 100644
+--- a/before/src/haute/modelling/_staged_runtime.py
++++ b/after/src/haute/modelling/_staged_runtime.py
+@@ -143,11 +143,19 @@ def _pack(
+     metadata: Mapping[str, Any],
+ ) -> None:
+     """Write a portable stage archive; `metadata.staged` diagnostics become shared objects."""
++    members, stored = pack_members(files, metadata)
++    write_bundle(path, members, revision=uuid.uuid4().hex, result={}, metadata=stored)
++
++
++def pack_members(
++    files: Mapping[str, Any], metadata: Mapping[str, Any]
++) -> tuple[dict[str, Any], dict[str, Any]]:
++    """A revision's members and stored metadata: `metadata.staged` split into objects."""
+     objects: dict[str, bytes] = {}
+     stored = dict(metadata)
+     if isinstance(metadata.get("staged"), Mapping):
+         stored["staged"] = split({"staged": metadata["staged"]}, objects.__setitem__)["staged"]
+-    write_bundle(path, {**files, **objects}, revision=uuid.uuid4().hex, result={}, metadata=stored)
++    return {**files, **objects}, stored
+ 
+ 
+ class StageBundle:
+@@ -410,9 +418,10 @@ def bundle_members(metadata: Mapping[str, Any], read: Any) -> set[str]:
+ 
+     fits = metadata["fits"]
+     names = {"source.parquet", "plan.json"}
+-    names |= {name for key in fits for name in checkpoint_members(key)}
+     if metadata.get("finalised") is True:
+-        names |= set(_EXPORT_MEMBERS.values())
++        names |= set(_EXPORT_MEMBERS.values())  # a final revision holds no checkpoint parts
++    else:
++        names |= {name for key in fits for name in checkpoint_members(key)}
+     for summary in metadata.get("paths", {}).values():
+         members = path_members(summary, fits)
+         names |= members
+@@ -945,12 +954,10 @@ def run_stage_job(
+             }
+             from haute.modelling._training_job import model_contract_filename
+ 
++            # The final revision's closure: the source, the final plan, the exports and the
++            # diagnostics. It keeps no checkpoint parts; nothing resumes from a final model.
+             files: dict[str, Path | bytes | Opener | ObjectRef] = {
+-                member: bundle.packed(member)
+-                for member in (
+-                    "source.parquet",
+-                    *(name for key in bundle.metadata["fits"] for name in checkpoint_members(key)),
+-                )
++                "source.parquet": bundle.packed("source.parquet")
+             }
+             assert result.evaluation is not None
+             files.update(
+diff --git a/before/src/haute/routes/_training_lifecycle.py b/after/src/haute/routes/_training_lifecycle.py
+index c0cac27..4da2335 100644
+--- a/before/src/haute/routes/_training_lifecycle.py
++++ b/after/src/haute/routes/_training_lifecycle.py
+@@ -419,12 +419,11 @@ class TrainService:
+             try:
+                 config = saved["config"]
+                 name = str(config.get("name") or "model")
+-                with scope.store.lease(scope.key, record["revision"]) as checkpoint:
+-                    with open_stage_bundle(checkpoint) as bundle:
++                # The five export members, read in place under a pin. The store keeps
++                # the stage state, so the restored job carries no `stage_state` copy.
++                with scope.store.lease(scope.key, record["revision"]) as final:
++                    with open_stage_bundle(final) as bundle:
+                         paths = bundle.export_artifacts(name, root / "output")
+-                    stage_path = root / "output" / f"{name}.hstage"
+-                    checkpoint.write_archive(stage_path)
+-                    paths["stage_state"] = stage_path
+                 response = TrainResponse.model_validate(saved["response"])
+                 assert response.evaluation is not None
+                 response = response.model_copy(
+@@ -452,7 +451,6 @@ class TrainService:
+                     artifact_root=root,
+                     expected_model_name=name,
+                     expected_evaluation=response.evaluation,
+-                    expected_staged=response.staged,
+                 )
+                 job_id = self._store.create_job(
+                     {"status": "running", "message": "Restoring final model"}
+diff --git a/before/src/haute/routes/_training_paths.py b/after/src/haute/routes/_training_paths.py
+index 8e86242..4481b1a 100644
+--- a/before/src/haute/routes/_training_paths.py
++++ b/after/src/haute/routes/_training_paths.py
+@@ -3,21 +3,19 @@
+ from __future__ import annotations
+ 
+ import copy
+-import tempfile
+ from collections.abc import Callable
+-from pathlib import Path
+ from typing import Any
+ 
+ from haute.errors import ConflictError
+ from haute.modelling._stage_paths import (
+-    materialize_path_point,
++    path_point_revision,
+     read_path_artifact,
+     read_path_result,
+     resolve_path,
+ )
+ from haute.modelling._stage_views import compact_response
+ from haute.modelling._staged_config import StagedConfig
+-from haute.modelling._staged_runtime import open_stage_bundle
++from haute.modelling._staged_runtime import open_stage_bundle, pack_members
+ from haute.routes._training_stages import StageJobScope, next_preview_stage
+ from haute.routes._training_worker import _training_response_payload
+ from haute.schemas import (
+@@ -80,65 +78,67 @@ def apply_path(
+     config = next(node.data.config for node in body.graph.nodes if node.id == body.node_id)
+     scope.validate_configuration(config)
+     draft = StagedConfig.from_plain_data(config.get("stages"))
+-    with tempfile.TemporaryDirectory(prefix="haute_apply_path_") as temporary:
+-        with scope.store.lease(scope.key, body.artifact_revision) as artifact:
+-            with open_stage_bundle(artifact) as bundle:
+-                path = resolve_path(bundle, body.path_id)
+-                proposed = draft.to_plain_data()
+-                proposed["enabled"] = {
+-                    **dict.fromkeys(("pruned", "banded", "smoothed"), True),
+-                    **proposed.get("enabled", {}),
+-                    path["stage"]: True,
+-                }
+-                if (
+-                    StagedConfig.from_plain_data(proposed).operation(path["stage"])["parent"]
+-                    != path["parent"]
+-                ):
+-                    raise ConflictError("The enabled predecessor changed; prepare this path again")
+-                selected = read_path_result(bundle, body.path_id, body.point_id)
+-                applied_config = selected.staged["configuration"]
+-                merged = draft.to_plain_data()
+-                section = {"pruned": "pruning", "banded": "banding", "smoothed": "smoothing"}[
+-                    path["stage"]
+-                ]
+-                merged[section] = copy.deepcopy(applied_config[section])
+-                merged["enabled"] = {
+-                    **dict.fromkeys(("pruned", "banded", "smoothed"), True),
+-                    **merged.get("enabled", {}),
+-                    path["stage"]: body.point_id != "unchanged",
+-                }
+-                for key in ("applied_recipe", "applied_path"):
+-                    merged[key] = copy.deepcopy(applied_config[key])
+-                if path["stage"] == "pruned":
+-                    merged["path"] = copy.deepcopy(applied_config["path"])
+-                merged = StagedConfig.from_plain_data(merged).to_plain_data()
+-                materialized, result = materialize_path_point(
+-                    bundle, body.path_id, body.point_id, Path(temporary), configuration=merged
+-                )
+-                response = _response(result, body)
+-        operation = (
+-            next_preview_stage(merged, result.staged["selected_stage"])
+-            if body.prepare_next
+-            else None
+-        )
+-        with scope.store.preparing(
+-            scope.key,
+-            materialized,
+-            result={
+-                **owner["result"],
+-                "response": response,
+-                "config": {**config, "stages": merged},
+-            },
+-            config_digest=owner["config_digest"],
+-            parent_revision=body.artifact_revision,
+-        ) as prepared:
+-            value = scope.store.apply_path(
+-                scope.key,
+-                expected_revision=body.current_revision,
+-                artifact_revision=body.artifact_revision,
+-                prepared=prepared,
+-                next_preview=operation,
++    with scope.store.lease(scope.key, body.artifact_revision) as artifact:
++        with open_stage_bundle(artifact) as bundle:
++            path = resolve_path(bundle, body.path_id)
++            proposed = draft.to_plain_data()
++            proposed["enabled"] = {
++                **dict.fromkeys(("pruned", "banded", "smoothed"), True),
++                **proposed.get("enabled", {}),
++                path["stage"]: True,
++            }
++            if (
++                StagedConfig.from_plain_data(proposed).operation(path["stage"])["parent"]
++                != path["parent"]
++            ):
++                raise ConflictError("The enabled predecessor changed; prepare this path again")
++            selected = read_path_result(bundle, body.path_id, body.point_id)
++            applied_config = selected.staged["configuration"]
++            merged = draft.to_plain_data()
++            section = {"pruned": "pruning", "banded": "banding", "smoothed": "smoothing"}[
++                path["stage"]
++            ]
++            merged[section] = copy.deepcopy(applied_config[section])
++            merged["enabled"] = {
++                **dict.fromkeys(("pruned", "banded", "smoothed"), True),
++                **merged.get("enabled", {}),
++                path["stage"]: body.point_id != "unchanged",
++            }
++            for key in ("applied_recipe", "applied_path"):
++                merged[key] = copy.deepcopy(applied_config[key])
++            if path["stage"] == "pruned":
++                merged["path"] = copy.deepcopy(applied_config["path"])
++            merged = StagedConfig.from_plain_data(merged).to_plain_data()
++            # The applied revision is the artifact revision's own objects plus the
++            # point's diagnostics: published in place, with no archive written.
++            files, metadata, result = path_point_revision(
++                bundle, body.path_id, body.point_id, configuration=merged
+             )
++            members, metadata = pack_members(files, metadata)
++            response = _response(result, body)
++    operation = (
++        next_preview_stage(merged, result.staged["selected_stage"]) if body.prepare_next else None
++    )
++    prepared = scope.store.prepare_members(
++        scope.key,
++        members,
++        metadata=metadata,
++        result={
++            **owner["result"],
++            "response": response,
++            "config": {**config, "stages": merged},
++        },
++        config_digest=owner["config_digest"],
++        parent_revision=body.artifact_revision,
++    )
++    # `apply_path` owns *prepared* from here: it discards the staging either way.
++    value = scope.store.apply_path(
++        scope.key,
++        expected_revision=body.current_revision,
++        artifact_revision=body.artifact_revision,
++        prepared=prepared,
++        next_preview=operation,
++    )
+     scope.store.cleanup(scope.key)
+     if operation is not None:
+         # Continue using the newly committed recipe and switches, preserving unrelated drafts.
+diff --git a/before/tests/test_stage_objects.py b/after/tests/test_stage_objects.py
+index 73d5b0b..0889440 100644
+--- a/before/tests/test_stage_objects.py
++++ b/after/tests/test_stage_objects.py
+@@ -45,6 +45,24 @@ def _roots(store: StageObjects, *revisions: str) -> dict[str, str]:
+     return {r: hashlib.sha256(store.revision_path(r).read_bytes()).hexdigest() for r in revisions}
+ 
+ 
++def _archive(store: StageObjects, path, manifest: RevisionManifest, *, inherited=()):
++    """A portable archive of a stored revision; *inherited* members are listed, not carried."""
++    from haute.modelling._stage_objects import write_bundle
++
++    write_bundle(
++        path,
++        {
++            name: ref
++            if name in inherited
++            else (lambda ref=ref: store.open(ref.sha256, size=ref.size))
++            for name, ref in manifest.objects.items()
++        },
++        revision=manifest.revision,
++        result=manifest.result,
++        metadata=manifest.metadata,
++    )
++
++
+ def _publish(store: StageObjects, objects: dict[str, bytes], revision: str | None = None):
+     manifest, staged = _revision(store, objects, revision)
+     with store.publishing(manifest, staged):
+@@ -226,8 +244,8 @@ def test_portable_and_delta_archives_round_trip_through_one_validator(tmp_path):
+     }
+     child = _publish(source, child_objects)
+     full, delta = tmp_path / "full.hstage", tmp_path / "delta.hstage"
+-    source.write_archive(full, parent)
+-    source.write_archive(delta, child, inherited=parent.objects)
++    _archive(source, full, parent)
++    _archive(source, delta, child, inherited=parent.objects)
+     imported = StageArchive.read(full)
+     with target.publishing(imported.manifest, imported.stage_into(target, parent=None)):
+         pass
+@@ -247,7 +265,7 @@ def test_malformed_archives_are_refused(tmp_path, damage):
+     store = _store(tmp_path)
+     manifest = _publish(store, {"source.parquet": b"rows", "plan.json": b"{}"})
+     path = tmp_path / "archive.hstage"
+-    store.write_archive(path, manifest)
++    _archive(store, path, manifest)
+     with zipfile.ZipFile(path) as archive:
+         members = [(info.filename, archive.read(info)) for info in archive.infolist()]
+     if damage == "duplicate":
+@@ -455,8 +473,8 @@ def test_a_delta_over_a_large_inherited_closure_round_trips(tmp_path):
+     parent = _publish(source, histories)
+     child = _publish(source, {**histories, "result": b'{"new":true}'})
+     full, delta = tmp_path / "full.hstage", tmp_path / "delta.hstage"
+-    source.write_archive(full, parent)
+-    source.write_archive(delta, child, inherited=histories)
++    _archive(source, full, parent)
++    _archive(source, delta, child, inherited=histories)
+     with zipfile.ZipFile(delta) as archive:
+         assert archive.getinfo("archive.json").file_size < 100
+     imported = StageArchive.read(full)
+diff --git a/before/tests/test_stage_store.py b/after/tests/test_stage_store.py
+index d6d4d15..3263bd1 100644
+--- a/before/tests/test_stage_store.py
++++ b/after/tests/test_stage_store.py
+@@ -561,20 +561,20 @@ def test_path_preparation_is_owned_against_cleanup(tmp_path):
+     key = store.key("p", "n", "m")
+     current = publish(store, key, tmp_path)["current"]
+     source = bundle(tmp_path / "point.bundle", "exact candidate")
+-    with store.preparing(key, source, result={}, config_digest="a" * 64) as prepared:
+-        with ThreadPoolExecutor(max_workers=1) as pool:
+-            pool.submit(StageStore(tmp_path).cleanup, key).result(timeout=5)
+-        assert all(item.path.exists() for item in prepared.staged)
+-        applied = store.apply_path(
+-            key,
+-            expected_revision=current["revision"],
+-            artifact_revision=current["revision"],
+-            prepared=prepared,
+-        )
++    prepared = store.prepare(key, source, result={}, config_digest="a" * 64)
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        pool.submit(StageStore(tmp_path).cleanup, key).result(timeout=5)
++    assert all(item.path.exists() for item in prepared.staged)
++    applied = store.apply_path(
++        key,
++        expected_revision=current["revision"],
++        artifact_revision=current["revision"],
++        prepared=prepared,
++    )
+     with store.lease(key, applied["current"]["revision"]) as pinned:
+         assert label(pinned) == "exact candidate"
+-    with store.preparing(key, source, result={}, config_digest="a" * 64) as abandoned:
+-        pass
++    abandoned = store.prepare(key, source, result={}, config_digest="a" * 64)
++    store.discard_prepared(abandoned)
+     assert not any(item.path.exists() for item in abandoned.staged)
+     assert not files(store, key, "staging")
+ 
+@@ -691,6 +691,13 @@ def test_corrupt_revisions_and_objects_are_refused(tmp_path, fault, compact):
+         raw["current"]["size"] = path.stat().st_size
+     if kind != "pointer" or damage == "record":
+         pointer.write_text(json.dumps(raw))
++    if compact and kind == "revision" and damage not in {"digest", "size"}:
++        # A compact status read verifies only the view, by the pointer's digest. A damaged
++        # revision manifest is refused by every full read, lease and collection.
++        assert StageStore(tmp_path).snapshot(key, compact=True)["current"]["result"]
++        compact = False
++    if compact and kind == "revision":
++        compact = False  # the record's manifest digest and size are checked on full reads
+     with pytest.raises(HauteValidationError):
+         StageStore(tmp_path).snapshot(key, compact=compact)
+ 
+@@ -848,3 +855,42 @@ def test_pin_release_failures_after_commit_never_fail_the_publication(tmp_path,
+     monkeypatch.undo()
+     store.cleanup(key)
+     assert store.snapshot(key)["current"] == published
++
++
++def test_apply_publishes_a_revision_from_its_parents_objects_without_an_archive(tmp_path):
++    from haute.modelling._stage_objects import ObjectRef
++
++    store = StageStore(tmp_path)
++    key = store.key("p", "n", "m")
++    current = publish(store, key, tmp_path)["current"]
++    parent = store._objects(key).read_revision(current["revision"])
++    prepared = store.prepare_members(
++        key,
++        {"plan.json": parent.objects["plan.json"], "snapshot/" + "a" * 64: b'{"new":1}'},
++        metadata={"label": "applied"},
++        result={"point": "point-2"},
++        config_digest="a" * 64,
++        parent_revision=current["revision"],
++    )
++    # Only the new JSON object, the result's diagnostics and the compact view are staged.
++    assert {item.sha256 for item in prepared.staged} <= {
++        ref.sha256 for name, ref in prepared.manifest.objects.items() if name != "plan.json"
++    }
++    applied = store.apply_path(
++        key,
++        expected_revision=current["revision"],
++        artifact_revision=current["revision"],
++        prepared=prepared,
++    )
++    with store.lease(key, applied["current"]["revision"]) as pinned:
++        assert label(pinned) == "complete artifact fit"  # the inherited plan object
++    with pytest.raises(HauteValidationError, match="does not hold"):
++        store.prepare_members(
++            key,
++            {"plan.json": ObjectRef("b" * 64, 2, "json")},
++            metadata={},
++            result={},
++            config_digest="a" * 64,
++            parent_revision=applied["current"]["revision"],
++        )
++    assert not files(store, key, "staging")
+diff --git a/before/tests/test_training_stages.py b/after/tests/test_training_stages.py
+index 9324127..f92afd2 100644
+--- a/before/tests/test_training_stages.py
++++ b/after/tests/test_training_stages.py
+@@ -237,6 +237,15 @@ def test_service_publishes_preview_and_cancel_preserves_applied(tmp_path, monkey
+         == expected_bytes
+     )
+     assert restarted.restore_final_stage(body).job_id == restored.job_id
++    # Restoring writes no archive copy: the store keeps the stage state.
++    restored_artifacts = require_training_artifacts(restarted_store.require_job(restored.job_id))
++    assert restored_artifacts.stage_state is None
++    # The final revision's closure keeps no checkpoint parts (nothing resumes from it).
++    with scope.store.lease(scope.key, final_state["final"]["revision"]) as final:
++        assert not any(name.startswith("fit/") for name in final.manifest.objects)
++        assert {"export/model.native", "plan.json", "source.parquet"} <= set(
++            final.manifest.objects
++        )
+     monkeypatch.setattr(_Booster, "fit", lambda *a, **kw: pytest.fail("post-fit called booster"))
+     body.stage = StageJobRequest(operation="banded", parent_revision=applied["revision"])
+     original_prepare = StageJobScope.prepare

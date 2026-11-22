@@ -164,7 +164,7 @@ def test_source_cache_session_isolation_owns_and_closes_coordination_tokens(
         store = SourceCacheStore(tmp_path_factory.mktemp("short-cache-root"))
         store._own_token()
         coordination = next(iter(SourceCacheStore._coordination_by_root.values()))
-        handle = coordination.token_handle
+        handle = coordination.tokens.handle
         assert handle is not None and not handle.closed
     finally:
         try:

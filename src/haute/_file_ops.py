@@ -284,13 +284,24 @@ def publish_staged_file(staged: Path, target: Path, *, replace: bool) -> None:
 
     ``replace=True`` replaces *target* with the bounded Windows contention retry.
     ``replace=False`` never clobbers: a *target* that appeared since the caller looked
-    raises ``FileExistsError`` and *staged* is left for the caller to remove.
+    raises ``FileExistsError`` and *staged* is left for the caller to remove. On Windows
+    it retries the same transient access and sharing violations, but never an existing
+    target.
     """
     if replace:
         _replace_with_windows_contention_retry(staged, target)
     elif _IS_WINDOWS:
         # MoveFileExW without MOVEFILE_REPLACE_EXISTING refuses an existing target.
-        os.rename(staged, target)
+        for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS, None):
+            try:
+                os.rename(staged, target)
+                return
+            except FileExistsError:
+                raise
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in {5, 32} or delay is None:
+                    raise
+                time.sleep(delay)
     else:
         # rename(2) would replace; link(2) refuses an existing target atomically.
         os.link(staged, target)

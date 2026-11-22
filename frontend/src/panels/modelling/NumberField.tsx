@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react"
+import { useEffect, useState, type CSSProperties } from "react"
 
 import { MODELLING_INPUT_STYLE } from "./styles"
 
@@ -45,6 +45,7 @@ export function NumberField({
   className = "h-7 w-14 min-w-0 rounded px-1.5 py-1 font-mono text-xs",
   style,
   onCommit,
+  onValidityChange,
   ...bounds
 }: NumberBounds & {
   label: string
@@ -54,6 +55,7 @@ export function NumberField({
   className?: string
   style?: CSSProperties
   onCommit: (value: number | undefined) => void
+  onValidityChange?: (valid: boolean) => void
 }) {
   const committed = value === undefined ? "" : String(value)
   const [draft, setDraft] = useState<string | null>(null)
@@ -63,6 +65,10 @@ export function NumberField({
     setDraft(null)
   }
   const error = draft === null ? null : numberDraftIssue(draft, bounds)
+  useEffect(() => {
+    onValidityChange?.(error === null)
+    return () => onValidityChange?.(true)
+  }, [error, onValidityChange])
   const commit = () => {
     if (draft === null || error !== null) return
     const text = draft.trim()

@@ -31,6 +31,7 @@ Writer contract (F6):
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -170,6 +171,45 @@ class TestAtomicWriteBytes:
         assert [item.args[0] for item in sleep.call_args_list] == [0.01, 0.025, 0.05, 0.1]
         assert target.read_bytes() == b"old"
         assert not tuple(tmp_path.glob("*.tmp"))
+
+    def test_windows_no_clobber_publish_retries_sharing_violations_never_an_existing_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._file_ops import publish_staged_file
+
+        class SimulatedSharingViolationError(PermissionError):
+            winerror = 32
+
+        staged, target = tmp_path / "staged.tmp", tmp_path / "object"
+        staged.write_bytes(b"payload")
+        real_rename = os.rename
+        attempts = 0
+
+        def transient_rename(source: Path, destination: Path) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise SimulatedSharingViolationError("transient sharing violation")
+            real_rename(source, destination)
+
+        monkeypatch.setattr("haute._file_ops._IS_WINDOWS", True)
+        with (
+            patch("haute._file_ops.os.rename", transient_rename),
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            publish_staged_file(staged, target, replace=False)
+        assert attempts == 3 and target.read_bytes() == b"payload"
+        assert [item.args[0] for item in sleep.call_args_list] == [0.01, 0.025]
+
+        staged.write_bytes(b"other")
+        with (
+            patch("haute._file_ops.os.rename", side_effect=FileExistsError("exists")) as rename,
+            patch("haute._file_ops.time.sleep") as sleep,
+        ):
+            with pytest.raises(FileExistsError):
+                publish_staged_file(staged, target, replace=False)
+        assert rename.call_count == 1 and not sleep.called
+        assert target.read_bytes() == b"payload"
 
     def test_winerror_shaped_failure_is_not_retried_off_windows(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

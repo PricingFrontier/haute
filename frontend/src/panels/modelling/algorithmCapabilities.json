@@ -265,7 +265,7 @@
       ]
     },
     "monotone_unsupported_losses": [],
-    "refit_policy": "validation_fit",
+    "refit_policy": "fixed_budget",
     "reserved_params": [
       "categorical_features",
       "monotone_constraints",

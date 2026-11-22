@@ -19,6 +19,7 @@ from haute._config_validation import validate_node_config
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
+    WorkEstimate,
     create_admitted_execution_context,
     isolated_execution_budget,
 )
@@ -78,6 +79,7 @@ from haute.modelling._evaluation import (
     generate_evaluation_plan,
 )
 from haute.modelling._glm_terms import validate_glm_model_columns
+from haute.modelling._staged_runtime import fit_config_digest as stage_fit_config_digest
 from haute.modelling._train_config import (
     TrainingConfigError,
     build_train_params,
@@ -114,6 +116,7 @@ from haute.routes._training_artifacts import (
     TRAINING_ARTIFACTS_HANDLE_KEY,
     TRAINING_ARTIFACTS_HANDLE_KIND,
     _max_training_artifact_bytes,
+    _read_training_response,
     _validate_training_artifacts,
     cleanup_training_artifacts,
     create_training_artifact_directory,
@@ -143,12 +146,14 @@ from haute.routes._training_preparation import (
     _training_rows,
     create_training_parquet_path,
     estimate_training_memory,
+    keeps_every_column,
     preparation_failure_outcome,
     prepare_training_data_worker,
     resolve_training_input_schema,
     training_row_plan,
     training_seed_plan_request,
 )
+from haute.routes._training_stages import StageJobScope
 from haute.routes._training_worker import (
     _append_live_loss_row,
     _assert_json_finite,
@@ -201,6 +206,7 @@ class _TrainingRunningJob(RunningJobFields):
     progress: float
     config: dict[str, Any]
     node_id: str
+    model_id: str | None
     node_label: str
     pipeline_source: str
     start_time: float
@@ -310,12 +316,14 @@ class TrainService:
         )
         self._training_jobs = CancellableJobRegistry()
         self._start_lock = threading.Lock()
+        self._stage_scopes: dict[str, StageJobScope] = {}
+        self._restored_stages: dict[tuple[str, str], str] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
-    def start(self, body: TrainRequest) -> TrainResponse:
+    def start(self, body: TrainRequest, *, queued_preview: bool = False) -> TrainResponse:
         """Validate and return a cancellable handle before preparing training data.
 
         Returns a ``TrainResponse`` with status ``"started"`` and the job ID.
@@ -325,6 +333,13 @@ class TrainService:
         node = _find_modelling_node(body.graph, body.node_id)
         config = node.data.config
         self._validate_config(config)
+        stage_scope = StageJobScope.from_request(body) if body.stage is not None else None
+        if stage_scope is not None:
+            if config.get("stages") is None:
+                raise HauteValidationError("Stage actions require staged model settings")
+            stage_scope.validate_parent()
+            if stage_scope.operation != "full":
+                stage_scope.validate_configuration(config)
         # Cheap pre-check so a busy server does not run the schema build first;
         # the authoritative check repeats under the start lock.
         self._check_no_concurrent_jobs()
@@ -340,12 +355,21 @@ class TrainService:
                 "message": "Preparing training data...",
                 "config": dict(config),
                 "node_id": body.node_id,
+                # An interactive build's model: its runs are kept apart from its siblings'.
+                "model_id": body.model,
                 "node_label": node.data.label,
                 "pipeline_source": str(body.graph.source_file or ""),
                 "start_time": start_time,
                 "timeout": _default_train_timeout(),
             }
             job_id = self._store.create_job(initial_job)
+            if stage_scope is not None:
+                try:
+                    stage_scope.begin(job_id, queued_preview=queued_preview)
+                except Exception as exc:
+                    self._lifecycle.transition(job_id, to="error", message=str(exc))
+                    raise
+                self._stage_scopes[job_id] = stage_scope
 
         cancellation_token = ExecutionCancellationToken()
         self._training_jobs.register_latest(
@@ -360,6 +384,102 @@ class TrainService:
             operation_noun="Training",
         )
         return TrainResponse(status="started", job_id=job_id)
+
+    def start_preview(self, body: TrainRequest) -> TrainResponse:
+        """Consume a queued continuation atomically through ordinary training."""
+        return self.start(body, queued_preview=True)
+
+    def restore_final_stage(self, body: TrainRequest) -> TrainResponse:
+        """Restore a durable final result through the ordinary artifact/job ownership seam."""
+        import shutil
+
+        from haute._worker_protocol import WorkerResultManifest, build_artifact_manifest
+        from haute.errors import GoneError
+        from haute.modelling._staged_runtime import open_stage_bundle
+        from haute.routes._training_artifacts import require_training_artifacts
+
+        scope = StageJobScope.from_request(body)
+        scope.validate_configuration(_find_modelling_node(body.graph, body.node_id).data.config)
+        state = scope.store.recover(scope.key)
+        record = state["final"]
+        if record is None or record["parent_revision"] != state["current"]["revision"]:
+            raise HauteValidationError("Finalise the applied model before exporting it")
+        saved = record["result"]
+        cache_key = (scope.key, record["revision"])
+        with self._start_lock:
+            restored = self._restored_stages.get(cache_key) or saved["response"].get("job_id")
+            existing = self._store.get_job(restored) if restored else None
+            if existing is not None and existing.get("status") == "completed":
+                try:
+                    require_training_artifacts(existing)
+                    return TrainResponse.model_validate(existing["result"])
+                except GoneError:
+                    pass  # Rehydrate the durable bytes when transient artifacts expired.
+            root = create_training_artifact_directory()
+            try:
+                config = saved["config"]
+                name = str(config.get("name") or "model")
+                # The five export members, read in place under a pin. The store keeps
+                # the stage state, so the restored job carries no `stage_state` copy.
+                with scope.store.lease(scope.key, record["revision"]) as final:
+                    with open_stage_bundle(final) as bundle:
+                        paths = bundle.export_artifacts(name, root / "output")
+                response = TrainResponse.model_validate(saved["response"])
+                assert response.evaluation is not None
+                response = response.model_copy(
+                    update={
+                        "evaluation": response.evaluation.model_copy(
+                            update={
+                                field: paths[kind].relative_to(root).as_posix()
+                                for kind, field in _EVALUATION_ARTIFACT_PATHS.items()
+                            }
+                        )
+                    }
+                )
+                manifest = WorkerResultManifest(
+                    metadata={},
+                    artifacts=tuple(
+                        build_artifact_manifest(
+                            artifact_root=root, path=path, kind=kind, lifetime="staged"
+                        )
+                        for kind, path in paths.items()
+                    ),
+                )
+                assert response.evaluation is not None
+                validated = _validate_training_artifacts(
+                    manifest,
+                    artifact_root=root,
+                    expected_model_name=name,
+                    expected_evaluation=response.evaluation,
+                )
+                job_id = self._store.create_job(
+                    {"status": "running", "message": "Restoring final model"}
+                )
+                response = response.model_copy(
+                    update={"job_id": job_id, "model_path": str(paths["model"])}
+                )
+                handle = training_artifacts_handle(root, validated)
+                self._lifecycle.publish_completion(
+                    job_id,
+                    publish=lambda: {
+                        "job_type": "training",
+                        "result": response,
+                        "config": config,
+                        "node_id": body.node_id,
+                        "model_id": body.model,
+                        "node_label": name,
+                        "pipeline_source": str(body.graph.source_file or ""),
+                        "provenance": saved["provenance"],
+                        "artifact_handles": {TRAINING_ARTIFACTS_HANDLE_KEY: handle},
+                        "progress": 1.0,
+                    },
+                    message="Final model restored",
+                )
+                self._restored_stages[cache_key] = job_id
+                return response
+            except BaseException:
+                shutil.rmtree(root)
+                raise
 
     def _spawn_preparation(
         self,
@@ -398,6 +518,7 @@ class TrainService:
             self._lifecycle.transition(
                 job_id, to="error", message=message, fields={"error": str(exc)}
             )
+            self._finish_stage_job(job_id)
             raise ServiceFailedError(message) from exc
 
     def evaluation_preview(
@@ -405,6 +526,7 @@ class TrainService:
         body: TrainEstimateRequest,
         *,
         row_limit: int | None,
+        estimated_rows: int | None = None,
     ) -> dict[str, Any] | None:
         """Materialise only evaluation keys and return the exact bounded plan summary.
 
@@ -446,9 +568,21 @@ class TrainService:
         )
         execution_context: ExecutionContext | None = None
         try:
+            estimate = None
+            if estimated_rows is not None:
+                rows = min(estimated_rows, row_limit) if row_limit is not None else estimated_rows
+                # Only target/key values and partition memberships are collected.
+                # Upstream operators retain the executor's own memory guards.
+                # Unknown cardinality retains the whole-budget reservation.
+                estimate = WorkEstimate(
+                    estimated_bytes=rows * (128 + 64 * len(selected_columns)) + 64 * 1024**2,
+                    subject="The evaluation preview",
+                    remedy="Reduce the training row limit or wait for other work to finish.",
+                )
             execution_context = create_admitted_execution_context(
                 operation="training_evaluation_preview",
                 profile=ExecutionProfile.TRAINING_PREP,
+                estimate=estimate,
             )
             preamble_ns = self._compile_preamble(body.graph)
             # The plan reads only the target and the evaluation key, so the
@@ -543,7 +677,9 @@ class TrainService:
         except (TypeError, ValueError) as exc:
             raise _evaluation_preview_refusal(f"Evaluation preview failed: {exc}") from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise _memory_limit_refusal(exc) from None
+            from haute.routes._contract_errors import memory_limit_refusal
+
+            raise memory_limit_refusal(exc, operation_noun="Evaluation preview") from None
         except BoundedMemoryUnsupportedError as exc:
             raise _evaluation_preview_refusal(
                 f"Evaluation preview cannot run in bounded mode: {exc}"
@@ -579,6 +715,29 @@ class TrainService:
         worker_owns_cleanup = False
         try:
             cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
+            scope = self._stage_scopes.get(job_id)
+            if scope is not None and scope.operation != "full":
+                execution_context = create_admitted_execution_context(
+                    operation="training_stage",
+                    profile=ExecutionProfile.TRAINING_PREP,
+                    job_id=job_id,
+                    cancellation_token=cancellation_token,
+                )
+                bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
+                # The worker reads its parent revision in place; nothing is copied for it.
+                self._launch_background(
+                    job_id,
+                    node_id,
+                    config,
+                    build_train_params(config),
+                    None,
+                    None,
+                    None,
+                    fit_mode="in_memory",
+                    execution_context=execution_context,
+                )
+                worker_owns_cleanup = True
+                return
             preamble_ns = self._compile_preamble(body.graph)
             cancellation_token.throw_if_cancelled("training_preamble", job_id=job_id)
             ram_est = self._estimate_ram(
@@ -614,7 +773,8 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                project_to_keep_columns=not is_glm_config(config),
+                project_to_keep_columns=not is_glm_config(config)
+                and not keeps_every_column(config),
                 keep_columns=_training_projection_keep_columns(config),
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
@@ -657,6 +817,7 @@ class TrainService:
                 if execution_context is not None:
                     execution_context.release_admission(preserve_primary_error=True)
                 self._training_jobs.release(job_id)
+                self._finish_stage_job(job_id)
 
     def _record_preparation_failure(
         self,
@@ -714,12 +875,27 @@ class TrainService:
             fields=fields,
         )
 
-    def cancel(self, job_id: str) -> JobSnapshot:
+    def cancel(self, job_id: str, *, include_followup: bool = True) -> JobSnapshot:
         """Cancel a running training job."""
         job = self._store.require_job(job_id)
         if job.get(_JOB_TYPE_KEY) != _TRAINING_JOB_TYPE:
             raise NotFoundError(f"Training job '{job_id}' not found")
         if job.get("status") != "running":
+            if include_followup and job.get("status") == "completed":
+                from haute.modelling._stage_store import StageStore
+
+                model, node, source = (
+                    job.get("model_id"),
+                    job.get("node_id"),
+                    job.get("pipeline_source"),
+                )
+                if isinstance(model, str) and isinstance(node, str) and isinstance(source, str):
+                    stages = StageStore(current_project().root)
+                    child = stages.cancel_followup(
+                        stages.key(source, node, model), parent_job_id=job_id
+                    )
+                    if child is not None:
+                        self.cancel(child, include_followup=False)
             return job
         self._training_jobs.cancel(job_id, reason="cancelled")
         updated_job = self._lifecycle.transition(
@@ -728,7 +904,10 @@ class TrainService:
             message="Cancelled",
             elapsed_seconds=_job_elapsed_seconds(job),
         )
-        return updated_job if updated_job is not None else self._store.require_job(job_id)
+        result = updated_job if updated_job is not None else self._store.require_job(job_id)
+        if include_followup and result.get("status") == "completed":
+            return self.cancel(job_id)
+        return result
 
     def reject_completed_result(self, job_id: str, *, message: str) -> JobSnapshot:
         """Correct a completed job whose result cannot satisfy the API contract."""
@@ -1121,6 +1300,7 @@ class TrainService:
         directory until eviction.
         """
         node_id = completed.get("node_id")
+        model_id = completed.get("model_id")
         pipeline_source = completed.get("pipeline_source")
         completed_at = completed.get("completed_at")
         if not isinstance(node_id, str) or not isinstance(completed_at, int | float):
@@ -1130,6 +1310,7 @@ class TrainService:
                 other.get("job_type") != _TRAINING_JOB_TYPE
                 or other.get("status") != "completed"
                 or other.get("node_id") != node_id
+                or other.get("model_id") != model_id
                 or other.get("pipeline_source") != pipeline_source
                 or TRAINING_ARTIFACTS_HANDLE_KEY not in (other.get("artifact_handles") or {})
             ):
@@ -1148,12 +1329,26 @@ class TrainService:
                 ),
             )
 
+    def _finish_stage_job(self, job_id: str) -> None:
+        scope = self._stage_scopes.pop(job_id, None)
+        if scope is not None:
+            job = self._store.require_job(job_id)
+            scope.finish(job_id, job)
+            if job["status"] == "completed" and scope.followup_request is not None:
+                state = scope.store.snapshot(scope.key)
+                if state["job"] and state["job"]["id"] == job_id and state["current"]:
+                    scope.start_queued_preview(
+                        scope.followup_request,
+                        self.start_preview,
+                        expected_revision=state["current"]["revision"],
+                    )
+
     def _parent_worker_cleanup(
         self,
         job_id: str,
         *,
         execution_context: ExecutionContext,
-        tmp_parquet: Path,
+        tmp_parquet: Path | None,
         artifact_root: Path | None,
         artifact_publication_committed: Callable[[], bool] | None = None,
     ) -> Callable[[], None]:
@@ -1175,7 +1370,8 @@ class TrainService:
                     "prepared_data",
                     lambda: (
                         tmp_parquet.unlink()
-                        if tmp_parquet.exists() or tmp_parquet.is_symlink()
+                        if tmp_parquet is not None
+                        and (tmp_parquet.exists() or tmp_parquet.is_symlink())
                         else None
                     ),
                 ),
@@ -1192,6 +1388,8 @@ class TrainService:
                         else None
                     ),
                 ),
+                # A continuation must wait until the previous admission is released.
+                ("stage_state", lambda: self._finish_stage_job(job_id)),
             ):
                 try:
                     action()
@@ -1738,7 +1936,7 @@ class TrainService:
         node_id: str,
         config: dict[str, Any],
         train_params: dict[str, Any],
-        tmp_parquet: str,
+        tmp_parquet: str | None,
         warning: str | None,
         total_source_rows: int | None,
         *,
@@ -1747,11 +1945,12 @@ class TrainService:
         feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
     ) -> IsolatedSupervisorThread | None:
         stored_job = self._store.require_job(job_id)
+        stage_scope = self._stage_scopes.get(job_id)
         start_time, timeout_seconds = _worker_timing(stored_job, job_id=job_id)
         launch_cleanup = self._parent_worker_cleanup(
             job_id,
             execution_context=execution_context,
-            tmp_parquet=Path(tmp_parquet),
+            tmp_parquet=Path(tmp_parquet) if tmp_parquet is not None else None,
             artifact_root=None,
         )
         try:
@@ -1764,11 +1963,18 @@ class TrainService:
         try:
             job_kwargs = build_training_job_kwargs(
                 config,
-                data=str(Path(tmp_parquet).resolve()),
+                # A stage resume reads its rows from the parent revision (`run_stage_job`).
+                data=str(Path(tmp_parquet).resolve())
+                if tmp_parquet is not None
+                else "stage-checkpoint",
                 default_name=_sanitize_func_name(stored_job["node_label"]),
             )
             job_kwargs["params"] = train_params
             job_kwargs["fit_mode"] = fit_mode
+            if stage_scope is not None:
+                job_kwargs["purpose"] = "exploration"
+                if stage_scope.operation == "full":
+                    job_kwargs["stages"] = {**job_kwargs["stages"], "applied_recipe": []}
             job_kwargs["mlflow_experiment"] = (
                 None  # GUI logging is manual: the post-training button logs.
             )
@@ -1784,7 +1990,7 @@ class TrainService:
         cleanup = self._parent_worker_cleanup(
             job_id,
             execution_context=execution_context,
-            tmp_parquet=Path(tmp_parquet),
+            tmp_parquet=Path(tmp_parquet) if tmp_parquet is not None else None,
             artifact_root=artifact_root,
             artifact_publication_committed=artifact_publication_committed.is_set,
         )
@@ -1806,6 +2012,17 @@ class TrainService:
                 kind="training",
                 payload={
                     "job_kwargs": job_kwargs,
+                    **(
+                        {
+                            "stage_resume": {
+                                "parent": stage_scope.parent_reference(),
+                                "operation": stage_scope.operation,
+                                "expected_fit_config": stage_fit_config_digest(job_kwargs),
+                            }
+                        }
+                        if stage_scope is not None and stage_scope.operation != "full"
+                        else {}
+                    ),
                     "profile": ExecutionProfile.TRAINING_PREP.value,
                     "memory_limit_bytes": execution_context.memory_limit_bytes,
                 },
@@ -1934,9 +2151,7 @@ class TrainService:
         def completed_fields(result: WorkerResultManifest) -> dict[str, Any]:
             if not isinstance(result.metadata, dict):
                 raise WorkerProtocolError("Training result metadata must be an object")
-            raw_response = result.metadata.get("response")
-            if not isinstance(raw_response, dict):
-                raise WorkerProtocolError("Training result response must be an object")
+            raw_response = _read_training_response(result, artifact_root=artifact_root)
             # Cheap identity and manifest-shape guards run on the raw payload
             # first so a cross-job or artifact-less response is diagnosed as
             # such rather than as a schema failure.
@@ -2017,6 +2232,10 @@ class TrainService:
                 expected_model_name=str(job_kwargs["name"]),
                 expected_evaluation=staged_evaluation,
                 expected_tuning=staged_response.tuning,
+                expected_staged=staged_response.staged,
+                stage_parent=stage_scope.lease_parent
+                if stage_scope is not None and stage_scope.parent_revision is not None
+                else None,
             )
             response_fields["model_path"] = str(published["model"])
             evaluation_fields = staged_evaluation.model_dump(mode="json", exclude_none=True)
@@ -2051,8 +2270,15 @@ class TrainService:
             def publish_completion_fields() -> Mapping[str, Any]:
                 # Ownership passes to the job record in this critical section;
                 # parent cleanup must no longer remove the directory.
+                if stage_scope is not None and prepared_stage is not None:
+                    stage_scope.publish(job_id, prepared_stage)
                 artifact_publication_committed.set()
                 return {
+                    **(
+                        {"config": prepared_stage.result["config"]}
+                        if prepared_stage is not None
+                        else {}
+                    ),
                     "result": response,
                     "provenance": provenance.to_plain_data(),
                     "artifact_handles": {TRAINING_ARTIFACTS_HANDLE_KEY: handle},
@@ -2072,11 +2298,26 @@ class TrainService:
                 node_id=stored.get("node_id"),
                 pipeline_source=stored.get("pipeline_source") or None,
             )
-            completed = self._lifecycle.publish_completion(
-                job_id,
-                publish=publish_completion_fields,
-                message="Training completed",
+            prepared_stage = (
+                stage_scope.prepare(
+                    published["stage_state"],
+                    response,
+                    provenance=provenance.to_plain_data(),
+                    config=stored.get("config", {}),
+                )
+                if stage_scope is not None
+                else None
             )
+            try:
+                completed = self._lifecycle.publish_completion(
+                    job_id,
+                    publish=publish_completion_fields,
+                    message="Training completed",
+                )
+            finally:
+                if stage_scope is not None and prepared_stage is not None:
+                    stage_scope.store.discard_prepared(prepared_stage)
+
             if completed is not None:
                 self._release_superseded_training_artifacts(completed)
             # The supervisor will make its normal terminal write after this
@@ -2098,7 +2339,11 @@ class TrainService:
                 _run_training_process_job,
                 request,
                 artifact_root=artifact_root,
-                artifact_kinds=_TRAINING_ARTIFACT_KINDS,
+                artifact_kinds=(
+                    _TRAINING_ARTIFACT_KINDS
+                    if stage_scope is not None
+                    else _TRAINING_ARTIFACT_KINDS - {"stage_state"}
+                ),
                 max_artifact_size_bytes=_max_training_artifact_bytes(),
                 config=worker_config,
                 on_progress=on_progress,
@@ -2121,7 +2366,7 @@ class TrainService:
         node_id: str,
         config: dict[str, Any],
         train_params: dict[str, Any],
-        tmp_parquet: str,
+        tmp_parquet: str | None,
         warning: str | None,
         total_source_rows: int | None,
         *,
@@ -2129,7 +2374,11 @@ class TrainService:
         execution_context: ExecutionContext,
         feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
     ) -> IsolatedSupervisorThread | None:
-        """Delegate fit/evaluation to the supervised process protocol."""
+        """Delegate fit/evaluation to the supervised process protocol.
+
+        *tmp_parquet* is the prepared training data the parent owns; a stage resume has
+        none, because its worker reads the parent revision in place.
+        """
         return self._launch_training_protocol(
             job_id,
             node_id,

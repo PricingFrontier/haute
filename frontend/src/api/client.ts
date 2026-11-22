@@ -905,10 +905,12 @@ export async function getPreviewProgress(
   options: { signal?: AbortSignal } = {},
 ): Promise<PreviewProgressResponse | null> {
   try {
-    const data = await request<unknown>(
+    const data = await requestWith<unknown>(
       `/api/pipeline/preview/progress/${encodeURIComponent(requestId)}`,
       { ...options, timeout: 2_000, retry: { maxRetries: 0 } },
+      (response) => response.status === 204 ? Promise.resolve(null) : response.json(),
     )
+    if (data === null) return null
     return expectGeneratedContract(
       "PreviewProgressResponse",
       (await previewValidators()).validatePreviewProgressResponse,
@@ -1687,6 +1689,10 @@ export interface TrainModelArgs {
   graph: PreparedGraph
   node_id: string
   source?: string
+  /** For an interactive build, the id of the model to train. */
+  model?: string
+  diagnostics?: "full" | "compact"
+  stage?: { operation: "full" | "pruned" | "banded" | "smoothed" | "finalise"; parent_revision?: string; prepare_next?: boolean }
   signal?: AbortSignal
   timeout?: number
 }
@@ -1704,8 +1710,53 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
   ).then(async (data) => (await import("../types/trainGuards")).parseTrainResponse(data))
 }
 
+function stageStateRequest<T extends TrainModelArgs>(path: string, args: T) {
+  const { signal, timeout, ...payload } = args
+  return post<unknown>(`/api/modelling/stages/${path}`, { diagnostics: "compact", ...payload }, { signal, timeout })
+    .then(async (data) => (await import("../types/trainGuards")).parseStageState(data))
+}
+
+export function readStages(args: TrainModelArgs) {
+  return stageStateRequest("read", args)
+}
+
+export function removeStages(args: TrainModelArgs) {
+  return stageStateRequest("remove", args)
+}
+
+export function restoreFinalStage(args: TrainModelArgs) {
+  const { signal, timeout, ...payload } = args
+  return post<unknown>("/api/modelling/stages/restore-final", payload, { signal, timeout })
+    .then(async (data) => (await import("../types/trainGuards")).parseTrainResponse(data))
+}
+
+export function updateStageCheckpoint(args: TrainModelArgs & {
+  action: "save" | "restore" | "delete"; current_revision: string; name?: string; checkpoint_id?: string
+}) {
+  return stageStateRequest("checkpoint", args)
+}
+
+export type PathRequest = TrainModelArgs & {
+  current_revision: string; artifact_revision: string; path_id: string; point_id: string
+}
+export function inspectStagePath(args: PathRequest) {
+  const { signal, timeout, ...payload } = args
+  return post<unknown>("/api/modelling/stages/path/read", { diagnostics: "compact", ...payload }, { signal, timeout })
+    .then(async (data) => (await import("../types/trainGuards")).parsePathInspection(data))
+}
+export function applyStagePath(args: PathRequest & { prepare_next?: boolean }) {
+  return stageStateRequest("path/apply", args)
+}
+
+export function updateStagePreview(
+  action: "apply" | "discard",
+  args: TrainModelArgs & { current_revision: string; preview_revision: string; prepare_next?: boolean },
+) {
+  return stageStateRequest(action, args)
+}
+
 export function estimateTrainingRam(
-  payload: { graph: PreparedGraph; node_id: string; source?: string },
+  payload: { graph: PreparedGraph; node_id: string; source?: string; model?: string },
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })

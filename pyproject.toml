@@ -58,7 +58,7 @@ dependencies = [
     # contract records, so a minor bump is a deliberate retrain boundary.
     "interpret-core>=0.7.8,<0.8",
     # A .tboost model is t-boost's own JSON document, read by its schema_version.
-    "t-boost>=0.8.1,<0.9",
+    "t-boost>=0.9.1,<0.10",
     # Tuning owns a reproducibility-sensitive seeded TPE contract. Keep the
     # supported Optuna sampler implementation within one pinned 4.x minor.
     "optuna>=4.9.0,<4.10",
@@ -178,6 +178,14 @@ dev = [
 
 [project.scripts]
 haute = "haute.cli:cli"
+
+# LOCAL DEVELOPMENT ONLY: remove this table and run `uv lock` before this branch merges.
+# t-boost and RustyStats are read from the checkouts beside this one while the libraries
+# are changed to fit Haute. uv.lock records these paths, so CI and any machine without
+# the two checkouts cannot resolve this branch.
+[tool.uv.sources]
+t-boost = { path = "../t-boost", editable = true }
+rustystats = { path = "../rustystats", editable = true }
 
 [tool.hatch.build]
 artifacts = [

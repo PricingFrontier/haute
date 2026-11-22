@@ -25,6 +25,7 @@
   "shap_link": null,
   "feature_importance_loss": [],
   "ave_per_feature": [],
+  "ave_left_out": [],
   "residuals_histogram": [],
   "residuals_stats": {},
   "actual_vs_predicted": [],

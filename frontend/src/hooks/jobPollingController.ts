@@ -34,6 +34,7 @@ export interface JobPollingConfig<TJob, TStatus> {
   getErrorMessage: (status: TStatus) => string
   getTerminalPollErrorMessage?: (error: unknown) => string | undefined
   addToast: (type: "success" | "error" | "warning" | "info", text: string) => void
+  notifySuccess?: (status: TStatus) => boolean
   successLabel: string
   failLabel: string
 }
@@ -266,7 +267,9 @@ export class JobPollingController<TJob, TStatus> {
       }
       return
     }
-    this.config.addToast("success", `${this.config.successLabel}: ${this.config.labelFn(job)}`)
+    if (this.config.notifySuccess?.(result) !== false) {
+      this.config.addToast("success", `${this.config.successLabel}: ${this.config.labelFn(job)}`)
+    }
   }
 
   private reportCallbackError(job: TJob, error: unknown): void {

@@ -2,13 +2,10 @@
 
 A t-boost model is exactly a set of rating tables: an intercept plus one value
 per main-effect or interaction table is the raw score. Each fit sees only the
-rows it is given; t-boost's own early stopping, bagging and table pruning run
-on internal carves of those rows, so Haute never passes its validation
-partition except as its early-stopping set: a fit that has validation rows
-passes them as t-boost's ``eval_set``, so every bag stops at its own best round
-on them and they never reach training, and the early-stopped fit is the model.
-A fit without validation rows (the development refit) stops on t-boost's own
-holdout of the rows it is given. No round count is carried between fits.
+rows it is given: t-boost's early stopping, bagging and table pruning run on
+rows each bag holds back from them, and t-boost has no fit-time evaluation
+set, so Haute's validation rows never reach a fit and only measure it. No
+round count is carried between fits.
 
 The saved ``.tboost`` file is t-boost's own JSON model document with Haute's
 record (the feature order, categorical levels, task and link, the offset column
@@ -176,6 +173,8 @@ class TBoostModel(NativeModel):
     threads: int | None = field(default=None, compare=False)
     #: The table report on the fit's own rows (absent on a loaded model).
     fit_tables: dict[str, Any] | None = field(default=None, compare=False)
+    #: Owned fitting evidence for explicitly staged jobs; inference exports omit it.
+    training_session: Any = field(default=None, compare=False)
 
     # -- ScoringModel-facing surface ------------------------------------
     def prepared(self, frame: pl.DataFrame) -> pl.DataFrame:
@@ -282,9 +281,28 @@ class TBoostModel(NativeModel):
     # -- persistence ------------------------------------------------------
     def save(self, path: Path) -> None:
         """t-boost's JSON model document, Haute's record in its ``metadata`` slot."""
-        self.estimator.metadata = {RECORD_KEY: self.record()}
+        metadata = dict(self.estimator.metadata or {})
+        metadata[RECORD_KEY] = self.record()
+        if self.training_session is not None:
+            metadata["haute_stage"] = self.stage_record
+        self.estimator.metadata = metadata
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.estimator.to_json(), encoding="utf-8")
+
+    @property
+    def stage_record(self) -> dict[str, Any]:
+        """The selected snapshot and recipe, without any retained training rows."""
+        if self.training_session is None:
+            raise HauteValidationError("This model has no resumable training session")
+        return {
+            "schema_version": 1,
+            "stage": self.selected_stage,
+            "revision": self.training_session.stages[self.selected_stage]["revision"],
+            "recipe": self.training_session.recipe(self.selected_stage),
+            "data_digest": self.training_session.data_digest,
+        }
+
+    selected_stage: str = "full"
 
     @classmethod
     def load(cls, path: str | Path) -> TBoostModel:
@@ -329,6 +347,16 @@ class TBoostModel(NativeModel):
             )
         estimator = _native_estimator(text, document, name)
         model = cls(estimator=estimator, **record)
+        stage_record = metadata.get("haute_stage") if isinstance(metadata, dict) else None
+        if stage_record is not None:
+            from haute.modelling._staged_config import StagedConfig
+
+            if not isinstance(stage_record, dict) or stage_record.get("schema_version") != 1:
+                raise HauteValidationError("Invalid saved t-boost stage metadata")
+            config = StagedConfig.from_plain_data({"applied_recipe": stage_record.get("recipe")})
+            if stage_record.get("stage") != config.output_stage:
+                raise HauteValidationError("Saved t-boost stage disagrees with its recipe")
+            model.selected_stage = config.output_stage
         # t-boost omits ``cat_indices`` for a model with no categorical feature.
         model.validate_native(document.get("cat_indices", []), name)
         return model
@@ -459,9 +487,9 @@ class _RoundProgress:
     the ceiling and :meth:`finish` reports the final round once.
 
     Each report carries a live loss row for the round shown: the mean of every
-    bag's latest train and validation deviance, so a report that repeats the
-    round updates its row as slower bags catch up. The fit's loss curve is
-    built afterwards from the complete per-bag history.
+    bag's latest train deviance and deviance on the rows it holds back, so a
+    report that repeats the round updates its row as slower bags catch up. The
+    fit's loss curve is built afterwards from the complete per-bag history.
     """
 
     def __init__(self, on_iteration: IterationCallback | None, total: int) -> None:
@@ -469,11 +497,13 @@ class _RoundProgress:
         self._total = total
         self._reached = 0
         self._latest: dict[int, dict[str, float]] = {}
+        self._rounds: dict[int, int] = {}
 
     def __call__(self, info: dict[str, Any]) -> None:
         if self._on_iteration is None:
             return
         self._reached = max(self._reached, int(info["round"]))
+        self._rounds[int(info["bag"])] = int(info["round"])
         self._latest[int(info["bag"])] = {
             key: float(info[key])
             for key in ("train_deviance", "eval_deviance")
@@ -493,6 +523,9 @@ class _RoundProgress:
             values = [bag[key] for bag in self._latest.values() if key in bag]
             if values:
                 row[key] = float(np.mean(values))
+        for bag, losses in self._latest.items():
+            row[f"bag_{bag + 1}_iteration"] = float(self._rounds[bag])
+            row.update({f"bag_{bag + 1}_{key}": value for key, value in losses.items()})
         metrics = {
             label: row[key]
             for key, label in (
@@ -505,7 +538,7 @@ class _RoundProgress:
 
 
 def _loss_history(evals: dict[str, Any] | None) -> list[dict[str, float]]:
-    """Per-round mean deviance over the bags still boosting at that round."""
+    """Aligned bag losses; stopped bags retain their final value in the mean."""
     if not evals:
         return []
     curves = {
@@ -517,9 +550,13 @@ def _loss_history(evals: dict[str, Any] | None) -> list[dict[str, float]]:
     for index in range(rounds):
         row = {"iteration": float(index + 1)}
         for key, bags in curves.items():
-            reached = [bag[index] for bag in bags if len(bag) > index]
+            reached = [bag[min(index, len(bag) - 1)] for bag in bags if len(bag)]
             if reached:
                 row[key] = float(np.mean(reached))
+            for number, bag in enumerate(bags, 1):
+                if len(bag):
+                    row[f"bag_{number}_iteration"] = float(min(index + 1, len(bag)))
+                    row[f"bag_{number}_{key}"] = float(bag[min(index, len(bag) - 1)])
         history.append(row)
     return history
 
@@ -554,6 +591,9 @@ class TBoostAlgorithm(BaseAlgorithm):
         loss = kwargs.get("loss")
         if not loss:
             raise HauteValidationError("t-boost needs an explicit loss")
+        from haute.modelling._staged_config import STAGE_NAMES, resolve_stages
+
+        stages = resolve_stages(kwargs.get("stages"), "tboost", params)
         native = TBOOST.native_loss(task, str(loss))
         issue = TBOOST.config_issue(params, str(loss), monotone_constraints)
         if issue is not None:
@@ -581,6 +621,8 @@ class TBoostAlgorithm(BaseAlgorithm):
             "unknown_category": UNKNOWN_CATEGORY,
             "n_jobs": threads,
         }
+        if stages is not None:
+            estimator_params.update(stages.path_params)
         if task == "classification":
             estimator: Any = TBoostClassifier(**estimator_params)
         else:
@@ -596,32 +638,70 @@ class TBoostAlgorithm(BaseAlgorithm):
                     if direction
                 }
             )
+        # ``eval_df`` is deliberately unused: every bag stops on rows it holds back
+        # from the training rows, and t-boost takes no validation rows.
+        del eval_df
         fit_kwargs = _rows_kwargs(model, train_df, target, weight, task)
-        if eval_df is not None:
-            # Haute's validation rows are the early-stopping set: each bag stops at
-            # its own best round on them, and the early-stopped fit is the model.
-            eval_kwargs = _rows_kwargs(model, eval_df, target, weight, task)
-            fit_kwargs["eval_set"] = (eval_kwargs.pop("X"), eval_kwargs.pop("y"))
-            fit_kwargs.update({f"eval_{key}": value for key, value in eval_kwargs.items()})
         groups = kwargs.get("groups")
         if groups is not None:
             fit_kwargs["groups"] = train_df.get_column(str(groups)).cast(pl.String).to_numpy()
         features_frame, label = fit_kwargs.pop("X"), fit_kwargs.pop("y")
         progress = _RoundProgress(on_iteration, n_trees)
         with _float32_features_accepted():
-            estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
+            if stages is None:
+                estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
+                history = estimator.evals_result_ if int(estimator.n_trees_) else {}
+            else:
+                session = kwargs.get("stage_session")
+                if session is None:
+                    session = estimator.fit_staged(
+                        features_frame, label, **fit_kwargs, callbacks=progress
+                    )
+                    estimator = session.apply_recipe(stages.applied_recipe)
+                    model.selected_stage = stages.output_stage
+                elif kwargs.get("prepared_stage") is not None:
+                    model.selected_stage = str(kwargs["prepared_stage"])
+                    estimator = session.model(model.selected_stage)
+                else:
+                    operation = stages.operation(str(kwargs.get("stage_operation")))
+                    enabled = stages.to_plain_data().get("enabled")
+                    if enabled is not None:
+                        parent = operation["parent"]
+                        expected = [
+                            stage
+                            for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1]
+                            if enabled[stage]
+                        ]
+                        if [item["stage"] for item in session.recipe(parent)] != expected:
+                            raise HauteValidationError(
+                                f"Rebuild {parent} with the enabled phases "
+                                "before using it as a parent"
+                            )
+                    name, settings = operation["stage"], operation["settings"]
+                    if name == "pruned":
+                        session.configure_path(**stages.to_plain_data()["path"])
+                        estimator = session.prune(**settings)
+                    elif name == "banded":
+                        estimator = session.band(parent=operation["parent"], **settings)
+                    else:
+                        estimator = session.smooth(parent=operation["parent"], **settings)
+                    model.selected_stage = name
+                history = session.loss_history
+                model.training_session = session
         progress.finish()
         model.estimator = estimator
         model.fit_tables = model.table_report(train_df)
         reason = str(estimator.stopping_reason_)
         if reason not in _STOPPING_REASONS:
             raise HauteValidationError(f"t-boost stopped for an unexpected reason: {reason!r}.")
+        rounds_fitted = int(estimator.n_trees_)
         return FitResult(
             model=model,
             best_iteration=None,
-            loss_history=_loss_history(estimator.evals_result_),
+            # A fit that kept no tree (a constant target) records no curves.
+            loss_history=_loss_history(history) if rounds_fitted else [],
             rounds_configured=n_trees,
-            rounds_fitted=int(estimator.n_trees_),
+            rounds_fitted=rounds_fitted,
             stopping_reason=_STOPPING_REASONS[reason],
         )
 

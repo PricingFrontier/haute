@@ -18,6 +18,8 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useToastStore from "../../stores/useToastStore"
 import type { ModellingPane } from "../../stores/useUIStore"
 import useUIStore from "../../stores/useUIStore"
+import useModellingViewStore from "../../stores/useModellingViewStore"
+import useWorkbenchStore from "../../stores/useWorkbenchStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { SimpleNode, SimpleEdge } from "../editors/_shared"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
@@ -28,6 +30,9 @@ import { addressKey, childAddress } from "../../utils/nodeAddress"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
+const mockReadStages = vi.fn()
+const mockUpdateStageCheckpoint = vi.fn()
+const mockUpdateStagePreview = vi.fn()
 const mockTrainModel = vi.fn()
 const mockCancelTrain = vi.fn()
 const mockEstimateTrainingRam = vi.fn()
@@ -42,6 +47,9 @@ let defaultPane: ModellingPane = "target"
 
 vi.mock("../../api/client", () => ({
   trainModel: (...args: unknown[]) => mockTrainModel(...args),
+  readStages: (...args: unknown[]) => mockReadStages(...args),
+  updateStageCheckpoint: (...args: unknown[]) => mockUpdateStageCheckpoint(...args),
+  updateStagePreview: (...args: unknown[]) => mockUpdateStagePreview(...args),
   cancelTrain: (...args: unknown[]) => mockCancelTrain(...args),
   estimateTrainingRam: (...args: unknown[]) => mockEstimateTrainingRam(...args),
   getExperiments: (...args: unknown[]) => mockGetExperiments(...args),
@@ -151,6 +159,22 @@ function renderConfig(overrides: ConfigOverrides = {}) {
   )
   return { ...result, props }
 }
+
+it("keeps the evaluation estimate when only a staged recipe changes, but refreshes for evaluation edits", () => {
+  const config = { ...defaultProps().config, algorithm: "tboost", stages: {} }
+  const { rerender, props } = renderConfig({ config })
+  const count = mockEstimateTrainingRam.mock.calls.length
+  act(() => useGraphStore.setState({ structuralVersion: useGraphStore.getState().structuralVersion + 1 }))
+  const renderNext = (next: Record<string, unknown>) => rerender(
+    <GraphProvider requestScope={documentRequestScope} allNodes={[]} edges={[]}>
+      <ModellingConfig {...props} config={next} />
+    </GraphProvider>,
+  )
+  renderNext({ ...config, stages: { smoothing: { strength: 4 }, applied_recipe: [{ stage: "pruned" }] } })
+  expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(count)
+  renderNext({ ...config, evaluation: { ...config.evaluation, seed: 99 } })
+  expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(count + 1)
+})
 
 function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
   return makeCanonicalTrainResult({
@@ -571,7 +595,13 @@ describe("ModellingConfig", () => {
       expect(props.onUpdate).toHaveBeenCalledWith({
         algorithm: "ebm",
         params: { max_rounds: 2000, learning_rate: 0.02, interactions: 10 },
-        evaluation: expect.objectContaining({ schema_version: 1 }),
+        // Every family but t-boost starts with a 20% holdout.
+        evaluation: {
+          schema_version: 1,
+          strategy: "random",
+          seed: 42,
+          validation: { method: "single", size: 0.2 },
+        },
       })
     })
 
@@ -591,8 +621,179 @@ describe("ModellingConfig", () => {
           band_tolerance: 0.75,
           graduate: true,
         },
-        evaluation: expect.objectContaining({ schema_version: 1 }),
+        // A t-boost fit takes no validation rows, so a new node sets none aside.
+        evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" } },
       })
+    })
+
+    it("Interactive build marks a t-boost node, boost only, with every column in and no validation set", () => {
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio" } })
+      fireEvent.click(screen.getByText("Interactive build"))
+      // The node holds the shared settings; its one model, t-boost, holds its own.
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        interactive_build: true,
+        evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" } },
+        models: [{
+          id: "m1",
+          name: "t-boost",
+          algorithm: "tboost",
+          // Pruning, banding and smoothing are later steps; a null tolerance is t-boost's off.
+          params: {
+            n_trees: 4000,
+            max_interaction_order: 3,
+            n_bags: 8,
+            interaction_gain_hurdle: 2,
+            prune: false,
+            band_tolerance: null,
+            graduate: false,
+          },
+          feature_columns: props.upstreamColumns.map((column) => column.name),
+        }],
+      })
+    })
+
+    it("Interactive build writes no factor list while the upstream columns are not known", () => {
+      const { props } = renderConfig({ nodeId: "node_1", config: { target: "loss_ratio" }, upstreamColumns: [] })
+      fireEvent.click(screen.getByText("Interactive build"))
+      const update = vi.mocked(props.onUpdate).mock.calls[0][0] as { interactive_build: boolean; models: Record<string, unknown>[] }
+      expect(update.interactive_build).toBe(true)
+      expect("feature_columns" in update.models[0]).toBe(false)
+    })
+
+    it("an interactive build's panel shows what it is and opens it in the Modelling view", () => {
+      renderConfig({
+        nodeId: "node_1",
+        config: {
+          interactive_build: true,
+          target: "claims",
+          models: [
+            { id: "m1", name: "t-boost", algorithm: "tboost", params: { n_trees: 4000 } },
+            { id: "m2", name: "short list", algorithm: "tboost" },
+          ],
+        },
+      })
+      const summary = screen.getByTestId("interactive-build-summary")
+      expect(within(summary).getByText("t-boost, short list")).toBeInTheDocument()
+      expect(within(summary).getByText("claims")).toBeInTheDocument()
+      // None of the editor's panes: the model is edited in the view.
+      expect(screen.queryByRole("tabpanel")).toBeNull()
+
+      fireEvent.click(within(summary).getByRole("button", { name: "Open in Modelling" }))
+      expect(useModellingViewStore.getState().modelId).toBe("node_1")
+      expect(useWorkbenchStore.getState().activeView).toBe("modelling")
+      useModellingViewStore.setState({ modelId: null })
+      useWorkbenchStore.setState({ activeView: "pipeline" })
+    })
+
+    it("keeps the null that turns banding off when the boost-only parameters are edited as JSON", () => {
+      const recipe = { n_trees: 4000, n_bags: 8, prune: false, band_tolerance: null, graduate: false }
+      const { props } = renderConfig({
+        nodeId: "node_1",
+        config: { algorithm: "tboost", interactive_build: true, target: "claims", loss_function: "Poisson", params: recipe },
+        panes: ["params"],
+      })
+      const editor = screen.getByLabelText("t-boost hyperparameters JSON") as HTMLTextAreaElement
+      expect(JSON.parse(editor.value)).toEqual(recipe)
+
+      fireEvent.change(editor, { target: { value: JSON.stringify({ ...recipe, n_trees: 2000 }) } })
+      expect(props.onUpdate).toHaveBeenLastCalledWith("params", { ...recipe, n_trees: 2000 })
+    })
+
+    it("stacks the panes its host names, as the Modelling view does, with Go to led by the host", () => {
+      const onReviewPane = vi.fn()
+      renderConfig({
+        nodeId: "node_1",
+        // No target and no factor: the Train pane lists both.
+        config: { algorithm: "tboost", interactive_build: true, loss_function: "Poisson", params: { n_trees: 4000 } },
+        panes: ["params", "train"],
+        onReviewPane,
+        reviewablePanes: ["target", "features"],
+      })
+      expect(screen.queryByTestId("interactive-build-summary")).toBeNull()
+      expect(screen.queryByRole("tabpanel")).toBeNull()
+      expect(document.querySelector('[data-pane="params"]')).not.toBeNull()
+      expect(document.querySelector('[data-pane="train"]')).not.toBeNull()
+
+      // An interactive build's features are the view's factors, and their link says so.
+      const links = screen.getAllByRole("button", { name: /^Go to / })
+      expect(new Set(links.map((link) => link.textContent))).toEqual(new Set(["Go to Target", "Go to Factors"]))
+      const factorIssue = screen.getByText("Tick at least one factor.").closest("li") as HTMLElement
+      fireEvent.click(within(factorIssue).getByRole("button", { name: "Go to Factors" }))
+      expect(onReviewPane).toHaveBeenLastCalledWith("features")
+
+      fireEvent.click(screen.getByRole("button", { name: "Go to Target" }))
+      expect(onReviewPane).toHaveBeenLastCalledWith("target")
+      // The node panel's own remembered pane is left alone.
+      expect(useUIStore.getState().modellingPanes.node_1).toBeUndefined()
+    })
+
+    it("stacks an interactive build's factors with the target, under the issue on them, as the view's Factors step", () => {
+      renderConfig({
+        nodeId: "node_1",
+        config: { algorithm: "tboost", interactive_build: true, target: "claims", loss_function: "Poisson", params: { n_trees: 4000 } },
+        upstreamColumns: [{ name: "claims", dtype: "Float64" }, { name: "age", dtype: "Float64" }],
+        panes: ["target", "features"],
+        reviewablePanes: ["params", "train"],
+      })
+      const factors = document.querySelector('[data-pane="features"]') as HTMLElement
+      expect(within(factors).getByRole("alert")).toHaveTextContent("Tick at least one factor.")
+      expect(within(factors).getByRole("heading", { name: "Factors" })).toBeInTheDocument()
+      expect(within(factors).getByRole("checkbox", { name: "Include age" })).not.toBeChecked()
+      expect(within(factors).queryByRole("checkbox", { name: "Include claims" })).toBeNull()
+    })
+
+    it("shows an interactive build's Split pane where the Modelling view's Training Split asks for it", () => {
+      renderConfig({
+        nodeId: "node_1",
+        config: {
+          algorithm: "tboost",
+          interactive_build: true,
+          target: "claims",
+          loss_function: "Poisson",
+          evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" } },
+        },
+        panes: ["split"],
+        reviewablePanes: ["target", "features", "params"],
+      })
+      const split = document.querySelector('[data-pane="split"]') as HTMLElement
+      expect(split).not.toBeNull()
+      expect(split.textContent).not.toBe("")
+    })
+
+    it("puts the tuning validation warning after the parameter controls in the Modelling pane", () => {
+      renderConfig({
+        config: {
+          algorithm: "tboost", interactive_build: true, target: "claims", loss_function: "Poisson",
+          feature_columns: ["age"], params: { n_trees: 4000 },
+          evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" } },
+          tuning: { schema_version: 1, trial_count: 20, seed: 42, metric: "gini", search_space: { learning_rate: [0.05, 0.1] } },
+        },
+        panes: ["params"],
+        reviewablePanes: ["target", "features", "split"],
+      })
+      const pane = document.querySelector('[data-pane="params"]') as HTMLElement
+      const warning = within(pane).getByText("Parameter tuning compares trials on validation rows: enable holdout or cross-validation in the Split pane.")
+      const search = within(pane).getByRole("textbox", { name: /search space JSON/ })
+      expect(search.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(pane.lastElementChild).toBe(warning)
+    })
+
+    it("offers no parameter tuning where the host has no Split pane, unless the node already tunes", () => {
+      const interactive = { algorithm: "tboost", interactive_build: true, target: "claims", loss_function: "Poisson", params: { n_trees: 4000 } }
+      const { unmount } = renderConfig({ nodeId: "node_1", config: interactive, panes: ["params"], reviewablePanes: ["target"] })
+      expect(screen.getByLabelText("t-boost hyperparameters JSON")).toBeInTheDocument()
+      expect(screen.queryByText("Parameter strategy")).toBeNull()
+      unmount()
+
+      renderConfig({
+        nodeId: "node_1",
+        config: { ...interactive, tuning: { schema_version: 1, trial_count: 20, seed: 42, metric: "gini", search_space: { learning_rate: [0.05, 0.1] } } },
+        panes: ["params"],
+        reviewablePanes: ["target"],
+      })
+      // A way back to fixed parameters, and no link to a Split pane that is not there.
+      expect(screen.getByText("Parameter strategy")).toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: "Review split →" })).toBeNull()
     })
 
     it("offers EBM Gamma but neither MAE nor CrossEntropy (MOD-F04)", () => {
@@ -910,6 +1111,37 @@ describe("ModellingConfig", () => {
           node_id: "node_1",
         }),
       )
+    })
+
+    it("trains the Modelling view's model by its id and keeps its job under the model's own key", async () => {
+      mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_7" })
+      renderConfig({ modelId: "m2" })
+      fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+      await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
+
+      expect(mockTrainModel.mock.calls[0][0]).toEqual(expect.objectContaining({ node_id: "node_1", model: "m2" }))
+      await waitFor(() => expect(useNodeResultsStore.getState().trainJobs["node_1#model:m2"]?.jobId).toBe("job_7"))
+      expect(useNodeResultsStore.getState().trainJobs.node_1).toBeUndefined()
+    })
+
+    it("reports the Modelling view's train action: why it cannot train, and a train that starts the model's job", async () => {
+      mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_9" })
+      const onTrainAction = vi.fn()
+      const { unmount } = renderConfig({ modelId: "m1", onTrainAction, panes: ["params"], config: { algorithm: "catboost", params: {} } })
+      // No target: the action names the issue, and no Train pane is on screen.
+      expect(screen.queryByRole("button", { name: /Train Model/ })).toBeNull()
+      const blocked = onTrainAction.mock.calls.at(-1)?.[0] as { issues: string[] }
+      expect(blocked.issues.length).toBeGreaterThan(0)
+      unmount()
+      expect(onTrainAction).toHaveBeenLastCalledWith(null)
+
+      onTrainAction.mockClear()
+      renderConfig({ modelId: "m1", onTrainAction, panes: ["params"] })
+      const ready = onTrainAction.mock.calls.at(-1)?.[0] as { issues: string[]; train: () => void }
+      expect(ready.issues).toEqual([])
+      act(() => ready.train())
+      await waitFor(() => expect(mockTrainModel).toHaveBeenCalledWith(expect.objectContaining({ model: "m1" })))
+      await waitFor(() => expect((onTrainAction.mock.calls.at(-1)?.[0] as { training: boolean }).training).toBe(true))
     })
 
     it("sends a global constant edited after the panel mounted", async () => {
@@ -1607,6 +1839,23 @@ describe("ModellingConfig", () => {
       })
       renderConfig()
       expect(screen.getByText(/Model trained - results in preview panel below/)).toBeTruthy()
+    })
+
+    it("says only that the model is trained where no preview panel sits below, in the Modelling view", () => {
+      useNodeResultsStore.setState({
+        trainResults: {
+          node_1: {
+            result: makeTrainResult(),
+            jobId: "job_1",
+            configHash: "irrelevant",
+            source: "live",
+            structuralVersion: 0,
+          },
+        },
+      })
+      renderConfig({ panes: ["train"] })
+      expect(screen.getByText("Model trained")).toBeInTheDocument()
+      expect(screen.queryByText(/results in preview panel below/)).toBeNull()
     })
 
     it("does not show completion badge when training is active", () => {
@@ -3429,4 +3678,108 @@ describe("Training a child of a submodel with two occurrences", () => {
     expect(readTrainedJobHandle("rating/main.py", ownerKey)).toBeNull()
     expect(useNodeResultsStore.getState().expiredTrainJobs).toEqual({ [ownerKey]: "job_gone" })
   })
+})
+
+
+describe("Staged interactive training", () => {
+  afterEach(cleanup)
+  it("submits migrated GBM settings to the selected model and cancels through its stage button", async () => {
+    mockReadStages.mockResolvedValue({ schema_version: 1, next_preview: null, checkpoints: [], current: null, preview: null, job: null, stale_reason: null })
+    mockTrainModel.mockResolvedValue({ status: "started", job_id: "staged-gbm" })
+    mockCancelTrain.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
+    const recipe = [{ stage: "smoothed", parent: "full", settings: { alpha: .2, high_order_alpha: 0 } }]
+    const onUpdate = vi.fn()
+    const flat: Record<string, unknown> = { ...defaultProps().config, algorithm: "tboost", interactive_build: true,
+      stages: { applied_recipe: recipe }, params: { n_trees: 10, n_bags: 3, prune: false, band_tolerance: null, graduate: false } }
+    const { algorithm, params, feature_columns, ...shared } = flat
+    const node: SimpleNode = { id: "node_1", data: { label: "Example", description: "", nodeType: "modelling", config: {
+      ...shared, models: [{ id: "m1", name: "First", algorithm, params, feature_columns }],
+    } } }
+    loadDocument([node])
+    renderConfig({ onUpdate, config: flat, allNodes: [node], modelId: "m1", panes: ["params"], stagedTraining: true })
+    fireEvent.click(screen.getByRole("button", { name: "Train GBM" }))
+    await waitFor(() => expect(mockTrainModel).toHaveBeenCalledOnce())
+    const payload = mockTrainModel.mock.calls[0][0]
+    expect(payload.stage).toEqual({ operation: "full", prepare_next: true })
+    expect(payload.model).toBe("m1")
+    const submitted = payload.graph.nodes.find((entry: { id: string }) => entry.id === "node_1").data.config.models[0]
+    expect(submitted.params).toEqual({ n_trees: 10, n_bags: 3 })
+    expect(submitted.stages.applied_recipe).toEqual([])
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ stages: expect.objectContaining({ applied_recipe: recipe }) }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled())
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("staged-gbm"))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Train GBM" })).toBeEnabled())
+    expect(onUpdate.mock.calls.every(([updates]) => updates.stages?.applied_recipe.length !== 0)).toBe(true)
+  })
+})
+
+
+it.each(["fixed", "tuning"] as const)("checkpoint restore clears the %s JSON draft so the saved parameters are visible", async (mode) => {
+  const { useStagedViews } = await import("../../modelling/useStagedTraining")
+  useStagedViews.setState({ models: {}, preferences: {} })
+  const config = { ...defaultProps().config, algorithm: "tboost", params: { n_trees: 40 }, stages: {},
+    ...(mode === "tuning" ? { tuning: { schema_version: 1, trial_count: 5, seed: 42, metric: "gini", search_space: { n_trees: [20, 40] } } } : {}) }
+  const label = mode === "fixed" ? "t-boost hyperparameters JSON" : "t-boost search space JSON"
+  const response = makeCanonicalTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+    configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+    stages: { full: { recipe: [] } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+  const state = { schema_version: 1, next_preview: null, checkpoints: [{ id: "c".repeat(32), name: "Baseline", revision: "a".repeat(32), created_at: "2026-11-21T00:00:00Z", output_stage: "full" }],
+    preview: null, final: null, job: null, stale_reason: null,
+    current: { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "d".repeat(64), config_digest: "f".repeat(64),
+      result: { graph_digest: "e".repeat(64), response, config } } }
+  mockReadStages.mockResolvedValue(state)
+  mockUpdateStageCheckpoint.mockResolvedValue(state)
+  const node: SimpleNode = { id: "node_1", data: { label: "Example", description: "", nodeType: "modelling", config: { ...config, models: [{ id: "m1", name: "t-boost", algorithm: "tboost", params: config.params, stages: config.stages }] } } }
+  loadDocument([node])
+  const { props, rerender } = renderConfig({ config, allNodes: [node], modelId: "m1", panes: ["params"], stagedTraining: true, stagedPane: "params" })
+  const switchPane = (stagedPane: "params" | "train") => rerender(<GraphProvider requestScope={documentRequestScope} allNodes={[node]} edges={[]}><ModellingConfig {...props} stagedPane={stagedPane} /></GraphProvider>)
+  fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value: "{ invalid draft" } })
+  switchPane("train")
+  fireEvent.click(await screen.findByText("Saved checkpoints · 1"))
+  fireEvent.click(screen.getByRole("button", { name: "Restore" }))
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }))
+  await waitFor(() => expect(mockUpdateStageCheckpoint).toHaveBeenCalledOnce())
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument())
+  switchPane("params")
+  expect(JSON.parse((screen.getByRole("textbox", { name: label }) as HTMLTextAreaElement).value)).toEqual({ n_trees: mode === "fixed" ? 40 : [20, 40] })
+  useStagedViews.setState({ models: {}, preferences: {} })
+})
+
+
+it.each(["queued", "running", "finishing", "manual"] as const)("keeps %s stage work on the correct card and cancels the actual job", async (phase) => {
+  const { useStagedViews } = await import("../../modelling/useStagedTraining")
+  useStagedViews.setState({ models: {}, preferences: {} })
+  const config = { ...defaultProps().config, algorithm: "tboost", params: { n_trees: 40 }, stages: {} }
+  const response = makeCanonicalTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+    configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+    stages: { full: { recipe: [] } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+  const state = { schema_version: 1, checkpoints: [], preview: null, final: null, stale_reason: null,
+    next_preview: phase === "queued" ? { operation: "pruned", parent_revision: "a".repeat(32), owner_pid: 1, status: "queued", message: "Preparing the next stage preview" } : null,
+    job: phase === "queued" ? null : { id: "followup", operation: "pruned", automatic: phase !== "manual", expected_revision: "a".repeat(32), owner_pid: 1, status: "running", message: "Running" },
+    current: { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "d".repeat(64), config_digest: "f".repeat(64),
+      result: { graph_digest: "e".repeat(64), response, config } } }
+  mockReadStages.mockResolvedValue(state)
+  mockCancelTrain.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
+  const node: SimpleNode = { id: "node_1", data: { label: "Example", description: "", nodeType: "modelling", config: { ...config, models: [{ id: "m1", name: "t-boost", algorithm: "tboost", params: config.params, stages: config.stages }] } } }
+  loadDocument([node])
+  renderConfig({ config, allNodes: [node], modelId: "m1", panes: ["params"], stagedTraining: true })
+  await screen.findByRole("button", { name: "Cancel" })
+  if (phase === "finishing") {
+    // Durable polling can finish before the foreground poller retires the same job.
+    const [key, view] = Object.entries(useStagedViews.getState().models)[0]
+    act(() => useStagedViews.getState().update(key, { state: { ...view.state!, job: { ...view.state!.job!, status: "completed" } } }))
+  }
+  const cancel = screen.getByRole("button", { name: "Cancel" })
+  expect(cancel.closest("section")?.firstElementChild).toHaveTextContent(phase === "manual" ? "Pruning" : "GBM")
+  expect(screen.queryByText(/Preparing preview|Automatically prepares|Applying prepares/)).not.toBeInTheDocument()
+  if (phase === "queued") {
+    expect(cancel).toBeDisabled()
+    expect(screen.getByTestId("training-blockers")).toHaveTextContent("Finishing the current run")
+  } else {
+    expect(cancel).toBeEnabled()
+    mockReadStages.mockResolvedValue({ ...state, job: { ...state.job, status: "cancelled" } })
+    fireEvent.click(cancel)
+    await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("followup"))
+  }
 })

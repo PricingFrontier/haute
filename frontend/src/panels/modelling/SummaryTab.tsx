@@ -190,19 +190,18 @@ function validationLabel(method: "none" | "single" | "cross_validation", count: 
 
 /**
  * What the published model is, by the tuned family's refit policy: a round-refitting
- * family's refit tree count, a fixed-budget family (EBM) refit with the winning budget,
- * or a validation-fit family's (t-boost) winning trial fit, which is never refit.
+ * family's refit tree count, or a fixed-budget family's (EBM, t-boost) refit with the
+ * winning parameters.
  */
 function finalFitNote(tuning: TuningReport): string {
   const family = tuningFamilyCapability(tuning.final_params)
   if (family === null) {
     throw new Error("The tuning report's final parameters carry no single tunable family's round key.")
   }
-  if (family.refit_policy === "validation_fit") return "published the winning trial's fit"
   if (tuning.final_tree_count !== null) {
     return `final tree count ${tuning.final_tree_count.toLocaleString()}`
   }
-  return "refit with the winning round budget"
+  return "refit with the winning parameters"
 }
 
 function sortedTopTrials(tuning: TuningReport) {

@@ -3532,10 +3532,51 @@ class SubmodelGraphResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class StageJobRequest(BaseModel):
+    prepare_next: bool = False
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["full", "pruned", "banded", "smoothed", "finalise"]
+    parent_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+    @model_validator(mode="after")
+    def _require_parent(self) -> StageJobRequest:
+        if self.operation != "full" and self.parent_revision is None:
+            raise ValueError("A post-fit stage requires its current parent revision")
+        return self
+
+
 class TrainRequest(BaseModel):
     graph: Graph
     node_id: BoundedName
     source: BoundedName = "live"
+    #: For an interactive build, the id of the model to train.
+    model: BoundedName | None = None
+    stage: StageJobRequest | None = None
+    diagnostics: Literal["full", "compact"] = "full"
+
+
+class StageActionRequest(TrainRequest):
+    prepare_next: bool = False
+    current_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    preview_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class StagePathReadRequest(TrainRequest):
+    current_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    artifact_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    path_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    point_id: str = Field(pattern=r"^(unchanged|point-([1-9]|1[0-6]))$")
+
+
+class StagePathApplyRequest(StagePathReadRequest):
+    prepare_next: bool = False
+
+
+class StageCheckpointRequest(TrainRequest):
+    action: Literal["save", "restore", "delete"]
+    current_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    checkpoint_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    name: str = Field(default="", max_length=80)
 
 
 TrainingFeatureSelectionMode = Literal["explicit", "glm_terms"]
@@ -3723,6 +3764,7 @@ class EvaluationReportPayload(_StrictPublicTrainingPayload):
     plan, results and report artifacts are produced and reloaded
     (``haute.modelling._evaluation``), not here."""
 
+    purpose: Literal["exploration"] | None = None
     schema_version: Literal[1]
     strategy: Literal["random", "group", "temporal"]
     validation_method: Literal["none", "single", "cross_validation"]
@@ -3969,10 +4011,122 @@ class TrainShapCurveFeature(BaseModel):
         return self
 
 
+class StagePathPointPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^(unchanged|point-([1-9]|1[0-6]))$")
+    stage: Literal["full", "pruned", "banded", "smoothed"]
+    identity: bool
+    status: Literal["identity", "changed", "unchanged", "rejected"]
+    reference_status: Literal["identity", "changed", "unchanged", "rejected"]
+    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    settings: dict[str, Any]
+    diagnostics: dict[str, Any]
+    loss: float
+    loss_delta: float
+    relative_loss_delta: float | None = None
+    fold_status: list[dict[str, str]] = Field(max_length=11)
+
+
+class StagePathPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    stage: Literal["pruned", "banded", "smoothed"]
+    parent: Literal["full", "pruned", "banded"]
+    points: list[StagePathPointPayload] = Field(min_length=1, max_length=17)
+    selected_point: str
+    suggested_point: str | None = None
+    evidence: Literal["development", "validation", "out_of_fold"]
+    metric: str
+    evaluation_identity: str = Field(pattern=r"^[a-f0-9]{64}$")
+    controls: dict[str, Any]
+    selection: dict[str, float]
+    reference_fit: Literal["development", "validation-0"]
+    parent_revisions: dict[str, str]
+    family_ids: dict[str, str]
+
+    @model_validator(mode="after")
+    def _point_identities(self) -> StagePathPayload:
+        ids = [point.id for point in self.points]
+        if len(ids) != len(set(ids)) or self.selected_point not in ids:
+            raise ValueError("Path selection requires unique known points")
+        if self.suggested_point is not None and self.suggested_point not in ids:
+            raise ValueError("Path suggestion must be a known point")
+        return self
+
+
+class StagedBuildPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[1]
+    diagnostic_scope: Literal["full", "path"] = Field(
+        default="full", exclude_if=lambda value: value == "full"
+    )
+    selected_stage: Literal["full", "pruned", "banded", "smoothed"]
+    evaluation_identity: str = Field(pattern=r"^[a-f0-9]{64}$")
+    fit_config_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    configuration: dict[str, Any]
+    diagnostics_basis: Literal["partition", "out_of_fold"] = "partition"
+    reference_fit: Literal["development", "validation-0"] = "validation-0"
+    stages: dict[str, dict[str, Any]]
+    pruning_path: dict[str, Any] | None = None
+    path_unavailable_reason: str | None = None
+    recommendation: dict[str, Any] | None = None
+    prepared_path: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{64}$", exclude_if=lambda value: value is None
+    )
+    paths: dict[Literal["pruned", "banded", "smoothed"], StagePathPayload] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+
+    @model_validator(mode="after")
+    def _selected_exists(self) -> StagedBuildPayload:
+        if self.selected_stage not in self.stages or "full" not in self.stages:
+            raise ValueError("Stage diagnostics must include full and selected snapshots")
+        if set(self.stages) - {"full", "pruned", "banded", "smoothed"}:
+            raise ValueError("Unknown stage diagnostics")
+        # Snapshots use the same public fit-evidence contract as the main result.
+        # Populate nullable fields before they cross the generated TS boundary.
+        self.stages = {
+            name: {
+                **snapshot,
+                "fit_evidence": (
+                    FitEvidencePayload.model_validate(snapshot["fit_evidence"]).model_dump(
+                        mode="json"
+                    )
+                    if snapshot.get("fit_evidence") is not None
+                    else None
+                ),
+            }
+            for name, snapshot in self.stages.items()
+        }
+        return self
+
+
+class StageTableSummaryEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    term: str
+    features: list[str]
+    order: int = Field(ge=1)
+    cells: int = Field(ge=0)
+    shape_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class StageTableSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tables: list[StageTableSummaryEntry]
+    factored: int = Field(ge=0)
+
+
 class TrainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["started", "completed", "error"]
+    diagnostics_view: Literal["full", "compact"] = Field(
+        default="full", exclude_if=lambda value: value == "full"
+    )
+    table_summary: StageTableSummary | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    staged: StagedBuildPayload | None = Field(default=None, exclude_if=lambda value: value is None)
     job_id: str | None = None
     diagnostic_metrics: dict[str, float] = Field(default_factory=dict)
     final_test_metrics: dict[str, float] = Field(default_factory=dict)
@@ -3999,6 +4153,8 @@ class TrainResponse(BaseModel):
     shap_link: Literal["identity", "log", "logit"] | None = None
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = Field(default_factory=list)
+    #: An interactive build's AvE for each column its model left out that holds no role.
+    ave_left_out: list[dict[str, Any]] = Field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = Field(default_factory=list)
     residuals_stats: dict[str, float] = Field(default_factory=dict)
     actual_vs_predicted: list[dict[str, float]] = Field(default_factory=list)
@@ -4041,6 +4197,87 @@ class TrainResponse(BaseModel):
         if bool(self.shap_curves) != (self.shap_link is not None):
             raise ValueError("shap_link names the scale exactly when shap_curves exist")
         return self
+
+
+class StagePathInspectionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    artifact_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    path_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+    point_id: str
+    response: TrainResponse
+
+
+class StageResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    response: TrainResponse
+    graph_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    provenance: dict[str, Any] | None = None
+    config: dict[str, Any] | None = None
+
+
+class StageRevisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    build_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    parent_revision: str | None = None
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    size: int = Field(ge=0)
+    config_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    result: StageResultPayload
+
+
+class StageJobPayload(BaseModel):
+    automatic: bool = False
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    operation: Literal["full", "pruned", "banded", "smoothed", "finalise"]
+    expected_revision: str | None = None
+    owner_pid: int = Field(ge=1)
+    status: Literal["running", "completed", "failed", "cancelled", "interrupted"]
+    message: str
+
+
+class StageCheckpointPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    name: str
+    created_at: str
+    revision: str
+    output_stage: Literal["full", "pruned", "banded", "smoothed"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _summary(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "record" in value:
+            record = value["record"]
+            return {
+                **{key: value[key] for key in ("id", "name", "created_at")},
+                "revision": record["revision"],
+                "output_stage": record["result"]["response"]["staged"]["selected_stage"],
+            }
+        return value
+
+
+class NextStagePreviewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["pruned", "banded", "smoothed"]
+    parent_revision: str = Field(pattern=r"^[a-f0-9]{32}$")
+    owner_pid: int = Field(ge=1)
+    status: Literal["queued", "failed", "interrupted"]
+    message: str
+
+
+class StageStatePayload(BaseModel):
+    next_preview: NextStagePreviewPayload | None = None
+    checkpoints: list[StageCheckpointPayload] = Field(default_factory=list, max_length=10)
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[1]
+    stale_reason: str | None = None
+    current: StageRevisionPayload | None = None
+    preview: StageRevisionPayload | None = None
+    final: StageRevisionPayload | None = None
+    job: StageJobPayload | None = None
 
 
 class MlflowExportReceipt(BaseModel):
@@ -4178,6 +4415,8 @@ class TrainEstimateRequest(BaseModel):
     graph: Graph
     node_id: BoundedName
     source: BoundedName = "live"
+    #: For an interactive build, the id of the model to estimate.
+    model: BoundedName | None = None
 
 
 class EvaluationDateRangePayload(BaseModel):

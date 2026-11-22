@@ -46,6 +46,54 @@ describe("CommonFeatureConfig", () => {
     expect(onUpdate).toHaveBeenLastCalledWith({ feature_columns: ["age"] })
   })
 
+  it("names its rows factors for an interactive build", () => {
+    render(
+      <CommonFeatureConfig
+        config={{ target: "target", feature_columns: ["age", "region"] }}
+        onUpdate={vi.fn(() => ({ ok: true as const }))}
+        columns={columns}
+        noun="factor"
+      />,
+    )
+
+    expect(screen.getByRole("heading", { name: "Factors" })).toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Search factors" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Include all factors" })).toBeInTheDocument()
+    const age = screen.getByRole("group", { name: "age factor" })
+    expect(within(age).getByRole("checkbox", { name: "Include age" })).toBeChecked()
+    expect(within(age).getByRole("button", { name: "age: increasing" })).toBeEnabled()
+    expect(screen.getByText("Factor")).toBeInTheDocument()
+  })
+
+  it("marks the chosen factor's row and scrolls to it each time the choice changes, unless the search hides it", () => {
+    // jsdom lays nothing out and has no scrollIntoView: this one records the rows asked.
+    const scrolled: string[] = []
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value(this: HTMLElement) {
+        scrolled.push(this.getAttribute("aria-label") ?? "")
+      },
+    })
+    const config = { target: "target", feature_columns: ["age", "region"] }
+    const view = (chosen: string | null) => (
+      <CommonFeatureConfig config={config} onUpdate={vi.fn(() => ({ ok: true as const }))} columns={columns} chosen={chosen} />
+    )
+    const { rerender } = render(view(null))
+    expect(screen.getAllByRole("group").filter((row) => row.hasAttribute("aria-current"))).toEqual([])
+    expect(scrolled).toEqual([])
+
+    rerender(view("region"))
+    expect(featureRow("region")).toHaveAttribute("aria-current", "true")
+    expect(featureRow("age")).not.toHaveAttribute("aria-current")
+    expect(scrolled).toEqual(["region feature"])
+
+    // A row the search hides has nothing to scroll to.
+    fireEvent.change(screen.getByRole("textbox", { name: "Search features" }), { target: { value: "ag" } })
+    rerender(view("severity"))
+    expect(scrolled).toEqual(["region feature"])
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+  })
+
   it("shares filtering, dtype labels, role omission, and stale-feature repair", () => {
     const onUpdate = vi.fn(() => ({ ok: true as const }))
     render(

@@ -27,10 +27,13 @@ type Props = {
   searchSpaceDraft: string
   setSearchSpaceDraft: (draft: string) => void
   onReviewSplit?: () => void
+  /**
+   * Whether the Fixed | Tune switch shows; a node that already tunes keeps it, to switch
+   * back. False where the host has no Split pane to give tuning its validation rows.
+   */
+  tuningOffered?: boolean
   /** The search space "Tune parameters" starts from; it must use the family's own keys. */
   starterSearchSpace?: Record<string, unknown>
-  /** The family publishes its winning validation fit (t-boost): tuning needs no refit. */
-  publishesValidationFit?: boolean
   /** The node's `refit_on_development` is not `false`, for the fit budget. */
   refitOnDevelopment: boolean
 }
@@ -43,7 +46,6 @@ const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
 
 export function HyperparametersConfig({
   starterSearchSpace = CATBOOST_STARTER_SEARCH_SPACE,
-  publishesValidationFit = false,
   refitOnDevelopment,
   algorithmLabel,
   params,
@@ -58,6 +60,7 @@ export function HyperparametersConfig({
   searchSpaceDraft,
   setSearchSpaceDraft,
   onReviewSplit,
+  tuningOffered = true,
 }: Props) {
   const stored = useMemo(
     () => formatHyperparameters(params, reservedKeys),
@@ -87,7 +90,7 @@ export function HyperparametersConfig({
     }
   }
   // The Train pane's run summary words the same budget.
-  const fitBudget = fitBudgetLabel(evaluation, tuning, { publishesValidationFit, refitOnDevelopment })
+  const fitBudget = fitBudgetLabel(evaluation, tuning, refitOnDevelopment)
   const updateFixedDraft = (nextDraft: string) => {
     setDraft(nextDraft)
     try {
@@ -118,7 +121,7 @@ export function HyperparametersConfig({
     setDraft(stored)
     setSearchSpaceDraft(formatTuningSearchSpace(searchSpace))
     onUpdate({
-      ...(publishesValidationFit ? {} : { refit_on_development: true }),
+      refit_on_development: true,
       tuning: {
         schema_version: 1,
         trial_count: 20,
@@ -131,25 +134,27 @@ export function HyperparametersConfig({
   const inputClass = "mt-1 w-full rounded-lg px-3 py-2 font-mono text-[13px]"
   return (
     <section className="space-y-5">
-      <div>
-        <p
-          id="parameter-strategy-label"
-          className="mb-2 text-[13px]"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          Parameter strategy
-        </p>
-        <ToggleButtonGroup<"fixed" | "tune">
-          value={tuning ? "tune" : "fixed"}
-          onChange={setStrategy}
-          options={[
-            { key: "fixed", label: "Fixed parameters" },
-            { key: "tune", label: "Tune parameters" },
-          ]}
-          accentColor={MODEL_COLORS.accent}
-          ariaLabelledBy="parameter-strategy-label"
-        />
-      </div>
+      {(tuningOffered || tuning) && (
+        <div>
+          <p
+            id="parameter-strategy-label"
+            className="mb-2 text-[13px]"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Parameter strategy
+          </p>
+          <ToggleButtonGroup<"fixed" | "tune">
+            value={tuning ? "tune" : "fixed"}
+            onChange={setStrategy}
+            options={[
+              { key: "fixed", label: "Fixed parameters" },
+              { key: "tune", label: "Tune parameters" },
+            ]}
+            accentColor={MODEL_COLORS.accent}
+            ariaLabelledBy="parameter-strategy-label"
+          />
+        </div>
+      )}
       {!tuning ? (
         <div>
           <label

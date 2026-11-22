@@ -11,6 +11,7 @@ contract and the git state.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -112,6 +113,10 @@ def training_identity_sha256(training_kwargs: Mapping[str, Any]) -> str:
     from haute._cache import canonical_json
 
     identity = {key: _canonical(training_kwargs.get(key)) for key in _TRAINING_IDENTITY_KEYS}
+    if training_kwargs.get("stages") is not None:
+        identity["stages"] = _canonical(training_kwargs["stages"])
+    if training_kwargs.get("purpose", "final") != "final":
+        identity["purpose"] = _canonical(training_kwargs["purpose"])
     return hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
 
 
@@ -291,6 +296,7 @@ def build_candidate_run(
     best_iteration: int | None,
     artifacts: CandidateArtifacts,
     fit_evidence: Mapping[str, Any] | None = None,
+    stages: Mapping[str, Any] | None = None,
 ) -> CandidateRun:
     """Build the contracted run for a trained model.
 
@@ -372,6 +378,16 @@ def build_candidate_run(
         "haute.evaluation_plan_sha256": evaluation_plan_sha256,
         "haute.training_identity_sha256": provenance.training_identity_sha256,
     }
+    if stages is not None:
+        from haute.modelling._staged_config import StagedConfig
+
+        staged = StagedConfig.from_plain_data(stages)
+        tags["haute.output_stage"] = staged.output_stage
+        if any(op["stage"] == "pruned" for op in staged.applied_recipe):
+            params["stage_path"] = json.dumps(staged.path_params, sort_keys=True)
+        params["stage_recipe"] = json.dumps(
+            staged.applied_recipe, sort_keys=True, separators=(",", ":")
+        )
     if provenance.node_id:
         tags["haute.node_id"] = provenance.node_id
     if provenance.pipeline:

@@ -24,6 +24,7 @@ import pyarrow as pa
 import pytest
 from polars.testing import assert_frame_equal
 
+import haute._process_tokens as process_tokens_module
 import haute._source_cache as source_cache_module
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
@@ -639,7 +640,7 @@ def test_a_fresh_token_file_another_process_holds_is_refused(
 ) -> None:
     store = SourceCacheStore(tmp_path)
     closed: list[bool] = []
-    real_open = source_cache_module._open_lock_file
+    real_open = process_tokens_module._open_lock_file
 
     def tracked_open(path: Path) -> Any:
         handle = real_open(path)
@@ -652,14 +653,14 @@ def test_a_fresh_token_file_another_process_holds_is_refused(
         handle.close = close
         return handle
 
-    monkeypatch.setattr(source_cache_module, "_open_lock_file", tracked_open)
-    monkeypatch.setattr(source_cache_module, "_acquire_file_lock", lambda *_a, **_k: False)
+    monkeypatch.setattr(process_tokens_module, "_open_lock_file", tracked_open)
+    monkeypatch.setattr(process_tokens_module, "_acquire_file_lock", lambda *_a, **_k: False)
 
     with pytest.raises(RuntimeError, match="already locked"):
         store._own_token()
 
     assert closed == [True]
-    assert store._coordination.token is None
+    assert store._coordination.tokens.current is None
 
 
 def test_transient_generation_access_error_is_not_reported_as_corruption(
@@ -1125,14 +1126,14 @@ def test_a_token_whose_file_was_swept_before_it_locked_is_replaced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = SourceCacheStore(tmp_path)
-    real_check = source_cache_module._path_names_handle
+    real_check = process_tokens_module._path_names_handle
     checked: list[Path] = []
 
     def swept_once(path: Path, handle: Any) -> bool:
         checked.append(path)
         return len(checked) > 1 and real_check(path, handle)
 
-    monkeypatch.setattr(source_cache_module, "_path_names_handle", swept_once)
+    monkeypatch.setattr(process_tokens_module, "_path_names_handle", swept_once)
 
     token = store._own_token()
 
@@ -1143,7 +1144,7 @@ def test_a_token_whose_file_was_swept_before_it_locked_is_replaced(
 
 def _dead_token_file(directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{'f' * source_cache_module._TOKEN_LENGTH}.lock"
+    path = directory / f"{'f' * process_tokens_module.TOKEN_LENGTH}.lock"
     path.write_bytes(b"\0")
     old = time.time() - 3600
     os.utime(path, (old, old))
@@ -1194,7 +1195,7 @@ def test_the_token_sweep_leaves_entries_that_are_not_live_tokens_it_can_judge(
     not_a_token.write_bytes(b"\0")
     target = tmp_path / "elsewhere.lock"
     target.write_bytes(b"\0")
-    linked = processes / f"{'a' * source_cache_module._TOKEN_LENGTH}.lock"
+    linked = processes / f"{'a' * process_tokens_module.TOKEN_LENGTH}.lock"
     linked.symlink_to(target)
     old = time.time() - 3600
     for path in (not_a_token, target):

@@ -1,0 +1,469 @@
+diff --git a/after/src/haute/modelling/_stage_diagnostics.py b/after/src/haute/modelling/_stage_diagnostics.py
+new file mode 100644
+index 0000000..14038a6
+--- /dev/null
++++ b/after/src/haute/modelling/_stage_diagnostics.py
+@@ -0,0 +1,208 @@
++"""Stage diagnostics stored once: split results into references; hydrate them back.
++
++A stage result keeps its small fields inline and moves its diagnostics into
++content-addressed objects ("Stage storage (version 2)" in `specs/modelling/low-level.md`):
++- every snapshot in `staged.stages` becomes a `snapshot/<sha256>` object, the selected
++  stage included;
++- dense fields (`tboost_tables` and each loss history) inside snapshots and at the top
++  level become `table/<sha256>` and `history/<sha256>` objects.
++
++References appear **only at those positions**, so result data elsewhere is never read as
++one. A reference is `{"$object": "<kind>/<sha256>"}`. A table reference also carries the
++table's `summary` (`table_summary()` of it), so compact reads never load the bank.
++Identical content gets an identical name, so each snapshot, bank and history is stored
++once however many results share it.
++
++`hydrate(split(x)) == x` for every result form: point results (`TrainResult` fields),
++public responses and store results (`{"response": ...}`).
++"""
++
++from __future__ import annotations
++
++import hashlib
++import re
++from collections.abc import Callable, Mapping
++from typing import Any, Literal
++
++from haute.errors import HauteValidationError
++from haute.modelling._stage_objects import canonical_json
++from haute.modelling._stage_views import compact_response, table_summary
++
++REFERENCE = "$object"
++SUMMARY = "summary"
++_DENSE: dict[str, Literal["table", "history"]] = {
++    "tboost_tables": "table",
++    "loss_history": "history",
++    "validation_loss_history": "history",
++}
++_NAME = re.compile(r"(snapshot|table|history)/[a-f0-9]{64}\Z")
++_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
++_ENTRY = {"term", "features", "order", "cells", "shape_digest"}
++
++Put = Callable[[str, bytes], None]
++Get = Callable[[str], Any]
++
++
++def without_nulls(value: Any) -> Any:
++    """*value* with every null member dropped, recursively.
++
++    Worker responses are serialised with ``exclude_none``, while artifact records keep
++    explicit nulls. Both sides of a response-versus-artifact comparison pass through
++    this, so the comparison sees the same shape.
++    """
++    if isinstance(value, dict):
++        return {key: without_nulls(item) for key, item in value.items() if item is not None}
++    if isinstance(value, list):
++        return [without_nulls(item) for item in value]
++    return value
++
++
++def _reference(kind: str, value: Any, put: Put) -> dict[str, Any]:
++    payload = canonical_json(value)
++    name = f"{kind}/{hashlib.sha256(payload).hexdigest()}"
++    put(name, payload)
++    reference: dict[str, Any] = {REFERENCE: name}
++    if kind == "table":
++        reference[SUMMARY] = table_summary(value)
++    return reference
++
++
++def _name(value: Any, kind: str) -> str:
++    """Validate a reference at a position that must hold one of *kind*; return its name."""
++    expected = {REFERENCE, SUMMARY} if kind == "table" else {REFERENCE}
++    if not isinstance(value, dict) or set(value) != expected:
++        raise HauteValidationError(f"Invalid stage {kind} reference")
++    name = value[REFERENCE]
++    match = _NAME.fullmatch(name) if isinstance(name, str) else None
++    if match is None or match.group(1) != kind:
++        raise HauteValidationError(f"Invalid stage {kind} reference")
++    if kind == "table" and not _valid_summary(value[SUMMARY]):
++        raise HauteValidationError("Invalid stage table summary")
++    return str(name)
++
++
++def _count(value: Any, minimum: int) -> bool:
++    return type(value) is int and value >= minimum
++
++
++def _valid_summary(summary: Any) -> bool:
++    """The `StageTableSummary` response contract, checked without loading the bank."""
++    return (
++        isinstance(summary, dict)
++        and set(summary) == {"tables", "factored"}
++        and _count(summary["factored"], 0)
++        and isinstance(summary["tables"], list)
++        and all(
++            isinstance(entry, dict)
++            and set(entry) == _ENTRY
++            and isinstance(entry["term"], str)
++            and isinstance(entry["features"], list)
++            and all(isinstance(feature, str) for feature in entry["features"])
++            and _count(entry["order"], 1)
++            and _count(entry["cells"], 0)
++            and isinstance(entry["shape_digest"], str)
++            and _DIGEST.fullmatch(entry["shape_digest"]) is not None
++            for entry in summary["tables"]
++        )
++    )
++
++
++def _split_dense(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
++    result = dict(value)
++    for field, kind in _DENSE.items():
++        if result.get(field):
++            result[field] = _reference(kind, result[field], put)
++    return result
++
++
++def _split_body(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
++    result = _split_dense(value, put)
++    staged = result.get("staged")
++    if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
++        result["staged"] = {
++            **staged,
++            "stages": {
++                name: _reference("snapshot", _split_dense(snapshot, put), put)
++                for name, snapshot in staged["stages"].items()
++            },
++        }
++    return result
++
++
++def _is_store_result(value: Mapping[str, Any]) -> bool:
++    return isinstance(value.get("response"), Mapping)
++
++
++def split(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
++    """Move a result's diagnostics into objects via *put*(name, bytes); return the envelope."""
++    if _is_store_result(value):
++        return {**value, "response": _split_body(value["response"], put)}
++    return _split_body(value, put)
++
++
++def _hydrate_dense(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[str, Any]:
++    result = dict(value)
++    for field, kind in _DENSE.items():
++        item = result.get(field)
++        if not item:
++            continue  # absent and empty values stay inline
++        name = _name(item, kind)
++        if kind == "table" and compact:
++            # As `compact_response` does from the bank: the bank's summary replaces any stored one.
++            result["table_summary"] = item[SUMMARY]
++            result[field] = None
++        else:
++            result[field] = get(name)
++    return result
++
++
++def _hydrate_body(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[str, Any]:
++    result = _hydrate_dense(value, get, compact=compact)
++    staged = result.get("staged")
++    if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
++        stages = {}
++        for name, reference in staged["stages"].items():
++            snapshot = get(_name(reference, "snapshot"))
++            if not isinstance(snapshot, dict):
++                raise HauteValidationError("Invalid stage snapshot object")
++            stages[name] = _hydrate_dense(snapshot, get, compact=compact)
++        result["staged"] = {**staged, "stages": stages}
++    return compact_response(result) if compact else result
++
++
++def hydrate(envelope: Mapping[str, Any], get: Get, *, compact: bool = False) -> dict[str, Any]:
++    """Resolve an envelope's references through *get*(name) -> decoded JSON.
++
++    Compact hydration leaves tables unloaded and applies the compact projection.
++    """
++    if _is_store_result(envelope):
++        return {**envelope, "response": _hydrate_body(envelope["response"], get, compact=compact)}
++    return _hydrate_body(envelope, get, compact=compact)
++
++
++def closure(envelope: Mapping[str, Any], get: Get) -> set[str]:
++    """Every object name an envelope needs, including those its snapshots reference."""
++    body = envelope["response"] if _is_store_result(envelope) else envelope
++
++    def dense(value: Mapping[str, Any]) -> set[str]:
++        return {_name(value[field], kind) for field, kind in _DENSE.items() if value.get(field)}
++
++    names = dense(body)
++    staged = body.get("staged")
++    if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
++        for reference in staged["stages"].values():
++            name = _name(reference, "snapshot")
++            names |= {name, *dense(get(name))}
++    return names
++
++
++def same_staged(
++    envelope_staged: Mapping[str, Any], public_staged: Mapping[str, Any], get: Get
++) -> bool:
++    """Whether reference-bearing staged metadata describes a public `staged` response.
++
++    Both sides are compared hydrated and without nulls: the public schema adds explicit
++    nulls for optional fields the artifact omits.
++    """
++    hydrated = _hydrate_body({"staged": dict(envelope_staged)}, get, compact=False)["staged"]
++    return bool(without_nulls(hydrated) == without_nulls(dict(public_staged)))
+diff --git a/before/src/haute/routes/_training_artifacts.py b/after/src/haute/routes/_training_artifacts.py
+index 6b478f1..5f5ed89 100644
+--- a/before/src/haute/routes/_training_artifacts.py
++++ b/after/src/haute/routes/_training_artifacts.py
+@@ -36,6 +36,7 @@ from haute.errors import GoneError
+ from haute.modelling._evaluation import (
+     EvaluationPlan,
+ )
++from haute.modelling._stage_diagnostics import without_nulls
+ from haute.schemas import (
+     EvaluationReportPayload,
+     StagedBuildPayload,
+@@ -89,21 +90,6 @@ def _max_training_artifact_bytes() -> int:
+ _TRAINING_DOWNSAMPLE_SEED = 42
+ 
+ 
+-def _without_nulls(value: Any) -> Any:
+-    """*value* with every null member dropped, recursively.
+-
+-    Worker responses are serialised with ``exclude_none``, while artifact records
+-    keep explicit nulls (an EBM fit has no ``best_iteration``; a fixed-budget study
+-    no ``final_tree_count``). Both sides of a response-versus-artifact comparison
+-    pass through this, so the comparison sees the same shape.
+-    """
+-    if isinstance(value, dict):
+-        return {key: _without_nulls(item) for key, item in value.items() if item is not None}
+-    if isinstance(value, list):
+-        return [_without_nulls(item) for item in value]
+-    return value
+-
+-
+ def _validate_evaluation_artifact_contents(
+     artifact_paths: Mapping[str, Path],
+     *,
+@@ -353,7 +339,7 @@ def _validate_training_artifacts(
+         response_refit_on_development=expected_evaluation_response["refit_on_development"],
+         response_purpose=expected_evaluation_response.get("purpose"),
+     )
+-    if _without_nulls(expected_evaluation_response) != _without_nulls(artifact_evaluation_response):
++    if without_nulls(expected_evaluation_response) != without_nulls(artifact_evaluation_response):
+         raise WorkerProtocolError(
+             "Training evaluation response does not match the staged artifact contents"
+         )
+@@ -384,7 +370,7 @@ def _validate_training_artifacts(
+             artifact_paths,
+             evaluation_plan_sha256=artifact_evaluation_response["plan_sha256"],
+         )
+-        if _without_nulls(expected_tuning_response) != _without_nulls(artifact_tuning_response):
++        if without_nulls(expected_tuning_response) != without_nulls(artifact_tuning_response):
+             raise WorkerProtocolError(
+                 "Training tuning response does not match the staged artifact contents"
+             )
+@@ -395,7 +381,7 @@ def _validate_training_artifacts(
+         if artifact_paths["stage_state"].name != f"{expected_model_name}.hstage":
+             raise WorkerProtocolError("Stage checkpoint filename disagrees with the model")
+         with open_stage_bundle(artifact_paths["stage_state"]) as bundle:
+-            if _without_nulls(bundle.metadata["staged"]) != _without_nulls(
++            if without_nulls(bundle.metadata["staged"]) != without_nulls(
+                 expected_staged.model_dump(mode="json")
+             ):
+                 raise WorkerProtocolError("Stage checkpoint and public diagnostics disagree")
+diff --git a/after/tests/test_stage_diagnostics.py b/after/tests/test_stage_diagnostics.py
+new file mode 100644
+index 0000000..aa58d79
+--- /dev/null
++++ b/after/tests/test_stage_diagnostics.py
+@@ -0,0 +1,175 @@
++"""Diagnostics stored once: hydrate(split(x)) is x for every real stage result form."""
++
++import json
++from dataclasses import fields
++
++import pytest
++
++from haute.errors import HauteValidationError
++from haute.modelling._stage_diagnostics import closure, hydrate, same_staged, split
++from haute.modelling._stage_views import compact_response, compact_result
++from haute.modelling._staged_runtime import open_stage_bundle, run_stage_job
++from tests.test_staged_runtime import build
++
++DENSE = {"tboost_tables", "loss_history", "validation_loss_history"}
++
++
++def _plain(value):
++    return json.loads(json.dumps(value))
++
++
++def _results(tmp_path, validation, monkeypatch):
++    """Real results: point results, an Apply and a final result as artifact and public forms."""
++    from haute.modelling._stage_paths import materialize_path_point, read_path_result
++    from haute.routes._training_worker import _training_response_payload
++
++    # Thin response histories below the fixture's round count, so a response's thinned
++    # top-level history differs from its snapshots' complete histories.
++    monkeypatch.setenv("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "8")
++    _, full = build(tmp_path, validation)
++    settings = full.staged["configuration"]
++    _, pruning = run_stage_job(
++        full.stage_checkpoint_path,
++        operation="pruned",
++        stages=settings,
++        prepare_path=True,
++        output_dir=str(tmp_path / "prune"),
++    )
++    path = pruning.staged["paths"]["pruned"]
++    artifacts, public = [], []
++    with open_stage_bundle(pruning.stage_checkpoint_path) as bundle:
++        for point in path["points"]:
++            result = read_path_result(bundle, path["id"], point["id"])
++            artifacts.append({f.name: getattr(result, f.name) for f in fields(result)})
++        applied, chosen = materialize_path_point(
++            bundle, path["id"], path["selected_point"], tmp_path / "apply"
++        )
++    _, final = run_stage_job(
++        applied, operation="finalise", stages=settings, output_dir=str(tmp_path / "final")
++    )
++    for item in (chosen, final):
++        artifacts.append({f.name: getattr(item, f.name) for f in fields(item)})
++        response = _training_response_payload(
++            item, job_id="job", model_path="model", evaluation=item.evaluation, tuning=item.tuning
++        )
++        public.append(response)
++        public.append({"response": response, "graph_digest": "g", "config": {}})
++    return [_plain(value) for value in artifacts], [_plain(value) for value in public]
++
++
++class _Store(dict):
++    def __init__(self):
++        super().__init__()
++        self.puts = 0
++        self.fetched: list[str] = []
++
++    def put(self, name, payload):
++        self.puts += 1
++        assert self.setdefault(name, payload) == payload  # content addressing
++
++    def get(self, name):
++        self.fetched.append(name)
++        return json.loads(self[name])
++
++
++def _inline_dense(value):
++    """Dense fields that are inline (not references) in a mapping."""
++    return [k for k in DENSE if value.get(k) and "$object" not in value[k]]
++
++
++@pytest.mark.parametrize("validation", [None, {"method": "cross_validation", "fold_count": 3}])
++def test_split_results_hydrate_exactly_and_store_each_object_once(
++    tmp_path, monkeypatch, validation
++):
++    artifacts, public = _results(tmp_path, validation, monkeypatch)
++    store = _Store()
++    for value in (*artifacts, *public):
++        envelope = split(value, store.put)
++        body = envelope.get("response") or envelope
++        assert not _inline_dense(body)
++        assert hydrate(envelope, store.get) == value
++        store.fetched.clear()
++        expected = compact_result(value) if "response" in value else compact_response(value)
++        assert hydrate(envelope, store.get, compact=True) == expected
++        assert not any(name.startswith("table/") for name in store.fetched)
++        assert closure(envelope, store.get) <= set(store)
++    # Persisted snapshots hold references only; dense content lives in its own objects.
++    for name, payload in store.items():
++        if name.startswith("snapshot/"):
++            assert not _inline_dense(json.loads(payload)), name
++    # Ancestor snapshots, banks and the GBM history are stored once across all results.
++    assert len(store) < store.puts / 2
++    # The thinned response history and the complete snapshot history stay distinct objects.
++    response = public[0]
++    selected = response["staged"]["stages"][response["staged"]["selected_stage"]]
++    assert len(response["loss_history"]) < len(selected["loss_history"])
++
++
++def test_artifact_metadata_matches_its_public_response_and_detects_changes(tmp_path, monkeypatch):
++    artifacts, public = _results(tmp_path, None, monkeypatch)
++    store = _Store()
++    for artifact, response in ((artifacts[-2], public[0]), (artifacts[-1], public[2])):
++        envelope = split({"staged": artifact["staged"]}, store.put)["staged"]
++        assert same_staged(envelope, response["staged"], store.get)
++        changed = json.loads(json.dumps(response["staged"]))
++        stage = changed["selected_stage"]
++        changed["stages"][stage]["metrics"] = {"poisson_deviance": 0.0}
++        assert not same_staged(envelope, changed, store.get)
++
++
++def test_result_data_resembling_references_is_left_alone(tmp_path, monkeypatch):
++    artifacts, _ = _results(tmp_path, None, monkeypatch)
++    value = {
++        **artifacts[0],
++        "config": {"monotone_constraints": {"$object": 1, "summary": -1}},
++        "feature_importance": [{"feature": "summary", "$object": "history/" + "0" * 64}],
++    }
++    store = _Store()
++    assert hydrate(split(value, store.put), store.get) == value
++
++
++@pytest.mark.parametrize(
++    "damage",
++    [
++        lambda ref: {"$object": 123, "summary": ref["summary"]},
++        lambda ref: {"$object": "history/" + "a" * 64, "summary": ref["summary"]},
++        lambda ref: {"$object": "table/not-a-digest", "summary": ref["summary"]},
++        lambda ref: {"$object": ref["$object"]},
++        lambda ref: {**ref, "summary": {"tables": "x", "factored": 0}},
++        lambda ref: {**ref, "summary": {"tables": [{}], "factored": 0}},
++        lambda ref: {**ref, "summary": {"tables": [], "factored": -1}},
++        lambda ref: {
++            **ref,
++            "summary": {
++                "tables": [{**ref["summary"]["tables"][0], "shape_digest": "short"}],
++                "factored": 0,
++            },
++        },
++        lambda ref: {
++            **ref,
++            "summary": {"tables": [{**ref["summary"]["tables"][0], "order": 0}], "factored": 0},
++        },
++    ],
++)
++def test_malformed_references_are_refused_even_by_compact_reads(tmp_path, monkeypatch, damage):
++    artifacts, _ = _results(tmp_path, None, monkeypatch)
++    store = _Store()
++    envelope = split(artifacts[0], store.put)
++    envelope["tboost_tables"] = damage(envelope["tboost_tables"])
++    for compact in (False, True):
++        with pytest.raises(HauteValidationError, match="table"):
++            hydrate(envelope, store.get, compact=compact)
++
++
++def test_compact_reads_take_the_banks_summary_over_any_stored_one(tmp_path, monkeypatch):
++    """As `compact_response` derives it from the bank, at the top level and in snapshots."""
++    artifacts, _ = _results(tmp_path, None, monkeypatch)
++    value = json.loads(json.dumps(artifacts[0]))
++    value["table_summary"] = None
++    for snapshot in value["staged"]["stages"].values():
++        if snapshot.get("tboost_tables"):
++            snapshot["table_summary"] = {"tables": [], "factored": 0}  # stale
++    store = _Store()
++    compact = hydrate(split(value, store.put), store.get, compact=True)
++    assert compact == compact_response(value)
++    assert compact["table_summary"] is not None
+diff --git a/before/tests/test_staged_runtime.py b/after/tests/test_staged_runtime.py
+index 828c3b8..dfa98f7 100644
+--- a/before/tests/test_staged_runtime.py
++++ b/after/tests/test_staged_runtime.py
+@@ -258,7 +258,7 @@ def test_supervised_worker_resumes_and_publishes_complete_stage_artifacts(tmp_pa
+     )
+     assert paths["stage_state"].is_file()
+     with open_stage_bundle(paths["stage_state"]) as bundle:
+-        from haute.routes._training_artifacts import _without_nulls
++        from haute.modelling._stage_diagnostics import without_nulls as _without_nulls
+ 
+         assert _without_nulls(bundle.metadata["staged"]) == _without_nulls(
+             response.staged.model_dump(mode="json")

@@ -277,7 +277,24 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // submodel's lift and projection, the request gateway and results kept by occurrence
 // bring the total to 1,803.7 KiB (initial 298.4 KiB); 1,806 KiB restores about 2.3 KiB
 // headroom. The other limits are unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1806
+// The Modelling view's first slice (16 November 2026): the lazy view (3.9 KiB) and its
+// toolbar, its store, the Model Training node's Interactive build option and summary, and
+// the editor's stacked panes bring the total to 1,810.6 KiB (initial 298.8 KiB);
+// 1,813 KiB restores about 2.4 KiB headroom. The other limits are unchanged.
+// Staged t-boost (20 November 2026): the Training cards, persisted stage state,
+// overlay/path controls and generated contracts add no dependency. The complete
+// build is 1,835.7 KiB (initial 299.8 KiB); 1,838 KiB preserves about 2.3 KiB
+// aggregate headroom. Initial, vendor and single-chunk caps remain unchanged.
+// Decision support and named checkpoints add 5.2 KiB in lazy modelling chunks.
+// Measured total: 1,840.9 KiB; 1,843 KiB retains ~2 KiB headroom.
+// Initial load remains 299.8 KiB; other chunk limits are unchanged.
+// Immutable model paths add a lazy canvas and bounded path contracts (21 November).
+// Measured total is 1,850.3 KiB, initial 299.9 KiB. 1,853 KiB retains ~3 KiB
+// aggregate headroom; startup, vendor and individual chunk limits are unchanged.
+// Compact diagnostic contracts and on-demand dense tables add about 4.4 KiB,
+// replacing multi-megabyte routine responses. 1,858 KiB keeps ~3 KiB headroom;
+// the 300 KiB startup cap and all vendor/single-chunk caps remain unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1858
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

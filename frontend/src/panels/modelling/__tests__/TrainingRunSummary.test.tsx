@@ -47,19 +47,24 @@ function fitBudget(): string | null {
   return term?.nextElementSibling?.textContent ?? null
 }
 
-describe("TrainingRunSummary fit budget for a family that publishes its validation fit", () => {
+describe("TrainingRunSummary fit budget for t-boost", () => {
   const tboost = (overrides: Record<string, unknown> = {}) =>
     catboostConfig({ algorithm: "tboost", loss_function: "Poisson", params: { n_trees: 4000 }, ...overrides })
 
-  it("counts the one validation fit it publishes", () => {
+  it("counts a holdout's validation fit and the final fit", () => {
     render(<TrainingRunSummary config={tboost()} columns={COLUMNS} preview={null} />)
+    expect(fitBudget()).toBe("2 total fits: 1 validation fit + 1 final fit")
+  })
+
+  it("counts the one fit a holdout saves with its refit off", () => {
+    render(<TrainingRunSummary config={tboost({ refit_on_development: false })} columns={COLUMNS} preview={null} />)
     expect(fitBudget()).toBe("1 validation fit (saved model)")
   })
 
-  it("counts a study's trials and the reproduced winning fit", () => {
+  it("counts a study's trials and the final fit", () => {
     const tuning = { schema_version: 1, trial_count: 6, seed: 42, metric: "gini", search_space: {} }
     render(<TrainingRunSummary config={tboost({ tuning })} columns={COLUMNS} preview={null} />)
-    expect(fitBudget()).toBe("7 total fits: 6 tuning fits + 1 winning validation fit")
+    expect(fitBudget()).toBe("7 total fits: 6 tuning fits + 1 final fit")
   })
 
   it("counts the one fit of a plan with no validation", () => {

@@ -21,9 +21,8 @@ from haute.errors import HauteValidationError
 Link = Literal["identity", "log", "logit"]
 #: How the deployed model relates to the selection fits: refit with the
 #: validation-weighted round count, refit with the configured budget unchanged,
-#: never refit because the early-stopped validation fit is the model
-#: (``validation_fit``), or no tuning at all (``none``, the GLM).
-RefitPolicy = Literal["validation_weighted_rounds", "fixed_budget", "validation_fit", "none"]
+#: or no tuning at all (``none``, the GLM).
+RefitPolicy = Literal["validation_weighted_rounds", "fixed_budget", "none"]
 FeatureControl = Literal["monotone_constraints", "feature_weights", "interactions"]
 
 #: The Haute loss vocabulary shared by every tree and EBM family. A family's
@@ -80,6 +79,8 @@ class AlgorithmDescriptor:
     #: Whether the top-level ``device: "gpu"`` setting is offered (hardware-probed;
     #: CatBoost keeps its own ``task_type`` parameter).
     gpu_device: bool = False
+    #: Independent full-fit and post-fit operations with resumable checkpoints.
+    staged_training: bool = False
     #: Family-specific value rules over (params, effective monotone constraints),
     #: returning an actionable message; key-level policy stays in validate_params.
     value_check: Callable[[Mapping[str, Any], Mapping[str, int] | None], str | None] | None = None
@@ -101,11 +102,6 @@ class AlgorithmDescriptor:
     @property
     def supports_tuning(self) -> bool:
         return self.refit_policy != "none"
-
-    @property
-    def publishes_validation_fit(self) -> bool:
-        """The early-stopped holdout fit is the deployed model; the family never refits."""
-        return self.refit_policy == "validation_fit"
 
     @property
     def refit_round_key(self) -> str:
@@ -685,9 +681,9 @@ def tboost_value_issue(
 
     ``n_trees`` is the round ceiling every fit stops early within, and the
     fixed-budget refit reuses it unchanged, so it must be explicit.
-    ``prune_main_effects`` needs pruning on and no monotone constraint, which
-    t-boost would otherwise refuse only once the fit starts. Every other value
-    rule (depth and order ranges, fractions) is t-boost's own.
+    ``prune_main_effects`` needs pruning on, which t-boost would otherwise
+    refuse only once the fit starts. Every other value rule (depth and order
+    ranges, fractions) is t-boost's own.
     """
     if "n_trees" not in params:
         return (
@@ -696,18 +692,11 @@ def tboost_value_issue(
         )
     if not _positive_int(params["n_trees"]):
         return f"t-boost n_trees must be a positive integer, got {params['n_trees']!r}."
-    if params.get("prune_main_effects") is True:
-        if params.get("prune", True) is False:
-            return (
-                "t-boost prune_main_effects needs prune: set prune to true, or "
-                "prune_main_effects to false, in Parameters."
-            )
-        if any(direction for direction in (monotone_constraints or {}).values()):
-            return (
-                "t-boost cannot prune main effects of a monotone fit: set prune_main_effects "
-                "to false in Parameters, or remove the monotonicity constraints in the "
-                "Features pane."
-            )
+    if params.get("prune_main_effects") is True and params.get("prune", True) is False:
+        return (
+            "t-boost prune_main_effects needs prune: set prune to true, or "
+            "prune_main_effects to false, in Parameters."
+        )
     return None
 
 
@@ -775,11 +764,14 @@ TBOOST = AlgorithmDescriptor(
     round_key="n_trees",
     round_key_aliases=("n_trees",),
     validation_only_params=(),
-    refit_policy="validation_fit",
+    # A fit takes no validation rows: every bag stops within ``n_trees`` on rows it
+    # holds back itself, so the refit reuses the ceiling unchanged.
+    refit_policy="fixed_budget",
     feature_controls=frozenset({"monotone_constraints"}),
     suffix=".tboost",
     engine_module="t_boost",
     importance_method="Variance share",
+    staged_training=True,
     value_check=tboost_value_issue,
 )
 
@@ -821,14 +813,12 @@ def tuning_family(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
     """The tunable family a study's final parameters belong to.
 
     A round-refitting family's projection carries exactly its round key; a
-    fixed-budget family (EBM) or a validation-fit family (t-boost) keeps its own
-    explicit budget key.
+    fixed-budget family (EBM, t-boost) keeps its own explicit budget key.
     """
     matches = [
         descriptor
         for descriptor in DESCRIPTORS.values()
-        if descriptor.refit_policy
-        in ("validation_weighted_rounds", "fixed_budget", "validation_fit")
+        if descriptor.refit_policy in ("validation_weighted_rounds", "fixed_budget")
         and descriptor.round_key in final_params
     ]
     if len(matches) != 1:

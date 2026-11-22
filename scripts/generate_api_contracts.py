@@ -137,6 +137,8 @@ from haute.schemas import (
     SchemaListResponse,
     SchemaResponse,
     SessionStatusResponse,
+    StagePathInspectionPayload,
+    StageStatePayload,
     SubmodelGraphResponse,
     TableListResponse,
     TraceResponse,
@@ -287,6 +289,8 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
         SaveCapture,
     ),
     "training": (
+        StageStatePayload,
+        StagePathInspectionPayload,
         TrainResponse,
         TrainStatusResponse,
     ),

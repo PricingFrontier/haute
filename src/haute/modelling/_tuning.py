@@ -563,12 +563,11 @@ def tuning_final_projection(
 
     *fits* holds each winning validation fit's ``(best_iteration, validation_rows)``.
     A round-refitting family refits with the validation-weighted round count
-    under its round key; a fixed-budget family (EBM) refits with the winning
-    parameters unchanged, its explicit budget included, and has no tree count; a
-    validation-fit family (t-boost) publishes the winning trial's fit, reproduced
-    from those same parameters, and has no tree count either.
+    under its round key; a fixed-budget family (EBM, t-boost) refits with the
+    winning parameters unchanged, its explicit budget included, and has no tree
+    count.
     """
-    if descriptor.refit_policy in ("fixed_budget", "validation_fit"):
+    if descriptor.refit_policy == "fixed_budget":
         return copy.deepcopy(dict(resolved_params)), None
     iteration_ceiling = round_ceiling(descriptor, resolved_params, 1000)
     if (
@@ -961,7 +960,7 @@ class TuningReportArtifact:
         ):
             raise HauteValidationError("tuning report counts are inconsistent")
         family = tuning_family(self.final_params)
-        if family.refit_policy in ("fixed_budget", "validation_fit"):
+        if family.refit_policy == "fixed_budget":
             if self.final_tree_count is not None:
                 raise HauteValidationError(
                     f"a {family.label} tuning report has no final tree count"

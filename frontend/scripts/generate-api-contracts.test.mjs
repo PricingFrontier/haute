@@ -71,13 +71,19 @@ test(
     assert.deepEqual(trainingDefinitions, [...trainingDefinitions].sort());
     assert.ok(trainingDefinitions.includes("TrainResponse"));
     assert.ok(trainingDefinitions.includes("TrainStatusResponse"));
+    assert.ok(trainingDefinitions.includes("StageStatePayload"));
+    assert.ok(trainingDefinitions.includes("StagePathInspectionPayload"));
     assert.equal(
       trainingDefinitions.length,
       new Set([
         ...Object.keys(extractContractSchema(schema, "TrainResponse").schema.$defs),
         ...Object.keys(extractContractSchema(schema, "TrainStatusResponse").schema.$defs),
+        ...Object.keys(extractContractSchema(schema, "StageStatePayload").schema.$defs),
+        ...Object.keys(extractContractSchema(schema, "StagePathInspectionPayload").schema.$defs),
         "TrainResponse",
         "TrainStatusResponse",
+        "StageStatePayload",
+        "StagePathInspectionPayload",
       ]).size,
     );
     assert.deepEqual(

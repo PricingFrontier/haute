@@ -139,6 +139,8 @@ const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"
 const NodeSearch = lazy(() => import("./components/NodeSearch"))
 // The workbench's view and its toolbar (specs/workbench), loaded when it is first shown.
 const WorkbenchView = lazy(() => import("./workbench/WorkbenchView"))
+const ModellingView = lazy(() => import("./modelling/ModellingView"))
+const ModellingToolbar = lazy(() => import("./modelling/ModellingToolbar"))
 const WorkbenchToolbar = lazy(() => import("./workbench/WorkbenchToolbar"))
 const ModellingPreview = lazy(() => import("./panels/ModellingPreview").then(
   ({ ModellingPreview }) => ({ default: ModellingPreview }),
@@ -793,8 +795,9 @@ function FlowEditor() {
   // The project's workbench (specs/workbench): whether it is enabled decides what the
   // palette offers and whether its tables, the workbench nodes' ports, are fetched. While
   // its view shows, the pipeline editor stays mounted but hidden, inert and deaf to the keyboard.
-  const workbenchEnabled = useWorkbenchStore((s) => s.enabled)
   const pipelineActive = useWorkbenchStore((s) => s.activeView === "pipeline")
+  const workbenchActive = useWorkbenchStore((s) => s.activeView === "workbench")
+  const modellingActive = useWorkbenchStore((s) => s.activeView === "modelling")
   useEffect(() => {
     void useWorkbenchStore.getState().load()
   }, [])
@@ -1759,6 +1762,14 @@ function FlowEditor() {
     openNode(node)
   }, [openNode])
 
+  // The Modelling view's Refresh: a model's node brought up to date as its panel's
+  // Refresh does, and with it the columns reaching the node.
+  const refreshCanvasNode = useCallback((nodeId: string) => {
+    const node = canvasGraph().nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) throw new Error(`Node ${nodeId} is not on the canvas`)
+    refreshPreview(node)
+  }, [refreshPreview])
+
   const presentedEdgeJoinCandidateEdgeId = useMemo(
     () => (
       !editingReadOnly && edgeJoinCandidateEdgeId
@@ -1959,7 +1970,17 @@ function FlowEditor() {
   )
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
-      {pipelineActive ? (
+      {modellingActive ? (
+        <ErrorBoundary name="ModellingToolbar">
+          <Suspense fallback={<header role="toolbar" aria-label="Modelling toolbar" className="toolbar" />}>
+            <ModellingToolbar
+              onSave={requestSave}
+              onCommit={requestCommit}
+              editingDisabled={editingReadOnly}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      ) : pipelineActive ? (
         <Toolbar
           nodeCount={nodes.length}
           canUndo={canUndo}
@@ -2092,11 +2113,9 @@ function FlowEditor() {
             <PaletteRevealStrip onReveal={() => setPaletteOpen(true)} />
           )}
         </nav>
-        {workbenchEnabled && (
-          <div style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
-            <ViewSwitcher compact={!paletteOpen} />
-          </div>
-        )}
+        <div style={{ background: "var(--chrome)", borderRight: "1px solid var(--chrome-border)" }}>
+          <ViewSwitcher compact={!paletteOpen} />
+        </div>
         </div>
 
         <main className="flex-1 flex flex-col min-w-0">
@@ -2262,7 +2281,29 @@ function FlowEditor() {
       </div>
       {/* While the view first loads its cover stands in: React Flow shows its nodes
           (inline visibility) through the hidden pipeline region. */}
-      {!pipelineActive && (
+      {modellingActive && (
+        <ErrorBoundary name="ModellingView">
+          <Suspense fallback={<div className="absolute inset-0" style={{ background: "var(--bg-base)" }} />}>
+            <ModellingView
+              graph={panelGraph}
+              submodels={submodelsSnapshot}
+              preamble={preamble}
+              onUpdateNode={handlePanelUpdateNode}
+              onOpenNode={openCanvasNode}
+              onRefreshNode={refreshCanvasNode}
+              preview={previewData}
+              onSave={saveProject}
+              onSaveShortcut={requestSave}
+              onUndo={undo}
+              onRedo={redo}
+              readOnly={editingReadOnly}
+              isInsideSubmodel={viewStack.length > 1}
+              documentReadOnly={documentReadOnly}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+      {workbenchActive && (
         <ErrorBoundary name="WorkbenchView">
           <Suspense fallback={<div className="absolute inset-0" style={{ background: "var(--bg-base)" }} />}>
             <WorkbenchView

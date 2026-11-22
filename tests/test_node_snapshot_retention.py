@@ -1411,7 +1411,10 @@ def test_clear_reads_a_token_the_sweep_removes_mid_probe_as_dead(
         probed.append(path)
         raise _LockFileReplacedError("swept while the probe opened it")
 
-    monkeypatch.setattr(source_cache_module, "_open_lock_file", swept_while_opening)
+    import haute._process_tokens as process_tokens_module
+
+    # Token liveness probes live in the shared process-token helper.
+    monkeypatch.setattr(process_tokens_module, "_open_lock_file", swept_while_opening)
 
     store.clear_slot(slot)
 

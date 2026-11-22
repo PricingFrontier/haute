@@ -8,7 +8,9 @@ consumers must derive TrainingJob kwargs from it so they can never drift
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1352,3 +1354,77 @@ class TestGlmValueContract:
             for family, links in re.findall(r"(\w+): (\[[^\]]*\])", block.group(1))
         }
         assert frontend == {family: list(links) for family, links in GLM_FAMILY_LINKS.items()}
+
+
+class TestInteractiveModelConfig:
+    """An interactive build trains one of its models: the shared settings with its own."""
+
+    @staticmethod
+    def _config(**fields: Any) -> dict[str, Any]:
+        return {
+            "target": "claims",
+            "offset": "exposure",
+            "interactive_build": True,
+            "models": [
+                {"id": "m1", "name": "t-boost", "algorithm": "tboost", "feature_columns": ["age"]},
+                {
+                    "id": "m2",
+                    "name": "wide",
+                    "algorithm": "tboost",
+                    "feature_columns": ["age", "region"],
+                    "monotone_constraints": {"age": 1},
+                },
+            ],
+            **fields,
+        }
+
+    def test_reads_the_node_as_the_model_named(self) -> None:
+        from haute.modelling._train_config import interactive_model_config
+
+        flat = interactive_model_config(self._config(), "m2")
+
+        assert flat == {
+            "target": "claims",
+            "offset": "exposure",
+            "interactive_build": True,
+            "algorithm": "tboost",
+            "feature_columns": ["age", "region"],
+            "monotone_constraints": {"age": 1},
+        }
+
+    @pytest.mark.parametrize(
+        ("change", "model_id", "message"),
+        [
+            ({"models": []}, "m1", "under `models`"),
+            ({}, None, "Name the model"),
+            ({}, "m9", "no model with the id 'm9'"),
+            ({"feature_columns": ["age"]}, "m1", "move feature_columns"),
+        ],
+    )
+    def test_refuses_what_names_no_one_model(self, change, model_id, message) -> None:
+        from haute.modelling._train_config import TrainingConfigError, interactive_model_config
+
+        with pytest.raises(TrainingConfigError, match=message):
+            interactive_model_config(self._config(**change), model_id)
+
+    def test_refuses_two_models_of_one_name(self) -> None:
+        from haute.modelling._train_config import TrainingConfigError, interactive_model_config
+
+        config = self._config()
+        config["models"][1]["name"] = "t-boost"
+        with pytest.raises(TrainingConfigError, match="distinct ids and names"):
+            interactive_model_config(config, "m1")
+
+    def test_a_job_is_never_built_from_the_whole_node(self) -> None:
+        from haute.modelling._train_config import TrainingConfigError
+
+        with pytest.raises(TrainingConfigError, match="interactive_model_config"):
+            build_training_job_kwargs(self._config(), data="x.parquet")
+
+    def test_the_view_names_the_same_per_model_keys(self) -> None:
+        from haute.modelling._train_config import INTERACTIVE_MODEL_KEYS
+
+        source = (ROOT / "frontend/src/modelling/interactiveModels.ts").read_text(encoding="utf-8")
+        block = re.search(r"INTERACTIVE_MODEL_KEYS = \[(.*?)\] as const", source, re.DOTALL)
+        assert block is not None
+        assert re.findall(r'"(\w+)"', block.group(1)) == list(INTERACTIVE_MODEL_KEYS)

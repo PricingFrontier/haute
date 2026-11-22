@@ -531,3 +531,40 @@ def test_a_route_answering_with_a_transformed_graph_refuses_a_config_its_shape_r
             nodes=[_node(NodeType.EDGE_JOIN, {"how": "left", "maintain_order": "left"})], edges=[]
         )
     )
+
+
+class TestInteractiveBuildModels:
+    """An interactive build's models are each checked as the flat config they train from."""
+
+    @staticmethod
+    def _config(**model: object) -> dict[str, object]:
+        return {
+            "target": "claims",
+            "interactive_build": True,
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "none"},
+            },
+            "models": [
+                {"id": "m1", "name": "t-boost", "algorithm": "tboost", "feature_columns": ["age"]},
+                {"id": "m2", "name": "wide", "algorithm": "tboost", **model},
+            ],
+        }
+
+    def test_a_valid_build_passes(self) -> None:
+        validate_node_config(NodeType.MODELLING, self._config(feature_columns=["age", "region"]))
+
+    def test_a_model_that_can_never_train_is_refused(self) -> None:
+        with pytest.raises((NodeConfigError, TrainingConfigError), match="Unknown algorithm 'gbm'"):
+            validate_node_config(NodeType.MODELLING, self._config(algorithm="gbm"))
+
+    def test_models_on_a_family_node_and_repeated_names_are_refused(self) -> None:
+        family = {**self._config(), "interactive_build": False}
+        with pytest.raises(
+            (NodeConfigError, TrainingConfigError), match="Only an interactive build holds"
+        ):
+            validate_node_config(NodeType.MODELLING, family)
+        with pytest.raises((NodeConfigError, TrainingConfigError), match="distinct ids and names"):
+            validate_node_config(NodeType.MODELLING, self._config(name="t-boost"))

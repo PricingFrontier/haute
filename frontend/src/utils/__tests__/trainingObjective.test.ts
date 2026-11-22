@@ -40,6 +40,22 @@ describe("trainingConfigurationIssues", () => {
       .not.toContain("feature-selection")
   })
 
+  it("words a model built in the Modelling view by its factors, which have no pane", () => {
+    const build = {
+      algorithm: "tboost",
+      interactive_build: true,
+      target: "y",
+      loss_function: "Poisson",
+      params: { n_trees: 4000 },
+      evaluation: { ...evaluation, validation: { method: "none" } },
+    }
+    expect(trainingConfigurationIssues(build)).toEqual([{
+      code: "feature-selection",
+      message: "Tick at least one factor.",
+    }])
+    expect(trainingConfigurationIssues({ ...build, feature_columns: ["age"] })).toEqual([])
+  })
+
   it.each([1, 2, 0, NaN, Infinity, "1.5"])("rejects invalid CatBoost Tweedie power %s", (variance_power) => {
     expect(trainingConfigurationIssues({ algorithm: "catboost", target: "y", feature_columns: ["age"], loss_function: "Tweedie", variance_power, evaluation }))
       .toEqual([expect.objectContaining({ code: "catboost-tweedie-variance-power" })])
@@ -101,7 +117,7 @@ describe("trainingConfigurationIssues", () => {
     })])
   })
 
-  it("mirrors the backend's t-boost validation-fit rules", () => {
+  it("gives t-boost the validation and refit rules of every refitting family", () => {
     const base = {
       algorithm: "tboost",
       target: "y",
@@ -113,10 +129,16 @@ describe("trainingConfigurationIssues", () => {
       trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
     expect(codes({ evaluation })).toEqual([])
     const folds = { ...evaluation, validation: { method: "cross_validation", fold_count: 3 } }
-    expect(codes({ evaluation: folds })).toEqual([["validation-fit", "split"]])
-    expect(codes({ evaluation, refit_on_development: false })).toEqual([["validation-fit", "split"]])
+    expect(codes({ evaluation: folds })).toEqual([])
+    expect(codes({ evaluation, refit_on_development: false })).toEqual([])
+    expect(codes({ evaluation: folds, refit_on_development: false })).toEqual([["final-refit", "split"]])
     const tuning = { schema_version: 1, trial_count: 5, seed: 1, metric: "gini", search_space: { learning_rate: [0.03, 0.1] } }
     expect(codes({ evaluation, tuning })).toEqual([])
+    expect(codes({ evaluation, tuning, refit_on_development: false })).toEqual([["final-refit", "split"]])
+    // A new t-boost node sets no validation rows aside, and a study needs some to compare trials on.
+    const none = { ...evaluation, validation: { method: "none" } }
+    expect(codes({ evaluation: none })).toEqual([])
+    expect(codes({ evaluation: none, tuning })).toEqual([["tuning-config", "params"]])
   })
 
   it("mirrors the backend's t-boost round ceiling rule", () => {
@@ -136,13 +158,8 @@ describe("trainingConfigurationIssues", () => {
     const pruned = { n_trees: 4000, prune: true, prune_main_effects: true }
     expect(codes({ params: pruned })).toEqual([])
     expect(codes({ params: { ...pruned, prune: false } })).toEqual([["tboost-prune-main-effects", "params"]])
-    expect(codes({ params: pruned, monotone_constraints: { age: 1 } })).toEqual([
-      ["tboost-prune-main-effects", "params"],
-    ])
-    // A zero direction or an unselected feature constrains nothing.
-    expect(codes({ params: pruned, monotone_constraints: { age: 0 } })).toEqual([])
-    expect(codes({ params: pruned, monotone_constraints: { region: -1 } })).toEqual([])
-    expect(codes({ params: { ...pruned, prune_main_effects: false }, monotone_constraints: { age: 1 } })).toEqual([])
+    // A monotone fit may prune its main effects too.
+    expect(codes({ params: pruned, monotone_constraints: { age: 1 } })).toEqual([])
   })
 
   it("reports conditional CatBoost Tweedie configuration", () => {

@@ -4264,6 +4264,11 @@ export interface ModellingConfig {
     [k: string]: unknown;
   }[];
   /**
+   * Whether the model is built in the Modelling view (`true`); absent for a model built in the
+   * node's own panel. It changes where the node is edited, never what it trains.
+   */
+  interactive_build?: boolean;
+  /**
    * For a GLM, whether the model has an intercept.
    */
   intercept?: boolean;
@@ -4300,6 +4305,10 @@ export interface ModellingConfig {
    * The Export pane's file path; empty or absent uses the default.
    */
   model_export_path?: string;
+  /**
+   * An interactive build's models, each with its own factors, directions and parameters.
+   */
+  models?: InteractiveModelConfig[];
   /**
    * For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none.
    */
@@ -4347,6 +4356,12 @@ export interface ModellingConfig {
   row_limit?: number | null;
   selected_columns?: string[];
   /**
+   * Versioned staged t-boost settings and applied recipe; absent keeps legacy fitting.
+   */
+  stages?: {
+    [k: string]: unknown;
+  } | null;
+  /**
    * The column the model predicts.
    */
   target?: string;
@@ -4386,6 +4401,57 @@ export interface ModellingConfig {
    * The column weighting each row, such as exposure.
    */
   weight?: string;
+}
+/**
+ * One model of an interactive build: its own settings over the ones its models share.
+ */
+export interface InteractiveModelConfig {
+  /**
+   * The model type, `tboost`.
+   */
+  algorithm: string;
+  /**
+   * The columns the model trains on.
+   */
+  feature_columns?: string[];
+  /**
+   * For each weighted feature, its weight in feature selection.
+   */
+  feature_weights?: {
+    [k: string]: number;
+  };
+  /**
+   * The model's id, which its runs are kept under; it never changes.
+   */
+  id: string;
+  /**
+   * For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none.
+   */
+  monotone_constraints?: {
+    [k: string]: number;
+  } | null;
+  /**
+   * The model's name, shown on its entry and given to its run.
+   */
+  name: string;
+  /**
+   * The model type's own parameters, by name.
+   */
+  params?: {
+    [k: string]: unknown;
+  };
+  /**
+   * Versioned staged t-boost settings and applied recipe; absent keeps legacy fitting.
+   */
+  stages?: {
+    [k: string]: unknown;
+  } | null;
+  /**
+   * Hyperparameter tuning settings; `null` or absent trains with `params` as set.
+   */
+  tuning?: {
+    [k: string]: unknown;
+  } | null;
 }
 /**
  * A optimiser node's data, its config typed by its config model.
@@ -5093,9 +5159,51 @@ export interface TraceWaterfallErrorResponse {
   error: string;
   error_type: string;
 }
+export interface StageStatePayload {
+  /**
+   * @maxItems 10
+   */
+  checkpoints: StageCheckpointPayload[];
+  current: StageRevisionPayload | null;
+  final: StageRevisionPayload | null;
+  job: StageJobPayload | null;
+  next_preview: NextStagePreviewPayload | null;
+  preview: StageRevisionPayload | null;
+  schema_version: 1;
+  stale_reason: string | null;
+}
+export interface StageCheckpointPayload {
+  created_at: string;
+  id: string;
+  name: string;
+  output_stage: 'full' | 'pruned' | 'banded' | 'smoothed';
+  revision: string;
+}
+export interface StageRevisionPayload {
+  build_id: string;
+  config_digest: string;
+  parent_revision: string | null;
+  result: StageResultPayload;
+  revision: string;
+  sha256: string;
+  size: number;
+}
+export interface StageResultPayload {
+  config: {
+    [k: string]: unknown;
+  } | null;
+  graph_digest: string;
+  provenance: {
+    [k: string]: unknown;
+  } | null;
+  response: TrainResponse;
+}
 export interface TrainResponse {
   actual_vs_predicted: {
     [k: string]: number;
+  }[];
+  ave_left_out: {
+    [k: string]: unknown;
   }[];
   ave_per_feature: {
     [k: string]: unknown;
@@ -5110,6 +5218,7 @@ export interface TrainResponse {
     [k: string]: string;
   }[];
   diagnostics_set: 'development' | 'validation' | 'final_test';
+  diagnostics_view?: 'full' | 'compact';
   double_lift: {
     [k: string]: unknown;
   }[];
@@ -5177,7 +5286,9 @@ export interface TrainResponse {
   shap_summary: {
     [k: string]: unknown;
   }[];
+  staged?: StagedBuildPayload;
   status: 'started' | 'completed' | 'error';
+  table_summary?: StageTableSummary;
   tboost_tables: {
     [k: string]: unknown;
   } | null;
@@ -5200,6 +5311,7 @@ export interface EvaluationReportPayload {
   fit_count: number;
   plan_path: string;
   plan_sha256: string;
+  purpose: 'exploration' | null;
   refit_on_development: boolean;
   report_path: string;
   results_path: string;
@@ -5325,6 +5437,96 @@ export interface TrainShapCurvePoint {
   rows: number;
   value: number | string | null;
 }
+export interface StagedBuildPayload {
+  configuration: {
+    [k: string]: unknown;
+  };
+  diagnostic_scope?: 'full' | 'path';
+  diagnostics_basis: 'partition' | 'out_of_fold';
+  evaluation_identity: string;
+  fit_config_digest: string;
+  path_unavailable_reason: string | null;
+  paths?: {
+    [k: string]: StagePathPayload;
+  };
+  prepared_path?: string;
+  pruning_path: {
+    [k: string]: unknown;
+  } | null;
+  recommendation: {
+    [k: string]: unknown;
+  } | null;
+  reference_fit: 'development' | 'validation-0';
+  schema_version: 1;
+  selected_stage: 'full' | 'pruned' | 'banded' | 'smoothed';
+  stages: {
+    [k: string]: {
+      [k: string]: unknown;
+    };
+  };
+}
+export interface StagePathPayload {
+  controls: {
+    [k: string]: unknown;
+  };
+  evaluation_identity: string;
+  evidence: 'development' | 'validation' | 'out_of_fold';
+  family_ids: {
+    [k: string]: string;
+  };
+  id: string;
+  metric: string;
+  parent: 'full' | 'pruned' | 'banded';
+  parent_revisions: {
+    [k: string]: string;
+  };
+  /**
+   * @minItems 1
+   * @maxItems 17
+   */
+  points: StagePathPointPayload[];
+  reference_fit: 'development' | 'validation-0';
+  selected_point: string;
+  selection: {
+    [k: string]: number;
+  };
+  stage: 'pruned' | 'banded' | 'smoothed';
+  suggested_point: string | null;
+}
+export interface StagePathPointPayload {
+  diagnostics: {
+    [k: string]: unknown;
+  };
+  /**
+   * @maxItems 11
+   */
+  fold_status: {
+    [k: string]: string;
+  }[];
+  id: string;
+  identity: boolean;
+  loss: number;
+  loss_delta: number;
+  reference_status: 'identity' | 'changed' | 'unchanged' | 'rejected';
+  relative_loss_delta: number | null;
+  revision: string;
+  settings: {
+    [k: string]: unknown;
+  };
+  stage: 'full' | 'pruned' | 'banded' | 'smoothed';
+  status: 'identity' | 'changed' | 'unchanged' | 'rejected';
+}
+export interface StageTableSummary {
+  factored: number;
+  tables: StageTableSummaryEntry[];
+}
+export interface StageTableSummaryEntry {
+  cells: number;
+  features: string[];
+  order: number;
+  shape_digest: string;
+  term: string;
+}
 /**
  * The tuning study as published; its invariants are checked where the
  * plan, trials and report artifacts are produced and reloaded
@@ -5380,6 +5582,29 @@ export interface TuningTrialPayload {
   };
   schema_version: 1;
   trial_index: number;
+}
+export interface StageJobPayload {
+  automatic: boolean;
+  expected_revision: string | null;
+  id: string;
+  message: string;
+  operation: 'full' | 'pruned' | 'banded' | 'smoothed' | 'finalise';
+  owner_pid: number;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+}
+export interface NextStagePreviewPayload {
+  message: string;
+  operation: 'pruned' | 'banded' | 'smoothed';
+  owner_pid: number;
+  parent_revision: string;
+  status: 'queued' | 'failed' | 'interrupted';
+}
+export interface StagePathInspectionPayload {
+  artifact_revision: string;
+  current_revision: string;
+  path_id: string;
+  point_id: string;
+  response: TrainResponse;
 }
 export interface TrainStatusResponse {
   best_objective: number | null;

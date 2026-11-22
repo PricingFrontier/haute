@@ -725,6 +725,52 @@ def validate_training_device(config: Mapping[str, Any]) -> str:
     return "gpu" if device == "gpu" else "cpu"
 
 
+#: The keys each model of an interactive build holds for itself; its node holds the rest.
+INTERACTIVE_MODEL_KEYS: tuple[str, ...] = (
+    "algorithm",
+    "feature_columns",
+    "params",
+    "tuning",
+    "stages",
+    "monotone_constraints",
+    "feature_weights",
+)
+
+
+def interactive_model_config(config: Mapping[str, Any], model_id: str | None) -> dict[str, Any]:
+    """The flat config one model of an interactive build trains from.
+
+    The node's shared settings, without ``models``, with the model's own keys over them.
+    The model's name is not carried: it is the user's label, and the run keeps the node's
+    name, which is safe in a file name, in an output folder of its own. Raises
+    ``TrainingConfigError`` when the node has no models, the id is missing or unknown, ids
+    or names repeat, or a per-model key sits at the node's top level.
+    """
+    models = config.get("models")
+    if not isinstance(models, list) or not models:
+        raise TrainingConfigError(
+            "An interactive build lists its models under `models`; this node has none."
+        )
+    misplaced = [key for key in INTERACTIVE_MODEL_KEYS if key in config]
+    if misplaced:
+        raise TrainingConfigError(
+            "An interactive build keeps each model's own settings in its model; "
+            f"move {', '.join(misplaced)} from the node into `models`."
+        )
+    ids = [model.get("id") for model in models]
+    names = [model.get("name") for model in models]
+    if len(set(ids)) != len(ids) or len(set(names)) != len(names):
+        raise TrainingConfigError("An interactive build's models need distinct ids and names.")
+    if not model_id:
+        raise TrainingConfigError("Name the model of this interactive build to train.")
+    model = next((candidate for candidate in models if candidate.get("id") == model_id), None)
+    if model is None:
+        raise TrainingConfigError(f"This interactive build has no model with the id {model_id!r}.")
+    flat = {key: value for key, value in config.items() if key != "models"}
+    flat.update({key: model[key] for key in INTERACTIVE_MODEL_KEYS if key in model})
+    return flat
+
+
 def build_training_job_kwargs(
     config: Mapping[str, Any],
     *,
@@ -754,6 +800,11 @@ def build_training_job_kwargs(
         Such a job/script trains a plausible-looking wrong model, so it must
         fail at build time, not at training time.
     """
+    if "models" in config:
+        raise TrainingConfigError(
+            "An interactive build trains one of its models: resolve it with "
+            "interactive_model_config first."
+        )
     target = config.get("target")
     if not isinstance(target, str) or not target:
         raise TrainingConfigError(MISSING_TARGET_MESSAGE)
@@ -803,28 +854,19 @@ def build_training_job_kwargs(
         evaluation=evaluation,
         configured_metrics=metrics,
     )
+    from haute.modelling._staged_config import resolve_stages
+
+    stages = resolve_stages(config.get("stages"), algorithm, params)
+    if stages is not None and tuning is not None:
+        stages.validate_gbm_params(tuning["search_space"])
     method = evaluation["validation"]["method"]
-    if descriptor.publishes_validation_fit:
-        # The early-stopped validation fit is the model: no refit setting exists.
-        if method == "cross_validation":
-            raise TrainingConfigError(
-                f"{descriptor.label} publishes its early-stopped validation fit, so it takes "
-                "holdout validation or none, not cross-validation."
-            )
-        if "refit_on_development" in config:
-            raise TrainingConfigError(
-                f"{descriptor.label} is never refit: its early-stopped validation fit is the "
-                "model. Remove refit_on_development from the configuration."
-            )
-        refit_on_development = method == "none"
-    else:
-        refit_on_development = config.get("refit_on_development", True)
-        if not isinstance(refit_on_development, bool):
-            raise TrainingConfigError("refit_on_development must be a boolean")
-        if not refit_on_development and method != "single":
-            raise TrainingConfigError("Skipping the final refit requires holdout validation")
-        if not refit_on_development and tuning is not None:
-            raise TrainingConfigError("Parameter tuning requires a final refit")
+    refit_on_development = config.get("refit_on_development", True)
+    if not isinstance(refit_on_development, bool):
+        raise TrainingConfigError("refit_on_development must be a boolean")
+    if not refit_on_development and method != "single":
+        raise TrainingConfigError("Skipping the final refit requires holdout validation")
+    if not refit_on_development and tuning is not None:
+        raise TrainingConfigError("Parameter tuning requires a final refit")
 
     positive_class = config.get("positive_class")
     if positive_class is not None and (
@@ -864,4 +906,7 @@ def build_training_job_kwargs(
         "mlflow_destination": destination,
         "positive_class": positive_class,
         "device": device,
+        # A model built in the Modelling view charts the factors it leaves out.
+        "chart_left_out": config.get("interactive_build") is True,
+        **({"stages": stages.to_plain_data()} if stages is not None else {}),
     }

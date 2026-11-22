@@ -20,8 +20,11 @@ import useNodeDataStore from "./useNodeDataStore"
 import useToastStore from "./useToastStore"
 import { latest } from "../utils/latest"
 
-/** The editor's views: the pipeline editor's, and the workbench's while it is enabled. */
-export type EditorView = "pipeline" | "workbench"
+/**
+ * The editor's views: the pipeline editor's, the Modelling view's, and the workbench's
+ * while it is enabled.
+ */
+export type EditorView = "pipeline" | "workbench" | "modelling"
 
 interface WorkbenchState {
   /** Whether the project's workbench is enabled in haute.toml; false until the status says so. */
@@ -32,7 +35,7 @@ interface WorkbenchState {
   formPath: string | null
   /** Fetch the status. A failure shows one error toast and leaves the workbench not enabled. */
   load: () => Promise<void>
-  /** Which view shows: the pipeline editor's, or the workbench's. */
+  /** Which view shows: the pipeline editor's, the Modelling view's, or the workbench's. */
   activeView: EditorView
   /** Show a view; the workbench's only while it is enabled. */
   showView: (view: EditorView) => void

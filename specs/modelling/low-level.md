@@ -49,6 +49,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 
 | File | Responsibility |
 |---|---|
+| `src/haute/modelling/_loss_history.py` | Shared bounded completed loss histories for jobs and compact stage views. |
+| `src/haute/modelling/_stage_paths.py` | Bounded retained-fit path families, canonical validation scoring, compact artifacts and exact candidate materialisation. |
+| `src/haute/routes/_training_paths.py` | Leased read-only point inspection and revision-checked path Apply with selected-phase adoption. |
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry; `NativeModel`, the base of the four native wrappers (their `haute` record, scoring-facing feature names, offset baseline, served labels and class probabilities, and `record_fields`, which checks a stored record field by field), and `inverse_link`. |
@@ -57,6 +60,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
 | `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
 | `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus the facts its file records, and the term report) and `EBMAlgorithm`. |
+| `src/haute/modelling/_staged_runtime.py` | Versioned worker bundles and canonical post-fit resume over retained evaluation sessions. |
+| `src/haute/modelling/_stage_views.py` | Compact diagnostic projections and table shape/count summaries for workspace reads. |
+| `src/haute/modelling/_stage_store.py` | Durable per-model stage revisions, preview/apply, job markers and artifact leases. |
+| `src/haute/modelling/_staged_config.py` | `StagedConfig`: stage-specific parameter validation, applied recipe chains and GBM-only parameter ownership. |
 | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats, in memory or out of core (see Chunked GLM fitting), with `glm_batch_source()` over the job's train-partition Parquet file, `glm_out_of_core_options()` from the execution budget, `glm_fit_evidence()`, and `GLMMemoryPlanError`; `prepare_glm_design()` (schema-dtype validation, reference-level translation from the labels RustyStats observes, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, fit-time robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
@@ -88,6 +95,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/routes/_training_evaluation.py` | Route-side evaluation and GLM-dispersion rules: family/link validation, dispersion parameter contracts, and immutable evaluation-preview projection. |
 | `src/haute/routes/_training_worker.py` | Spawn-picklable training/dispersion worker protocol: request validation, child execution context, curated failure taxonomy, bounded progress/result payloads, and the two process entrypoints. It publishes only staged manifests. |
 | `src/haute/routes/_training_artifacts.py` | Sole parent-side training artifact publication owner: manifest/path/size/digest validation, strict evaluation/tuning reloads, rollback-capable generation replacement, and stale tuning retirement. |
+| `src/haute/routes/_training_stages.py` | Durable model scope, upstream/fit identity checks, leased resume copies and stage publication. |
 | `src/haute/routes/_training_lifecycle.py` | State-owning `TrainService` implementation. Composes `JobLifecycle`, `CancellableJobRegistry`, and `IsolatedJobSupervisor`; orchestrates preparation and worker launch, cancellation/timeout, parent cleanup, and atomic completion publication through the domain modules above. |
 | `src/haute/routes/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
 | `src/haute/schemas.py` | Shared Pydantic request/response contracts owned by [server-api](../server-api/low-level.md) and used by `/api/modelling/*` routes. |
@@ -551,7 +559,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    bounded `ExecutionContext`, then runs planning, selection/tuning, final fit and
    diagnostics. It stages the model, per-model feature contract, three evaluation
    artifacts, and—when enabled—three tuning artifacts. It returns progress events and
-   a validated result manifest containing a bounded `TrainResponse` payload. In the
+   a validated result manifest containing compact identity/execution metadata and a
+   `training_response` JSON artifact; report size never consumes the IPC metadata budget. In the
    parent, the supervisor strictly reloads and cross-checks the complete staged set in
    place (`_validate_training_artifacts`) before it takes the job store's lock, so no file
    is read while status polls wait on it: the staged set is the run's own and no longer
@@ -1250,6 +1259,62 @@ and a classifier declares `pred_label` with the target's dtype beside a `double`
 floating-target regression and an integer-label classifier through `TrainingJob`, then
 compares the stored signature's outputs with what the reloaded pyfunc predicts.
 
+### Interactive build marker
+
+An interactive build's models are `models`, a list of `InteractiveModelConfig` (closed:
+`id`, `name` and `algorithm` required; `feature_columns`, `params`, `tuning`,
+`monotone_constraints` and `feature_weights` optional), the keys `INTERACTIVE_MODEL_KEYS`
+in `_train_config.py` names; such a node carries none of them at its top level.
+`interactive_model_config(config, model_id)` returns the flat config a training reads: the
+top level without `models`, with the model's keys over it; the model's name, a free label,
+is not carried, so the run keeps the node's name and a rename never makes it out of date.
+It raises `TrainingConfigError` for an interactive build without `models`, a missing or
+unknown id, two models with one id or one name, or a per-model key at the top level, and
+`build_training_job_kwargs` raises for a config that still has `models`. The node config's
+`check` and `completeness` hooks (`_check_modelling`, `_modelling_gaps`) run the flat checks
+on each model's `interactive_model_config`, refuse `models` on a node that is not an
+interactive build, and say a gap every model has once, another under its model's name; a
+config without `models` is checked flat, as one model resolved by the route is. `TrainRequest` and
+`TrainEstimateRequest` carry an optional `model`; `train_model` and `estimate_training`
+replace the node's config in the request graph with `interactive_model_config` once, before
+anything reads it (`_resolve_interactive_model` in `_training_preparation.py`). A training
+job's record keeps `model_id`, and `_release_superseded_training_artifacts` releases only an
+earlier run of the same node, pipeline and model.
+`tests/test_modelling_train_routes.py::TestTrainEndpoint::test_two_models_of_one_node_train_apart`
+trains two models of one node with different factors and reads both runs back;
+`tests/test_node_config_models.py::TestInteractiveBuildModels` and
+`tests/test_train_config_builder.py::TestInteractiveModelConfig` cover the checks.
+
+The MODEL node config gains the optional `interactive_build` boolean, `true` for a model
+built in the Modelling view and absent otherwise, declared on the `ModellingConfig` TypedDict
+and `MODELLING_CONFIG_KEYS` so it round-trips through save, parse and codegen
+(`tests/test_config_field_roundtrip.py` carries it, and a boost-only t-boost variant whose
+`params` hold the null). Training never reads it to fit:
+`build_training_job_kwargs` emits `chart_left_out: true` for it (false otherwise), and the
+train route neither pushes a column demand into the pipeline nor projects the sink to the
+keep columns for it, so the training parquet holds every column reaching the node. With
+`chart_left_out`, `TrainingJob._compute_metrics` bins each column of the diagnostics frame
+that is neither a feature nor a role column (`TrainingJob._role_columns`: the target,
+weight, offset, fold, identifiers and evaluation column; with the row keys and the split's
+date or group column) into
+`ave_left_out`, the same shape as `ave_per_feature` from the same rows, predictions and
+exposure. A Boolean, numeric, String, Categorical or Enum column is binned (a Boolean as
+numeric 0 and 1); a column of any other type, or one whose binning fails, is left out of
+`ave_left_out` and recorded in `diagnostics_errors` as the `ave_left_out` diagnostic naming
+the column, and the run still succeeds. Without `chart_left_out`, `ave_left_out` is empty. The view's starting recipe relies on a null
+being a value: `band_tolerance: null` in `params` reaches t-boost as no banding, where an
+absent key bands at t-boost's default of 0.75.
+`tests/test_modelling_train_routes.py::TestTrainEndpoint::test_an_interactive_build_trains_its_boost_only_recipe`
+trains such a node through the route with no validation and no test set, and reads `prune`,
+`band_tolerance` and `graduate` back from the saved model, the AvE strip as the rows' summed
+exposure, and a loss history carrying `train_deviance` and `eval_deviance` on every round;
+`tests/test_modelling_train_routes.py::TestTrainEndpoint::test_an_interactive_build_charts_the_columns_it_left_out`
+trains one with a column left out and a role column, and reads the left-out column, and
+only it, from `ave_left_out`.
+`tests/test_modelling_train_routes.py::TestTrainEndpoint::test_previewing_a_model_training_node_brings_the_columns_reaching_it`
+pins what the view's factor list relies on: one preview of the node carries the feeding
+node's columns in `node_columns`.
+
 ### Save-model-after-the-fact
 
 The MODEL node config gains the optional `model_export_path` string — the Export pane's
@@ -1452,6 +1517,20 @@ potentially large copy on its threadpool.
   datetime's ticks; nearest-rank for an integer or temporal feature, so its points are
   observed values) is cast to that physical dtype and deduplicated, and each point is cast
   back to the feature's dtype to be predicted.
+- `compute_ave_per_feature` reports every bin (a numeric bin, a categorical level, the
+  `Missing` bin and the `Other` lump) as `{label, exposure, avg_actual, avg_predicted}`
+  over the bin's mass. A row's mass is its weight (one without a weight), times its
+  exposure when the caller passes `exposure`. A bin's `exposure` is its summed mass,
+  rounded to four decimal places, and its averages are the weighted sums of the actuals
+  and of the predictions, each divided by that mass and rounded to six; the categorical
+  fold ranks levels by mass, and a bin with no mass is left out. `TrainingJob._compute_metrics`
+  passes the offset column as `exposure` only under a log link (`TrainingJob._offset_link`),
+  where a prediction is a rate times the exposure, so the averages are rates per unit of
+  exposure; it passes none for an identity-link offset, an additive base value, and the
+  averages are then weighted means per row. The exposure is filtered with the mask that
+  drops non-finite rows, and one that is non-finite, zero or negative on a remaining row
+  raises `HauteValidationError` naming the `ave_per_feature` diagnostic; it is never
+  repaired.
 - The feature contract is hashed over sorted, separator-compact canonical JSON but
   written to disk pretty-printed — human-reviewable on disk, byte-deterministic for
   hashing.
@@ -1760,7 +1839,7 @@ rows/features) and retry.
   iterator-fed and external-memory matrices against its in-memory fit (peak memory, time,
   predictions and objective history). It asserts none of its figures; the PL2-17 roadmap
   entry records the results.
-- `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
+- `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits; and, with an exposure, that numeric bins and categorical levels report rates per unit of exposure and their summed mass with and without a weight, that the numeric `Missing` bin, the categorical `Missing` level and the `Other` lump do so under a weight, that levels rank by mass rather than by weight, exposure or row count, that a row dropped as non-finite takes its exposure with it, and that a non-finite, zero or negative exposure is refused.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
 - `tests/test_mlflow_log.py` verifies the destination-aware tracking backend/experiment resolution wrappers (no destination resolving the local folder even with Databricks credentials or an env server configured, a named key resolving that destination, an unconfigured explicit key raising, an unknown key rejected before resolution, the experiment default following the destination), databricks/server/local run URL construction, experiment/model-card/JSON logging, and tracking configuration.
@@ -1863,24 +1942,30 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   feature weights fail before fitting, and a feature name with `:` trains and explains; with a
   log-link offset the response is the rate times the offset and the margin is the raw score
   plus `log(offset)`, and an `RMSE` offset matches an independent native fit with `offset` and
-  is added verbatim to the margin; with holdout validation the job runs one fit, on the
-  training partition with the validation rows as `eval_set`, and publishes it (fit count 1,
-  no refit); with no validation the one fit is on the development rows without an
-  `eval_set`; the configuration refuses cross-validation and any `refit_on_development`, and
-  `TrainingJob` refuses an explicit refit; a study publishes the winning trial's reproduced
-  fit, whose validation metric equals the winner's objective; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
+  is added verbatim to the margin; no fit is given the validation rows: with holdout
+  validation the job fits the training partition, scores it on the validation rows and refits
+  on the development rows (fit count 2), with the holdout's refit off it publishes the
+  training-partition fit (fit count 1), with cross-validation it runs one fit per fold and the
+  refit, and with no validation its one fit is on the development rows; the configuration
+  takes cross-validation and `refit_on_development` as an EBM's does, refusing a skipped
+  refit without a holdout; a study refits the winning parameters on the development rows,
+  with no tree count; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
   the loss history is the per-round bag mean of `evals_result_`; contributions plus bias rebuild the margin for every row and per-feature
   Shapley values sum to the same total; a categorical value outside the fitted levels scores
   exactly as a level t-boost pooled into `<rare>` does, in the default cell when the axis
   pooled nothing (`unseen_cell`), and a null in the missing level; a training run whose validation
   rows hold levels the training rows lack completes; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
   feature, reaches the selection and final fits as `groups`; a model with no tables (t-boost's
-  `intercept` placeholder) has no terms, an empty table report and still explains; the table report's scores, read at the cell each row's feature
+  `intercept` placeholder, whose fit kept no tree and recorded no curve) has no terms, an empty table report, an empty loss history and still explains; the table report's scores, read at the cell each row's feature
   values select (right-closed numeric intervals, categorical member levels, row-major axes,
   gapped categorical cells dropped), equal that row's contribution for every table; `support`
   sums to the training rows' weight times exposure for an unweighted, a weighted, an
   exposure-only and a weighted-with-exposure Poisson fit, and to the weights alone for an
-  `RMSE` fit with an offset; a table whose log-link score overflows a float records one
+  `RMSE` fit with an offset; a Poisson job with an exposure offset reports an AvE level's
+  actual average as its claims per unit of exposure and its strip as its summed exposure,
+  and an `RMSE` job with an offset, whose link is the identity, reports the level's mean per
+  row and its row count; a
+  table whose log-link score overflows a float records one
   `tboost_tables` diagnostic error naming that table, leaves the report null, and the job
   completes with a loadable model and a response the finite guard accepts; every bag's every round reaches the progress callback (so a
   cancellation during a later bag stops the fit), and through `_FitRounds` with a still clock
@@ -2080,7 +2165,7 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   `development` diagnostics are Training diagnostics (in-sample final-refit data),
   and `final_test` displays as Test. Internal keys and split calculations are unchanged.
 - `CommonFeatureConfig` keeps aligned inclusion, feature, type and monotonicity
-  columns. Type labels use `getDtypeColor`; monotonicity uses the existing coloured
+  columns ([frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md)). Type labels use `getDtypeColor`; monotonicity uses the existing coloured
   ↓ / − / ↑ buttons with accessible names and pressed states. Every checkbox starts
   unticked: the pane writes only `feature_columns`, and Include all / Exclude all add or
   remove every eligible column. Unselected and nonnumeric features keep the monotonicity
@@ -2119,8 +2204,8 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   editor, with no individual parameter inputs or advanced disclosure. JSON edits
   preserve arbitrary keys and merge reserved settings from their owning controls;
   omitted parameters remain library-managed rather than gaining display-only defaults.
-- Choosing tuning writes the tuning configuration and turns on `refit_on_development`
-  (t-boost, which is never refit, excepted); it never changes the evaluation. The tuning
+- Choosing tuning writes the tuning configuration and turns on `refit_on_development`;
+  it never changes the evaluation. The tuning
   note reports final-test presence with a Split navigation action and states the fit
   budget in the Train run summary's words, and its search space is labelled with the
   selected family's name. Invalid local parameter/search-space drafts remain visible across
@@ -2209,16 +2294,10 @@ used for staged input.
   `tuning_final_projection` in `src/haute/modelling/_tuning.py` is the one derivation of a
   study's final parameters and tree count that the job, `build_tuning_report`, the report
   artifact and `TuningReportPayload` all use: a round-refitting family refits with the
-  validation-weighted count under its round key; a `fixed_budget` family (EBM) refits with the
-  winner's parameters unchanged and no tree count (`final_tree_count` is `None`), and a
-  `validation_fit` family (t-boost) publishes the winning trial's fit, reproduced from those
-  unchanged parameters, also with no tree count. `AlgorithmDescriptor.publishes_validation_fit`
-  marks that policy: `build_training_job_kwargs` refuses cross-validation and any
-  `refit_on_development` key for such a family and sets the flag to `method == "none"`;
-  `TrainingJob(refit_on_development=None)` derives the same value, refuses cross-validation,
-  and refuses an explicit value that disagrees; a tuned job without a refit runs, after the
-  trials, a `_new_evaluation_job` for fit 0 with the winning parameters into the output
-  directory and publishes it as the validation-fit result. The worker's tuned-response check
+  validation-weighted count under its round key; a `fixed_budget` family (EBM, t-boost) refits
+  with the winner's parameters unchanged and no tree count (`final_tree_count` is `None`).
+  Every tuned job ends in that refit: `build_training_job_kwargs` and `TrainingJob` refuse
+  tuning without one for every family. The worker's tuned-response check
   requires only that the evaluation's `fit_count` equals the study's `total_fit_count`. The report
   identifies its family with `tuning_family` from the one round key its final parameters carry.
 - `AlgorithmDescriptor.config_issue` combines the per-loss monotonicity rule with the family's
@@ -2420,9 +2499,9 @@ used for staged input.
   `Tweedie` → `tweedie` with `tweedie_rho` set to the job's variance power, `Logloss` →
   `logistic` through `TBoostClassifier`), raises the descriptor's `config_issue`, rejects
   feature weights and a classification offset, and fits one estimator with the job seed,
-  `n_jobs` set to the thread allotment, `monotone_constraints` as a feature-name dict, `eval_set`
-  (with `eval_sample_weight` and the evaluation offset) built from `eval_df` when the fit has
-  validation rows, and, for a `group` evaluation
+  `n_jobs` set to the thread allotment, `monotone_constraints` as a feature-name dict, never
+  the validation rows (`eval_df` is dropped, as the EBM adapter drops it: t-boost 0.9.1 has no
+  fit-time evaluation set, and every bag stops on rows it holds back itself), and, for a `group` evaluation
   strategy, `groups` as the training rows' group values cast to strings (an evaluation key is
   never a feature, which `TrainingJob` already refuses, so the column reaches t-boost only as
   `groups`). `TrainingJob._plan_group_column()` names the
@@ -2435,8 +2514,8 @@ used for staged input.
   against the levels (t-boost scores a value it never saw under `unknown_category`, which
   Haute owns and sets to `UNKNOWN_CATEGORY` = `rare`), and casts every other feature
   to `Float64`, so a Date or
-  Boolean feature is numeric exactly as `encode_frame` makes it. `_rows_kwargs` builds one
-  frame's arguments, the same for the training and the evaluation rows: the offset column is
+  Boolean feature is numeric exactly as `encode_frame` makes it. `_rows_kwargs` builds the
+  fit rows' arguments: the offset column is
   t-boost's `exposure` (the exponent of the log baseline) under a log link and its link-scale
   `offset` under the identity link. t-boost's `PrecisionWarning` about its float32 features is
   suppressed inside the adapter (it is a property of the family, stated here). `_RoundProgress`
@@ -2445,8 +2524,8 @@ used for staged input.
   round any bag has reached, capped one round below `n_trees` during the fit because Haute's
   progress gate always passes a final round; `finish()` reports the final round once after
   the fit when a bag reached the ceiling. Each report carries a live loss row for the round it
-  shows: the mean of every bag's latest finite train and validation deviance (reported as
-  `deviance` and `validation_deviance`), so a report that repeats a round replaces that row
+  shows: the mean of every bag's latest finite train deviance and deviance on the rows it
+  holds back (reported as `deviance` and `validation_deviance`), so a report that repeats a round replaces that row
   as slower bags catch up. These live means are progress only; the result's `loss_history`
   is rebuilt after the fit from the complete per-bag history. The result carries
   `rounds_configured = n_trees`, `rounds_fitted = n_trees_` (the largest per-bag kept count),
@@ -2454,7 +2533,9 @@ used for staged input.
   `max_trees` → `none`, `no_split` → `native_exhaustion`; any other value fails),
   `best_iteration = None` (every unseen value reaches t-boost's `unknown_category`
   policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
-  round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it),
+  round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it;
+  the `eval` curve is each bag's deviance on the rows it holds back, and a fit that kept no
+  tree, `n_trees_ == 0`, has no `evals_result_` and an empty history),
   and the table report computed on the fit's own rows.
 - `TBoostModel` holds the estimator with the record's features, levels, task, link, offset
   column and link, and class labels. A document without the record, a model trained outside
@@ -2508,10 +2589,10 @@ used for staged input.
   `cat_min_data_per_group` and `cat_direct_max_levels`; Haute owns `objective`, `tweedie_rho`,
   `seed`, `n_jobs`, `monotone_constraints`, `categorical_features` and `unknown_category`. Its
   `round_key` is
-  `n_trees`, searchable by tuning, its `refit_policy` is `validation_fit`, and `tboost_value_issue`
+  `n_trees`, searchable by tuning, its `refit_policy` is `fixed_budget`, and `tboost_value_issue`
   requires `n_trees` to be a positive integer and refuses `prune_main_effects: true` with
-  `prune: false` or with a non-zero monotone constraint on a selected feature (t-boost refuses
-  both only once the fit starts); the frontend mirrors it as `tboost-prune-main-effects`. Every other value rule (depth and order ranges,
+  `prune: false` (t-boost refuses it only once the fit starts; a monotone fit may prune its
+  main effects, which t-boost 0.9.1 repairs to the constrained signs last); the frontend mirrors it as `tboost-prune-main-effects`. Every other value rule (depth and order ranges,
   fractions) is t-boost's own, raised by the fit.
 - The `tboost` scoring family registers `.tboost` as self-describing with a Polars predict
   frame, the offset riding in the frame, explanation `tboost_tables`, and the `t-boost`
@@ -2796,3 +2877,682 @@ taxonomy.
    cancellation; a cancellation raised in a batch reaches the caller as itself.
 5. Memory: the family memory probe records the end-to-end peak of both modes at a size the
    in-memory job exceeds (`tests/performance/test_training_family_memory_perf.py`).
+
+## Staged t-boost contract
+
+`modelling._staged_config.StagedConfig` validates the optional per-model `stages` mapping.
+Its JSON form is `{schema_version: 1, path, pruning, banding, smoothing, applied_recipe}`.
+Omitted sections use explicit defaults; unknown keys, wrong scalar types and non-finite
+numbers fail. `path` has `steps` (integer >=2, default32), `main_effects` (Boolean,false),
+`min_rows` (integer >=1,500). `pruning` has `fraction` (0,1],.995), `tolerance` (>=0,.001)
+and `max_tables` (null or non-negative integer). A manual budget cannot be combined with
+non-default automatic controls. `banding` has parent full/pruned (defaultpruned), positive
+`tolerance` (.75) and `deviance_cap` (.001). `smoothing` has parent full/pruned/banded
+(defaultbanded), `alpha` (null or non-negative) and `high_order_alpha` ([0,1],0).
+
+`applied_recipe` defaults to an empty list (full output). Each entry has exact keys
+`stage`, `parent`, `settings`; it must form an increasing continuous chain beginning at
+full, with the same per-stage field validation. It contains no support sets, path indices,
+artifact paths or row identifiers. The canonical GBM `params` and tuning space reject
+post-fit parameters whenever `stages` is present, with the parameter and owning stage in
+the error. Only descriptors declaring staged-training support admit this contract.
+Legacy flat params remain unchanged without `stages`. Migration is explicit: the editor
+creates staged settings on the first requested staged build, moves supported post-fit
+settings to their section and refuses unsupported legacy controls instead of ignoring them.
+
+The t-boost adapter accepts `stages` through canonical training kwargs. It prepares labels,
+offsets, categories, groups and callbacks once through existing helpers, calls public
+`fit_staged`, then public `apply_recipe`; it never orchestrates private library methods.
+The native model retains its session while the job publishes checkpoints and records the
+recipe in Haute's native metadata. Inference export remains loadable through plain t-boost.
+No checkpoint is implicitly loaded from a user-supplied native inference artifact.
+
+Testing: legacy `fit` remains unchanged; a staged empty recipe gives the full unsmoothed,
+unpruned bank; a staged recipe matches the library sequence under offsets, categories and
+binary labels; misplaced/unknown parameters fail before fitting; canonical script kwargs
+round-trip `stages` without falling back to legacy post-processing. The complete interactive
+job/persistence/evaluation protocol is specified in the staged-training subsection below
+as it is integrated with the existing worker lifecycle.
+
+### Exploration purpose
+
+`TrainingJob(purpose="exploration", stages=...)` explicitly selects interactive evaluation;
+`purpose="final"` remains the default for canonical script/refit/logging work. Exploration
+requires the staged-capable family, stages configuration and an evaluation plan. With fixed
+holdout validation it retains exactly the training-partition fit and does not refit on
+all development rows. With no validation it fits development rows once. In either case
+final-test positions are PARTITION_UNUSED before fitting/metrics/diagnostics, not scored
+and hidden afterwards. Results label diagnostics validation or development, preserve the
+reserved final-test row count, and report no final-test metrics. Plan membership and source
+hash remain the canonical evaluator's. The exploration purpose passes to child jobs and
+participates in run identity; legacy final-run identity stays byte-compatible. Exploration
+logging is refused until explicit finalisation replays the recipe. CV and tuning retain matching validation fits as specified below; tuning holdout also builds
+a development reference fit while keeping its validation diagnostics.
+
+Tests intercept real adapter fit/predict calls and prove that no reserved test row is seen,
+only one holdout training fit runs, no-validation fits only development rows, and diagnostics
+are labelled appropriately. Existing final jobs must still refit/evaluate as configured.
+
+### Durable interactive stage store
+
+`src/haute/modelling/_stage_store.py` owns project-local `.haute/staged-training/` state.
+A key hashes pipeline source, node id and model id; client values never become path segments.
+Each key has an atomically replaced version-2 manifest with current revision, optional
+stage preview, optional final export revision and the last job marker. Revision records include build id, parent revision,
+fit-config fingerprint, bundle SHA-256/size and a result-file SHA-256/size descriptor. Stage artifacts
+are opaque validated bundles; preparing a new bundle cannot replace the applied result.
+Publication checks the job id, running state and expected current revision under the shared
+cross-process FileLock. Only then does it publish the prepared bundle and manifest. A late
+or cancelled worker cannot replace either current or preview. A stage preview updates
+only the preview pointer. Apply requires both expected current and preview revisions and
+changes the current pointer atomically; Discard drops only the candidate. Starting another
+operation does not erase the last applied result.
+
+Durable storage uses existing atomic-file and FileLock helpers. Reads reject unsupported
+manifest versions, path escapes, linked artifact files, missing files and checksum failures.
+An artifact lease prevents cleanup while a worker/export reads its parent. Cleanup removes
+only unreferenced store-owned revisions whose lease can be acquired; it never removes the
+current/preview/final or a leased revision. A failed publication removes its new orphan and leaves
+the prior manifest valid. Restart recovery marks running jobs interrupted only when their
+owner process is gone; it preserves current and preview. Multiple server processes sharing
+a project must not recover another live server's job.
+
+Tests cover preview/apply/discard across fresh store instances; stale parent/job refusal;
+cancellation and interrupted-process recovery; failed atomic manifest write; corruption and
+symlink rejection; and cleanup while a revision is leased. The UI retrieves persisted stage
+results on reopen; live jobs use the existing supervised worker status/cancel lifecycle.
+
+### Stage bundle and canonical resume
+
+`src/haute/modelling/_staged_runtime.py` owns stage revisions. A revision consists of one
+immutable prepared source Parquet, the canonical evaluation plan, t-boost checkpoint parts
+per required fit (fit evidence and stage chain), path candidates, point results and
+diagnostic objects, plus JSON metadata. Its storage is defined in "Stage storage
+(version 2)": immutable content-addressed objects named by a revision manifest. Fixed
+logical member names, SHA-256/length descriptors and expanded-size limits protect loading.
+Never call `extractall` or accept member names as filesystem destinations. Source and plan
+hashes bind every checkpoint and prediction series to the same row identities and
+partition.
+
+An exploration TrainingJob captures its session at the adapter seam, and records the
+retained fits before its normal temporary-data cleanup. Resume reads the parent revision's
+members through `StageBundle`'s read-only resolver, writes new members to job-owned
+scratch, reconstructs the canonical TrainingJob from its captured
+kwargs, and runs its existing preparation, partitioning, metrics and artifact pipeline.
+Only the adapter fit seam changes: it applies the requested public session operation rather
+than calling any booster. It validates the fit configuration and stage parent before doing
+work. Full, prune, band and smooth each return independent inference snapshots. Pruning
+can rebuild path evidence when its structural controls change, without fitting trees.
+The bundle retains one set of diagnostics per still-valid stage; visibility toggles only
+read those saved diagnostics. Any failure or cancellation discards the new bundle and
+leaves the leased parent untouched. Reserved test rows remain unused on every resume.
+
+Behavioral tests build through TrainingJob, save/reopen a bundle, patch the booster to fail,
+then prune, band and smooth through the same evaluator. Predictions and diagnostics must
+match the public library recipe; stage provenance/row partitions match; checksums, unknown
+members, stale configuration and missing parents are refused; restart restores all overlays.
+
+### Stage job API and worker transport
+
+`routes._training_stages` binds durable model scope to the existing training lifecycle.
+A TrainRequest may contain `stage: {operation, parent_revision}`; full builds need no
+parent, later stages require the current durable revision. The same supervised worker,
+progress, cancellation, memory admission and terminal status protocol serve every action.
+Full builds use ordinary upstream preparation with exploration purpose. Later stages read
+the current revision's members in place, pinned by the running-job record, and skip
+upstream execution. The request's
+fit configuration and upstream graph fingerprint must match the saved build. A model
+rename, visibility change or draft post-fit setting does not invalidate the GBM.
+
+The worker publishes a `stage_state` artifact alongside its ordinary inference/evaluation
+artifacts and a `staged` response with stage diagnostics, recipes and evaluation identity.
+The `stage_state` artifact is a delta archive: a revision-manifest proposal plus only the new
+objects. Publication ingests and validates it outside the lifecycle lock, then publishes the
+revision pointer only inside the job's completion claim. Cancellation or
+failure leaves current and preview unchanged and terminates the durable job marker.
+Pruning, banding and smoothing complete as previews; Apply/Discard use explicit revision compare-and-swap. Read,
+Apply and Discard endpoints resolve the same project/source/node/model scope as training;
+clients never supply artifact paths. Read recovers interrupted jobs and restores saved
+results. Tests exercise real worker resume without boosting, complete artifact validation,
+stale graph/config refusal, preview publication and cancellation before completion.
+
+### Cross-validation exploration
+
+For staged cross-validation, canonical selection fits retain one checkpoint and held-out
+prediction stream per fold. A development reference fit supplies the inspectable native
+model, tables and pruning path; it is labelled as such and never consumes final-test rows.
+Stage prediction curves and primary metrics use pooled out-of-fold predictions, not the
+reference fit's in-sample predictions and not averages of separately binned fold charts.
+The reference fit is included in the disclosed fit count. A stage operation applies its
+recipe independently within every retained fold and within the reference fit. No support
+set or path index is transferred between fits. Validation arrays carry canonical row
+positions; duplicate, missing or wrong-fold predictions fail before publication. Temporal
+CV uses precisely its plan's scored windows, excluding earlier training-only rows.
+
+The canonical evaluator captures validation predictions before releasing each fit's frame.
+The stage runtime writes those frames/row positions to owned scratch, pools them in source
+order and supplies them at the existing diagnostics seam. This reuses the normal metrics,
+AvE/exposure/left-out and residual computations. Optional model explanation views are
+labelled reference-fit diagnostics; stage overlays retain one shared OOF provenance. The
+bundle retains all required fit checkpoints; UI stage toggles never launch prediction work.
+Tests compare pooled metrics and AvE against manual predictions from each saved fold,
+prove no test-row fit/scoring, and patch boosting out before post-fit replay across all folds.
+
+#### Staged GBM tuning and finalisation
+
+Staged tuning compares full GBMs only. Each trial owns temporary fold checkpoints and
+held-out predictions; after objective comparison only the best trial's evidence survives.
+The selected development reference fit is the one additional fit already counted by the
+tuning contract. Holdout curves use the winner's held-out predictions, never that reference
+fit's training predictions. Post-fit jobs replay retained winner fits without running the
+study again; authored tuning configuration remains part of build identity. Finalisation is
+an explicit admitted job on the frozen source and applied recipe. It fixes the winning GBM
+parameters, refits through the canonical evaluator and may score reserved test rows. It
+does not replace exploration curves. Only final results may be logged as candidates.
+
+
+Finalisation publishes a separate `final` revision bound to the applied current revision;
+full/band/smooth publication and pruning Apply invalidate it. Its bundle also retains the
+ordinary native model, feature contract and evaluation artifacts. `stages/restore-final`
+validates and rehydrates these into the existing job-owned artifact contract so Save and
+Log survive process restarts. It does not run the booster or return checkpoint rows.
+Candidate logging records `haute.output_stage` and the replayable `stage_recipe`, for both
+GUI and script paths. Exploration logging is rejected at both entry points. Upstream identity
+includes the shared local-source content proof and imported utility fingerprint; remote
+providers continue using the explicitly frozen build snapshot until a new build.
+
+
+Applied recipes retain `applied_path` separately from draft `path` settings. Pruned stage
+snapshots also retain their path settings, so selecting a previously built pruned parent
+preserves its replay settings even after a different output chain was selected. Only a
+successful full publication clears the canonical applied recipe; failed/cancelled rebuilds
+leave it intact. All model restorers synchronise completed recipes, including background
+models. Overlay compatibility includes target, task, positive-class, weight, offset and
+loss semantics as well as source/plan/partition identity. Store access rejects symlinked
+`.haute`, `staged-training` and model-key directories before lock creation or writes.
+Confirmed model removal detaches durable revisions and cleans them after reader leases end.
+
+`StagedConfig` accepts optional `enabled: {pruned: bool, banded: bool, smoothed: bool}`.
+With this object, parent fields are derived from enabled predecessors; disabled operations
+are rejected. Without it, legacy explicit parent settings keep their semantics. Saved/exported
+applied recipes remain independent of the flags. Resuming from a parent whose recipe does
+not match the enabled predecessor chain fails with an instruction to rebuild that parent.
+Tests cover all phase combinations, boolean validation, legacy compatibility, unchanged
+applied recipes and real checkpoint reuse without booster fitting across skipped phases.
+
+### Recoverable modelling decisions
+
+Pruning, banding and smoothing all publish previews; only explicit Apply promotes a
+post-fit candidate. Publication, failure, discard and cancellation preserve current/final.
+A manifest may retain up to ten named checkpoints (trimmed names of 1–80 characters), each
+referencing an immutable applied revision plus its saved configuration. Older manifests
+without checkpoints read as an empty list. Cleanup and artifact leases include checkpoints;
+confirmed model removal releases them. Checkpoint APIs return bounded metadata, not a copy
+of every historical diagnostic response. Save/restore/delete use expected current revision
+and refuse active jobs; restore verifies the retained artifact and upstream identity and
+requires the saved per-model configuration combined with current shared settings to match
+the saved fit identity. Restore clears any candidate/final artifact and returns the saved
+per-model settings so the canonical editor can adopt them. It never refits a booster.
+
+### Automatic preparation of the next stage
+
+Interactive full-stage requests may opt into `prepare_next`; applying a preview may opt
+into the same flag. After publishing the full GBM, or explicitly applying a candidate,
+queue exactly the next enabled phase against that applied revision. Disabled phases are
+skipped using the configured chain. Preview completion itself never advances the chain.
+Keep the completed applied model while the next preview runs; never apply it automatically.
+Use the existing supervised post-fit training job, immutable parent and evaluation fits,
+without rerunning upstream or GBM training. Full-fit follow-up starts after its resource
+cleanup; Apply starts it server-side, independent of the browser staying open.
+
+Persist `next_preview` metadata with the applied publication: operation, parent revision,
+owner PID, queued/failed/interrupted status and message. Stage begin consumes the matching
+queue atomically; polling observes queued as well as running work. A failed start records
+an actionable message without undoing the successful stage. Restart marks a dead owner's
+queued work interrupted; reads/discard/restore never trigger new training. No enabled next
+phase means no follow-up. Existing callers retain opt-out behavior by default. Cancel or
+failure before full-fit publication never queues follow-up; cancelling the next preview
+preserves its applied parent. Concurrent/replaced parents cannot launch stale continuation.
+
+Tests: real full fit automatically prepares a pruning candidate without a second booster
+fit; Apply prepares the next enabled stage; skipped/all-disabled/last phases; no auto-apply
+or recursive preparation; cancelled/failed follow-up preserves parent; queue recovery and
+stale revision refusal; frozen request settings and browser-independent continuation.
+
+Stage jobs record `automatic` (false for old manifests/manual runs, true when consuming a
+queued continuation). This is server-owned metadata for rendering a continuous parent run;
+it does not change the worker operation or cancellation identity. Persist it across restart
+and completion. Tests verify automatic queue claims and manual runs are distinguished.
+
+Cancel on a just-completed parent also cancels its automatic continuation, even when the
+browser has not observed the handoff. Under the manifest lock, match the current applied
+record's response job ID to the cancelled parent: clear a matching queued continuation or
+return its running automatic job ID for normal service cancellation. Never cancel a manual
+job or a continuation belonging to a replaced applied revision. Parent success is retained.
+Tests cover queued/running handoffs, manual/replaced jobs and unchanged applied results.
+
+
+## Post-fit path families
+
+The shared Paths canvas has Pruning, Banding and Smoothing views. Candidate inspection is
+transient and read-only: selecting a point changes linked factor/table diagnostics without
+changing canonical parameters, applied recipes, stages or the durable preview revision.
+Suggested, Selected and Applied are separate markers. Applying a point commits the exact
+candidate evaluated and its selected settings; unchanged means use the logical parent and
+skip that phase, including when rebuilding from an already-applied descendant.
+
+The preceding stage prepares the next enabled path inside its existing running/cancel state.
+No preview button, additional preview wording or global disabled state is introduced.
+Parameters remain in their own pane. Actual blocking reasons remain at the bottom.
+
+A bounded preview envelope stores typed path summaries plus a compact artifact containing
+source and parent checkpoints once, per-fit candidate deltas and per-point canonical
+responses. A read-only point endpoint validates current/preview/path/point identity, leases
+that artifact and returns diagnostics. Apply verifies the same identities and materialises
+only the selected checkpoint. Inspection has its own request fence for rapid A/B selections.
+No read endpoint fits trees, transforms candidates, publishes a preview or rewrites config.
+
+Each band/smooth setting transforms every retained training fit and scores matching held-out
+rows with the canonical evaluator. CV evidence pools those fold predictions; development
+reference complexity is labelled separately. Final-test data is untouched. Pruning retains
+its native OOB evidence label. Without held-out evidence, show development evidence and do
+not claim a validation recommendation. Curves include the unchanged parent and explicit
+rejected/unchanged points. Loss deltas remain finite near zero. A configurable practical
+loss tolerance chooses the simplest feasible point within tolerance of BOTH the best point
+and unchanged parent. Internal banding budgets remain hard maxima, distinct from this
+selection tolerance. Final refit replays policy and recomputes fold-specific proposals.
+
+Testing: inspection leaves canonical state unchanged, linked factor/tables show the same
+point, out-of-order reads cannot replace newer selections, stale Apply changes nothing,
+chosen settings are adopted only after success, and baseline restores its logical parent.
+Verify retained-fit evidence and labels, exact applied predictions, reload/cancel lifecycle,
+nearest enabled successor preparation and bounded artifacts without row/candidate matrices.
+
+
+Path module map: `src/haute/modelling/_stage_paths.py` owns family preparation, canonical
+retained-fit scoring, bounded summaries, recommendation, compact artifacts and materialisation.
+`src/haute/routes/_training_paths.py` owns leased point reads and exact Apply, preserving
+unrelated drafts and checking current/artifact/path identities. Inspection reads one hashed
+JSON member without extracting checkpoints. The store caches only checksum strings keyed by
+inode/device/size/mtime/ctime; modifying a published file invalidates that cache.
+
+Path outcome reuse compares native inference-bank fingerprints for every retained fit, not
+only the reference fit or rounded predictions. Identical outcomes share one canonical
+evaluation; aliases keep their own settings, recipes, rejection status and exact Apply
+identity. Reusing diagnostics rebuilds the selected reference snapshot and export metadata
+without scoring rows again. The point summary labels its equivalent point.
+
+Synchronous path Apply leases its unpublished candidate throughout preparation and commit;
+concurrent cleanup skips leased pending files, and abandoning the transaction removes them.
+Pruning paths first inspect each retained fit's mandatory table floor and prepare a common
+bounded budget schedule at or above every floor. A sparse reference fit cannot make another
+fold's valid path fail. Reference-fit table counts remain clearly distinguished from budgets.
+
+### Path preparation reuse
+
+Interactive path preparation reuses a bounded worker-owned cache of validated parent
+sessions. Each candidate receives an independent stage/recipe branch; immutable training
+arrays and native full-fit evidence may be shared, but applying or reconfiguring one branch
+must not mutate another. A checkpoint replacement invalidates its cache entry. Release
+the cache with the bundle, including on cancellation. Full inference templates use the
+library's binary round-trip internally. Training checkpoints follow t-boost's version-2 format;
+older stage artifacts are refused (see "Stage storage (version 2)").
+
+Applying an already prepared point publishes a revision manifest that references its exact
+parent checkpoint parts, candidate delta and selected-point identity. It is a pointer
+publication: it copies no object and never deserializes or recompresses training arrays. Subsequent work restores that same candidate through
+the normal session reader; stale revision checks, leases, checksums and atomic publication
+remain mandatory. Test reload and subsequent-stage predictions against direct replay.
+
+Path candidates compute canonical losses, metrics, AvE and compact decision information.
+Optional SHAP/PDP diagnostics are deferred until the final model evaluation; exploratory
+paths explicitly identify their diagnostic scope and do not report deferred work as errors.
+Full/final training retains its existing diagnostic contract. Table views remain available
+on demand. Workspace reads and path selection use compact projections, omitting dense
+table cells while retaining shape/count summaries and factor curves. Full table retrieval
+is explicitly requested and fenced by the same revision identity. Saved artifacts retain
+full diagnostics. Revision/configuration checks read the immutable compact view sidecar instead of dense
+result arrays. `src/haute/modelling/_stage_views.py` owns this projection and table
+shape digests. View sidecars share revision checksums, leases and atomic publication
+with full results; older manifests project their existing full result on demand.
+Corruption is rejected in either representation. The session cache uses a conservative
+uncompressed-checkpoint size estimate, a 512 MiB retention budget and the existing
+worker RSS guard. Oversized sessions remain uncached.
+
+Changing only post-fit settings does not rerun the data-dependent evaluation preview.
+Evaluation previews reserve their bounded projected-data work estimate rather than a
+whole training budget; an actual admission refusal identifies evaluation preview work.
+Training admission and cancellation guards are retained.
+
+Regression checks cover isolated candidate branches, cache invalidation/bounds, identical
+canonical losses and applied predictions, old checkpoint reads, compact/full projection
+parity, stale reads/Apply, concurrent cleanup, deferred diagnostic scope, and evaluation
+preview admission alongside a running stage. Keep the frequency browser/performance
+runner in `scripts/modelling_audit/`, configurable for an isolated project and server;
+retain request timings, warnings/errors, selected settings and final-stage evidence.
+
+A path worker shares its immutable partition parquet between candidate evaluations of the
+same retained fit. Reuse is keyed by the complete plan memberships/fit, task/target/class
+encoding and split semantics, and only applies to the bundle-owned source. Class labels
+are restored with a cached partition. The bundle owns and removes these temporary files
+on success, failure or cancellation; they are never published in checkpoints. A 256 MiB
+per-worker disk allowance bounds retained partitions; fits beyond it use normal temporary
+partition ownership and cleanup without retaining additional copies. Candidate
+predictions, loss and diagnostics still pass through the canonical evaluator independently.
+JSON serialization reads TrainResult fields directly: it must not recursively copy the
+already JSON-compatible diagnostic payload just to encode it. Tests compare independent
+candidate metrics/diagnostics and verify one partition write per retained fit plus cleanup.
+
+#### Path jobs without redundant writes
+
+A path job writes each retained fit's parent checkpoint at most once, and only when its
+stored state changes:
+- pruning writes each fit once, after reconfiguring its path structure;
+- banding and smoothing write a fit only to flatten an earlier selected candidate into its
+  parent.
+
+`StageBundle.replace_checkpoint` performs the write. It keeps the session it wrote as the
+cached parent for the new file identity, under the existing cache budget, so the job never
+reloads and re-validates a checkpoint it has just written.
+
+Each point result is written once. It records its own family as `prepared_path` and stores
+no family summary.
+- Every reader (`read_path_result`, `read_path_artifact`) derives `staged.paths` as follows:
+  every family the artifact retains that is valid for the point (its parent revision is the
+  point's), plus the point's own family with the point selected.
+- This is the form previously embedded at write time. Because it is never stored, rebuilding
+  or invalidating a family cannot leave a point referring to a missing or stale family. A
+  point lists the families its artifact actually retains.
+- A member without its own retained family, or in the legacy embedded form, is refused.
+
+Stage-bundle manifests are decoded with the same strict rules.
+
+Point results and durable stage results share one strict JSON decoder: non-finite and
+overflowing numbers are refused.
+
+t-boost owns the default pruning budget schedule. Haute raises each budget to the common
+mandatory-table floor across retained fits and removes duplicates.
+
+**Tests:**
+- a pruning path loads and saves each fit's checkpoint once;
+- a banding or smoothing path saves each fit at most once, and not at all when there is
+  nothing to flatten;
+- hydrated point results equal the published `staged.paths` contract for selected,
+  non-selected, identity and earlier-family points;
+- stored point members contain no family summaries;
+- a re-checksummed member containing NaN, `1e999`, a foreign `prepared_path` or the legacy
+  form is refused;
+- a manifest containing NaN is refused by both readers;
+- after pruning is rebuilt under a still-valid banding family, the banding points read the
+  new pruning family;
+- after Apply of `unchanged` drops the banding family, every retained pruning point stays
+  readable and no longer lists banding.
+
+Categorical AvE aggregation dictionary-encodes levels to compact Arrow codes, then reduces
+weighted actual/predicted totals and mass with NumPy. This avoids a separate Polars group
+query for every feature of every path point. Keep labels variable-width (no fixed-width
+NumPy Unicode expansion to the longest category). Keep the existing top-N by mass, lexical tie
+breaking, Missing/Other buckets, exposure weighting and rounding. Use the same kernel for
+ordinary and staged diagnostics; test weighted manual totals and categorical dtype parity.
+
+
+### Training response artifact transport
+
+Training workers always stage the complete JSON response as `output/training-response.json`
+and return its size/SHA-256 descriptor with the normal artifact set. The 4 MiB worker
+metadata limit remains unchanged; no inline fallback, diagnostic truncation or second
+training path. Response JSON is bounded at 256 MiB (and the configured artifact limit).
+The parent requires exactly one staged response artifact at the canonical relative path,
+checks containment, regular-file/no-symlink status, byte size and digest before parsing,
+then validates response object/schema/finiteness, job identity and evaluation/tuning/stage
+links through the existing completion flow. Corrupt, missing, oversized or duplicate
+response manifests fail as protocol errors. The response file is transport-only, retained
+in the owned job directory but omitted from export handles. Cancellation/failure removes
+the directory; successful publication transfers ownership unchanged. Existing saved model
+artifact handles remain valid. Tests exercise real worker-to-parent publication above the
+IPC limit without lost diagnostics, invalid response artifacts, unchanged cancellation
+cleanup and cross-job/schema guards. Verify a frequency fit with its configured exposure.
+
+
+### Durable stage result files
+
+Superseded by "Stage storage (version 2)". Result bodies are revision members, and their
+diagnostics are shared objects. The rules below still hold where that section does not
+replace them: limits, finiteness, link and size checks, and hydration before commit.
+
+Keep the 32 MiB manifest limit: current, preview, final and named checkpoints reference
+immutable revisions rather than embedding diagnostic arrays. Each
+result is bounded at 256 MiB, JSON-only and finite. Paths derive exclusively from validated
+revision IDs; reads reject missing, linked, oversized or checksum-mismatched result files.
+Version-1 inline manifests remain readable and migrate atomically on their next write.
+Revision envelopes also hold the nullable result job ID (at most 128 characters), so
+cancelling a continuation does not decode diagnostics. Result files are durable before
+publishing the version-2 manifest. A failed manifest write removes only newly created result files and leaves the previous manifest/revisions usable.
+Named checkpoints share their revision's result file. Internal metadata operations verify
+file descriptors without decoding diagnostics; public snapshots hydrate full results with
+the existing shape and public schema version 1. Prepare the hydrated return value before
+the atomic commit, so a read/parse failure cannot trigger rollback after publication.
+Cleanup removes unreferenced result files with the same revision lease as stage bundles,
+including abandoned files and recognised atomic result-write temporaries after a crash.
+Applied stages/checkpoints and active readers retain both files. Tests cover combined full/preview results above 32 MiB,
+restart, checkpoints, legacy migration, failed atomic publication, result corruption/size/
+links and cleanup under a lease. Validate publication with real frequency-stage diagnostics.
+
+Evaluation preview admission is sized from its bounded target/key projection and partition
+memberships, not the full-feature training forecast. A small row limit on a large source
+must reduce that reservation; the executor retains its operator and RSS guards for upstream
+work. Unknown source cardinality keeps the conservative whole-budget reservation.
+
+### Stage storage (version 2)
+
+Format versions are: store manifest `schema_version` 3, revision manifest version 2,
+portable `.hstage` version 2, and t-boost training checkpoint and path-candidate version 2.
+Public stage-state schema version 1 is unchanged; storage versions never appear in public
+responses.
+
+**Layout per model key** (`.haute/staged-training/<key>/`):
+- `manifest.json`: the pointer for current, preview, final, job, named checkpoints and
+  next preview;
+- `revisions/<revision>.json`: immutable revision manifests;
+- `objects/<sha256>`: immutable content-addressed files;
+- `staging/`: parent-owned ingest temporaries;
+- `leases/`: reader pins.
+
+Every path component is checked for symlinks and reparse points. Objects are regular files
+that are never rewritten. Each is verified by SHA-256 on ingest and on a reader's first
+open, and the reader hashes and parses through the same handle. The checksum cache is sized
+for a store's object count.
+
+**Revision manifest.**
+- `objects` lists the revision's complete closure: logical name → `{sha256, size, kind}`.
+  `parent_revision` is provenance, never a retention edge.
+- `result` is the typed result envelope: small fields plus diagnostic references.
+- `metadata` holds `job_kwargs`, `fit_config_digest`, `fits`, `staged`, `paths` and `path`,
+  as references with no embedded diagnostics.
+- Logical names follow one allowed-name grammar (`_stage_objects._NAMES`):
+  - `source.parquet` and `plan.json`;
+  - `fit/<fit>/evidence` and `fit/<fit>/chain`, the t-boost checkpoint parts;
+  - `path/<path id>/<point>/<fit>.candidate` and `path/<path id>/<point>.result`;
+  - `snapshot|table|history/<sha256>`, the diagnostics objects;
+  - `export/<model.native|feature-contract.json|evaluation-results.json|evaluation-report.json>`
+    for a finalised revision, whose `plan.json` is the final-fit plan.
+
+  A path result is a split envelope. Its diagnostic objects are in the revision's closure.
+- Pointer records keep `revision`, `build_id`, `parent_revision` and `config_digest`.
+  `sha256`/`size` describe the revision-manifest bytes. Two private fields are never shown
+  publicly: `result_job_id`, and `view`, the compact view object's `{sha256, size}`.
+
+**Limits, enforced at write:**
+- the pointer manifest: 32 MiB;
+- a revision manifest: 4 MiB;
+- each JSON object: 256 MiB;
+- binary members (source, checkpoint parts, candidates): bounded only by the revision's
+  total expanded budget, the previous 4 GiB bundle limit.
+
+**Diagnostics.**
+- A stage snapshot is an object keyed by its content. It records the t-boost stage
+  revision, the evaluation identity and a diagnostics schema version.
+- Its dense fields (`tboost_tables` and each loss history) are separate objects, referenced
+  by digest, so each is stored once.
+- `validation_loss_history`, reference-fit history and final-fit history stay distinct.
+- Every stage, the selected one included, is a snapshot reference.
+- Point results (`TrainResult` form) hydrate their top-level diagnostics from their own
+  snapshot.
+- Store results are response projections. They reference shared objects where provenance
+  matches, and response-specific projection is applied after hydration.
+- Final results keep their own final-fit diagnostics plus the exploration snapshot
+  references.
+
+**Hydration.** One hydration function serves every read boundary: store snapshots, path
+reads and restore-final.
+- Reads (`snapshot`, `recover`, `lease`) pin the pointer's revisions under the manifest
+  lock, then hydrate after releasing it.
+- Mutations (publish, Apply, discard, checkpoint) prepare their response under the lock,
+  before the pointer is written. A response failure therefore never follows a commit.
+  Publication's new result is the one in memory and is never read back.
+- Compact reads skip table objects and thin histories through `compact_response`.
+- Only the revision-level compact view is persisted; there are no per-snapshot or
+  per-point views. A compact status read verifies the view against the pointer record's
+  digest and parses only it, never the revision manifest. A damaged manifest is refused by
+  full reads, leases and collection.
+- `staged.paths` is always derived on read (see "Path jobs without redundant writes").
+- Evaluation member strings in path responses keep their present form.
+- Hydrated responses must deep-equal the frozen goldens (`tests/test_stage_goldens.py`).
+
+**Jobs.**
+- The worker request carries the store key and parent revision.
+- The worker reads its parent revision in place through the parent's validated reader
+  (`StageStore.open_parent`). It is given the store key, the revision and the manifest's
+  digest and size, takes no pin and no token, and writes nothing under the store.
+- Training reads Parquet by path, and no path to a store object is handed out. The worker
+  therefore copies the rows once, through their verified handle, into its own scratch on
+  first use (`StageBundle.source`); parent-side opens never copy them. `TrainingJob` is
+  unchanged.
+- `StageBundle` separates read-only members from a job-owned scratch root.
+- The worker never writes under the store. It returns a delta `.hstage`: a manifest proposal
+  plus new objects only, as its single `stage_state` artifact. The worker protocol's
+  artifact and metadata limits are unchanged.
+- The parent stream-copies new objects into `staging/`, verifies them, and checks that every
+  inherited reference is in the pinned parent's closure.
+- Its artifact validation reads the delta in place (`DeltaRevision`): carried objects from
+  the archive, inherited ones from the leased parent by member name and identical
+  reference. It compares the hydrated `metadata.staged` with the public response without
+  nulls, and extracts nothing.
+- After ingest, the job directory keeps only the ordinary artifacts. Parent cleanup never
+  unlinks a store object.
+
+**Pinning.**
+- A running job's parent is pinned by the running-job record: `begin`, `apply`,
+  `apply_path`, `checkpoint` and `remove` refuse while a job runs, and publication requires
+  `expected_revision == current`.
+- No lease is held for a job's lifetime. An orphaned worker's output is never ingested.
+- Readers (inspection, Apply, export, restore-final) take multi-holder pins: marker files
+  owned by process tokens, as in the snapshot store. One token directory,
+  `.haute/staged-training/processes/`, serves every model scope, so a process holds one token
+  file. Apply and checkpoint restore verify the promoted revision's manifest checksum before
+  the pointer changes.
+- A pinned store revision is read only through verified object handles. JSON members,
+  checkpoint parts (t-boost reads the handle), candidates, exports and repacking all go
+  through them. No path to a store object is ever handed out to be reopened; only an
+  extracted portable bundle's private copies have paths.
+- Housekeeping after a commit (collection, and an older store's reclaim) logs its failures
+  and leaves them for a later collection. It never fails a committed change. Pins are registered under the manifest
+  lock and probed by cleanup without waiting. Concurrent readers of one revision proceed
+  together, and released pins are removed.
+
+**Publication.**
+1. Validate and hash new objects in `staging/` outside the lock.
+2. Write the revision manifest. It is a root while its publisher is live: the running-job
+   record, or the Apply `preparing` pin.
+3. Install the objects without clobbering. An existing digest is verified and the duplicate
+   dropped. This works on POSIX and Windows; interrupted link-then-unlink installs are
+   repaired; sharing violations are retried.
+4. Under the manifest lock, check compare-and-swap and replace the pointer.
+
+A failed publication never deletes an object it installed or deduplicated. Response
+preparation happens before commit; a failure after commit never rolls back. The guarantee
+is against process crashes; directory fsyncs are not performed.
+
+**Cleanup.**
+- It computes reachability and deletes within one manifest-lock hold.
+- Roots: current, preview, final, named checkpoints, pinned revisions, and live write-ahead
+  manifests.
+- A missing, corrupt or checksum-invalid root manifest stops deletion. Every root carries
+  its manifest's expected digest: the pointer record's, or the one a pin marker records.
+  An altered manifest that still parses therefore cannot redirect reachability.
+- It removes unreachable objects, unrooted revision manifests, dead staging files, stale
+  pins and recognised temporaries. Open files on Windows are skipped and retried.
+
+**Old stores.**
+- A pointer of any other schema reads as no saved stages. This is a state, not an exception,
+  so a full build can proceed. The public stage state has no field for a message, so none is
+  shown.
+- No legacy content is interpreted, and reads never delete. The first full build that
+  publishes replaces the pointer and deletes the old layout's files (`*.hstage`,
+  `*.result.json`, `*.view.json`, `*.pending` and their leases).
+
+**Apply** publishes a revision manifest built in place (`StageStore.prepare_members`), with
+no archive written:
+- it references the parent's closure plus the selected candidate objects;
+- the result envelope carries the merged configuration (drafts, enabled phases, applied
+  recipe and path, saved configuration) and response metadata;
+- it never rewrites an object or flattens;
+- envelope depth never exceeds one, because path jobs flatten before preparing;
+- the closure lists exactly the snapshots its remaining results reference.
+
+**Finalise** refits from source, plan, parameters and recipe. Its closure is the source,
+the final plan, the export members, the final result and diagnostics, and the exploration
+snapshot references.
+
+**Restore-final** resolves the five export members under a reader pin into job-owned
+artifacts. It makes no archive copy and needs no `stage_state` artifact.
+
+**Portable `.hstage` v2.**
+- A zip of one revision manifest plus its objects (`ZIP_STORED`), read by the same
+  validator as the store.
+- The delta variant lists inherited objects by reference only.
+- Used by scripted `run_stage_job`, `TrainResult.stage_checkpoint_path`, worker transport
+  and tests.
+
+**Tests:**
+- interleaving barriers at each publication step, with concurrent cleanup;
+- two publications sharing an object, one of which fails;
+- a dedup hit against an object being collected;
+- an interrupted link-then-unlink;
+- commit and rollback boundaries;
+- job pinning, with inspection of current staying responsive;
+- concurrent readers;
+- integrity: altered data with a kept digest, mismatched evidence pairing, a file replaced
+  between verification and use, checksummed but invalid JSON, an inherited reference
+  outside the closure;
+- golden equivalence for holdout and CV, full and compact;
+- named-checkpoint retention across collect and restart;
+- restore-final after the job artifacts expire;
+- more than 64 new objects through the real worker protocol;
+- per-kind caps;
+- an extensionless source;
+- cross-filesystem staging;
+- Windows open-file contention;
+- old-store recovery through a full build.
+
+### Bag loss history
+
+t-boost history rows retain aggregate train/eval deviance plus each bag's own
+round and train/eval deviance (`bag_N_iteration`, `bag_N_train_deviance`,
+`bag_N_eval_deviance`, one-based bag numbers). Live rows carry the latest observed
+point for each bag. Completed rows align rounds and hold stopped bags' last
+observed losses in the mean; individual bag round numbers stop advancing. These
+are diagnostic bag losses, not losses of averaged ensemble predictions. History
+thinning must preserve the first and last observed point for every bag.
+
+Live history is thinned independently per bag and packed as columns with each
+bag's explicit iteration; the aggregate retains its own iteration column. The
+row budget therefore stays bounded as bag count grows, and a faster bag cannot
+erase a slower bag's early or late points.
+
+Compact stage reads apply the same completed-history sampling budget as training
+responses, including nested stage histories. Full artifacts keep the original
+curves; first/last bag points and the best-iteration row survive sampling.
+
+`src/haute/modelling/_loss_history.py` owns the shared history budget and completed
+curve projection used by training responses and compact workspace views.

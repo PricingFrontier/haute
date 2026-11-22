@@ -788,6 +788,30 @@ class ExploreConfig(CodeSurfaceConfig, total=False):
 
 
 @closed
+class InteractiveModelConfig(TypedDict, total=False):
+    """One model of an interactive build: its own settings over the ones its models share."""
+
+    id: Required[str]
+    """The model's id, which its runs are kept under; it never changes."""
+    name: Required[str]
+    """The model's name, shown on its entry and given to its run."""
+    algorithm: Required[str]
+    """The model type, `tboost`."""
+    feature_columns: list[str]
+    """The columns the model trains on."""
+    params: dict[str, Any]
+    """The model type's own parameters, by name."""
+    stages: dict[str, Any] | None
+    """Versioned staged t-boost settings and applied recipe; absent keeps legacy fitting."""
+    tuning: dict[str, Any] | None
+    """Hyperparameter tuning settings; `null` or absent trains with `params` as set."""
+    monotone_constraints: dict[str, int] | None
+    """For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none."""
+    feature_weights: dict[str, float]
+    """For each weighted feature, its weight in feature selection."""
+
+
+@closed
 class ModellingConfig(NodeConfigBase, total=False):
     """A Model Training node: trains a model on its input."""
 
@@ -808,6 +832,8 @@ class ModellingConfig(NodeConfigBase, total=False):
     """The family's own parameters, by name."""
     evaluation: dict[str, Any]
     """How the model is evaluated: the holdout or cross-validation split."""
+    stages: dict[str, Any] | None
+    """Versioned staged t-boost settings and applied recipe; absent keeps legacy fitting."""
     tuning: dict[str, Any] | None
     """Hyperparameter tuning settings; `null` or absent trains with `params` as set."""
     refit_on_development: bool
@@ -877,6 +903,11 @@ class ModellingConfig(NodeConfigBase, total=False):
     """For a binary classifier, the label trained as positive; `true` or `1` when absent."""
     device: Literal["cpu", "gpu"]
     """For XGBoost, whether it trains on the CPU or a GPU; the CPU when absent."""
+    interactive_build: bool
+    """Whether the model is built in the Modelling view (`true`); absent for a model built in the
+    node's own panel. It changes where the node is edited, never what it trains."""
+    models: list[InteractiveModelConfig]
+    """An interactive build's models, each with its own factors, directions and parameters."""
 
 
 MODELLING_CONFIG_KEYS: tuple[str, ...] = (
@@ -888,11 +919,14 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "params",
     "evaluation",
     "tuning",
+    "stages",
     "metrics",
     "mlflow_experiment",
     "output_dir",
     "mlflow_destination",
     "model_export_path",
+    "interactive_build",
+    "models",
 )
 
 
@@ -1386,7 +1420,38 @@ def _live_switch_gaps(
     ]
 
 
+def _interactive_model_configs(
+    config: Mapping[str, Any],
+) -> list[tuple[str, dict[str, Any]]] | None:
+    """Each model of an interactive build, by name, as the flat config it trains from;
+    ``None`` for a config without ``models``, which is one flat config already: a family's
+    node, or one model of an interactive build as the train route resolves it (the route
+    refuses an interactive build that has no models)."""
+    from haute.errors import NodeConfigError
+    from haute.modelling._train_config import TrainingConfigError, interactive_model_config
+
+    models = config.get("models")
+    if models is None:
+        return None
+    if config.get("interactive_build") is not True:
+        raise NodeConfigError("Only an interactive build holds `models`.", setting="models")
+    try:
+        return [(model["name"], interactive_model_config(config, model["id"])) for model in models]
+    except TrainingConfigError as exc:
+        raise NodeConfigError(str(exc), setting="models") from exc
+
+
 def _check_modelling(config: Mapping[str, Any]) -> None:
+    models = _interactive_model_configs(config)
+    if models is None:
+        _check_flat_modelling(config)
+        return
+    for _name, flat in models:
+        _check_flat_modelling(flat)
+
+
+def _check_flat_modelling(config: Mapping[str, Any]) -> None:
+    from haute.modelling._staged_config import resolve_stages
     from haute.modelling._train_config import (
         blank_evaluation_settings,
         build_train_params,
@@ -1398,6 +1463,10 @@ def _check_modelling(config: Mapping[str, Any]) -> None:
         validate_training_device,
     )
 
+    if config.get("stages") is not None:
+        resolve_stages(
+            config["stages"], str(config.get("algorithm", "catboost")), build_train_params(config)
+        )
     validate_modelling_config_values(config)
     validate_training_device(config)
     # A present evaluation and tuning are each checked; an absent evaluation, and a
@@ -1423,6 +1492,23 @@ def _check_modelling(config: Mapping[str, Any]) -> None:
 def _modelling_gaps(
     config: Mapping[str, Any], input_names: Sequence[str] | None
 ) -> list[ConfigGap]:
+    models = _interactive_model_configs(config)
+    if models is None:
+        return _flat_modelling_gaps(config)
+    # A gap every model has is the node's, said once; another names its model.
+    per_model = [(name, _flat_modelling_gaps(flat)) for name, flat in models]
+    shared = [gap for gap in per_model[0][1] if all(gap in gaps for _name, gaps in per_model)]
+    gaps = list(shared)
+    for name, model_gaps in per_model:
+        gaps.extend(
+            gap._replace(message=f"{name}: {gap.message}")
+            for gap in model_gaps
+            if gap not in shared
+        )
+    return gaps
+
+
+def _flat_modelling_gaps(config: Mapping[str, Any]) -> list[ConfigGap]:
     from haute.modelling._train_config import (
         blank_evaluation_settings,
         feature_selection_issue,

@@ -1,7 +1,4 @@
-import {
-  algorithmCapability,
-  publishesValidationFit,
-} from "../panels/modelling/algorithmCapabilities"
+import { algorithmCapability } from "../panels/modelling/algorithmCapabilities"
 import {
   interactionEntryIssue,
   monotoneConstraintTerms,
@@ -50,7 +47,6 @@ export type TrainingConfigurationIssueCode =
   | "evaluation-config"
   | "evaluation-fraction-sum"
   | "final-refit"
-  | "validation-fit"
   | "tuning-config"
 
 export type TrainingConfigurationIssue = {
@@ -297,24 +293,9 @@ export function trainingConfigurationIssues(
   const validation = evaluation?.validation as Record<string, unknown> | undefined
   const method = validation?.method
   const refit = config.refit_on_development
-  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
-  // Mirrors build_training_job_kwargs: the early-stopped validation fit is the
-  // model, so there is no refit setting and no cross-validation.
-  if (validationFit && method === "cross_validation") {
-    issues.push({
-      code: "validation-fit",
-      message: "t-boost publishes its early-stopped validation fit: choose holdout validation or no validation.",
-    })
-  }
-  if (validationFit && refit !== undefined) {
-    issues.push({
-      code: "validation-fit",
-      message: "t-boost is never refit: remove refit_on_development from the configuration.",
-    })
-  }
-  if (!validationFit && ((refit !== undefined && typeof refit !== "boolean") || (
+  if ((refit !== undefined && typeof refit !== "boolean") || (
     refit === false && method !== "single"
-  ))) {
+  )) {
     issues.push({
       code: "final-refit",
       message: "Skipping the final refit requires holdout validation.",
@@ -329,7 +310,7 @@ export function trainingConfigurationIssues(
     ? config.tuning as Record<string, unknown>
     : null
   if (tuning) {
-    if (!validationFit && refit === false && method === "single") {
+    if (refit === false && method === "single") {
       issues.push({
         code: "final-refit",
         message: "Parameter tuning requires a final refit.",
@@ -498,7 +479,10 @@ export function trainingConfigurationIssues(
   if (selectedFeatureColumns(config).length === 0) {
     issues.push({
       code: "feature-selection",
-      message: "Tick at least one feature on the Features pane.",
+      // An interactive build's features are the Modelling view's factors, in its Factors step.
+      message: config.interactive_build === true
+        ? "Tick at least one factor."
+        : "Tick at least one feature on the Features pane.",
     })
   }
   if (algorithm === "ebm") issues.push(...ebmParameterIssues(config))
@@ -535,20 +519,11 @@ function tboostParameterIssues(config: Record<string, unknown>): TrainingConfigu
     })
     return issues
   }
-  if (params.prune_main_effects === true) {
-    if (params.prune === false) {
-      issues.push({
-        code: "tboost-prune-main-effects",
-        message: "Set prune to true, or prune_main_effects to false: main effects are pruned only when pruning is on.",
-      })
-    } else if (hasNonZeroMonotoneConstraints(config)) {
-      issues.push({
-        code: "tboost-prune-main-effects",
-        message:
-          "Set prune_main_effects to false, or remove the monotonicity constraints in the Features pane: "
-          + "t-boost cannot prune main effects of a monotone fit.",
-      })
-    }
+  if (params.prune_main_effects === true && params.prune === false) {
+    issues.push({
+      code: "tboost-prune-main-effects",
+      message: "Set prune to true, or prune_main_effects to false: main effects are pruned only when pruning is on.",
+    })
   }
   return issues
 }
@@ -639,23 +614,12 @@ function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
   return Object.keys(constraints).some((name) => selected.has(name))
 }
 
-/** Whether a selected feature carries a non-zero monotone direction, as t-boost counts one. */
-function hasNonZeroMonotoneConstraints(config: Record<string, unknown>): boolean {
-  const constraints = config.monotone_constraints
-  if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
-    return false
-  }
-  const selected = new Set(selectedFeatureColumns(config))
-  return Object.entries(constraints).some(([name, direction]) => selected.has(name) && Boolean(direction))
-}
-
 /** Destination of a readiness issue, shared by tabs and the Train summary. */
 export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" | "features" | "params" | "split" {
   switch (issue.code) {
     case "evaluation-config":
     case "evaluation-fraction-sum":
-    case "final-refit":
-    case "validation-fit": return "split"
+    case "final-refit": return "split"
     case "catboost-params":
     case "tuning-config":
     case "glm-elastic-net-l1-ratio":

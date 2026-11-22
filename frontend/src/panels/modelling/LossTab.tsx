@@ -1,8 +1,9 @@
 /**
- * Full-size loss curve chart for the ModellingPreview panel: an adapter from
- * the training loss history to the shared `IterationLinesChart` (train and
- * eval curves, the best iteration as a dashed marker).
+ * Full-size loss curve chart for the ModellingPreview panel and the Modelling view's
+ * Learning curve pane: an adapter from the training loss history to the shared
+ * `IterationLinesChart` (train and eval curves, the best iteration as a dashed marker).
  */
+import { BagLossChart } from "./BagLossChart"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import { IterationLinesChart } from "../IterationLinesChart"
@@ -40,16 +41,21 @@ export function LossTab({ result, width, height = 280 }: LossTabProps) {
         </p>
       )}
       <ResponsiveChart width={width}>
-        {(measuredWidth) => <LossTabChart fit={fit} width={measuredWidth} height={height} />}
+        {(measuredWidth) => <LossHistoryChart fit={fit} width={measuredWidth} height={height} />}
       </ResponsiveChart>
     </div>
   )
 }
 
-function LossTabChart({ fit, width, height }: { fit: ShownFit; width: number; height: number }) {
+/** The curves of one fit's history: a finished run's (`shownFit`), or the rows a running fit has reported so far. */
+export function LossHistoryChart({ fit, width, height }: { fit: ShownFit; width: number; height: number }) {
   const lossHistory = fit.history
   if (!lossHistory || lossHistory.length < 2) {
     return <ChartEmptyState>No loss history data available</ChartEmptyState>
+  }
+
+  if (lossHistory.some((row) => Object.keys(row).some((key) => /^bag_\d+_iteration$/.test(key)))) {
+    return <BagLossChart fit={fit} width={width} height={height} />
   }
 
   // Find train and eval loss keys

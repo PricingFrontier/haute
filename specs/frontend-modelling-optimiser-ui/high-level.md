@@ -182,6 +182,134 @@ suppresses an error, while a terminal cancelled/superseded status returned by th
 in the auto-range error area. Deliberately strict helper parsers throw for malformed numerical
 result contracts rather than silently charting incorrect values.
 
+## The Modelling view
+
+The Modelling view is a view of the editor beside Pricing and Workbench, in which a model is
+built against its data. The view switcher always offers it, whether or not the
+workbench is enabled. While it shows it covers the area below the toolbar, and the pipeline
+editor stays mounted, invisible and inert, its keyboard shortcuts off, as under the
+Workbench view.
+
+- **The toolbar** is the view's own: the brand; **Main Menu**, which returns to the list
+  of modelling nodes (disabled there, available while read-only); **Model Setup** over **Training Split**, which open in the
+  right-hand column in place of the chosen model's settings (asking for the one that shows
+  goes back to them); one **Train** button that becomes **Cancel** while the chosen model
+  trains and returns to **Train** when it stops. Train is unavailable while the model cannot
+  train: it is greyed out and disabled, with the reason as its tooltip. Warnings never
+  insert a banner above the chart panes; configuration warnings appear after the controls
+  in the right-hand pane, and training failures appear at that pane’s foot. Cancel stops the
+  training and is disabled while its request is pending; and the project's controls (Pipeline files and Local files,
+  Assistant, Help, the branch, Save and Commit). It has no source selector, Pipeline
+  control, Undo or Redo (undo and redo are the keyboard's), and none of the pipeline
+  toolbar's canvas actions; a model trains on the source last chosen in Pricing. Model
+  Setup, Training Split and Train are off until a node is open. The Git, Files and
+  Assistant panels open at the view's right, one at a time, in the same place, and
+  opening Model Setup or Training Split closes them.
+- **The left column** is the palette column of the other views, as wide as the node palette
+  in Pricing, with the view switcher at its foot, beside the list of models and a model
+  alike, so the toolbar's controls after the brand start over the area beside it, as in
+  Pricing. It uses the same chrome background, muted uppercase Models heading and collapse
+  control. Collapsed, it shows the reveal strip and compact view switcher. Its open state is
+  shared with Pricing and Workbench; collapsing preserves the chosen model and workspace.
+
+- **Interactive builds.** The algorithm gateway lists one option after the six families,
+  **Interactive build**. Choosing it makes the node a t-boost model marked
+  `interactive_build: true`, with every upstream column ticked as a factor when the columns
+  are known, no validation set, one t-boost model named t-boost under `models`, and a
+  starting recipe that only boosts: `prune` false,
+  `band_tolerance` null (t-boost bands at 0.75 when the key is absent) and `graduate` false,
+  beside `n_trees` 4000, `max_interaction_order` 3, `n_bags` 8 and
+  `interaction_gain_hurdle` 2. The marker changes where the node is edited, never what it
+  trains: training reads its settings as any t-boost node's.
+- **One editor per node.** An interactive build is edited only in the view. Its node panel
+  has no pane tabs: it shows that the node is an interactive build, its model and its
+  target, and **Open in Modelling**, which opens the model in the view. A node set to a
+  family is unchanged and never appears in the view.
+- **Models.** The view opens on the interactive builds of the graph the canvas shows (the
+  pipeline, or the submodel open on the canvas), each with its target and whether its last
+  run is training, trained, failed or absent. A row opens the model. Main Menu returns to the
+  list, which also shows when the open model has left the graph.
+- **A model.** Its factors are named in the right-hand **Features** pane, one name for each column the model
+  can take as a factor, under a search by name, and a name selects the factor to chart.
+  A search that matches none says "No matching factors". Each name has the Workbench sliders settings icon and an always-visible inclusion
+  checkbox, in that order. Names select the chart and close open options; settings icons
+  independently toggle the numeric monotonicity controls for the chosen model. Only one
+  row is expanded at a time; toggling settings never changes the chart. Switching models shows that model's settings in the expanded
+  row. Collapsed rows show names, settings icons and checkboxes, with left-out factors muted. Rows have no disclosure
+  chevrons: a soft accent surface and a fine outline mark the selected row, with fitting
+  controls separated beneath its name. Fitting controls slide open and closed over 200ms
+  with a gentle fade, moving the rows below smoothly; reduced-motion settings make the
+  change immediate. Hover highlights the whole unselected row softly, without a dark block
+  behind the feature name or a change to the selected row's colour. Collapsed controls are
+  excluded from keyboard focus and the accessibility tree even during the closing animation.
+  Compact bulk-action buttons align above the list. Controls are disabled
+  while read-only, but searching, expanding and charting still work. Include all and
+  Exclude all remain available above the names; saved features missing upstream remain
+  visible with a removal control when expanded. The left palette holds the Models heading,
+  an entry per model and **Add**, stacked vertically, with no node-name subtitle; the old row and back arrow above
+  the chart tabs are removed. Long model names truncate within the palette, with the full
+  name available on hover or wrapped when expanded. An entry shows its chart colour and name;
+  clicking the name selects the model. The Workbench schema’s sliders settings icon, just
+  left of the checkbox, expands the model actions without changing the selected model. Show on charts toggles its
+  chart visibility (also available while read-only). Training progress stays under the name
+  even when collapsed, and a failed last run marks the name. Expanded controls offer
+  **Duplicate**, **Rename** and **Remove** (not for the last model). **Add** opens a model-type picker, currently offering only **t-boost**. Choosing it adds a model whose factors,
+  directions and parameters start as the chosen model's; **Duplicate** copies the model's
+  own settings under a new name; neither copies a run. Each model trains, and keeps its
+  latest run, on its own; only one training runs at a time.
+- **Settings.** The right column shows **Features**, **Parameters** and **Training** tabs for the chosen
+  model, Features first, with no duplicate model-name heading above them. Features contains the complete searchable, animated factor list
+  and its fitting controls, with no duplicate list on the left. The tab strip stays visible
+  while either pane scrolls. The chart and settings selectors use the same compact uppercase
+  typography, padding and bar height, with tabs sized to their labels and grouped at the left of
+  each bar. Switching tabs or opening a toolbar panel preserves the feature
+  search and expansion and keeps the model editor mounted for drafts and the stage
+  training actions. Model Setup and Training Split still open their shared settings in this
+  column. Read-only mode allows switching tabs, searching and charting; fitting and parameter
+  edits stay disabled. Settings content cannot extend the page beyond the viewport.
+- **Its columns.** Opening a model selects its node in the pipeline, as a click on it does,
+  so in automatic calculation the node is previewed and the preview brings the columns
+  reaching it, which are the factors the list offers. While they are not known the list
+  says so, with **Loading columns** while that preview runs, why it failed when it did, and
+  **Refresh**, which asks again and is the only way to ask in manual calculation. Once they
+  are known, a model with no column but its target, weight and offset lists "No factors".
+- **Links between panels.** A **Go to** link in the editor leads to the panel that holds its
+  pane, and is offered only for a pane that is not currently visible. The feature controls
+  open the right-hand Features tab when requested. An issue on the factors reads
+  "Tick at least one factor.", and its Factors are in the model's own settings.
+- **Not in the view yet.** An interactive build's Export pane cannot be reached, from the
+  view or from the node's panel: its model cannot be saved to a project file, logged to
+  MLflow or exported as a training script, so it stays with its training result. Its split
+  is set in Training Split, so its Parameters offer tuning, which compares trials on the
+  validation rows a split sets aside.
+- **Panes.** Tabs along the top of the area between the factors and the settings choose
+  what it shows: **Factor**, shared by every model, then the chosen model's own **Learning
+  curve** and **Tables**, from its latest run. Choosing a factor shows the Factor pane.
+- **Factor.** The selected factor's actual by level over its exposure, with the expected of
+  every ticked model from its latest run, each in its colour and the chosen model's line
+  heavier. A model that left the factor out is drawn too, dashed, from its predictions,
+  which do not use it, and named "(not in model)" in the legend; one whose run could not
+  chart the factor (a date, for instance) or never saw it is named in a line above the
+  chart; and one binned on other rows is named and not drawn. The models share their
+  split, so their levels and actuals agree. The chart says when no factor is selected,
+  when no model is ticked and when no ticked model has been boosted.
+- **Learning curve.** The deviance by boosting round, on the rows each bag trains on and on
+  the rows it holds back, each the mean over the bags. While the model boosts the curve is
+  the rounds reported so far, from the second one; otherwise it is the latest run's. The
+  view has no Train pane: the toolbar trains, the entry's bar shows the progress and the
+  alert at the settings column’s foot shows any failure.
+- **Tables.** The latest run's t-boost tables, as the node panel's results show them.
+- **Edits are the pipeline's.** A model's settings are its node's config, so an edit in the
+  view is an edit to the pipeline document: it is saved with the project and undone with the
+  pipeline's history. Ctrl/Cmd+S saves the project as the toolbar's Save does, with a
+  focused field's edit included; outside a text field Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (or
+  Ctrl/Cmd+Y) undo and redo the pipeline's last edit.
+- **While the pipeline cannot be edited** (a read-only document or submodel, or the
+  assistant at work) the editor is inert and fitting controls are disabled, so no factor can be included, excluded
+  or constrained and nothing trains, and the keyboard undoes nothing. The list of models,
+  choosing and ticking models, Model Setup and Training Split (inert), the panes, the
+  factor selection and the charts still work.
+
 ## Modelling config panes
 
 With a known algorithm selected, the modelling node panel presents the same six panes for every
@@ -260,8 +388,7 @@ CatBoost. Pane ownership:
   "XGBoost search space JSON"). The note says whether a test set is held out during tuning ("No
   test set is reserved. Reserve one in Split for an independent evaluation." otherwise), offers
   **Review split →**, which opens the Split pane, and states the fit budget in the Train pane's
-  run-summary words, so a t-boost study ends with its winning validation fit rather than a
-  final fit. Neither JSON editor has Apply/Revert controls. Each family's gateway starter
+  run-summary words. Neither JSON editor has Apply/Revert controls. Each family's gateway starter
   parameters are visible and editable in that JSON: CatBoost's include
   `one_hot_max_size: 10`, and t-boost's are under
   [Model family capabilities](#model-family-capabilities). Haute adds no hidden default, nodes
@@ -278,7 +405,7 @@ CatBoost. Pane ownership:
   parameter while nested conditional objects remain indented. Selecting Tune parameters seeds
   the family's own starter search space (CatBoost's candidate lists for `depth`,
   `learning_rate`, and `l2_leaf_reg`), 20 trials, seed 42 and the first reported metric, and in
-  the same update turns on `refit_on_development`, except for t-boost, which is never refit; it
+  the same update turns on `refit_on_development`; it
   never changes the evaluation. Selecting Fixed parameters removes tuning without changing the
   last valid fixed Parameters JSON. The editor component accepts the family's label, starter
   search space and reserved keys, so every tree family uses it without bespoke controls.
@@ -301,8 +428,7 @@ CatBoost. Pane ownership:
   split with its group column, or Time-based split with its date column. **Validation
   strategy** is Holdout validation with a Validation set (%) or Validation starts date,
   Cross-validation with a fold count (expanding windows when time-based), or No validation; a
-  holdout adds **Refit on training + validation**, locked on while tuning (t-boost has neither
-  the box nor Cross-validation; see [Model family capabilities](#model-family-capabilities)).
+  holdout adds **Refit on training + validation**, locked on while tuning.
   **Test set** is a Test set (%) for random and group splits, where 0 means none, or a Test
   starts date.
   Percentages are source-relative and stored as fractions, and the evaluation seed stays
@@ -402,9 +528,8 @@ fit count/elapsed time (the completed job's own, from its terminal status, never
 run's clock) and a bounded top-trial table. The fit line ends with what the published model
 is, by the tuned family's refit policy (`tuningFamilyCapability`, which finds the family as
 the backend's `tuning_family` does, from the one round key the final parameters carry): a
-round-refitting family's final tree count, "refit with the winning round budget" for a
-fixed-budget family (EBM), and "published the winning trial's fit" for a validation-fit
-family (t-boost), which is never refit. **Use best as fixed
+round-refitting family's final tree count, and "refit with the winning parameters" for a
+fixed-budget family (EBM, t-boost). **Use best as fixed
 parameters** asks for confirmation, atomically writes the reported fixed-parameter
 projection and disables tuning; an asynchronous result never mutates node config
 automatically. In a read-only document, or a read-only copy of a submodel, it asks nothing and
@@ -725,8 +850,9 @@ this discrete solve a positive λ can sit beside positive slack.
 - Algorithm names, tasks, losses, feature controls, refit policy, suffixes and tuning support
   come from `frontend/src/panels/modelling/algorithmCapabilities.json`, which the backend
   generates from its descriptors and checks for drift. The gateway lists exactly the families
-  in it, the target pane offers only the selected family's losses, and tuning is offered only
-  for families that support it.
+  in it, then **Interactive build** ([the Modelling view](#the-modelling-view)), the target
+  pane offers only the selected family's losses, and tuning is offered only for families that
+  support it.
 - The model type is chosen once, when the node is created, and cannot be changed afterwards;
   a different family is a new node.
 - The palette describes the Model Training node by what it trains rather than by engine: "Train
@@ -762,7 +888,7 @@ this discrete solve a positive λ can sit beside positive slack.
   `learning_rate`, `max_interaction_order` and `lambda_`. Two readiness issues mirror the
   backend's rules on Parameters: `tboost-n-trees` when `n_trees` is not a positive whole
   number, and `tboost-prune-main-effects` when `prune_main_effects` is true with `prune` set
-  to false or with a monotonicity constraint in the Features pane.
+  to false.
 - A t-boost result adds a Tables tab: the model's rating tables ranked by importance, with the
   base value. Every table shows as a table by default, with a Table/Chart switch. A main
   effect's table lists its cells (level groups, or numeric intervals such as `(25, 40]` after
@@ -777,13 +903,88 @@ this discrete solve a positive λ can sit beside positive slack.
   A traced t-boost prediction lists one contribution per table, an interaction as one row.
 - The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
   optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a
-  fixed-budget (EBM) study refits with the winner's parameters and a validation-fit (t-boost)
-  study publishes the winning trial's fit; neither has a tree count.
-- A family whose capability `refit_policy` is `validation_fit` (t-boost,
-  `publishesValidationFit`) is never refit: its Split pane has no **Refit on training +
-  validation** box and no Cross-validation option, choosing a validation method or turning
-  on tuning never writes `refit_on_development`, and the readiness issue `validation-fit` (on
-  Split) mirrors the backend's refusals. The Train summary's fit budget, and the Parameters
-  pane's tuning note in the same words, count its one validation fit, or a study's trials plus
-  the winning validation fit, never a final fit.
+  fixed-budget (EBM, t-boost) study refits with the winner's parameters and has no tree count.
+- A new node's split is the gateway's: a random split with seed 42 and no test set, with a
+  20% holdout validation set for every family but t-boost, which starts with no validation
+  set (`defaultEvaluation`). A t-boost fit takes no validation rows, each bag stopping on
+  rows it holds back itself, so by default none are set aside and its one fit trains on every
+  row outside the test set. Its Split pane offers the same validation choices as an EBM's;
+  validation rows only measure the model and compare tuning trials, and the published model
+  is refit on all development rows unless a holdout's refit is switched off.
 
+
+
+The left Models list uses the feature list's disclosure style: compact names and colour dots,
+soft hover and selection, no chevrons, and a smooth slide open/closed respecting reduced motion.
+Clicking a name selects that model. Its sliders settings icon toggles the actions beneath
+it without selecting the model; only one action area expands at a time.
+Collapsing keeps the selected model and chart visibility. The always-visible checkbox beside each name controls chart visibility independently of
+selection or expansion. Expanded controls include Duplicate, Rename and Remove (absent for the last model). Add remains below the list;
+training progress stays visible even when collapsed. Read-only browsing still works, while
+model edits remain disabled.
+
+Model actions stack vertically below an expanded name: Duplicate, Rename, then Remove.
+Remove opens Haute's confirmation dialog naming the model, with Cancel and a danger-styled
+Remove button. Only confirmation removes it; dismissing the dialog leaves it unchanged.
+
+Opening or dismissing the Add picker never creates a model. Selecting t-boost creates and
+selects one model, retaining the existing settings-copy behaviour. No unavailable model
+types are listed. The picker supports keyboard selection and Escape/outside dismissal.
+
+### Separate staged parameter and training panes (21 November 2026)
+
+The interactive modelling settings column has three content-sized, left-aligned tabs:
+Features, Parameters and Training. Parameters holds the GBM, pruning, banding and smoothing
+configuration disclosures. Training holds the stage actions, cancellation, preview decisions
+and finalization/export, without editable hyperparameters. Switching tabs preserves drafts,
+validation and active jobs. A pruning preview exposes Apply pruning and Discard preview directly
+in Training, without opening settings. Before a full fit, the Pruning action identifies its
+GBM prerequisite; a completed preview identifies the explicit apply step.
+
+### Optional post-fit phases (21 November 2026)
+
+Parameters retains its JSON GBM editor. Pruning, Banding and Smoothing have an always-visible
+phase checkbox in their parameter-card headings, separate from disclosure controls. GBM is
+the required base. Disabled phase settings remain saved but inert, and its Training action
+is unavailable. Replace Starting model dropdowns with the resolved parent name: each enabled
+phase uses the nearest earlier enabled phase, never silently skipping an enabled but unbuilt
+parent. Changing the phase selection is a draft edit; saved predictions and applied recipes
+remain intact until another stage is run/applied. Running jobs retain Cancel, and phase
+checkboxes cannot change the chain during a running operation.
+
+Staged modelling supports deliberate evaluation choice, visible stage states, compatible
+before/after candidate comparisons and reversible preview/apply/discard for every post-fit
+phase. Named checkpoints retain trained models for later restoration; finalisation and
+export identify the actual applied recipe. JSON parameters remain separate from Training.
+
+Training the GBM and applying a post-fit stage automatically prepare the next enabled
+preview. Users inspect and apply that ready candidate; preparation never auto-applies it.
+
+
+### Post-fit paths
+
+Pruning, interaction banding and Auto-relative smoothing expose bounded immutable candidate
+families from retained fits. Users inspect/select without editing canonical settings; Apply
+commits the exact evaluated candidate and its replayable policy. Identity skips the phase,
+rejection/no-op is explicit, and the preceding run prepares the next enabled path seamlessly.
+One Paths canvas links selection to factor and table inspection, with separate suggested,
+selected and applied states. Comparable validation/OOF evidence never uses reserved test rows;
+development-only evidence has no validation recommendation. Native pruning OOB evidence keeps
+its own label. Compact artifacts share fit evidence and survive restart; stale selections
+cannot replace newer models. Final refits recompute fit-specific transformations from policy.
+
+Paths present the trade-off using banding budget versus percentage validation-loss change,
+with the unchanged model and configured tolerance visible. Actual complexity supplements
+the decision. Factor and Tables are separate panes, retaining selected candidate overlays.
+
+
+Paths include compact summaries of the selected post-fit candidate: a before/after histogram
+of materialised interaction-table cell counts for banding, and small average-prediction
+charts by fitted factor for smoothing. They reuse saved diagnostics and compare against the
+path's unchanged predecessor. Full Factor/Tables exploration remains separate.
+
+The modelling workspace shows one continuous progress bar for a fit and its
+automatic next-path preparation. Learning curves expose individual bags with
+stable colours, Training/Validation views and visibility controls; validation
+curves use each bag's held-back rows. A completed mean retains stopped bags so
+changes in the averaging population cannot create artificial steps.

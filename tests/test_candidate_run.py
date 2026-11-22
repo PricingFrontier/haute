@@ -364,3 +364,14 @@ def test_an_external_memory_fit_is_recorded_on_the_candidate_run(tmp_path: Path)
     run = _build(tmp_path, fit_evidence={"threads": 2, "mode": "out_of_core"})
 
     assert run.params["fit_mode"] == "out_of_core"
+
+
+def test_candidate_records_applied_stage_recipe_not_pending_settings(tmp_path):
+    import json
+
+    recipe = [{"stage": "smoothed", "parent": "full", "settings": {"alpha": 0.2}}]
+    run = _build(
+        tmp_path, algorithm="tboost", stages={"applied_recipe": recipe, "smoothing": {"alpha": 9}}
+    )
+    assert run.tags["haute.output_stage"] == "smoothed"
+    assert json.loads(run.params["stage_recipe"])[0]["settings"]["alpha"] == 0.2

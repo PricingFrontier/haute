@@ -894,6 +894,8 @@ _EXPORT_DEFAULTED_KWARGS: dict[str, object] = {
     "device": "cpu",
     "mlflow_experiment": None,
     "mlflow_destination": "",
+    # Only an interactive build charts its left-out columns, and it cannot be exported.
+    "chart_left_out": False,
 }
 
 

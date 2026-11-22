@@ -62,7 +62,7 @@ In scope:
   their stylesheet), the frame of a right-hand panel (resized from its left edge,
   with a header and Close), and the native dropdowns' colours. Haute's `Toolbar`
   and node palette render these components, as the workbench's toolbar and palette
-  do.
+  and the Modelling view's toolbar and left column do.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
@@ -254,8 +254,10 @@ reachable, whatever the calculation mode, and "Offline" once live sync has lost 
 and Zoom In/Zoom Out columns and Save/Commit pair are `haute-ui` components, the same ones
 the workbench's toolbar is built from. Its right-hand group, Pipeline files over Local
 files, Assistant over Help, and the branch indicator with Save and Commit, is
-`ProjectControls`, which the workbench's toolbar ends with too
-([workbench](../workbench/high-level.md)).
+`ProjectControls`, which the workbench's toolbar
+([workbench](../workbench/high-level.md)) and the Modelling view's
+([frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md#the-modelling-view))
+end with too.
 Pipeline files and Local files each open the Files panel on its place
 ([server-api](../server-api/high-level.md)): Pipeline files on the pipeline folder's
 versioned `files/`, Local files on the project root's `data/` and `outputs/`. The panel

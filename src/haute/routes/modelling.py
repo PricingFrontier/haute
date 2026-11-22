@@ -18,7 +18,7 @@ from haute._file_ops import atomic_copy_files
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError
 from haute._project_context import current_project
-from haute.errors import HauteValidationError, RequestRefusedError
+from haute.errors import ConflictError, HauteValidationError, RequestRefusedError
 from haute.modelling._model_export import (
     MODEL_FILE_SUFFIXES,
     resolve_model_export_destination,
@@ -43,11 +43,13 @@ from haute.routes._training_lifecycle import TrainService, _default_train_timeou
 from haute.routes._training_preparation import (
     _check_gpu_vram,
     _find_modelling_node,
+    _resolve_interactive_model,
     _training_rows,
     _VramCheck,
     estimate_training_memory,
     training_row_plan,
 )
+from haute.routes._training_stages import StageJobScope
 from haute.routes._training_worker import _assert_json_finite
 from haute.routes.pipeline import _prepare_runtime_graph
 from haute.schemas import (
@@ -68,6 +70,12 @@ from haute.schemas import (
     ModelSaveDestinationResponse,
     SaveModelRequest,
     SaveModelResponse,
+    StageActionRequest,
+    StageCheckpointRequest,
+    StagePathApplyRequest,
+    StagePathInspectionPayload,
+    StagePathReadRequest,
+    StageStatePayload,
     TrainEstimateRequest,
     TrainEstimateResponse,
     TrainEstimateUnavailable,
@@ -95,8 +103,107 @@ def train_model(body: TrainRequest) -> TrainResponse:
     Returns the cancellable job handle before background preparation
     materialises the training DataFrame and launches the supervised fit worker.
     """
-    graph = _prepare_runtime_graph(body.graph)
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
     return _train_service.start(body.model_copy(update={"graph": graph}))
+
+
+def _stage_scope(body: TrainRequest, *, validate: bool = False) -> StageJobScope:
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
+    scope = StageJobScope.from_request(body.model_copy(update={"graph": graph}))
+    if validate:
+        scope.validate_configuration(_find_modelling_node(graph, body.node_id).data.config)
+    return scope
+
+
+def _stage_payload(value: dict[str, Any], body: TrainRequest) -> StageStatePayload:
+    from haute.modelling._stage_views import compact_state
+
+    return StageStatePayload.model_validate(
+        compact_state(value) if body.diagnostics == "compact" else value
+    )
+
+
+@router.post("/stages/read", response_model=StageStatePayload)
+def read_stages(body: TrainRequest) -> StageStatePayload:
+    """Restore durable stage results and any live or interrupted job marker."""
+    scope = _stage_scope(body)
+    value = scope.store.recover(scope.key, compact=body.diagnostics == "compact")
+    if value["current"] is not None:
+        try:
+            _stage_scope(body, validate=True)
+        except (ConflictError, TrainingConfigError, HauteValidationError) as exc:
+            value["stale_reason"] = str(exc)
+    return _stage_payload(value, body)
+
+
+@router.post("/stages/remove", response_model=StageStatePayload)
+def remove_stages(body: TrainRequest) -> StageStatePayload:
+    """Release a confirmed model removal's durable stage artifacts."""
+    scope = _stage_scope(body)
+    scope.store.recover(scope.key)
+    scope.store.remove(scope.key)
+    return _stage_payload(scope.store.snapshot(scope.key), body)
+
+
+@router.post("/stages/checkpoint", response_model=StageStatePayload)
+def update_stage_checkpoint(body: StageCheckpointRequest) -> StageStatePayload:
+    """Keep or restore a named applied model, without rerunning training."""
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
+    scope = StageJobScope.from_request(body.model_copy(update={"graph": graph}))
+    config = _find_modelling_node(graph, body.node_id).data.config
+    scope.store.recover(scope.key)
+    value = scope.store.checkpoint(
+        scope.key,
+        action=body.action,
+        expected_revision=body.current_revision,
+        name=body.name,
+        checkpoint_id=body.checkpoint_id,
+        validate=lambda record: scope.validate_checkpoint(record, config),
+    )
+    scope.store.cleanup(scope.key)
+    return _stage_payload(value, body)
+
+
+@router.post("/stages/restore-final", response_model=TrainResponse)
+def restore_final_stage(body: TrainRequest) -> TrainResponse:
+    """Make a final model's durable native artifacts available to Save and Log again."""
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
+    return _train_service.restore_final_stage(body.model_copy(update={"graph": graph}))
+
+
+@router.post("/stages/path/read", response_model=StagePathInspectionPayload)
+def read_stage_path(body: StagePathReadRequest) -> StagePathInspectionPayload:
+    from haute.routes._training_paths import inspect_path
+
+    return inspect_path(_stage_scope(body, validate=True), body)
+
+
+@router.post("/stages/path/apply", response_model=StageStatePayload)
+def apply_stage_path(body: StagePathApplyRequest) -> StageStatePayload:
+    from haute.routes._training_paths import apply_path
+
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
+    resolved = body.model_copy(update={"graph": graph})
+    scope = StageJobScope.from_request(resolved)
+    return _stage_payload(apply_path(scope, resolved, _train_service.start_preview), body)
+
+
+@router.post("/stages/apply", response_model=StageStatePayload)
+def apply_stage(body: StageActionRequest) -> StageStatePayload:
+    """Apply precisely the preview the user reviewed."""
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
+    resolved = body.model_copy(update={"graph": graph})
+    scope = StageJobScope.from_request(resolved)
+    return _stage_payload(scope.apply_preview(resolved, _train_service.start_preview), body)
+
+
+@router.post("/stages/discard", response_model=StageStatePayload)
+def discard_stage(body: StageActionRequest) -> StageStatePayload:
+    """Discard a stage candidate while retaining the applied model."""
+    scope = _stage_scope(body)
+    value = scope.store.discard(scope.key, preview_revision=body.preview_revision)
+    scope.store.cleanup(scope.key)
+    return _stage_payload(value, body)
 
 
 @router.get("/gpu", response_model=ModellingGpuStatusResponse)
@@ -257,7 +364,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     only the bounded target/evaluation-key projection needed for an exact
     partition preview.
     """
-    graph = _prepare_runtime_graph(body.graph)
+    graph = _resolve_interactive_model(_prepare_runtime_graph(body.graph), body.node_id, body.model)
     body = body.model_copy(update={"graph": graph})
     node = _find_modelling_node(body.graph, body.node_id)
 
@@ -303,6 +410,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     evaluation_preview = _train_service.evaluation_preview(
         body,
         row_limit=safe_limit,
+        estimated_rows=ram_est.total_rows,
     )
     evaluation_preview_payload = (
         EvaluationPreviewPayload.model_validate(evaluation_preview)
@@ -383,6 +491,8 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 status_code=400,
                 detail="Completed training result has no evaluation report",
             )
+        if result.evaluation.purpose == "exploration":
+            raise HauteValidationError("Finalise the applied stage before logging it to MLflow")
         artifacts = require_training_artifacts(job)
         config = job.get("config", {})
         node_label = job.get("node_label", "model")
@@ -424,6 +534,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 evaluation_config=config.get("evaluation", {}),
                 evaluation_plan_sha256=result.evaluation.plan_sha256,
                 final_params=final_params,
+                stages=config.get("stages"),
                 final_test_metrics=result.final_test_metrics,
                 development_metrics=(
                     result.diagnostic_metrics if result.diagnostics_set == "development" else {}

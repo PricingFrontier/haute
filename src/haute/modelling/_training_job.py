@@ -67,6 +67,7 @@ from haute.modelling._shap import shap_diagnostics, shap_sample
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
     PARTITION_TRAIN,
+    PARTITION_UNUSED,
     PARTITION_VALIDATION,
     SplitConfig,
     needs_row_order,
@@ -384,6 +385,8 @@ def _record_diag_error(
     errors: list[dict[str, str]],
     diagnostic: str,
     exc: BaseException,
+    *,
+    message: str | None = None,
 ) -> None:
     """Record an optional-diagnostic failure without aborting training.
 
@@ -393,14 +396,14 @@ def _record_diag_error(
     """
     entry = {
         "diagnostic": diagnostic,
-        "error": str(exc),
+        "error": str(exc) if message is None else message,
         "error_type": type(exc).__name__,
     }
     errors.append(entry)
     logger.warning(
         "diagnostic_skipped",
         diagnostic=diagnostic,
-        error=str(exc),
+        error=entry["error"],
         error_type=type(exc).__name__,
     )
 
@@ -433,6 +436,8 @@ class TrainResult:
     shap_link: str | None = None
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
+    #: With ``chart_left_out``, AvE for each column the model left out that holds no role.
+    ave_left_out: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
     residuals_stats: dict[str, float] = field(default_factory=dict)
     actual_vs_predicted: list[dict[str, float]] = field(default_factory=list)
@@ -462,6 +467,8 @@ class TrainResult:
     final_tree_count: int | None = None
     #: The final fit's threads, round ceiling, fitted rounds, and stopping reason.
     fit_evidence: dict[str, Any] | None = None
+    staged: dict[str, Any] | None = None
+    stage_checkpoint_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -543,6 +550,7 @@ class _MetricsResult:
     # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
+    ave_left_out: list[dict[str, Any]] = field(default_factory=list)
 
 
 class TrainingJob:
@@ -631,6 +639,9 @@ class TrainingJob:
         device: str = "cpu",
         fit_mode: FitMode = "in_memory",
         scratch_dir: str | None = None,
+        chart_left_out: bool = False,
+        stages: Mapping[str, Any] | None = None,
+        purpose: str = "final",
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -643,6 +654,19 @@ class TrainingJob:
         self.algorithm = algorithm
         self.task = task
         self.params = params or {}
+        from haute.modelling._staged_config import resolve_stages
+
+        self.stages = resolve_stages(stages, algorithm, self.params)
+        if purpose not in ("final", "exploration"):
+            raise HauteValidationError("Training purpose must be final or exploration")
+        if purpose == "exploration" and (self.stages is None or evaluation is None):
+            raise HauteValidationError(
+                "Exploration requires staged training and an evaluation plan"
+            )
+        if purpose == "exploration" and mlflow_experiment:
+            raise HauteValidationError("Finalise the selected stage before logging an exploration")
+        self.purpose = purpose
+        self._stage_runtime: Any = None
         self.metrics = metrics or default_metrics(
             task,
             loss_function=loss_function,
@@ -692,6 +716,8 @@ class TrainingJob:
             )
         self.fit_mode: FitMode = fit_mode
         self.scratch_dir = scratch_dir
+        #: Bin the columns the model left out against its predictions (an interactive build).
+        self.chart_left_out = chart_left_out
         #: ``(negative, positive)`` once a classification split resolves them.
         self._class_labels: tuple[bool | int | str, bool | int | str] | None = None
         self.offset = offset
@@ -742,21 +768,9 @@ class TrainingJob:
         else:
             self.evaluation = EvaluationConfig.from_plain_data(evaluation)
         method = None if self.evaluation is None else self.evaluation.validation["method"]
-        family = algorithm_descriptor(self.algorithm)
-        if family.publishes_validation_fit and method is not None:
-            # The early-stopped validation fit is the model; only a plan with no
-            # validation has a fit on the development rows, and it is that fit.
-            if method == "cross_validation":
-                raise HauteValidationError(
-                    f"{family.label} publishes its early-stopped validation fit, so it takes "
-                    "holdout validation or none, not cross-validation"
-                )
-            if refit_on_development is not None and refit_on_development != (method == "none"):
-                raise HauteValidationError(
-                    f"{family.label} is never refit: its early-stopped validation fit is the model"
-                )
-            refit_on_development = method == "none"
-        elif refit_on_development is None:
+        if purpose == "exploration":
+            refit_on_development = method != "single" or tuning is not None
+        if refit_on_development is None:
             refit_on_development = True
         if not isinstance(refit_on_development, bool):
             raise HauteValidationError("refit_on_development must be a boolean")
@@ -782,11 +796,9 @@ class TrainingJob:
                 evaluation=self.evaluation,
                 configured_metrics=self.metrics,
             )
-        if (
-            self.tuning is not None
-            and not self.refit_on_development
-            and not family.publishes_validation_fit
-        ):
+        if self.stages is not None and self.tuning is not None:
+            self.stages.validate_gbm_params(self.tuning.search_space)
+        if self.tuning is not None and not self.refit_on_development:
             raise HauteValidationError("Parameter tuning requires a final refit")
         if evaluation_plan is not None and self.evaluation is None:
             raise HauteValidationError("evaluation_plan requires an explicit evaluation contract")
@@ -1011,6 +1023,7 @@ class TrainingJob:
                 shap_link=metrics_result.shap_link,
                 feature_importance_loss=metrics_result.feature_importance_loss,
                 ave_per_feature=metrics_result.ave_per_feature,
+                ave_left_out=metrics_result.ave_left_out,
                 residuals_histogram=metrics_result.residuals_histogram,
                 residuals_stats=metrics_result.residuals_stats,
                 actual_vs_predicted=metrics_result.actual_vs_predicted,
@@ -1154,7 +1167,17 @@ class TrainingJob:
             id_columns=list(self.id_columns),
             algorithm=self.algorithm,
             task=self.task,
-            params=copy.deepcopy(dict(self.params if params is None else params)),
+            params=copy.deepcopy(
+                dict(
+                    self._stage_runtime.selected_params
+                    if self._stage_runtime is not None
+                    and self._stage_runtime.bundle is not None
+                    and self._stage_runtime.selected_params is not None
+                    else self.params
+                    if params is None
+                    else params
+                )
+            ),
             metrics=list(self.metrics),
             mlflow_experiment=mlflow_experiment,
             mlflow_destination=self.mlflow_destination,
@@ -1174,8 +1197,12 @@ class TrainingJob:
             device=self.device,
             fit_mode=self.fit_mode,
             scratch_dir=self.scratch_dir,
+            chart_left_out=self.chart_left_out,
+            stages=self.stages.to_plain_data() if self.stages is not None else None,
+            purpose=self.purpose,
         )
         child._live_rounds = self._live_rounds
+        child._stage_runtime = self._stage_runtime
         return child
 
     def _round_callback(
@@ -1501,6 +1528,9 @@ class TrainingJob:
                 prepared.features,
                 offset=self.offset,
             )
+            if self._stage_runtime is not None:
+                self._stage_runtime.remember(self, trained.model)
+                self._stage_runtime.record_validation(self, validation, predictions)
             try:
                 metrics = compute_metrics(
                     validation[self.target].to_numpy(),
@@ -1622,6 +1652,11 @@ class TrainingJob:
                 self.params,
                 sampled_params,
             )
+            trial_runtime = None
+            if self._stage_runtime is not None:
+                from haute.modelling._staged_runtime import StageRuntime
+
+                trial_runtime = StageRuntime(scratch_dir=str(self._stage_runtime.root))
             fit_results: list[EvaluationFitResult] = []
             try:
                 for fit_index in range(config.validation_fit_count):
@@ -1657,6 +1692,14 @@ class TrainingJob:
                         params=resolved_params,
                         source_sha256=source_sha256,
                     )
+                    if self.stages is not None:
+                        from haute.modelling._staged_config import StagedConfig
+
+                        child.stages = StagedConfig.from_plain_data(
+                            {**self.stages.to_plain_data(), "applied_recipe": []}
+                        )
+                    if trial_runtime is not None:
+                        child._stage_runtime = trial_runtime
                     fit_results.append(
                         child.run_evaluation_fit(
                             check_cancelled=check_cancelled,
@@ -1706,6 +1749,12 @@ class TrainingJob:
                 elapsed_seconds=0.0,
             )
             trials.append(completed_trial)
+            if trial_runtime is not None:
+                try:
+                    if choose_winner(trials, direction=config.direction).trial_index == trial_index:
+                        self._stage_runtime.retain_trial(trial_runtime, resolved_params)
+                finally:
+                    trial_runtime.close()
             if optuna_trial is not None:
                 study.tell(optuna_trial, objective)
             emit_progress(
@@ -1776,6 +1825,7 @@ class TrainingJob:
         prepared: _PreparedData | None = None
         created: list[Path] = []
         floor = 0.0
+        owns_stage_runtime = False
 
         def checkpoint(label: str) -> None:
             if check_cancelled is not None:
@@ -1791,6 +1841,15 @@ class TrainingJob:
             checkpoint("after_evaluation_progress")
 
         try:
+            if self.purpose == "exploration" and self._stage_runtime is None:
+                from haute.modelling._staged_runtime import StageRuntime
+
+                if self.stages is not None and self.stages.applied_recipe:
+                    raise HauteValidationError(
+                        "Start exploration with the full GBM before applying stages"
+                    )
+                self._stage_runtime = StageRuntime(scratch_dir=self.scratch_dir)
+                owns_stage_runtime = True
             report("Evaluation: preparing source", 0.0)
             prepared = self._prepare_data(report, execution_context=execution_context)
             # Caller-owned parquets retain the fused null-target filter until
@@ -1851,7 +1910,9 @@ class TrainingJob:
             selection_histories: list[list[dict[str, float]]] = []
             # The published model when no refit runs: the holdout validation fit.
             selected_result: TrainResult | None = None
-            if self.tuning is not None:
+            if self.tuning is not None and (
+                self._stage_runtime is None or self._stage_runtime.bundle is None
+            ):
                 with tempfile.TemporaryDirectory(prefix="haute_tuning_fits_") as tuning_fit_root:
                     fits, final_params, tuning_response = self._run_tuning_trials(
                         plan=plan,
@@ -1870,47 +1931,6 @@ class TrainingJob:
                     )
                 total = self.tuning.total_fit_count
                 completed_before_final = self.tuning.trial_fit_count
-                if not self.refit_on_development:
-                    # A validation-fit family publishes the winning trial's holdout
-                    # fit, reproduced from its parameters (fits are deterministic), so
-                    # it must see exactly the source the trials saw.
-                    if evaluation_file_sha256(prepared.data_path) != plan.source_sha256:
-                        raise HauteValidationError(
-                            "evaluation source changed before the winning validation fit"
-                        )
-                    report("Evaluation: winning validation fit", completed_before_final / total)
-                    if on_tuning_progress is not None:
-                        on_tuning_progress(
-                            {
-                                "phase": "final_fit",
-                                "trial_index": None,
-                                "trial_count": self.tuning.trial_count,
-                                "fold_index": None,
-                                "fold_count": self.tuning.validation_fit_count,
-                                "completed_fits": completed_before_final,
-                                "total_fits": total,
-                                "best_objective": tuning_response["winner_objective"],
-                            }
-                        )
-                    winner = self._new_evaluation_job(
-                        name=self.name,
-                        data=prepared.data_path,
-                        output_dir=self.output_dir,
-                        plan=plan,
-                        fit_index=0,
-                        mlflow_experiment=None,
-                        params=final_params,
-                        source_sha256=source_digest,
-                    )
-                    selected_result = winner.run(
-                        progress=lambda message, fraction: report(
-                            f"Evaluation: winning validation fit: {message}",
-                            (completed_before_final + fraction) / total,
-                        ),
-                        on_iteration=on_iteration,
-                        check_cancelled=check_cancelled,
-                        execution_context=execution_context,
-                    )
             else:
                 descriptor = algorithm_descriptor(self.algorithm)
                 ordinary_fits: list[EvaluationFitResult] = []
@@ -2064,10 +2084,12 @@ class TrainingJob:
                 result = selected_result
             result.development_rows = plan.development_rows
             result.final_test_rows = plan.test_rows
-            result.final_test_metrics = dict(result.holdout_metrics) if plan.test_rows else {}
+            result.final_test_metrics = (
+                dict(result.holdout_metrics) if plan.test_rows and self.purpose == "final" else {}
+            )
             result.diagnostics_set = (
                 "final_test"
-                if plan.test_rows
+                if plan.test_rows and self.purpose == "final"
                 else "development"
                 if self.refit_on_development
                 else "validation"
@@ -2092,6 +2114,11 @@ class TrainingJob:
                 "report_path": str(report_path),
                 "summary": dict(plan.summary),
             }
+            if self.purpose == "exploration":
+                result.evaluation["purpose"] = "exploration"
+                if self._stage_runtime.oof_rows:
+                    result.diagnostics_set = "validation"
+                    result.validation_rows = self._stage_runtime.oof_rows
             result.tuning = tuning_response
             refit = algorithm_descriptor(self.algorithm)
             if (
@@ -2117,6 +2144,14 @@ class TrainingJob:
                         ),
                     }
                 )
+            if self._stage_runtime is not None:
+                checkpoint("before_stage_bundle_save")
+                checkpoint_path = self._stage_runtime.finalize(
+                    self, result, prepared.data_path, plan
+                )
+                if checkpoint_path is not None:
+                    created.append(checkpoint_path)
+                checkpoint("after_stage_bundle_save")
             if self.mlflow_experiment:
                 checkpoint("before_evaluation_mlflow_log")
                 with _training_stage(
@@ -2135,6 +2170,9 @@ class TrainingJob:
             raise
         finally:
             self._cleanup_owned_temp_parquets(prepared, None)
+            if owns_stage_runtime:
+                self._stage_runtime.close()
+                self._stage_runtime = None
 
     # ------------------------------------------------------------------
     # Pipeline sub-methods
@@ -2351,6 +2389,11 @@ class TrainingJob:
         """Compute train/validation/holdout split mask and write split parquet."""
         from haute.modelling._algorithms import _mem_checkpoint
 
+        if self._stage_runtime is not None:
+            shared: _SplitResult | None = self._stage_runtime.cached_split(self, prepared)
+            if shared is not None:
+                return shared
+
         data_path = prepared.data_path
         owns_tmp = prepared.owns_tmp
         total_rows = prepared.total_rows
@@ -2382,13 +2425,16 @@ class TrainingJob:
                     "evaluation plan row count does not match prepared source"
                 )
             if self.evaluation_fit_index is None:
-                mask = pl.Series("_partition", self.evaluation_plan.final_mask())
+                final_mask = self.evaluation_plan.final_mask()
+                if self.purpose == "exploration":
+                    final_mask[final_mask == PARTITION_HOLDOUT] = PARTITION_UNUSED
+                mask = pl.Series("_partition", final_mask)
             else:
                 mask = pl.Series(
                     "_partition",
                     (
                         self.evaluation_plan.selection_mask(self.evaluation_fit_index)
-                        if self.refit_on_development
+                        if self.refit_on_development or self.purpose == "exploration"
                         else self.evaluation_plan.saved_selection_mask(self.evaluation_fit_index)
                     ),
                 )
@@ -2460,13 +2506,16 @@ class TrainingJob:
             os.unlink(data_path)
         _mem_checkpoint("wrote split parquet")
 
-        return _SplitResult(
+        result = _SplitResult(
             split_path=split_path,
             owns_tmp=True,
             n_train=n_train,
             n_validation=n_validation,
             n_holdout=n_holdout,
         )
+        if self._stage_runtime is not None:
+            result = self._stage_runtime.retain_split(self, prepared, result)
+        return result
 
     def _train_model(
         self,
@@ -2711,6 +2760,8 @@ class TrainingJob:
             "seed": self._fit_seed,
             "device": self.device,
             "groups": self._plan_group_column(),
+            **({"stages": self.stages.to_plain_data()} if self.stages is not None else {}),
+            **(self._stage_runtime.adapter_kwargs(self) if self._stage_runtime is not None else {}),
         }
 
     def _fit_xgboost_external_memory(
@@ -3097,20 +3148,32 @@ class TrainingJob:
 
         # ── Read the diagnostics partition ONCE — metrics + all diagnostics ──
         _report("Computing diagnostics", 0.8)
-        diag_df = self._read_partition(
-            data_path,
-            diag_partition,
-            columns=glm_columns,
-            execution_context=execution_context,
-            stage_name=f"training_{diagnostics_set}_diagnostics_materialise",
+        oof_diagnostics = (
+            self._stage_runtime is not None
+            and self.evaluation is not None
+            and self.evaluation.validation["method"] != "none"
+            and self.evaluation_fit_index is None
         )
+        if oof_diagnostics:
+            diag_df, y_pred = self._stage_runtime.oof_diagnostics(self, execution_context)
+            diagnostics_set = "validation"
+        else:
+            diag_df = self._read_partition(
+                data_path,
+                diag_partition,
+                columns=glm_columns,
+                execution_context=execution_context,
+                stage_name=f"training_{diagnostics_set}_diagnostics_materialise",
+            )
+            y_pred = self._predict_diagnostic_batches(
+                algo, model, diag_df, features, execution_context=execution_context
+            )
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
-        # Reported fit quality describes the predictions the model serves.
-        y_pred = self._predict_diagnostic_batches(
-            algo, model, diag_df, features, execution_context=execution_context
-        )
         w = diag_df[self.weight].to_numpy() if self.weight else None
+
+        if self._stage_runtime is not None:
+            self._stage_runtime.record_diagnostics(self, diag_df, y_pred)
 
         # Primary metrics from the diagnostics set
         try:
@@ -3135,7 +3198,14 @@ class TrainingJob:
         # Double-lift
         double_lift = compute_double_lift(y_true, y_pred, w)
 
-        # AvE per feature
+        # AvE per feature. A log-link offset is an exposure the predictions already
+        # include, so the bins report rates per unit of it; an identity-link offset
+        # is an additive base value, not an exposure.
+        ave_exposure = (
+            diag_df[self.offset].cast(pl.Float64).to_numpy()
+            if self.offset and self._offset_link() == "log"
+            else None
+        )
         ave_per_feature = compute_ave_per_feature(
             diag_df,
             sorted_features,
@@ -3143,6 +3213,14 @@ class TrainingJob:
             y_true,
             y_pred,
             w,
+            exposure=ave_exposure,
+        )
+        ave_left_out = (
+            self._ave_left_out(
+                diag_df, features, y_true, y_pred, w, ave_exposure, diagnostics_errors
+            )
+            if self.chart_left_out
+            else []
         )
 
         # SHAP + LossFunctionChange importance (OPTIONAL: failures
@@ -3156,7 +3234,10 @@ class TrainingJob:
         # inside the optional diagnostics' guards: SHAP builds it and PDP reuses it, or
         # orders the rows itself when it samples them.
         diag_row_order: np.ndarray | None = None
-        if hasattr(algo, "shap_values"):
+        path_diagnostics = (
+            self._stage_runtime is not None and self._stage_runtime.candidate_id is not None
+        )
+        if not path_diagnostics and hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
                 diag_row_order = frame_row_order(diag_df, self._row_key_columns)
@@ -3177,7 +3258,7 @@ class TrainingJob:
                 )
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "shap", exc)
-        if hasattr(algo, "feature_importance_typed"):
+        if not path_diagnostics and hasattr(algo, "feature_importance_typed"):
             _report("Computing loss-based feature importance", 0.855)
             try:
                 # The loss the model was fitted under: a weight- or exposure-trained
@@ -3209,23 +3290,24 @@ class TrainingJob:
         # PDP (OPTIONAL — numerically fragile on small subsamples; its
         # output is diagnostic-only, so record failures in diagnostics_errors
         # rather than aborting an otherwise-successful run.)
-        _report("Computing partial dependence", 0.87)
         pdp_data: list[dict[str, Any]] = []
-        try:
-            pdp_data = compute_pdp(
-                model,
-                algo,
-                diag_df,
-                features,
-                cat_features,
-                offset=self.offset,
-                row_order=diag_row_order,
-            )
-            # Importance ranks charts, never the positional inputs to prediction.
-            pdp_order = {feature: index for index, feature in enumerate(sorted_features)}
-            pdp_data.sort(key=lambda entry: pdp_order[entry["feature"]])
-        except Exception as exc:
-            _record_diag_error(diagnostics_errors, "pdp", exc)
+        if not path_diagnostics:
+            _report("Computing partial dependence", 0.87)
+            try:
+                pdp_data = compute_pdp(
+                    model,
+                    algo,
+                    diag_df,
+                    features,
+                    cat_features,
+                    offset=self.offset,
+                    row_order=diag_row_order,
+                )
+                # Importance ranks charts, never the positional inputs to prediction.
+                pdp_order = {feature: index for index, feature in enumerate(sorted_features)}
+                pdp_data.sort(key=lambda entry: pdp_order[entry["feature"]])
+            except Exception as exc:
+                _record_diag_error(diagnostics_errors, "pdp", exc)
 
         # ── GLM-specific diagnostics (all OPTIONAL) ──
         glm_report = None
@@ -3285,6 +3367,7 @@ class TrainingJob:
             ebm_terms=ebm_terms,
             tboost_tables=tboost_tables,
             diagnostics_errors=diagnostics_errors,
+            ave_left_out=ave_left_out,
         )
 
     def _save_artifacts(
@@ -3339,6 +3422,8 @@ class TrainingJob:
             contract_path = output_dir / model_contract_filename(self.name)
             save_contract(contract, contract_path)
 
+        if self._stage_runtime is not None:
+            self._stage_runtime.remember(self, train_result.model)
         return model_path
 
     # ------------------------------------------------------------------
@@ -3403,6 +3488,55 @@ class TrainingJob:
         ]
         if dropped:
             logger.debug("exclude_columns_already_dropped", count=len(dropped))
+
+    def _ave_left_out(
+        self,
+        diag_df: pl.DataFrame,
+        features: list[str],
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        weight: np.ndarray | None,
+        exposure: np.ndarray | None,
+        diagnostics_errors: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        """AvE for each column of the diagnostics rows the model left out and that holds
+        no role, against the model's predictions, which do not use it. A column of a type
+        that is not binned, or whose binning fails, is recorded and the run goes on."""
+        from haute.modelling._metrics import compute_ave_per_feature
+
+        # The role columns, the row keys (the identifiers and any evaluation key) and the
+        # split's own columns are never factors.
+        excluded = {*self._role_columns(), *self._row_key_columns, *features}
+        for split_column in (self.split_config.date_column, self.split_config.group_column):
+            if split_column:
+                excluded.add(split_column)
+        rows: list[dict[str, Any]] = []
+        for column in diag_df.columns:
+            if column in excluded:
+                continue
+            series = diag_df[column]
+            dtype = series.dtype
+            try:
+                if is_string_or_categorical(dtype) or isinstance(dtype, pl.Enum):
+                    frame, categorical = diag_df.select(column), [column]
+                elif dtype == pl.Boolean:
+                    frame, categorical = diag_df.select(series.cast(pl.Int8)), []
+                elif dtype.is_numeric():
+                    frame, categorical = diag_df.select(column), []
+                else:
+                    raise HauteValidationError(f"{column}: a {dtype} column is not charted.")
+                rows.extend(
+                    compute_ave_per_feature(
+                        frame, [column], categorical, y_true, y_pred, weight, exposure=exposure
+                    )
+                )
+            except Exception as exc:
+                # The column leads the message: the view finds its reason by it.
+                message = str(exc)
+                if not message.startswith(f"{column}: "):
+                    message = f"{column}: {message}"
+                _record_diag_error(diagnostics_errors, "ave_left_out", exc, message=message)
+        return rows
 
     def _derive_features(self, df: pl.DataFrame) -> tuple[list[str], list[str]]:
         """Derive feature list: all columns minus {target, weight, *exclude}.
@@ -3559,6 +3693,8 @@ class TrainingJob:
                 "algorithm": self.algorithm,
                 "task": self.task,
                 "params": self.params,
+                "stages": self.stages,
+                "purpose": self.purpose,
                 "evaluation": self.evaluation,
                 "tuning": self.tuning,
                 "metrics": list(self.metrics),
@@ -3637,6 +3773,7 @@ class TrainingJob:
             evaluation_config=self.evaluation.to_plain_data(),
             evaluation_plan_sha256=str(result.evaluation["plan_sha256"]),
             final_params=logged_final_params,
+            stages=self.stages.to_plain_data() if self.stages is not None else None,
             final_test_metrics=result.final_test_metrics,
             development_metrics=(result.metrics if result.diagnostics_set == "development" else {}),
             diagnostics=diagnostics,

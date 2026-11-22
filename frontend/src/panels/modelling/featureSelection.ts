@@ -48,3 +48,16 @@ export function finalSelectedFeatureNames(
   const selected = new Set(selectedFeatureColumns(config))
   return new Set(eligible.filter((column) => selected.has(column.name)).map((column) => column.name))
 }
+
+/** Keep upstream order, followed by selected saved names no longer present upstream. */
+export function orderedFeatureSelection(
+  columns: readonly ModellingColumn[],
+  saved: readonly string[],
+  selected: ReadonlySet<string>,
+): string[] {
+  const upstream = new Set(columns.map((column) => column.name))
+  return [
+    ...columns.map((column) => column.name).filter((name) => selected.has(name)),
+    ...saved.filter((name) => selected.has(name) && !upstream.has(name)),
+  ]
+}

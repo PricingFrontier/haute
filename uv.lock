@@ -1374,12 +1374,12 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5,<3" },
     { name = "python-dotenv", specifier = ">=1.2.2,<2" },
     { name = "python-multipart", specifier = ">=0.0.31,<0.1" },
-    { name = "rustystats", specifier = ">=0.11.1,<0.12" },
+    { name = "rustystats", editable = "../rustystats" },
     { name = "scipy", specifier = ">=1.16.0,<2" },
     { name = "sqlalchemy", specifier = ">=2.0.46,<3" },
     { name = "sqlalchemy", marker = "extra == 'sqlserver'", specifier = ">=2.1.0,<3" },
     { name = "structlog", specifier = ">=25.5.0,<26" },
-    { name = "t-boost", specifier = ">=0.8.1,<0.9" },
+    { name = "t-boost", editable = "../t-boost" },
     { name = "tomlkit", specifier = ">=0.15.1,<0.16" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40.0,<0.41" },
     { name = "watchfiles", specifier = ">=1.1.1,<2" },
@@ -3928,18 +3928,49 @@ wheels = [
 [[package]]
 name = "rustystats"
 version = "0.11.1"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "../rustystats" }
 dependencies = [
     { name = "numpy" },
     { name = "polars" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/5a/4182e0e64ce478e9c2d0ba9180579507dfaf79605983e78651c165a4090c/rustystats-0.11.1.tar.gz", hash = "sha256:693bcb499d041adbfa77b7dfabf35432944e8558ac28a9038b1bb26153c7033e", size = 962622, upload-time = "2026-11-12T14:13:01.017Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/ae/8b23d04bd4e27535ffaf04116f5e5349fdd3fffed33ae035d396850a6b5a/rustystats-0.11.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:ce39a479253e489bf788b8e9978867591baab66ec119fa6433af5c304ee4b4ab", size = 2164031, upload-time = "2026-11-12T14:12:52.271Z" },
-    { url = "https://files.pythonhosted.org/packages/1e/bf/f8951121d87021644c282b0abf53799e6751b1731695cdbcd8c923eef38a/rustystats-0.11.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:71c2b810dce99ee2197f5ab4353ed7d35f0a7e284abd5f5286b27e4c863943f7", size = 2048664, upload-time = "2026-11-12T14:12:54.276Z" },
-    { url = "https://files.pythonhosted.org/packages/98/7c/c6ffbbcb17911c7554e933563fe435f074bd1c242d5b58435d6b1b7de175/rustystats-0.11.1-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e6f92f7782095990c16ad5f5dc66a93da001fc84776e44ea25394243251af1b5", size = 2103373, upload-time = "2026-11-12T14:12:55.96Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/77/8300fd199336f52c9ef3b03e78a73affb150376d77f1405cf28f63b88fbe/rustystats-0.11.1-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a78ded153fa7719781ce6f8e1b4f6cb3ee09c7ee84f7e26a0c4be7dcc44e2a81", size = 2256404, upload-time = "2026-11-12T14:12:57.442Z" },
-    { url = "https://files.pythonhosted.org/packages/92/8c/1ef5255a22634fe9f48fd029424d53e03be7ef4ebf44f32b3aeb1e98cfce/rustystats-0.11.1-cp310-abi3-win_amd64.whl", hash = "sha256:1f9eca14cb59f0971c84d8d0bb20d2e137e14ecd65087cc90d87b1ece1a973a8", size = 2199169, upload-time = "2026-11-12T14:12:59.175Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "coverage", marker = "extra == 'dev'", specifier = ">=7.6" },
+    { name = "glum", marker = "extra == 'dev'", specifier = ">=3.1.2" },
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
+    { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.31.0" },
+    { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.4" },
+    { name = "numpy", specifier = ">=1.20,<2.4" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11' and extra == 'dev'", specifier = ">=1.24.3" },
+    { name = "polars", specifier = ">=2.0,<3" },
+    { name = "psutil", marker = "extra == 'dev'", specifier = ">=5.9" },
+    { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=14.0" },
+    { name = "pypmml", marker = "extra == 'dev'", specifier = ">=1.5.8" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "statsmodels", marker = "extra == 'dev'", specifier = ">=0.14" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "coverage", specifier = ">=7.6" },
+    { name = "glum", specifier = ">=3.1.2" },
+    { name = "hypothesis", specifier = ">=6.100" },
+    { name = "ipykernel", specifier = ">=6.31.0" },
+    { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "maturin", specifier = ">=1.10.2" },
+    { name = "mkdocs", specifier = ">=1.6.1" },
+    { name = "mkdocs-material", specifier = ">=9.7.1" },
+    { name = "numpy", specifier = ">=2.0.2,<2.4" },
+    { name = "onnxruntime", marker = "python_full_version >= '3.11'", specifier = ">=1.24.3" },
+    { name = "pre-commit", specifier = ">=3.5" },
+    { name = "pymdown-extensions", specifier = ">=10.19.1" },
+    { name = "pypmml", specifier = ">=1.5.8" },
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-cov", specifier = ">=5.0" },
 ]
 
 [[package]]
@@ -4230,20 +4261,27 @@ wheels = [
 
 [[package]]
 name = "t-boost"
-version = "0.8.1"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "../t-boost" }
 dependencies = [
     { name = "numpy" },
     { name = "polars" },
     { name = "threadpoolctl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/43/3882723b9084a8ef51f8ed5c20a65b778d7960c1ac0b5ddb476c6037094c/t_boost-0.8.1.tar.gz", hash = "sha256:6ce8ffb3aa7c3c9d0d6e91da7b364b8bcad5ee3673bc994920295734fe202695", size = 1042232, upload-time = "2026-10-05T09:38:16.905Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/6b/793f92f887d543c26f160fd6b71b60d648dd34b6326a2245091060e5cf86/t_boost-0.8.1-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:22801dc38f73d648e4139b753faf8e1641b6d0ffc86321f15b3a112f9d21a052", size = 3040898, upload-time = "2026-10-05T09:38:07.216Z" },
-    { url = "https://files.pythonhosted.org/packages/d2/f7/9b25a04266d2264839a3b4d572252b348d7ef0eb82f898279c2dfa37ab21/t_boost-0.8.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:2bc73a61a1c99065a9e388aad75877756c7f4caf406f167d6e3f76f6a8c5c0cc", size = 2643192, upload-time = "2026-10-05T09:38:09.213Z" },
-    { url = "https://files.pythonhosted.org/packages/55/b7/5f252d9abfc1fbd25ec37bf43ed8bdb4340bc75664e49447a1a0ecd99bcb/t_boost-0.8.1-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d8a79a459f2b8d8bf3fb19f911096c699a002e312f389c5df5044c8a1d1c1d31", size = 2711399, upload-time = "2026-10-05T09:38:11.483Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/f3/552563a1bbc58a7d09871d81d501be5a9efb36545e91f4dcdce137367789/t_boost-0.8.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:802316eaa36822e95ceb366a7627d1fd56458d09171a80cf6c68638ddec1b365", size = 3123541, upload-time = "2026-10-05T09:38:13.473Z" },
-    { url = "https://files.pythonhosted.org/packages/4b/55/1805ca29c1fc7618025391614b2af2003856313ca2be2ca21fa263f77dc1/t_boost-0.8.1-cp310-abi3-win_amd64.whl", hash = "sha256:e9dd32c402edebe5945675c336d6526f2eab59e1b89c3d26f5e5d26b4bb95737", size = 3034270, upload-time = "2026-10-05T09:38:15.154Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.23" },
+    { name = "polars", specifier = ">=1.0" },
+    { name = "threadpoolctl", specifier = ">=3.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pandas", specifier = ">=2.0" },
+    { name = "pyarrow", specifier = ">=14" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "scikit-learn", specifier = ">=1.2" },
 ]
 
 [[package]]

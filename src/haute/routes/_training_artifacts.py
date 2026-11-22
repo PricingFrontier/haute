@@ -14,10 +14,10 @@ import tempfile
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from haute._artifact_housekeeping import (
     create_owned_artifact_directory,
@@ -26,15 +26,25 @@ from haute._artifact_housekeeping import (
 from haute._env import int_env
 from haute._logging import get_logger
 from haute._worker_failures import WorkerProtocolError
-from haute._worker_protocol import WorkerArtifactManifest, WorkerResultManifest
+from haute._worker_protocol import (
+    WorkerArtifactManifest,
+    WorkerResultManifest,
+    build_artifact_manifest,
+    validate_result_manifest,
+)
 from haute.errors import GoneError
 from haute.modelling._evaluation import (
     EvaluationPlan,
 )
+from haute.modelling._stage_diagnostics import without_nulls
 from haute.schemas import (
     EvaluationReportPayload,
+    StagedBuildPayload,
     TuningReportPayload,
 )
+
+if TYPE_CHECKING:
+    from haute.modelling._stage_objects import StoredRevision
 
 logger = get_logger(component="server.modelling.train")
 
@@ -67,7 +77,9 @@ _EVALUATED_TRAINING_ARTIFACT_KINDS = frozenset(
     _CORE_TRAINING_ARTIFACT_KINDS | set(_EVALUATION_ARTIFACT_PATHS)
 )
 _TRAINING_ARTIFACT_KINDS = frozenset(
-    _EVALUATED_TRAINING_ARTIFACT_KINDS | set(_TUNING_ARTIFACT_PATHS)
+    _EVALUATED_TRAINING_ARTIFACT_KINDS
+    | set(_TUNING_ARTIFACT_PATHS)
+    | {"stage_state", "training_response"}
 )
 
 
@@ -81,26 +93,12 @@ def _max_training_artifact_bytes() -> int:
 _TRAINING_DOWNSAMPLE_SEED = 42
 
 
-def _without_nulls(value: Any) -> Any:
-    """*value* with every null member dropped, recursively.
-
-    Worker responses are serialised with ``exclude_none``, while artifact records
-    keep explicit nulls (an EBM fit has no ``best_iteration``; a fixed-budget study
-    no ``final_tree_count``). Both sides of a response-versus-artifact comparison
-    pass through this, so the comparison sees the same shape.
-    """
-    if isinstance(value, dict):
-        return {key: _without_nulls(item) for key, item in value.items() if item is not None}
-    if isinstance(value, list):
-        return [_without_nulls(item) for item in value]
-    return value
-
-
 def _validate_evaluation_artifact_contents(
     artifact_paths: Mapping[str, Path],
     *,
     response_fit_count: int,
     response_refit_on_development: bool = True,
+    response_purpose: str | None = None,
 ) -> dict[str, Any]:
     """Validate and reconstruct the digest-linked evaluation response."""
     from haute.modelling._evaluation import (
@@ -129,6 +127,7 @@ def _validate_evaluation_artifact_contents(
         if expected_report.to_plain_data() != report.to_plain_data():
             raise ValueError("evaluation report does not match the persisted plan and results")
         return {
+            **({"purpose": response_purpose} if response_purpose is not None else {}),
             "schema_version": 1,
             "strategy": plan.config.strategy,
             "validation_method": plan.config.validation["method"],
@@ -191,6 +190,51 @@ def _validate_tuning_artifact_contents(
         raise WorkerProtocolError(f"Training tuning artifact set is malformed: {exc}") from exc
 
 
+_MAX_TRAINING_RESPONSE_BYTES = 256 * 1024**2
+_TRAINING_RESPONSE_PATH = "output/training-response.json"
+
+
+def _stage_training_response(
+    response: dict[str, Any], *, artifact_root: Path
+) -> WorkerArtifactManifest:
+    """Keep diagnostic arrays out of the worker's bounded IPC metadata."""
+    path = artifact_root / _TRAINING_RESPONSE_PATH
+    with path.open("w", encoding="utf-8") as stream:
+        json.dump(response, stream, allow_nan=False, separators=(",", ":"))
+    artifact = build_artifact_manifest(
+        artifact_root=artifact_root, path=path, kind="training_response", lifetime="staged"
+    )
+    if artifact.size_bytes > min(_MAX_TRAINING_RESPONSE_BYTES, _max_training_artifact_bytes()):
+        raise WorkerProtocolError("Training response artifact exceeds maximum size")
+    return artifact
+
+
+def _read_training_response(
+    manifest: WorkerResultManifest, *, artifact_root: Path
+) -> dict[str, Any]:
+    """Verify the response file before parsing; normal completion validates its content."""
+    responses = tuple(a for a in manifest.artifacts if a.kind == "training_response")
+    if len(responses) != 1:
+        raise WorkerProtocolError("Training completion requires exactly one response artifact")
+    artifact = responses[0]
+    if artifact.relative_path != _TRAINING_RESPONSE_PATH or artifact.lifetime != "staged":
+        raise WorkerProtocolError("Training response artifact must use its staged canonical path")
+    validate_result_manifest(
+        WorkerResultManifest(metadata={}, artifacts=responses),
+        artifact_root=artifact_root,
+        artifact_kinds=frozenset({"training_response"}),
+        max_artifact_size_bytes=min(_MAX_TRAINING_RESPONSE_BYTES, _max_training_artifact_bytes()),
+    )
+    try:
+        with (artifact_root / artifact.relative_path).open(encoding="utf-8") as stream:
+            response = json.load(stream)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise WorkerProtocolError(f"Training response artifact is malformed: {exc}") from exc
+    if not isinstance(response, dict):
+        raise WorkerProtocolError("Training result response must be an object")
+    return response
+
+
 def _validate_training_artifacts(
     manifest: WorkerResultManifest,
     *,
@@ -198,8 +242,13 @@ def _validate_training_artifacts(
     expected_model_name: str,
     expected_evaluation: EvaluationReportPayload,
     expected_tuning: TuningReportPayload | None = None,
+    expected_staged: StagedBuildPayload | None = None,
+    stage_parent: Callable[[], AbstractContextManager[StoredRevision]] | None = None,
 ) -> dict[str, Path]:
     """Validate one complete evaluation run and optional tuning set in place.
+
+    A stage job's `stage_state` is a delta over its parent revision; *stage_parent* leases
+    that revision so the delta is validated in place, without extracting anything.
 
     Returns each artifact kind's absolute path inside *artifact_root*; no file is
     moved, so the validated directory is the published, immutable set.
@@ -212,19 +261,23 @@ def _validate_training_artifacts(
             raise WorkerProtocolError("Training artifacts must have staged lifetime")
         by_kind[artifact.kind] = artifact
     artifact_kinds = set(by_kind)
-    if artifact_kinds not in (
-        set(_EVALUATED_TRAINING_ARTIFACT_KINDS),
-        set(_TRAINING_ARTIFACT_KINDS),
-    ):
+    has_tuning_artifacts = set(_TUNING_ARTIFACT_PATHS) <= artifact_kinds
+    if (expected_tuning is None) != (not has_tuning_artifacts):
+        raise WorkerProtocolError("Training response and tuning artifact set disagree")
+    expected_kinds = set(_EVALUATED_TRAINING_ARTIFACT_KINDS)
+    if "training_response" in by_kind:
+        expected_kinds.add("training_response")
+    if expected_tuning is not None:
+        expected_kinds.update(_TUNING_ARTIFACT_PATHS)
+    if expected_staged is not None:
+        expected_kinds.add("stage_state")
+    if artifact_kinds != expected_kinds:
         raise WorkerProtocolError(
             "Training completion requires a model, feature contract, and complete "
             "three-artifact evaluation set, with an optional complete tuning set"
         )
     if expected_evaluation is None:
         raise WorkerProtocolError("Training response must declare evaluation artifacts")
-    has_tuning_artifacts = set(_TUNING_ARTIFACT_PATHS) <= artifact_kinds
-    if (expected_tuning is None) != (not has_tuning_artifacts):
-        raise WorkerProtocolError("Training response and tuning artifact set disagree")
 
     root = artifact_root.resolve()
     artifact_paths: dict[str, Path] = {}
@@ -237,6 +290,7 @@ def _validate_training_artifacts(
         "tuning_plan",
         "tuning_trials",
         "tuning_report",
+        "stage_state",
     )
     for kind in ordered_kinds:
         selected_artifact = by_kind.get(kind)
@@ -290,8 +344,9 @@ def _validate_training_artifacts(
         artifact_paths,
         response_fit_count=expected_evaluation_response["fit_count"],
         response_refit_on_development=expected_evaluation_response["refit_on_development"],
+        response_purpose=expected_evaluation_response.get("purpose"),
     )
-    if _without_nulls(expected_evaluation_response) != _without_nulls(artifact_evaluation_response):
+    if without_nulls(expected_evaluation_response) != without_nulls(artifact_evaluation_response):
         raise WorkerProtocolError(
             "Training evaluation response does not match the staged artifact contents"
         )
@@ -322,11 +377,28 @@ def _validate_training_artifacts(
             artifact_paths,
             evaluation_plan_sha256=artifact_evaluation_response["plan_sha256"],
         )
-        if _without_nulls(expected_tuning_response) != _without_nulls(artifact_tuning_response):
+        if without_nulls(expected_tuning_response) != without_nulls(artifact_tuning_response):
             raise WorkerProtocolError(
                 "Training tuning response does not match the staged artifact contents"
             )
 
+    if expected_staged is not None:
+        from contextlib import nullcontext
+
+        from haute.modelling._stage_objects import DeltaRevision, StageArchive
+        from haute.modelling._staged_runtime import open_stage_bundle
+
+        if artifact_paths["stage_state"].name != f"{expected_model_name}.hstage":
+            raise WorkerProtocolError("Stage checkpoint filename disagrees with the model")
+        archive = StageArchive.read(artifact_paths["stage_state"])
+        if archive.inherited and stage_parent is None:
+            raise WorkerProtocolError("Stage checkpoint inherits from an unknown parent")
+        with stage_parent() if archive.inherited and stage_parent else nullcontext() as parent:
+            with open_stage_bundle(DeltaRevision(archive, parent)) as bundle:
+                if without_nulls(bundle.metadata["staged"]) != without_nulls(
+                    expected_staged.model_dump(mode="json")
+                ):
+                    raise WorkerProtocolError("Stage checkpoint and public diagnostics disagree")
     return artifact_paths
 
 
@@ -374,6 +446,7 @@ class TrainingArtifactSet:
     tuning_plan: Path | None = None
     tuning_trials: Path | None = None
     tuning_report: Path | None = None
+    stage_state: Path | None = None
 
     def evidence_paths(self) -> dict[str, Path]:
         """Evaluation and (when tuned) tuning artifacts keyed by kind."""
@@ -391,7 +464,12 @@ class TrainingArtifactSet:
         return paths
 
     def all_paths(self) -> tuple[Path, ...]:
-        return (self.model, self.feature_contract, *self.evidence_paths().values())
+        return (
+            self.model,
+            self.feature_contract,
+            *self.evidence_paths().values(),
+            *((self.stage_state,) if self.stage_state is not None else ()),
+        )
 
 
 def _validated_handle_directory(handle: Mapping[str, Any]) -> Path:
@@ -420,7 +498,10 @@ def training_artifact_set_from_handle(handle: Mapping[str, Any]) -> TrainingArti
     if not isinstance(files, Mapping):
         raise ValueError("Training artifact handle has no file list.")
     kinds = set(files)
-    if kinds not in (set(_EVALUATED_TRAINING_ARTIFACT_KINDS), set(_TRAINING_ARTIFACT_KINDS)):
+    if kinds - {"stage_state"} not in (
+        set(_EVALUATED_TRAINING_ARTIFACT_KINDS),
+        set(_EVALUATED_TRAINING_ARTIFACT_KINDS) | set(_TUNING_ARTIFACT_PATHS),
+    ):
         raise ValueError("Training artifact handle does not describe a complete artifact set.")
     output = directory / _STAGED_OUTPUT_DIRNAME
     paths: dict[str, Path] = {}

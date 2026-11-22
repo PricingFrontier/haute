@@ -63,8 +63,10 @@ from haute.modelling._glm_terms import (
 )
 from haute.modelling._train_config import (
     NO_FEATURES_MESSAGE,
+    TrainingConfigError,
     build_train_params,
     fits_out_of_core,
+    interactive_model_config,
     is_glm_config,
     role_column_reasons,
     selected_feature_columns,
@@ -278,6 +280,40 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
     return columns
 
 
+def _resolve_interactive_model(
+    graph: PipelineGraph, node_id: str, model_id: str | None
+) -> PipelineGraph:
+    """The graph with an interactive build's node read as the one model named.
+
+    Every reader after this sees a flat config, as for any node; a node that is not an
+    interactive build is returned as it is, and naming a model for one is refused.
+    """
+    node = _find_modelling_node(graph, node_id)
+    config = node.data.config
+    if config.get("interactive_build") is not True:
+        if model_id is not None:
+            raise UnprocessableError("Only an interactive build names a model to train.")
+        return graph
+    try:
+        flat = interactive_model_config(config, model_id)
+    except TrainingConfigError as exc:
+        raise UnprocessableError(str(exc)) from None
+    return graph.model_copy(
+        update={
+            "nodes": [
+                candidate.with_config(flat) if candidate.id == node_id else candidate
+                for candidate in graph.nodes
+            ]
+        }
+    )
+
+
+def keeps_every_column(config: Mapping[str, Any]) -> bool:
+    """Whether training keeps every column reaching the node: an interactive build
+    charts the columns its model leaves out, so none is projected away."""
+    return config.get("interactive_build") is True
+
+
 def _training_projection_keep_columns(config: Mapping[str, Any]) -> list[str]:
     """Return every configured column the training sink must retain.
 
@@ -406,7 +442,7 @@ def _training_required_columns_by_node(
     """
     term_columns = _glm_training_term_columns(config)
     target = config.get("target")
-    if not isinstance(target, str) or not target:
+    if not isinstance(target, str) or not target or keeps_every_column(config):
         return None
 
     if term_columns is None:

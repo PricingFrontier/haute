@@ -1,0 +1,656 @@
+diff --git a/before/haute/specs/modelling/low-level.md b/after/haute/specs/modelling/low-level.md
+index 8adc2c8..2830471 100644
+--- a/before/haute/specs/modelling/low-level.md
++++ b/after/haute/specs/modelling/low-level.md
+@@ -3236,6 +3236,51 @@ JSON serialization reads TrainResult fields directly: it must not recursively co
+ already JSON-compatible diagnostic payload just to encode it. Tests compare independent
+ candidate metrics/diagnostics and verify one partition write per retained fit plus cleanup.
+ 
++#### Path jobs without redundant writes
++
++A path job writes each retained fit's parent checkpoint at most once, and only when its
++stored state changes:
++- pruning writes each fit once, after reconfiguring its path structure;
++- banding and smoothing write a fit only to flatten an earlier selected candidate into its
++  parent.
++
++`StageBundle.replace_checkpoint` performs the write. It keeps the session it wrote as the
++cached parent for the new file identity, under the existing cache budget, so the job never
++reloads and re-validates a checkpoint it has just written.
++
++Each point result is written once. It records its own family as `prepared_path` and stores
++no family summary.
++- Every reader (`read_path_result`, `read_path_artifact`) derives `staged.paths` as follows:
++  every family the artifact retains that is valid for the point (its parent revision is the
++  point's), plus the point's own family with the point selected.
++- This is the form previously embedded at write time. Because it is never stored, rebuilding
++  or invalidating a family cannot leave a point referring to a missing or stale family. A
++  point lists the families its artifact actually retains.
++- A member without its own retained family, or in the legacy embedded form, is refused.
++
++Stage-bundle manifests are decoded with the same strict rules.
++
++Point results and durable stage results share one strict JSON decoder: non-finite and
++overflowing numbers are refused.
++
++t-boost owns the default pruning budget schedule. Haute raises each budget to the common
++mandatory-table floor across retained fits and removes duplicates.
++
++**Tests:**
++- a pruning path loads and saves each fit's checkpoint once;
++- a banding or smoothing path saves each fit at most once, and not at all when there is
++  nothing to flatten;
++- hydrated point results equal the published `staged.paths` contract for selected,
++  non-selected, identity and earlier-family points;
++- stored point members contain no family summaries;
++- a re-checksummed member containing NaN, `1e999`, a foreign `prepared_path` or the legacy
++  form is refused;
++- a manifest containing NaN is refused by both readers;
++- after pruning is rebuilt under a still-valid banding family, the banding points read the
++  new pruning family;
++- after Apply of `unchanged` drops the banding family, every retained pruning point stays
++  readable and no longer lists banding.
++
+ Categorical AvE aggregation dictionary-encodes levels to compact Arrow codes, then reduces
+ weighted actual/predicted totals and mass with NumPy. This avoids a separate Polars group
+ query for every feature of every path point. Keep labels variable-width (no fixed-width
+diff --git a/before/haute/src/haute/modelling/_stage_paths.py b/after/haute/src/haute/modelling/_stage_paths.py
+index 3c3402e..03be6b9 100644
+--- a/before/haute/src/haute/modelling/_stage_paths.py
++++ b/after/haute/src/haute/modelling/_stage_paths.py
+@@ -4,7 +4,6 @@ from __future__ import annotations
+ 
+ import copy
+ import hashlib
+-import json
+ import math
+ import re
+ import shutil
+@@ -14,9 +13,8 @@ from dataclasses import fields
+ from pathlib import Path
+ from typing import Any
+ 
+-import numpy as np
+-
+ from haute.errors import HauteValidationError
++from haute.modelling._stage_store import strict_json_loads
+ from haute.modelling._staged_config import StagedConfig
+ from haute.modelling._staged_runtime import StageBundle, StageRuntime, _json, _pack
+ 
+@@ -168,30 +166,75 @@ def _reuse_evaluation(
+ def _pruning_budgets(
+     bundle: StageBundle, config: StagedConfig, fit_keys: list[str], cancel: Any
+ ) -> list[int]:
+-    """One common budget policy must accommodate every fit's mandatory mains."""
+-    reference_counts: list[int] = []
++    """The reference fit's schedule, raised to every retained fit's mandatory-table floor.
++
++    Each fit's configured parent is written here once; the family loop reuses it.
++    """
++    schedule: list[int] = []
+     minimum = 0
+     for index, key in enumerate(fit_keys):
+         cancel()
++        # Each fit is read before its own replacement, so the previous envelope still
++        # applies here; it is dropped once every parent is flattened.
+         session = bundle.session(key)
+         session.configure_path(**config.to_plain_data()["path"])
+         evidence = session.pruning_path
+         if evidence is None:
+             raise HauteValidationError(session.path_unavailable_reason)
+-        counts = evidence["table_counts"]
+-        minimum = max(minimum, counts[0])
++        minimum = max(minimum, evidence["table_counts"][0])
+         if index == 0:
+-            indices = np.linspace(0, len(counts) - 1, min(10, len(counts)), dtype=int)
+-            reference_counts = [counts[int(i)] for i in indices]
+-            reference_counts.append(
+-                len(session.pruning_selection(**config.operation("pruned")["settings"])["kept"])
+-            )
+-        # Keep just one fit in memory. Replace envelope parents only when all are ready.
+-        session.save(bundle.root / f"path-parent-{key}.checkpoint")
+-    for key in fit_keys:
+-        (bundle.root / f"path-parent-{key}.checkpoint").replace(bundle.root / f"{key}.checkpoint")
++            schedule = session.pruning_budgets(**config.operation("pruned")["settings"])
++        bundle.replace_checkpoint(key, session)
++        del session
+     bundle.metadata.pop("path", None)
+-    return sorted({max(minimum, count) for count in reference_counts})
++    return sorted({max(minimum, count) for count in schedule})
++
++
++def _point_result_bytes(result: Any, path_id: str) -> bytes:
++    """A point result as stored: its own diagnostics, without any path family summary.
++
++    ``staged.paths`` is derived on every read from the families the artifact retains (see
++    `_resolve_point_paths`), so each summary is stored once per artifact and a point can
++    never refer to a family that was rebuilt or invalidated after it was written.
++    """
++    if result.staged is None:
++        raise HauteValidationError("Path candidate produced no staged result")
++    staged = {key: value for key, value in result.staged.items() if key != "paths"}
++    staged["prepared_path"] = path_id
++    return _json(
++        {
++            field.name: staged if field.name == "staged" else getattr(result, field.name)
++            for field in fields(result)
++        }
++    )
++
++
++def _resolve_point_paths(
++    payload: bytes, retained: Mapping[str, Any], path_id: str, point_id: str
++) -> Any:
++    """Decode a stored point result; its families are those retained and valid for it."""
++    from haute.modelling._training_job import TrainResult
++
++    try:
++        stored = strict_json_loads(payload)
++    except (ValueError, UnicodeError) as exc:
++        raise HauteValidationError("Invalid path point result") from exc
++    staged = stored.get("staged") if isinstance(stored, dict) else None
++    if not isinstance(staged, dict) or "paths" in staged:
++        raise HauteValidationError(
++            "This path was prepared by an older version of Haute; prepare it again"
++        )
++    if staged.get("prepared_path") != path_id:
++        raise HauteValidationError("Path point result belongs to a different path")
++    own = next((path for path in retained.values() if path["id"] == path_id), None)
++    if own is None:
++        raise HauteValidationError("The prepared path has changed")
++    # Another family belongs to this point exactly when its parent is this point's stage.
++    staged["paths"] = {
++        **_valid_paths(retained, staged),
++        own["stage"]: {**copy.deepcopy(own), "selected_point": point_id},
++    }
++    return TrainResult(**stored)
+ 
+ 
+ def run_path_job(
+@@ -204,7 +247,7 @@ def run_path_job(
+     scratch_dir: str | None,
+     **run_kwargs: Any,
+ ) -> tuple[Any, Any]:
+-    from haute.modelling._training_job import TrainingJob, TrainResult
++    from haute.modelling._training_job import TrainingJob
+ 
+     op = config.operation(operation)
+     parent, settings = op["parent"], op["settings"]
+@@ -223,6 +266,8 @@ def run_path_job(
+     pruning_budgets = (
+         _pruning_budgets(bundle, config, fit_keys, cancel) if operation == "pruned" else None
+     )
++    # A previous path's selected candidate is still an envelope over its parent checkpoint.
++    flatten = bundle.metadata.get("path") is not None
+     for key in fit_keys:
+         cancel()
+         session = bundle.session(key)
+@@ -246,8 +291,9 @@ def run_path_job(
+             raise HauteValidationError("Retained fits produced different logical path points")
+         family_ids[key] = family.path_id
+         parent_revisions[key] = session.stages[parent]["revision"]
+-        # Flatten any previous path envelope once. All new candidates share this parent.
+-        session.save(bundle.root / f"{key}.checkpoint")
++        # Flatten a previous path envelope once; all new candidates share this parent.
++        if flatten:
++            bundle.replace_checkpoint(key, session)
+         for point in family.points:
+             outcomes.setdefault(point["id"], []).append(point["diagnostics"]["outcome_id"])
+             member = f"{prefix}-{point['id']}-{key}.candidate"
+@@ -345,9 +391,7 @@ def run_path_job(
+             point["status"] = "changed"
+         member = f"{prefix}-{point_id}.result.json"
+         destination = bundle.root / member
+-        destination.write_bytes(
+-            _json({field.name: getattr(result, field.name) for field in fields(result)})
+-        )
++        destination.write_bytes(_point_result_bytes(result, path_id))
+         point_files[member] = destination
+         job._stage_runtime = None
+         runtime.close()
+@@ -364,20 +408,6 @@ def run_path_job(
+         "unchanged",
+     )
+     path.update(suggested_point=suggested, selected_point=selected)
+-    for point in points:
+-        point_id = point["id"]
+-        result_member = f"{prefix}-{point_id}.result.json"
+-        destination = bundle.root / result_member
+-        result = TrainResult(**json.loads(destination.read_bytes()))
+-        assert result.staged is not None
+-        result.staged["prepared_path"] = path_id
+-        result.staged["paths"] = {
+-            **_valid_paths(original.get("paths", {}), result.staged),
+-            operation: {**copy.deepcopy(path), "selected_point": point_id},
+-        }
+-        destination.write_bytes(
+-            _json({field.name: getattr(result, field.name) for field in fields(result)})
+-        )
+     selected_result = read_path_result(bundle, path_id, selected)
+     selected_metadata = {
+         **original,
+@@ -426,12 +456,14 @@ def run_path_job(
+ 
+ 
+ def read_path_result(bundle: StageBundle, path_id: str, point_id: str) -> Any:
+-    from haute.modelling._training_job import TrainResult
+ 
+     path = resolve_path(bundle, path_id)
+     require_point(path, point_id)
+-    return TrainResult(
+-        **json.loads((bundle.root / f"path-{path_id}-{point_id}.result.json").read_bytes())
++    return _resolve_point_paths(
++        (bundle.root / f"path-{path_id}-{point_id}.result.json").read_bytes(),
++        bundle.metadata.get("paths", {}),
++        path_id,
++        point_id,
+     )
+ 
+ 
+@@ -440,7 +472,6 @@ def read_path_artifact(artifact: Path, path_id: str, point_id: str) -> Any:
+ 
+     Inspection never extracts parent rows, boosters or other candidate banks.
+     """
+-    from haute.modelling._training_job import TrainResult
+ 
+     with zipfile.ZipFile(artifact) as archive:
+         names = archive.namelist()
+@@ -449,7 +480,10 @@ def read_path_artifact(artifact: Path, path_id: str, point_id: str) -> Any:
+             or archive.getinfo("manifest.json").file_size > 32 * 1024**2
+         ):
+             raise HauteValidationError("Invalid path artifact manifest")
+-        manifest = json.loads(archive.read("manifest.json"))
++        try:
++            manifest = strict_json_loads(archive.read("manifest.json"))
++        except (ValueError, UnicodeError) as exc:
++            raise HauteValidationError("Invalid path artifact manifest") from exc
+         if manifest.get("format") != "haute-staged-training" or manifest.get("version") != 1:
+             raise HauteValidationError("Unsupported path artifact format")
+         paths = manifest["metadata"].get("paths", {})
+@@ -465,7 +499,7 @@ def read_path_artifact(artifact: Path, path_id: str, point_id: str) -> Any:
+         payload = archive.read(member)
+         if hashlib.sha256(payload).hexdigest() != record["sha256"]:
+             raise HauteValidationError("Path diagnostic checksum mismatch")
+-        return TrainResult(**json.loads(payload))
++        return _resolve_point_paths(payload, paths, path_id, point_id)
+ 
+ 
+ def materialize_path_point(
+diff --git a/before/haute/src/haute/modelling/_stage_store.py b/after/haute/src/haute/modelling/_stage_store.py
+index 9e69ab8..a8becaf 100644
+--- a/before/haute/src/haute/modelling/_stage_store.py
++++ b/after/haute/src/haute/modelling/_stage_store.py
+@@ -48,6 +48,11 @@ def _invalid_constant(value: str) -> None:
+     raise ValueError(f"Stage results cannot contain {value}")
+ 
+ 
++def strict_json_loads(data: bytes) -> Any:
++    """Decode stage JSON, refusing NaN, infinities and numbers that overflow to them."""
++    return json.loads(data, parse_float=_finite_float, parse_constant=_invalid_constant)
++
++
+ def _digest(path: Path) -> tuple[str, int]:
+     try:
+         info = path.lstat()
+@@ -267,9 +272,7 @@ class StageStore:
+         kind = "view" if compact and "view_artifact" in record else "result"
+         path = self._result_path(key, record, kind=kind)
+         try:
+-            result = json.loads(
+-                path.read_bytes(), parse_float=_finite_float, parse_constant=_invalid_constant
+-            )
++            result = strict_json_loads(path.read_bytes())
+         except (ValueError, UnicodeError) as exc:
+             raise HauteValidationError("Invalid stage result JSON") from exc
+         if not isinstance(result, dict):
+diff --git a/before/haute/src/haute/modelling/_staged_runtime.py b/after/haute/src/haute/modelling/_staged_runtime.py
+index 7a6b853..6af8557 100644
+--- a/before/haute/src/haute/modelling/_staged_runtime.py
++++ b/after/haute/src/haute/modelling/_staged_runtime.py
+@@ -23,6 +23,7 @@ from haute._file_ops import atomic_path
+ from haute.errors import HauteValidationError
+ from haute.modelling._candidate_run import training_identity_sha256
+ from haute.modelling._evaluation import EvaluationPlan
++from haute.modelling._stage_store import strict_json_loads
+ from haute.modelling._stage_views import table_summary
+ from haute.modelling._staged_config import StagedConfig
+ 
+@@ -210,16 +211,8 @@ class StageBundle:
+             parent = TBoostTrainingSession.load(
+                 checkpoint, expected_data_digest=self.metadata["fits"][key]["data_digest"]
+             )
+-            with zipfile.ZipFile(checkpoint) as archive:
+-                # Allow for decoded strings, arrays, native banks and binary templates.
+-                size = 4 * sum(member.file_size for member in archive.infolist())
+-            cached = (identity, size, parent)
+-        if cached[1] <= _MAX_SESSION_CACHE_BYTES:
+-            while self._sessions and self._session_bytes + cached[1] > _MAX_SESSION_CACHE_BYTES:
+-                _, evicted = self._sessions.popitem(last=False)
+-                self._session_bytes -= evicted[1]
+-            self._sessions[key] = cached
+-            self._session_bytes += cached[1]
++            cached = self._cache_entry(checkpoint, parent)
++        self._retain(key, cached)
+         session = cached[2].fork()
+         from haute.modelling._stage_paths import resolve_path
+ 
+@@ -237,6 +230,41 @@ class StageBundle:
+             family.apply(session, point["id"])
+         return session
+ 
++    def replace_checkpoint(self, key: str, session: Any) -> None:
++        """Atomically rewrite a retained fit's checkpoint from ``session``.
++
++        The written state becomes the cached parent for the new file identity, so a job never
++        reloads and re-validates a checkpoint it has just written.
++        """
++        if key not in self.metadata["fits"] or not _FIT_KEY.fullmatch(key):
++            raise HauteValidationError(f"Stage checkpoint has no retained fit {key!r}")
++        if session.data_digest != self.metadata["fits"][key]["data_digest"]:
++            raise HauteValidationError("Replacement checkpoint belongs to different training data")
++        checkpoint = self.root / f"{key}.checkpoint"
++        session.save(checkpoint)
++        cached = self._sessions.pop(key, None)
++        if cached is not None:
++            self._session_bytes -= cached[1]
++        self._retain(key, self._cache_entry(checkpoint, session.fork()))
++
++    @staticmethod
++    def _cache_entry(checkpoint: Path, parent: Any) -> tuple[tuple[int, ...], int, Any]:
++        info = checkpoint.stat()
++        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++        with zipfile.ZipFile(checkpoint) as archive:
++            # Allow for decoded strings, arrays, native banks and binary templates.
++            size = 4 * sum(member.file_size for member in archive.infolist())
++        return identity, size, parent
++
++    def _retain(self, key: str, cached: tuple[tuple[int, ...], int, Any]) -> None:
++        """Keep ``cached`` as the most recent entry when it fits the cache budget."""
++        if cached[1] <= _MAX_SESSION_CACHE_BYTES:
++            while self._sessions and self._session_bytes + cached[1] > _MAX_SESSION_CACHE_BYTES:
++                _, evicted = self._sessions.popitem(last=False)
++                self._session_bytes -= evicted[1]
++            self._sessions[key] = cached
++            self._session_bytes += cached[1]
++
+ 
+ @contextmanager
+ def open_stage_bundle(
+@@ -256,7 +284,10 @@ def open_stage_bundle(
+                 or sum(item.file_size for item in entries) > max_bytes
+             ):
+                 raise HauteValidationError("Invalid stage bundle members or expanded size")
+-            manifest = json.loads(archive.read("manifest.json"))
++            try:
++                manifest = strict_json_loads(archive.read("manifest.json"))
++            except (ValueError, UnicodeError) as exc:
++                raise HauteValidationError("Invalid stage bundle manifest") from exc
+             if (
+                 not isinstance(manifest, dict)
+                 or manifest.get("format") != "haute-staged-training"
+diff --git a/before/haute/tests/test_staged_runtime.py b/after/haute/tests/test_staged_runtime.py
+index f409935..828c3b8 100644
+--- a/before/haute/tests/test_staged_runtime.py
++++ b/after/haute/tests/test_staged_runtime.py
+@@ -930,3 +930,168 @@ def test_path_split_cache_is_removed_when_cancelled(tmp_path, monkeypatch):
+             check_cancelled=cancel,
+         )
+     assert cached and all(not path.exists() for path in cached)
++
++
++@pytest.mark.parametrize("validation", [None, {"method": "cross_validation", "fold_count": 3}])
++def test_path_jobs_write_parents_once_and_store_families_by_reference(
++    tmp_path, monkeypatch, validation
++):
++    """Each fit's checkpoint is written at most once; point results reference summaries."""
++    import json
++    import zipfile
++
++    from t_boost import TBoostTrainingSession
++
++    from haute.modelling._stage_paths import materialize_path_point, read_path_result
++
++    _, full = build(tmp_path, validation)
++    settings = full.staged["configuration"]
++    calls = {"load": 0, "save": 0}
++    original_load, original_save = TBoostTrainingSession.load, TBoostTrainingSession.save
++
++    def load(*args, **kwargs):
++        calls["load"] += 1
++        return original_load(*args, **kwargs)
++
++    def save(*args, **kwargs):
++        calls["save"] += 1
++        return original_save(*args, **kwargs)
++
++    monkeypatch.setattr(TBoostTrainingSession, "load", load)
++    monkeypatch.setattr(TBoostTrainingSession, "save", save)
++
++    def prepare(checkpoint, operation, output):
++        calls.update(load=0, save=0)
++        _, result = run_stage_job(
++            checkpoint, operation=operation, stages=settings, prepare_path=True, output_dir=output
++        )
++        return result, dict(calls)
++
++    pruning, counted = prepare(full.stage_checkpoint_path, "pruned", str(tmp_path / "prune"))
++    with open_stage_bundle(pruning.stage_checkpoint_path) as bundle:
++        fits = len(bundle.metadata["fits"])
++        assert counted["save"] == fits
++        assert counted["load"] == fits
++        summary = bundle.metadata["paths"]["pruned"]
++        for point in summary["points"]:
++            result = read_path_result(bundle, summary["id"], point["id"])
++            assert result.staged["prepared_path"] == summary["id"]
++            assert result.staged["paths"] == {"pruned": {**summary, "selected_point": point["id"]}}
++            assert "path_stages" not in result.staged and "path_refs" not in result.staged
++        chosen = next(p["id"] for p in summary["points"] if p["status"] == "changed")
++        applied, _ = materialize_path_point(bundle, summary["id"], chosen, tmp_path / "applied")
++
++    banding, counted = prepare(applied, "banded", str(tmp_path / "band"))
++    assert counted["save"] == fits  # flattening the applied pruning candidate, once per fit
++    assert counted["load"] == fits
++    with zipfile.ZipFile(banding.stage_checkpoint_path) as archive:
++        manifest = json.loads(archive.read("manifest.json"))["metadata"]
++        band, prune = manifest["paths"]["banded"], manifest["paths"]["pruned"]
++        stored = json.loads(archive.read(f"path-{band['id']}-point-1.result.json"))
++    assert not {"paths", "path_stages", "path_refs"} & set(stored["staged"])
++    with open_stage_bundle(banding.stage_checkpoint_path) as bundle:
++        result = read_path_result(bundle, band["id"], "point-1")
++        assert result.staged["paths"] == {
++            "pruned": prune,
++            "banded": {**band, "selected_point": "point-1"},
++        }
++        assert result.staged["paths"] == banding.staged["paths"] | {
++            "banded": {**band, "selected_point": "point-1"}
++        }
++
++
++@pytest.mark.parametrize("payload", ["NaN", "1e999", "foreign-path", "legacy", "manifest-NaN"])
++def test_path_point_reads_refuse_invalid_members_even_with_matching_checksums(tmp_path, payload):
++    import hashlib
++    import json
++    import zipfile
++
++    from haute.errors import HauteValidationError
++    from haute.modelling._stage_paths import read_path_artifact
++
++    _, full = build(tmp_path)
++    _, pruning = run_stage_job(
++        full.stage_checkpoint_path,
++        operation="pruned",
++        stages=full.staged["configuration"],
++        prepare_path=True,
++        output_dir=str(tmp_path / "prune"),
++    )
++    source = zipfile.ZipFile(pruning.stage_checkpoint_path)
++    manifest = json.loads(source.read("manifest.json"))
++    path_id = manifest["metadata"]["paths"]["pruned"]["id"]
++    member = f"path-{path_id}-point-1.result.json"
++    stored = json.loads(source.read(member))
++    if payload == "foreign-path":
++        stored["staged"]["prepared_path"] = "0" * 64
++        text = json.dumps(stored)
++    elif payload == "legacy":
++        stored["staged"]["paths"] = manifest["metadata"]["paths"]
++        text = json.dumps(stored)
++    elif payload == "manifest-NaN":
++        text = json.dumps(stored)
++        manifest["metadata"]["paths"]["pruned"]["points"][1]["loss"] = float("nan")
++    else:
++        stored["metrics"] = {"poisson_deviance": "__NUMBER__"}
++        text = json.dumps(stored).replace('"__NUMBER__"', payload)
++    data = text.encode()
++    manifest["members"][member] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
++    tampered = tmp_path / "tampered.hstage"
++    with zipfile.ZipFile(tampered, "w") as target:
++        for info in source.infolist():
++            if info.filename == "manifest.json":
++                target.writestr(info, json.dumps(manifest))
++            elif info.filename == member:
++                target.writestr(info, data)
++            else:
++                target.writestr(info, source.read(info))
++    with pytest.raises(HauteValidationError):
++        read_path_artifact(tampered, path_id, "point-1")
++    if payload == "manifest-NaN":
++        with pytest.raises(HauteValidationError, match="manifest"):
++            with open_stage_bundle(tampered):
++                pass
++
++
++def test_later_family_reads_the_rebuilt_earlier_family_it_remains_valid_for(tmp_path):
++    """Rebuilding pruning replaces its summary; a still-valid banding family stays readable."""
++    from haute.modelling._stage_paths import materialize_path_point, read_path_result
++
++    _, full = build(tmp_path)
++    settings = full.staged["configuration"]
++
++    def prepare(checkpoint, operation, stages, output):
++        return run_stage_job(
++            checkpoint, operation=operation, stages=stages, prepare_path=True, output_dir=output
++        )[1]
++
++    first = prepare(full.stage_checkpoint_path, "pruned", settings, str(tmp_path / "p1"))
++    p1 = first.staged["paths"]["pruned"]
++    with open_stage_bundle(first.stage_checkpoint_path) as bundle:
++        applied, _ = materialize_path_point(bundle, p1["id"], p1["selected_point"], tmp_path / "a")
++    banding = prepare(applied, "banded", settings, str(tmp_path / "band"))
++    band = banding.staged["paths"]["banded"]
++    selection = {**settings["selection"]}
++    selection["relative_tolerance"] *= 1.01  # a new family identity, the same suggestion
++    rebuilt = prepare(
++        banding.stage_checkpoint_path,
++        "pruned",
++        {**settings, "selection": selection},
++        str(tmp_path / "p2"),
++    )
++    p2 = rebuilt.staged["paths"]["pruned"]
++    assert p2["id"] != p1["id"] and p2["selected_point"] == p1["selected_point"]
++    assert rebuilt.staged["paths"]["banded"]["id"] == band["id"]
++    with open_stage_bundle(rebuilt.stage_checkpoint_path) as bundle:
++        for point in band["points"]:
++            result = read_path_result(bundle, band["id"], point["id"])
++            assert result.staged["paths"]["pruned"] == bundle.metadata["paths"]["pruned"]
++            assert result.staged["paths"]["pruned"]["id"] == p2["id"]
++        # Applying `unchanged` invalidates the banding family; every pruning point stays readable.
++        unchanged, _ = materialize_path_point(bundle, p2["id"], "unchanged", tmp_path / "u")
++    with open_stage_bundle(unchanged) as bundle:
++        assert set(bundle.metadata["paths"]) == {"pruned"}
++        for point in p2["points"]:
++            result = read_path_result(bundle, p2["id"], point["id"])
++            assert set(result.staged["paths"]) == {"pruned"}
++            assert result.staged["paths"]["pruned"]["selected_point"] == point["id"]
+diff --git a/before/t-boost/python/t_boost/_paths.py b/after/t-boost/python/t_boost/_paths.py
+index 1a24a0f..d22c49b 100644
+--- a/before/t-boost/python/t_boost/_paths.py
++++ b/after/t-boost/python/t_boost/_paths.py
+@@ -241,12 +241,9 @@ def prepare_path(session: TBoostTrainingSession, stage: str, *, parent: str | No
+         evidence = session.pruning_path
+         if evidence is None:
+             raise ValueError(session.path_unavailable_reason)
+-        counts = evidence['table_counts']
+-        if values is None:
+-            indices = np.linspace(0, len(counts) - 1, min(10, len(counts)), dtype=int)
+-            counts = sorted(set([counts[int(i)] for i in indices] + [len(session.pruning_selection(**settings)['kept'])]))
+-        else:
+-            counts = values
++        # Caller budgets share `values` with the strength schedules; the next check
++        # requires non-negative integers before any is used as `max_tables`.
++        counts: list[Any] = session.pruning_budgets(**settings) if values is None else list(values)
+         if not counts or len(counts) > 16 or any(type(v) is not int or v < 0 for v in counts):
+             raise ValueError('pruning path requires 1..16 non-negative integer table budgets')
+         for i, count in enumerate(counts, 1):
+diff --git a/before/t-boost/python/t_boost/_staged.py b/after/t-boost/python/t_boost/_staged.py
+index 336c167..e705e2d 100644
+--- a/before/t-boost/python/t_boost/_staged.py
++++ b/after/t-boost/python/t_boost/_staged.py
+@@ -419,6 +419,24 @@ class TBoostTrainingSession:
+         _, report = result._select_ranked_path(deepcopy(self._evidence), max_tables=max_tables)
+         return report
+ 
++    def pruning_budgets(
++        self, *, fraction: float = 0.995, tolerance: float = 0.001, max_tables: int | None = None,
++    ) -> list[int]:
++        """The default pruning path's total-table budgets, ascending and distinct.
++
++        Up to ten evenly spaced counts along the cached path, plus the count the given
++        selection rule keeps. `prepare_path('pruned')` uses this schedule when no budgets
++        are passed.
++        """
++        _check_selection(fraction=fraction, tolerance=tolerance, max_tables=max_tables)
++        if self._evidence is None:
++            raise ValueError(self._unavailable_reason)
++        counts = self._evidence['table_counts']
++        indices = np.linspace(0, len(counts) - 1, min(10, len(counts)), dtype=int)
++        selected = len(self.pruning_selection(fraction=fraction, tolerance=tolerance,
++                                              max_tables=max_tables)['kept'])
++        return sorted({int(counts[int(i)]) for i in indices} | {selected})
++
+     def configure_path(self, *, steps: int = 32, main_effects: bool = False, min_rows: int = 500) -> None:
+         """Recompute structural OOB evidence from the full fit; never boost new trees."""
+         if type(steps) is not int or steps < 2 or type(min_rows) is not int or min_rows < 1 or type(main_effects) is not bool:
+diff --git a/before/t-boost/python/tests/test_staged_postfit.py b/after/t-boost/python/tests/test_staged_postfit.py
+index 5e21993..c66502e 100644
+--- a/before/t-boost/python/tests/test_staged_postfit.py
++++ b/after/t-boost/python/tests/test_staged_postfit.py
+@@ -251,6 +251,22 @@ def test_path_candidates_are_immutable_compact_and_exactly_applicable(tmp_path,
+         family.apply(session, 'point-1')
+ 
+ 
++def test_default_pruning_path_uses_the_session_budget_schedule():
++    x, y = book()
++    session = estimator().fit_staged(x, y)
++    counts = session.pruning_path['table_counts']
++    selection = dict(fraction=.99, tolerance=.002)
++    schedule = session.pruning_budgets(**selection)
++    kept = len(session.pruning_selection(**selection)['kept'])
++    assert schedule == sorted(set(schedule)) and kept in schedule
++    assert set(schedule) - {kept} <= set(counts) and {counts[0], counts[-1]} <= set(schedule)
++    assert len(schedule) <= 11
++    family = session.prepare_path('pruned', settings=selection)
++    assert [p['diagnostics']['table_budget'] for p in family.points[1:]] == schedule
++    with pytest.raises(ValueError, match='fraction'):
++        session.pruning_budgets(fraction=2.)
++
++
+ def test_smoothing_path_auto_replay_and_parent_are_stable(monkeypatch):
+     x, y = book()
+     session = estimator().fit_staged(x, y)
+diff --git a/before/t-boost/specs/roadmap/staged-training.md b/after/t-boost/specs/roadmap/staged-training.md
+index 664af24..f01078b 100644
+--- a/before/t-boost/specs/roadmap/staged-training.md
++++ b/after/t-boost/specs/roadmap/staged-training.md
+@@ -243,6 +243,12 @@ diagnostics never serialise a bank. Wire formats are unchanged.
+ **Path families.** `candidate_bytes` serialises only the requested point's metadata.
+ `points` keeps returning detached copies.
+ 
++**Pruning budget schedule.** `session.pruning_budgets(fraction, tolerance, max_tables)` owns
++the default schedule: up to ten evenly spaced path counts plus the count the selection rule
++keeps, ascending and distinct. `prepare_path('pruned')` uses it when no budgets are given.
++Callers that prepare several retained fits (such as Haute) take the reference fit's schedule
++and apply their own floors to it, rather than restating the rule.
++
+ **Tests:**
+ - restored estimators have attributes equal to today's for every envelope fixture
+   (regressor, classifier, multiclass, tables, legacy bare blobs, Tweedie); stubtest;

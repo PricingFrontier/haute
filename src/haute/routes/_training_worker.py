@@ -6,7 +6,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
 from typing import Any, Literal
@@ -14,7 +14,6 @@ from typing import Any, Literal
 import polars as pl
 from pydantic import BaseModel
 
-from haute._env import int_env
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -38,6 +37,12 @@ from haute._worker_protocol import (
     build_artifact_manifest,
 )
 from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
+from haute.modelling._loss_history import (
+    bounded_loss_history as _bounded_loss_history,
+)
+from haute.modelling._loss_history import (
+    loss_history_limit as _max_train_loss_history,
+)
 from haute.modelling._rustystats import GLMMemoryPlanError
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
@@ -48,6 +53,7 @@ from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._training_artifacts import (
     _EVALUATION_ARTIFACT_PATHS,
     _TUNING_ARTIFACT_PATHS,
+    _stage_training_response,
 )
 from haute.routes._training_evaluation import _DISPERSION_PARAM_FAMILIES
 from haute.schemas import (
@@ -57,10 +63,6 @@ from haute.schemas import (
 )
 
 logger = get_logger(component="server.modelling.train")
-
-
-def _max_train_loss_history() -> int:
-    return int_env("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", 200)
 
 
 def _training_context_phrase(job_kwargs: Mapping[str, Any] | None) -> str:
@@ -203,32 +205,6 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
     return float(elapsed) if isinstance(elapsed, int | float) else fallback
 
 
-def _bounded_loss_history(
-    history: Iterable[dict[str, float]],
-    *,
-    best_iteration: int | None,
-) -> tuple[list[dict[str, float]], bool]:
-    """Thin a fit's loss history to the limit, keeping its whole span.
-
-    Keeps the first and last rows, the best iteration's row (rows count from
-    one, ``best_iteration`` from zero) and an even stride between them.
-    """
-    rows = list(history)
-    limit = _max_train_loss_history()
-    if len(rows) <= limit:
-        return rows, False
-    kept = {0, len(rows) - 1}
-    if best_iteration is not None:
-        kept.update(
-            index for index, row in enumerate(rows) if row["iteration"] == best_iteration + 1
-        )
-    spare = limit - len(kept)
-    if spare > 0:
-        step = (len(rows) - 1) / (spare + 1)
-        kept.update(round(step * slot) for slot in range(1, spare + 1))
-    return [rows[index] for index in sorted(kept)][:limit], True
-
-
 def _append_live_loss_row(
     history: list[dict[str, float]],
     truncated: bool,
@@ -237,7 +213,9 @@ def _append_live_loss_row(
 ) -> tuple[list[dict[str, float]], bool]:
     """Add a fit's newest loss row to the live history, keeping its span and extremes.
 
-    A row for the last row's round replaces it, as when a bagged fit reports
+    Bag snapshots keep distinct updates even at the same furthest round, so
+    slower bags retain their own curve as they catch up. Other rows for the
+    last row's round replace it, as when a bagged fit reports
     its furthest round again while slower bags catch up; a row for an earlier
     round starts a new fit's history. Past the limit the history is compacted
     to its first and newest rows, the rows holding each value's lowest and
@@ -246,6 +224,8 @@ def _append_live_loss_row(
     every round so far, and axes drawn from them never shrink during a fit.
     Returns the history and whether it has dropped any row it was given.
     """
+    if any(key.startswith("bag_") for key in row):
+        return _append_live_bag_history(history, truncated, row, total)
     if history and row["iteration"] == history[-1]["iteration"]:
         return [*history[:-1], row], truncated
     if history and row["iteration"] < history[-1]["iteration"]:
@@ -276,6 +256,65 @@ def _append_live_loss_row(
             buckets.add(bucket)
             kept.add(index)
     return [history[index] for index in sorted(kept)], True
+
+
+def _append_live_bag_history(
+    history: list[dict[str, float]],
+    truncated: bool,
+    row: dict[str, float],
+    total: int,
+) -> tuple[list[dict[str, float]], bool]:
+    """Thin each bag independently, then pack the columns into bounded rows.
+
+    Each bag has its own explicit iteration column. Zipping independent curves
+    keeps all their endpoints without requiring more rows as bag count grows.
+    Aggregate values retain their own original iteration column.
+    """
+    if history and row["iteration"] < history[-1]["iteration"]:
+        history, truncated = [], False
+    aggregate = {
+        entry["iteration"]: {
+            key: value for key, value in entry.items() if not key.startswith("bag_")
+        }
+        for entry in history
+    }
+    rows, truncated = _append_live_loss_row(
+        list(aggregate.values()),
+        truncated,
+        {key: value for key, value in row.items() if not key.startswith("bag_")},
+        total,
+    )
+    curves = {}
+    for key in row:
+        if not key.startswith("bag_") or not key.endswith("_iteration"):
+            continue
+        prefix = key.removesuffix("iteration")
+        points = {
+            entry[key]: {
+                name: entry[prefix + name]
+                for name in ("iteration", "train_deviance", "eval_deviance")
+                if prefix + name in entry
+            }
+            for entry in history
+            if key in entry
+        }
+        latest = {
+            name: row[prefix + name]
+            for name in ("iteration", "train_deviance", "eval_deviance")
+            if prefix + name in row
+        }
+        curve, thinned = _append_live_loss_row(list(points.values()), False, latest, total)
+        truncated = truncated or thinned
+        curves[prefix] = curve
+    packed = []
+    for index in range(max(len(rows), *(len(curve) for curve in curves.values()))):
+        entry = dict(rows[min(index, len(rows) - 1)])
+        for prefix, curve in curves.items():
+            entry.update(
+                {prefix + name: value for name, value in curve[min(index, len(curve) - 1)].items()}
+            )
+        packed.append(entry)
+    return packed, truncated
 
 
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
@@ -469,7 +508,19 @@ def _require_consistent_completed_response(response: TrainResponse) -> None:
         raise ValueError("development_rows must equal evaluation development_rows")
     if response.final_test_rows != evaluation.final_test_rows:
         raise ValueError("final_test_rows must equal evaluation final_test_rows")
-    if response.final_test_rows:
+    if evaluation.purpose == "exploration":
+        if response.final_test_metrics:
+            raise ValueError("exploration cannot publish final-test metrics")
+        expected_diagnostics = (
+            "validation"
+            if evaluation.validation_method != "none"
+            else "development"
+            if evaluation.refit_on_development
+            else "validation"
+        )
+        if response.diagnostics_set != expected_diagnostics:
+            raise ValueError(f"exploration diagnostics must be {expected_diagnostics}")
+    elif response.final_test_rows:
         if response.diagnostic_metrics != response.final_test_metrics:
             raise ValueError(
                 "diagnostic_metrics must equal final_test_metrics when a final test exists"
@@ -494,9 +545,7 @@ def _require_consistent_completed_response(response: TrainResponse) -> None:
                 raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
             raise ValueError("evaluation fit_count must equal validation_fit_count without refit")
         return
-    # A refitting family's study ends in the refit; a validation-fit family's
-    # (t-boost) in the reproduced winning holdout fit. Either is the one fit
-    # beyond the trials.
+    # A study ends in the refit: the one fit beyond the trials.
     if evaluation.fit_count != tuning.total_fit_count:
         raise ValueError("evaluation fit_count must equal tuning total_fit_count")
     if tuning.evaluation_plan_sha256 != evaluation.plan_sha256:
@@ -532,6 +581,9 @@ def _training_response_payload(
         best_iteration=validation_best,
     )
     tuning_payload = TuningReportPayload.model_validate(tuning) if tuning is not None else None
+    from haute.modelling._stage_views import table_summary
+    from haute.schemas import StageTableSummary
+
     response = TrainResponse(
         status="completed",
         job_id=job_id,
@@ -558,6 +610,7 @@ def _training_response_payload(
         shap_link=train_result.shap_link,
         feature_importance_loss=train_result.feature_importance_loss,
         ave_per_feature=train_result.ave_per_feature,
+        ave_left_out=train_result.ave_left_out,
         residuals_histogram=train_result.residuals_histogram,
         residuals_stats=train_result.residuals_stats,
         actual_vs_predicted=train_result.actual_vs_predicted,
@@ -572,9 +625,15 @@ def _training_response_payload(
         glm_regularization=train_result.glm_regularization,
         ebm_terms=train_result.ebm_terms,
         tboost_tables=train_result.tboost_tables,
+        table_summary=(
+            StageTableSummary.model_validate(table_summary(train_result.tboost_tables))
+            if train_result.tboost_tables
+            else None
+        ),
         diagnostics_errors=train_result.diagnostics_errors,
         evaluation=evaluation_payload,
         tuning=tuning_payload,
+        staged=train_result.staged,
     )
     _require_consistent_completed_response(response)
     _assert_json_finite(response)
@@ -610,7 +669,8 @@ def _run_training_process_job(
             payload,
             operation="training_job",
         )
-        job = TrainingJob(**job_kwargs)
+        stage_resume = payload.get("stage_resume")
+        job = TrainingJob(**job_kwargs) if stage_resume is None else None
 
         def progress(message: str, fraction: float) -> None:
             execution_context.checkpoint(label="training_progress")
@@ -661,15 +721,49 @@ def _run_training_process_job(
                 fields=fields,
             )
 
-        train_result = job.run(
-            progress,
-            iteration,
-            check_cancelled=lambda: execution_context.checkpoint(
+        run_kwargs: dict[str, Any] = {
+            "progress": progress,
+            "on_iteration": iteration,
+            "check_cancelled": lambda: execution_context.checkpoint(
                 label="training_cancel_checkpoint"
             ),
-            execution_context=execution_context,
-            on_tuning_progress=tuning_progress,
-        )
+            "execution_context": execution_context,
+            "on_tuning_progress": tuning_progress,
+        }
+        if stage_resume is not None:
+            from haute.modelling._stage_store import StageStore
+            from haute.modelling._staged_runtime import run_stage_job
+
+            if not isinstance(stage_resume, dict) or set(stage_resume) != {
+                "parent",
+                "operation",
+                "expected_fit_config",
+            }:
+                raise HauteValidationError("Invalid stage resume request")
+            # The parent revision is read in place, read-only; the worker writes nothing
+            # to the store and returns a delta archive over it.
+            job, train_result = run_stage_job(
+                StageStore.open_parent(stage_resume["parent"]),
+                operation=stage_resume["operation"],
+                prepare_path=stage_resume["operation"] != "finalise",
+                expected_fit_config=stage_resume["expected_fit_config"],
+                stages=job_kwargs["stages"],
+                name=job_kwargs.get("name"),
+                output_dir=str(staged_output),
+                scratch_dir=job_kwargs["scratch_dir"],
+                **run_kwargs,
+            )
+        else:
+            assert job is not None
+            train_result = job.run(
+                progress,
+                iteration,
+                **{
+                    key: value
+                    for key, value in run_kwargs.items()
+                    if key not in {"progress", "on_iteration"}
+                },
+            )
         model_path = Path(train_result.model_path).resolve()
         contract_path = model_path.parent / model_contract_filename(model_path.stem)
         model_manifest = build_artifact_manifest(
@@ -685,6 +779,15 @@ def _run_training_process_job(
             lifetime="staged",
         )
         artifacts = [model_manifest, contract_manifest]
+        if train_result.stage_checkpoint_path is not None:
+            artifacts.append(
+                build_artifact_manifest(
+                    artifact_root=staged_output.parent,
+                    path=Path(train_result.stage_checkpoint_path).resolve(),
+                    kind="stage_state",
+                    lifetime="staged",
+                )
+            )
         if not isinstance(train_result.evaluation, dict):
             raise ValueError("Training evaluation result must be an object")
         response_evaluation = dict(train_result.evaluation)
@@ -726,9 +829,9 @@ def _run_training_process_job(
             evaluation=response_evaluation,
             tuning=response_tuning,
         )
+        artifacts.append(_stage_training_response(response, artifact_root=staged_output.parent))
         return WorkerResultManifest(
             metadata={
-                "response": response,
                 "training_identity_sha256": job.training_identity_sha256,
                 "execution_metrics": execution_context.metrics_payload(
                     status="completed",

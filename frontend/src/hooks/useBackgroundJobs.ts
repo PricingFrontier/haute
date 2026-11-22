@@ -207,6 +207,7 @@ export default function useBackgroundJobs() {
       terminalReason: s.terminal_reason,
     }),
     addToast,
+    notifySuccess: (status) => !status.result?.staged,
     successLabel: "Training complete",
     failLabel: "Training failed",
   })

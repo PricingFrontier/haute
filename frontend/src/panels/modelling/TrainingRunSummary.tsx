@@ -2,7 +2,7 @@ import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
 import { fractionToPercent } from "../../utils/formatValue"
 import { isStringOrCategoricalDtype } from "../../utils/polarsDtypes"
-import { algorithmCapability, publishesValidationFit, trainsOnGpu } from "./algorithmCapabilities"
+import { algorithmCapability, trainsOnGpu } from "./algorithmCapabilities"
 import {
   finalSelectedFeatureNames,
   roleColumnReasons,
@@ -89,10 +89,8 @@ export function TrainingRunSummary({
     "tuning",
     null,
   )
-  const fitBudget = fitBudgetLabel(evaluation, tuning, {
-    publishesValidationFit: publishesValidationFit(String(config.algorithm ?? "")),
-    refitOnDevelopment: config.refit_on_development !== false,
-  }) ?? "Complete evaluation settings"
+  const fitBudget = fitBudgetLabel(evaluation, tuning, config.refit_on_development !== false)
+    ?? "Complete evaluation settings"
   const params = configField<Record<string, unknown>>(config, "params", {})
   const hasCategoricalFeatures =
     config.algorithm === "catboost"

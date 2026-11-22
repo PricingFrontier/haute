@@ -5123,6 +5123,19 @@
           "title": "Plan Sha256",
           "type": "string"
         },
+        "purpose": {
+          "anyOf": [
+            {
+              "const": "exploration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purpose"
+        },
         "refit_on_development": {
           "default": true,
           "title": "Refit On Development",
@@ -5192,6 +5205,7 @@
         }
       },
       "required": [
+        "purpose",
         "schema_version",
         "strategy",
         "validation_method",
@@ -13277,6 +13291,97 @@
       "title": "InputPreparationRecordPayload",
       "type": "object"
     },
+    "InteractiveModelConfig": {
+      "additionalProperties": false,
+      "description": "One model of an interactive build: its own settings over the ones its models share.",
+      "properties": {
+        "algorithm": {
+          "description": "The model type, `tboost`.",
+          "title": "Algorithm",
+          "type": "string"
+        },
+        "feature_columns": {
+          "description": "The columns the model trains on.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Feature Columns",
+          "type": "array"
+        },
+        "feature_weights": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "For each weighted feature, its weight in feature selection.",
+          "title": "Feature Weights",
+          "type": "object"
+        },
+        "id": {
+          "description": "The model's id, which its runs are kept under; it never changes.",
+          "title": "Id",
+          "type": "string"
+        },
+        "monotone_constraints": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none.",
+          "title": "Monotone Constraints"
+        },
+        "name": {
+          "description": "The model's name, shown on its entry and given to its run.",
+          "title": "Name",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "description": "The model type's own parameters, by name.",
+          "title": "Params",
+          "type": "object"
+        },
+        "stages": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Versioned staged t-boost settings and applied recipe; absent keeps legacy fitting.",
+          "title": "Stages"
+        },
+        "tuning": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hyperparameter tuning settings; `null` or absent trains with `params` as set.",
+          "title": "Tuning"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "algorithm"
+      ],
+      "title": "InteractiveModelConfig",
+      "type": "object"
+    },
     "IoCapabilitiesResponse": {
       "additionalProperties": false,
       "properties": {
@@ -14834,6 +14939,11 @@
           "title": "Interactions",
           "type": "array"
         },
+        "interactive_build": {
+          "description": "Whether the model is built in the Modelling view (`true`); absent for a model built in the\nnode's own panel. It changes where the node is edited, never what it trains.",
+          "title": "Interactive Build",
+          "type": "boolean"
+        },
         "intercept": {
           "description": "For a GLM, whether the model has an intercept.",
           "title": "Intercept",
@@ -14900,6 +15010,14 @@
           "description": "The Export pane's file path; empty or absent uses the default.",
           "title": "Model Export Path",
           "type": "string"
+        },
+        "models": {
+          "description": "An interactive build's models, each with its own factors, directions and parameters.",
+          "items": {
+            "$ref": "#/$defs/InteractiveModelConfig"
+          },
+          "title": "Models",
+          "type": "array"
         },
         "monotone_constraints": {
           "anyOf": [
@@ -15015,6 +15133,19 @@
           },
           "title": "Selected Columns",
           "type": "array"
+        },
+        "stages": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Versioned staged t-boost settings and applied recipe; absent keeps legacy fitting.",
+          "title": "Stages"
         },
         "target": {
           "description": "The column the model predicts.",
@@ -15153,6 +15284,52 @@
         "editor"
       ],
       "title": "ModellingNodeData",
+      "type": "object"
+    },
+    "NextStagePreviewPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "pruned",
+            "banded",
+            "smoothed"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "owner_pid": {
+          "minimum": 1,
+          "title": "Owner Pid",
+          "type": "integer"
+        },
+        "parent_revision": {
+          "pattern": "^[a-f0-9]{32}$",
+          "title": "Parent Revision",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "failed",
+            "interrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "parent_revision",
+        "owner_pid",
+        "status",
+        "message"
+      ],
+      "title": "NextStagePreviewPayload",
       "type": "object"
     },
     "NodeData": {
@@ -23659,6 +23836,784 @@
       "title": "SqlImport",
       "type": "object"
     },
+    "StageCheckpointPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "output_stage": {
+          "enum": [
+            "full",
+            "pruned",
+            "banded",
+            "smoothed"
+          ],
+          "title": "Output Stage",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "created_at",
+        "revision",
+        "output_stage"
+      ],
+      "title": "StageCheckpointPayload",
+      "type": "object"
+    },
+    "StageJobPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic": {
+          "default": false,
+          "title": "Automatic",
+          "type": "boolean"
+        },
+        "expected_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Revision"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "full",
+            "pruned",
+            "banded",
+            "smoothed",
+            "finalise"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "owner_pid": {
+          "minimum": 1,
+          "title": "Owner Pid",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "automatic",
+        "id",
+        "operation",
+        "expected_revision",
+        "owner_pid",
+        "status",
+        "message"
+      ],
+      "title": "StageJobPayload",
+      "type": "object"
+    },
+    "StagePathInspectionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_revision": {
+          "pattern": "^[a-f0-9]{32}$",
+          "title": "Artifact Revision",
+          "type": "string"
+        },
+        "current_revision": {
+          "pattern": "^[a-f0-9]{32}$",
+          "title": "Current Revision",
+          "type": "string"
+        },
+        "path_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Path Id",
+          "type": "string"
+        },
+        "point_id": {
+          "title": "Point Id",
+          "type": "string"
+        },
+        "response": {
+          "$ref": "#/$defs/TrainResponse"
+        }
+      },
+      "required": [
+        "current_revision",
+        "artifact_revision",
+        "path_id",
+        "point_id",
+        "response"
+      ],
+      "title": "StagePathInspectionPayload",
+      "type": "object"
+    },
+    "StagePathPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "additionalProperties": true,
+          "title": "Controls",
+          "type": "object"
+        },
+        "evaluation_identity": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Evaluation Identity",
+          "type": "string"
+        },
+        "evidence": {
+          "enum": [
+            "development",
+            "validation",
+            "out_of_fold"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        },
+        "family_ids": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Family Ids",
+          "type": "object"
+        },
+        "id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "metric": {
+          "title": "Metric",
+          "type": "string"
+        },
+        "parent": {
+          "enum": [
+            "full",
+            "pruned",
+            "banded"
+          ],
+          "title": "Parent",
+          "type": "string"
+        },
+        "parent_revisions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Parent Revisions",
+          "type": "object"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/StagePathPointPayload"
+          },
+          "maxItems": 17,
+          "minItems": 1,
+          "title": "Points",
+          "type": "array"
+        },
+        "reference_fit": {
+          "enum": [
+            "development",
+            "validation-0"
+          ],
+          "title": "Reference Fit",
+          "type": "string"
+        },
+        "selected_point": {
+          "title": "Selected Point",
+          "type": "string"
+        },
+        "selection": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Selection",
+          "type": "object"
+        },
+        "stage": {
+          "enum": [
+            "pruned",
+            "banded",
+            "smoothed"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "suggested_point": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggested Point"
+        }
+      },
+      "required": [
+        "id",
+        "stage",
+        "parent",
+        "points",
+        "selected_point",
+        "suggested_point",
+        "evidence",
+        "metric",
+        "evaluation_identity",
+        "controls",
+        "selection",
+        "reference_fit",
+        "parent_revisions",
+        "family_ids"
+      ],
+      "title": "StagePathPayload",
+      "type": "object"
+    },
+    "StagePathPointPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "diagnostics": {
+          "additionalProperties": true,
+          "title": "Diagnostics",
+          "type": "object"
+        },
+        "fold_status": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "maxItems": 11,
+          "title": "Fold Status",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^(unchanged|point-([1-9]|1[0-6]))$",
+          "title": "Id",
+          "type": "string"
+        },
+        "identity": {
+          "title": "Identity",
+          "type": "boolean"
+        },
+        "loss": {
+          "title": "Loss",
+          "type": "number"
+        },
+        "loss_delta": {
+          "title": "Loss Delta",
+          "type": "number"
+        },
+        "reference_status": {
+          "enum": [
+            "identity",
+            "changed",
+            "unchanged",
+            "rejected"
+          ],
+          "title": "Reference Status",
+          "type": "string"
+        },
+        "relative_loss_delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Loss Delta"
+        },
+        "revision": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "title": "Settings",
+          "type": "object"
+        },
+        "stage": {
+          "enum": [
+            "full",
+            "pruned",
+            "banded",
+            "smoothed"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "identity",
+            "changed",
+            "unchanged",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "stage",
+        "identity",
+        "status",
+        "reference_status",
+        "revision",
+        "settings",
+        "diagnostics",
+        "loss",
+        "loss_delta",
+        "relative_loss_delta",
+        "fold_status"
+      ],
+      "title": "StagePathPointPayload",
+      "type": "object"
+    },
+    "StageResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config"
+        },
+        "graph_digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Graph Digest",
+          "type": "string"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provenance"
+        },
+        "response": {
+          "$ref": "#/$defs/TrainResponse"
+        }
+      },
+      "required": [
+        "response",
+        "graph_digest",
+        "provenance",
+        "config"
+      ],
+      "title": "StageResultPayload",
+      "type": "object"
+    },
+    "StageRevisionPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "pattern": "^[a-f0-9]{32}$",
+          "title": "Build Id",
+          "type": "string"
+        },
+        "config_digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Config Digest",
+          "type": "string"
+        },
+        "parent_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Revision"
+        },
+        "result": {
+          "$ref": "#/$defs/StageResultPayload"
+        },
+        "revision": {
+          "pattern": "^[a-f0-9]{32}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "revision",
+        "build_id",
+        "parent_revision",
+        "sha256",
+        "size",
+        "config_digest",
+        "result"
+      ],
+      "title": "StageRevisionPayload",
+      "type": "object"
+    },
+    "StageStatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoints": {
+          "items": {
+            "$ref": "#/$defs/StageCheckpointPayload"
+          },
+          "maxItems": 10,
+          "title": "Checkpoints",
+          "type": "array"
+        },
+        "current": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageRevisionPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "final": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageRevisionPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageJobPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "next_preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NextStagePreviewPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageRevisionPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "stale_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stale Reason"
+        }
+      },
+      "required": [
+        "next_preview",
+        "checkpoints",
+        "schema_version",
+        "stale_reason",
+        "current",
+        "preview",
+        "final",
+        "job"
+      ],
+      "title": "StageStatePayload",
+      "type": "object"
+    },
+    "StageTableSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "factored": {
+          "minimum": 0,
+          "title": "Factored",
+          "type": "integer"
+        },
+        "tables": {
+          "items": {
+            "$ref": "#/$defs/StageTableSummaryEntry"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tables",
+        "factored"
+      ],
+      "title": "StageTableSummary",
+      "type": "object"
+    },
+    "StageTableSummaryEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "minimum": 0,
+          "title": "Cells",
+          "type": "integer"
+        },
+        "features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Features",
+          "type": "array"
+        },
+        "order": {
+          "minimum": 1,
+          "title": "Order",
+          "type": "integer"
+        },
+        "shape_digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Shape Digest",
+          "type": "string"
+        },
+        "term": {
+          "title": "Term",
+          "type": "string"
+        }
+      },
+      "required": [
+        "term",
+        "features",
+        "order",
+        "cells",
+        "shape_digest"
+      ],
+      "title": "StageTableSummaryEntry",
+      "type": "object"
+    },
+    "StagedBuildPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "configuration": {
+          "additionalProperties": true,
+          "title": "Configuration",
+          "type": "object"
+        },
+        "diagnostic_scope": {
+          "default": "full",
+          "enum": [
+            "full",
+            "path"
+          ],
+          "title": "Diagnostic Scope",
+          "type": "string"
+        },
+        "diagnostics_basis": {
+          "default": "partition",
+          "enum": [
+            "partition",
+            "out_of_fold"
+          ],
+          "title": "Diagnostics Basis",
+          "type": "string"
+        },
+        "evaluation_identity": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Evaluation Identity",
+          "type": "string"
+        },
+        "fit_config_digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fit Config Digest",
+          "type": "string"
+        },
+        "path_unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path Unavailable Reason"
+        },
+        "paths": {
+          "additionalProperties": {
+            "$ref": "#/$defs/StagePathPayload"
+          },
+          "propertyNames": {
+            "enum": [
+              "pruned",
+              "banded",
+              "smoothed"
+            ]
+          },
+          "title": "Paths",
+          "type": "object"
+        },
+        "prepared_path": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Prepared Path",
+          "type": "string"
+        },
+        "pruning_path": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pruning Path"
+        },
+        "recommendation": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recommendation"
+        },
+        "reference_fit": {
+          "default": "validation-0",
+          "enum": [
+            "development",
+            "validation-0"
+          ],
+          "title": "Reference Fit",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "selected_stage": {
+          "enum": [
+            "full",
+            "pruned",
+            "banded",
+            "smoothed"
+          ],
+          "title": "Selected Stage",
+          "type": "string"
+        },
+        "stages": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Stages",
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "selected_stage",
+        "evaluation_identity",
+        "fit_config_digest",
+        "configuration",
+        "diagnostics_basis",
+        "reference_fit",
+        "stages",
+        "pruning_path",
+        "path_unavailable_reason",
+        "recommendation"
+      ],
+      "title": "StagedBuildPayload",
+      "type": "object"
+    },
     "SubmodelConfig": {
       "additionalProperties": false,
       "description": "A submodel occurrence: which definition it is, and its name in the pipeline.",
@@ -25450,6 +26405,14 @@
           "title": "Actual Vs Predicted",
           "type": "array"
         },
+        "ave_left_out": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Ave Left Out",
+          "type": "array"
+        },
         "ave_per_feature": {
           "items": {
             "additionalProperties": true,
@@ -25508,6 +26471,15 @@
             "final_test"
           ],
           "title": "Diagnostics Set",
+          "type": "string"
+        },
+        "diagnostics_view": {
+          "default": "full",
+          "enum": [
+            "full",
+            "compact"
+          ],
+          "title": "Diagnostics View",
           "type": "string"
         },
         "double_lift": {
@@ -25783,6 +26755,9 @@
           "title": "Shap Summary",
           "type": "array"
         },
+        "staged": {
+          "$ref": "#/$defs/StagedBuildPayload"
+        },
         "status": {
           "enum": [
             "started",
@@ -25791,6 +26766,9 @@
           ],
           "title": "Status",
           "type": "string"
+        },
+        "table_summary": {
+          "$ref": "#/$defs/StageTableSummary"
         },
         "tboost_tables": {
           "anyOf": [
@@ -25875,6 +26853,7 @@
         "shap_link",
         "feature_importance_loss",
         "ave_per_feature",
+        "ave_left_out",
         "residuals_histogram",
         "residuals_stats",
         "actual_vs_predicted",
@@ -29943,6 +30922,12 @@
     "SessionStatusResponse": {
       "$ref": "#/$defs/SessionStatusResponse"
     },
+    "StagePathInspectionPayload": {
+      "$ref": "#/$defs/StagePathInspectionPayload"
+    },
+    "StageStatePayload": {
+      "$ref": "#/$defs/StageStatePayload"
+    },
     "SubmodelGraphResponse": {
       "$ref": "#/$defs/SubmodelGraphResponse"
     },
@@ -30152,6 +31137,8 @@
     "GitPushRejection",
     "GitMilestoneFork",
     "SaveCapture",
+    "StageStatePayload",
+    "StagePathInspectionPayload",
     "TrainResponse",
     "TrainStatusResponse",
     "ExplorePivotRunResponse",
@@ -30430,6 +31417,8 @@
       "TraceResponse"
     ],
     "training": [
+      "StageStatePayload",
+      "StagePathInspectionPayload",
       "TrainResponse",
       "TrainStatusResponse"
     ],

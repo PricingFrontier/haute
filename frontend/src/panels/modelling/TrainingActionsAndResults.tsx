@@ -35,7 +35,8 @@ function joinNames(nodeIds: readonly string[], nodeLabel: (nodeId: string) => st
 export type TrainingActionsAndResultsProps = {
   /** Current readiness issues, shown before submission. */
   validationMessages?: readonly string[]
-  validationDestinations?: readonly string[]
+  /** Each message's pane, by name; null for a pane the host cannot lead to, which gets no "Go to". */
+  validationDestinations?: readonly (string | null)[]
   onValidationMessageClick?: (index: number) => void
   training: boolean
   trainProgress: TrainProgress | null
@@ -65,6 +66,8 @@ export type TrainingActionsAndResultsProps = {
   submitting?: boolean
   cancelling?: boolean
   tuningEnabled?: boolean
+  /** The host shows a finished model's results in the preview panel below the canvas; the Modelling view has none. */
+  resultsInPreviewPanel?: boolean
   onTrain: () => void
   onCancel: () => void
 }
@@ -94,6 +97,7 @@ export function TrainingActionsAndResults({
   submitting = false,
   cancelling = false,
   tuningEnabled = false,
+  resultsInPreviewPanel = true,
   onTrain,
   onCancel,
 }: TrainingActionsAndResultsProps) {
@@ -345,7 +349,7 @@ export function TrainingActionsAndResults({
               <ul className="mt-1 list-disc space-y-1 pl-4">
                 {validationMessages.map((message, index) => (
                   <li key={message}>{message}
-                    {onValidationMessageClick && <button type="button" className="ml-2 font-medium underline underline-offset-2" onClick={() => onValidationMessageClick(index)}>Go to {validationDestinations[index]}</button>}
+                    {onValidationMessageClick && validationDestinations[index] !== null && <button type="button" className="ml-2 font-medium underline underline-offset-2" onClick={() => onValidationMessageClick(index)}>Go to {validationDestinations[index]}</button>}
                   </li>
                 ))}
               </ul>
@@ -381,7 +385,7 @@ export function TrainingActionsAndResults({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--train-complete-bg)", border: "1px solid var(--train-complete-border)" }}>
           <CheckCircle2 size={12} style={{ color: "var(--train-complete-text)" }} className="shrink-0" />
           <span style={{ color: "var(--train-complete-text)" }}>
-            Model trained - results in preview panel below
+            {resultsInPreviewPanel ? "Model trained - results in preview panel below" : "Model trained"}
           </span>
         </div>
       )}

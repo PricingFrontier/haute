@@ -9,6 +9,7 @@ when called directly.
 from __future__ import annotations
 
 import time
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -60,6 +61,34 @@ def _completed_train_result() -> object:
         features=["x1", "x2"],
         cat_features=[],
     )
+
+
+def test_evaluation_preview_admits_a_small_sample_of_a_large_training_source(
+    client, training_data, monkeypatch
+):
+    from tests._execution_context_helpers import _clear_execution_memory_env
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 4 * 1024**3)
+    graph = _make_modelling_graph(training_data)
+    node = next(node for node in graph["nodes"] if node["id"] == "train")
+    node["data"]["config"]["row_limit"] = 100
+    forecast = RamEstimate(
+        safe_row_limit=1000,
+        total_rows=10_000_000,
+        estimated_bytes=8 * 1024**3,
+        available_bytes=4 * 1024**3,
+        bytes_per_row=859.0,
+        was_downsampled=True,
+        warning="Large training source",
+    )
+    with patch("haute.routes.modelling.estimate_training_memory", return_value=forecast):
+        response = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+    assert response.status_code == 200, response.text
+    preview = response.json()["evaluation_preview"]
+    assert preview is not None
+    assert preview["development_rows"] == pl.read_parquet(training_data).height
 
 
 class TestEvaluationResponseContract:
@@ -130,6 +159,19 @@ def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
     monkeypatch.setattr("haute.routes.modelling._train_service", service)
     return service, launched
+
+
+def _as_interactive_build(config: dict, *models: dict) -> None:
+    """Make a node's flat t-boost config an interactive build holding *models*.
+
+    Each model's own keys move off the node: the first model takes the node's, and a
+    later one overrides only what it gives.
+    """
+    from haute.modelling._train_config import INTERACTIVE_MODEL_KEYS
+
+    own = {key: config.pop(key) for key in INTERACTIVE_MODEL_KEYS if key in config}
+    config["interactive_build"] = True
+    config["models"] = [{**own, **model} for model in models]
 
 
 class TestTrainEndpoint:
@@ -251,6 +293,274 @@ class TestTrainEndpoint:
             assert "feature" in entry
             assert "type" in entry
             assert "bins" in entry
+
+    def test_an_interactive_build_trains_its_boost_only_recipe(self, client, tmp_path) -> None:
+        """A model built in the Modelling view is a t-boost node to the route.
+
+        Its marker is accepted, it trains on every row, and the null band tolerance of
+        its starting recipe reaches t-boost as "no banding": an absent key would band at
+        t-boost's default of 0.75.
+        """
+        from haute.modelling._tboost import TBoostModel
+
+        rng = np.random.default_rng(5)
+        rows = 1500
+        age = rng.uniform(18, 80, rows)
+        exposure = rng.uniform(0.2, 1.0, rows)
+        claims = rng.poisson(np.exp(-2 + 0.02 * (age - 40)) * exposure).astype(float)
+        data = tmp_path / "quotes.parquet"
+        pl.DataFrame({"age": age, "exposure": exposure, "claims": claims}).write_parquet(data)
+        recipe = {
+            "n_trees": 60,
+            "learning_rate": 0.3,
+            "n_bags": 2,
+            "max_interaction_order": 1,
+            "prune": False,
+            "band_tolerance": None,
+            "graduate": False,
+        }
+        graph = _make_modelling_graph(
+            str(data),
+            target="claims",
+            algorithm="tboost",
+            params=recipe,
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "none"},
+            },
+            feature_columns=["age"],
+        )
+        config = next(node for node in graph["nodes"] if node["id"] == "train")["data"]["config"]
+        config.update({"loss_function": "Poisson", "offset": "exposure"})
+        _as_interactive_build(config, {"id": "m1", "name": "t-boost"})
+
+        resp = client.post(
+            "/api/modelling/train", json={"graph": graph, "node_id": "train", "model": "m1"}
+        )
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"], timeout=120)
+        assert status["status"] == "completed", status
+        result = status["result"]
+        assert (result["development_rows"], result["final_test_rows"]) == (rows, 0)
+        fitted = TBoostModel.load(result["model_path"]).estimator.get_params()
+        assert {key: fitted[key] for key in ("prune", "band_tolerance", "graduate")} == {
+            "prune": False,
+            "band_tolerance": None,
+            "graduate": False,
+        }
+        # The factor chart is drawn on those rows, over their exposure rather than their count.
+        (age_levels,) = result["ave_per_feature"]
+        assert sum(level["exposure"] for level in age_levels["bins"]) == pytest.approx(
+            exposure.sum(), abs=1e-2
+        )
+        # The learning curve has both of its lines: the deviance on the rows the bags
+        # train on and on the rows they hold back, one row per boosting round.
+        history = result["loss_history"]
+        assert [row["iteration"] for row in history] == list(range(1, len(history) + 1))
+        assert all({"train_deviance", "eval_deviance"} <= row.keys() for row in history)
+
+    def test_an_interactive_build_charts_the_columns_it_left_out(self, client, tmp_path) -> None:
+        """A model built in the Modelling view charts every factor, fitted or not.
+
+        Each column reaching the node that holds no role and that the model left out is
+        binned against the model's predictions on the same rows as its own factors; a
+        column of a type that is not binned is named in the run's diagnostic errors, and
+        a column holding a role, here the identifier, is never charted.
+        """
+        rng = np.random.default_rng(7)
+        rows = 1200
+        age = rng.uniform(18, 80, rows)
+        region = rng.choice(["north", "south", "east"], rows)
+        exposure = rng.uniform(0.2, 1.0, rows)
+        claims = rng.poisson(np.exp(-2 + 0.02 * (age - 40)) * exposure).astype(float)
+        data = tmp_path / "quotes.parquet"
+        pl.DataFrame(
+            {
+                "policy_id": np.arange(rows),
+                "age": age,
+                "region": region,
+                "garaged": rng.random(rows) > 0.5,
+                "start": [date(2025, 1, 1)] * rows,
+                "exposure": exposure,
+                "claims": claims,
+            }
+        ).write_parquet(data)
+        graph = _make_modelling_graph(
+            str(data),
+            target="claims",
+            algorithm="tboost",
+            params={"n_trees": 30, "learning_rate": 0.3, "n_bags": 2, "max_interaction_order": 1},
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "none"},
+            },
+            feature_columns=["age"],
+        )
+        config = next(node for node in graph["nodes"] if node["id"] == "train")["data"]["config"]
+        config.update(
+            {"loss_function": "Poisson", "offset": "exposure", "id_columns": ["policy_id"]}
+        )
+        _as_interactive_build(config, {"id": "m1", "name": "t-boost"})
+
+        resp = client.post(
+            "/api/modelling/train", json={"graph": graph, "node_id": "train", "model": "m1"}
+        )
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"], timeout=120)
+        assert status["status"] == "completed", status
+        result = status["result"]
+        assert [row["feature"] for row in result["ave_per_feature"]] == ["age"]
+        charted = {row["feature"]: row for row in result["ave_left_out"]}
+        assert set(charted) == {"region", "garaged"}
+        assert charted["region"]["type"] == "categorical"
+        assert {level["label"] for level in charted["region"]["bins"]} == {"north", "south", "east"}
+        # The same rows and predictions as the model's own factors: the masses and the
+        # predicted totals agree.
+        (age_levels,) = result["ave_per_feature"]
+        for levels in (age_levels, charted["region"], charted["garaged"]):
+            assert sum(level["exposure"] for level in levels["bins"]) == pytest.approx(
+                exposure.sum(), abs=1e-2
+            )
+        predicted = [
+            sum(level["avg_predicted"] * level["exposure"] for level in levels["bins"])
+            for levels in (age_levels, charted["region"])
+        ]
+        assert predicted[0] == pytest.approx(predicted[1], rel=1e-4)
+        (skipped,) = [e for e in result["diagnostics_errors"] if e["diagnostic"] == "ave_left_out"]
+        assert skipped["error"].startswith("start: ")
+
+    def test_two_models_of_one_node_train_apart(self, client, tmp_path) -> None:
+        """An interactive build's models share the node's settings and keep their own.
+
+        Each request names its model: the run takes that model's factors and name, the
+        other model's columns are charted as left out, and the first run stays readable
+        after the second finishes.
+        """
+        rng = np.random.default_rng(11)
+        rows = 800
+        age = rng.uniform(18, 80, rows)
+        exposure = rng.uniform(0.2, 1.0, rows)
+        data = tmp_path / "quotes.parquet"
+        pl.DataFrame(
+            {
+                "age": age,
+                "mileage": rng.uniform(1, 30, rows),
+                "region": rng.choice(["north", "south"], rows),
+                "exposure": exposure,
+                "claims": rng.poisson(np.exp(-2 + 0.02 * (age - 40)) * exposure).astype(float),
+            }
+        ).write_parquet(data)
+        graph = _make_modelling_graph(
+            str(data),
+            target="claims",
+            algorithm="tboost",
+            params={"n_trees": 20, "learning_rate": 0.3, "n_bags": 2, "max_interaction_order": 1},
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "none"},
+            },
+            feature_columns=["age"],
+        )
+        config = next(node for node in graph["nodes"] if node["id"] == "train")["data"]["config"]
+        config.update({"loss_function": "Poisson", "offset": "exposure"})
+        _as_interactive_build(
+            config,
+            {"id": "m1", "name": "short list"},
+            {"id": "m2", "name": "wide", "feature_columns": ["age", "mileage", "region"]},
+        )
+
+        def train(model: str) -> dict:
+            resp = client.post(
+                "/api/modelling/train", json={"graph": graph, "node_id": "train", "model": model}
+            )
+            assert resp.status_code == 200, resp.text
+            job_id = resp.json()["job_id"]
+            status = _poll_until_done(client, job_id, timeout=120)
+            assert status["status"] == "completed", status
+            return {**status, "job_id": job_id}
+
+        first = train("m1")
+        second = train("m2")
+
+        assert [row["feature"] for row in first["result"]["ave_per_feature"]] == ["age"]
+        assert {row["feature"] for row in first["result"]["ave_left_out"]} == {"mileage", "region"}
+        assert {row["feature"] for row in second["result"]["ave_per_feature"]} == {
+            "age",
+            "mileage",
+            "region",
+        }
+        assert second["result"]["ave_left_out"] == []
+        # The first model's run is still there once the second has finished.
+        again = client.get(f"/api/modelling/train/status/{first['job_id']}")
+        assert again.status_code == 200, again.text
+        assert again.json()["status"] == "completed"
+        assert again.json()["result"]["ave_per_feature"] == first["result"]["ave_per_feature"]
+
+    def test_an_interactive_build_names_the_model_it_trains(self, client, training_data) -> None:
+        """A request for an interactive build must name one of its models, and only then."""
+        graph = _make_modelling_graph(training_data, algorithm="tboost", feature_columns=["x1"])
+        config = next(node for node in graph["nodes"] if node["id"] == "train")["data"]["config"]
+        plain = dict(config)
+        _as_interactive_build(config, {"id": "m1", "name": "t-boost"})
+
+        for body, message in (
+            ({"graph": graph, "node_id": "train"}, "Name the model"),
+            ({"graph": graph, "node_id": "train", "model": "m9"}, "no model with the id 'm9'"),
+        ):
+            resp = client.post("/api/modelling/train", json=body)
+            assert resp.status_code == 422, resp.text
+            assert message in resp.text
+        plain_graph = _make_modelling_graph(
+            training_data, algorithm="tboost", feature_columns=["x1"]
+        )
+        next(node for node in plain_graph["nodes"] if node["id"] == "train")["data"]["config"] = (
+            plain
+        )
+        resp = client.post(
+            "/api/modelling/train", json={"graph": plain_graph, "node_id": "train", "model": "m1"}
+        )
+        assert resp.status_code == 422, resp.text
+        assert "Only an interactive build names a model" in resp.text
+
+    def test_a_model_built_in_its_node_panel_charts_no_left_out_column(
+        self, client, training_data
+    ) -> None:
+        """Only an interactive build charts the columns its model leaves out."""
+        graph = _make_modelling_graph(training_data)
+
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"], timeout=120)
+        assert status["status"] == "completed", status
+        assert status["result"]["ave_left_out"] == []
+
+    def test_previewing_a_model_training_node_brings_the_columns_reaching_it(
+        self, client, training_data
+    ) -> None:
+        """The Modelling view lists a model's factors from the columns of the node feeding it.
+
+        Opening a model there previews the model's own node, as a click on it does, and
+        that one preview carries the feeding node's columns in its schema maps.
+        """
+        graph = _make_modelling_graph(training_data)
+
+        resp = client.post(
+            "/api/pipeline/preview", json={"graph": graph, "node_id": "train", "row_limit": 20}
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "ok", body.get("error")
+        assert [column["name"] for column in body["node_columns"]["source"]] == ["x1", "x2", "y"]
 
     def test_an_unproven_join_bound_trains_on_every_row_without_a_downsample_warning(
         self, client, tmp_path, monkeypatch
@@ -1340,3 +1650,46 @@ class TestTrainStatusDirect:
         with pytest.raises(RequestRefusedError) as exc_info:
             await train_status("nonexistent_job_id")
         assert exc_info.value.status_code == 404
+
+
+def test_live_bag_history_keeps_slower_bag_points_after_fastest_bag_finishes() -> None:
+    from haute.routes import _training_worker
+
+    history = []
+    truncated = False
+    for step in range(1, 401):
+        row = {
+            "iteration": 499.0,
+            "train_deviance": 1.0 / step,
+            "bag_1_iteration": 500.0,
+            "bag_1_train_deviance": 0.1,
+            "bag_2_iteration": float(step),
+            "bag_2_train_deviance": 1.0 / step,
+        }
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 500)
+    assert 10 < len(history) <= _training_worker._max_train_loss_history()
+    assert history[0]["bag_2_iteration"] == 1
+    assert history[-1]["bag_2_iteration"] == 400
+    rounds = sorted({entry["bag_2_iteration"] for entry in history})
+    assert max(right - left for left, right in zip(rounds, rounds[1:])) < 10
+
+
+@pytest.mark.parametrize("bags", [8, 40])
+def test_live_curve_budget_is_per_bag_not_a_minimum_multiplied_by_bag_count(bags: int) -> None:
+    from haute.routes import _training_worker
+
+    history = []
+    truncated = False
+    for step in range(1, 251):
+        row = {"iteration": float(step), "train_deviance": 1.0 / step}
+        for bag in range(1, bags + 1):
+            round_number = min(step, 100 + bag)
+            row[f"bag_{bag}_iteration"] = float(round_number)
+            row[f"bag_{bag}_train_deviance"] = 1.0 / round_number
+            row[f"bag_{bag}_eval_deviance"] = 2.0 / round_number
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 250)
+    assert len(history) <= _training_worker._max_train_loss_history()
+    for bag in range(1, bags + 1):
+        assert history[0][f"bag_{bag}_iteration"] == 1
+        assert history[-1][f"bag_{bag}_iteration"] == 100 + bag
+        assert history[-1][f"bag_{bag}_train_deviance"] == 1.0 / (100 + bag)

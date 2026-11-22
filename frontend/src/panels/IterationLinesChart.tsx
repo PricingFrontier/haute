@@ -24,6 +24,10 @@ export type IterationLineSeries = {
   color: string
   /** One value per x index; `null` is a gap. */
   values: readonly (number | null)[]
+  /** Optional own iteration coordinates on a numeric x axis. */
+  x?: readonly number[]
+  strokeWidth?: number
+  opacity?: number
 }
 
 export type IterationReferenceLine = { label: string; value: number; color: string }
@@ -45,6 +49,8 @@ export interface IterationLinesChartProps {
   marker?: IterationMarker | null
   /** Mark every point, for short series; a lone point is always marked. */
   showPoints?: boolean
+  numericX?: boolean
+  showLegend?: boolean
 }
 
 const MARGIN = { left: 60, right: 16, top: 16, bottom: 36 }
@@ -98,12 +104,14 @@ export function IterationLinesChart({
   referenceLines = [],
   marker = null,
   showPoints = false,
+  numericX = false,
+  showLegend = true,
 }: IterationLinesChartProps) {
   const log = yScale === "log"
   if (x.length === 0) throw new Error(`${title} has no iterations to draw`)
   const values: number[] = []
   for (const line of series) {
-    if (line.values.length !== x.length) {
+    if (line.values.length !== (line.x ?? x).length) {
       throw new Error(`${line.label} has ${line.values.length} values for ${x.length} iterations`)
     }
     for (const value of line.values) {
@@ -125,8 +133,12 @@ export function IterationLinesChart({
   const plotHeight = height - MARGIN.top - MARGIN.bottom
   const plotBottom = MARGIN.top + plotHeight
   const axis = (log ? logAxis : linearAxis)(values, MARGIN.top, plotHeight)
-  const xPosition = (index: number) =>
-    x.length === 1 ? MARGIN.left + plotWidth / 2 : MARGIN.left + (index / (x.length - 1)) * plotWidth
+  const xMin = Math.min(...x)
+  const xMax = Math.max(...x)
+  const numericPosition = (value: number) => xMax === xMin
+    ? MARGIN.left + plotWidth / 2 : MARGIN.left + (value - xMin) / (xMax - xMin) * plotWidth
+  const xPosition = (index: number) => numericX ? numericPosition(x[index])
+    : x.length === 1 ? MARGIN.left + plotWidth / 2 : MARGIN.left + (index / (x.length - 1)) * plotWidth
   const xTicks = [...chartLabelIndices(x.length, plotWidth, 60)]
 
   const legend: ChartLegendItem[] = [
@@ -206,7 +218,7 @@ export function IterationLinesChart({
         )}
         {series.map((line) => {
           const points = line.values.flatMap((value, index) =>
-            value === null ? [] : [{ x: xPosition(index), y: axis.position(value) }],
+            value === null ? [] : [{ x: line.x ? numericPosition(line.x[index]) : xPosition(index), y: axis.position(value) }],
           )
           return (
             <g key={line.label}>
@@ -215,7 +227,8 @@ export function IterationLinesChart({
                 d={points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")}
                 fill="none"
                 stroke={line.color}
-                strokeWidth={1.5}
+                strokeWidth={line.strokeWidth ?? 1.5}
+                opacity={line.opacity ?? 1}
               />
               {(showPoints || points.length === 1) && points.map((point, index) => (
                 <circle key={index} data-series={line.label} cx={point.x} cy={point.y} r={3} fill={line.color} />
@@ -224,7 +237,7 @@ export function IterationLinesChart({
           )
         })}
       </ChartSvg>
-      <ChartLegend items={legend} />
+      {showLegend && <ChartLegend items={legend} />}
     </div>
   )
 }

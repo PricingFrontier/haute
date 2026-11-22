@@ -63,6 +63,8 @@ from haute.routes._job_store import JobStore
 from haute.routes._training_artifacts import (
     _TRAINING_ARTIFACT_KINDS,
     _max_training_artifact_bytes,
+    _read_training_response,
+    _stage_training_response,
     _validate_evaluation_artifact_contents,
     _validate_training_artifacts,
     _validate_tuning_artifact_contents,
@@ -586,8 +588,9 @@ def test_training_entrypoint_stages_complete_evaluation_and_public_response(tmp_
         "evaluation_plan",
         "evaluation_results",
         "evaluation_report",
+        "training_response",
     }
-    response = result.metadata["response"]
+    response = _read_training_response(result, artifact_root=tmp_path / "artifacts")
     assert response["diagnostic_metrics"] == {"rmse": 0.2}
     assert response["final_test_metrics"] == {"rmse": 0.2}
     assert response["development_rows"] == 8 and response["final_test_rows"] == 2
@@ -711,6 +714,7 @@ def test_train_service_publishes_complete_evaluation_run(tmp_path: Path) -> None
                 "tuning_plan",
                 "tuning_trials",
                 "tuning_report",
+                "training_response",
             }
         )
     ]
@@ -784,12 +788,17 @@ def test_train_service_rejects_evaluation_response_artifact_mismatch(
 ) -> None:
     def mismatched_runner(function, request, **kwargs):
         result = _inline_protocol_runner(function, request, **kwargs)
-        metadata, response = dict(result.metadata), dict(result.metadata["response"])
+        response = _read_training_response(result, artifact_root=kwargs["artifact_root"])
         evaluation = dict(response["evaluation"])
         mutation(evaluation)
         response["evaluation"] = evaluation
-        metadata["response"] = response
-        return WorkerResultManifest(metadata=metadata, artifacts=result.artifacts)
+        artifact = _stage_training_response(response, artifact_root=kwargs["artifact_root"])
+        return WorkerResultManifest(
+            metadata=result.metadata,
+            artifacts=tuple(
+                artifact if a.kind == "training_response" else a for a in result.artifacts
+            ),
+        )
 
     store = JobStore()
     service = TrainService(store, protocol_runner=mismatched_runner)
@@ -801,11 +810,15 @@ def test_train_service_rejects_evaluation_response_artifact_mismatch(
 def test_train_service_rejects_schema_invalid_completed_response(tmp_path: Path) -> None:
     def invalid_response_runner(function, request, **kwargs):
         result = _inline_protocol_runner(function, request, **kwargs)
-        metadata = dict(result.metadata)
-        response = dict(metadata["response"])
+        response = _read_training_response(result, artifact_root=kwargs["artifact_root"])
         response["development_rows"] = int(response["development_rows"]) + 1
-        metadata["response"] = response
-        return WorkerResultManifest(metadata=metadata, artifacts=result.artifacts)
+        artifact = _stage_training_response(response, artifact_root=kwargs["artifact_root"])
+        return WorkerResultManifest(
+            metadata=result.metadata,
+            artifacts=tuple(
+                artifact if a.kind == "training_response" else a for a in result.artifacts
+            ),
+        )
 
     store = JobStore()
     service = TrainService(store, protocol_runner=invalid_response_runner)
@@ -2097,4 +2110,105 @@ def test_real_spawn_catboost_training_runs_under_the_rlimit_fallback(
     result = run()
     assert result.metadata["catboost_preloaded"] is True
     assert result.metadata["training_threads"] == 4
-    assert result.metadata["response"]["status"] == "completed"
+    assert (
+        _read_training_response(result, artifact_root=tmp_path / "artifacts")["status"]
+        == "completed"
+    )
+
+
+def test_large_training_diagnostics_publish_without_using_ipc_metadata(tmp_path: Path) -> None:
+    from haute._worker_protocol import WORKER_MAX_METADATA_BYTES
+
+    class LargeDiagnosticJob(_SuccessfulTrainingJob):
+        def run(self, progress, on_iteration, **kwargs):
+            result = super().run(progress, on_iteration, **kwargs)
+            result.ave_per_feature = [
+                {
+                    "feature": "x",
+                    "type": "numeric",
+                    "bins": [
+                        {
+                            "label": str(i),
+                            "exposure": 1.0,
+                            "avg_actual": i / 10,
+                            "avg_predicted": i / 11,
+                        }
+                        for i in range(120_000)
+                    ],
+                }
+            ]
+            assert len(pickle.dumps(result.ave_per_feature)) > WORKER_MAX_METADATA_BYTES
+            return result
+
+    observed = []
+
+    def runner(*args, **kwargs):
+        result = _inline_protocol_runner(*args, **kwargs)
+        observed.append(result)
+        return result
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=runner)
+    with patch("haute.modelling.TrainingJob", LargeDiagnosticJob):
+        job_id, prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+    job = store.require_job(job_id)
+    assert job["status"] == "completed", job.get("message")
+    assert "response" not in observed[0].metadata
+    assert len(pickle.dumps(observed[0].metadata)) < 64 * 1024
+    bins = job["result"].ave_per_feature[0]["bins"]
+    assert len(bins) == 120_000
+    assert bins[-1]["avg_predicted"] == 119_999 / 11
+    assert not prepared.exists()
+    assert "training_response" not in job["artifact_handles"]["training_artifacts"]["files"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "duplicate",
+        "path",
+        "lifetime",
+        "size",
+        "digest",
+        "oversize",
+        "json",
+        "object",
+        "symlink",
+    ],
+)
+def test_training_response_artifact_is_verified_before_use(tmp_path: Path, monkeypatch, fault):
+    root = tmp_path / "response-job"
+    (root / "output").mkdir(parents=True)
+    artifact = _stage_training_response({"status": "completed"}, artifact_root=root)
+    path = root / artifact.relative_path
+    artifacts = (artifact,)
+    if fault == "missing":
+        artifacts = ()
+    elif fault == "duplicate":
+        artifacts = (artifact, artifact)
+    elif fault == "path":
+        artifacts = (replace(artifact, relative_path="output/other.json"),)
+    elif fault == "lifetime":
+        artifacts = (replace(artifact, lifetime="durable"),)
+    elif fault == "size":
+        artifacts = (replace(artifact, size_bytes=artifact.size_bytes + 1),)
+    elif fault == "digest":
+        artifacts = (replace(artifact, sha256="0" * 64),)
+    elif fault == "oversize":
+        monkeypatch.setattr(_training_artifacts, "_MAX_TRAINING_RESPONSE_BYTES", 1)
+    elif fault in {"json", "object"}:
+        path.write_text("{bad" if fault == "json" else "[]")
+        artifacts = (
+            build_artifact_manifest(
+                artifact_root=root, path=path, kind="training_response", lifetime="staged"
+            ),
+        )
+    elif fault == "symlink":
+        outside = tmp_path / "outside.json"
+        path.rename(outside)
+        path.symlink_to(outside)
+    with pytest.raises(WorkerProtocolError):
+        _read_training_response(
+            WorkerResultManifest(metadata={}, artifacts=artifacts), artifact_root=root
+        )

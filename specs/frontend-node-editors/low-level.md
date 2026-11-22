@@ -4,6 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
+| `frontend/src/panels/nodePanelData.ts` | What a node's editor reads and writes of the graph around it, shared by the node panel and the Modelling view ([frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md)): `edgeSourceColumns` and `collectColumnsFromEdges` (the columns arriving over a node's incoming edges, by the output handle each leaves) and `clearCachedResultShape` (a node's data without the cached preview fields an edit makes stale), `columnsSignature`, and `useUpstreamColumns`, which keeps one column array per upstream schema so an edit to the node itself does not change the list's identity. |
 | `frontend/src/panels/NodePanel.tsx` | Composes the selected-node panel and memoised per-edge `InputSource` list. Its tab strip names a Rating Step's config tab Tables and adds a Combined tab after it, each showing that part of the one mounted Rating Step editor. Its recovery inspector, generic tab strip, schema-warning banner, notes (the previewed node's `_notes`, one line each), and editor body are pure local view components; scoped UI transitions are delegated to `useNodePanelSession`, and editor routing to `NodeConfigEditor`. |
 | `frontend/src/panels/useRecordedNodeColumns.ts` | The node's own columns for the Polars panes' code columns: `_availableColumns` while `_columnsSource` is the active source, kept (with one identity for equal content) through a cleared stash while the node's config differs only in `code` or `steps` (other values compared by identity); any other config change or a source switch drops the kept columns, and going back to that source or those settings does not restore them. |
 | `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. A label failing the shared name-shape check (`nodeNameIssue`) is refused inline without a request; a valid one is sent trimmed. |
@@ -928,7 +929,9 @@ The behaviour and non-goals are defined by
 Parameters, Split, Train and Export for every known family, from `modellingPanesFor`. It uses the
 shared preview tab control and per-node UI-store selection memory, and opens Target when none is
 remembered, for both the tab and the editor body, without changing model config. The strip is
-shown only when the modelling node's algorithm is one the capability table lists; an unset
+shown only when the modelling node's algorithm is one the capability table lists and the node
+is not an interactive build (`interactive_build: true`), whose panel is the summary that opens
+it in the Modelling view; an unset
 algorithm leaves the gateway as the only editor content, and a non-empty unsupported value also
 suppresses the strip and is handed to the modelling editor's explicit diagnostic rather than
 treated as CatBoost.

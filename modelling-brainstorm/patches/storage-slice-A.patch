@@ -1,0 +1,1363 @@
+diff --git a/sliceA/before/t-boost/crates/t-boost-py/src/lib.rs b/sliceA2/after/t-boost/crates/t-boost-py/src/lib.rs
+index a43df4e..1ef4852 100644
+--- a/sliceA/before/t-boost/crates/t-boost-py/src/lib.rs
++++ b/sliceA2/after/t-boost/crates/t-boost-py/src/lib.rs
+@@ -4959,6 +4959,18 @@ impl PyModel {
+         provenance_pairs(&self.model.provenance)
+     }
+ 
++    /// Whether `bank` serves with this model's schema: equal `schema`, `provenance`, `grids`,
++    /// `link` and `mode`. A training checkpoint requires its full-stage inference bank to
++    /// share these with the training envelope; comparing natively avoids serializing either.
++    fn shares_inference_schema(&self, bank: &PyTableModel) -> bool {
++        let (model, table) = (&*self.model, &*bank.model);
++        model.schema == table.schema
++            && model.provenance == table.provenance
++            && model.grids == table.grids
++            && model.link == table.link
++            && model.mode == table.mode
++    }
++
+     /// Number of trees retained in the fitted model. With internal early stopping this is the
+     /// best-validation tree count (the model is truncated back to it), summed across bags for an
+     /// outer-bag ensemble. Exposed read-only so the deploy/benchmark path can quantify how far a
+diff --git a/sliceA/before/t-boost/python/t_boost/_checkpoint.py b/sliceA2/after/t-boost/python/t_boost/_checkpoint.py
+index 6da06dd..0b00f33 100644
+--- a/sliceA/before/t-boost/python/t_boost/_checkpoint.py
++++ b/sliceA2/after/t-boost/python/t_boost/_checkpoint.py
+@@ -1,13 +1,23 @@
+-"""Versioned, data-bound training checkpoints. Never load Python objects or extract paths."""
++"""Versioned, data-bound training checkpoints. Never load Python objects or extract paths.
++
++Format version 2 has two parts (see `specs/roadmap/staged-training.md`):
++- **fit evidence**: canonical data members, the native training envelope, full-fit state
++  and the full stage. It is immutable and written once per fit.
++- **stage chain**: path settings and evidence plus the post-fit stages. It is written
++  whenever a stage changes, and is bound to its evidence by the evidence digest.
++
++A portable checkpoint is a stored ZIP holding both parts.
++"""
+ from __future__ import annotations
+ 
+ from hashlib import sha256
++import io
+ import json
+ import math
+ import os
+ from pathlib import Path
+ import tempfile
+-from typing import TYPE_CHECKING, Any, IO, Mapping
++from typing import TYPE_CHECKING, Any, Callable, IO, Mapping
+ import zipfile
+ 
+ import numpy as np
+@@ -15,12 +25,31 @@ import numpy as np
+ if TYPE_CHECKING:
+     from ._staged import TBoostTrainingSession, _FullFitState
+ 
++VERSION = 2
++_EVIDENCE_FORMAT = "t-boost-fit-evidence"
++_CHAIN_FORMAT = "t-boost-stage-chain"
++_PORTABLE_FORMAT = "t-boost-training-checkpoint"
++_OLD_FORMAT = "t-boost-training-session"
++_REBUILD = "this training checkpoint was written by an older t-boost; rebuild the GBM"
+ _ARRAYS = ("x", "y", "weight", "exposure", "groups")
+-_REQUIRED = {"x.npy", "y.npy", "categories.json", "native.bin", "full.json", "state.json", "stages.json", "stages/full.bin"}
+-_STAGES = ('full', 'pruned', 'banded', 'smoothed')
+-_ALLOWED = _REQUIRED | {"weight.npy", "exposure.npy", "groups.npy"} | {
+-    f"stages/{stage}.{extension}" for stage in _STAGES for extension in ('bin', 'json')
++_DTYPES = {"x": "<f4", "y": "<f4", "weight": "<f4", "exposure": "<f4", "groups": "<u4"}
++_CATEGORY_CODES = "data/category-codes.bin"
++_EVIDENCE_REQUIRED = {"data/arrays.json", "data/categories.json", "data/x.bin", "data/y.bin",
++                      "native.bin", "state.json", "full/working.bin", "full/inference.json"}
++_EVIDENCE_ALLOWED = (_EVIDENCE_REQUIRED | {f"data/{name}.bin" for name in _ARRAYS}
++                     | {_CATEGORY_CODES})
++_POST_FIT = ("pruned", "banded", "smoothed")
++_CHAIN_REQUIRED = {"chain.json"}
++_CHAIN_ALLOWED = _CHAIN_REQUIRED | {
++    f"stages/{stage}.{extension}" for stage in _POST_FIT for extension in ("bin", "json")
+ }
++_CHUNK = 1 << 20
++# Measured on a 678k-row fit's evidence (47.8 MB raw): level 1 writes 10.5 MB in 0.9 s,
++# level 6 writes 8.4 MB in 3.6 s.
++_COMPRESS_LEVEL = 1
++
++Categories = tuple[np.ndarray, list[list[str]]]
++Member = np.ndarray | bytes
+ 
+ 
+ def _json(value: Any) -> bytes:
+@@ -43,14 +72,14 @@ def _strict_json(data: bytes) -> Any:
+ 
+ 
+ class _Writer:
+-    """Hash bytes as numpy writes them, without making a second row-sized buffer."""
++    """Hash bytes as they are written, without making a second row-sized buffer."""
+ 
+     def __init__(self, target: IO[bytes] | None = None) -> None:
+         self.target = target
+         self.hash = sha256()
+         self.size = 0
+ 
+-    def write(self, data: bytes) -> int:
++    def write(self, data: bytes | memoryview) -> int:
+         if self.target is not None and self.target.write(data) != len(data):
+             raise OSError("short checkpoint write")
+         self.hash.update(data)
+@@ -61,84 +90,120 @@ class _Writer:
+         return {"sha256": self.hash.hexdigest(), "bytes": self.size}
+ 
+ 
+-def _data_members(
+-    arrays: Mapping[str, np.ndarray | None], categories: list[list[str]] | None,
+-) -> dict[str, np.ndarray | bytes]:
+-    members: dict[str, np.ndarray | bytes] = {}
++# ---------------------------------------------------------------------------
++# Canonical data members
++# ---------------------------------------------------------------------------
++
++
++def encode_categories(categories: list[list[str]] | None) -> Categories | None:
++    """Canonical coding: ``uint32`` codes plus levels in order of first appearance."""
++    if categories is None:
++        return None
++    rows = len(categories[0]) if categories else 0
++    codes = np.empty((len(categories), rows), dtype=np.uint32)
++    levels: list[list[str]] = []
++    for column, values in enumerate(categories):
++        index: dict[str, int] = {}
++        codes[column] = np.fromiter((index.setdefault(value, len(index)) for value in values),
++                                    dtype=np.uint32, count=rows)
++        levels.append(list(index))
++    codes.setflags(write=False)
++    return codes, levels
++
++
++def _write_array(array: np.ndarray, writer: _Writer) -> None:
++    # Column-major for the 2-D feature block: native ingest's layout, hashed per column
++    # without a transposed copy. Little-endian throughout.
++    columns = [array[:, j] for j in range(array.shape[1])] if array.ndim == 2 else [array]
++    little = np.dtype(array.dtype).newbyteorder("<")
++    for column in columns:
++        flat = np.ascontiguousarray(column, dtype=little).reshape(-1).view(np.uint8)
++        for start in range(0, len(flat), _CHUNK):
++            writer.write(flat[start:start + _CHUNK].data)
++
++
++def _data_members(arrays: Mapping[str, np.ndarray | None],
++                  categories: Categories | None) -> dict[str, Member]:
++    header: dict[str, Any] = {}
++    for name in _ARRAYS:
++        array = arrays[name]
++        header[name] = (None if array is None
++                        else {"dtype": _DTYPES[name], "shape": [int(n) for n in array.shape]})
++    members: dict[str, Member] = {"data/arrays.json": _json(header)}
+     for name in _ARRAYS:
+         array = arrays[name]
+         if array is not None:
+-            members[f"{name}.npy"] = array
+-    members["categories.json"] = _json(categories)
++            if array.dtype != np.dtype(_DTYPES[name]).newbyteorder("="):
++                raise ValueError(f"training {name} must be {_DTYPES[name]}")
++            members[f"data/{name}.bin"] = array
++    if categories is None:
++        members["data/categories.json"] = _json(None)
++    else:
++        codes, levels = categories
++        members["data/categories.json"] = _json({"levels": levels, "rows": int(codes.shape[1])})
++        members[_CATEGORY_CODES] = codes
+     return members
+ 
+ 
+-def _state_members(state: _FullFitState) -> dict[str, np.ndarray | bytes]:
+-    return _data_members({name: getattr(state, name) for name in _ARRAYS}, state.categories)
+-
+-
+-def _write(value: np.ndarray | bytes, writer: _Writer) -> None:
++def _write_member(value: Member, writer: _Writer) -> None:
+     if isinstance(value, np.ndarray):
+-        np.save(writer, value, allow_pickle=False)
++        # Category codes are written one column after another, like the feature block.
++        for column in (value if value.dtype == np.uint32 and value.ndim == 2 else [value]):
++            _write_array(column, writer)
+     else:
+         writer.write(value)
+ 
+ 
+-def _digest(records: dict[str, Any]) -> str:
++def _digest(records: Mapping[str, Any]) -> str:
+     return sha256(_json({name: value for name, value in records.items()
+-                         if name.endswith(".npy") or name == "categories.json"})).hexdigest()
++                         if name.startswith("data/")})).hexdigest()
+ 
+ 
+-def data_digest(
+-    arrays: Mapping[str, np.ndarray | None], categories: list[list[str]] | None,
+-) -> str:
+-    """The digest a checkpoint's manifest records for these prepared rows."""
++def data_digest(arrays: Mapping[str, np.ndarray | None], categories: Categories | None) -> str:
++    """The digest a fit-evidence manifest records for these prepared rows."""
+     records: dict[str, Any] = {}
+     for name, value in _data_members(arrays, categories).items():
+         writer = _Writer()
+-        _write(value, writer)
++        _write_member(value, writer)
+         records[name] = writer.record()
+     return _digest(records)
+ 
+ 
+-def save_session(session: TBoostTrainingSession, destination: Any) -> None:
+-    from . import __version__
++def evidence_digest(data: str, native: str, full_revision: str) -> str:
++    """Fit identity: the rows, the native training envelope and the full stage."""
++    return sha256(_json({"data": data, "native": native, "full": full_revision})).hexdigest()
++
++
++# ---------------------------------------------------------------------------
++# Writing
++# ---------------------------------------------------------------------------
++
++
++def _archive(members: Mapping[str, Member], handle: IO[bytes],
++             manifest: Callable[[Mapping[str, Any]], dict[str, Any]]) -> None:
++    with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
++        records: dict[str, Any] = {}
++        for name, value in members.items():
++            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
++            info.compress_type = zipfile.ZIP_DEFLATED
++            # A member carries its own level: `compress_level` from Python 3.13,
++            # `_compresslevel` before. The archive's default would not apply to it.
++            setattr(info, "compress_level" if hasattr(info, "compress_level") else "_compresslevel",
++                    _COMPRESS_LEVEL)
++            with archive.open(info, "w", force_zip64=True) as target:
++                writer = _Writer(target)
++                _write_member(value, writer)
++            records[name] = writer.record()
++        archive.writestr(zipfile.ZipInfo("manifest.json", (1980, 1, 1, 0, 0, 0)),
++                         _json({**manifest(records), "members": records}))
+ 
++
++def _atomic(destination: Any, write: Callable[[IO[bytes]], None]) -> None:
+     path = Path(destination)
+-    state = session._state
+-    members = _state_members(state)
+-    members.update({
+-        "native.bin": state.model.to_training_bytes(len(state.y)),
+-        "full.json": session._full_json.encode("utf-8"),
+-        "state.json": _json({
+-            "monotone": state.monotone, "supports": state.supports,
+-            "share": [[list(key), value] for key, value in sorted(state.share.items())],
+-            "path": session.pruning_path, "path_unavailable_reason": session.path_unavailable_reason,
+-            "loss_history": session.loss_history, "path_settings": session._path_settings,
+-        }),
+-    })
+-    members["stages.json"] = _json({name: {**session.stages[name], "keep": value.keep}
+-                                     for name, value in session._stages.items()})
+-    for name, stage_value in session._stages.items():
+-        members[f"stages/{name}.bin"] = stage_value.working
+-        members[f"stages/{name}.json"] = stage_value.inference.encode("utf-8")
+     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+     try:
+         with os.fdopen(descriptor, "w+b") as handle:
+-            with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+-                records: dict[str, Any] = {}
+-                for name, value in members.items():
+-                    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+-                    info.compress_type = zipfile.ZIP_DEFLATED
+-                    with archive.open(info, "w", force_zip64=True) as target:
+-                        writer = _Writer(target)
+-                        _write(value, writer)
+-                    records[name] = writer.record()
+-                archive.writestr(zipfile.ZipInfo("manifest.json", (1980, 1, 1, 0, 0, 0)), _json({
+-                    "format": "t-boost-training-session", "version": 1,
+-                    "tboost_version": __version__, "data_digest": _digest(records),
+-                    "members": records,
+-                }))
++            write(handle)
+             handle.flush()
+             os.fsync(handle.fileno())
+         os.replace(temporary, path)
+@@ -147,39 +212,93 @@ def save_session(session: TBoostTrainingSession, destination: Any) -> None:
+             os.unlink(temporary)
+ 
+ 
+-def _array(archive: zipfile.ZipFile, name: str) -> np.ndarray:
+-    info = archive.getinfo(name)
+-    with archive.open(info) as stream:
+-        version = np.lib.format.read_magic(stream)
+-        if version == (1, 0):
+-            shape, _, dtype = np.lib.format.read_array_header_1_0(stream, max_header_size=4096)
+-        elif version == (2, 0):
+-            shape, _, dtype = np.lib.format.read_array_header_2_0(stream, max_header_size=4096)
+-        else:
+-            raise ValueError("unsupported checkpoint array format")
+-        expected = np.dtype(np.uint32 if name == "groups.npy" else np.float32)
+-        if dtype != expected or len(shape) != (2 if name == "x.npy" else 1):
+-            raise ValueError(f"invalid checkpoint shape/dtype for {name}")
+-        if math.prod(shape) * dtype.itemsize != info.file_size - stream.tell():
+-            raise ValueError(f"checkpoint array size disagrees with its shape: {name}")
+-        stream.seek(0)
+-        result: np.ndarray = np.load(stream, allow_pickle=False, max_header_size=4096)
+-        return result
++def write_evidence(session: TBoostTrainingSession, handle: IO[bytes]) -> None:
++    from . import __version__
++
++    state, full = session._state, session._stages["full"]
++    members = _data_members({name: getattr(state, name) for name in _ARRAYS},
++                            state.coded_categories)
++    members.update({
++        "native.bin": state.native_training_bytes(),
++        "state.json": _json({
++            "monotone": state.monotone, "supports": state.supports,
++            "share": [[list(key), value] for key, value in sorted(state.share.items())],
++            "loss_history": session.loss_history,
++        }),
++        "full/working.bin": full.working,
++        "full/inference.json": full.inference.encode("utf-8"),
++    })
++
++    def manifest(records: Mapping[str, Any]) -> dict[str, Any]:
++        if _digest(records) != session.data_digest:
++            raise ValueError("training data changed after its digest was recorded")
++        return {"format": _EVIDENCE_FORMAT, "version": VERSION, "tboost_version": __version__,
++                "data_digest": session.data_digest, "evidence_digest": session.evidence_digest}
+ 
++    _archive(members, handle, manifest)
+ 
+-def _check_members(archive: zipfile.ZipFile, max_bytes: int) -> dict[str, Any]:
++
++def write_chain(session: TBoostTrainingSession, handle: IO[bytes]) -> None:
++    from . import __version__
++
++    stages = {name: {**session.stages[name], "keep": value.keep}
++              for name, value in session._stages.items() if name != "full"}
++    members: dict[str, Member] = {"chain.json": _json({
++        "path": session.pruning_path, "path_unavailable_reason": session.path_unavailable_reason,
++        "path_settings": session._path_settings, "stages": stages,
++    })}
++    for name, value in session._stages.items():
++        if name != "full":
++            members[f"stages/{name}.bin"] = value.working
++            members[f"stages/{name}.json"] = value.inference.encode("utf-8")
++    _archive(members, handle, lambda records: {
++        "format": _CHAIN_FORMAT, "version": VERSION, "tboost_version": __version__,
++        "evidence_digest": session.evidence_digest,
++    })
++
++
++def save_session(session: TBoostTrainingSession, destination: Any) -> None:
++    """One portable file holding both parts, stored."""
++    evidence, chain = io.BytesIO(), io.BytesIO()
++    write_evidence(session, evidence)
++    write_chain(session, chain)
++
++    def write(handle: IO[bytes]) -> None:
++        with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
++            for name, part in (("evidence", evidence), ("chain", chain)):
++                archive.writestr(zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)), part.getvalue())
++            archive.writestr(zipfile.ZipInfo("manifest.json", (1980, 1, 1, 0, 0, 0)),
++                             _json({"format": _PORTABLE_FORMAT, "version": VERSION}))
++
++    _atomic(destination, write)
++
++
++def save_part(session: TBoostTrainingSession, destination: Any, part: str) -> None:
++    """Write one part (``"evidence"`` or ``"chain"``) atomically."""
++    writer = {"evidence": write_evidence, "chain": write_chain}[part]
++    _atomic(destination, lambda handle: writer(session, handle))
++
++
++# ---------------------------------------------------------------------------
++# Reading
++# ---------------------------------------------------------------------------
++
++
++def _check_members(archive: zipfile.ZipFile, *, fmt: str,
++                   required: set[str], allowed: set[str]) -> dict[str, Any]:
+     entries = archive.infolist()
+     names = [item.filename for item in entries]
+-    if len(names) != len(set(names)) or not _REQUIRED <= set(names) or set(names) - (_ALLOWED | {"manifest.json"}):
+-        raise ValueError("checkpoint has duplicate, unknown or missing members")
+     if "manifest.json" not in names or archive.getinfo("manifest.json").file_size > 64 * 1024:
+         raise ValueError("checkpoint manifest is missing or exceeds its size limit")
+-    if sum(item.file_size for item in entries) > max_bytes:
+-        raise ValueError("checkpoint exceeds the expanded size limit")
+     manifest = _strict_json(archive.read("manifest.json"))
+-    if (not isinstance(manifest, dict) or manifest.get("format") != "t-boost-training-session"
+-            or type(manifest.get("version")) is not int or manifest["version"] != 1):
++    if isinstance(manifest, dict) and manifest.get("format") == _OLD_FORMAT:
++        raise ValueError(_REBUILD)
++    if (not isinstance(manifest, dict) or manifest.get("format") != fmt
++            or type(manifest.get("version")) is not int or manifest["version"] != VERSION):
+         raise ValueError("unsupported checkpoint format/version")
++    if (len(names) != len(set(names)) or not required <= set(names)
++            or set(names) - (allowed | {"manifest.json"})):
++        raise ValueError("checkpoint has duplicate, unknown or missing members")
+     records = manifest.get("members")
+     if not isinstance(records, dict) or set(records) != set(names) - {"manifest.json"}:
+         raise ValueError("checkpoint manifest members disagree with the archive")
+@@ -189,15 +308,63 @@ def _check_members(archive: zipfile.ZipFile, max_bytes: int) -> dict[str, Any]:
+             raise ValueError(f"checkpoint member size mismatch: {name}")
+         digest = sha256()
+         with archive.open(name) as stream:
+-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
++            for chunk in iter(lambda: stream.read(_CHUNK), b""):
+                 digest.update(chunk)
+         if record.get("sha256") != digest.hexdigest():
+             raise ValueError(f"checkpoint checksum mismatch: {name}")
+-    if manifest.get("data_digest") != _digest(records):
+-        raise ValueError("checkpoint data digest mismatch")
++    if not isinstance(manifest, dict):
++        raise ValueError("invalid checkpoint manifest")
+     return manifest
+ 
+ 
++def _read_array(archive: zipfile.ZipFile, name: str, spec: Any, rows: int | None) -> np.ndarray:
++    if (not isinstance(spec, dict) or set(spec) != {"dtype", "shape"}
++            or spec["dtype"] != _DTYPES[name] or not isinstance(spec["shape"], list)
++            or any(type(n) is not int or n < 0 for n in spec["shape"])
++            or len(spec["shape"]) != (2 if name == "x" else 1)
++            or (rows is not None and spec["shape"][0] != rows)):
++        raise ValueError(f"invalid checkpoint shape/dtype for {name}")
++    dtype = np.dtype(spec["dtype"])
++    payload = archive.read(f"data/{name}.bin")
++    if len(payload) != math.prod(spec["shape"]) * dtype.itemsize:
++        raise ValueError(f"checkpoint array size disagrees with its shape: {name}")
++    values = np.frombuffer(payload, dtype=dtype).astype(dtype.newbyteorder("="), copy=True)
++    if name == "x":
++        rows_, columns = spec["shape"]
++        result: np.ndarray = values.reshape(columns, rows_).T  # column-major, as captured
++        return result
++    return values
++
++
++def _read_categories(archive: zipfile.ZipFile, rows: int) -> Categories | None:
++    header = _strict_json(archive.read("data/categories.json"))
++    if header is None:
++        if _CATEGORY_CODES in archive.namelist():
++            raise ValueError("checkpoint categorical rows are invalid")
++        return None
++    if (not isinstance(header, dict) or set(header) != {"levels", "rows"} or header["rows"] != rows
++            or not isinstance(header["levels"], list) or _CATEGORY_CODES not in archive.namelist()):
++        raise ValueError("checkpoint categorical rows are invalid")
++    levels = header["levels"]
++    for column in levels:
++        if (not isinstance(column, list) or any(not isinstance(level, str) for level in column)
++                or len(set(column)) != len(column)):
++            raise ValueError("checkpoint categorical levels are invalid")
++    payload = archive.read(_CATEGORY_CODES)
++    if len(payload) != len(levels) * rows * 4:
++        raise ValueError("checkpoint categorical codes disagree with their shape")
++    codes = np.frombuffer(payload, dtype="<u4").astype(np.uint32).reshape(len(levels), rows)
++    for column, (values, labels) in enumerate(zip(codes, levels)):
++        if rows and int(values.max()) >= len(labels):
++            raise ValueError(f"checkpoint categorical codes out of range (column {column})")
++        # The canonical coding numbers levels by first appearance in row order.
++        first = np.unique(values, return_index=True)[1]
++        if len(first) != len(labels) or not np.all(np.diff(first) > 0):
++            raise ValueError(f"checkpoint categorical coding is not canonical (column {column})")
++    codes.setflags(write=False)
++    return codes, levels
++
++
+ def _validate_path(path: Any, state: Any, estimator: Any) -> dict[str, Any] | None:
+     if path is None:
+         return None
+@@ -229,127 +396,191 @@ def _validate_path(path: Any, state: Any, estimator: Any) -> dict[str, Any] | No
+             "ranked_supports": ranked, "share": state.share.copy()}
+ 
+ 
++def _open(source: Any) -> zipfile.ZipFile:
++    return zipfile.ZipFile(io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else source)
++
++
+ def load_session(
+-    source: Any, *, expected_data_digest: str | None, max_bytes: int,
++    source: Any = None, *, evidence: Any = None, chain: Any = None,
++    expected_data_digest: str | None, max_bytes: int,
+ ) -> TBoostTrainingSession:
+-    from ._staged import TBoostTrainingSession, _FullFitState
+-    from ._t_boost import _Model
+-    from .sklearn import TBoostClassifier, TBoostRegressor
+-
+     if type(max_bytes) is not int or max_bytes < 1:
+         raise ValueError("checkpoint size limit must be a positive integer")
++    if (source is None) == (evidence is None and chain is None) or (
++            source is None and (evidence is None or chain is None)):
++        raise ValueError("load a portable checkpoint, or both its evidence and chain parts")
+     try:
+-        with zipfile.ZipFile(source) as archive:
+-            manifest = _check_members(archive, max_bytes)
+-            if expected_data_digest is not None and manifest["data_digest"] != expected_data_digest:
+-                raise ValueError("checkpoint data digest disagrees with the requested training snapshot")
+-            arrays = {name: _array(archive, f"{name}.npy") for name in _ARRAYS
+-                      if f"{name}.npy" in archive.namelist()}
+-            x, y = arrays["x"], arrays["y"]
+-            rows = len(y)
+-            if rows == 0 or any(len(array) != rows for array in arrays.values()) or not np.isfinite(y).all():
+-                raise ValueError("checkpoint arrays have mismatched rows or invalid targets")
+-            for name in ("weight", "exposure"):
+-                array = arrays.get(name)
+-                if array is not None and (not np.isfinite(array).all() or np.any(array < 0)
+-                                          or (name == "exposure" and np.any(array == 0))
+-                                          or float(np.sum(array, dtype=np.float64)) <= 0):
+-                    raise ValueError(f"invalid checkpoint {name}")
+-            categories = _strict_json(archive.read("categories.json"))
+-            if categories is not None and (not isinstance(categories, list) or any(
+-                not isinstance(column, list) or len(column) != rows or any(not isinstance(v, str) for v in column)
+-                for column in categories
+-            )):
+-                raise ValueError("checkpoint categorical rows are invalid")
+-            full_json = archive.read("full.json").decode("utf-8")
+-            document = _strict_json(full_json.encode("utf-8"))
+-            kind = document.get("estimator")
+-            if kind not in ("TBoostRegressor", "TBoostClassifier"):
+-                raise ValueError("unsupported checkpoint estimator")
+-            estimator_type = TBoostRegressor if kind == "TBoostRegressor" else TBoostClassifier
+-            if set(document.get("params", {})) - set(estimator_type().get_params()):
+-                raise ValueError("checkpoint contains unsupported training parameters")
+-            estimator = estimator_type.from_json(full_json)
+-            features = int(estimator.n_features_in_)
+-            if x.shape[1] + len(categories or []) != features:
+-                raise ValueError("checkpoint feature schema disagrees with the model")
+-            native = _Model.from_training_bytes(archive.read("native.bin"), rows)
+-            full_bank = _strict_json(estimator._model.to_json().encode('utf-8'))['model']
+-            native_schema = _strict_json(native.to_json().encode('utf-8'))['model']
+-            if any(full_bank[key] != native_schema[key] for key in ('schema', 'provenance', 'grids', 'link', 'mode')):
+-                raise ValueError('checkpoint native schema disagrees with the full snapshot')
+-            metadata = _strict_json(archive.read("state.json"))
+-            supports = [tuple(u) for u in metadata["supports"]]
+-            if (supports != sorted(set(supports)) or any(
+-                not u or tuple(sorted(set(u))) != u or any(type(i) is not int or not 0 <= i < features for i in u)
+-                for u in supports
+-            )):
+-                raise ValueError("invalid checkpoint table supports")
+-            share = {tuple(u): float(value) for u, value in metadata["share"]}
+-            if (len(share) != len(metadata["share"]) or set(share) != set(supports)
+-                    or not all(math.isfinite(v) for v in share.values())):
+-                raise ValueError("invalid checkpoint table variances")
+-            monotone = metadata["monotone"]
+-            if monotone is not None and (not isinstance(monotone, list) or len(monotone) != features
+-                                         or any(type(v) is not int or v not in (-1, 0, 1) for v in monotone)):
+-                raise ValueError("invalid checkpoint monotone constraints")
+-            # `_check_members` verified every data member against the manifest digest.
+-            state = _FullFitState(native, x, y, arrays.get("weight"), arrays.get("exposure"),
+-                                  categories, monotone, supports, share, archive.read("stages/full.bin"),
+-                                  arrays.get("groups"), digest=manifest["data_digest"])
+-            path_settings = metadata['path_settings']
+-            if (not isinstance(path_settings, dict) or set(path_settings) !=
+-                    {'prune_path_steps', 'prune_main_effects', 'prune_guard_min_rows'}
+-                    or type(path_settings['prune_path_steps']) is not int or path_settings['prune_path_steps'] < 2
+-                    or type(path_settings['prune_guard_min_rows']) is not int or path_settings['prune_guard_min_rows'] < 1
+-                    or type(path_settings['prune_main_effects']) is not bool):
+-                raise ValueError('invalid checkpoint path settings')
+-            for key, value in path_settings.items():
+-                setattr(estimator, key, value)
+-            evidence = _validate_path(metadata["path"], state, estimator)
+-            reason = metadata["path_unavailable_reason"]
+-            if (evidence is None and (not isinstance(reason, str) or not reason)) or (evidence is not None and reason is not None):
+-                raise ValueError("checkpoint path availability is inconsistent")
+-            if not isinstance(metadata["loss_history"], dict):
+-                raise ValueError("invalid checkpoint loss history")
+-            session = TBoostTrainingSession.__new__(TBoostTrainingSession)
+-            session._estimator_type = estimator_type
+-            session._full_json = full_json
+-            session._full_bytes = estimator.to_bytes()
+-            session._state = state
+-            session._evidence = evidence
+-            session._unavailable_reason = reason
+-            session._loss_history = metadata["loss_history"]
+-            session._path_settings = path_settings
+-            session._stages = _load_stages(archive, session)
+-            return session
++        if source is not None:
++            with _open(source) as archive:
++                names = archive.namelist()
++                if "manifest.json" not in names or archive.getinfo("manifest.json").file_size > 64 * 1024:
++                    raise ValueError("checkpoint manifest is missing or exceeds its size limit")
++                manifest = _strict_json(archive.read("manifest.json"))
++                if isinstance(manifest, dict) and manifest.get("format") == _OLD_FORMAT:
++                    raise ValueError(_REBUILD)
++                if (manifest != {"format": _PORTABLE_FORMAT, "version": VERSION}
++                        or sorted(names) != ["chain", "evidence", "manifest.json"]):
++                    raise ValueError("unsupported checkpoint format/version, or duplicate parts")
++                if sum(item.file_size for item in archive.infolist()) > max_bytes:
++                    raise ValueError("checkpoint exceeds the expanded size limit")
++                evidence, chain = archive.read("evidence"), archive.read("chain")
++        with _open(evidence) as evidence_archive, _open(chain) as chain_archive:
++            # One budget covers both parts, checked before either is read.
++            expanded = sum(item.file_size for archive in (evidence_archive, chain_archive)
++                           for item in archive.infolist())
++            if expanded > max_bytes:
++                raise ValueError("checkpoint exceeds the expanded size limit")
++            session = _load_evidence(evidence_archive, expected_data_digest)
++            _load_chain(chain_archive, session)
++        return session
+     except (zipfile.BadZipFile, KeyError, TypeError, IndexError, UnicodeError, OverflowError) as exc:
+         raise ValueError(f"invalid training checkpoint: {exc}") from exc
+ 
+ 
+-def _load_stages(archive: zipfile.ZipFile, session: TBoostTrainingSession) -> Any:
++def _load_evidence(archive: zipfile.ZipFile,
++                   expected_data_digest: str | None) -> TBoostTrainingSession:
++    from ._staged import TBoostTrainingSession, _FullFitState, _Stage
++    from ._t_boost import _Model, _TableModel
++    from .sklearn import TBoostClassifier, TBoostRegressor
++
++    manifest = _check_members(archive, fmt=_EVIDENCE_FORMAT,
++                              required=_EVIDENCE_REQUIRED, allowed=_EVIDENCE_ALLOWED)
++    records = manifest["members"]
++    if manifest.get("data_digest") != _digest(records):
++        raise ValueError("checkpoint data digest mismatch")
++    if expected_data_digest is not None and manifest["data_digest"] != expected_data_digest:
++        raise ValueError("checkpoint data digest disagrees with the requested training snapshot")
++    header = _strict_json(archive.read("data/arrays.json"))
++    if (not isinstance(header, dict) or set(header) != set(_ARRAYS)
++            or header["x"] is None or header["y"] is None):
++        raise ValueError("invalid checkpoint array header")
++    present = [name for name in _ARRAYS if header[name] is not None]
++    binary = {name for name in archive.namelist() if name.startswith("data/") and name.endswith(".bin")}
++    if binary - {_CATEGORY_CODES} != {f"data/{name}.bin" for name in present}:
++        raise ValueError("checkpoint array members disagree with their header")
++    y = _read_array(archive, "y", header["y"], None)
++    rows = len(y)
++    arrays = {name: _read_array(archive, name, header[name], rows) for name in present}
++    x = arrays["x"]
++    if rows == 0 or not np.isfinite(y).all():
++        raise ValueError("checkpoint arrays have mismatched rows or invalid targets")
++    for name in ("weight", "exposure"):
++        array = arrays.get(name)
++        if array is not None and (not np.isfinite(array).all() or np.any(array < 0)
++                                  or (name == "exposure" and np.any(array == 0))
++                                  or float(np.sum(array, dtype=np.float64)) <= 0):
++            raise ValueError(f"invalid checkpoint {name}")
++    coded = _read_categories(archive, rows)
++    inference = archive.read("full/inference.json").decode("utf-8")
++    document = _strict_json(inference.encode("utf-8"))
++    kind = document.get("estimator")
++    if kind not in ("TBoostRegressor", "TBoostClassifier"):
++        raise ValueError("unsupported checkpoint estimator")
++    estimator_type = TBoostRegressor if kind == "TBoostRegressor" else TBoostClassifier
++    if set(document.get("params", {})) - set(estimator_type().get_params()):
++        raise ValueError("checkpoint contains unsupported training parameters")
++    estimator = estimator_type.from_json(inference)
++    features = int(estimator.n_features_in_)
++    if x.shape[1] + (0 if coded is None else len(coded[1])) != features:
++        raise ValueError("checkpoint feature schema disagrees with the model")
++    native = _Model.from_training_bytes(archive.read("native.bin"), rows)
++    if (not isinstance(estimator._model, _TableModel)
++            or not native.shares_inference_schema(estimator._model)):
++        raise ValueError("checkpoint native schema disagrees with the full snapshot")
++    working = archive.read("full/working.bin")
++    if _TableModel.from_bytes(working).raw_feature_names() != estimator._model.raw_feature_names():
++        raise ValueError("checkpoint stage feature schema mismatch")
++    metadata = _strict_json(archive.read("state.json"))
++    if (not isinstance(metadata, dict)
++            or set(metadata) != {"monotone", "supports", "share", "loss_history"}):
++        raise ValueError("invalid checkpoint training state")
++    supports = [tuple(u) for u in metadata["supports"]]
++    if (supports != sorted(set(supports)) or any(
++        not u or tuple(sorted(set(u))) != u or any(type(i) is not int or not 0 <= i < features for i in u)
++        for u in supports
++    )):
++        raise ValueError("invalid checkpoint table supports")
++    share = {tuple(u): float(value) for u, value in metadata["share"]}
++    if (len(share) != len(metadata["share"]) or set(share) != set(supports)
++            or not all(math.isfinite(v) for v in share.values())):
++        raise ValueError("invalid checkpoint table variances")
++    monotone = metadata["monotone"]
++    if monotone is not None and (not isinstance(monotone, list) or len(monotone) != features
++                                 or any(type(v) is not int or v not in (-1, 0, 1) for v in monotone)):
++        raise ValueError("invalid checkpoint monotone constraints")
++    if not isinstance(metadata["loss_history"], dict):
++        raise ValueError("invalid checkpoint loss history")
++    categories = None if coded is None else [
++        [labels[code] for code in values.tolist()] for values, labels in zip(*coded)
++    ]
++    # `_check_members` verified every data member against the manifest digest.
++    state = _FullFitState(native, x, y, arrays.get("weight"), arrays.get("exposure"),
++                          categories, monotone, supports, share, working, arrays.get("groups"),
++                          digest=manifest["data_digest"], coded_categories=coded)
++    full_revision = TBoostTrainingSession._revision(working, inference, None, {}, None)
++    expected = evidence_digest(manifest["data_digest"], records["native.bin"]["sha256"],
++                               full_revision)
++    if manifest.get("evidence_digest") != expected:
++        raise ValueError("checkpoint evidence digest mismatch")
++    state.remember_evidence_digest(expected)
++    session = TBoostTrainingSession.__new__(TBoostTrainingSession)
++    session._estimator_type = estimator_type
++    session._full_bytes = estimator.to_bytes()
++    session._state = state
++    session._loss_history = metadata["loss_history"]
++    session._stages = {"full": _Stage(full_revision, None, None, {}, working, inference, None)}
++    return session
++
++
++def _load_chain(archive: zipfile.ZipFile, session: TBoostTrainingSession) -> None:
+     from ._staged import _Stage
+     from ._t_boost import _TableModel
+ 
+-    metadata = _strict_json(archive.read("stages.json"))
+-    if not isinstance(metadata, dict) or "full" not in metadata or set(metadata) - set(_STAGES):
++    manifest = _check_members(archive, fmt=_CHAIN_FORMAT,
++                              required=_CHAIN_REQUIRED, allowed=_CHAIN_ALLOWED)
++    if manifest.get("evidence_digest") != session.evidence_digest:
++        raise ValueError("stage chain belongs to different fit evidence")
++    metadata = _strict_json(archive.read("chain.json"))
++    if (not isinstance(metadata, dict)
++            or set(metadata) != {"path", "path_unavailable_reason", "path_settings", "stages"}):
++        raise ValueError("invalid stage chain")
++    path_settings = metadata["path_settings"]
++    if (not isinstance(path_settings, dict) or set(path_settings) !=
++            {'prune_path_steps', 'prune_main_effects', 'prune_guard_min_rows'}
++            or type(path_settings['prune_path_steps']) is not int or path_settings['prune_path_steps'] < 2
++            or type(path_settings['prune_guard_min_rows']) is not int or path_settings['prune_guard_min_rows'] < 1
++            or type(path_settings['prune_main_effects']) is not bool):
++        raise ValueError('invalid checkpoint path settings')
++    estimator = session.full_model
++    for key, value in path_settings.items():
++        setattr(estimator, key, value)
++    evidence = _validate_path(metadata["path"], session._state, estimator)
++    reason = metadata["path_unavailable_reason"]
++    if (evidence is None and (not isinstance(reason, str) or not reason)) or (
++            evidence is not None and reason is not None):
++        raise ValueError("checkpoint path availability is inconsistent")
++    session._evidence = evidence
++    session._unavailable_reason = reason
++    session._path_settings = path_settings
++    stages_metadata = metadata["stages"]
++    if not isinstance(stages_metadata, dict) or set(stages_metadata) - set(_POST_FIT):
+         raise ValueError("checkpoint has invalid stage names")
+-    expected = {f"stages/{name}.{ext}" for name in metadata for ext in ('bin', 'json')}
+-    actual = {name for name in archive.namelist() if name.startswith('stages/')}
+-    if actual != expected:
++    expected_members = {f"stages/{name}.{ext}" for name in stages_metadata for ext in ('bin', 'json')}
++    if {name for name in archive.namelist() if name.startswith('stages/')} != expected_members:
+         raise ValueError("checkpoint stage artifacts disagree with metadata")
+-    stages: dict[str, _Stage] = {}
+-    allowed_parents = {'full': (None,), 'pruned': ('full',), 'banded': ('full', 'pruned'),
++    stages: dict[str, _Stage] = {"full": session._stages["full"]}
++    allowed_parents = {'pruned': ('full',), 'banded': ('full', 'pruned'),
+                        'smoothed': ('full', 'pruned', 'banded')}
+-    for name in _STAGES:
+-        if name not in metadata:
++    features = session._state.n_features
++    for name in _POST_FIT:
++        if name not in stages_metadata:
+             continue
+-        value = metadata[name]
++        value = stages_metadata[name]
+         if not isinstance(value, dict) or set(value) != {'revision', 'parent', 'parent_revision', 'settings', 'keep'}:
+             raise ValueError("checkpoint has invalid stage metadata")
+         parent = value['parent']
+-        if (parent not in allowed_parents[name] or (parent is not None and parent not in stages)
+-                or value['parent_revision'] != (stages[parent].revision if parent else None)):
++        if (parent not in allowed_parents[name] or parent not in stages
++                or value['parent_revision'] != stages[parent].revision):
+             raise ValueError("checkpoint stage has a missing or mismatched parent")
+         working = archive.read(f"stages/{name}.bin")
+         inference = archive.read(f"stages/{name}.json").decode('utf-8')
+@@ -358,27 +589,27 @@ def _load_stages(archive: zipfile.ZipFile, session: TBoostTrainingSession) -> An
+             raise ValueError("checkpoint stage estimator type mismatch")
+         model = session._estimator_type.from_json(inference)
+         bank = _TableModel.from_bytes(working)
+-        if int(model.n_features_in_) != session._state.n_features or not isinstance(model._model, _TableModel) or bank.raw_feature_names() != model._model.raw_feature_names():
++        if (int(model.n_features_in_) != features or not isinstance(model._model, _TableModel)
++                or bank.raw_feature_names() != model._model.raw_feature_names()):
+             raise ValueError("checkpoint stage feature schema mismatch")
+         settings, keep = value['settings'], value['keep']
+         if not isinstance(settings, dict):
+             raise ValueError("invalid checkpoint stage settings")
+-        if keep is not None and (not isinstance(keep, list) or any(tuple(u) not in session._state.supports for u in keep)):
++        if keep is not None and (not isinstance(keep, list)
++                                 or any(tuple(u) not in session._state.supports for u in keep)):
+             raise ValueError("invalid checkpoint stage keep-set")
+-        if name == 'full' and (inference != session._full_json or keep is not None or settings):
+-            raise ValueError("checkpoint full stage disagrees with full snapshot")
+         revision = session._revision(working, inference, value['parent_revision'], settings, keep)
+         if revision != value['revision']:
+             raise ValueError("checkpoint stage revision mismatch")
+-        stages[name] = _Stage(revision, parent, value['parent_revision'], settings, working, inference, keep)
++        stages[name] = _Stage(revision, parent, value['parent_revision'], settings, working,
++                              inference, keep)
+     session._stages = stages
+     for name, stage in stages.items():
+         session._validate_recipe(session.recipe(name))
+         if name == 'pruned':
+             expected_keep = session.pruning_selection(**stage.settings)['kept']
+-            inference = session.model(name)
+-            if stage.keep != expected_keep or stage.keep != inference.pruning_report_['kept']:
++            inference_model = session.model(name)
++            if stage.keep != expected_keep or stage.keep != inference_model.pruning_report_['kept']:
+                 raise ValueError('checkpoint pruning keep-set disagrees with its recipe and report')
+         elif stage.parent is not None and stage.keep != stages[stage.parent].keep:
+             raise ValueError('checkpoint post-fit keep-set disagrees with its parent')
+-    return stages
+diff --git a/sliceA/before/t-boost/python/t_boost/_paths.py b/sliceA2/after/t-boost/python/t_boost/_paths.py
+index d22c49b..9d54d25 100644
+--- a/sliceA/before/t-boost/python/t_boost/_paths.py
++++ b/sliceA2/after/t-boost/python/t_boost/_paths.py
+@@ -12,7 +12,7 @@ import zipfile
+ 
+ import numpy as np
+ 
+-from ._checkpoint import _json, _strict_json
++from ._checkpoint import _REBUILD, _json, _strict_json
+ from ._t_boost import _TableModel
+ from ._staged import _Stage, _check_band, _check_selection, _check_smooth, _finite
+ from .sklearn import _canonical_objective
+@@ -46,6 +46,7 @@ class TBoostPathFamily:
+         self._parent = parent
+         self._parent_revision = session._stages[parent].revision
+         self._data_digest = data_digest if data_digest is not None else session.data_digest
++        self._evidence_digest = session.evidence_digest
+         self._estimator_type = session._estimator_type
+         self._path_settings = deepcopy(session._path_settings)
+         working_banks: dict[bytes, bytes] = {}
+@@ -85,6 +86,8 @@ class TBoostPathFamily:
+             raise ValueError('path parent has changed; prepare the path again')
+         if session.data_digest != self._data_digest:
+             raise ValueError('path belongs to different training data')
++        if session.evidence_digest != self._evidence_digest:
++            raise ValueError('path belongs to a different fit')
+         if self._stage == 'pruned' and session._path_settings != self._path_settings:
+             raise ValueError('pruning path settings have changed; prepare the path again')
+ 
+@@ -108,9 +111,10 @@ class TBoostPathFamily:
+     def candidate_bytes(self, point_id: str) -> bytes:
+         """Versioned compact delta, with strict members and content revision checks on read."""
+         point = self._point(point_id)
+-        meta = dict(format='t-boost-path-candidate', version=1, stage=self._stage,
++        meta = dict(format='t-boost-path-candidate', version=2, stage=self._stage,
+                     parent=self._parent, parent_revision=self._parent_revision,
+-                    data_digest=self._data_digest, path_settings=self._path_settings,
++                    data_digest=self._data_digest, evidence_digest=self._evidence_digest,
++                    path_settings=self._path_settings,
+                     point=self._metadata(point),
+                     keep=point.snapshot.keep)
+         buffer = io.BytesIO()
+@@ -134,14 +138,16 @@ class TBoostPathFamily:
+             if 'candidate.json' not in names or archive.getinfo('candidate.json').file_size > 4 * 1024**2:
+                 raise ValueError('invalid path candidate metadata')
+             meta = _strict_json(archive.read('candidate.json'))
+-            if not isinstance(meta, dict) or meta.get('format') != 't-boost-path-candidate' or meta.get('version') != 1:
++            if isinstance(meta, dict) and meta.get('format') == 't-boost-path-candidate' and meta.get('version') == 1:
++                raise ValueError(_REBUILD)
++            if not isinstance(meta, dict) or meta.get('format') != 't-boost-path-candidate' or meta.get('version') != 2:
+                 raise ValueError('unsupported path candidate format')
+             required = {'format', 'version', 'stage', 'parent', 'parent_revision',
+-                        'data_digest', 'path_settings', 'point', 'keep'}
++                        'data_digest', 'evidence_digest', 'path_settings', 'point', 'keep'}
+             point = meta.get('point')
+             if (set(meta) != required or not isinstance(point, dict)
+                     or set(point) != {'id', 'stage', 'identity', 'status', 'revision', 'settings', 'diagnostics'}
+-                    or not all(isinstance(meta[k], str) for k in ('stage', 'parent', 'parent_revision', 'data_digest'))
++                    or not all(isinstance(meta[k], str) for k in ('stage', 'parent', 'parent_revision', 'data_digest', 'evidence_digest'))
+                     or not all(isinstance(point[k], str) for k in ('id', 'stage', 'status', 'revision'))
+                     or not isinstance(point['settings'], dict)
+                     or not isinstance(point['diagnostics'], dict)
+@@ -156,6 +162,8 @@ class TBoostPathFamily:
+                 raise ValueError('path candidate parent has changed')
+             if meta['data_digest'] != session.data_digest:
+                 raise ValueError('path candidate belongs to different training data')
++            if meta['evidence_digest'] != session.evidence_digest:
++                raise ValueError('path candidate belongs to a different fit')
+             if stage == 'pruned' and meta['path_settings'] != session._path_settings:
+                 raise ValueError('pruning path settings have changed')
+             identity = point['identity']
+diff --git a/sliceA/before/t-boost/python/t_boost/_staged.py b/sliceA2/after/t-boost/python/t_boost/_staged.py
+index e705e2d..f162888 100644
+--- a/sliceA/before/t-boost/python/t_boost/_staged.py
++++ b/sliceA2/after/t-boost/python/t_boost/_staged.py
+@@ -35,6 +35,12 @@ class _FullFitState:
+     # Fingerprint of the prepared rows (`_checkpoint.data_digest`): computed once at capture,
+     # or the manifest digest of a checkpoint whose members were verified against it.
+     digest: str = field(kw_only=True)
++    # The canonical categorical coding (codes plus first-appearance levels) the digest and
++    # checkpoint use. The per-row strings above still feed native calls.
++    coded_categories: tuple[np.ndarray, list[list[str]]] | None = field(kw_only=True)
++    # Derived identities shared by forks; never part of equality.
++    _identities: dict[str, str] = field(default_factory=dict, kw_only=True, compare=False,
++                                        repr=False)
+ 
+     def __post_init__(self) -> None:
+         # The digest describes these exact values, so the owned arrays must not change.
+@@ -50,7 +56,7 @@ class _FullFitState:
+         share: dict[tuple[int, ...], float], working: bytes,
+         groups: np.ndarray | None = None,
+     ) -> _FullFitState:
+-        from ._checkpoint import data_digest
++        from ._checkpoint import data_digest, encode_categories
+ 
+         # Native OOB membership is tied to these exact prepared rows. Own their values
+         # so a later caller mutation cannot silently change the meaning of the evidence.
+@@ -59,9 +65,18 @@ class _FullFitState:
+                       exposure=None if exposure is None else exposure.copy(),
+                       groups=None if groups is None else groups.copy())
+         owned_categories = deepcopy(categories)
++        coded = encode_categories(owned_categories)
+         return cls(model, arrays["x"], arrays["y"], arrays["weight"], arrays["exposure"],
+                    owned_categories, deepcopy(monotone), supports.copy(), share.copy(), working,
+-                   arrays["groups"], digest=data_digest(arrays, owned_categories))
++                   arrays["groups"], digest=data_digest(arrays, coded), coded_categories=coded)
++
++    def native_training_bytes(self) -> bytes:
++        """The native training envelope for these rows (bags, membership, fit bins)."""
++        return bytes(self.model.to_training_bytes(len(self.y)))
++
++    def remember_evidence_digest(self, digest: str) -> None:
++        """Record an evidence digest a checkpoint load has already verified."""
++        self._identities["evidence"] = digest
+ 
+     @cached_property
+     def weights(self) -> np.ndarray:
+@@ -100,7 +115,6 @@ class TBoostTrainingSession:
+         self, estimator: TBoostRegressor | TBoostClassifier, state: _FullFitState,
+     ) -> None:
+         self._estimator_type = type(estimator)
+-        self._full_json = estimator.to_json()
+         self._full_bytes = estimator.to_bytes()
+         self._state = state
+         self._evidence: dict[str, Any] | None = None
+@@ -197,20 +211,57 @@ class TBoostTrainingSession:
+         """Digest of the owned prepared training data and row order."""
+         return self._state.digest
+ 
++    @property
++    def evidence_digest(self) -> str:
++        """Identity of this fit's immutable evidence: rows, native envelope and full stage.
++
++        Stage chains and path candidates bind to it, so neither can be restored onto a
++        different fit on the same rows.
++        """
++        identities = self._state._identities
++        if "evidence" not in identities:
++            from ._checkpoint import evidence_digest
++
++            native = sha256(self._state.native_training_bytes()).hexdigest()
++            identities["evidence"] = evidence_digest(
++                self._state.digest, native, self._stages["full"].revision)
++        return identities["evidence"]
++
+     def save(self, path: Any) -> None:
+-        """Atomically save a resumable training checkpoint, separate from inference export."""
++        """Atomically save a portable training checkpoint holding both parts.
++
++        Inference export stays separate. See `save_evidence` and `save_chain` for the parts.
++        """
+         from ._checkpoint import save_session
+ 
+         save_session(self, path)
+ 
++    def save_evidence(self, path: Any) -> None:
++        """Atomically save the immutable fit evidence (rows, native envelope, full stage)."""
++        from ._checkpoint import save_part
++
++        save_part(self, path, "evidence")
++
++    def save_chain(self, path: Any) -> None:
++        """Atomically save the stage chain (path evidence and post-fit stages)."""
++        from ._checkpoint import save_part
++
++        save_part(self, path, "chain")
++
+     @classmethod
+     def load(
+-        cls, path: Any, *, expected_data_digest: str | None = None, max_bytes: int = 4 * 1024**3,
++        cls, path: Any = None, *, evidence: Any = None, chain: Any = None,
++        expected_data_digest: str | None = None, max_bytes: int = 4 * 1024**3,
+     ) -> TBoostTrainingSession:
+-        """Restore a validated checkpoint without fitting or rescoring its path."""
++        """Restore a validated checkpoint without fitting or rescoring its path.
++
++        Pass a portable checkpoint, or both ``evidence`` and ``chain`` parts. Each may be a
++        path, a binary file object or bytes.
++        """
+         from ._checkpoint import load_session
+ 
+-        return load_session(path, expected_data_digest=expected_data_digest, max_bytes=max_bytes)
++        return load_session(path, evidence=evidence, chain=chain,
++                            expected_data_digest=expected_data_digest, max_bytes=max_bytes)
+ 
+     def prune(
+         self, *, fraction: float = 0.995, tolerance: float = 0.001,
+diff --git a/sliceA/before/t-boost/python/t_boost/_t_boost.pyi b/sliceA2/after/t-boost/python/t_boost/_t_boost.pyi
+index 58c14f2..bd19548 100644
+--- a/sliceA/before/t-boost/python/t_boost/_t_boost.pyi
++++ b/sliceA2/after/t-boost/python/t_boost/_t_boost.pyi
+@@ -261,6 +261,7 @@ class _Model:
+ 
+     def objective(self) -> tuple[str, float | None]: ...
+     def provenance(self) -> list[tuple[int, int | None]]: ...
++    def shares_inference_schema(self, bank: _TableModel) -> bool: ...
+ 
+     @property
+     def n_trees(self) -> int: ...
+diff --git a/sliceA/before/t-boost/python/tests/test_training_checkpoint.py b/sliceA2/after/t-boost/python/tests/test_training_checkpoint.py
+index 2a8828c..6ae6c5f 100644
+--- a/sliceA/before/t-boost/python/tests/test_training_checkpoint.py
++++ b/sliceA2/after/t-boost/python/tests/test_training_checkpoint.py
+@@ -98,13 +98,13 @@ def test_training_state_owns_one_digest_of_read_only_rows(session, tmp_path):
+     fitted, frame = session
+     state = fitted._state
+     arrays = {name: getattr(state, name) for name in ("x", "y", "weight", "exposure", "groups")}
+-    assert fitted.data_digest == data_digest(arrays, state.categories)
++    assert fitted.data_digest == data_digest(arrays, state.coded_categories)
+     path = tmp_path / "digest.checkpoint"
+     fitted.save(path)
+     loaded = TBoostTrainingSession.load(path)
+     assert loaded.data_digest == fitted.data_digest == loaded.fork().data_digest
+     loaded_arrays = {name: getattr(loaded._state, name) for name in arrays}
+-    assert data_digest(loaded_arrays, loaded._state.categories) == fitted.data_digest
++    assert data_digest(loaded_arrays, loaded._state.coded_categories) == fitted.data_digest
+     for owned in (state.x, state.y, state.weight, state.exposure, state.groups,
+                   loaded._state.x, loaded._state.weights):
+         with pytest.raises(ValueError, match="read-only"):
+@@ -147,16 +147,53 @@ def test_checkpoint_bytes_are_stable_and_data_bound(session, tmp_path):
+         TBoostTrainingSession.load(first, max_bytes=100)
+ 
+ 
++def _parts(path):
++    with zipfile.ZipFile(path) as portable:
++        parts = {name: portable.read(name) for name in ("evidence", "chain")}
++    return {name: _members(payload) for name, payload in parts.items()}
++
++
++def _members(payload):
++    import io
++
++    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
++        return {name: archive.read(name) for name in archive.namelist()}
++
++
++def _write_parts(path, parts, *, rehash):
++    """Write a portable checkpoint; ``rehash`` recomputes each part's member records."""
++    import hashlib
++    import io
++
++    payloads = {}
++    for name, members in parts.items():
++        members = dict(members)
++        if rehash:
++            manifest = json.loads(members["manifest.json"])
++            manifest["members"] = {
++                member: {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
++                for member, value in members.items() if member != "manifest.json"
++            }
++            members["manifest.json"] = json.dumps(manifest).encode()
++        buffer = io.BytesIO()
++        with zipfile.ZipFile(buffer, "w") as archive:
++            for member, value in members.items():
++                archive.writestr(member, value)
++        payloads[name] = buffer.getvalue()
++    with zipfile.ZipFile(path, "w") as portable:
++        portable.writestr("evidence", payloads["evidence"])
++        portable.writestr("chain", payloads["chain"])
++        portable.writestr("manifest.json", json.dumps(
++            {"format": "t-boost-training-checkpoint", "version": 2}))
++
++
+ def test_corrupt_members_are_refused(session, tmp_path):
+     fitted, _ = session
+     path = tmp_path / "training"
+     fitted.save(path)
+-    with zipfile.ZipFile(path) as archive:
+-        members = {name: archive.read(name) for name in archive.namelist()}
+-    members["x.npy"] = members["x.npy"][:-4] + b"xxxx"
+-    with zipfile.ZipFile(path, "w") as archive:
+-        for name, value in members.items():
+-            archive.writestr(name, value)
++    parts = _parts(path)
++    parts["evidence"]["data/x.bin"] = parts["evidence"]["data/x.bin"][:-4] + b"xxxx"
++    _write_parts(path, parts, rehash=False)
+     with pytest.raises(ValueError, match="checksum"):
+         TBoostTrainingSession.load(path)
+ 
+@@ -180,22 +217,20 @@ def test_failed_save_preserves_previous_file(session, tmp_path, monkeypatch):
+ 
+ 
+ def rewrite_checkpoint(path, change):
+-    """Rehash a malformed archive to exercise semantic validation, not only checksums."""
+-    import hashlib
++    """Rehash a malformed archive to exercise semantic validation, not only checksums.
+ 
+-    with zipfile.ZipFile(path) as archive:
+-        members = {name: archive.read(name) for name in archive.namelist()}
+-    change(members)
+-    manifest = json.loads(members['manifest.json'])
+-    manifest['members'] = {
+-        name: {'sha256': hashlib.sha256(value).hexdigest(), 'bytes': len(value)}
+-        for name, value in members.items() if name != 'manifest.json'
+-    }
+-    # The data digest remains valid: these cases only alter metadata or model envelopes.
+-    members['manifest.json'] = json.dumps(manifest).encode()
+-    with zipfile.ZipFile(path, 'w') as archive:
+-        for name, value in members.items():
+-            archive.writestr(name, value)
++    ``change`` receives the evidence and chain member dicts. Data digests stay valid:
++    these cases only alter metadata or model envelopes.
++    """
++    parts = _parts(path)
++    change(parts["evidence"], parts["chain"])
++    _write_parts(path, parts, rehash=True)
++
++
++def _edit_json(members, name, edit):
++    document = json.loads(members[name])
++    edit(document)
++    members[name] = json.dumps(document).encode()
+ 
+ 
+ @pytest.mark.parametrize('case', ['parent', 'version', 'feature_shape', 'path', 'unknown_member'])
+@@ -205,25 +240,20 @@ def test_semantically_invalid_checkpoints_are_refused(session, tmp_path, case):
+     path = tmp_path / 'malformed'
+     fitted.save(path)
+ 
+-    def alter(members):
++    def alter(evidence, chain):
+         if case == 'parent':
+-            metadata = json.loads(members['stages.json'])
+-            metadata['pruned']['parent_revision'] = 'wrong'
+-            members['stages.json'] = json.dumps(metadata).encode()
++            _edit_json(chain, 'chain.json',
++                       lambda value: value['stages']['pruned'].update(parent_revision='wrong'))
+         elif case == 'version':
+-            metadata = json.loads(members['manifest.json'])
+-            metadata['version'] = 2
+-            members['manifest.json'] = json.dumps(metadata).encode()
++            _edit_json(evidence, 'manifest.json', lambda value: value.update(version=3))
+         elif case == 'feature_shape':
+-            document = json.loads(members['full.json'])
+-            document['n_features_in'] = 99
+-            members['full.json'] = json.dumps(document).encode()
++            _edit_json(evidence, 'full/inference.json',
++                       lambda value: value.update(n_features_in=99))
+         elif case == 'path':
+-            metadata = json.loads(members['state.json'])
+-            metadata['path']['table_counts'][0] += 1
+-            members['state.json'] = json.dumps(metadata).encode()
++            _edit_json(chain, 'chain.json',
++                       lambda value: value['path']['table_counts'].__setitem__(0, value['path']['table_counts'][0] + 1))
+         else:
+-            members['../../unexpected'] = b'ignored?'
++            evidence['../../unexpected'] = b'ignored?'
+ 
+     rewrite_checkpoint(path, alter)
+     with pytest.raises(ValueError):
+@@ -238,22 +268,22 @@ def test_checkpoint_rejects_changed_ranking_and_keepset(tmp_path):
+     path = tmp_path / 'invalid-ranking'
+     fitted.save(path)
+ 
+-    def reverse_ranking(members):
+-        state = json.loads(members['state.json'])
+-        assert len(state['path']['ranked_supports']) > 1
+-        state['path']['ranked_supports'].reverse()
+-        members['state.json'] = json.dumps(state).encode()
++    def reverse_ranking(evidence, chain):
++        def edit(value):
++            assert len(value['path']['ranked_supports']) > 1
++            value['path']['ranked_supports'].reverse()
++        _edit_json(chain, 'chain.json', edit)
+ 
+     rewrite_checkpoint(path, reverse_ranking)
+     with pytest.raises(ValueError, match='path'):
+         TBoostTrainingSession.load(path)
+     fitted.save(path)
+ 
+-    def change_keep(members):
+-        state = json.loads(members['stages.json'])
+-        assert state['pruned']['keep']
+-        state['pruned']['keep'] = []
+-        members['stages.json'] = json.dumps(state).encode()
++    def change_keep(evidence, chain):
++        def edit(value):
++            assert value['stages']['pruned']['keep']
++            value['stages']['pruned']['keep'] = []
++        _edit_json(chain, 'chain.json', edit)
+ 
+     rewrite_checkpoint(path, change_keep)
+     with pytest.raises(ValueError, match='revision|keep-set'):
+@@ -267,11 +297,133 @@ def test_native_schema_cannot_be_swapped_between_checkpoints(session, tmp_path):
+     other = TBoostRegressor(objective='poisson', n_trees=5, n_bags=3, n_jobs=2).fit_staged(
+         frame.select('x'), fitted._state.y)
+     replacement = other._state.model.to_training_bytes(len(frame))
+-    rewrite_checkpoint(path, lambda members: members.update({'native.bin': replacement}))
++    rewrite_checkpoint(path, lambda evidence, chain: evidence.update({'native.bin': replacement}))
+     with pytest.raises(ValueError, match='native schema'):
+         TBoostTrainingSession.load(path)
+ 
+ 
++def test_parts_round_trip_and_bind_to_their_own_fit(session, tmp_path):
++    """Evidence and chain load separately; a chain never fits other evidence."""
++    fitted, frame = session
++    fitted.prune()
++    evidence, chain, portable = (tmp_path / name for name in ("evidence", "chain", "portable"))
++    fitted.save_evidence(evidence)
++    fitted.save_chain(chain)
++    fitted.save(portable)
++    split = TBoostTrainingSession.load(evidence=evidence, chain=chain)
++    whole = TBoostTrainingSession.load(portable)
++    for loaded in (split, whole):
++        assert loaded.stages == fitted.stages
++        assert loaded.evidence_digest == fitted.evidence_digest
++        np.testing.assert_array_equal(loaded.model("pruned").predict(frame),
++                                      fitted.model("pruned").predict(frame))
++    # Same rows, different fit: the evidence differs, so neither its chain nor its
++    # candidates may be paired with this one.
++    other = TBoostRegressor(objective="poisson", n_trees=12, n_bags=3, n_jobs=2, seed=99,
++                            cat_direct_max_levels=0, prune_guard_min_rows=20).fit_staged(
++        frame, fitted._state.y, sample_weight=np.linspace(0.5, 1.5, len(frame)),
++        exposure=np.linspace(0.1, 1.0, len(frame)), groups=np.arange(len(frame)) // 3)
++    assert other.data_digest == fitted.data_digest
++    assert other.evidence_digest != fitted.evidence_digest
++    other_chain = tmp_path / "other-chain"
++    other.save_chain(other_chain)
++    with pytest.raises(ValueError, match="different fit evidence"):
++        TBoostTrainingSession.load(evidence=evidence, chain=other_chain)
++    with pytest.raises(ValueError, match="evidence and chain"):
++        TBoostTrainingSession.load(evidence=evidence)
++
++
++def _candidate_with(payload, **changes):
++    import io
++
++    members = _members(payload)
++    meta = json.loads(members["candidate.json"])
++    meta.update(changes)
++    members["candidate.json"] = json.dumps(meta).encode()
++    buffer = io.BytesIO()
++    with zipfile.ZipFile(buffer, "w") as archive:
++        for name, value in members.items():
++            archive.writestr(name, value)
++    return buffer.getvalue()
++
++
++def test_candidates_bind_to_fit_evidence_and_refuse_version_one(session):
++    """Same rows and parent revision but other evidence: only the evidence binding refuses."""
++    from t_boost import TBoostPathFamily
++
++    fitted, _ = session
++    family = fitted.prepare_path("pruned", values=[fitted.pruning_path["table_counts"][-1]])
++    payload = family.candidate_bytes("point-1")
++    restored = TBoostPathFamily.from_candidate_bytes(fitted.fork(), payload)
++    assert restored.points[0]["id"] == "point-1"
++    with pytest.raises(ValueError, match="different fit"):
++        TBoostPathFamily.from_candidate_bytes(
++            fitted.fork(), _candidate_with(payload, evidence_digest="0" * 64))
++    with pytest.raises(ValueError, match="rebuild the GBM"):
++        TBoostPathFamily.from_candidate_bytes(fitted.fork(), _candidate_with(payload, version=1))
++
++
++def test_one_size_budget_covers_both_parts_and_parts_are_unique(session, tmp_path):
++    fitted, _ = session
++    evidence, chain, portable = (tmp_path / name for name in ("evidence", "chain", "portable"))
++    fitted.save_evidence(evidence)
++    fitted.save_chain(chain)
++    fitted.save(portable)
++
++    def expanded(path):
++        with zipfile.ZipFile(path) as archive:
++            return sum(item.file_size for item in archive.infolist())
++
++    # Either part alone fits the budget; together they exceed it.
++    budget = max(expanded(evidence), expanded(chain)) + 1
++    assert budget < expanded(evidence) + expanded(chain)
++    for kwargs in (dict(evidence=evidence, chain=chain), dict(path=portable)):
++        with pytest.raises(ValueError, match="size limit"):
++            TBoostTrainingSession.load(max_bytes=budget, **kwargs)
++    duplicated = tmp_path / "duplicated"
++    with zipfile.ZipFile(portable) as source, zipfile.ZipFile(duplicated, "w") as target:
++        for name in ("evidence", "chain", "manifest.json", "chain"):
++            target.writestr(name, source.read(name))
++    with pytest.raises(ValueError, match="duplicate"):
++        TBoostTrainingSession.load(duplicated)
++
++
++def test_categorical_coding_is_canonical_for_missing_sentinels_and_unicode(tmp_path):
++    from t_boost._checkpoint import encode_categories
++    from t_boost._ingest import _CAT_MISSING
++
++    rng = np.random.default_rng(3)
++    n = 600
++    values = ["é", None, "東京", _CAT_MISSING + "literal", "b", "é"]
++    column = [values[i % len(values)] for i in range(n)]
++    frame = pl.DataFrame({"x": rng.normal(size=n).astype(np.float32), "c": column})
++    y = rng.poisson(1.0, size=n).astype(np.float32)
++    fitted = TBoostRegressor(objective="poisson", n_trees=10, n_bags=2, seed=5,
++                             cat_direct_max_levels=0, prune_guard_min_rows=20).fit_staged(frame, y)
++    codes, levels = fitted._state.coded_categories
++    # Levels in first-appearance order; the null is the reserved missing level, and the
++    # literal in the sentinel namespace keeps its own escaped identity.
++    assert levels == [["é", _CAT_MISSING, "東京", _CAT_MISSING + ":" + _CAT_MISSING + "literal", "b"]]
++    assert codes[0][:6].tolist() == [0, 1, 2, 3, 4, 0]
++    assert encode_categories(fitted._state.categories)[1] == levels
++    path = tmp_path / "unicode"
++    fitted.save(path)
++    loaded = TBoostTrainingSession.load(path)
++    assert loaded._state.categories == fitted._state.categories
++    assert loaded.data_digest == fitted.data_digest
++    np.testing.assert_array_equal(loaded._state.coded_categories[0], codes)
++
++
++
++def test_version_one_checkpoints_are_refused_with_a_rebuild_message(tmp_path):
++    path = tmp_path / "v1"
++    with zipfile.ZipFile(path, "w") as archive:
++        archive.writestr("manifest.json", json.dumps(
++            {"format": "t-boost-training-session", "version": 1, "members": {}}))
++    with pytest.raises(ValueError, match="rebuild the GBM"):
++        TBoostTrainingSession.load(path)
++
++
+ def _categorical_tail_offset(encoded):
+     position = 0
+ 
+diff --git a/sliceA/before/t-boost/specs/roadmap/staged-training.md b/sliceA2/after/t-boost/specs/roadmap/staged-training.md
+index c14d130..27b33ca 100644
+--- a/sliceA/before/t-boost/specs/roadmap/staged-training.md
++++ b/sliceA2/after/t-boost/specs/roadmap/staged-training.md
+@@ -66,13 +66,18 @@ with a strict manifest of SHA-256 digests and lengths.
+ 
+ **Canonical data members.**
+ - Each numeric array (`x`, `y`, `weight`, `exposure`, `groups`) is one member of raw
+-  little-endian C-order bytes with a strict header (name, dtype, shape).
++  little-endian bytes, described in one strict header (name, dtype, shape). The 2-D feature
++  block is column-major, the layout native ingest uses, so hashing and writing need no
++  transposed copy. Loading restores that layout.
+ - An absent array has an explicit absence entry.
+ - Valid feature NaNs keep their bit patterns.
+ - Categorical columns use **one canonical coding**:
+   - `uint32` codes, plus levels ordered by first appearance in row order;
+-  - missing values take a reserved code recorded in the header;
+-  - levels are UTF-8 with length framing;
++  - missing values are the reserved `__t_boost_missing__` level. Ingest's escaping keeps
++    it distinct from every literal value, so no separate missing code is recorded;
++  - the header (`data/categories.json`) holds the levels as a strict JSON array of strings
++    per column, which frames UTF-8 text, plus the row count. Codes are one `uint32`
++    little-endian member, column after column;
+   - `_cat_level` semantics (missing markers, sentinel escaping, `str()` of numeric
+     categories) are applied once per distinct level;
+   - polars, pandas and numpy inputs give identical codes and levels.
+@@ -83,8 +88,10 @@ with a strict manifest of SHA-256 digests and lengths.
+   verifies member checksums, so the digest is derived from verified bytes and needs no
+   recomputation, and replacing the data changes it. Capture hashes the same canonical bytes
+   incrementally, without a second row-sized buffer.
+-- The **evidence digest** is SHA-256 of the evidence part's manifest. It differs between
+-  two fits on the same rows.
++- The **evidence digest** is SHA-256 over the data digest, the native training envelope's
++  member digest and the full stage revision. Each is verified on load, so the digest needs
++  no extra hashing, and it differs between two fits on the same rows. The evidence manifest
++  records it, and stage chains and path candidates bind to it.
+ - Stage revisions are unchanged.
+ - Path-candidate envelopes are **version 2**. They bind to the evidence digest as well as
+   the parent stage revision and data digest.
+@@ -106,7 +113,8 @@ with a strict manifest of SHA-256 digests and lengths.
+ - A version-1 checkpoint or a version-1 path candidate is refused with: "written by an
+   older t-boost; rebuild the GBM".
+ 
+-**Compression.** Members are DEFLATE-compressed, with the level chosen by measurement. ZIP
++**Compression.** Members are DEFLATE level 1. Measured on a 678k-row fit's evidence: level 1
++writes 10.5 MB in 0.9 s, level 6 writes 8.4 MB in 3.6 s. ZIP
+ metadata timestamps are fixed, so saving an unchanged session twice produces identical
+ bytes.
+ 

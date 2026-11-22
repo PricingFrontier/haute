@@ -1,0 +1,959 @@
+diff --git a/before/crates/t-boost-py/src/lib.rs b/after/crates/t-boost-py/src/lib.rs
+index a7e4fab..a43df4e 100644
+--- a/before/crates/t-boost-py/src/lib.rs
++++ b/after/crates/t-boost-py/src/lib.rs
+@@ -45,7 +45,8 @@ use t_boost_core::explain::{
+     Tensor,
+ };
+ use t_boost_core::loss::{
+-    Gamma, GatedDeltaStep, Link, Logistic, Loss, LossId, Poisson, SquaredError, Tweedie,
++    Gamma, GatedDeltaStep, Link, Logistic, Loss, LossId, ObjectiveTag, Poisson, SquaredError,
++    Tweedie,
+ };
+ use t_boost_core::prune::{
+     bag_banks_for_keepset, bag_oob_evidence_available, bag_oob_group_sums_with,
+@@ -4946,6 +4947,18 @@ impl PyModel {
+         self.model.schema.class_labels.clone()
+     }
+ 
++    /// `(loss, tweedie_rho)` as `to_json()`'s `schema.objective` reports them, without
++    /// serializing the model (see [`objective_pair`]).
++    fn objective(&self) -> PyResult<(String, Option<f64>)> {
++        objective_pair(&self.model.schema.objective)
++    }
++
++    /// Each axis's `(raw id, categorical TS encoding or None)`, as `to_json()`'s `provenance`
++    /// entries report them, without serializing the model (see [`provenance_pairs`]).
++    fn provenance(&self) -> Vec<(u32, Option<u8>)> {
++        provenance_pairs(&self.model.provenance)
++    }
++
+     /// Number of trees retained in the fitted model. With internal early stopping this is the
+     /// best-validation tree count (the model is truncated back to it), summed across bags for an
+     /// outer-bag ensemble. Exposed read-only so the deploy/benchmark path can quantify how far a
+@@ -5871,6 +5884,18 @@ impl PyTableModel {
+         deployed_census_dict(py, &[&self.model.bank])
+     }
+ 
++    /// `(loss, tweedie_rho)` as `to_json()`'s `schema.objective` reports them, without
++    /// serializing the bank (see [`objective_pair`]).
++    fn objective(&self) -> PyResult<(String, Option<f64>)> {
++        objective_pair(&self.model.schema.objective)
++    }
++
++    /// Each axis's `(raw id, categorical TS encoding or None)`, as `to_json()`'s `provenance`
++    /// entries report them, without serializing the bank (see [`provenance_pairs`]).
++    fn provenance(&self) -> Vec<(u32, Option<u8>)> {
++        provenance_pairs(&self.model.provenance)
++    }
++
+     /// The feature sets of the tables actually present in the deployed bank (sorted raw ids,
+     /// order >= 1). Cheap — no data pass. Lets callers reconcile the prune-selection report's
+     /// keep-set with what survived purification into the shipped model.
+@@ -6776,6 +6801,16 @@ impl PyMultiClassModel {
+             .map_or_else(Vec::new, |m| m.schema.feature_names.clone())
+     }
+ 
++    /// The first class's axis provenance (the classes share it), as `_Model.provenance`
++    /// reports it.
++    fn provenance(&self) -> PyResult<Vec<(u32, Option<u8>)>> {
++        self.model
++            .classes
++            .first()
++            .map(|m| provenance_pairs(&m.provenance))
++            .ok_or_else(|| PyValueError::new_err("multiclass model has no classes"))
++    }
++
+     #[pyo3(signature = (x, cat_x=None, n_jobs=None))]
+     fn predict_proba<'py>(
+         &self,
+@@ -7619,6 +7654,12 @@ impl PyMultiClassTableModel {
+         table_raw_feature_names(self.class_model(0)?).map_err(py_err)
+     }
+ 
++    /// The first class's axis provenance (the classes share it), as
++    /// `_TableModel.provenance` reports it.
++    fn provenance(&self) -> PyResult<Vec<(u32, Option<u8>)>> {
++        Ok(provenance_pairs(&self.class_model(0)?.provenance))
++    }
++
+     /// `_TableModel.merged_axes` of class `class_index`'s bank.
+     #[pyo3(signature = (class_index=0))]
+     fn merged_axes(&self, class_index: usize) -> PyResult<String> {
+@@ -10183,9 +10224,208 @@ fn deployed_census_dict<'py>(
+     d.set_item("banks", banks.len())?;
+     d.set_item("tables", tables)?;
+     d.set_item("cells", cells)?;
++    d.set_item(
++        "factored",
++        banks.iter().map(|bank| bank.factored.len()).sum::<usize>(),
++    )?;
+     Ok(d)
+ }
+ 
++/// Each axis's `(raw id, categorical TS encoding or None)`: the `raw` and
++/// `kind.CategoricalTS.encoding` fields of `to_json()`'s `provenance` entries.
++fn provenance_pairs(provenance: &[AxisProvenance]) -> Vec<(u32, Option<u8>)> {
++    provenance
++        .iter()
++        .map(|axis| {
++            let encoding = match axis.kind {
++                AxisKind::CategoricalTS { encoding } => Some(encoding.0),
++                AxisKind::Numeric | AxisKind::Missing => None,
++            };
++            (axis.raw.0, encoding)
++        })
++        .collect()
++}
++
++/// `(loss, tweedie_rho)` exactly as `to_json()`'s `schema.objective` reports them. The loss is
++/// its wire name. The `f32` power is rendered by the same JSON float formatting as the wire
++/// format and read back as `f64`, so it equals what parsing `to_json()` gives bit for bit
++/// (a non-finite power renders as JSON `null`, i.e. absent).
++fn objective_pair(tag: &ObjectiveTag) -> PyResult<(String, Option<f64>)> {
++    let json_error =
++        |err: serde_json::Error| PyValueError::new_err(format!("objective tag: {err}"));
++    let loss = match serde_json::to_value(tag.loss).map_err(json_error)? {
++        serde_json::Value::String(name) => name,
++        other => {
++            return Err(PyValueError::new_err(format!(
++                "objective loss has no wire name: {other}"
++            )))
++        }
++    };
++    let rho = match tag.tweedie_rho {
++        None => None,
++        Some(power) => {
++            let text = serde_json::to_string(&power).map_err(json_error)?;
++            if text == "null" {
++                None
++            } else {
++                Some(text.parse::<f64>().map_err(|err| {
++                    PyValueError::new_err(format!("objective tweedie_rho {text:?}: {err}"))
++                })?)
++            }
++        }
++    };
++    Ok((loss, rho))
++}
++
++/// `(parsed, kind)` for a JSON document: when `parsed`, `kind` is exactly what
++/// `json.loads(text).get("kind")` answers for a string `kind` (`None` for a non-object, or an
++/// absent or non-string `kind`; a repeated key keeps its last value, as Python's parser does),
++/// found without building the document's Python objects. `parsed` is false whenever the
++/// probe's answer could differ from Python's: text that is not valid UTF-8 (a lone surrogate),
++/// NaN/Infinity literals, numbers outside `f64` (Python also bounds integer digits), nesting
++/// deeper than serde_json's recursion limit (below Python's), or malformed text. The caller
++/// then applies the same rule with Python's own parser, so answers and errors are unchanged.
++#[pyfunction]
++fn _json_kind_probe(text: &Bound<'_, pyo3::types::PyString>) -> (bool, Option<String>) {
++    let Ok(text) = text.to_str() else {
++        return (false, None);
++    };
++    match serde_json::from_str::<JsonKindProbe>(text) {
++        Ok(JsonKindProbe(kind)) => (true, kind),
++        Err(_) => (false, None),
++    }
++}
++
++/// Consumes any JSON value through `deserialize_any`, so serde_json applies its recursion limit
++/// and number range checks to skipped content too (`IgnoredAny` scans without either).
++struct JsonSkip;
++
++impl<'de> serde::Deserialize<'de> for JsonSkip {
++    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
++        struct SkipVisitor;
++
++        impl<'de> serde::de::Visitor<'de> for SkipVisitor {
++            type Value = JsonSkip;
++
++            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++                formatter.write_str("a JSON value")
++            }
++
++            fn visit_map<A: serde::de::MapAccess<'de>>(
++                self,
++                mut map: A,
++            ) -> Result<JsonSkip, A::Error> {
++                while map.next_entry::<JsonSkip, JsonSkip>()?.is_some() {}
++                Ok(JsonSkip)
++            }
++
++            fn visit_seq<A: serde::de::SeqAccess<'de>>(
++                self,
++                mut seq: A,
++            ) -> Result<JsonSkip, A::Error> {
++                while seq.next_element::<JsonSkip>()?.is_some() {}
++                Ok(JsonSkip)
++            }
++
++            fn visit_bool<E>(self, _: bool) -> Result<JsonSkip, E> {
++                Ok(JsonSkip)
++            }
++
++            fn visit_i64<E>(self, _: i64) -> Result<JsonSkip, E> {
++                Ok(JsonSkip)
++            }
++
++            fn visit_u64<E>(self, _: u64) -> Result<JsonSkip, E> {
++                Ok(JsonSkip)
++            }
++
++            fn visit_f64<E>(self, _: f64) -> Result<JsonSkip, E> {
++                Ok(JsonSkip)
++            }
++
++            fn visit_str<E>(self, _: &str) -> Result<JsonSkip, E> {
++                Ok(JsonSkip)
++            }
++
++            fn visit_unit<E>(self) -> Result<JsonSkip, E> {
++                Ok(JsonSkip)
++            }
++        }
++
++        deserializer.deserialize_any(SkipVisitor)
++    }
++}
++
++/// The top-level string `kind` of any JSON value (see [`_json_kind_probe`]).
++struct JsonKindProbe(Option<String>);
++
++impl<'de> serde::Deserialize<'de> for JsonKindProbe {
++    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
++        struct ValueVisitor;
++
++        impl<'de> serde::de::Visitor<'de> for ValueVisitor {
++            type Value = JsonKindProbe;
++
++            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++                formatter.write_str("a JSON value")
++            }
++
++            fn visit_map<A: serde::de::MapAccess<'de>>(
++                self,
++                mut map: A,
++            ) -> Result<JsonKindProbe, A::Error> {
++                let mut kind = None;
++                while let Some(key) = map.next_key::<String>()? {
++                    if key == "kind" {
++                        // Every occurrence is read; the last one wins, as in `json.loads`.
++                        kind = match map.next_value::<serde_json::Value>()? {
++                            serde_json::Value::String(value) => Some(value),
++                            _ => None,
++                        };
++                    } else {
++                        map.next_value::<JsonSkip>()?;
++                    }
++                }
++                Ok(JsonKindProbe(kind))
++            }
++
++            fn visit_seq<A: serde::de::SeqAccess<'de>>(
++                self,
++                mut seq: A,
++            ) -> Result<JsonKindProbe, A::Error> {
++                while seq.next_element::<JsonSkip>()?.is_some() {}
++                Ok(JsonKindProbe(None))
++            }
++
++            fn visit_bool<E>(self, _: bool) -> Result<JsonKindProbe, E> {
++                Ok(JsonKindProbe(None))
++            }
++
++            fn visit_i64<E>(self, _: i64) -> Result<JsonKindProbe, E> {
++                Ok(JsonKindProbe(None))
++            }
++
++            fn visit_u64<E>(self, _: u64) -> Result<JsonKindProbe, E> {
++                Ok(JsonKindProbe(None))
++            }
++
++            fn visit_f64<E>(self, _: f64) -> Result<JsonKindProbe, E> {
++                Ok(JsonKindProbe(None))
++            }
++
++            fn visit_str<E>(self, _: &str) -> Result<JsonKindProbe, E> {
++                Ok(JsonKindProbe(None))
++            }
++
++            fn visit_unit<E>(self) -> Result<JsonKindProbe, E> {
++                Ok(JsonKindProbe(None))
++            }
++        }
++
++        deserializer.deserialize_any(ValueVisitor)
++    }
++}
++
+ /// The dense order-1/2 tables of `model` the graduation solver can smooth (see
+ /// `_TableModel.graduation_tables`).
+ fn graduation_table_inputs(
+@@ -10956,6 +11196,7 @@ fn _t_boost(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     m.add_class::<PyTableBank>()?;
+     m.add_class::<PyTableModel>()?;
+     m.add_class::<PyMultiClassTableModel>()?;
++    m.add_function(wrap_pyfunction!(_json_kind_probe, m)?)?;
+     m.add_function(wrap_pyfunction!(_report_cell_sums, m)?)?;
+     m.add_function(wrap_pyfunction!(_report_cell_quantiles, m)?)?;
+     m.add_function(wrap_pyfunction!(_report_ranking, m)?)?;
+diff --git a/before/python/t_boost/_checkpoint.py b/after/python/t_boost/_checkpoint.py
+index 6e77934..6da06dd 100644
+--- a/before/python/t_boost/_checkpoint.py
++++ b/after/python/t_boost/_checkpoint.py
+@@ -7,13 +7,13 @@ import math
+ import os
+ from pathlib import Path
+ import tempfile
+-from typing import TYPE_CHECKING, Any, IO
++from typing import TYPE_CHECKING, Any, IO, Mapping
+ import zipfile
+ 
+ import numpy as np
+ 
+ if TYPE_CHECKING:
+-    from ._staged import TBoostTrainingSession
++    from ._staged import TBoostTrainingSession, _FullFitState
+ 
+ _ARRAYS = ("x", "y", "weight", "exposure", "groups")
+ _REQUIRED = {"x.npy", "y.npy", "categories.json", "native.bin", "full.json", "state.json", "stages.json", "stages/full.bin"}
+@@ -61,16 +61,22 @@ class _Writer:
+         return {"sha256": self.hash.hexdigest(), "bytes": self.size}
+ 
+ 
+-def _data_members(session: TBoostTrainingSession) -> dict[str, np.ndarray | bytes]:
++def _data_members(
++    arrays: Mapping[str, np.ndarray | None], categories: list[list[str]] | None,
++) -> dict[str, np.ndarray | bytes]:
+     members: dict[str, np.ndarray | bytes] = {}
+     for name in _ARRAYS:
+-        array = getattr(session._state, name)
++        array = arrays[name]
+         if array is not None:
+             members[f"{name}.npy"] = array
+-    members["categories.json"] = _json(session._state.categories)
++    members["categories.json"] = _json(categories)
+     return members
+ 
+ 
++def _state_members(state: _FullFitState) -> dict[str, np.ndarray | bytes]:
++    return _data_members({name: getattr(state, name) for name in _ARRAYS}, state.categories)
++
++
+ def _write(value: np.ndarray | bytes, writer: _Writer) -> None:
+     if isinstance(value, np.ndarray):
+         np.save(writer, value, allow_pickle=False)
+@@ -83,9 +89,12 @@ def _digest(records: dict[str, Any]) -> str:
+                          if name.endswith(".npy") or name == "categories.json"})).hexdigest()
+ 
+ 
+-def data_digest(session: TBoostTrainingSession) -> str:
++def data_digest(
++    arrays: Mapping[str, np.ndarray | None], categories: list[list[str]] | None,
++) -> str:
++    """The digest a checkpoint's manifest records for these prepared rows."""
+     records: dict[str, Any] = {}
+-    for name, value in _data_members(session).items():
++    for name, value in _data_members(arrays, categories).items():
+         writer = _Writer()
+         _write(value, writer)
+         records[name] = writer.record()
+@@ -97,7 +106,7 @@ def save_session(session: TBoostTrainingSession, destination: Any) -> None:
+ 
+     path = Path(destination)
+     state = session._state
+-    members = _data_members(session)
++    members = _state_members(state)
+     members.update({
+         "native.bin": state.model.to_training_bytes(len(state.y)),
+         "full.json": session._full_json.encode("utf-8"),
+@@ -284,8 +293,10 @@ def load_session(
+             if monotone is not None and (not isinstance(monotone, list) or len(monotone) != features
+                                          or any(type(v) is not int or v not in (-1, 0, 1) for v in monotone)):
+                 raise ValueError("invalid checkpoint monotone constraints")
++            # `_check_members` verified every data member against the manifest digest.
+             state = _FullFitState(native, x, y, arrays.get("weight"), arrays.get("exposure"),
+-                                  categories, monotone, supports, share, archive.read("stages/full.bin"), arrays.get("groups"))
++                                  categories, monotone, supports, share, archive.read("stages/full.bin"),
++                                  arrays.get("groups"), digest=manifest["data_digest"])
+             path_settings = metadata['path_settings']
+             if (not isinstance(path_settings, dict) or set(path_settings) !=
+                     {'prune_path_steps', 'prune_main_effects', 'prune_guard_min_rows'}
+@@ -347,7 +358,7 @@ def _load_stages(archive: zipfile.ZipFile, session: TBoostTrainingSession) -> An
+             raise ValueError("checkpoint stage estimator type mismatch")
+         model = session._estimator_type.from_json(inference)
+         bank = _TableModel.from_bytes(working)
+-        if int(model.n_features_in_) != session.full_model.n_features_in_ or not isinstance(model._model, _TableModel) or bank.raw_feature_names() != model._model.raw_feature_names():
++        if int(model.n_features_in_) != session._state.n_features or not isinstance(model._model, _TableModel) or bank.raw_feature_names() != model._model.raw_feature_names():
+             raise ValueError("checkpoint stage feature schema mismatch")
+         settings, keep = value['settings'], value['keep']
+         if not isinstance(settings, dict):
+diff --git a/before/python/t_boost/_paths.py b/after/python/t_boost/_paths.py
+index 5cf1e6b..1a24a0f 100644
+--- a/before/python/t_boost/_paths.py
++++ b/after/python/t_boost/_paths.py
+@@ -61,9 +61,14 @@ class TBoostPathFamily:
+ 
+     @property
+     def points(self) -> list[dict[str, Any]]:
+-        return [dict(id=p.point_id, stage=p.stage, identity=p.identity, status=p.status,
+-                     revision=p.snapshot.revision, settings=deepcopy(p.snapshot.settings),
+-                     diagnostics=deepcopy(p.diagnostics)) for p in self._candidates]
++        return [self._metadata(p) for p in self._candidates]
++
++    @staticmethod
++    def _metadata(p: _Candidate) -> dict[str, Any]:
++        """One point's detached public metadata."""
++        return dict(id=p.point_id, stage=p.stage, identity=p.identity, status=p.status,
++                    revision=p.snapshot.revision, settings=deepcopy(p.snapshot.settings),
++                    diagnostics=deepcopy(p.diagnostics))
+ 
+     def _point(self, point_id: str) -> _Candidate:
+         for point in self._candidates:
+@@ -106,7 +111,7 @@ class TBoostPathFamily:
+         meta = dict(format='t-boost-path-candidate', version=1, stage=self._stage,
+                     parent=self._parent, parent_revision=self._parent_revision,
+                     data_digest=self._data_digest, path_settings=self._path_settings,
+-                    point=self.points[next(i for i, p in enumerate(self._candidates) if p is point)],
++                    point=self._metadata(point),
+                     keep=point.snapshot.keep)
+         buffer = io.BytesIO()
+         with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+@@ -172,7 +177,7 @@ class TBoostPathFamily:
+                     raise ValueError('path candidate estimator type mismatch')
+                 bank = _TableModel.from_bytes(working)
+                 model = session._estimator_type.from_json(inference)
+-                if (int(model.n_features_in_) != session.full_model.n_features_in_
++                if (int(model.n_features_in_) != session._state.n_features
+                         or not isinstance(model._model, _TableModel)
+                         or bank.raw_feature_names() != model._model.raw_feature_names()):
+                     raise ValueError('path candidate feature schema mismatch')
+@@ -198,15 +203,13 @@ class TBoostPathFamily:
+ 
+ 
+ def _complexity(model: Any) -> dict[str, Any]:
+-    bank = json.loads(model._model.to_json())['model']['bank']
+     # Dense cell counts describe the materialised interaction grids. Factored tables remain
+     # explicitly separate, rather than claiming their dense-equivalent cells are storage.
+-    tables = bank.get('tables', [])
+-    interactions = [t for t in tables if len(t['u']) >= 2]
++    census = model._model.deployed_census()
+     return dict(outcome_id=sha256(bytes(model._model.to_bytes())).hexdigest(),
+-                tables=len(tables) + len(bank.get('factored', [])),
+-                interaction_cells=sum(math.prod(t['values']['shape']) for t in interactions),
+-                factored_interactions=len(bank.get('factored', [])))
++                tables=sum(census['tables'].values()),
++                interaction_cells=sum(n for order, n in census['cells'].items() if order >= 2),
++                factored_interactions=census['factored'])
+ 
+ 
+ def _candidate(session: TBoostTrainingSession, stage: str, parent: str, point_id: str,
+diff --git a/before/python/t_boost/_staged.py b/after/python/t_boost/_staged.py
+index 497681a..336c167 100644
+--- a/before/python/t_boost/_staged.py
++++ b/after/python/t_boost/_staged.py
+@@ -2,7 +2,8 @@
+ from __future__ import annotations
+ 
+ from copy import copy, deepcopy
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
++from functools import cached_property
+ import json
+ from hashlib import sha256
+ import math
+@@ -31,6 +32,16 @@ class _FullFitState:
+     share: dict[tuple[int, ...], float]
+     working: bytes
+     groups: np.ndarray | None = None
++    # Fingerprint of the prepared rows (`_checkpoint.data_digest`): computed once at capture,
++    # or the manifest digest of a checkpoint whose members were verified against it.
++    digest: str = field(kw_only=True)
++
++    def __post_init__(self) -> None:
++        # The digest describes these exact values, so the owned arrays must not change.
++        for array in (self.x, self.y, self.weight, self.exposure, self.groups):
++            if array is not None:
++                array.setflags(write=False)
++
+     @classmethod
+     def capture(
+         cls, model: _Model, x: np.ndarray, y: np.ndarray, weight: np.ndarray | None,
+@@ -39,17 +50,31 @@ class _FullFitState:
+         share: dict[tuple[int, ...], float], working: bytes,
+         groups: np.ndarray | None = None,
+     ) -> _FullFitState:
++        from ._checkpoint import data_digest
++
+         # Native OOB membership is tied to these exact prepared rows. Own their values
+         # so a later caller mutation cannot silently change the meaning of the evidence.
+-        return cls(model, x.copy(order="K"), y.copy(),
+-                   None if weight is None else weight.copy(),
+-                   None if exposure is None else exposure.copy(), deepcopy(categories),
+-                   deepcopy(monotone), supports.copy(), share.copy(), working,
+-                   None if groups is None else groups.copy())
++        arrays = dict(x=x.copy(order="K"), y=y.copy(),
++                      weight=None if weight is None else weight.copy(),
++                      exposure=None if exposure is None else exposure.copy(),
++                      groups=None if groups is None else groups.copy())
++        owned_categories = deepcopy(categories)
++        return cls(model, arrays["x"], arrays["y"], arrays["weight"], arrays["exposure"],
++                   owned_categories, deepcopy(monotone), supports.copy(), share.copy(), working,
++                   arrays["groups"], digest=data_digest(arrays, owned_categories))
++
++    @cached_property
++    def weights(self) -> np.ndarray:
++        if self.weight is not None:
++            return self.weight
++        unit = np.ones(len(self.y), dtype=np.float32)
++        unit.setflags(write=False)
++        return unit
+ 
+     @property
+-    def weights(self) -> np.ndarray:
+-        return self.weight if self.weight is not None else np.ones(len(self.y), dtype=np.float32)
++    def n_features(self) -> int:
++        """Raw input features: the numeric block plus the categorical columns."""
++        return int(self.x.shape[1]) + len(self.categories or [])
+ 
+ 
+ @dataclass(frozen=True)
+@@ -170,9 +195,7 @@ class TBoostTrainingSession:
+     @property
+     def data_digest(self) -> str:
+         """Digest of the owned prepared training data and row order."""
+-        from ._checkpoint import data_digest
+-
+-        return data_digest(self)
++        return self._state.digest
+ 
+     def save(self, path: Any) -> None:
+         """Atomically save a resumable training checkpoint, separate from inference export."""
+diff --git a/before/python/t_boost/_t_boost.pyi b/after/python/t_boost/_t_boost.pyi
+index 03a243e..58c14f2 100644
+--- a/before/python/t_boost/_t_boost.pyi
++++ b/after/python/t_boost/_t_boost.pyi
+@@ -19,6 +19,7 @@ __all__ = [
+     "_MultiClassTableModel",
+     "_TableBank",
+     "_TableModel",
++    "_json_kind_probe",
+     "_report_cell_quantiles",
+     "_report_cell_sums",
+     "_report_ranking",
+@@ -258,6 +259,9 @@ class _Model:
+     @property
+     def class_labels(self) -> list[str] | None: ...
+ 
++    def objective(self) -> tuple[str, float | None]: ...
++    def provenance(self) -> list[tuple[int, int | None]]: ...
++
+     @property
+     def n_trees(self) -> int: ...
+ 
+@@ -456,6 +460,8 @@ class _Model:
+ class _TableModel:
+     def deployed_table_count(self) -> int: ...
+     def deployed_census(self) -> dict[str, Any]: ...
++    def objective(self) -> tuple[str, float | None]: ...
++    def provenance(self) -> list[tuple[int, int | None]]: ...
+     def deployed_supports(self) -> list[list[int]]: ...
+     def cell_indices(
+         self,
+@@ -650,6 +656,8 @@ class _MultiClassModel:
+     @property
+     def feature_names(self) -> list[str]: ...
+ 
++    def provenance(self) -> list[tuple[int, int | None]]: ...
++
+     def predict_proba(
+         self,
+         x: np.ndarray,
+@@ -797,6 +805,7 @@ class _MultiClassTableModel:
+         class_index: int = 0,
+     ) -> np.ndarray: ...
+     def raw_feature_names(self) -> list[str]: ...
++    def provenance(self) -> list[tuple[int, int | None]]: ...
+     def merged_axes(self, class_index: int = 0) -> str: ...
+ 
+     def predict_raw(
+@@ -859,6 +868,8 @@ class _TableBank:
+ 
+     def sobol(self) -> list[tuple[list[int], float]]: ...
+ 
++def _json_kind_probe(text: str) -> tuple[bool, str | None]: ...
++
+ def _report_cell_sums(
+     cells: np.ndarray,
+     n_cells: Sequence[int],
+diff --git a/before/python/t_boost/sklearn.py b/after/python/t_boost/sklearn.py
+index 16c2680..0c8c562 100644
+--- a/before/python/t_boost/sklearn.py
++++ b/after/python/t_boost/sklearn.py
+@@ -41,6 +41,7 @@ from ._t_boost import (
+     _Model,
+     _MultiClassModel,
+     _MultiClassTableModel,
++    _json_kind_probe,
+     _TableModel,
+ )
+ 
+@@ -1145,19 +1146,17 @@ def _restore_metadata(est: "_BaseTBoost", md: dict[str, Any]) -> None:
+     fitted = getattr(est, "_multi_model", None)
+     if fitted is None:
+         fitted = est._model
+-    native = json.loads(fitted.to_json())["model"]
+-    if "classes" in native:
+-        native = native["classes"][0]
+-    provenance = native["provenance"]
+-    n_inputs = max((int(p["raw"]) for p in provenance), default=-1) + 1
++    # `(raw id, categorical TS encoding or None)` per axis; a multiclass model reports its
++    # first class's, which every class shares.
++    provenance = fitted.provenance()
++    n_inputs = max((raw for raw, _ in provenance), default=-1) + 1
+     n_inputs = n_inputs or int(fitted.n_features)
+     cat_positions = md.get("cat_indices", [])
+     if (not isinstance(cat_positions, list) or any(type(v) is not int for v in cat_positions)
+             or len(set(cat_positions)) != len(cat_positions)
+             or any(v < 0 or v >= n_inputs for v in cat_positions)):
+         raise SerializationError("Invalid categorical positions in estimator envelope")
+-    native_categorical = {int(axis["raw"]) for axis in provenance
+-                          if isinstance(axis["kind"], dict) and "CategoricalTS" in axis["kind"]}
++    native_categorical = {raw for raw, encoding in provenance if encoding is not None}
+     if ("cat_indices" in md or "schema_version" in md) and len(cat_positions) != len(native_categorical):
+         raise SerializationError("Envelope categorical positions disagree with native model")
+     if "n_features_in_" in md and (type(md["n_features_in_"]) is not int
+@@ -1171,16 +1170,16 @@ def _restore_metadata(est: "_BaseTBoost", md: dict[str, Any]) -> None:
+         raw_to_input = [i for i in range(n_inputs) if i not in cat_positions] + cat_positions
+         expected_names = []
+         seen_raw: set[int] = set()
+-        for axis in provenance:
+-            raw = int(axis["raw"])
++        for raw, encoding in provenance:
+             name = names[raw_to_input[raw]]
+             if raw in seen_raw:
+-                encoding = int(axis["kind"]["CategoricalTS"]["encoding"])
++                if encoding is None:
++                    raise SerializationError("Native model repeats a non-categorical axis")
+                 suffix = "#mean" if encoding == 0 else "#count" if encoding == 1 else f"#cls{encoding-2}"
+                 name += suffix
+             expected_names.append(name)
+             seen_raw.add(raw)
+-        if expected_names != native["schema"]["feature_names"]:
++        if expected_names != list(fitted.feature_names):
+             raise SerializationError("Envelope feature names disagree with native axis mapping")
+     if "classes_" in md:
+         labels = md["classes_"]
+@@ -1293,7 +1292,8 @@ def _pack_json(est: "_BaseTBoost", inner_json: str) -> str:
+     return json.dumps(md)
+ 
+ 
+-def _unpack_json(text: str) -> tuple[dict[str, Any], str]:
++def _unpack_json(text: str) -> tuple[dict[str, Any], str, str | None]:
++    """``(envelope metadata, native document, native document kind)``; the kind is read once."""
+     obj = json.loads(text)
+     envelope = isinstance(obj, dict) and (
+         obj.get(_JSON_ENVELOPE_KEY)
+@@ -1310,7 +1310,7 @@ def _unpack_json(text: str) -> tuple[dict[str, Any], str]:
+             obj["kind"] = "multi"
+         else:
+             obj["kind"] = "single"
+-        return obj, inner
++        return obj, inner, marker
+     marker = _native_json_kind(text)
+     if marker == "t-boost-multiclass-tables":
+         kind = "multi_tables"
+@@ -1318,10 +1318,16 @@ def _unpack_json(text: str) -> tuple[dict[str, Any], str]:
+         kind = "multi"
+     else:
+         kind = "single"
+-    return {"kind": kind}, text
++    return {"kind": kind}, text, marker
+ 
+ 
+ def _native_json_kind(text: str) -> str | None:
++    # The native probe reads the top-level `kind` without building the document's Python
++    # objects; a document it cannot parse falls to the same rule over Python's parser, so
++    # answers and errors (`JSONDecodeError`) are those of `json.loads`.
++    parsed, marker = _json_kind_probe(text)
++    if parsed:
++        return marker
+     doc = json.loads(text)
+     marker = doc.get("kind") if isinstance(doc, dict) else None
+     return marker if isinstance(marker, str) else None
+@@ -5152,14 +5158,13 @@ class _BaseTBoost(BaseEstimator):  # type: ignore[misc]  # sklearn is untyped (n
+     def _attach_model(self, model: _Model | _TableModel) -> None:
+         # Native legacy blobs already carry objective metadata in their schema.
+         # Restore it even when there is no Python estimator envelope.
+-        native = json.loads(model.to_json())["model"]
+-        objective = native["schema"]["objective"]
++        loss, tweedie_rho = model.objective()
+         self.objective = {
+             "SquaredError": "squared_error", "Poisson": "poisson", "Gamma": "gamma",
+             "Tweedie": "tweedie", "Logistic": "logistic",
+-        }[objective["loss"]]
+-        if objective.get("tweedie_rho") is not None:
+-            self.tweedie_rho = float(objective["tweedie_rho"])
++        }[loss]
++        if tweedie_rho is not None:
++            self.tweedie_rho = tweedie_rho
+         self._model = model
+         self.n_features_in_ = model.n_features
+         names = model.feature_names
+@@ -6607,10 +6612,10 @@ class TBoostRegressor(RegressorMixin, _BaseTBoost):  # type: ignore[misc]
+         schema 1) is refused, because its missing-value level was labelled differently.
+         """
+         est = cls()
+-        md, inner = _unpack_json(data)
++        md, inner, native_kind = _unpack_json(data)
+         _check_envelope(cls, md)
+         _restore_params(est, md)
+-        if _native_json_kind(inner) == "t-boost-tables":
++        if native_kind == "t-boost-tables":
+             est._attach_model(_TableModel.from_json(inner))
+         else:
+             est._attach_model(_Model.from_json(inner))
+@@ -7942,14 +7947,14 @@ class TBoostClassifier(ClassifierMixin, _BaseTBoost):  # type: ignore[misc]
+         schema 1) is refused, because its missing-value level was labelled differently.
+         """
+         est = cls()
+-        md, inner = _unpack_json(data)
++        md, inner, native_kind = _unpack_json(data)
+         _check_envelope(cls, md)
+         _restore_params(est, md)
+         if md.get("kind") == "multi":
+             est._attach_multiclass_model(_MultiClassModel.from_json(inner))
+         elif md.get("kind") == "multi_tables":
+             est._attach_multiclass_model(_MultiClassTableModel.from_json(inner))
+-        elif _native_json_kind(inner) == "t-boost-tables":
++        elif native_kind == "t-boost-tables":
+             est._attach_classifier_model(_TableModel.from_json(inner))
+         else:
+             est._attach_classifier_model(_Model.from_json(inner))
+diff --git a/before/python/tests/test_estimator_serialization.py b/after/python/tests/test_estimator_serialization.py
+index 77bd44d..754eca6 100644
+--- a/before/python/tests/test_estimator_serialization.py
++++ b/after/python/tests/test_estimator_serialization.py
+@@ -28,7 +28,11 @@ from sklearn.metrics import accuracy_score
+ 
+ import t_boost
+ from t_boost import SerializationError
+-from t_boost._t_boost import _MultiClassTableModel
++from t_boost._t_boost import (
++    _Model,
++    _MultiClassTableModel,
++    _TableModel,
++)
+ from t_boost.sklearn import _ESTIMATOR_MAGIC, TBoostClassifier, TBoostRegressor
+ 
+ 
+@@ -438,3 +442,97 @@ def test_multiclass_ae_flags_record_the_fit_weight_and_survive_a_round_trip(weig
+         assert est._ae_requires_weight_ is weighted
+         assert est._ae_requires_exposure_ is False and est._ae_requires_offset_ is False
+ 
++
++def _json_provenance(native: dict[str, Any]) -> list[tuple[int, int | None]]:
++    return [
++        (
++            int(axis["raw"]),
++            int(axis["kind"]["CategoricalTS"]["encoding"])
++            if isinstance(axis["kind"], dict) and "CategoricalTS" in axis["kind"]
++            else None,
++        )
++        for axis in native["provenance"]
++    ]
++
++
++def test_native_accessors_report_what_to_json_reports() -> None:
++    """Restore reads objective/provenance/census natively; each must equal the JSON field."""
++    frame = _frequency_frame()
++    x, y = frame.select("a", "b", "region"), frame["ClaimCount"].to_numpy()
++    tweedie = _small_regressor(objective="tweedie", tweedie_rho=1.3, n_bags=2, prune=True)
++    staged = _small_regressor(objective="poisson", n_bags=2).fit_staged(x, y)
++    xm, ym = _categorical_multiclass_fixture(n=600)
++    multi = dict(objective="logistic", n_trees=20, n_bags=1, seed=0, categorical_features=[4])
++    models = [
++        tweedie.fit(x, y)._model,
++        staged._state.model,
++        TBoostClassifier(**multi).fit(xm, ym)._multi_model,
++    ]
++    # Fits deploy tables; a `_MultiClassModel` is only restored from legacy blobs, and its
++    # accessor shares `_Model`'s provenance mapping.
++    assert [type(model) for model in models] == [_TableModel, _Model, _MultiClassTableModel]
++    for model in models:
++        native = json.loads(model.to_json())["model"]
++        first = native["classes"][0] if "classes" in native else native
++        assert model.provenance() == _json_provenance(first)
++        assert any(encoding is not None for _, encoding in model.provenance())
++        if isinstance(model, (_Model, _TableModel)):
++            objective = first["schema"]["objective"]
++            rho = objective.get("tweedie_rho")
++            assert model.objective() == (objective["loss"], None if rho is None else float(rho))
++        if isinstance(model, _TableModel):
++            assert model.deployed_census()["factored"] == len(first["bank"].get("factored", []))
++    # The f32 power reads back as its JSON rendering, so restored parameters are unchanged.
++    assert models[0].objective() == ("Tweedie", 1.3)
++    for restored in (
++        TBoostRegressor.from_json(tweedie.to_json()),
++        TBoostRegressor.from_bytes(tweedie.to_bytes()),
++    ):
++        assert (restored.objective, restored.tweedie_rho) == ("tweedie", 1.3)
++        assert restored.get_params() == tweedie.get_params()
++
++
++def test_native_json_kind_answers_exactly_as_json_loads() -> None:
++    """The native probe must give `json.loads(text).get("kind")`'s answers and errors."""
++    from t_boost._t_boost import _json_kind_probe
++    from t_boost.sklearn import _native_json_kind
++
++    def reference(text: str) -> str | None:
++        doc = json.loads(text)
++        marker = doc.get("kind") if isinstance(doc, dict) else None
++        return marker if isinstance(marker, str) else None
++
++    def outcome(rule: Any, text: str) -> tuple[str, Any]:
++        try:
++            return "value", rule(text)
++        except Exception as exc:  # the exception class is part of the contract
++            return "error", type(exc)
++
++    documents = [
++        '{"model": {"kind": "inner"}, "kind": "t-boost-tables"}',
++        '{"model": {"kind": "inner"}}',
++        '{"kind": 3}',
++        '{"kind": "a", "kind": "b"}',
++        '{"k\\u0069nd": "escaped"}',
++        '["t-boost-tables"]',
++        '"t-boost-tables"',
++        "null",
++        '{"kind": "nan-elsewhere", "value": NaN}',
++        '{"kind": "deep", "skip": ' + "[" * 200 + "]" * 200 + "}",
++        '{"kind": "too-deep", "skip": ' + "[" * 1100 + "]" * 1100 + "}",
++        '{"kind": "big-int", "skip": 1' + "0" * 400 + "}",
++        '{"kind": "over-digit-limit", "skip": 1' + "0" * 5000 + "}",
++        '{"kind": "x\ud800"}',
++        '{"kind": "lone-\\ud800-escape"}',
++        chr(0xD800),
++        '{"kind": ',
++        "",
++        '{"kind": "a"} trailing',
++    ]
++    for text in documents:
++        assert outcome(_native_json_kind, text) == outcome(reference, text), text[:60]
++    # Strict JSON is answered natively; anything beyond it defers to Python's parser.
++    assert _json_kind_probe('{"kind": "a", "kind": "b"}') == (True, "b")
++    for deferred in ('{"kind": "x", "value": NaN}', '{"kind": "x", "skip": ' + "[" * 200 + "]" * 200 + "}",
++                     '{"kind": "x\ud800"}'):
++        assert _json_kind_probe(deferred) == (False, None)
+diff --git a/before/python/tests/test_training_checkpoint.py b/after/python/tests/test_training_checkpoint.py
+index df43fdc..2a8828c 100644
+--- a/before/python/tests/test_training_checkpoint.py
++++ b/after/python/tests/test_training_checkpoint.py
+@@ -91,6 +91,50 @@ def test_save_load_resumes_pruning_without_fitting_or_rescoring(session, tmp_pat
+     assert pruned.to_json() == baseline.to_json()
+ 
+ 
++def test_training_state_owns_one_digest_of_read_only_rows(session, tmp_path):
++    """The digest is computed once and cannot go stale: the rows it describes are read-only."""
++    from t_boost._checkpoint import data_digest
++
++    fitted, frame = session
++    state = fitted._state
++    arrays = {name: getattr(state, name) for name in ("x", "y", "weight", "exposure", "groups")}
++    assert fitted.data_digest == data_digest(arrays, state.categories)
++    path = tmp_path / "digest.checkpoint"
++    fitted.save(path)
++    loaded = TBoostTrainingSession.load(path)
++    assert loaded.data_digest == fitted.data_digest == loaded.fork().data_digest
++    loaded_arrays = {name: getattr(loaded._state, name) for name in arrays}
++    assert data_digest(loaded_arrays, loaded._state.categories) == fitted.data_digest
++    for owned in (state.x, state.y, state.weight, state.exposure, state.groups,
++                  loaded._state.x, loaded._state.weights):
++        with pytest.raises(ValueError, match="read-only"):
++            owned[0] = owned[0]
++    assert state.n_features == fitted.full_model.n_features_in_
++    unweighted = TBoostRegressor(objective="poisson", n_trees=5, n_bags=2, seed=1).fit_staged(
++        frame[["x", "z"]], np.ones(len(frame), dtype=np.float32))
++    assert unweighted._state.weights is unweighted._state.weights
++
++
++def test_digest_is_computed_once_per_training_state(session, tmp_path, monkeypatch):
++    """Reads, forks, checkpoint load and path candidates reuse the state's digest."""
++    import t_boost._checkpoint as checkpoint
++    from t_boost import TBoostPathFamily
++
++    fitted, _ = session
++    expected = fitted.data_digest
++    path = tmp_path / "once.checkpoint"
++    fitted.save(path)
++    monkeypatch.setattr(checkpoint, "data_digest",
++                        lambda *a, **kw: pytest.fail("data digest recomputed after capture"))
++    loaded = TBoostTrainingSession.load(path, expected_data_digest=expected)
++    for current in (fitted, fitted.fork(), loaded, loaded.fork()):
++        assert current.data_digest == current.data_digest == expected
++    family = loaded.prepare_path("pruned", values=[loaded.pruning_path["table_counts"][0]])
++    restored = TBoostPathFamily.from_candidate_bytes(loaded.fork(), family.candidate_bytes("point-1"))
++    assert restored.points == [point for point in family.points if point["id"] == "point-1"]
++    fitted.save(tmp_path / "again.checkpoint")
++
++
+ def test_checkpoint_bytes_are_stable_and_data_bound(session, tmp_path):
+     fitted, _ = session
+     first, second = tmp_path / "one", tmp_path / "two"
+diff --git a/before/specs/roadmap/staged-training.md b/after/specs/roadmap/staged-training.md
+index 8b57eb2..664af24 100644
+--- a/before/specs/roadmap/staged-training.md
++++ b/after/specs/roadmap/staged-training.md
+@@ -202,3 +202,52 @@ sibling branches. Full-model templates are cloned through the binary inference f
+ internally, while checkpoint and inference JSON formats remain backward compatible.
+ Tests compare branch predictions/recipes and checkpoint round trips after independent
+ pruning, banding, smoothing and path reconfiguration.
++
++# Restore and fingerprint costs
++
++Staged workflows restore models and check data identity many times per path. Neither may
++cost more than the information it needs.
++
++**Model restore.** Estimator `from_bytes` / `from_json` reads the native objective, axis
++provenance, feature names and document kind through native accessors:
++- `objective()` returns `(loss, tweedie_rho)`;
++- `provenance()` returns `(raw id, categorical TS encoding or None)` for each axis;
++- `feature_names` is the existing getter;
++- `_native_json_kind(text)` reads a native document's top-level `kind` through a native
++  probe, without building Python objects. Its answers and errors are exactly those of
++  `json.loads(text).get("kind")`: non-objects have no kind, and a repeated key keeps its
++  last value. Documents the probe cannot parse (NaN or Infinity literals, very deep nesting,
++  malformed text) use Python's parser, so they keep its answers and `JSONDecodeError`.
++
++They do not serialise the native model to JSON and parse it back in Python. Each accessor
++reports exactly the values `to_json()` reports. In particular, `tweedie_rho` keeps the
++same decimal rendering of the stored `f32`, so restored estimator parameters, and every
++result computed from them, are unchanged. A load determines the document kind once.
++`deployed_census` also reports the count of factored tables, so path-point complexity
++diagnostics never serialise a bank. Wire formats are unchanged.
++
++**Immutable training state.**
++- The full-fit training state computes its data digest once: at capture for a fresh fit,
++  or from the manifest digest that load has already verified.
++- `session.data_digest` returns that stored value. Forks share it.
++- The state's owned numeric arrays (rows, target, weight, exposure, groups) are read-only;
++  writing to them raises. Categorical values are an owned deep copy that no session operation
++  mutates. They become read-only codes when the checkpoint stores categorical columns as codes
++  plus levels; until then the cached digest relies on that ownership.
++- The unit weight vector of an unweighted fit is built once.
++- Internal checks of the raw feature count use the validated state, not a model rebuild.
++- `full_model` and `model()` still return independent estimators.
++- Once restore is cheap, re-measure the remaining internal `full_model` uses. Introduce a
++  shared template only if they still matter.
++
++**Path families.** `candidate_bytes` serialises only the requested point's metadata.
++`points` keeps returning detached copies.
++
++**Tests:**
++- restored estimators have attributes equal to today's for every envelope fixture
++  (regressor, classifier, multiclass, tables, legacy bare blobs, Tweedie); stubtest;
++- accessor values equal the corresponding `to_json()` fields;
++- a fresh digest equals the loaded digest, and both equal a recomputed digest;
++- writes to owned state arrays raise;
++- mismatched-data refusal still fires;
++- path evidence, candidates and checkpoint bytes are unchanged for a fixed seed.

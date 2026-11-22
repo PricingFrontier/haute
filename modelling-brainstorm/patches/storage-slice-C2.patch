@@ -1,0 +1,1291 @@
+diff --git a/before/scripts/modelling_audit/serialization_bench.py b/after/scripts/modelling_audit/serialization_bench.py
+index c07d374..c56d76e 100644
+--- a/before/scripts/modelling_audit/serialization_bench.py
++++ b/after/scripts/modelling_audit/serialization_bench.py
+@@ -1,9 +1,7 @@
+ import argparse
+-import io
+ import json
+ import statistics
+ import time
+-import zipfile
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -11,6 +9,8 @@ import numpy as np
+ import polars as pl
+ from t_boost import TBoostRegressor
+ 
++from haute.modelling._staged_runtime import open_stage_bundle
++
+ parser = argparse.ArgumentParser(
+     description="Compare native model encodings without changing a checkpoint"
+ )
+@@ -22,13 +22,10 @@ parser.add_argument("--output", type=Path, required=True)
+ args = parser.parse_args()
+ root = args.output.resolve()
+ root.mkdir(parents=True, exist_ok=True)
+-source = args.checkpoint
+-with zipfile.ZipFile(source) as stage:
+-    manifest = json.loads(stage.read("manifest.json"))
+-    ref = manifest["metadata"]["staged"]["reference_fit"]
+-    with zipfile.ZipFile(io.BytesIO(stage.read(ref + ".checkpoint"))) as checkpoint:
+-        text = checkpoint.read("full.json").decode()
+-model = TBoostRegressor.from_json(text)
++with open_stage_bundle(args.checkpoint) as stage:
++    reference = stage.metadata["staged"]["reference_fit"]
++    model = stage.session(reference, raw=True).model("full")
++text = model.to_json()
+ binary = model.to_bytes()
+ frame = pl.read_parquet(args.data).head(1000)
+ X = frame.select(list(model.feature_names_in_))
+diff --git a/before/specs/modelling/low-level.md b/after/specs/modelling/low-level.md
+index 9914fa4..7975430 100644
+--- a/before/specs/modelling/low-level.md
++++ b/after/specs/modelling/low-level.md
+@@ -3369,7 +3369,15 @@ for a store's object count.
+ - `result` is the typed result envelope: small fields plus diagnostic references.
+ - `metadata` holds `job_kwargs`, `fit_config_digest`, `fits`, `staged`, `paths` and `path`,
+   as references with no embedded diagnostics.
+-- Logical names follow the allowed-name grammar that extends the bundle's member rules.
++- Logical names follow one allowed-name grammar (`_stage_objects._NAMES`):
++  - `source.parquet` and `plan.json`;
++  - `fit/<fit>/evidence` and `fit/<fit>/chain`, the t-boost checkpoint parts;
++  - `path/<path id>/<point>/<fit>.candidate` and `path/<path id>/<point>.result`;
++  - `snapshot|table|history/<sha256>`, the diagnostics objects;
++  - `export/<model.native|feature-contract.json|evaluation-results.json|evaluation-report.json>`
++    for a finalised revision, whose `plan.json` is the final-fit plan.
++
++  A path result is a split envelope. Its diagnostic objects are in the revision's closure.
+ - Pointer records keep `revision`, `build_id`, `parent_revision` and `config_digest`.
+   `sha256`/`size` describe the revision-manifest bytes.
+ 
+diff --git a/before/src/haute/modelling/_stage_diagnostics.py b/after/src/haute/modelling/_stage_diagnostics.py
+index 14038a6..1975ed7 100644
+--- a/before/src/haute/modelling/_stage_diagnostics.py
++++ b/after/src/haute/modelling/_stage_diagnostics.py
+@@ -39,7 +39,7 @@ _NAME = re.compile(r"(snapshot|table|history)/[a-f0-9]{64}\Z")
+ _DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+ _ENTRY = {"term", "features", "order", "cells", "shape_digest"}
+ 
+-Put = Callable[[str, bytes], None]
++Put = Callable[[str, bytes], object]
+ Get = Callable[[str], Any]
+ 
+ 
+@@ -170,11 +170,18 @@ def _hydrate_body(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[
+     return compact_response(result) if compact else result
+ 
+ 
++def _envelope(value: Any) -> Mapping[str, Any]:
++    if not isinstance(value, Mapping):
++        raise HauteValidationError("Invalid stage result envelope")
++    return value
++
++
+ def hydrate(envelope: Mapping[str, Any], get: Get, *, compact: bool = False) -> dict[str, Any]:
+     """Resolve an envelope's references through *get*(name) -> decoded JSON.
+ 
+     Compact hydration leaves tables unloaded and applies the compact projection.
+     """
++    envelope = _envelope(envelope)
+     if _is_store_result(envelope):
+         return {**envelope, "response": _hydrate_body(envelope["response"], get, compact=compact)}
+     return _hydrate_body(envelope, get, compact=compact)
+@@ -182,6 +189,7 @@ def hydrate(envelope: Mapping[str, Any], get: Get, *, compact: bool = False) ->
+ 
+ def closure(envelope: Mapping[str, Any], get: Get) -> set[str]:
+     """Every object name an envelope needs, including those its snapshots reference."""
++    envelope = _envelope(envelope)
+     body = envelope["response"] if _is_store_result(envelope) else envelope
+ 
+     def dense(value: Mapping[str, Any]) -> set[str]:
+diff --git a/before/src/haute/modelling/_stage_objects.py b/after/src/haute/modelling/_stage_objects.py
+index 5713603..96cb11d 100644
+--- a/before/src/haute/modelling/_stage_objects.py
++++ b/after/src/haute/modelling/_stage_objects.py
+@@ -759,3 +759,86 @@ class StageArchive:
+                 item.path.unlink(missing_ok=True)
+             raise
+         return staged
++
++
++def write_bundle(
++    destination: Path,
++    members: Mapping[str, Path | bytes],
++    *,
++    revision: str,
++    result: Mapping[str, Any],
++    metadata: Mapping[str, Any],
++) -> RevisionManifest:
++    """A full portable archive of loose member files or bytes, without a store.
++
++    Members with identical content share one object. Returns the archive's manifest.
++    """
++    refs: dict[str, ObjectRef] = {}
++    sources: dict[str, Path | bytes] = {}
++    for name, value in members.items():
++        if isinstance(value, bytes):
++            digest, size = hashlib.sha256(value).hexdigest(), len(value)
++        else:
++            hasher, size = hashlib.sha256(), 0
++            with value.open("rb") as handle:
++                for chunk in iter(lambda: handle.read(_CHUNK), b""):
++                    hasher.update(chunk)
++                    size += len(chunk)
++            digest = hasher.hexdigest()
++        refs[name] = ObjectRef(digest, size, object_kind(name))
++        sources.setdefault(digest, value)
++    manifest = RevisionManifest(revision, refs, result, metadata)
++    with atomic_path(destination) as temporary, temporary.open("wb") as handle:
++        with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
++            archive.writestr(
++                zipfile.ZipInfo("archive.json", (1980, 1, 1, 0, 0, 0)),
++                canonical_json({"format": ARCHIVE_FORMAT, "version": VERSION, "delta": False}),
++            )
++            archive.writestr(
++                zipfile.ZipInfo("revision.json", (1980, 1, 1, 0, 0, 0)), manifest.encode()
++            )
++            for digest, value in sorted(sources.items()):
++                member = zipfile.ZipInfo(f"objects/{digest}", (1980, 1, 1, 0, 0, 0))
++                with archive.open(member, "w", force_zip64=True) as target:
++                    if isinstance(value, bytes):
++                        target.write(value)
++                        continue
++                    with value.open("rb") as source:
++                        for chunk in iter(lambda: source.read(_CHUNK), b""):
++                            target.write(chunk)
++    return manifest
++
++
++def extract_archive(archive: StageArchive, directory: Path) -> dict[str, Path]:
++    """Copy a full archive's objects into *directory*, verifying each; map names to files."""
++    if archive.inherited:
++        raise HauteValidationError("A delta stage archive needs its parent's store")
++    directory.mkdir(parents=True, exist_ok=True)
++    sizes = {ref.sha256: ref.size for ref in archive.manifest.objects.values()}
++    with zipfile.ZipFile(archive.path) as source:
++        for digest in sorted(archive.carried):
++            hasher, size = hashlib.sha256(), 0
++            with source.open(f"objects/{digest}") as reader, (directory / digest).open("xb") as out:
++                for chunk in iter(lambda: reader.read(_CHUNK), b""):
++                    size += len(chunk)
++                    if size > sizes[digest]:
++                        raise HauteValidationError("Stage archive object exceeds its size")
++                    hasher.update(chunk)
++                    out.write(chunk)
++            if (hasher.hexdigest(), size) != (digest, sizes[digest]):
++                raise HauteValidationError("Stage archive object checksum mismatch")
++    return {name: directory / ref.sha256 for name, ref in archive.manifest.objects.items()}
++
++
++def read_archive_object(path: Path, ref: ObjectRef) -> bytes:
++    """One verified object from a validated archive, without extracting the rest."""
++    if ref.kind == "json" and ref.size > JSON_OBJECT_LIMIT:
++        raise HauteValidationError("Stage JSON object exceeds its size limit")
++    with zipfile.ZipFile(path) as archive:
++        info = archive.getinfo(f"objects/{ref.sha256}")
++        if info.file_size != ref.size:
++            raise HauteValidationError("Stage archive object size mismatch")
++        payload = archive.read(info)
++    if hashlib.sha256(payload).hexdigest() != ref.sha256:
++        raise HauteValidationError("Stage archive object checksum mismatch")
++    return payload
+diff --git a/before/src/haute/modelling/_stage_paths.py b/after/src/haute/modelling/_stage_paths.py
+index 1ea180e..a468f3e 100644
+--- a/before/src/haute/modelling/_stage_paths.py
++++ b/after/src/haute/modelling/_stage_paths.py
+@@ -7,16 +7,22 @@ import hashlib
+ import math
+ import re
+ import shutil
+-import zipfile
+ from collections.abc import Mapping
+ from dataclasses import fields
+ from pathlib import Path
+ from typing import Any
+ 
+ from haute.errors import HauteValidationError
+-from haute.modelling._stage_objects import strict_json_loads
++from haute.modelling._stage_diagnostics import hydrate, split
++from haute.modelling._stage_objects import StageArchive, read_archive_object, strict_json_loads
+ from haute.modelling._staged_config import StagedConfig
+-from haute.modelling._staged_runtime import StageBundle, StageRuntime, _json, _pack
++from haute.modelling._staged_runtime import (
++    StageBundle,
++    StageRuntime,
++    _json,
++    _pack,
++    revision_files,
++)
+ 
+ _POINT = re.compile(r"(?:unchanged|point-(?:[1-9]|1[0-6]))\Z")
+ _SECTIONS = {"pruned": "pruning", "banded": "banding", "smoothed": "smoothing"}
+@@ -37,6 +43,16 @@ def require_point(path: Mapping[str, Any], point_id: object) -> dict[str, Any]:
+     raise HauteValidationError("This point is not part of the prepared path")
+ 
+ 
++def candidate_member(path_id: str, point_id: str, key: str) -> str:
++    """A path point's retained t-boost candidate for one fit."""
++    return f"path/{path_id}/{point_id}/{key}.candidate"
++
++
++def result_member(path_id: str, point_id: str) -> str:
++    """A path point's stored result envelope (diagnostics are shared objects)."""
++    return f"path/{path_id}/{point_id}.result"
++
++
+ def path_members(path: Any, fits: Mapping[str, Any]) -> set[str]:
+     if (
+         not isinstance(path, dict)
+@@ -46,7 +62,7 @@ def path_members(path: Any, fits: Mapping[str, Any]) -> set[str]:
+         or not 1 <= len(path["points"]) <= 17
+     ):
+         raise HauteValidationError("Invalid stage path envelope")
+-    ids = [point.get("id") for point in path["points"] if isinstance(point, dict)]
++    ids: list[Any] = [point.get("id") for point in path["points"] if isinstance(point, dict)]
+     if len(ids) != len(path["points"]) or len(ids) != len(set(ids)):
+         raise HauteValidationError("Invalid stage path point identities")
+     for point_id in ids:
+@@ -54,10 +70,9 @@ def path_members(path: Any, fits: Mapping[str, Any]) -> set[str]:
+     require_point(path, path.get("selected_point"))
+     if not isinstance(path.get("id"), str) or not re.fullmatch(r"[a-f0-9]{64}", path["id"]):
+         raise HauteValidationError("Invalid stage path identity")
+-    prefix = f"path-{path['id']}"
+     return {
+-        *(f"{prefix}-{point_id}.result.json" for point_id in ids),
+-        *(f"{prefix}-{point_id}-{key}.candidate" for point_id in ids for key in fits),
++        *(result_member(path["id"], point_id) for point_id in ids),
++        *(candidate_member(path["id"], point_id, key) for point_id in ids for key in fits),
+     }
+ 
+ 
+@@ -190,35 +205,33 @@ def _pruning_budgets(
+     return sorted({max(minimum, count) for count in schedule})
+ 
+ 
+-def _point_result_bytes(result: Any, path_id: str) -> bytes:
+-    """A point result as stored: its own diagnostics, without any path family summary.
++def _write_point_result(bundle: StageBundle, result: Any, path_id: str, point_id: str) -> None:
++    """Store a point result: its own diagnostics, without any path family summary.
+ 
+     ``staged.paths`` is derived on every read from the families the artifact retains (see
+     `_resolve_point_paths`), so each summary is stored once per artifact and a point can
+-    never refer to a family that was rebuilt or invalidated after it was written.
++    never refer to a family that was rebuilt or invalidated after it was written. The
++    diagnostics become shared bundle objects (`_stage_diagnostics.split`).
+     """
+     if result.staged is None:
+         raise HauteValidationError("Path candidate produced no staged result")
+     staged = {key: value for key, value in result.staged.items() if key != "paths"}
+     staged["prepared_path"] = path_id
+-    return _json(
+-        {
+-            field.name: staged if field.name == "staged" else getattr(result, field.name)
+-            for field in fields(result)
+-        }
+-    )
++    stored = {
++        field.name: staged if field.name == "staged" else getattr(result, field.name)
++        for field in fields(result)
++    }
++    # Through strict JSON once, so the stored form is exactly what a read returns.
++    envelope = split(strict_json_loads(_json(stored)), bundle.write_member)
++    bundle.write_member(result_member(path_id, point_id), _json(envelope))
+ 
+ 
+ def _resolve_point_paths(
+-    payload: bytes, retained: Mapping[str, Any], path_id: str, point_id: str
++    stored: Any, retained: Mapping[str, Any], path_id: str, point_id: str
+ ) -> Any:
+-    """Decode a stored point result; its families are those retained and valid for it."""
++    """A hydrated stored point result; its families are those retained and valid for it."""
+     from haute.modelling._training_job import TrainResult
+ 
+-    try:
+-        stored = strict_json_loads(payload)
+-    except (ValueError, UnicodeError) as exc:
+-        raise HauteValidationError("Invalid path point result") from exc
+     staged = stored.get("staged") if isinstance(stored, dict) else None
+     if not isinstance(staged, dict) or "paths" in staged:
+         raise HauteValidationError(
+@@ -255,13 +268,12 @@ def run_path_job(
+     reference = original["staged"]["reference_fit"]
+     fit_keys = [reference, *(key for key in original["fits"] if key != reference)]
+     points: list[dict[str, Any]] = []
+-    point_files: dict[str, Path] = {}
+     fold_status: dict[str, list[dict[str, str]]] = {}
+     outcomes: dict[str, list[str]] = {}
+     family_ids = {}
+     parent_revisions = {}
+-    # Temporary names avoid tying a family to unrelated applied descendants.
+-    prefix = "path-preparing"
++    # Candidates wait in scratch until the family identity is known.
++    pending: dict[tuple[str, str], Path] = {}
+     cancel = run_kwargs.get("check_cancelled", lambda: None)
+     pruning_budgets = (
+         _pruning_budgets(bundle, config, fit_keys, cancel) if operation == "pruned" else None
+@@ -296,10 +308,9 @@ def run_path_job(
+             bundle.replace_checkpoint(key, session)
+         for point in family.points:
+             outcomes.setdefault(point["id"], []).append(point["diagnostics"]["outcome_id"])
+-            member = f"{prefix}-{point['id']}-{key}.candidate"
+-            destination = bundle.root / member
++            destination = bundle.scratch / f"candidate-{point['id']}-{key}.member"
+             destination.write_bytes(family.candidate_bytes(point["id"]))
+-            point_files[member] = destination
++            pending[(point["id"], key)] = destination
+             fold_status.setdefault(point["id"], []).append(dict(fit=key, status=point["status"]))
+         del family, session
+     path_id = hashlib.sha256(
+@@ -311,14 +322,8 @@ def run_path_job(
+             ]
+         )
+     ).hexdigest()
+-    previous_prefix, prefix = prefix, f"path-{path_id}"
+-    renamed: dict[str, Path] = {}
+-    for member, source in point_files.items():
+-        name_in_bundle = member.replace(previous_prefix, prefix, 1)
+-        target = bundle.root / name_in_bundle
+-        source.replace(target)
+-        renamed[name_in_bundle] = target
+-    point_files = renamed
++    for (point_id, key), source in pending.items():
++        bundle.adopt_member(candidate_member(path_id, point_id, key), source)
+     evidence = (
+         "development"
+         if original["job_kwargs"]["evaluation"]["validation"]["method"] == "none"
+@@ -389,10 +394,7 @@ def run_path_job(
+             point["status"] = "rejected"
+         elif any(item["status"] == "changed" for item in fold_status[point_id]):
+             point["status"] = "changed"
+-        member = f"{prefix}-{point_id}.result.json"
+-        destination = bundle.root / member
+-        destination.write_bytes(_point_result_bytes(result, path_id))
+-        point_files[member] = destination
++        _write_point_result(bundle, result, path_id, point_id)
+         job._stage_runtime = None
+         runtime.close()
+         del result, runtime, job
+@@ -439,18 +441,8 @@ def run_path_job(
+         for field in ("plan_path", "trials_path", "report_path"):
+             selected_result.tuning[field] = str(root / Path(selected_result.tuning[field]).name)
+     selected_job.output_dir = str(root)
+-    for previous in selected_metadata["paths"].values():
+-        point_files.update(
+-            {member: bundle.root / member for member in path_members(previous, original["fits"])}
+-        )
+-    files = {
+-        "source.parquet": bundle.source,
+-        "plan.json": bundle.root / "plan.json",
+-        **{f"{key}.checkpoint": bundle.root / f"{key}.checkpoint" for key in fit_keys},
+-        **point_files,
+-    }
+     destination = root / f"{selected_job.name}.hstage"
+-    _pack(destination, files, selected_metadata)
++    _pack(destination, revision_files(bundle, selected_metadata), selected_metadata)
+     selected_result.stage_checkpoint_path = str(destination)
+     return selected_job, selected_result
+ 
+@@ -459,8 +451,9 @@ def read_path_result(bundle: StageBundle, path_id: str, point_id: str) -> Any:
+ 
+     path = resolve_path(bundle, path_id)
+     require_point(path, point_id)
++    stored = hydrate(bundle.read_json(result_member(path_id, point_id)), bundle.read_json)
+     return _resolve_point_paths(
+-        (bundle.root / f"path-{path_id}-{point_id}.result.json").read_bytes(),
++        stored,
+         bundle.metadata.get("paths", {}),
+         path_id,
+         point_id,
+@@ -473,33 +466,25 @@ def read_path_artifact(artifact: Path, path_id: str, point_id: str) -> Any:
+     Inspection never extracts parent rows, boosters or other candidate banks.
+     """
+ 
+-    with zipfile.ZipFile(artifact) as archive:
+-        names = archive.namelist()
+-        if (
+-            len(names) != len(set(names))
+-            or archive.getinfo("manifest.json").file_size > 32 * 1024**2
+-        ):
+-            raise HauteValidationError("Invalid path artifact manifest")
++    archive = StageArchive.read(artifact)
++    objects = archive.manifest.objects
++    paths = archive.manifest.metadata.get("paths", {})
++    summary = next((p for p in paths.values() if p["id"] == path_id), None)
++    if summary is None:
++        raise HauteValidationError("The prepared path has changed")
++    require_point(summary, point_id)
++
++    def read(name: str) -> Any:
++        ref = objects.get(name)
++        if ref is None:
++            raise HauteValidationError(f"Path artifact lacks member {name!r}")
+         try:
+-            manifest = strict_json_loads(archive.read("manifest.json"))
++            return strict_json_loads(read_archive_object(artifact, ref))
+         except (ValueError, UnicodeError) as exc:
+-            raise HauteValidationError("Invalid path artifact manifest") from exc
+-        if manifest.get("format") != "haute-staged-training" or manifest.get("version") != 1:
+-            raise HauteValidationError("Unsupported path artifact format")
+-        paths = manifest["metadata"].get("paths", {})
+-        summary = next((p for p in paths.values() if p["id"] == path_id), None)
+-        if summary is None:
+-            raise HauteValidationError("The prepared path has changed")
+-        require_point(summary, point_id)
+-        member = f"path-{path_id}-{point_id}.result.json"
+-        record = manifest["members"].get(member)
+-        info = archive.getinfo(member)
+-        if not record or info.file_size > 32 * 1024**2 or record["bytes"] != info.file_size:
+-            raise HauteValidationError("Invalid path diagnostic size")
+-        payload = archive.read(member)
+-        if hashlib.sha256(payload).hexdigest() != record["sha256"]:
+-            raise HauteValidationError("Path diagnostic checksum mismatch")
+-        return _resolve_point_paths(payload, paths, path_id, point_id)
++            raise HauteValidationError("Invalid path point result") from exc
++
++    stored = hydrate(read(result_member(path_id, point_id)), read)
++    return _resolve_point_paths(stored, paths, path_id, point_id)
+ 
+ 
+ def materialize_path_point(
+@@ -519,9 +504,6 @@ def materialize_path_point(
+     if point["status"] == "rejected":
+         raise HauteValidationError("This candidate was rejected by a retained fit's training guard")
+     destination.mkdir(parents=True, exist_ok=True)
+-    files = {"source.parquet": bundle.source, "plan.json": bundle.root / "plan.json"}
+-    for key in bundle.metadata["fits"]:
+-        files[f"{key}.checkpoint"] = bundle.root / f"{key}.checkpoint"
+     metadata = {
+         key: copy.deepcopy(value) for key, value in bundle.metadata.items() if key != "path"
+     }
+@@ -531,12 +513,8 @@ def materialize_path_point(
+     # reader restores this selection; Apply never re-encodes the training arrays.
+     metadata["path"] = {**copy.deepcopy(path), "selected_point": point_id}
+     metadata["paths"][path["stage"]] = metadata["path"]
+-    for previous in metadata["paths"].values():
+-        files.update(
+-            {member: bundle.root / member for member in path_members(previous, metadata["fits"])}
+-        )
+     metadata["job_kwargs"]["stages"] = result.staged["configuration"]
+     artifact = destination / "applied.hstage"
+-    _pack(artifact, files, metadata)
++    _pack(artifact, revision_files(bundle, metadata), metadata)
+     result.stage_checkpoint_path = str(artifact)
+     return artifact, result
+diff --git a/before/src/haute/modelling/_staged_runtime.py b/after/src/haute/modelling/_staged_runtime.py
+index c0fddc1..2fd9b4e 100644
+--- a/before/src/haute/modelling/_staged_runtime.py
++++ b/after/src/haute/modelling/_staged_runtime.py
+@@ -9,6 +9,7 @@ import os
+ import re
+ import shutil
+ import tempfile
++import uuid
+ import zipfile
+ from collections import OrderedDict
+ from collections.abc import Iterator, Mapping
+@@ -19,11 +20,17 @@ from typing import TYPE_CHECKING, Any
+ import numpy as np
+ import polars as pl
+ 
+-from haute._file_ops import atomic_path
+ from haute.errors import HauteValidationError
+ from haute.modelling._candidate_run import training_identity_sha256
+ from haute.modelling._evaluation import EvaluationPlan
+-from haute.modelling._stage_objects import strict_json_loads
++from haute.modelling._stage_diagnostics import closure, hydrate, split
++from haute.modelling._stage_objects import (
++    StageArchive,
++    extract_archive,
++    object_kind,
++    strict_json_loads,
++    write_bundle,
++)
+ from haute.modelling._stage_views import table_summary
+ from haute.modelling._staged_config import StagedConfig
+ 
+@@ -75,11 +82,11 @@ _LIMIT = 4 * 1024**3
+ _MAX_PATH_SPLIT_BYTES = 256 * 1024**2
+ _MAX_SESSION_CACHE_BYTES = 512 * 1024**2
+ _EXPORT_MEMBERS = {
+-    "model": "model.native",
+-    "feature_contract": "feature-contract.json",
+-    "evaluation_plan": "plan.json",
+-    "evaluation_results": "evaluation-results.json",
+-    "evaluation_report": "evaluation-report.json",
++    "model": "export/model.native",
++    "feature_contract": "export/feature-contract.json",
++    "evaluation_plan": "plan.json",  # a final revision's plan is the final-fit plan
++    "evaluation_results": "export/evaluation-results.json",
++    "evaluation_report": "export/evaluation-report.json",
+ }
+ 
+ 
+@@ -118,40 +125,36 @@ def _fit_key(job: Any) -> str:
+     )
+ 
+ 
+-def _pack(path: Path, files: Mapping[str, Path], metadata: Mapping[str, Any]) -> None:
+-    with atomic_path(path) as temporary:
+-        with temporary.open("w+b") as handle:
+-            with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
+-                records = {}
+-                for name, source in files.items():
+-                    digest, size = hashlib.sha256(), 0
+-                    with (
+-                        source.open("rb") as reader,
+-                        archive.open(name, "w", force_zip64=True) as writer,
+-                    ):
+-                        for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+-                            writer.write(chunk)
+-                            digest.update(chunk)
+-                            size += len(chunk)
+-                    records[name] = {"sha256": digest.hexdigest(), "bytes": size}
+-                archive.writestr(
+-                    "manifest.json",
+-                    _json(
+-                        {
+-                            "format": "haute-staged-training",
+-                            "version": 1,
+-                            "members": records,
+-                            "metadata": metadata,
+-                        }
+-                    ),
+-                )
+-            handle.flush()
+-            os.fsync(handle.fileno())
++def checkpoint_members(key: str) -> tuple[str, str]:
++    """A retained fit's t-boost checkpoint parts: immutable evidence and the stage chain."""
++    return f"fit/{key}/evidence", f"fit/{key}/chain"
++
++
++def _pack(path: Path, files: Mapping[str, Path | bytes], metadata: Mapping[str, Any]) -> None:
++    """Write a portable stage archive; `metadata.staged` diagnostics become shared objects."""
++    objects: dict[str, bytes] = {}
++    stored = dict(metadata)
++    if isinstance(metadata.get("staged"), Mapping):
++        stored["staged"] = split({"staged": metadata["staged"]}, objects.__setitem__)["staged"]
++    write_bundle(path, {**files, **objects}, revision=uuid.uuid4().hex, result={}, metadata=stored)
+ 
+ 
+ class StageBundle:
+-    def __init__(self, root: Path, metadata: dict[str, Any], plan: EvaluationPlan) -> None:
++    """One stage revision opened for a job.
++
++    `members` are the revision's read-only files. A job writes new members (checkpoint
++    chains, path candidates and results, diagnostics) into its own scratch directory, and
++    `member` returns them in preference to the revision's.
++    """
++
++    def __init__(
++        self, root: Path, members: dict[str, Path], metadata: dict[str, Any], plan: EvaluationPlan
++    ) -> None:
+         self.root, self.metadata, self.plan = root, metadata, plan
++        self.members = members
++        self.scratch = root / "scratch"
++        self.scratch.mkdir(exist_ok=True)
++        self._written: dict[str, Path] = {}
+         self.path_splits: dict[str, tuple[_SplitResult, Any]] = {}
+         self.path_split_bytes = 0
+         self._sessions: OrderedDict[str, tuple[tuple[int, ...], int, Any]] = OrderedDict()
+@@ -159,7 +162,39 @@ class StageBundle:
+ 
+     @property
+     def source(self) -> Path:
+-        return self.root / "source.parquet"
++        return self.member("source.parquet")
++
++    def has_member(self, name: str) -> bool:
++        return name in self._written or name in self.members
++
++    def member(self, name: str) -> Path:
++        found = self._written.get(name) or self.members.get(name)
++        if found is None:
++            raise HauteValidationError(f"Stage revision has no member {name!r}")
++        return found
++
++    def write_member(self, name: str, data: bytes) -> Path:
++        """Record a new member this job wrote; content-addressed names are written once."""
++        object_kind(name)  # validates the name
++        if name in self._written and name.split("/", 1)[0] in {"snapshot", "table", "history"}:
++            return self._written[name]
++        path = self.scratch / f"{uuid.uuid4().hex}.member"
++        path.write_bytes(data)
++        self._written[name] = path
++        return path
++
++    def adopt_member(self, name: str, path: Path) -> None:
++        """Record a scratch file written by another writer (a checkpoint chain) as *name*."""
++        object_kind(name)
++        if path.parent != self.scratch:
++            raise HauteValidationError("Stage members must be written to the job's scratch")
++        self._written[name] = path
++
++    def read_json(self, name: str) -> Any:
++        try:
++            return strict_json_loads(self.member(name).read_bytes())
++        except (ValueError, UnicodeError) as exc:
++            raise HauteValidationError(f"Invalid stage member {name!r}") from exc
+ 
+     def export_artifacts(self, name: str, destination: Path | None = None) -> dict[str, Path]:
+         """Rehydrate only ordinary inference/evaluation artifacts, never checkpoint data."""
+@@ -174,7 +209,7 @@ class StageBundle:
+             )
+         if Path(name).name != name or not name:
+             raise HauteValidationError("Invalid export model name")
+-        output = destination if destination is not None else self.root / "export"
++        output = destination if destination is not None else self.scratch / "export"
+         output.mkdir(parents=True, exist_ok=True)
+         evaluation = evaluation_artifact_filenames(name)
+         names = {
+@@ -185,7 +220,7 @@ class StageBundle:
+         result = {}
+         for kind, member in _EXPORT_MEMBERS.items():
+             path = output / names[kind]
+-            shutil.copyfile(self.root / member, path)
++            shutil.copyfile(self.member(member), path)
+             result[kind] = path
+         return result
+ 
+@@ -201,17 +236,18 @@ class StageBundle:
+ 
+         if key not in self.metadata["fits"] or not _FIT_KEY.fullmatch(key):
+             raise HauteValidationError(f"Stage checkpoint has no retained fit {key!r}")
+-        checkpoint = self.root / f"{key}.checkpoint"
+-        info = checkpoint.stat()
+-        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++        evidence, chain = (self.member(name) for name in checkpoint_members(key))
++        identity = _identity(evidence) + _identity(chain)
+         cached = self._sessions.pop(key, None)
+         if cached is not None:
+             self._session_bytes -= cached[1]
+         if cached is None or cached[0] != identity:
+             parent = TBoostTrainingSession.load(
+-                checkpoint, expected_data_digest=self.metadata["fits"][key]["data_digest"]
++                evidence=evidence,
++                chain=chain,
++                expected_data_digest=self.metadata["fits"][key]["data_digest"],
+             )
+-            cached = self._cache_entry(checkpoint, parent)
++            cached = (identity, _session_size(evidence, chain), parent)
+         self._retain(key, cached)
+         session = cached[2].fork()
+         from haute.modelling._stage_paths import resolve_path
+@@ -220,41 +256,41 @@ class StageBundle:
+         if path is not None and not raw:
+             from t_boost import TBoostPathFamily
+ 
+-            from haute.modelling._stage_paths import require_point
++            from haute.modelling._stage_paths import candidate_member, require_point
+ 
+             point = require_point(path, point_id or path["selected_point"])
+             family = TBoostPathFamily.from_candidate_bytes(
+-                session,
+-                (self.root / f"path-{path['id']}-{point['id']}-{key}.candidate").read_bytes(),
++                session, self.member(candidate_member(path["id"], point["id"], key)).read_bytes()
+             )
+             family.apply(session, point["id"])
+         return session
+ 
+     def replace_checkpoint(self, key: str, session: Any) -> None:
+-        """Atomically rewrite a retained fit's checkpoint from ``session``.
++        """Write a retained fit's new stage chain from ``session``; its evidence is unchanged.
+ 
+-        The written state becomes the cached parent for the new file identity, so a job never
++        The written state becomes the cached parent for the new chain, so a job never
+         reloads and re-validates a checkpoint it has just written.
+         """
+         if key not in self.metadata["fits"] or not _FIT_KEY.fullmatch(key):
+             raise HauteValidationError(f"Stage checkpoint has no retained fit {key!r}")
+         if session.data_digest != self.metadata["fits"][key]["data_digest"]:
+             raise HauteValidationError("Replacement checkpoint belongs to different training data")
+-        checkpoint = self.root / f"{key}.checkpoint"
+-        session.save(checkpoint)
++        evidence_name, chain_name = checkpoint_members(key)
++        chain = self.scratch / f"{uuid.uuid4().hex}.member"
++        session.save_chain(chain)
++        self.adopt_member(chain_name, chain)
+         cached = self._sessions.pop(key, None)
+         if cached is not None:
+             self._session_bytes -= cached[1]
+-        self._retain(key, self._cache_entry(checkpoint, session.fork()))
+-
+-    @staticmethod
+-    def _cache_entry(checkpoint: Path, parent: Any) -> tuple[tuple[int, ...], int, Any]:
+-        info = checkpoint.stat()
+-        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+-        with zipfile.ZipFile(checkpoint) as archive:
+-            # Allow for decoded strings, arrays, native banks and binary templates.
+-            size = 4 * sum(member.file_size for member in archive.infolist())
+-        return identity, size, parent
++        evidence = self.member(evidence_name)
++        self._retain(
++            key,
++            (
++                _identity(evidence) + _identity(chain),
++                _session_size(evidence, chain),
++                session.fork(),
++            ),
++        )
+ 
+     def _retain(self, key: str, cached: tuple[tuple[int, ...], int, Any]) -> None:
+         """Keep ``cached`` as the most recent entry when it fits the cache budget."""
+@@ -266,6 +302,46 @@ class StageBundle:
+             self._session_bytes += cached[1]
+ 
+ 
++def _identity(path: Path) -> tuple[int, ...]:
++    info = path.stat()
++    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++
++
++def _session_size(*parts: Path) -> int:
++    # Allow for decoded strings, arrays, native banks and binary templates.
++    total = 0
++    for part in parts:
++        with zipfile.ZipFile(part) as archive:
++            total += sum(member.file_size for member in archive.infolist())
++    return 4 * total
++
++
++def bundle_members(metadata: Mapping[str, Any], read: Any) -> set[str]:
++    """Every member name a revision with *metadata* holds; *read* decodes a member's JSON."""
++    from haute.modelling._stage_paths import path_members
++
++    fits = metadata["fits"]
++    names = {"source.parquet", "plan.json"}
++    names |= {name for key in fits for name in checkpoint_members(key)}
++    if metadata.get("finalised") is True:
++        names |= set(_EXPORT_MEMBERS.values())
++    for summary in metadata.get("paths", {}).values():
++        members = path_members(summary, fits)
++        names |= members
++        for name in members:
++            if name.endswith(".result"):
++                names |= closure(read(name), read)
++    return names
++
++
++def revision_files(bundle: StageBundle, metadata: Mapping[str, Any]) -> dict[str, Path | bytes]:
++    """The member files a new revision of *bundle* with *metadata* carries.
++
++    `metadata.staged` objects are excluded: `_pack` splits them from the metadata itself.
++    """
++    return {name: bundle.member(name) for name in bundle_members(metadata, bundle.read_json)}
++
++
+ @contextmanager
+ def open_stage_bundle(
+     path: str | Path, *, scratch_dir: str | None = None, max_bytes: int = _LIMIT
+@@ -274,81 +350,61 @@ def open_stage_bundle(
+         Path(scratch_dir).mkdir(parents=True, exist_ok=True)
+     with tempfile.TemporaryDirectory(prefix="haute_stage_", dir=scratch_dir) as temporary:
+         root = Path(temporary)
+-        with zipfile.ZipFile(path) as archive:
+-            entries = archive.infolist()
+-            names = [item.filename for item in entries]
+-            if (
+-                len(names) != len(set(names))
+-                or "manifest.json" not in names
+-                or archive.getinfo("manifest.json").file_size > 32 * 1024 * 1024
+-                or sum(item.file_size for item in entries) > max_bytes
+-            ):
+-                raise HauteValidationError("Invalid stage bundle members or expanded size")
++        archive = StageArchive.read(Path(path))
++        manifest = archive.manifest
++        if sum(ref.size for ref in manifest.objects.values()) > max_bytes:
++            raise HauteValidationError("Invalid stage bundle members or expanded size")
++        metadata = dict(manifest.metadata)
++        fits = metadata.get("fits")
++        if (
++            not isinstance(fits, dict)
++            or not fits
++            or len(fits) > 11
++            or any(not _FIT_KEY.fullmatch(key) for key in fits)
++        ):
++            raise HauteValidationError("Invalid stage bundle fit identities")
++        paths = metadata.get("paths", {})
++        if not isinstance(paths, dict) or set(paths) - {"pruned", "banded", "smoothed"}:
++            raise HauteValidationError("Invalid stage path families")
++        for stage, path_summary in paths.items():
++            if not isinstance(path_summary, dict) or path_summary.get("stage") != stage:
++                raise HauteValidationError("Stage path identity mismatch")
++        if metadata.get("path") is not None:
++            path_summary = metadata["path"]
++            if paths.get(path_summary.get("stage")) != path_summary:
++                raise HauteValidationError("Selected path is not a retained family")
++        members = extract_archive(archive, root / "members")
++
++        def read(name: str) -> Any:
+             try:
+-                manifest = strict_json_loads(archive.read("manifest.json"))
++                return strict_json_loads(members[name].read_bytes())
++            except KeyError as exc:
++                raise HauteValidationError(f"Stage bundle lacks member {name!r}") from exc
+             except (ValueError, UnicodeError) as exc:
+-                raise HauteValidationError("Invalid stage bundle manifest") from exc
+-            if (
+-                not isinstance(manifest, dict)
+-                or manifest.get("format") != "haute-staged-training"
+-                or type(manifest.get("version")) is not int
+-                or manifest["version"] != 1
+-            ):
+-                raise HauteValidationError("Unsupported stage bundle format/version")
+-            metadata, records = manifest.get("metadata"), manifest.get("members")
+-            if not isinstance(metadata, dict) or not isinstance(records, dict):
+-                raise HauteValidationError("Invalid stage bundle metadata")
+-            fits = metadata.get("fits")
+-            if (
+-                not isinstance(fits, dict)
+-                or not fits
+-                or len(fits) > 11
+-                or any(not _FIT_KEY.fullmatch(key) for key in fits)
+-            ):
+-                raise HauteValidationError("Invalid stage bundle fit identities")
+-            allowed = {"source.parquet", "plan.json", *(f"{key}.checkpoint" for key in fits)}
+-            if metadata.get("finalised") is True:
+-                allowed.update(_EXPORT_MEMBERS.values())
+-            paths = metadata.get("paths", {})
+-            if not isinstance(paths, dict) or set(paths) - {"pruned", "banded", "smoothed"}:
+-                raise HauteValidationError("Invalid stage path families")
+-            from haute.modelling._stage_paths import path_members
+-
+-            for stage, path_summary in paths.items():
+-                allowed.update(path_members(path_summary, fits))
+-                if path_summary["stage"] != stage:
+-                    raise HauteValidationError("Stage path identity mismatch")
+-            if metadata.get("path") is not None:
+-                path_summary = metadata["path"]
+-                if paths.get(path_summary.get("stage")) != path_summary:
+-                    raise HauteValidationError("Selected path is not a retained family")
+-            if set(records) != allowed or set(names) != allowed | {"manifest.json"}:
+-                raise HauteValidationError("Unknown or missing stage bundle member")
+-            for name, record in records.items():
+-                if (
+-                    not isinstance(record, dict)
+-                    or type(record.get("bytes")) is not int
+-                    or record["bytes"] != archive.getinfo(name).file_size
+-                ):
+-                    raise HauteValidationError("Stage bundle member size mismatch")
+-                digest = hashlib.sha256()
+-                with archive.open(name) as reader, (root / name).open("xb") as writer:
+-                    for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+-                        digest.update(chunk)
+-                        writer.write(chunk)
+-                if record.get("sha256") != digest.hexdigest():
+-                    raise HauteValidationError("Stage bundle checksum mismatch")
+-            plan = EvaluationPlan.from_plain_data(json.loads((root / "plan.json").read_bytes()))
+-            if plan.source_sha256 != records["source.parquet"]["sha256"]:
+-                raise HauteValidationError("Stage bundle source disagrees with its evaluation plan")
+-            kwargs = metadata.get("job_kwargs")
+-            if (
+-                not isinstance(kwargs, dict)
+-                or fit_config_digest(kwargs) != metadata.get("fit_config_digest")
+-                or kwargs.get("purpose") != "exploration"
+-            ):
+-                raise HauteValidationError("Stage bundle fit configuration mismatch")
+-        bundle = StageBundle(root, metadata, plan)
++                raise HauteValidationError(f"Invalid stage member {name!r}") from exc
++
++        staged = metadata.get("staged")
++        if not isinstance(staged, dict):
++            raise HauteValidationError("Invalid stage bundle metadata")
++        expected = bundle_members(metadata, read) | closure({"staged": staged}, read)
++        if set(members) != expected:
++            raise HauteValidationError("Unknown or missing stage bundle member")
++        metadata["staged"] = hydrate({"staged": staged}, read)["staged"]
++        # Readers dispatch on the file extension: name the validated rows as Parquet.
++        source = root / "source.parquet"
++        os.link(members["source.parquet"], source)
++        members["source.parquet"] = source
++        plan = EvaluationPlan.from_plain_data(read("plan.json"))
++        if plan.source_sha256 != manifest.objects["source.parquet"].sha256:
++            raise HauteValidationError("Stage bundle source disagrees with its evaluation plan")
++        kwargs = metadata.get("job_kwargs")
++        if (
++            not isinstance(kwargs, dict)
++            or fit_config_digest(kwargs) != metadata.get("fit_config_digest")
++            or kwargs.get("purpose") != "exploration"
++        ):
++            raise HauteValidationError("Stage bundle fit configuration mismatch")
++        bundle = StageBundle(root, members, metadata, plan)
+         try:
+             yield bundle
+         finally:
+@@ -382,7 +438,7 @@ class StageRuntime:
+             self._temporary = tempfile.TemporaryDirectory(prefix="haute_stages_", dir=scratch_dir)
+             self.root = Path(self._temporary.name)
+         else:
+-            self.root = bundle.root
++            self.root = bundle.scratch
+         self.fits: dict[str, dict[str, Any]] = {}
+         self.summary: dict[str, Any] = {}
+         self.selected_params = (
+@@ -437,7 +493,7 @@ class StageRuntime:
+         size = Path(split.split_path).stat().st_size
+         if self.bundle.path_split_bytes + size > _MAX_PATH_SPLIT_BYTES:
+             return split
+-        destination = self.bundle.root / f"path-split-{key}.parquet"
++        destination = self.bundle.scratch / f"path-split-{key}.parquet"
+         try:
+             shutil.move(split.split_path, destination)
+         finally:
+@@ -464,11 +520,11 @@ class StageRuntime:
+ 
+     def retain_trial(self, trial: StageRuntime, params: Mapping[str, Any]) -> None:
+         """Replace the retained best trial; never accumulate every candidate's banks."""
+-        for path in self.root.glob("*.checkpoint"):
+-            path.unlink()
+-        for path in self.root.glob("*.oof.parquet"):
+-            path.unlink()
+-        for path in (*trial.root.glob("*.checkpoint"), *trial.root.glob("*.oof.parquet")):
++        retained = ("*.evidence", "*.chain", "*.oof.parquet")
++        for pattern in retained:
++            for path in self.root.glob(pattern):
++                path.unlink()
++        for path in (path for pattern in retained for path in trial.root.glob(pattern)):
+             shutil.move(str(path), self.root / path.name)
+         self.fits = copy.deepcopy(trial.fits)
+         self.summary = copy.deepcopy(trial.summary)
+@@ -541,7 +597,11 @@ class StageRuntime:
+         if session is None:
+             raise HauteValidationError("Stage job did not retain its training session")
+         if self.candidate_id is None:
+-            session.save(self.root / f"{key}.checkpoint")
++            if self.bundle is None:
++                session.save_evidence(self.root / f"{key}.evidence")
++                session.save_chain(self.root / f"{key}.chain")
++            else:
++                self.bundle.replace_checkpoint(key, session)
+         self.remember_session(key, session, model.selected_stage)
+ 
+     def remember_session(self, key: str, session: Any, selected: str) -> None:
+@@ -665,11 +725,17 @@ class StageRuntime:
+         self.metadata = metadata
+         if self.candidate_id is not None:
+             return None
+-        files = {
++        files: dict[str, Path | bytes] = {
+             "source.parquet": Path(source),
+             "plan.json": Path(result.evaluation["plan_path"]),
+-            **{f"{key}.checkpoint": self.root / f"{key}.checkpoint" for key in self.fits},
+         }
++        for key in self.fits:
++            for name in checkpoint_members(key):
++                files[name] = (
++                    self.bundle.member(name)
++                    if self.bundle is not None
++                    else self.root / f"{key}.{name.rsplit('/', 1)[1]}"
++                )
+         destination = Path(job.output_dir) / f"{job.name}.hstage"
+         _pack(destination, files, metadata)
+         result.stage_checkpoint_path = str(destination)
+@@ -745,23 +811,22 @@ def run_stage_job(
+             }
+             from haute.modelling._training_job import model_contract_filename
+ 
+-            files = {
+-                member: bundle.root / member
++            files: dict[str, Path | bytes] = {
++                member: bundle.member(member)
+                 for member in (
+                     "source.parquet",
+-                    "plan.json",
+-                    *(f"{key}.checkpoint" for key in bundle.metadata["fits"]),
++                    *(name for key in bundle.metadata["fits"] for name in checkpoint_members(key)),
+                 )
+             }
+             assert result.evaluation is not None
+             files.update(
+                 {
+-                    "model.native": Path(result.model_path),
+-                    "feature-contract.json": Path(result.model_path).parent
++                    "export/model.native": Path(result.model_path),
++                    "export/feature-contract.json": Path(result.model_path).parent
+                     / model_contract_filename(job.name),
+                     "plan.json": Path(result.evaluation["plan_path"]),
+-                    "evaluation-results.json": Path(result.evaluation["results_path"]),
+-                    "evaluation-report.json": Path(result.evaluation["report_path"]),
++                    "export/evaluation-results.json": Path(result.evaluation["results_path"]),
++                    "export/evaluation-report.json": Path(result.evaluation["report_path"]),
+                 }
+             )
+             destination = Path(output_dir) / f"{job.name}.hstage"
+diff --git a/before/tests/test_staged_runtime.py b/after/tests/test_staged_runtime.py
+index dfa98f7..266a33e 100644
+--- a/before/tests/test_staged_runtime.py
++++ b/after/tests/test_staged_runtime.py
+@@ -1,9 +1,12 @@
+ """Real canonical jobs reopen owned stage evidence without calling the booster again."""
+ 
++from pathlib import Path
++
+ import numpy as np
+ import pytest
+ from t_boost import _Booster
+ 
++from haute.modelling._stage_objects import StageArchive, read_archive_object
+ from haute.modelling._staged_runtime import open_stage_bundle, run_stage_job
+ from haute.modelling._tboost import TBoostModel
+ from haute.modelling._training_job import TrainingJob
+@@ -125,7 +128,7 @@ def test_session_cache_revalidates_replaced_checkpoints_and_respects_budget(
+     calls = []
+ 
+     def load(*args, **kwargs):
+-        calls.append(args[0])
++        calls.append(kwargs["chain"])
+         return original(*args, **kwargs)
+ 
+     monkeypatch.setattr(TBoostTrainingSession, "load", load)
+@@ -134,10 +137,11 @@ def test_session_cache_revalidates_replaced_checkpoints_and_respects_budget(
+         bundle.session("validation-0")
+         bundle.session("validation-0")
+         assert len(calls) == (2 if cache_budget == 0 else 1)
+-        checkpoint = bundle.root / "validation-0.checkpoint"
+-        replacement = checkpoint.with_suffix(".replacement")
+-        replacement.write_bytes(checkpoint.read_bytes())
+-        replacement.replace(checkpoint)
++        # A job's new chain for the fit supersedes the cached parent.
++        chain = "fit/validation-0/chain"
++        replacement = bundle.scratch / "replacement.member"
++        replacement.write_bytes(bundle.member(chain).read_bytes())
++        bundle.adopt_member(chain, replacement)
+         before = len(calls)
+         bundle.session("validation-0")
+         assert len(calls) == before + 1
+@@ -180,8 +184,43 @@ def test_path_defers_optional_shap_and_pdp_but_keeps_canonical_decision_diagnost
+     assert result.diagnostics_errors == []
+ 
+ 
+-@pytest.mark.parametrize("corruption", ["checksum", "unknown", "size"])
++def rewrite_archive(path, destination, change):
++    """Rewrite a stage archive after *change*(members, revision) edits its decoded parts.
++
++    Members are bytes by name. Object digests and sizes are recomputed, so only the
++    reader's own validation can refuse the result. The revision is written as given.
++    """
++    import hashlib
++    import json
++    import zipfile
++
++    with zipfile.ZipFile(path) as archive:
++        header = archive.read("archive.json")
++        revision = json.loads(archive.read("revision.json"))
++        members = {
++            name: archive.read(f"objects/{ref['sha256']}")
++            for name, ref in revision["objects"].items()
++        }
++    change(members, revision)
++    revision["objects"] = {
++        name: {
++            "sha256": hashlib.sha256(data).hexdigest(),
++            "size": len(data),
++            "kind": revision["objects"].get(name, {}).get("kind", "json"),
++        }
++        for name, data in members.items()
++    }
++    with zipfile.ZipFile(destination, "w") as archive:
++        archive.writestr("archive.json", header)
++        archive.writestr("revision.json", json.dumps(revision))
++        for data in {hashlib.sha256(d).hexdigest(): d for d in members.values()}.items():
++            archive.writestr(f"objects/{data[0]}", data[1])
++    return destination
++
++
++@pytest.mark.parametrize("corruption", ["checksum", "unknown", "size", "missing-source"])
+ def test_bundle_load_refuses_corrupt_or_unknown_payloads(tmp_path, corruption):
++    import json
+     import zipfile
+     from pathlib import Path
+ 
+@@ -189,6 +228,14 @@ def test_bundle_load_refuses_corrupt_or_unknown_payloads(tmp_path, corruption):
+ 
+     _, full = build(tmp_path)
+     path = Path(full.stage_checkpoint_path)
++    if corruption == "missing-source":
++        tampered = rewrite_archive(
++            path, tmp_path / "tampered.hstage", lambda members, _: members.pop("source.parquet")
++        )
++        with pytest.raises(HauteValidationError, match="missing"):
++            with open_stage_bundle(tampered):
++                pytest.fail("bundle without its source loaded")
++        return
+     if corruption == "size":
+         with pytest.raises(HauteValidationError, match="size"):
+             with open_stage_bundle(path, max_bytes=1):
+@@ -196,8 +243,10 @@ def test_bundle_load_refuses_corrupt_or_unknown_payloads(tmp_path, corruption):
+         return
+     with zipfile.ZipFile(path) as archive:
+         members = {name: archive.read(name) for name in archive.namelist()}
++        source = json.loads(members["revision.json"])["objects"]["source.parquet"]["sha256"]
+     if corruption == "checksum":
+-        members["source.parquet"] = members["source.parquet"][:-4] + b"xxxx"
++        name = f"objects/{source}"
++        members[name] = members[name][:-4] + b"xxxx"
+     else:
+         members["../../outside"] = b"escape"
+     with zipfile.ZipFile(path, "w") as archive:
+@@ -631,12 +680,15 @@ def test_banding_path_retains_parent_once_and_applies_exact_candidate(
+     assert all(p["loss"] is not None for p in summary["points"])
+     assert summary["points"][0]["loss_delta"] == 0
+     with open_stage_bundle(result.stage_checkpoint_path) as bundle:
+-        assert len(list(bundle.root.glob("*.checkpoint"))) == 1
++        assert {name for name in bundle.members if name.startswith("fit/")} == {
++            "fit/validation-0/evidence",
++            "fit/validation-0/chain",
++        }
+         last = read_path_result(bundle, summary["id"], "point-6")
+         assert last.metrics == independent.metrics
+         assert last.ave_per_feature == independent.ave_per_feature
+         assert last.ave_left_out == independent.ave_left_out
+-        assert not list(bundle.root.glob("path-split-*.parquet"))
++        assert not any("split" in name for name in bundle.members)
+         chosen = summary["points"][2]["id"]
+         candidate_result = read_path_result(bundle, summary["id"], chosen)
+         selected = bundle.session("validation-0", point_id=chosen).model("banded")
+@@ -938,7 +990,6 @@ def test_path_jobs_write_parents_once_and_store_families_by_reference(
+ ):
+     """Each fit's checkpoint is written at most once; point results reference summaries."""
+     import json
+-    import zipfile
+ 
+     from t_boost import TBoostTrainingSession
+ 
+@@ -946,8 +997,9 @@ def test_path_jobs_write_parents_once_and_store_families_by_reference(
+ 
+     _, full = build(tmp_path, validation)
+     settings = full.staged["configuration"]
+-    calls = {"load": 0, "save": 0}
+-    original_load, original_save = TBoostTrainingSession.load, TBoostTrainingSession.save
++    calls = {"load": 0, "save": 0, "evidence": 0}
++    original_load, original_save = TBoostTrainingSession.load, TBoostTrainingSession.save_chain
++    original_evidence = TBoostTrainingSession.save_evidence
+ 
+     def load(*args, **kwargs):
+         calls["load"] += 1
+@@ -957,11 +1009,16 @@ def test_path_jobs_write_parents_once_and_store_families_by_reference(
+         calls["save"] += 1
+         return original_save(*args, **kwargs)
+ 
++    def evidence(*args, **kwargs):
++        calls["evidence"] += 1
++        return original_evidence(*args, **kwargs)
++
+     monkeypatch.setattr(TBoostTrainingSession, "load", load)
+-    monkeypatch.setattr(TBoostTrainingSession, "save", save)
++    monkeypatch.setattr(TBoostTrainingSession, "save_chain", save)
++    monkeypatch.setattr(TBoostTrainingSession, "save_evidence", evidence)
+ 
+     def prepare(checkpoint, operation, output):
+-        calls.update(load=0, save=0)
++        calls.update(load=0, save=0, evidence=0)
+         _, result = run_stage_job(
+             checkpoint, operation=operation, stages=settings, prepare_path=True, output_dir=output
+         )
+@@ -971,6 +1028,7 @@ def test_path_jobs_write_parents_once_and_store_families_by_reference(
+     with open_stage_bundle(pruning.stage_checkpoint_path) as bundle:
+         fits = len(bundle.metadata["fits"])
+         assert counted["save"] == fits
++        assert counted["evidence"] == 0  # path jobs never rewrite fit evidence
+         assert counted["load"] == fits
+         summary = bundle.metadata["paths"]["pruned"]
+         for point in summary["points"]:
+@@ -984,10 +1042,14 @@ def test_path_jobs_write_parents_once_and_store_families_by_reference(
+     banding, counted = prepare(applied, "banded", str(tmp_path / "band"))
+     assert counted["save"] == fits  # flattening the applied pruning candidate, once per fit
+     assert counted["load"] == fits
+-    with zipfile.ZipFile(banding.stage_checkpoint_path) as archive:
+-        manifest = json.loads(archive.read("manifest.json"))["metadata"]
+-        band, prune = manifest["paths"]["banded"], manifest["paths"]["pruned"]
+-        stored = json.loads(archive.read(f"path-{band['id']}-point-1.result.json"))
++    archive = StageArchive.read(Path(banding.stage_checkpoint_path))
++    manifest = archive.manifest.metadata
++    band, prune = manifest["paths"]["banded"], manifest["paths"]["pruned"]
++    stored = json.loads(
++        read_archive_object(
++            archive.path, archive.manifest.objects[f"path/{band['id']}/point-1.result"]
++        )
++    )
+     assert not {"paths", "path_stages", "path_refs"} & set(stored["staged"])
+     with open_stage_bundle(banding.stage_checkpoint_path) as bundle:
+         result = read_path_result(bundle, band["id"], "point-1")
+@@ -1000,11 +1062,11 @@ def test_path_jobs_write_parents_once_and_store_families_by_reference(
+         }
+ 
+ 
+-@pytest.mark.parametrize("payload", ["NaN", "1e999", "foreign-path", "legacy", "manifest-NaN"])
++@pytest.mark.parametrize(
++    "payload", ["NaN", "1e999", "foreign-path", "legacy", "manifest-NaN", "null", "list"]
++)
+ def test_path_point_reads_refuse_invalid_members_even_with_matching_checksums(tmp_path, payload):
+-    import hashlib
+     import json
+-    import zipfile
+ 
+     from haute.errors import HauteValidationError
+     from haute.modelling._stage_paths import read_path_artifact
+@@ -1017,36 +1079,35 @@ def test_path_point_reads_refuse_invalid_members_even_with_matching_checksums(tm
+         prepare_path=True,
+         output_dir=str(tmp_path / "prune"),
+     )
+-    source = zipfile.ZipFile(pruning.stage_checkpoint_path)
+-    manifest = json.loads(source.read("manifest.json"))
+-    path_id = manifest["metadata"]["paths"]["pruned"]["id"]
+-    member = f"path-{path_id}-point-1.result.json"
+-    stored = json.loads(source.read(member))
+-    if payload == "foreign-path":
+-        stored["staged"]["prepared_path"] = "0" * 64
+-        text = json.dumps(stored)
+-    elif payload == "legacy":
+-        stored["staged"]["paths"] = manifest["metadata"]["paths"]
+-        text = json.dumps(stored)
+-    elif payload == "manifest-NaN":
+-        text = json.dumps(stored)
+-        manifest["metadata"]["paths"]["pruned"]["points"][1]["loss"] = float("nan")
+-    else:
+-        stored["metrics"] = {"poisson_deviance": "__NUMBER__"}
+-        text = json.dumps(stored).replace('"__NUMBER__"', payload)
+-    data = text.encode()
+-    manifest["members"][member] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+-    tampered = tmp_path / "tampered.hstage"
+-    with zipfile.ZipFile(tampered, "w") as target:
+-        for info in source.infolist():
+-            if info.filename == "manifest.json":
+-                target.writestr(info, json.dumps(manifest))
+-            elif info.filename == member:
+-                target.writestr(info, data)
+-            else:
+-                target.writestr(info, source.read(info))
++    path_id = pruning.staged["paths"]["pruned"]["id"]
++    member = f"path/{path_id}/point-1.result"
++
++    def change(members, revision):
++        stored = json.loads(members[member])
++        if payload == "foreign-path":
++            stored["staged"]["prepared_path"] = "0" * 64
++            text = json.dumps(stored)
++        elif payload == "legacy":
++            stored["staged"]["paths"] = revision["metadata"]["paths"]
++            text = json.dumps(stored)
++        elif payload in ("null", "list"):
++            text = "null" if payload == "null" else "[]"
++        elif payload == "manifest-NaN":
++            text = json.dumps(stored)
++            revision["metadata"]["paths"]["pruned"]["points"][1]["loss"] = float("nan")
++        else:
++            stored["metrics"] = {"poisson_deviance": "__NUMBER__"}
++            text = json.dumps(stored).replace('"__NUMBER__"', payload)
++        members[member] = text.encode()
++
++    tampered = rewrite_archive(pruning.stage_checkpoint_path, tmp_path / "tampered.hstage", change)
+     with pytest.raises(HauteValidationError):
+         read_path_artifact(tampered, path_id, "point-1")
++    if payload in ("null", "list"):
++        # The bundle reader refuses it while validating the revision's closure.
++        with pytest.raises(HauteValidationError, match="envelope"):
++            with open_stage_bundle(tampered):
++                pytest.fail("bundle with a malformed point result opened")
+     if payload == "manifest-NaN":
+         with pytest.raises(HauteValidationError, match="manifest"):
+             with open_stage_bundle(tampered):

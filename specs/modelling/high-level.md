@@ -61,7 +61,10 @@ the workspace. Related charts stack when their container is narrow.
   silently selecting another feature. A new node or training result resets this
   state. The feature picker moves above the chart in narrow containers.
 - AvE displays actual and expected together with a separate, aligned exposure
-  strip. Unordered categories use unconnected marks; numeric bins retain their
+  strip. Under a log-link offset (an exposure) the actual and expected averages are
+  per unit of exposure and the strip is the weight times the exposure; otherwise they
+  are weighted averages per row and the strip is the weight. An absent weight counts
+  as one. Unordered categories use unconnected marks; numeric bins retain their
   ordered lines. Full bin labels, values and exposure are available in a hover/
   focus detail and a disclosed table.
 - PDP uses the feature name on its axis, numeric curves and horizontal categorical
@@ -141,6 +144,25 @@ compatibility facade and route own no duplicate state or worker implementation.
   node config has no `exclude` field: like the removed `model_name`, a config carrying
   one is refused wherever it is loaded, saved or run, naming `feature_columns` as its
   replacement.
+- A node may be marked `interactive_build: true`: its model is built step by step in the
+  Modelling view
+  ([the frontend contract](../frontend-modelling-optimiser-ui/high-level.md#the-modelling-view))
+  and not in the node's panel. The marker says where the node is edited and nothing about
+  what it trains: training reads the node as the t-boost node its other settings describe.
+  Its config holds the settings its models share (the target, weight, offset, loss,
+  metrics and split) once, and its models under `models`, each with an id, a name, its model
+  type and its own factors, directions and parameters. A train or estimate request names the
+  model by its id, and the route reads the node as that model: the shared settings with the
+  model's own over them. Loading and saving check each model as the config it trains from.
+  Training refuses an interactive build without `models` (one made before them; the view
+  says it has no models) and a request that names no model or one the node does not hold.
+  It adds one thing to the run's report: every column reaching the node that holds no role
+  and that the model left out is binned against the model's predictions as its factors
+  are, so the view can chart a factor the model does not use. Its training input therefore
+  keeps every column reaching the node.
+  The editor does not yet reach such a node's Split and Export panes, so its model cannot be
+  saved to a project file, logged to MLflow or exported as a training script for
+  `haute train`.
 - Starting training (`POST /api/modelling/train`) performs the cheap graph/config
   validation synchronously, creates and registers the cancellable job, starts an owned
   preparation thread, and returns `status="started"` plus the job ID before RAM
@@ -464,9 +486,7 @@ option. Unchecking it publishes the one model trained on the training partition
 with validation used for selection and, for CatBoost, early stopping. The
 validation model is saved with its diagnostics and optional final-test metrics;
 there is no second fit. The run reports one total fit and labels diagnostics as
-validation when there is no final test. A t-boost node has no such option: its
-early-stopped validation fit is always the published model (see Model families).
-For the other families this option is unavailable for
+validation when there is no final test. This option is unavailable for
 cross-validation, no-validation, and parameter tuning, which require their
 existing final fit. Older configurations default to refitting.
 
@@ -670,8 +690,7 @@ Parameters as well as Train. CatBoost Tweedie power must be finite and strictly 
 
 Tuning must not silently add or alter a final-test partition. The Parameters pane
 explains whether one is reserved and links to Split, and states the fit budget in the
-Train run summary's words: the selection fits plus the final fit, or, for t-boost, which
-is never refit, plus the winning validation fit. Config issues appear in the relevant pane and on
+Train run summary's words: the selection fits plus the final fit. Config issues appear in the relevant pane and on
 its tab; Train provides links to resolve them and a summary of target, feature count,
 evaluation, compute settings and fit budget before submission. With fixed parameters, the
 fit budget labels holdout/CV runs as validation fits and the development refit as the final
@@ -1000,23 +1019,26 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   rating tables, one per main effect and per interaction up to `max_interaction_order`, so an
   intercept plus one table value per table is the raw score with no approximation. Losses are
   `RMSE`, `Poisson`, `Gamma`, `Tweedie` (the variance power is t-boost's `tweedie_rho`) and
-  `Logloss`; `MAE` and `CrossEntropy` are not offered. Early stopping fits the model, and a
-  t-boost model is never refit (refit policy `validation_fit`): with holdout validation, the
-  published model is the one fit on the training partition, whose validation rows are
-  t-boost's `eval_set`, so every bag stops at its own best round on them and they never reach
-  training, pruning or the tables. The node has no refit setting, and cross-validation is
-  refused because it leaves no single fit to publish. With no validation, the one fit on the
-  development rows stops on t-boost's own holdout of those rows (`validation_fraction`). A
-  study compares its trials on the holdout and publishes the winning trial's fit, reproduced
-  from the winning parameters (fits are deterministic) as the one fit beyond the trials;
-  `n_trees` is the ceiling every fit stops early within, and tuning may search it. Final-test
-  rows never reach a fit. When the evaluation strategy is
-  `group`, the group column is passed as t-boost's `groups`, so its holdout and bags never
-  split an entity. Fits are deterministic for a seed whatever the thread allotment. Fit
-  evidence records the ceiling, the trees kept (the largest bag's count, as t-boost reports
-  it) and why the fit stopped (`validation` for early stopping, `none` at the ceiling,
-  `native_exhaustion` when no split remained), and the loss curve is each round's mean
-  training and early-stopping deviance over the bags still boosting. A regression offset
+  `Logloss`; `MAE` and `CrossEntropy` are not offered. A t-boost fit takes no validation rows
+  (t-boost 0.9.1 has no fit-time evaluation set): every bag stops early on rows it holds back
+  from the rows it is given (`validation_fraction`) and prunes on its out-of-bag rows, so,
+  like an EBM, a fit sees only the rows it is given. Its refit policy is `fixed_budget`:
+  `n_trees` is the ceiling every fit stops early within, passed to every fit unchanged, and
+  no round count is carried between fits. Validation rows are therefore never part of the
+  fit, and a new t-boost node sets none aside (validation method `none`): its one fit trains
+  on every development row. A node that does ask for validation uses it to measure, as an
+  EBM does: the selection fits train on the training partition and are scored on the
+  validation rows, and the final fit trains on all development rows, unless a holdout's
+  refit is switched off and its training-partition fit is published. A study compares its
+  trials on the validation rows and refits the winning parameters on all development rows,
+  and tuning may search `n_trees`. Final-test rows never reach a fit. When the evaluation
+  strategy is `group`, the group column is passed as t-boost's `groups`, so its holdout and
+  bags never split an entity. Fits are deterministic for a seed whatever the thread
+  allotment. Fit evidence records the ceiling, the trees kept (the largest bag's count, as
+  t-boost reports it) and why the fit stopped (`validation` for early stopping on the bags'
+  own rows, `none` at the ceiling, `native_exhaustion` when no split remained), and the loss
+  curve is each round's mean training and early-stopping deviance over the bags still
+  boosting; a fit that boosts nothing (a constant target) has no curve. A regression offset
   enters as t-boost's exposure under the log-link losses (the model scores the rate times the
   offset) and is added verbatim to the raw score under `RMSE`; a classification offset fails,
   as for the other new families.
@@ -1024,7 +1046,7 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   fitted levels never fails, in training or scoring: t-boost scores it in the cell its
   `unknown_category` policy names, which Haute sets to `rare`: the pooled `<rare>` cell, priced
   like the levels too thin to model alone, or t-boost's default cell on an axis that pooled
-  nothing. A fit logs each feature whose validation rows hold such values. The feature
+  nothing. The feature
   contract therefore records only a categorical domain the user declared upstream, which
   Model Scoring still enforces; an undeclared feature's values reach t-boost unchecked. Nulls score in the
   missing level, and every other feature is cast to `Float64`. Monotone constraints are
@@ -1038,7 +1060,7 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   staying one term. The `.tboost` file is t-boost's own JSON model document with Haute's
   record (features, categorical levels, task, link, offset and its link, class labels) in
   t-boost's `metadata` slot, so plain t-boost still loads it and no pickle is involved. It
-  needs t-boost 0.8 or later. Loading checks that
+  needs t-boost 0.9.1 or later. Loading checks that
   record against the native model (estimator kind, binary 0/1 classes, link, offset, feature
   order and categorical set) and refuses any file where they disagree.
 - **GPU training.** CatBoost keeps its own `task_type: "GPU"` parameter. A family whose
@@ -1076,3 +1098,70 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
 
+
+## Staged t-boost training
+
+Interactive t-boost builds expose independent full GBM, pruning, banding and smoothing
+results. Each result is an ordinary exact table model; post-fit actions reuse the retained
+training evidence and never fit trees. Pruning is previewed before Apply; a failed or
+cancelled action preserves the applied output. Results survive server restart through
+versioned, checksummed training checkpoints. Each result identifies its immutable build,
+parent revision, data/evaluation provenance and replayable recipe.
+
+A model's optional `stages` configuration separates path/pruning, banding and smoothing
+settings from its GBM `params`. It records the applied recipe independently of draft
+controls. Absence of `stages` preserves existing single-call fitting and saved artifacts.
+Entering staged training creates a new fit; inference-only legacy models cannot resume.
+Scripts, refits, native exports and logging use the same canonical recipe and evaluator.
+Interactive exploration scores validation rows, or explicitly labelled development rows
+when there is no validation; it never refits on or scores reserved final-test rows.
+
+
+Staged exploration supports fixed holdout, development-only and cross-validation diagnostics.
+Tuning selects full GBMs and retains only the winning evaluation fits. Explicit finalisation
+replays the applied recipe and owns final-test scoring; its native export and logging artifacts
+survive restart independently of the exploration curves. Candidate metadata records the
+selected stage and recipe. Stage visibility and table selection never change model output.
+
+Staged phase selection can skip pruning, banding or smoothing. With explicit enable flags,
+post-fit operations resolve their parent from the nearest preceding enabled phase. An enabled
+parent must exist with the corresponding chain; it is never implicitly fitted. Applied
+recipes remain frozen independently of these draft switches.
+
+All interactive post-fit stages retain candidates until explicit Apply. Up to ten named
+applied checkpoints survive later builds and restarts; restoring one verifies its artifact,
+upstream identity and compatibility with current shared evaluation settings without refitting.
+
+Interactive requests can queue one next-stage preview with each applied publication.
+The server prepares it through supervised post-fit training after the previous fit releases
+its resources, preserving the applied result on continuation failure or cancellation.
+
+
+### Post-fit paths
+
+Pruning, interaction banding and Auto-relative smoothing expose bounded immutable candidate
+families from retained fits. Users inspect/select without editing canonical settings; Apply
+commits the exact evaluated candidate and its replayable policy. Identity skips the phase,
+rejection/no-op is explicit, and the preceding run prepares the next enabled path seamlessly.
+One Paths canvas links selection to factor and table inspection, with separate suggested,
+selected and applied states. Comparable validation/OOF evidence never uses reserved test rows;
+development-only evidence has no validation recommendation. Native pruning OOB evidence keeps
+its own label. Compact artifacts share fit evidence and survive restart; stale selections
+cannot replace newer models. Final refits recompute fit-specific transformations from policy.
+
+
+Large model diagnostics cross the worker boundary as validated job-owned JSON artifacts,
+not IPC metadata. Successful fitting must not fail merely because its complete report
+exceeds the message limit; retain the same strict publication and cancellation guarantees.
+
+
+Large stage diagnostics must not prevent banding/smoothing previews or named checkpoints
+from being saved. Durable stage metadata references separately validated immutable result
+files; existing builds reopen unchanged, and failed publication preserves the applied model.
+
+Interactive stage work reuses validated full-fit evidence without sharing mutable recipe
+choices between candidates. Applying a prepared point retains its exact recipe without
+rebuilding the checkpoint. Workspace responses contain compact decision evidence; dense
+tables load on demand. Optional SHAP/PDP work is deferred to final evaluation for path
+candidates. Post-fit parameter edits do not repeat the data evaluation preview, and
+small previews can coexist with a running training stage within the admission budget.

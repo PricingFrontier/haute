@@ -22,6 +22,7 @@ export type ShownFit = {
   thinned: boolean
   bestIteration: number | null
   intro: string | null
+  live?: boolean
 }
 
 /**

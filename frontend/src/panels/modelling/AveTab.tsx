@@ -42,7 +42,8 @@ export function AveTab({
   )
 }
 
-function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
+/** One feature's actual and expected by bin, over its exposure. The Modelling view draws it for the factor selected. */
+export function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
   const [activeBin, setActiveBin] = useState<number | null>(null)
   const { bins } = data
   if (!bins.length) return <ChartEmptyState>No bins for {data.feature}</ChartEmptyState>

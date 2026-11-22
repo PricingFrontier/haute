@@ -1,0 +1,1114 @@
+diff --git a/before/scripts/modelling_audit/audit_hooks.py b/after/scripts/modelling_audit/audit_hooks.py
+index a9a560c..5be046b 100644
+--- a/before/scripts/modelling_audit/audit_hooks.py
++++ b/after/scripts/modelling_audit/audit_hooks.py
+@@ -34,8 +34,9 @@ def timed_training_worker(
+     """Record the worker job function's wall-clock span (after spawn and imports)."""
+     from haute.routes._training_worker import _run_training_process_job
+ 
+-    from .audit_timing import record
++    from .audit_timing import WORKER_TARGETS, install, record
+ 
++    install(Path(os.environ["HAUTE_AUDIT_OUTPUT"]), WORKER_TARGETS)
+     start = time.time()
+     try:
+         return _run_training_process_job(runtime, request)
+diff --git a/before/scripts/modelling_audit/audit_timing.py b/after/scripts/modelling_audit/audit_timing.py
+index 25843d1..9aa2ef1 100644
+--- a/before/scripts/modelling_audit/audit_timing.py
++++ b/after/scripts/modelling_audit/audit_timing.py
+@@ -28,7 +28,7 @@ TARGETS: tuple[tuple[str, str], ...] = (
+     ("haute.routes._training_lifecycle:TrainService", "_finish_stage_job"),
+     ("haute.routes._training_lifecycle:TrainService", "_release_superseded_training_artifacts"),
+     ("haute.routes._training_lifecycle:TrainService", "start_preview"),
+-    ("haute.routes._training_stages:StageJobScope", "copy_parent"),
++    ("haute.routes._training_stages:StageJobScope", "parent_reference"),
+     ("haute.routes._training_stages:StageJobScope", "prepare"),
+     ("haute.routes._training_stages:StageJobScope", "publish"),
+     ("haute.routes._training_stages:StageJobScope", "finish"),
+@@ -40,6 +40,16 @@ TARGETS: tuple[tuple[str, str], ...] = (
+     ("haute.modelling._stage_store:StageStore", "_collect"),
+     ("haute.modelling._stage_store:StageStore", "apply_path"),
+     ("haute.modelling._stage_store:StageStore", "cleanup"),
++    ("haute.modelling._stage_objects:StoredRevision", "write_archive"),
++    ("haute.modelling._stage_objects:StageArchive", "stage_into"),
++    ("haute.modelling._stage_objects:StageObjects", "install"),
++)
++# Spans inside the spawned stage worker: reading its parent revision and packing its own.
++WORKER_TARGETS: tuple[tuple[str, str], ...] = (
++    ("haute.modelling._staged_runtime", "extract_archive"),
++    ("haute.modelling._staged_runtime", "_pack"),
++    ("haute.modelling._stage_paths", "_pack"),
++    ("haute.modelling._staged_runtime:StageBundle", "_load_session"),
+ )
+ 
+ 
+@@ -70,10 +80,10 @@ def _timed(function: Callable[..., Any], name: str, output: Path) -> Callable[..
+     return wrapped
+ 
+ 
+-def install(output: Path) -> None:
++def install(output: Path, targets: tuple[tuple[str, str], ...] = TARGETS) -> None:
+     import importlib
+ 
+-    for location, attribute in TARGETS:
++    for location, attribute in targets:
+         module_name, _, class_name = location.partition(":")
+         owner: Any = importlib.import_module(module_name)
+         if class_name:
+diff --git a/before/specs/modelling/low-level.md b/after/specs/modelling/low-level.md
+index 5178b03..5431b10 100644
+--- a/before/specs/modelling/low-level.md
++++ b/after/specs/modelling/low-level.md
+@@ -3418,16 +3418,23 @@ reads and restore-final.
+ 
+ **Jobs.**
+ - The worker request carries the store key and parent revision.
+-- The worker resolves members through the same validated reader the parent uses, and reads
+-  the source as a typed, explicitly owned Parquet input.
++- The worker reads its parent revision in place through the parent's validated reader
++  (`StageStore.open_parent`). It is given the store key, the revision and the manifest's
++  digest and size, takes no pin and no token, and writes nothing under the store.
++- Training reads Parquet by path, and no path to a store object is handed out. The worker
++  therefore copies the rows once, through their verified handle, into its own scratch on
++  first use (`StageBundle.source`); parent-side opens never copy them. `TrainingJob` is
++  unchanged.
+ - `StageBundle` separates read-only members from a job-owned scratch root.
+ - The worker never writes under the store. It returns a delta `.hstage`: a manifest proposal
+   plus new objects only, as its single `stage_state` artifact. The worker protocol's
+   artifact and metadata limits are unchanged.
+ - The parent stream-copies new objects into `staging/`, verifies them, and checks that every
+   inherited reference is in the pinned parent's closure.
+-- It compares `metadata.staged` with the public response under a defined normalization of
+-  references.
++- Its artifact validation reads the delta in place (`DeltaRevision`): carried objects from
++  the archive, inherited ones from the leased parent by member name and identical
++  reference. It compares the hydrated `metadata.staged` with the public response without
++  nulls, and extracts nothing.
+ - After ingest, the job directory keeps only the ordinary artifacts. Parent cleanup never
+   unlinks a store object.
+ 
+diff --git a/before/src/haute/modelling/_stage_objects.py b/after/src/haute/modelling/_stage_objects.py
+index 54ed879..bbf90ac 100644
+--- a/before/src/haute/modelling/_stage_objects.py
++++ b/after/src/haute/modelling/_stage_objects.py
+@@ -900,17 +900,18 @@ Opener = Callable[[], AbstractContextManager[IO[bytes]]]
+ 
+ def write_bundle(
+     destination: Path,
+-    members: Mapping[str, Path | bytes | Opener],
++    members: Mapping[str, Path | bytes | Opener | ObjectRef],
+     *,
+     revision: str,
+     result: Mapping[str, Any],
+     metadata: Mapping[str, Any],
+ ) -> RevisionManifest:
+-    """A full portable archive of member files, bytes or verified openers, without a store.
++    """A portable archive of member files, bytes or verified openers, without a store.
+ 
+     Members with identical content share one object. An opener (a store revision's
+-    verified member reader) is read only through the handle it yields. Returns the
+-    archive's manifest.
++    verified member reader) is read only through the handle it yields. An `ObjectRef`
++    member is *inherited*: it is listed but not carried, so the archive is a delta that
++    only its parent's store can complete. Returns the archive's manifest.
+     """
+     refs: dict[str, ObjectRef] = {}
+     sources: dict[str, Path | bytes | Opener] = {}
+@@ -919,6 +920,9 @@ def write_bundle(
+         return value.open("rb") if isinstance(value, Path) else value()
+ 
+     for name, value in members.items():
++        if isinstance(value, ObjectRef):
++            refs[name] = value
++            continue
+         if isinstance(value, bytes):
+             digest, size = hashlib.sha256(value).hexdigest(), len(value)
+         else:
+@@ -935,7 +939,13 @@ def write_bundle(
+         with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
+             archive.writestr(
+                 zipfile.ZipInfo("archive.json", (1980, 1, 1, 0, 0, 0)),
+-                canonical_json({"format": ARCHIVE_FORMAT, "version": VERSION, "delta": False}),
++                canonical_json(
++                    {
++                        "format": ARCHIVE_FORMAT,
++                        "version": VERSION,
++                        "delta": manifest.digests() != set(sources),
++                    }
++                ),
+             )
+             archive.writestr(
+                 zipfile.ZipInfo("revision.json", (1980, 1, 1, 0, 0, 0)), manifest.encode()
+@@ -1022,3 +1032,43 @@ class StoredRevision:
+     def write_archive(self, destination: Path) -> None:
+         """A portable archive of this revision, for a worker or an exported artifact."""
+         self.objects.write_archive(destination, self.manifest)
++
++
++@dataclass(frozen=True)
++class DeltaRevision:
++    """A delta archive read in place: carried objects from the archive, inherited ones from
++    its parent revision, matched by member name and identical reference.
++
++    *parent* is the pinned revision the delta was built on (``None`` for a full archive).
++    """
++
++    archive: StageArchive
++    parent: StoredRevision | None
++
++    @property
++    def manifest(self) -> RevisionManifest:
++        return self.archive.manifest
++
++    def read_bytes(self, ref: ObjectRef) -> bytes:
++        if ref.sha256 in self.archive.carried:
++            return read_archive_object(self.archive.path, ref)
++        name = next((n for n, r in self.manifest.objects.items() if r == ref), None)
++        if name is None:
++            raise HauteValidationError("Stage archive does not list this object")
++        with self.open(name) as handle:
++            return handle.read()
++
++    @contextmanager
++    def open(self, name: str) -> Iterator[IO[bytes]]:
++        ref = self.manifest.objects.get(name)
++        if ref is None:
++            raise HauteValidationError(f"Stage revision lacks member {name!r}")
++        if ref.sha256 in self.archive.carried:
++            yield io.BytesIO(read_archive_object(self.archive.path, ref))
++            return
++        if self.parent is None or self.parent.manifest.objects.get(name) != ref:
++            raise HauteValidationError(
++                f"Stage archive inherits {name!r}, which its parent does not hold"
++            )
++        with self.parent.open(name) as handle:
++            yield handle
+diff --git a/before/src/haute/modelling/_stage_store.py b/after/src/haute/modelling/_stage_store.py
+index 48db7f0..b65328f 100644
+--- a/before/src/haute/modelling/_stage_store.py
++++ b/after/src/haute/modelling/_stage_store.py
+@@ -529,11 +529,20 @@ class StageStore:
+             self._write(key, value)
+ 
+     def prepare(
+-        self, key: str, source: Path, *, result: Mapping[str, Any], config_digest: str
++        self,
++        key: str,
++        source: Path,
++        *,
++        result: Mapping[str, Any],
++        config_digest: str,
++        parent_revision: str | None = None,
+     ) -> PreparedStage:
+-        """Stage a portable `.hstage`'s objects and the result's diagnostics as a revision.
++        """Stage a stage archive's new objects and the result's diagnostics as a revision.
+ 
+-        Nothing is published; `publish`, `apply_path` or `discard_prepared` follows.
++        A delta archive inherits members from *parent_revision*, the revision it was built
++        on. Each inherited member must be in that revision's verified closure with an
++        identical reference. Nothing is published; `publish`, `apply_path` or
++        `discard_prepared` follows.
+         """
+         if not _HEX64.fullmatch(config_digest):
+             raise HauteValidationError("Stage fit configuration needs a SHA-256 digest")
+@@ -541,7 +550,10 @@ class StageStore:
+         if archive.manifest.result:
+             raise HauteValidationError("A stage artifact cannot carry a result envelope")
+         objects = self._objects(key)
+-        staged = archive.stage_into(objects, parent=None)
++        parent = None
++        if archive.inherited:
++            parent = self._parent_manifest(key, parent_revision)
++        staged = archive.stage_into(objects, parent=parent)
+         try:
+             payloads: dict[str, bytes] = {}
+             envelope = split(result, payloads.__setitem__)
+@@ -571,12 +583,76 @@ class StageStore:
+                 item.path.unlink(missing_ok=True)
+             raise
+ 
++    def _parent_manifest(self, key: str, revision: str | None) -> RevisionManifest:
++        """The verified manifest of a revision the pointer still names, for a delta's ingest."""
++        with self._lock(key):
++            record = next(
++                (item for item in self._records(self._read(key)) if item["revision"] == revision),
++                None,
++            )
++            if record is None:
++                raise ConflictError("The stage parent changed; refresh before continuing")
++            return self._manifest(self._objects(key), record)
++
++    def parent_reference(self, key: str, revision: str) -> dict[str, Any]:
++        """What a worker needs to read *revision* in place: its scope and manifest digest."""
++        with self._lock(key):
++            record = next(
++                (item for item in self._records(self._read(key)) if item["revision"] == revision),
++                None,
++            )
++            if record is None:
++                raise ConflictError("The stage parent changed; refresh before continuing")
++        return {
++            "project_root": str(self.project_root),
++            "key": key,
++            "revision": revision,
++            "sha256": record["sha256"],
++            "size": record["size"],
++        }
++
++    @classmethod
++    def open_parent(cls, reference: Mapping[str, Any]) -> StoredRevision:
++        """A worker's read-only view of its parent revision; it writes nothing to the store.
++
++        It takes no pin and no token: the running-job record keeps the parent rooted. If
++        the parent was nevertheless collected (an orphaned worker), reads fail validation.
++        """
++        if not isinstance(reference, Mapping) or set(reference) != {
++            "project_root",
++            "key",
++            "revision",
++            "sha256",
++            "size",
++        }:
++            raise HauteValidationError("Invalid stage parent reference")
++        store = cls(Path(reference["project_root"]))
++        objects = store._objects(reference["key"])
++        if not _HEX64.fullmatch(str(reference["sha256"])) or type(reference["size"]) is not int:
++            raise HauteValidationError("Invalid stage parent reference")
++        manifest = objects.read_revision(
++            reference["revision"], sha256=reference["sha256"], size=reference["size"]
++        )
++        return StoredRevision(objects, manifest)
++
+     @contextmanager
+     def preparing(
+-        self, key: str, source: Path, *, result: Mapping[str, Any], config_digest: str
++        self,
++        key: str,
++        source: Path,
++        *,
++        result: Mapping[str, Any],
++        config_digest: str,
++        parent_revision: str | None = None,
+     ) -> Iterator[PreparedStage]:
+         """Own an unpublished synchronous Apply revision until commit or abandonment."""
+-        prepared = self.prepare(key, source, result=result, config_digest=config_digest)
++        prepared = self.prepare(
++            key,
++            source,
++            result=result,
++            config_digest=config_digest,
++            parent_revision=parent_revision,
++        )
+         try:
+             yield prepared
+         finally:
+diff --git a/before/src/haute/modelling/_staged_runtime.py b/after/src/haute/modelling/_staged_runtime.py
+index 20b0b93..e96c6f3 100644
+--- a/before/src/haute/modelling/_staged_runtime.py
++++ b/after/src/haute/modelling/_staged_runtime.py
+@@ -25,6 +25,8 @@ from haute.modelling._candidate_run import training_identity_sha256
+ from haute.modelling._evaluation import EvaluationPlan
+ from haute.modelling._stage_diagnostics import closure, hydrate, split
+ from haute.modelling._stage_objects import (
++    DeltaRevision,
++    ObjectRef,
+     Opener,
+     RevisionManifest,
+     StageArchive,
+@@ -40,6 +42,8 @@ from haute.modelling._staged_config import StagedConfig
+ if TYPE_CHECKING:
+     from haute.modelling._training_job import _SplitResult
+ 
++# A revision read in place through verified handles.
++InPlaceRevision = StoredRevision | DeltaRevision
+ _FIT_KEY = re.compile(r"(?:development|validation-[0-9])\Z")
+ _JOB_FIELDS = (
+     "name",
+@@ -134,7 +138,9 @@ def checkpoint_members(key: str) -> tuple[str, str]:
+ 
+ 
+ def _pack(
+-    path: Path, files: Mapping[str, Path | bytes | Opener], metadata: Mapping[str, Any]
++    path: Path,
++    files: Mapping[str, Path | bytes | Opener | ObjectRef],
++    metadata: Mapping[str, Any],
+ ) -> None:
+     """Write a portable stage archive; `metadata.staged` diagnostics become shared objects."""
+     objects: dict[str, bytes] = {}
+@@ -168,6 +174,7 @@ class StageBundle:
+         self._opener = opener
+         # Extracted copies (a portable bundle only); a store revision has no paths.
+         self._files = files
++        self._source: Path | None = None
+         self.scratch = root / "scratch"
+         self.scratch.mkdir(exist_ok=True)
+         self._written: dict[str, Path] = {}
+@@ -178,8 +185,36 @@ class StageBundle:
+ 
+     @property
+     def source(self) -> Path:
+-        """The training rows as a Parquet path: only an extracted bundle has one."""
+-        return self.member("source.parquet")
++        """The training rows as a Parquet path.
++
++        An extracted bundle has its private copy. A revision read in place copies its rows
++        once, through their verified handle, into this job's scratch: training reads
++        Parquet by path, and no path to a store object is ever handed out.
++        """
++        if self._files is not None or "source.parquet" in self._written:
++            return self.member("source.parquet")
++        if self._source is None:
++            copy = self.scratch / "source.parquet"
++            with self.open_member("source.parquet") as rows, copy.open("xb") as target:
++                shutil.copyfileobj(rows, target, 1024 * 1024)
++            self._source = copy
++        return self._source
++
++    def packed(self, name: str) -> Path | ObjectRef | Opener:
++        """How a new revision of this bundle carries member *name*.
++
++        A member this job wrote is carried. An untouched member of a revision read in place
++        is inherited by its reference, so the new archive is a delta on this revision. An
++        extracted bundle's members are carried from their verified copies.
++        """
++        if name in self._written:
++            return self._written[name]
++        if self._files is None:
++            ref = self.manifest.objects.get(name)
++            if ref is None:
++                raise HauteValidationError(f"Stage revision has no member {name!r}")
++            return ref
++        return self.opener(name)
+ 
+     def has_member(self, name: str) -> bool:
+         return name in self._written or name in self.manifest.objects
+@@ -403,25 +438,28 @@ def revision_closure(metadata: Mapping[str, Any], result: Mapping[str, Any], rea
+     return names | closure(result, read) | {"view"} if result else names
+ 
+ 
+-def revision_files(bundle: StageBundle, metadata: Mapping[str, Any]) -> dict[str, Opener]:
+-    """Verified openers for the members a new revision of *bundle* with *metadata* carries.
++def revision_files(
++    bundle: StageBundle, metadata: Mapping[str, Any]
++) -> dict[str, Path | ObjectRef | Opener]:
++    """The members a new revision of *bundle* with *metadata* holds (see `packed`).
+ 
+     `metadata.staged` objects are excluded: `_pack` splits them from the metadata itself.
+     """
+-    return {name: bundle.opener(name) for name in bundle_members(metadata, bundle.read_json)}
++    return {name: bundle.packed(name) for name in bundle_members(metadata, bundle.read_json)}
+ 
+ 
+ @contextmanager
+ def open_stage_bundle(
+-    source: str | Path | StoredRevision,
++    source: str | Path | InPlaceRevision,
+     *,
+     scratch_dir: str | None = None,
+     max_bytes: int = _LIMIT,
+ ) -> Iterator[StageBundle]:
+-    """Open a revision: a portable `.hstage` (extracted, verified) or a pinned store revision.
++    """Open a revision: a portable `.hstage` (extracted, verified) or one read in place.
+ 
+-    A store revision is read in place through verified handles, and the caller keeps it
+-    pinned while the bundle is open.
++    In place means a store revision (`StoredRevision`) or a delta archive over its parent
++    (`DeltaRevision`), read through verified handles. Their holder keeps the store revision
++    rooted (a pin, or the running-job record) while the bundle is open.
+     """
+     if scratch_dir is not None:
+         Path(scratch_dir).mkdir(parents=True, exist_ok=True)
+@@ -430,9 +468,10 @@ def open_stage_bundle(
+         if isinstance(source, (str, Path)):
+             read_archive = StageArchive.read(Path(source))
+             archive: StageArchive | None = read_archive
++            in_place: InPlaceRevision | None = None
+             manifest = read_archive.manifest
+         else:
+-            archive, manifest = None, source.manifest
++            archive, in_place, manifest = None, source, source.manifest
+         if sum(ref.size for ref in manifest.objects.values()) > max_bytes:
+             raise HauteValidationError("Invalid stage bundle members or expanded size")
+         metadata = dict(manifest.metadata)
+@@ -464,8 +503,8 @@ def open_stage_bundle(
+                 return extracted[name].open("rb")
+ 
+         else:
+-            assert isinstance(source, StoredRevision)
+-            opener = source.open
++            assert in_place is not None
++            opener = in_place.open
+ 
+         def read(name: str) -> Any:
+             if name not in manifest.objects:
+@@ -817,14 +856,17 @@ class StageRuntime:
+         self.metadata = metadata
+         if self.candidate_id is not None:
+             return None
+-        files: dict[str, Path | bytes | Opener] = {
+-            "source.parquet": Path(source),
++        files: dict[str, Path | bytes | Opener | ObjectRef] = {
++            # A resumed stage inherits its parent's rows rather than its scratch copy.
++            "source.parquet": self.bundle.packed("source.parquet")
++            if self.bundle is not None
++            else Path(source),
+             "plan.json": Path(result.evaluation["plan_path"]),
+         }
+         for key in self.fits:
+             for name in checkpoint_members(key):
+                 files[name] = (
+-                    self.bundle.opener(name)
++                    self.bundle.packed(name)
+                     if self.bundle is not None
+                     else self.root / f"{key}.{name.rsplit('/', 1)[1]}"
+                 )
+@@ -835,7 +877,7 @@ class StageRuntime:
+ 
+ 
+ def run_stage_job(
+-    checkpoint: str | Path,
++    checkpoint: str | Path | InPlaceRevision,
+     *,
+     operation: str,
+     stages: Mapping[str, Any],
+@@ -903,8 +945,8 @@ def run_stage_job(
+             }
+             from haute.modelling._training_job import model_contract_filename
+ 
+-            files: dict[str, Path | bytes | Opener] = {
+-                member: bundle.opener(member)
++            files: dict[str, Path | bytes | Opener | ObjectRef] = {
++                member: bundle.packed(member)
+                 for member in (
+                     "source.parquet",
+                     *(name for key in bundle.metadata["fits"] for name in checkpoint_members(key)),
+diff --git a/before/src/haute/routes/_training_artifacts.py b/after/src/haute/routes/_training_artifacts.py
+index 5f5ed89..40da9fc 100644
+--- a/before/src/haute/routes/_training_artifacts.py
++++ b/after/src/haute/routes/_training_artifacts.py
+@@ -14,10 +14,10 @@ import tempfile
+ import threading
+ from collections import Counter
+ from collections.abc import Callable, Iterator, Mapping
+-from contextlib import contextmanager
++from contextlib import AbstractContextManager, contextmanager
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Any, Literal, cast
++from typing import TYPE_CHECKING, Any, Literal, cast
+ 
+ from haute._artifact_housekeeping import (
+     create_owned_artifact_directory,
+@@ -43,6 +43,9 @@ from haute.schemas import (
+     TuningReportPayload,
+ )
+ 
++if TYPE_CHECKING:
++    from haute.modelling._stage_objects import StoredRevision
++
+ logger = get_logger(component="server.modelling.train")
+ 
+ _TRAINING_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/modelling_training"
+@@ -240,9 +243,13 @@ def _validate_training_artifacts(
+     expected_evaluation: EvaluationReportPayload,
+     expected_tuning: TuningReportPayload | None = None,
+     expected_staged: StagedBuildPayload | None = None,
++    stage_parent: Callable[[], AbstractContextManager[StoredRevision]] | None = None,
+ ) -> dict[str, Path]:
+     """Validate one complete evaluation run and optional tuning set in place.
+ 
++    A stage job's `stage_state` is a delta over its parent revision; *stage_parent* leases
++    that revision so the delta is validated in place, without extracting anything.
++
+     Returns each artifact kind's absolute path inside *artifact_root*; no file is
+     moved, so the validated directory is the published, immutable set.
+     """
+@@ -376,15 +383,22 @@ def _validate_training_artifacts(
+             )
+ 
+     if expected_staged is not None:
++        from contextlib import nullcontext
++
++        from haute.modelling._stage_objects import DeltaRevision, StageArchive
+         from haute.modelling._staged_runtime import open_stage_bundle
+ 
+         if artifact_paths["stage_state"].name != f"{expected_model_name}.hstage":
+             raise WorkerProtocolError("Stage checkpoint filename disagrees with the model")
+-        with open_stage_bundle(artifact_paths["stage_state"]) as bundle:
+-            if without_nulls(bundle.metadata["staged"]) != without_nulls(
+-                expected_staged.model_dump(mode="json")
+-            ):
+-                raise WorkerProtocolError("Stage checkpoint and public diagnostics disagree")
++        archive = StageArchive.read(artifact_paths["stage_state"])
++        if archive.inherited and stage_parent is None:
++            raise WorkerProtocolError("Stage checkpoint inherits from an unknown parent")
++        with stage_parent() if archive.inherited and stage_parent else nullcontext() as parent:
++            with open_stage_bundle(DeltaRevision(archive, parent)) as bundle:
++                if without_nulls(bundle.metadata["staged"]) != without_nulls(
++                    expected_staged.model_dump(mode="json")
++                ):
++                    raise WorkerProtocolError("Stage checkpoint and public diagnostics disagree")
+     return artifact_paths
+ 
+ 
+diff --git a/before/src/haute/routes/_training_lifecycle.py b/after/src/haute/routes/_training_lifecycle.py
+index 7be452b..c0cac27 100644
+--- a/before/src/haute/routes/_training_lifecycle.py
++++ b/after/src/haute/routes/_training_lifecycle.py
+@@ -726,13 +726,13 @@ class TrainService:
+                     cancellation_token=cancellation_token,
+                 )
+                 bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
+-                parent = scope.copy_parent()
++                # The worker reads its parent revision in place; nothing is copied for it.
+                 self._launch_background(
+                     job_id,
+                     node_id,
+                     config,
+                     build_train_params(config),
+-                    str(parent),
++                    None,
+                     None,
+                     None,
+                     fit_mode="in_memory",
+@@ -1350,7 +1350,7 @@ class TrainService:
+         job_id: str,
+         *,
+         execution_context: ExecutionContext,
+-        tmp_parquet: Path,
++        tmp_parquet: Path | None,
+         artifact_root: Path | None,
+         artifact_publication_committed: Callable[[], bool] | None = None,
+     ) -> Callable[[], None]:
+@@ -1372,7 +1372,8 @@ class TrainService:
+                     "prepared_data",
+                     lambda: (
+                         tmp_parquet.unlink()
+-                        if tmp_parquet.exists() or tmp_parquet.is_symlink()
++                        if tmp_parquet is not None
++                        and (tmp_parquet.exists() or tmp_parquet.is_symlink())
+                         else None
+                     ),
+                 ),
+@@ -1937,7 +1938,7 @@ class TrainService:
+         node_id: str,
+         config: dict[str, Any],
+         train_params: dict[str, Any],
+-        tmp_parquet: str,
++        tmp_parquet: str | None,
+         warning: str | None,
+         total_source_rows: int | None,
+         *,
+@@ -1951,7 +1952,7 @@ class TrainService:
+         launch_cleanup = self._parent_worker_cleanup(
+             job_id,
+             execution_context=execution_context,
+-            tmp_parquet=Path(tmp_parquet),
++            tmp_parquet=Path(tmp_parquet) if tmp_parquet is not None else None,
+             artifact_root=None,
+         )
+         try:
+@@ -1964,7 +1965,10 @@ class TrainService:
+         try:
+             job_kwargs = build_training_job_kwargs(
+                 config,
+-                data=str(Path(tmp_parquet).resolve()),
++                # A stage resume reads its rows from the parent revision (`run_stage_job`).
++                data=str(Path(tmp_parquet).resolve())
++                if tmp_parquet is not None
++                else "stage-checkpoint",
+                 default_name=_sanitize_func_name(stored_job["node_label"]),
+             )
+             job_kwargs["params"] = train_params
+@@ -1988,7 +1992,7 @@ class TrainService:
+         cleanup = self._parent_worker_cleanup(
+             job_id,
+             execution_context=execution_context,
+-            tmp_parquet=Path(tmp_parquet),
++            tmp_parquet=Path(tmp_parquet) if tmp_parquet is not None else None,
+             artifact_root=artifact_root,
+             artifact_publication_committed=artifact_publication_committed.is_set,
+         )
+@@ -2013,7 +2017,7 @@ class TrainService:
+                     **(
+                         {
+                             "stage_resume": {
+-                                "checkpoint": tmp_parquet,
++                                "parent": stage_scope.parent_reference(),
+                                 "operation": stage_scope.operation,
+                                 "expected_fit_config": stage_fit_config_digest(job_kwargs),
+                             }
+@@ -2231,6 +2235,9 @@ class TrainService:
+                 expected_evaluation=staged_evaluation,
+                 expected_tuning=staged_response.tuning,
+                 expected_staged=staged_response.staged,
++                stage_parent=stage_scope.lease_parent
++                if stage_scope is not None and stage_scope.parent_revision is not None
++                else None,
+             )
+             response_fields["model_path"] = str(published["model"])
+             evaluation_fields = staged_evaluation.model_dump(mode="json", exclude_none=True)
+@@ -2361,7 +2368,7 @@ class TrainService:
+         node_id: str,
+         config: dict[str, Any],
+         train_params: dict[str, Any],
+-        tmp_parquet: str,
++        tmp_parquet: str | None,
+         warning: str | None,
+         total_source_rows: int | None,
+         *,
+@@ -2369,7 +2376,11 @@ class TrainService:
+         execution_context: ExecutionContext,
+         feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None,
+     ) -> IsolatedSupervisorThread | None:
+-        """Delegate fit/evaluation to the supervised process protocol."""
++        """Delegate fit/evaluation to the supervised process protocol.
++
++        *tmp_parquet* is the prepared training data the parent owns; a stage resume has
++        none, because its worker reads the parent revision in place.
++        """
+         return self._launch_training_protocol(
+             job_id,
+             node_id,
+diff --git a/before/src/haute/routes/_training_paths.py b/after/src/haute/routes/_training_paths.py
+index f17b3db..8e86242 100644
+--- a/before/src/haute/routes/_training_paths.py
++++ b/after/src/haute/routes/_training_paths.py
+@@ -130,6 +130,7 @@ def apply_path(
+                 "config": {**config, "stages": merged},
+             },
+             config_digest=owner["config_digest"],
++            parent_revision=body.artifact_revision,
+         ) as prepared:
+             value = scope.store.apply_path(
+                 scope.key,
+diff --git a/before/src/haute/routes/_training_stages.py b/after/src/haute/routes/_training_stages.py
+index c961888..1e9064c 100644
+--- a/before/src/haute/routes/_training_stages.py
++++ b/after/src/haute/routes/_training_stages.py
+@@ -4,8 +4,8 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
+-import tempfile
+ from collections.abc import Callable, Mapping
++from contextlib import AbstractContextManager
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+@@ -13,6 +13,7 @@ from typing import Any
+ from haute._logging import get_logger
+ from haute._project_context import current_project
+ from haute.errors import ConflictError, HauteValidationError
++from haute.modelling._stage_objects import StoredRevision
+ from haute.modelling._stage_store import PreparedStage, StageStore
+ from haute.modelling._staged_config import STAGE_NAMES, StagedConfig
+ from haute.modelling._staged_runtime import fit_config_digest
+@@ -149,20 +150,17 @@ class StageJobScope:
+             queued_preview=queued_preview,
+         )
+ 
+-    def copy_parent(self) -> Path:
++    def parent_reference(self) -> dict[str, Any]:
++        """The worker's in-place reference to this job's parent revision (no copy is made)."""
+         if self.parent_revision is None:
+             raise HauteValidationError("Post-fit work requires a saved parent")
+-        with self.store.lease(self.key, self.parent_revision) as source:
+-            with tempfile.NamedTemporaryFile(
+-                prefix="haute_stage_parent_", suffix=".hstage", delete=False
+-            ) as target:
+-                path = Path(target.name)
+-            try:
+-                source.write_archive(path)
+-            except BaseException:
+-                path.unlink(missing_ok=True)
+-                raise
+-        return path
++        return self.store.parent_reference(self.key, self.parent_revision)
++
++    def lease_parent(self) -> AbstractContextManager[StoredRevision]:
++        """Pin this job's parent revision, for validating the delta built on it."""
++        if self.parent_revision is None:
++            raise HauteValidationError("Post-fit work requires a saved parent")
++        return self.store.lease(self.key, self.parent_revision)
+ 
+     def prepare(
+         self,
+@@ -175,18 +173,17 @@ class StageJobScope:
+         if response.staged is None:
+             raise HauteValidationError("Stage job returned no stage diagnostics")
+         if self.operation == "finalise":
+-            from haute.modelling._staged_runtime import open_stage_bundle
++            from haute.modelling._stage_objects import StageArchive
+ 
+-            with open_stage_bundle(path) as bundle:
+-                final = bundle.metadata["final_job_kwargs"]
+-                config = {
+-                    **config,
+-                    "name": final["name"],
+-                    "params": final["params"],
+-                    "stages": final["stages"],
+-                    "tuning": None,
+-                    "refit_on_development": True,
+-                }
++            final = StageArchive.read(path).manifest.metadata["final_job_kwargs"]
++            config = {
++                **config,
++                "name": final["name"],
++                "params": final["params"],
++                "stages": final["stages"],
++                "tuning": None,
++                "refit_on_development": True,
++            }
+         return self.store.prepare(
+             self.key,
+             path,
+@@ -197,6 +194,7 @@ class StageJobScope:
+                 "config": dict(config),
+             },
+             config_digest=response.staged.fit_config_digest,
++            parent_revision=self.parent_revision,
+         )
+ 
+     def publish(self, job_id: str, prepared: PreparedStage) -> None:
+diff --git a/before/src/haute/routes/_training_worker.py b/after/src/haute/routes/_training_worker.py
+index 6a9f764..1f4db91 100644
+--- a/before/src/haute/routes/_training_worker.py
++++ b/after/src/haute/routes/_training_worker.py
+@@ -731,16 +731,19 @@ def _run_training_process_job(
+             "on_tuning_progress": tuning_progress,
+         }
+         if stage_resume is not None:
++            from haute.modelling._stage_store import StageStore
+             from haute.modelling._staged_runtime import run_stage_job
+ 
+             if not isinstance(stage_resume, dict) or set(stage_resume) != {
+-                "checkpoint",
++                "parent",
+                 "operation",
+                 "expected_fit_config",
+             }:
+                 raise HauteValidationError("Invalid stage resume request")
++            # The parent revision is read in place, read-only; the worker writes nothing
++            # to the store and returns a delta archive over it.
+             job, train_result = run_stage_job(
+-                stage_resume["checkpoint"],
++                StageStore.open_parent(stage_resume["parent"]),
+                 operation=stage_resume["operation"],
+                 prepare_path=stage_resume["operation"] != "finalise",
+                 expected_fit_config=stage_resume["expected_fit_config"],
+diff --git a/before/tests/test_stage_objects.py b/after/tests/test_stage_objects.py
+index a525e65..73d5b0b 100644
+--- a/before/tests/test_stage_objects.py
++++ b/after/tests/test_stage_objects.py
+@@ -536,3 +536,55 @@ def test_a_marker_that_cannot_be_removed_never_fails_the_release(tmp_path, monke
+     monkeypatch.undo()
+     assert store.pinned() == set()  # the hold is gone; collection removes the marker
+     assert not list(store.leases.iterdir())
++
++
++def test_delta_archives_inherit_only_identical_named_references(tmp_path):
++    from haute.modelling._stage_objects import (
++        DeltaRevision,
++        StageArchive,
++        StoredRevision,
++        write_bundle,
++    )
++
++    store = _store(tmp_path)
++    parent = _publish(store, {"plan.json": b'{"p":1}', "source.parquet": b"rows"})
++    stored = StoredRevision(store, parent)
++    # A new member equal in bytes to a parent object but under another name is carried;
++    # a same-named member with new content is carried too.
++    delta = tmp_path / "delta.hstage"
++    write_bundle(
++        delta,
++        {
++            "source.parquet": parent.objects["source.parquet"],  # inherited by reference
++            "plan.json": b'{"p":2}',
++            "fit/development/chain": b'{"p":1}',  # the parent's plan bytes, a new name
++        },
++        revision="d" * 32,
++        result={},
++        metadata={},
++    )
++    archive = StageArchive.read(delta)
++    assert archive.inherited == {"source.parquet"}
++    assert DeltaRevision(archive, stored).read_bytes(archive.manifest.objects["plan.json"]) == (
++        b'{"p":2}'
++    )
++    staged = archive.stage_into(store, parent=parent)
++    try:
++        assert {item.sha256 for item in staged} == archive.carried
++    finally:
++        for item in staged:
++            item.path.unlink(missing_ok=True)
++    # Inheriting a name the parent does not hold with an identical reference is refused.
++    forged = tmp_path / "forged.hstage"
++    write_bundle(
++        forged,
++        {"plan.json": ObjectRef(parent.objects["source.parquet"].sha256, 4, "json")},
++        revision="e" * 32,
++        result={},
++        metadata={},
++    )
++    with pytest.raises(HauteValidationError, match="does not hold"):
++        StageArchive.read(forged).stage_into(store, parent=parent)
++    with pytest.raises(HauteValidationError, match="does not hold"):
++        with DeltaRevision(StageArchive.read(forged), stored).open("plan.json"):
++            pass
+diff --git a/before/tests/test_staged_runtime.py b/after/tests/test_staged_runtime.py
+index 6c971ce..6774fd7 100644
+--- a/before/tests/test_staged_runtime.py
++++ b/after/tests/test_staged_runtime.py
+@@ -258,10 +258,176 @@ def test_bundle_load_refuses_corrupt_or_unknown_payloads(tmp_path, corruption):
+     assert not (tmp_path / "outside").exists()
+ 
+ 
+-def test_supervised_worker_resumes_and_publishes_complete_stage_artifacts(tmp_path, monkeypatch):
++def published_store(tmp_path, full):
++    """A store whose current revision is *full*'s bundle: a worker's real parent."""
++    from haute.modelling._stage_store import StageStore
++
++    store = StageStore(tmp_path / "project")
++    key = store.key("p", "n", "m")
++    store.begin(key, job_id="fit", operation="full", expected_revision=None)
++    prepared = store.prepare(
++        key,
++        Path(full.stage_checkpoint_path),
++        result={"response": {"job_id": "fit"}, "graph_digest": "c" * 64},
++        config_digest="a" * 64,
++    )
++    revision = store.publish(key, job_id="fit", prepared=prepared)["current"]["revision"]
++    return store, key, revision
++
++
++def _store_state(root):
++    """Every path under *root* with its content digest: names and bytes.
++
++    Lock files (process tokens, store locks) are recorded by size and modification time:
++    Windows forbids reading a byte-range-locked file, even from the process holding it.
++    """
++    import hashlib
++
++    def state(path):
++        if not path.is_file():
++            return None
++        if path.suffix == ".lock":
++            info = path.stat()
++            return ("lock", info.st_size, info.st_mtime_ns)
++        return hashlib.sha256(path.read_bytes()).hexdigest()
++
++    return {str(path.relative_to(root)): state(path) for path in sorted(root.rglob("*"))}
++
++
++def _spawned_stage_job(arguments):
++    """The stage worker's job function, run in a freshly spawned process."""
++    from haute._worker_protocol import WorkerRequest, WorkerRuntime
++    from haute.routes._training_worker import _run_training_process_job
++    from tests.test_training_worker_protocol import _ForwardingQueue
++
++    root, payload = arguments
++    result = _run_training_process_job(
++        WorkerRuntime(_ForwardingQueue(), root), WorkerRequest("stage-job", "training", payload)
++    )
++    return result  # pickled back to the test process
++
++
++def test_supervised_worker_reads_its_parent_in_place_and_returns_a_delta(tmp_path, monkeypatch):
++    from haute._execution_context import ExecutionProfile
++    from haute._worker_protocol import WorkerResultManifest
++    from haute.routes._training_artifacts import (
++        _read_training_response,
++        _validate_training_artifacts,
++    )
++    from haute.schemas import TrainResponse
++
++    _, full = build(tmp_path)
++    with open_stage_bundle(full.stage_checkpoint_path) as bundle:
++        kwargs = bundle.metadata["job_kwargs"]
++        digest = bundle.metadata["fit_config_digest"]
++    store, key, parent = published_store(tmp_path, full)
++    # As in the service: the running-job record roots the parent before the worker starts.
++    store.begin(key, job_id="prune", operation="pruned", expected_revision=parent)
++    before = _store_state(store.root)
++    root = tmp_path / "worker"
++    payload = {
++        "job_kwargs": kwargs,
++        "stage_resume": {
++            "parent": store.parent_reference(key, parent),
++            "operation": "pruned",
++            "expected_fit_config": digest,
++        },
++        "profile": ExecutionProfile.TRAINING_PREP.value,
++        "memory_limit_bytes": None,
++    }
++    import multiprocessing
++
++    # A genuinely separate process: its own token registry, and the spawn start method
++    # that Windows uses.
++    with multiprocessing.get_context("spawn").Pool(1) as pool:
++        result = pool.apply(_spawned_stage_job, ((str(root), payload),))
++    assert isinstance(result, WorkerResultManifest), result
++    # The worker wrote nothing under the store: no new file, and no existing one changed.
++    assert _store_state(store.root) == before
++    response = TrainResponse.model_validate(_read_training_response(result, artifact_root=root))
++    assert response.staged.selected_stage == "pruned"
++    assert response.staged.stages["full"]["fit_evidence"]["term_update_steps"] is None
++    assert response.staged.stages["pruned"]["fit_evidence"]["term_update_steps"] is None
++    assert response.staged.evaluation_identity == full.staged["evaluation_identity"]
++    assert not response.final_test_metrics
++    with pytest.raises(Exception, match="unknown parent"):
++        _validate_training_artifacts(
++            result,
++            artifact_root=root,
++            expected_model_name="stages",
++            expected_evaluation=response.evaluation,
++            expected_staged=response.staged,
++        )
++    paths = _validate_training_artifacts(
++        result,
++        artifact_root=root,
++        expected_model_name="stages",
++        expected_evaluation=response.evaluation,
++        expected_staged=response.staged,
++        stage_parent=lambda: store.lease(key, parent),
++    )
++    # The delta carries only what the job wrote; rows and fit evidence are inherited.
++    archive = StageArchive.read(paths["stage_state"])
++    assert {"source.parquet", "fit/validation-0/evidence"} <= archive.inherited
++    assert "fit/validation-0/chain" not in archive.inherited
++    prepared = store.prepare(
++        key,
++        paths["stage_state"],
++        result={"response": {"job_id": "prune"}, "graph_digest": "c" * 64},
++        config_digest="a" * 64,
++        parent_revision=parent,
++    )
++    preview = store.publish(key, job_id="prune", prepared=prepared, preview=True)["preview"]
++    with store.lease(key, preview["revision"]) as stored, open_stage_bundle(stored) as bundle:
++        from haute.modelling._stage_diagnostics import without_nulls
++
++        assert without_nulls(bundle.metadata["staged"]) == without_nulls(
++            response.staged.model_dump(mode="json")
++        )
++
++
++def test_a_delta_is_refused_once_its_parent_is_gone(tmp_path):
++    from haute.errors import ConflictError
++
++    _, full = build(tmp_path)
++    store, key, parent = published_store(tmp_path, full)
++    with store.lease(key, parent) as stored:
++        _, pruning = run_stage_job(
++            stored,
++            operation="pruned",
++            stages=full.staged["configuration"],
++            prepare_path=True,
++            output_dir=str(tmp_path / "prune"),
++        )
++    # A rebuild replaces the parent and collection removes it.
++    store.begin(key, job_id="rebuild", operation="full", expected_revision=None)
++    rebuilt = store.prepare(
++        key, Path(full.stage_checkpoint_path), result={}, config_digest="a" * 64
++    )
++    store.publish(key, job_id="rebuild", prepared=rebuilt)
++    store.cleanup(key)
++    pointer = (store._directory(key) / "manifest.json").read_bytes()
++    with pytest.raises(ConflictError, match="parent changed"):
++        store.prepare(
++            key,
++            Path(pruning.stage_checkpoint_path),
++            result={},
++            config_digest="a" * 64,
++            parent_revision=parent,
++        )
++    assert (store._directory(key) / "manifest.json").read_bytes() == pointer
++    assert not list(store._directory(key).glob("staging/*"))
++
++
++def test_an_orphaned_delta_fails_validation_once_its_parent_is_collected(tmp_path):
++    """A worker's finished delta is refused at validation when its parent has gone."""
+     from haute._execution_context import ExecutionProfile
+     from haute._worker_protocol import WorkerRequest, WorkerResultManifest, WorkerRuntime
+-    from haute.routes._training_artifacts import _validate_training_artifacts
++    from haute.errors import ConflictError
++    from haute.routes._training_artifacts import (
++        _read_training_response,
++        _validate_training_artifacts,
++    )
+     from haute.routes._training_worker import _run_training_process_job
+     from haute.schemas import TrainResponse
+     from tests.test_training_worker_protocol import _ForwardingQueue
+@@ -270,7 +436,7 @@ def test_supervised_worker_resumes_and_publishes_complete_stage_artifacts(tmp_pa
+     with open_stage_bundle(full.stage_checkpoint_path) as bundle:
+         kwargs = bundle.metadata["job_kwargs"]
+         digest = bundle.metadata["fit_config_digest"]
+-    monkeypatch.setattr(_Booster, "fit", lambda *a, **kw: pytest.fail("worker fitted booster"))
++    store, key, parent = published_store(tmp_path, full)
+     root = tmp_path / "worker"
+     result = _run_training_process_job(
+         WorkerRuntime(_ForwardingQueue(), str(root)),
+@@ -280,7 +446,7 @@ def test_supervised_worker_resumes_and_publishes_complete_stage_artifacts(tmp_pa
+             {
+                 "job_kwargs": kwargs,
+                 "stage_resume": {
+-                    "checkpoint": full.stage_checkpoint_path,
++                    "parent": store.parent_reference(key, parent),
+                     "operation": "pruned",
+                     "expected_fit_config": digest,
+                 },
+@@ -290,27 +456,33 @@ def test_supervised_worker_resumes_and_publishes_complete_stage_artifacts(tmp_pa
+         ),
+     )
+     assert isinstance(result, WorkerResultManifest), result
+-    from haute.routes._training_artifacts import _read_training_response
+-
+     response = TrainResponse.model_validate(_read_training_response(result, artifact_root=root))
+-    assert response.staged.selected_stage == "pruned"
+-    assert response.staged.stages["full"]["fit_evidence"]["term_update_steps"] is None
+-    assert response.staged.stages["pruned"]["fit_evidence"]["term_update_steps"] is None
+-    assert response.staged.evaluation_identity == full.staged["evaluation_identity"]
+-    assert not response.final_test_metrics
+-    paths = _validate_training_artifacts(
+-        result,
+-        artifact_root=root,
+-        expected_model_name="stages",
+-        expected_evaluation=response.evaluation,
+-        expected_staged=response.staged,
+-    )
+-    assert paths["stage_state"].is_file()
+-    with open_stage_bundle(paths["stage_state"]) as bundle:
+-        from haute.modelling._stage_diagnostics import without_nulls as _without_nulls
++    store.remove(key)  # the parent is unrooted and collected after the worker finished
++    with pytest.raises(ConflictError, match="no longer available"):
++        _validate_training_artifacts(
++            result,
++            artifact_root=root,
++            expected_model_name="stages",
++            expected_evaluation=response.evaluation,
++            expected_staged=response.staged,
++            stage_parent=lambda: store.lease(key, parent),
++        )
+ 
+-        assert _without_nulls(bundle.metadata["staged"]) == _without_nulls(
+-            response.staged.model_dump(mode="json")
++
++def test_an_orphaned_worker_fails_validation_when_its_parent_is_collected(tmp_path):
++    from haute.errors import HauteValidationError
++
++    _, full = build(tmp_path)
++    store, key, parent = published_store(tmp_path, full)
++    reference = store.parent_reference(key, parent)
++    store.remove(key)  # the parent is unrooted and collected under the worker
++    with pytest.raises(HauteValidationError, match="no longer available|missing"):
++        run_stage_job(
++            store.open_parent(reference),
++            operation="pruned",
++            stages=full.staged["configuration"],
++            prepare_path=True,
++            output_dir=str(tmp_path / "prune"),
+         )
+ 
+ 

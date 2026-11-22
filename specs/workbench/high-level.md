@@ -718,8 +718,10 @@ Out of scope:
   of each refusal, never the form sent back, and a form giving one id to two sheets,
   sections or components is refused naming the id. Both routes
   answer 404 while the workbench is not enabled.
-- **The view.** While the workbench is enabled, a view switcher at the bottom of the left
-  palette offers "Pricing", the pipeline editor, and "Workbench".
+- **The view.** A view switcher at the bottom of the left palette offers "Pricing", the
+  pipeline editor, "Modelling"
+  ([the Modelling view](../frontend-modelling-optimiser-ui/high-level.md#the-modelling-view))
+  and, while the workbench is enabled, "Workbench".
   - **Showing it.** The Workbench view covers the area below the toolbar: its own left
     column, the component palette with the switcher back, and the sheets, which the
     schema's pane slides over from the left when the toolbar's Schema opens it. Meanwhile the pipeline editor stays mounted (live sync, the document and its

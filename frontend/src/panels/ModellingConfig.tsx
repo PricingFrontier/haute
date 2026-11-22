@@ -1,3 +1,4 @@
+import { selectedFeatureColumns } from "./modelling/featureSelection"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cancelTrain, estimateTrainingRam, trainModel } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
@@ -21,6 +22,14 @@ import useDocumentStatusStore, {
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ModellingPane } from "../stores/useUIStore"
+import useModellingViewStore, { openModelInModellingView, type TrainAction } from "../stores/useModellingViewStore"
+import { applyModelUpdate, hasModels, interactiveModels, modelResultKey } from "../modelling/interactiveModels"
+import { ModelCheckpoints } from "../modelling/ModelCheckpoints"
+import { TrainingPane } from "../modelling/TrainingPane"
+import { stageConfiguration, stageMatchesDraft, STAGES, type ModelStage } from "../modelling/stageSettings"
+import { availablePaths, selectedCandidate, selectedPathPoint } from "../modelling/pathSelection"
+import { useStagedTraining, useAppliedStageRecipe, useStagedViews } from "../modelling/useStagedTraining"
+import { hashConfig } from "../utils/configHash"
 import { configField } from "../utils/configField"
 import {
   executionJobStatusFromReason,
@@ -40,7 +49,6 @@ import { useGraph, useRequestScope, useResultKey } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
   algorithmCapability,
-  publishesValidationFit,
   isKnownAlgorithm,
   usesSharedPanes,
 } from "./modelling/algorithmCapabilities"
@@ -62,7 +70,8 @@ import {
   parseHyperparameters,
   parseTuningSearchSpace,
 } from "./modelling/hyperparameters"
-import { trainingIdentityConfig } from "../utils/modellingExportConfig"
+import { trainingIdentityConfig, trainingEstimateConfig } from "../utils/modellingExportConfig"
+import { shallowNodeDataHash } from "../utils/shallowNodeHash"
 import { trainingLineage } from "../utils/trainedJobHandles"
 import { useTrainedJobRestore } from "./modelling/useTrainedJobRestore"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
@@ -82,6 +91,34 @@ type Props = {
   activePane?: ModellingPane
   /** Reports the panes whose settings block training, for the host's tab badges. */
   onPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
+  /**
+   * The Modelling view's host: these panes of the one editor, stacked, in place of the
+   * node panel's `activePane`. Absent in the node panel.
+   */
+  panes?: readonly ModellingPane[]
+  /** Where a "Go to" link leads; the node panel's own pane when absent. */
+  onReviewPane?: (pane: ModellingPane) => void
+  /**
+   * The panes the host can lead to; every pane when absent. A link to another pane is not
+   * offered, and neither is parameter tuning where Split, which gives it its validation
+   * rows, cannot be reached.
+   */
+  reviewablePanes?: readonly ModellingPane[]
+  /** The Modelling view's chosen factor, marked and scrolled to in the Features pane's list. */
+  chosenFactor?: string | null
+  /**
+   * The Modelling view's model of an interactive build, by id: `config` is its flat config,
+   * its run is kept under its own key, and every request names it.
+   */
+  modelId?: string
+  /**
+   * The Modelling view's toolbar trains the chosen model: the editor reports how to train
+   * or cancel it, why it cannot, and its last failure, each time one changes; null on leaving.
+   */
+  onTrainAction?: (action: TrainAction | null) => void
+  stagedPane?: "params" | "train"
+  stagedTraining?: boolean
+  onAppliedStage?: (updates: Record<string, unknown>) => unknown
 }
 
 // one_hot_max_size is a visible starter value, not a hidden default: CatBoost's
@@ -131,6 +168,19 @@ const TBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   prune_main_effects: true,
   band_tolerance: 0.75,
   graduate: true,
+}
+
+// An interactive build is boosted first; pruning, banding and smoothing are later steps of
+// the Modelling view, so its starting recipe switches each of them off. `band_tolerance`
+// is null because t-boost bands at 0.75 when the key is absent.
+const INTERACTIVE_BUILD_PARAMS: Record<string, unknown> = {
+  n_trees: 4000,
+  max_interaction_order: 3,
+  n_bags: 8,
+  interaction_gain_hurdle: 2,
+  prune: false,
+  band_tolerance: null,
+  graduate: false,
 }
 
 const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
@@ -199,6 +249,16 @@ const DEFAULT_EVALUATION: Record<string, unknown> = {
   validation: { method: "single", size: 0.2 },
 }
 
+/**
+ * A new node's split. A t-boost fit takes no validation rows (every bag stops on rows it
+ * holds back itself), so a t-boost node starts with none set aside.
+ */
+function defaultEvaluation(algorithm: string): Record<string, unknown> {
+  return algorithm === "tboost"
+    ? { ...DEFAULT_EVALUATION, validation: { method: "none" } }
+    : DEFAULT_EVALUATION
+}
+
 /** Why a node's last training failed: the failed job's error, or a result the server marked an error. */
 function trainFailure(cached: CachedTrainResult): string | null {
   if (cached.result === null) return cached.error ?? null
@@ -236,7 +296,10 @@ const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
     "Rating-table boosting - gradient boosting whose model is exactly a set of rating tables",
 }
 
-function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
+function AlgorithmGateway({ onUpdate, columns }: {
+  onUpdate: OnUpdateConfig
+  columns: readonly { name: string; dtype: string }[]
+}) {
   // A family appears here once its descriptor ships, so the gateway can never
   // offer a model type the backend cannot train.
   const algorithms = Object.entries(ALGORITHM_CAPABILITIES).map(([id, capability]) => ({
@@ -255,7 +318,7 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
           onClick={() => onUpdate({
             algorithm: option.id,
             ...(DEFAULT_PARAMS[option.id] ? { params: { ...DEFAULT_PARAMS[option.id] } } : {}),
-            evaluation: DEFAULT_EVALUATION,
+            evaluation: defaultEvaluation(option.id),
           })}
           className="w-full rounded-lg px-3 py-3 text-left algorithm-gateway-btn"
         >
@@ -268,6 +331,61 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
           </span>
         </button>
       ))}
+      <button
+        type="button"
+        // Every factor starts in the model. The columns are written here, in the click,
+        // and only once they are known: a node whose columns have not arrived keeps no
+        // feature list, and the Modelling view's Include all fills it.
+        onClick={() => onUpdate({
+          interactive_build: true,
+          evaluation: defaultEvaluation("tboost"),
+          models: [{
+            id: "m1",
+            name: "t-boost",
+            algorithm: "tboost",
+            params: { ...INTERACTIVE_BUILD_PARAMS },
+            ...(columns.length > 0 ? { feature_columns: columns.map((column) => column.name) } : {}),
+          }],
+        })}
+        className="w-full rounded-lg px-3 py-3 text-left algorithm-gateway-btn"
+      >
+        <span className="block text-xs font-semibold">Interactive build</span>
+        <span
+          className="mt-0.5 block text-[11px]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          t-boost, built step by step in the Modelling view
+        </span>
+      </button>
+    </div>
+  )
+}
+
+/** An interactive build's node panel: what the model is, and the way into the Modelling view. */
+function InteractiveBuildSummary({ nodeId, config }: { nodeId: string; config: Record<string, unknown> }) {
+  const target = typeof config.target === "string" && config.target !== "" ? config.target : null
+  return (
+    <div className="px-4 py-3 space-y-3" data-testid="interactive-build-summary">
+      <p className="text-[13px] font-semibold">Interactive build</p>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12px]">
+        <dt style={{ color: "var(--text-muted)" }}>Models</dt>
+        <dd className="truncate">{hasModels(config) ? interactiveModels(config).map((model) => model.name).join(", ") : "None"}</dd>
+        <dt style={{ color: "var(--text-muted)" }}>Target</dt>
+        <dd className="truncate">{target ?? "Not set"}</dd>
+      </dl>
+      <button
+        type="button"
+        className="rounded-lg px-3 py-1.5 text-[12px] font-medium"
+        style={{
+          background: "var(--model-accent-soft)",
+          border: "1px solid var(--model-accent-border)",
+          color: "var(--model-accent)",
+        }}
+        // Another view hides an open utility panel, so it waits for the panel's unsaved edit.
+        onClick={() => useUIStore.getState().afterUtilitySaved(() => openModelInModellingView(nodeId))}
+      >
+        Open in Modelling
+      </button>
     </div>
   )
 }
@@ -280,6 +398,8 @@ type TrainPaneProps = {
   validationIssues: readonly TrainingConfigurationIssue[]
   columns: { name: string; dtype: string }[]
   onReviewPane: (pane: ModellingPane) => void
+  /** Whether the host can lead to a pane: an issue on one it cannot is listed without its "Go to". */
+  canReviewPane: (pane: ModellingPane) => boolean
   trainJob: ReturnType<typeof useNodeResultsStore.getState>["trainJobs"][string] | undefined
   cachedResult: ReturnType<typeof useNodeResultsStore.getState>["trainResults"][string] | undefined
   estimate: UseStaleConfigEstimateResult<TrainEstimate>
@@ -291,6 +411,8 @@ type TrainPaneProps = {
   onTrain: () => void
   onCancel: () => void
   tuningEnabled: boolean
+  /** False in the Modelling view, which has no preview panel below to point a finished model's results at. */
+  resultsInPreviewPanel: boolean
 }
 
 function TrainPane({
@@ -301,6 +423,7 @@ function TrainPane({
   validationIssues,
   columns,
   onReviewPane,
+  canReviewPane,
   trainJob,
   cachedResult,
   estimate,
@@ -312,6 +435,7 @@ function TrainPane({
   onTrain,
   onCancel,
   tuningEnabled,
+  resultsInPreviewPanel,
 }: TrainPaneProps) {
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
   const validationMessages = validationIssues.map((issue) => issue.message)
@@ -342,7 +466,11 @@ function TrainPane({
         onValidationMessageClick={(index) => onReviewPane(trainingIssuePane(validationIssues[index]))}
         validationDestinations={validationIssues.map((issue) => {
           const pane = trainingIssuePane(issue)
-          return pane === "params" ? "Parameters" : pane.charAt(0).toUpperCase() + pane.slice(1)
+          if (!canReviewPane(pane)) return null
+          if (pane === "params") return "Parameters"
+          // An interactive build's features are the Modelling view's factors.
+          if (pane === "features" && config.interactive_build === true) return "Factors"
+          return pane.charAt(0).toUpperCase() + pane.slice(1)
         })}
         training={Boolean(trainJob)}
         trainProgress={trainJob?.progress ?? null}
@@ -365,6 +493,7 @@ function TrainPane({
         submitting={submitting}
         cancelling={cancelling}
         tuningEnabled={tuningEnabled}
+        resultsInPreviewPanel={resultsInPreviewPanel}
         onTrain={requestTrain}
         onCancel={onCancel}
       />
@@ -372,21 +501,43 @@ function TrainPane({
   )
 }
 
-export default function ModellingConfig({
+/**
+ * A Model Training node's editor. An interactive build is edited in the Modelling view,
+ * which passes `panes`; in the node panel it shows what it is and the way there.
+ */
+export default function ModellingConfig(props: Props) {
+  if (props.config.interactive_build === true && props.panes === undefined) {
+    return <InteractiveBuildSummary nodeId={props.nodeId} config={props.config} />
+  }
+  return <ModellingEditor {...props} />
+}
+
+function ModellingEditor({
   nodeId,
   config,
   onUpdate,
   upstreamColumns = [],
   activePane = "target",
   onPaneIssuesChange,
+  panes,
+  onReviewPane,
+  reviewablePanes,
+  chosenFactor = null,
+  modelId,
+  onTrainAction,
+  stagedTraining = false,
+  stagedPane = "train",
+  onAppliedStage,
 }: Props) {
   const requestScope = useRequestScope()
   const { allNodes, edges, submodels, preamble, openNode } = useGraph()
   const setModellingPane = useUIStore((state) => state.setModellingPane)
-  const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
+  const reviewPane = onReviewPane ?? ((pane: ModellingPane) => setModellingPane(nodeId, pane))
+  const canReviewPane = (pane: ModellingPane) => reviewablePanes === undefined || reviewablePanes.includes(pane)
   // The node's training is kept under its result key (an occurrence's own inside a
   // submodel); its id still names it on the canvas, and its panes and drafts.
-  const resultKey = useResultKey(nodeId)
+  const nodeResultKey = useResultKey(nodeId)
+  const resultKey = modelId === undefined ? nodeResultKey : modelResultKey(nodeResultKey, modelId)
   const trainJob = useNodeResultsStore((state) => state.trainJobs[resultKey])
   const cachedResult = useNodeResultsStore((state) => state.trainResults[resultKey])
   const startTrainJob = useNodeResultsStore((state) => state.startTrainJob)
@@ -401,17 +552,24 @@ export default function ModellingConfig({
   const [cancelling, setCancelling] = useState(false)
   // Drafts live above the Params pane.  They deliberately survive a Params
   // unmount for this node, while a newly seen node starts from its own params.
+  const [restoreVersion, setRestoreVersion] = useState(0)
   const [paramDrafts, setParamDrafts] = useState<Record<string, string>>({})
   const [searchSpaceDrafts, setSearchSpaceDrafts] = useState<Record<string, string>>({})
 
   const algorithm = String(config.algorithm ?? "").toLowerCase()
-  const params = configField<Record<string, unknown>>(config, "params", {})
+  const rawParams = configField<Record<string, unknown>>(config, "params", {})
+  const stagedEnabled = stagedTraining && algorithm === "tboost" && modelId !== undefined
+  const stagedDraft = useMemo(() => {
+    try { return { ...stageConfiguration(config), error: null } }
+    catch (error) { return { params: rawParams, stages: stageConfiguration({}).stages, error: apiErrorMessage(error) } }
+  }, [config, rawParams])
+  const params = stagedEnabled ? stagedDraft.params : rawParams
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   const evaluation = configField<Record<string, unknown>>(
     config,
     "evaluation",
-    DEFAULT_EVALUATION,
+    defaultEvaluation(algorithm),
   )
   const tuning = (
     config.tuning !== null
@@ -489,6 +647,12 @@ export default function ModellingConfig({
   // The graph reads the preamble and constants from the store; listing them
   // renews the callback, so an edit made after mount reaches the next request.
   const globalConstants = useGraphStore((state) => state.globalConstants)
+  const estimateInputs = useMemo(() => trainingEstimateConfig(config), [config])
+  const estimateStructureKey = useMemo(() => hashConfig({
+    nodes: allNodes.filter((entry) => entry.id !== nodeId).map((entry) => [entry.id, shallowNodeDataHash(entry.data)]),
+    edges: edges.map((edge) => [edge.source, edge.target, edge.sourceHandle, edge.targetHandle]),
+    submodels: submodels ?? null, preamble, globalConstants,
+  }), [allNodes, nodeId, edges, submodels, preamble, globalConstants])
   const requestTarget = useCallback(
     () => {
       void allNodes
@@ -496,11 +660,23 @@ export default function ModellingConfig({
       void submodels
       void globalConstants
       void preamble
-      return prepareCanvasRequest(requestScope, nodeId)
+      const prepared = prepareCanvasRequest(requestScope, nodeId)
+      return modelId === undefined
+        ? prepared
+        : { ...prepared, resultKey: modelResultKey(prepared.resultKey, modelId) }
     },
-    [requestScope, allNodes, edges, submodels, nodeId, preamble, globalConstants],
+    [requestScope, allNodes, edges, submodels, nodeId, preamble, globalConstants, modelId],
   )
   const graph = useCallback(() => requestTarget().graph, [requestTarget])
+  const stageRequest = useCallback(() => {
+    const target = requestTarget()
+    return { graph: target.graph, node_id: target.nodeId, source: activeSource, model: modelId }
+  }, [requestTarget, activeSource, modelId])
+  const stageBuild = useStagedTraining({ enabled: stagedEnabled && requestScope !== null,
+    resultKey, request: stageRequest, jobId: trainJob?.jobId })
+  const [requestedStage, setRequestedStage] = useState<ModelStage | "finalise" | null>(null)
+  const otherTraining = useNodeResultsStore((state) => Object.keys(state.trainJobs).some((key) => key !== resultKey))
+
   // The estimate names a node by its id in the graph sent. One inside another
   // submodel is off this canvas; its id still says which.
   const nodeNamed = useMemo(() => {
@@ -533,7 +709,7 @@ export default function ModellingConfig({
         return await estimateAfterSupersededPreviews(
           () => {
             const target = requestTarget()
-            return estimateTrainingRam({ graph: target.graph, node_id: target.nodeId, source: activeSource }, context)
+            return estimateTrainingRam({ graph: target.graph, node_id: target.nodeId, source: activeSource, model: modelId }, context)
           },
           context.signal,
           undefined,
@@ -543,7 +719,7 @@ export default function ModellingConfig({
         if (run === latestEstimate.current) setEstimateWaiting(false)
       }
     },
-    [activeSource, requestTarget],
+    [activeSource, modelId, requestTarget],
   )
   const estimate = useStaleConfigEstimate<TrainEstimate>(
     nodeId,
@@ -552,7 +728,7 @@ export default function ModellingConfig({
     estimateEndpoint,
     { source: activeSource, structuralVersion },
     // A saved version (the comparison view) runs nothing, so it is not estimated.
-    { toastLabel: "Training estimate failed", enabled: requestScope !== null },
+    { toastLabel: "Training estimate failed", enabled: requestScope !== null, estimateInputs, estimateStructureKey },
   )
   // A completed result is remembered per document so a browser reload can put
   // it back from the server; a result the server no longer holds is recorded
@@ -562,19 +738,16 @@ export default function ModellingConfig({
   const trainedResultExpired = useNodeResultsStore(
     (state) => Object.hasOwn(state.expiredTrainJobs, resultKey),
   )
-  // A family whose early-stopped validation fit is the model (t-boost) has no
-  // refit setting at all, so its config never carries refit_on_development.
-  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
   const onEvaluationChange = useCallback(
     (nextEvaluation: Record<string, unknown>) => {
       const method = (nextEvaluation.validation as Record<string, unknown> | undefined)?.method
-      if (!validationFit && config.refit_on_development === false && method !== "single") {
+      if (config.refit_on_development === false && method !== "single") {
         onUpdate({ evaluation: nextEvaluation, refit_on_development: true })
       } else {
         onUpdate("evaluation", nextEvaluation)
       }
     },
-    [config.refit_on_development, onUpdate, validationFit],
+    [config.refit_on_development, onUpdate],
   )
   // A dispersion estimate reads the document, this node's training settings,
   // the graph feeding it and the data source; a change to any stops it.
@@ -593,8 +766,8 @@ export default function ModellingConfig({
       }, { signal })
     },
   }), [activeSource, documentKey, resultKey, requestTarget, structuralVersion, trainingHash])
-  const onTrain = useCallback(async () => {
-    if (hasTrainingConfigurationIssues) return
+  const onTrain = useCallback(async (operation?: ModelStage | "finalise") => {
+    if (hasTrainingConfigurationIssues || (stagedEnabled && stagedDraft.error)) return
     const documentFence = captureDocumentExecutionFence()
     if (!isDocumentExecutionFenceCurrent(documentFence)) return
     setSubmitting(true)
@@ -603,17 +776,32 @@ export default function ModellingConfig({
     // config hash is this render's training identity for the same reason. The
     // job is kept under the key prepared with the request, so a start answered
     // after the view changed stays with the occurrence it was started in.
-    const target = requestTarget()
+    const target = { ...requestTarget() }
+    if (operation !== undefined && modelId !== undefined) {
+      const updates = { params: stagedDraft.params, stages: stagedDraft.stages }
+      const submitted = operation === "full" ? { ...updates, stages: { ...updates.stages, applied_recipe: [] } } : updates
+      const updated = onUpdate(updates)
+      if (updated?.ok === false) { setSubmitting(false); return }
+      target.graph = { ...target.graph, nodes: target.graph.nodes.map((node) => node.id === target.nodeId
+        ? { ...node, data: { ...node.data, config: applyModelUpdate(node.data.config as Record<string, unknown>, modelId, submitted) } } : node) }
+      setRequestedStage(operation)
+    }
     const key = target.resultKey
     const nodeLabel = allNodes.find((node) => node.id === nodeId)?.data.label ?? "Model Training"
     const lineage = trainingLineage(target.graph)
-    const configHash = trainingHash
+    const configHash = operation === undefined ? trainingHash : hashConfig(trainingIdentityConfig({
+      ...config, params: stagedDraft.params, stages: { ...stagedDraft.stages,
+        applied_recipe: operation === "full" ? [] : stagedDraft.stages.applied_recipe },
+    }))
     const attempt = { configHash, source: activeSource, structuralVersion }
     try {
       const result = await trainModel({
         graph: target.graph,
         node_id: target.nodeId,
         source: useSettingsStore.getState().activeSource,
+        model: modelId,
+        ...(operation === undefined ? {} : { stage: { operation,
+          ...(operation === "full" ? { prepare_next: true } : { parent_revision: stageBuild.state?.current?.revision }) } }),
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {
@@ -629,35 +817,75 @@ export default function ModellingConfig({
     } finally {
       setSubmitting(false)
     }
-  }, [activeSource, allNodes, failTrainStart, hasTrainingConfigurationIssues, nodeId, requestTarget, startTrainJob, structuralVersion, trainingHash])
+  }, [activeSource, allNodes, failTrainStart, hasTrainingConfigurationIssues, modelId, nodeId, requestTarget, startTrainJob, structuralVersion, trainingHash, config, stagedEnabled, stagedDraft, stageBuild.state, onUpdate])
+  const restoredStageJob = useRef<string | null>(null)
+  useEffect(() => {
+    const savedJob = stageBuild.state?.job
+    if (!stagedEnabled || trainJob || savedJob?.status !== "running"
+      || savedJob.id === cachedResult?.jobId || savedJob.id === restoredStageJob.current) return
+    restoredStageJob.current = savedJob.id
+    setRequestedStage(savedJob.operation)
+    startTrainJob(resultKey, savedJob.id, "Model training", trainingHash, activeSource, structuralVersion)
+  }, [stagedEnabled, stageBuild.state?.job, trainJob, cachedResult?.jobId, resultKey, trainingHash, activeSource, structuralVersion, startTrainJob])
+
+  useAppliedStageRecipe(stagedEnabled ? stageBuild.state : undefined, config, onAppliedStage ?? onUpdate, stageBuild.key)
+
+  const stageJob = stageBuild.state?.job
+  const refreshStages = stageBuild.refresh
   const onCancel = useCallback(async () => {
     const key = resultKey
     const job = useNodeResultsStore.getState().trainJobs[key]
-    if (!job || cancelling) return
+    const durableJob = stageJob
+    const jobId = durableJob?.status === "running" ? durableJob.id : job?.jobId
+    if (!jobId || cancelling) return
 
     setCancelling(true)
     const documentFence = captureDocumentExecutionFence()
     try {
-      const status = await cancelTrain(job.jobId)
+      const status = await cancelTrain(jobId)
       // The reply belongs to the job it cancelled; the store ignores it once
       // polling has retired that job, and a changed document drops it here.
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      if (status.status === "completed" && status.result) completeTrainJob(key, job.jobId, status.result, status)
-      else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(key, job.jobId, status.message || "Training stopped", status)
-      else updateTrainProgress(key, job.jobId, status)
+      if (job?.jobId === jobId) {
+        if (status.status === "completed" && status.result) completeTrainJob(key, jobId, status.result, status)
+        else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(key, jobId, status.message || "Training stopped", status)
+        else updateTrainProgress(key, jobId, status)
+      }
+      refreshStages()
     } catch (error) {
       if (
         isDocumentExecutionFenceCurrent(documentFence)
-        && useNodeResultsStore.getState().trainJobs[key]?.jobId === job.jobId
+        && (durableJob?.id === jobId || useNodeResultsStore.getState().trainJobs[key]?.jobId === jobId)
       ) {
         addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`)
       }
     } finally {
       setCancelling(false)
     }
-  }, [addToast, cancelling, completeTrainJob, failTrainJob, resultKey, updateTrainProgress])
+  }, [addToast, cancelling, completeTrainJob, failTrainJob, resultKey, updateTrainProgress, stageJob, refreshStages])
 
-  if (!algorithm) return <AlgorithmGateway onUpdate={onUpdate} />
+  // The view's toolbar trains this model, so it hears how, and what stands in the way.
+  const trainFailureMessage = cachedResult ? trainFailure(cachedResult) : null
+  const trainIssueKey = validationIssues.map((issue) => issue.message).join("\n")
+  const actionRef = useRef({ onTrain, onCancel })
+  useEffect(() => {
+    actionRef.current = { onTrain, onCancel }
+  }, [onTrain, onCancel])
+  const training = Boolean(trainJob)
+  useEffect(() => {
+    if (onTrainAction === undefined) return
+    onTrainAction({
+      training,
+      busy: submitting || cancelling,
+      issues: trainIssueKey === "" ? [] : trainIssueKey.split("\n"),
+      error: trainFailureMessage,
+      train: () => void actionRef.current.onTrain(),
+      cancel: () => void actionRef.current.onCancel(),
+    })
+  }, [onTrainAction, training, submitting, cancelling, trainIssueKey, trainFailureMessage])
+  useEffect(() => () => onTrainAction?.(null), [onTrainAction])
+
+  if (!algorithm) return <AlgorithmGateway onUpdate={onUpdate} columns={upstreamColumns} />
   if (!isKnownAlgorithm(algorithm)) {
     return <div className="px-4 py-3" role="alert">Unsupported modelling algorithm: {algorithm}.</div>
   }
@@ -671,7 +899,6 @@ export default function ModellingConfig({
       onEvaluationChange={onEvaluationChange}
       refitOnDevelopment={config.refit_on_development !== false}
       onRefitOnDevelopmentChange={(value) => onUpdate("refit_on_development", value)}
-      publishesValidationFit={validationFit}
       tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
       previewError={estimate.errorCode === EVALUATION_PREVIEW_FAILED ? estimate.error : null}
@@ -687,6 +914,7 @@ export default function ModellingConfig({
       validationIssues={validationIssues}
       columns={upstreamColumns}
       onReviewPane={reviewPane}
+      canReviewPane={canReviewPane}
       trainJob={trainJob}
       cachedResult={cachedResult}
       estimate={estimate}
@@ -698,6 +926,7 @@ export default function ModellingConfig({
       onTrain={onTrain}
       onCancel={onCancel}
       tuningEnabled={tuning !== null}
+      resultsInPreviewPanel={panes === undefined}
     />
   )
   const exportPane = (
@@ -706,7 +935,7 @@ export default function ModellingConfig({
       config={config}
       onUpdate={onUpdate}
       nodeLabel={allNodes.find((node) => node.id === nodeId)?.data.label ?? "model"}
-      trainedJobId={
+      trainedJobId={stagedEnabled ? stageBuild.finalJobId ?? null :
         cachedResult && hasTrainResult(cachedResult) && cachedResult.jobId
           ? cachedResult.jobId
           : null
@@ -717,74 +946,194 @@ export default function ModellingConfig({
     />
   )
 
-  // The same pane list as the tabs: a pane this algorithm lacks shows Target.
-  const pane = resolveModellingPane(algorithm, activePane)
-  let paneBody: ReactElement | null = null
-  if (pane === "split") {
-    paneBody = splitPane
-  } else if (pane === "train") {
-    paneBody = trainPane
-  } else if (pane === "export") {
-    paneBody = exportPane
-  } else if (usesSharedPanes(algorithm)) {
-    if (pane === "target") {
-      paneBody = <TargetAndTaskConfig algorithm={algorithm} config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
-    } else if (pane === "features") {
+  const bodyFor = (pane: ModellingPane): ReactElement | null => {
+    let paneBody: ReactElement | null = null
+    if (pane === "split") {
+      paneBody = splitPane
+    } else if (pane === "train") {
+      paneBody = trainPane
+    } else if (pane === "export") {
+      paneBody = exportPane
+    } else if (usesSharedPanes(algorithm)) {
+      if (pane === "target") {
+        paneBody = <TargetAndTaskConfig algorithm={algorithm} config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
+      } else if (pane === "features") {
+        paneBody = (
+          <>
+            <CommonFeatureConfig
+              config={config}
+              onUpdate={onUpdate}
+              columns={upstreamColumns}
+              noun={config.interactive_build === true ? "factor" : "feature"}
+              chosen={chosenFactor}
+            />
+            {algorithm === "ebm" && (
+              <EBMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+            )}
+          </>
+        )
+      } else if (pane === "params") {
+        paneBody = (
+          <HyperparametersConfig
+            onReviewSplit={canReviewPane("split") ? () => reviewPane("split") : undefined}
+            tuningOffered={canReviewPane("split")}
+            algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
+            starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
+            refitOnDevelopment={config.refit_on_development !== false}
+            params={params}
+            reservedKeys={reservedParams.keys}
+            reservedKeysHelp={reservedParams.help}
+            onUpdate={stagedEnabled ? ((key, value) => onUpdate({
+              stages: stagedDraft.stages,
+              ...(typeof key === "string" ? { [key]: value } : key),
+            })) : onUpdate}
+            draft={paramDraft}
+            setDraft={(value) => setParamDrafts((current) => ({ ...current, [nodeId]: value }))}
+            tuning={tuning}
+            evaluation={evaluation}
+            metrics={metrics}
+            searchSpaceDraft={searchSpaceDraft}
+            setSearchSpaceDraft={(value) => setSearchSpaceDrafts(
+              (current) => ({ ...current, [nodeId]: value }),
+            )}
+          />
+        )
+        if (stagedEnabled) {
+          const current = stageBuild.state?.current?.result.response.staged
+          const pending: ModelStage[] = []
+          for (const name of ["pruned", "banded", "smoothed"] as const) {
+            const snapshot = current?.stages[name]
+            if (!snapshot) continue
+            if (!stagedDraft.stages.enabled[name] || pending.includes(snapshot.parent as ModelStage)
+              || !stageMatchesDraft(stagedDraft.stages, name, snapshot, current.configuration.applied_path ?? current.configuration.path)) pending.push(name)
+          }
+          const savedJob = stageBuild.state?.job
+          const queued = stageBuild.state?.next_preview?.status === "queued"
+          const active = queued || (savedJob?.automatic && (savedJob.status === "running" || trainJob?.jobId === savedJob.id))
+            ? current?.selected_stage ?? "full"
+            : savedJob?.status === "running" ? savedJob.operation
+            : trainJob ? requestedStage ?? "full" : null
+          paneBody = <>
+            <TrainingPane key={restoreVersion} view={stagedPane} settings={stagedDraft.stages} gbm={paneBody}
+              currentResult={stageBuild.state?.current?.result.response}
+              previewResult={selectedCandidate(stageBuild)}
+              finalResult={stageBuild.state?.final?.result.response}
+              previewStage={selectedPathPoint(stageBuild)?.available.path.stage ?? stageBuild.state?.preview?.result.response.staged?.selected_stage}
+              candidatePath={selectedPathPoint(stageBuild)?.available.path}
+              candidatePoint={selectedPathPoint(stageBuild)?.pointId}
+              inspectionPending={stageBuild.inspection?.loading || Boolean(stageBuild.inspection?.error)}
+              primaryMetric={metrics[0]}
+              evaluationMode={(evaluation.validation as { method?: string } | undefined)?.method === "cross_validation" ? "OOF validation" : (evaluation.validation as { method?: string } | undefined)?.method === "single" ? "Validation" : "Development"}
+              evaluationKey={hashConfig({ evaluation, target, modelId })}
+              setupSummary={`${target || "Choose a target"} · ${selectedFeatureColumns(config).length} features`}
+              onSetup={canReviewPane("target") ? () => reviewPane("target") : undefined}
+              onSplit={canReviewPane("split") ? () => reviewPane("split") : undefined}
+              onInspect={(pane, stage) => {
+                if (stage) {
+                  useStagedViews.getState().update(stageBuild.key, { pathStage: stage })
+                  const path = availablePaths(stageBuild)[stage]
+                  if (path) void stageBuild.inspect(path, path.path.selected_point)
+                }
+                useModellingViewStore.getState().showPane(pane)
+              }}
+              onCompare={(stage, parent) => {
+                useStagedViews.getState().update(stageBuild.key, { comparison: { stage, parent } })
+                useModellingViewStore.getState().showPane("factor")
+              }}
+              onFactor={(factor) => {
+                const stage = stageBuild.state?.preview?.result.response.staged?.selected_stage
+                const parent = stage && stageBuild.state?.preview?.result.response.staged?.stages[stage]?.parent as ModelStage | undefined
+                if (stage && parent) useStagedViews.getState().update(stageBuild.key, { comparison: { stage, parent } })
+                useModellingViewStore.getState().selectFactor(factor)
+              }}
+              checkpoints={stageBuild.state?.current && <ModelCheckpoints checkpoints={stageBuild.state.checkpoints}
+                disabled={active !== null || stageBuild.busy || submitting || cancelling || otherTraining || stageBuild.state.preview != null}
+                onAction={(action, value) => stageBuild.checkpointAction(action, value, (updates) => {
+                  const result = (onAppliedStage ?? onUpdate)(updates)
+                  if (!(result && typeof result === "object" && "ok" in result && result.ok === false)) {
+                    setParamDrafts({})
+                    setSearchSpaceDrafts({})
+                    setRestoreVersion((version) => version + 1)
+                  }
+                  return result
+                })} />}
+              jobMessage={stageBuild.state?.job && ["failed", "cancelled", "interrupted"].includes(stageBuild.state.job.status) ? stageBuild.state.job.message : undefined}
+              pending={pending}
+              stages={STAGES.filter((name) => current?.stages[name] !== undefined)}
+              pathAvailable={current?.pruning_path != null}
+              pathChanged={current !== undefined && hashConfig({ path: current.configuration.applied_path ?? current.configuration.path }) !== hashConfig({ path: stagedDraft.stages.path })}
+              active={active} busy={submitting || cancelling || stageBuild.busy || queued}
+              blocked={hasTrainingConfigurationIssues || Boolean(stagedDraft.error) || otherTraining}
+              blockingReasons={[...validationIssues.map((issue) => issue.message),
+                ...(stagedDraft.error ? [stagedDraft.error] : []),
+                ...(otherTraining ? ["Another model is training. Wait for it to finish or cancel that run."] : []),
+                ...(queued ? ["Finishing the current run. Cancellation will be available shortly."] : [])]}
+              postfitBlocked={Boolean(stageBuild.state?.stale_reason)}
+              preview={selectedPathPoint(stageBuild) !== undefined || stageBuild.state?.preview != null}
+              onRun={(stage) => void onTrain(stage)} onCancel={() => void onCancel()}
+              onUpdate={(stages) => onUpdate({ params: stagedDraft.params, stages })}
+              onApply={() => void stageBuild.previewAction("apply")}
+              onDiscard={() => void stageBuild.previewAction("discard")}
+              finalAvailable={stageBuild.state?.final != null}
+              onExport={() => void stageBuild.prepareExport()}
+              exportPanel={stageBuild.finalJobId ? exportPane : undefined}
+              diagnosticsNote={current?.reference_fit === "development" && current.diagnostics_basis === "out_of_fold"
+                ? "Prediction curves use held-out validation rows. Tables and pruning path show the development reference fit."
+                : undefined} />
+            {(stagedDraft.error || stageBuild.error || (stageBuild.state?.next_preview?.status !== "queued" ? stageBuild.state?.next_preview?.message : undefined) || stageBuild.state?.stale_reason || current?.path_unavailable_reason) &&
+              <p className="px-4 pb-4 text-[11px] leading-relaxed" role="status" style={{ color: "var(--text-muted)" }}>
+                {stagedDraft.error || stageBuild.error || (stageBuild.state?.next_preview?.status !== "queued" ? stageBuild.state?.next_preview?.message : undefined) || stageBuild.state?.stale_reason || current?.path_unavailable_reason}
+              </p>}
+          </>
+        }
+      }
+    } else if (algorithm === "glm" && pane === "target") {
       paneBody = (
         <>
-          <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
-          {algorithm === "ebm" && (
-            <EBMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
-          )}
+          <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} dispersionEstimate={dispersionEstimate} />
         </>
       )
-    } else if (pane === "params") {
+    } else if (algorithm === "glm" && pane === "params") {
+      paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
+    } else if (algorithm === "glm" && pane === "features") {
       paneBody = (
-        <HyperparametersConfig
-          onReviewSplit={() => reviewPane("split")}
-          algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
-          starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
-          publishesValidationFit={validationFit}
-          refitOnDevelopment={config.refit_on_development !== false}
-          params={params}
-          reservedKeys={reservedParams.keys}
-          reservedKeysHelp={reservedParams.help}
-          onUpdate={onUpdate}
-          draft={paramDraft}
-          setDraft={(value) => setParamDrafts((current) => ({ ...current, [nodeId]: value }))}
-          tuning={tuning}
-          evaluation={evaluation}
-          metrics={metrics}
-          searchSpaceDraft={searchSpaceDraft}
-          setSearchSpaceDraft={(value) => setSearchSpaceDrafts(
-            (current) => ({ ...current, [nodeId]: value }),
-          )}
-        />
+        <>
+          <GLMTermsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+          <GLMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+        </>
       )
     }
-  } else if (algorithm === "glm" && pane === "target") {
-    paneBody = (
-      <>
-        <GLMTargetConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} dispersionEstimate={dispersionEstimate} />
-      </>
-    )
-  } else if (algorithm === "glm" && pane === "params") {
-    paneBody = <GLMRegularizationConfig config={config} onUpdate={onUpdate} />
-  } else if (algorithm === "glm" && pane === "features") {
-    paneBody = (
-      <>
-        <GLMTermsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
-        <GLMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
-      </>
+
+    return paneBody
+  }
+  const issueAlerts = (pane: ModellingPane) => (
+    pane === "train" || pane === "split"
+      ? []
+      : validationIssues.filter((issue) => trainingIssuePane(issue) === pane && !PANE_BODY_ISSUE_CODES.has(issue.code) && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue)
+  ).map((issue) => (
+    <p key={issue.code} role="alert" className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "var(--warning-border)", color: "var(--warning-strong)", background: "var(--warning-soft-subtle)" }}>{issue.message}</p>
+  ))
+
+  // The Modelling view keeps readiness warnings below the controls in each pane.
+  if (panes !== undefined) {
+    return (
+      <div key={nodeId} className="px-4 py-3 space-y-6">
+        {panes.map((stacked) => (
+          <section key={stacked} data-pane={stacked} className="space-y-4">
+            {bodyFor(stacked)}
+            {issueAlerts(stacked)}
+          </section>
+        ))}
+      </div>
     )
   }
 
+  // The same pane list as the tabs: a pane this algorithm lacks shows Target.
+  const pane = resolveModellingPane(algorithm, activePane)
   return (
     <div key={nodeId} id={`modelling-${pane}-pane`} role="tabpanel" aria-labelledby={`modelling-${pane}-tab`} className="px-4 py-3 space-y-4">
-      {pane !== "train" && pane !== "split" && validationIssues.filter((issue) => trainingIssuePane(issue) === pane && !PANE_BODY_ISSUE_CODES.has(issue.code) && issue !== paramDraftIssue && issue !== searchSpaceDraftIssue).map((issue) => (
-        <p key={issue.code} role="alert" className="rounded-lg border px-3 py-2 text-xs leading-5" style={{ borderColor: "var(--warning-border)", color: "var(--warning-strong)", background: "var(--warning-soft-subtle)" }}>{issue.message}</p>
-      ))}
-      {paneBody}
+      {issueAlerts(pane)}
+      {bodyFor(pane)}
     </div>
   )
 }

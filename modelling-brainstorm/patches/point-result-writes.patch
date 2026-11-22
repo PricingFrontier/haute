@@ -1,0 +1,81 @@
+diff --git a/before/src/haute/modelling/_stage_paths.py b/after/src/haute/modelling/_stage_paths.py
+index 470862f..5ce451f 100644
+--- a/before/src/haute/modelling/_stage_paths.py
++++ b/after/src/haute/modelling/_stage_paths.py
+@@ -221,8 +221,10 @@ def _write_point_result(bundle: StageBundle, result: Any, path_id: str, point_id
+         field.name: staged if field.name == "staged" else getattr(result, field.name)
+         for field in fields(result)
+     }
+-    # Through strict JSON once, so the stored form is exactly what a read returns.
+-    envelope = split(strict_json_loads(_json(stored)), bundle.write_member)
++    # Each object is encoded once, by the same strict canonical JSON that reads decode.
++    # This equals a JSON round trip because producers use string keys and list rows
++    # (tuples encode as lists; non-finite numbers are refused).
++    envelope = split(stored, bundle.write_member)
+     bundle.write_member(result_member(path_id, point_id), _json(envelope))
+ 
+ 
+diff --git a/before/tests/test_staged_runtime.py b/after/tests/test_staged_runtime.py
+index 6774fd7..68e0705 100644
+--- a/before/tests/test_staged_runtime.py
++++ b/after/tests/test_staged_runtime.py
+@@ -1363,3 +1363,59 @@ def test_store_revisions_are_read_only_through_verified_handles(tmp_path, replac
+         with pytest.raises(HauteValidationError, match="checksum|regular"):
+             bundle.read_json("plan.json")
+     assert plan["schema_version"]
++
++
++def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
++    tmp_path, monkeypatch
++):
++    """Encoding once is exactly the old encode, decode and split: same objects, same bytes.
++
++    The live results entering `_write_point_result` from a real path job are compared, so
++    the guarantee covers today's producers (string keys, list score rows).
++    """
++    from dataclasses import fields
++
++    from haute.modelling import _stage_paths
++    from haute.modelling._stage_diagnostics import split
++    from haute.modelling._stage_objects import strict_json_loads
++    from haute.modelling._staged_runtime import _json
++
++    original = _stage_paths._write_point_result
++    compared = []
++
++    def compare(bundle, result, path_id, point_id):
++        written: dict[str, bytes] = {}
++        record = bundle.write_member
++
++        def capture(name, data):
++            written[name] = data
++            return record(name, data)
++
++        monkeypatch.setattr(bundle, "write_member", capture)
++        try:
++            original(bundle, result, path_id, point_id)
++        finally:
++            monkeypatch.setattr(bundle, "write_member", record)
++        envelope = written.pop(_stage_paths.result_member(path_id, point_id))
++        # The old form, from the same live result: a strict JSON round trip, then split.
++        staged = {k: v for k, v in result.staged.items() if k != "paths"}
++        staged["prepared_path"] = path_id
++        live = {
++            f.name: staged if f.name == "staged" else getattr(result, f.name)
++            for f in fields(result)
++        }
++        old: dict[str, bytes] = {}
++        assert _json(split(strict_json_loads(_json(live)), old.__setitem__)) == envelope
++        assert old == written
++        compared.append(point_id)
++
++    monkeypatch.setattr(_stage_paths, "_write_point_result", compare)
++    _, full = build(tmp_path)
++    _, pruning = run_stage_job(
++        full.stage_checkpoint_path,
++        operation="pruned",
++        stages=full.staged["configuration"],
++        prepare_path=True,
++        output_dir=str(tmp_path / "prune"),
++    )
++    assert compared == [p["id"] for p in pruning.staged["paths"]["pruned"]["points"]]

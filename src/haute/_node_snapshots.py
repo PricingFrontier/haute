@@ -1399,7 +1399,7 @@ class NodeSnapshotStore(SourceCacheStore):
                 if remaining:
                     return
                 generation_dir = self._generation_dir(identity.digest, generation_id)
-                token = self._coordination.token
+                token = self._coordination.tokens.current
                 if token is not None:
                     (generation_dir / f"{_LEASE_PREFIX}{token}").unlink(missing_ok=True)
                 if (

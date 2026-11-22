@@ -190,7 +190,7 @@ export function ChartEmptyState({ children }: { children: ReactNode }) {
 }
 
 /** A point marker as a chart draws it: filled, a ring, hollow or a cross. */
-export type ChartLegendMarker = "dot" | "ring" | "hollow" | "cross"
+export type ChartLegendMarker = "dot" | "ring" | "hollow" | "cross" | "diamond"
 
 export type ChartLegendItem = {
   label: ReactNode
@@ -198,6 +198,7 @@ export type ChartLegendItem = {
   swatch?: "line" | "bar" | "dashed"
   /** Draws the swatch as this point marker instead of a line or bar. */
   marker?: ChartLegendMarker
+  dashArray?: string
   dashed?: boolean
   opacity?: number
 }
@@ -213,7 +214,7 @@ function LegendMarker({ marker, color, opacity }: { marker: ChartLegendMarker; c
       data-marker={marker}
       style={{ opacity, flexShrink: 0 }}
     >
-      {marker === "cross" ? (
+      {marker === "diamond" ? <path d="M5 0 L10 5 L5 10 L0 5 Z" fill={color} /> : marker === "cross" ? (
         <path d="M2 2 L8 8 M8 2 L2 8" stroke={color} strokeWidth={2} strokeLinecap="round" />
       ) : (
         <circle
@@ -244,7 +245,9 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
         const isDashed = item.swatch === "dashed" || item.dashed
         return (
           <span key={index} className="flex items-center gap-1.5">
-            {item.marker ? (
+            {item.dashArray ? <svg width={26} height={10} aria-hidden="true" data-testid="chart-legend-swatch">
+              <path d="M0 5 H26" stroke={item.color} strokeWidth={2} strokeDasharray={item.dashArray} />
+            </svg> : item.marker ? (
               <LegendMarker marker={item.marker} color={item.color} opacity={item.opacity} />
             ) : (
               <span

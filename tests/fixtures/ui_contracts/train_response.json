@@ -126,6 +126,7 @@
       ]
     }
   ],
+  "ave_left_out": [],
   "residuals_histogram": [
     {
       "bin_center": 0,

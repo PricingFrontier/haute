@@ -310,6 +310,7 @@ import * as workbenchApi from "../api/workbench"
 import type { WorkbenchTablesResponse } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchStore from "../stores/useWorkbenchStore"
+import useModellingViewStore from "../stores/useModellingViewStore"
 import { makeExploreColumnStat, makeGitWorkingBranch, makeNodeDataPoint, makeNodeDataStatus, makeTrainResult } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3327,6 +3328,179 @@ describe("App integration - a Model Training node's results panel", () => {
     // The node's ordinary preview frame is shown instead.
     await waitFor(() => expect(screen.getAllByText("Claims Model").length).toBeGreaterThan(1))
     expect(screen.queryByText(RESULTS_GONE)).toBeNull()
+  })
+})
+
+describe("App integration - the Modelling view (specs/frontend-modelling-optimiser-ui)", () => {
+  afterEach(() => {
+    useWorkbenchStore.setState({ activeView: "pipeline" })
+    useModellingViewStore.setState({ modelId: null, chosenModel: null, hiddenModels: [], panel: "model", pane: "factor", factor: null, trainAction: null })
+  })
+
+  const configOf = (id: string): Record<string, unknown> =>
+    useGraphStore.getState().nodes.find((node) => node.id === id)?.data.config as Record<string, unknown>
+
+  it("shows the view over the hidden, inert pipeline editor under its own toolbar, edits a model in the pipeline's document, and switches back", async () => {
+    const model = makeNode("frequency", "Frequency", "modelling")
+    model.data.config = {
+      interactive_build: true,
+      target: "claims",
+      loss_function: "Poisson",
+      offset: "exposure",
+      evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" } },
+      models: [{
+        id: "m1",
+        name: "t-boost",
+        algorithm: "tboost",
+        feature_columns: ["age", "region"],
+        params: { n_trees: 4000, prune: false, band_tolerance: null, graduate: false },
+      }],
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("quotes", "Quotes", "dataInput"), model],
+      edges: [{ id: "e1", source: "quotes", target: "frequency" }],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    // Runtime columns come from a preview, never from the loaded document.
+    const columns = ["claims", "exposure", "age", "region"].map((name) => ({ name, dtype: name === "region" ? "String" : "Float64" }))
+    act(() => {
+      useGraphStore.getState().setNodesRaw(useGraphStore.getState().nodes.map((node) => (node.id === "quotes" ? { ...node, data: { ...node.data, _columns: columns } } : node)))
+    })
+
+    // The switcher offers Modelling whether or not the workbench is enabled.
+    const pipeline = screen.getByTestId("pipeline-view")
+    const switcher = await within(pipeline).findByRole("group", { name: "Views" })
+    expect(within(switcher).queryByRole("button", { name: "Workbench" })).toBeNull()
+    fireEvent.click(within(switcher).getByRole("button", { name: "Modelling" }))
+
+    const view = await screen.findByTestId("modelling-view", {}, { timeout: 10_000 })
+    expect(pipeline).toHaveClass("invisible")
+    expect(pipeline).toHaveAttribute("inert")
+    // Its toolbar keeps the project's controls and none of the canvas's.
+    const toolbar = await screen.findByRole("toolbar", { name: "Modelling toolbar" }, { timeout: 10_000 })
+    expect(screen.queryByRole("toolbar", { name: "Pipeline toolbar" })).toBeNull()
+    expect(within(toolbar).getByRole("button", { name: /^save$/i })).toBeInTheDocument()
+    expect(within(toolbar).queryByTestId("toolbar-layout")).toBeNull()
+
+    // The pipeline's interactive build is the view's model; its factors are the node's,
+    // named down the left and included or left out in the All models settings.
+    fireEvent.click(within(view).getByRole("button", { name: "Frequency" }))
+    const factors = await within(view).findByRole("navigation", { name: "Factors" })
+    expect(within(factors).getByRole("button", { name: "region" })).toBeInTheDocument()
+    // A model's factors are on the right, under its name.
+    const settings = within(view).getByRole("complementary", { name: "t-boost settings" })
+    expect(within(settings).getByText("2 included · 0 excluded")).toBeInTheDocument()
+    const factorsOf = () => (configOf("frequency").models as Array<{ feature_columns: string[] }>)[0].feature_columns
+
+    // Taking a factor out edits the pipeline's document, and Ctrl+Z undoes it there.
+    fireEvent.click(within(settings).getByRole("checkbox", { name: "Include region" }))
+    await waitFor(() => expect(factorsOf()).toEqual(["age"]))
+    expect(configOf("frequency").interactive_build).toBe(true)
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true })
+    await waitFor(() => expect(factorsOf()).toEqual(["age", "region"]))
+    // Redo is the keyboard's here, and the pipeline's too; the toolbar has none.
+    expect(within(toolbar).queryByTestId("toolbar-redo")).toBeNull()
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(factorsOf()).toEqual(["age"]))
+
+    // Ctrl+S saves the project, as it does from the pipeline editor.
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true })
+    await waitFor(() => expect(api.savePipeline).toHaveBeenCalledTimes(1))
+    // The saved node keeps its marker and the null that turns banding off.
+    const savedModel = vi.mocked(api.savePipeline).mock.calls[0][0].graph.nodes.find((node) => node.id === "frequency")
+    expect(savedModel?.data.config).toMatchObject({
+      interactive_build: true,
+      models: [{
+        id: "m1",
+        feature_columns: ["age"],
+        params: { n_trees: 4000, prune: false, band_tolerance: null, graduate: false },
+      }],
+    })
+
+    // The toolbar's Train trains the chosen model on the pipeline as the editor holds it, naming it.
+    vi.mocked(api.trainModel).mockClear()
+    fireEvent.click(within(toolbar).getByRole("button", { name: "Train" }))
+    await waitFor(() => expect(api.trainModel).toHaveBeenCalledTimes(1))
+    const request = vi.mocked(api.trainModel).mock.calls[0][0]
+    expect(request.node_id).toBe("frequency")
+    expect(request.model).toBe("m1")
+    const trainedModel = request.graph.nodes.find((node) => node.id === "frequency")
+    expect((trainedModel?.data.config as { models: Array<{ params: unknown }> }).models[0].params).toEqual({
+      n_trees: 4000,
+      prune: false,
+      band_tolerance: null,
+      graduate: false,
+    })
+
+    fireEvent.click(within(view).getByRole("button", { name: "Pricing" }))
+    expect(pipeline).not.toHaveClass("invisible")
+    expect(screen.queryByTestId("modelling-view")).toBeNull()
+    expect(await screen.findByRole("toolbar", { name: "Pipeline toolbar" })).toBeInTheDocument()
+  })
+
+  it("brings a model's factors on a pipeline just loaded: opening it previews its node as a click does", async () => {
+    const model = makeNode("frequency", "Frequency", "modelling")
+    model.data.config = {
+      interactive_build: true,
+      target: "claims",
+      loss_function: "Poisson",
+      offset: "exposure",
+      models: [{ id: "m1", name: "t-boost", algorithm: "tboost", feature_columns: ["age", "region"] }],
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("quotes", "Quotes", "dataInput"), model],
+      edges: [{ id: "e1", source: "quotes", target: "frequency" }],
+      source_revision: "revision-test",
+    }))
+    // Nothing has been previewed: a node's columns arrive with a preview's schema maps.
+    const columns = ["claims", "exposure", "age", "region"].map((name) => ({ name, dtype: name === "region" ? "String" : "Float64" }))
+    vi.mocked(api.previewNode).mockImplementation(async ({ nodeId }) => makePreviewResponse({
+      node_id: nodeId,
+      status: "ok",
+      columns,
+      column_count: columns.length,
+      node_columns: { quotes: columns, frequency: columns },
+    }))
+    render(<App />)
+    await waitForAppReady()
+    expect(api.previewNode).not.toHaveBeenCalled()
+
+    fireEvent.click(within(await screen.findByRole("group", { name: "Views" })).getByRole("button", { name: "Modelling" }))
+    const view = await screen.findByTestId("modelling-view", {}, { timeout: 10_000 })
+    fireEvent.click(await within(view).findByRole("button", { name: "Frequency" }))
+
+    await waitFor(() => expect(api.previewNode).toHaveBeenCalledWith(expect.objectContaining({ nodeId: "frequency" })))
+    const factors = await within(view).findByRole("navigation", { name: "Factors" })
+    expect(await within(factors).findByRole("button", { name: "age" })).toBeInTheDocument()
+    expect(within(view).getByRole("complementary", { name: "t-boost settings" })).toHaveTextContent("2 included · 0 excluded")
+    expect(within(factors).queryByRole("button", { name: "Refresh" })).toBeNull()
+  })
+
+  it("opens an interactive build in the view from its node panel, which has no pane tabs", async () => {
+    const model = makeNode("frequency", "Frequency", "modelling")
+    model.data.config = {
+      interactive_build: true,
+      target: "claims",
+      models: [{ id: "m1", name: "t-boost", algorithm: "tboost" }],
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [model],
+      edges: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("rf__node-frequency"))
+    const summary = await screen.findByTestId("interactive-build-summary", {}, { timeout: 10_000 })
+    expect(screen.queryByRole("tab", { name: "Parameters" })).toBeNull()
+    fireEvent.click(within(summary).getByRole("button", { name: "Open in Modelling" }))
+
+    const view = await screen.findByTestId("modelling-view", {}, { timeout: 10_000 })
+    expect(await within(view).findByRole("group", { name: "Models" })).toBeInTheDocument()
+    expect(within(view).getByRole("heading", { name: "Frequency" })).toBeInTheDocument()
   })
 })
 

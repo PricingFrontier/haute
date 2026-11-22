@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -25,15 +25,7 @@ from haute._credential_security import is_credential_name, validate_credential_f
 from haute._env import float_env
 from haute._file_lock import (
     FileLock,
-    UnsafeCachePathError,
-    _acquire_file_lock,
-    _assert_path_ancestors_plain,
     _is_reparse_point,
-    _LockFileReplacedError,
-    _open_lock_file,
-    _path_names_handle,
-    _release_file_lock,
-    remove_unheld_lock_file,
 )
 from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
@@ -44,6 +36,7 @@ from haute._map_columns import (
     map_entries_frame,
     map_entries_table,
 )
+from haute._process_tokens import ProcessTokens
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -73,7 +66,6 @@ _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 # most this often (or once per staging age, when that is shorter).
 _STAGING_SWEEP_INTERVAL_SECONDS = 300.0
 # A token file younger than this may belong to a process still creating it.
-_TOKEN_SWEEP_GRACE_SECONDS = 60.0
 _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 # Provider of node-output snapshots; their publication, leases, and retirement
 # live in ``haute._node_snapshots``.
@@ -89,7 +81,6 @@ _LEASE_PREFIX = ".lease-"
 # A retired generation is renamed to this prefix beside ``generations/`` under
 # the lease lock, and its files are deleted once the lock is released.
 _RETIRED_PREFIX = ".retired-"
-_TOKEN_LENGTH = 12
 
 logger = get_logger(component="source_cache")
 
@@ -463,6 +454,7 @@ class _SourceCacheCoordination:
     """Process-local locks and leases shared by every handle to one cache root."""
 
     lease_lock: FileLock
+    tokens: ProcessTokens
     lock: threading.RLock = field(default_factory=threading.RLock)
     identity_locks: dict[str, threading.RLock] = field(default_factory=dict)
     leases: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -471,17 +463,9 @@ class _SourceCacheCoordination:
     guard: threading.Lock = field(default_factory=threading.Lock)
     publication_locks: dict[str, FileLock] = field(default_factory=dict)
     budget_lock: FileLock | None = None
-    token: str | None = None
-    token_handle: Any | None = None
     retired_cleaned: bool = False
     staging_swept_at: float | None = None
     publication_locks_swept: bool = False
-
-
-def _is_token(value: str) -> bool:
-    return len(value) == _TOKEN_LENGTH and all(
-        character in "0123456789abcdef" for character in value
-    )
 
 
 def _verification_key(
@@ -608,7 +592,8 @@ class SourceCacheStore:
             coordination = self._coordination_by_root.get(coordination_key)
             if coordination is None:
                 coordination = _SourceCacheCoordination(
-                    lease_lock=FileLock(self._locks_dir / "leases.lock")
+                    lease_lock=FileLock(self._locks_dir / "leases.lock"),
+                    tokens=ProcessTokens(self._processes_dir),
                 )
                 self._coordination_by_root[coordination_key] = coordination
         self._coordination = coordination
@@ -677,77 +662,16 @@ class SourceCacheStore:
             return self._identity_locks.setdefault(identity.digest, threading.RLock())
 
     def _own_token(self) -> str:
-        coordination = self._coordination
-        with coordination.guard:
-            while coordination.token is None:
-                token = uuid.uuid4().hex[:_TOKEN_LENGTH]
-                path = self._processes_dir / f"{token}.lock"
-                _assert_path_ancestors_plain(path)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                handle = _open_lock_file(path)
-                try:
-                    handle.write(b"\0")
-                    handle.flush()
-                    if not _acquire_file_lock(handle, blocking=False):
-                        raise RuntimeError("a fresh lease-owner token file is already locked")
-                    named = _path_names_handle(path, handle)
-                except BaseException:
-                    handle.close()
-                    raise
-                if not named:
-                    # A sweep removed the file before this process locked it, so
-                    # other processes would read the token as dead: take another.
-                    handle.close()
-                    continue
-                coordination.token = token
-                coordination.token_handle = handle
-            return coordination.token
+        return self._coordination.tokens.own()
 
     def _sweep_dead_tokens(self) -> None:
-        """Remove the token files of processes that have exited.
-
-        A token file is locked by its live owner for the owner's lifetime, so
-        one no process holds names a process that has gone. It is removed while
-        this process holds its lock (:func:`remove_unheld_lock_file`), and an
-        owner that locked it meanwhile finds it gone and takes another token. One
-        younger than the grace may be one its owner is still creating, so it is
-        left, as is this process's own.
-        """
-        cutoff = time.time() - _TOKEN_SWEEP_GRACE_SECONDS
-        for path in tuple(self._processes_dir.glob("*.lock")):
-            token = path.stem
-            if not _is_token(token) or token == self._coordination.token:
-                continue
-            try:
-                if path.lstat().st_mtime > cutoff or not remove_unheld_lock_file(path):
-                    continue
-            except (OSError, UnsafeCachePathError):
-                # A racing or unreadable entry is not proven dead.
-                continue
-            logger.info("source_cache_dead_token_removed", token=token)
+        """Remove the token files of processes that have exited (see `ProcessTokens`)."""
+        self._coordination.tokens.sweep_dead(
+            lambda token: logger.info("source_cache_dead_token_removed", token=token)
+        )
 
     def _token_alive(self, token: str) -> bool:
-        if token == self._coordination.token:
-            return True
-        if not _is_token(token):
-            return False
-        path = self._processes_dir / f"{token}.lock"
-        if not path.exists():
-            return False
-        try:
-            handle = _open_lock_file(path)
-        except _LockFileReplacedError:
-            # A sweep removed it meanwhile, which it does only to a file no process holds.
-            return False
-        try:
-            if not _acquire_file_lock(handle, blocking=False):
-                return True
-            _release_file_lock(handle)
-        finally:
-            handle.close()
-        with contextlib.suppress(OSError):
-            path.unlink()
-        return False
+        return self._coordination.tokens.alive(token)
 
     def _in_process_lease_count(self, identity_digest: str, generation_id: str) -> int:
         with self._lock:
@@ -764,7 +688,7 @@ class SourceCacheStore:
         identity_digest = generation_dir.parent.parent.name
         generation_id = generation_dir.name
         live = False
-        own = self._coordination.token
+        own = self._coordination.tokens.current
         for marker in markers:
             token = marker.name.removeprefix(_LEASE_PREFIX)
             if token == own:

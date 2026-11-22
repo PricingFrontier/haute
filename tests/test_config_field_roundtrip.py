@@ -111,6 +111,7 @@ def _examples():
             "mlflow_experiment": "Pricing",
             "output_dir": "models/output",
             "model_export_path": "output/frequency.rsglm",
+            "interactive_build": True,
             "row_limit": 1234,
             "terms": {"_age": {"type": "linear"}},
             "family": "negbinomial",
@@ -422,6 +423,50 @@ def _examples():
         (
             NodeType.MODELLING,
             _modelling(algorithm="xgboost", loss_function="RMSE", device="gpu"),
+        ),
+        # A model built in the Modelling view starts boost-only. Its null band tolerance
+        # is a value, t-boost's "do not band": an absent key bands at t-boost's default.
+        # Its models keep their own factors, directions and parameters.
+        (
+            NodeType.MODELLING,
+            {
+                key: value
+                for key, value in _modelling(
+                    loss_function="Poisson",
+                    interactive_build=True,
+                    models=[
+                        {
+                            "id": "m1",
+                            "name": "t-boost",
+                            "algorithm": "tboost",
+                            "feature_columns": ["premium (gross)", "rate_factor"],
+                            "monotone_constraints": {"rate_factor": 1},
+                            "params": {
+                                "n_trees": 4000,
+                                "prune": False,
+                                "band_tolerance": None,
+                                "graduate": False,
+                            },
+                        },
+                        {
+                            "id": "m2",
+                            "name": "short list",
+                            "algorithm": "tboost",
+                            "feature_columns": ["rate_factor"],
+                            "feature_weights": {"rate_factor": 2.0},
+                            # Tuning needs validation rows, which this build has none of.
+                            "tuning": None,
+                        },
+                    ],
+                    evaluation={
+                        "schema_version": 1,
+                        "strategy": "random",
+                        "seed": 42,
+                        "validation": {"method": "none"},
+                    },
+                ).items()
+                if key != "feature_columns"
+            },
         ),
         # A binary classifier names the label it trains as positive.
         (

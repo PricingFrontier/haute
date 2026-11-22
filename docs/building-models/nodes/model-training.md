@@ -36,9 +36,15 @@ A new Model Training node opens on **Select algorithm**, with one button per fam
 | **t-boost** | Rating-table boosting - gradient boosting whose model is exactly a set of rating tables |
 | **XGBoost** | Gradient boosting - histogram trees with native categoricals and early stopping on CPU |
 
+Below the families, **Interactive build** ("t-boost, built step by step in the Modelling
+view") makes the node a t-boost model that you build in the [Modelling view](../modelling.md),
+one step at a time with a chart of each factor. Its panel then shows the model, its target
+and **Open in Modelling** in place of the panes described here.
+
 Choosing a tree, t-boost or EBM family fills in its starting parameters (see
 [The PARAMETERS pane](#the-parameters-pane)), and every family starts from a default split: a random split with seed 42, a 20% holdout validation set and no test
-set. The panel then shows six panes, **TARGET**, **FEATURES**, **PARAMETERS**, **SPLIT**,
+set. t-boost starts with no validation set, because its fits do not use one (see
+[The SPLIT pane](#the-split-pane)). The panel then shows six panes, **TARGET**, **FEATURES**, **PARAMETERS**, **SPLIT**,
 **TRAIN** and **EXPORT**, described below in that order. A pane whose settings stop the model
 training shows a warning mark on its tab, and the **TRAIN** tab shows a running indicator
 while a model trains. The node has no **COLUMNS** tab.
@@ -50,10 +56,10 @@ while a model trains. The node has no **COLUMNS** tab.
 | Tasks | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression |
 | Losses | RMSE, MAE, Poisson, Tweedie, Logloss, CrossEntropy | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | **Family** and **Link Function** |
 | Round budget (in **Parameters JSON**) | `iterations` | `num_boost_round` | `num_iterations` | `n_trees` (required ceiling) | `max_rounds` (required) | — |
-| Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | On the validation rows, each bag at its own round; else on its own holdout | Never | — |
-| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Never: the early-stopped validation fit is the model | Winning `max_rounds`, unchanged | Same settings |
+| Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | On rows each bag holds back itself | Never | — |
+| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Same settings, within the same `n_trees` ceiling | Winning `max_rounds`, unchanged | Same settings |
 | Tuning | Yes | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
-| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes, with `prune_main_effects` set to `false` | Yes, not on an interaction | Per term |
+| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes | Yes, not on an interaction | Per term |
 | Feature weights | Yes (pipeline file only) | No | No | No | No | No |
 | Interactions | Learned by trees | Learned by trees | Learned by trees | Learned, up to `max_interaction_order` features per table | Chosen count or explicit pairs | Explicit cards |
 | Offset | Baseline | `base_margin` | `init_score` (added at prediction) | Exposure (Poisson, Gamma, Tweedie); added to the raw score (RMSE) | `init_score` | Offset term |
@@ -314,16 +320,16 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     set of rating tables: one table per main effect and per interaction, each coupling at
     most `max_interaction_order` features (3 to start). The prediction is a base value plus
     one value from each table, with no approximation, so the tables you read in the result
-    are the model that scores. Early stopping fits the model: when a fit has validation rows
-    (from the **SPLIT** pane), every bagged fit (`n_bags`) stops at its own best round on
-    them (`early_stopping_rounds`), and the validation rows never train, prune or shape the
-    tables. That early-stopped fit is the model: t-boost is never refit, so its **SPLIT**
-    pane has no **Refit on training + validation** box and no **Cross-validation** option.
-    With **No validation**, the one fit holds out a share of its own rows to stop on
-    (`validation_fraction`). t-boost also prunes tables that do not improve its
+    are the model that scores. A t-boost fit never uses a validation set: every bagged fit
+    (`n_bags`) holds back a share of the rows it is given (`validation_fraction`) and stops
+    at its own best round on them (`early_stopping_rounds`). A new t-boost node therefore
+    starts with **No validation**, and its one fit trains on every row outside the test set.
+    If you choose a validation set in the **SPLIT** pane, it only measures the model and
+    compares tuning trials; the published model is then refitted on all development rows,
+    unless you untick **Refit on training + validation**. t-boost also prunes tables that do not improve its
     own held-out deviance (`prune`). A new node also lets pruning drop a main effect
     (`prune_main_effects`), so a feature that earns no place leaves the model; set it to
-    `false` to keep every main effect, as a fit with monotonicity constraints must: while `prune_main_effects` is `true`, training is blocked if a feature has a monotonicity constraint or `prune` is `false`. To switch pruning off, set `prune`, `prune_main_effects` and `graduate` to `false`, because t-boost refuses `graduate` without pruning when the fit starts. `n_trees` is the ceiling every fit stops early within,
+    `false` to keep every main effect. While `prune_main_effects` is `true`, training is blocked if `prune` is `false`. To switch pruning off, set `prune` and `prune_main_effects` to `false`. `n_trees` is the ceiling every fit stops early within,
     and is required. When the **SPLIT** pane groups rows by an entity column, t-boost's own
     holdouts keep each entity on one side. A fit gives the same model whatever the number of
     threads. The **Loss** view draws each round's training and early-stopping deviance,
@@ -344,7 +350,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     value the model never saw, such as a make that only appears in the validation rows or
     arrives after training, never fails: t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
     Haute's record in its metadata, so it describes its own inputs and offset, and plain
-    t-boost (0.8 or later) can read it too.
+    t-boost (0.9.1 or later) can read it too.
 
 ??? info "EBM parameters"
     An Explainable Boosting Machine is a sum of one learned shape per feature plus chosen
@@ -369,14 +375,12 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
 
 Every family except the GLM can tune a bounded search over the validation plan set in the
 **SPLIT** pane. Choosing **Tune parameters** hides **Parameters JSON**, ticks **Refit on
-training + validation** in the **SPLIT** pane (tuning requires the refit; t-boost has no
-refit) and shows:
+training + validation** in the **SPLIT** pane (tuning requires the refit) and shows:
 
 - A note saying whether a test set is held out during tuning (**No test set is reserved.
   Reserve one in Split for an independent evaluation.** otherwise), with **Review split →**,
   and the fit budget in the **TRAIN** pane's words, for example **101 total fits: 100 tuning
-  fits + 1 final fit** for 20 trials over 5 cross-validation folds (t-boost's last fit is
-  **1 winning validation fit**, since it is never refit).
+  fits + 1 final fit** for 20 trials over 5 cross-validation folds.
 - **Trial count**: how many trials to run, from 5 to 50 (20 to start). Trial zero is always
   your current fixed parameters, so the search must beat the model you would otherwise
   train.
@@ -403,9 +407,8 @@ Tuning needs holdout validation or cross-validation and evaluates every trial in
 deterministic seeded sampler. The selected parameters are refitted once on all development
 data; the test set, when there is one, is then evaluated once. A tree family refits with the
 winner's validation-weighted round count (the **final tree count**); an EBM refits with the
-winner's `max_rounds` unchanged. t-boost is not refitted: it publishes the winning trial's
-holdout fit, reproduced exactly from the winning parameters as the one fit after the
-trials. Choosing **Fixed parameters** again turns tuning off.
+winner's `max_rounds` unchanged, and t-boost with the winner's parameters, each fit stopping
+within its `n_trees` ceiling. Choosing **Fixed parameters** again turns tuning off.
 
 ### GLM penalty and solver { #glm-parameters }
 
@@ -441,11 +444,11 @@ separates three roles:
 | **Split strategy** | **Random split** (the default), **Group split** or **Time-based split**. |
 | **Group column** | Group split: the column whose rows must stay together, such as a customer, policyholder, household, or claim identifier. |
 | **Date column** | Time-based split: the date the split boundaries apply to. |
-| **Validation strategy** | **Holdout validation** (the default), **Cross-validation** or **No validation**. |
+| **Validation strategy** | **Holdout validation** (the default), **Cross-validation** or **No validation** (the default for t-boost, whose fits use no validation set). |
 | **Validation set (%)** | Holdout validation with a random or group split: the share of source rows held out, above 0 and below 100 (20 to start). |
 | **Validation starts** | Holdout validation with a time-based split: rows from this date on form the validation set. |
 | **Fold count** | Cross-validation: from 2 to 10 folds (5 to start). With a time-based split the folds use an expanding window. |
-| **Refit on training + validation** | Holdout validation only, ticked by default: refits the final model on all development rows. Untick it to keep the one model trained on the training rows during validation, with no second fit; without a test set, its diagnostics are then labelled as validation diagnostics. Cross-validation and no validation always perform their final fit, and tuning requires the refit, so the box is ticked and locked while **Tune parameters** is on. A t-boost node has no box: its early-stopped validation fit is always the model. |
+| **Refit on training + validation** | Holdout validation only, ticked by default: refits the final model on all development rows. Untick it to keep the one model trained on the training rows during validation, with no second fit; without a test set, its diagnostics are then labelled as validation diagnostics. Cross-validation and no validation always perform their final fit, and tuning requires the refit, so the box is ticked and locked while **Tune parameters** is on. |
 | **Test set (%)** | Random or group split: the share of source rows reserved as the test set, from 0 (no test set) to below 100. |
 | **Test starts** | Time-based split: rows from this date on form the test set; leave it blank for none. |
 
@@ -627,7 +630,11 @@ appears only when the result has something to show in it:
   red for a high one. A categorical feature's dots have no value order and take one
   colour; point at a dot to see its row's value. SHAP is computed on a sample of up to
   5,000 diagnostics rows, and the beeswarm draws 2,000 of them.
-- **AvE**: actual against expected across each feature's groups, with exposure.
+- **AvE**: actual against expected across each feature's groups, with exposure. When the
+  offset is an exposure (an offset under a log link), actual and expected are per unit of
+  exposure, such as claims per policy year, and a group's exposure is the sum of weight
+  times exposure over its rows. Otherwise they are weighted averages per row, and a
+  group's exposure is the sum of its rows' weights, or their count with no weight column.
 - **PDP**: partial dependence, how predictions change as one feature varies.
 - **SHAP curves** (CatBoost, XGBoost, LightGBM, t-boost): for each feature, the average SHAP value
   of the sampled rows in each band of its values (up to 20 bands) or in each of its 30
@@ -656,8 +663,8 @@ The Summary keeps model-selection evidence distinct from final performance:
   fixed and tuned candidates. Cross-validation summaries are weighted by the number of
   validation rows in each fit.
 - A tuned run shows the baseline, winning trial, improvement, selected parameters,
-  final tree count (tree families), the winning round budget (EBM) or, for t-boost, that
-  it published the winning trial's fit, and exact total fit count. **Use best as fixed parameters** copies the winning parameters into the
+  final tree count (tree families) or that it was refit with the winning parameters (EBM
+  and t-boost), and exact total fit count. **Use best as fixed parameters** copies the winning parameters into the
   node's **Parameters JSON** and turns tuning off, after asking.
 - An EBM's **Terms** view shows each term's additive scores on the model's link scale
   (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is the
@@ -928,6 +935,16 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `mlflow_destination` | `""` or `"databricks"` or `"server"` | The MLflow server or Databricks workspace a run is logged to; empty or absent is the local folder. |
     | `positive_class` | text or number or `true` or `false` | For a binary classifier, the label trained as positive; `true` or `1` when absent. |
     | `device` | `"cpu"` or `"gpu"` | For XGBoost, whether it trains on the CPU or a GPU; the CPU when absent. |
+    | `interactive_build` | `true` or `false` | Whether the model is built in the Modelling view (`true`); absent for a model built in the node's own panel. It changes where the node is edited, never what it trains. |
+    | `models` | list of object | An interactive build's models, each with its own factors, directions and parameters. |
+    | `models[].id` | text | The model's id, which its runs are kept under; it never changes. |
+    | `models[].name` | text | The model's name, shown on its entry and given to its run. |
+    | `models[].algorithm` | text | The model type, `tboost`. |
+    | `models[].feature_columns` | list of text | The columns the model trains on. |
+    | `models[].params` | map of text to any JSON value | The model type's own parameters, by name. |
+    | `models[].tuning` | map of text to any JSON value or `null` | Hyperparameter tuning settings; `null` or absent trains with `params` as set. |
+    | `models[].monotone_constraints` | map of text to whole number or `null` | For each constrained feature, `1` (increasing) or `-1` (decreasing); `null` for none. |
+    | `models[].feature_weights` | map of text to number | For each weighted feature, its weight in feature selection. |
     | `input_mapping` | map of text to text | The input names the node's code uses, each mapped to the connected input it reads. |
     | `contract` | `"opaque"` or object | The node's column contract as its decorator declares it: `"opaque"`, or the columns it reads and produces. |
     | `selected_columns` | list of text | The columns the node passes downstream, chosen on its **Columns** tab; absent passes all. |

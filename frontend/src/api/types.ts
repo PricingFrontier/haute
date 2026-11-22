@@ -569,6 +569,8 @@ type TrainResponseUiFields = {
   shap_summary: TrainShapSummaryRow[]
   feature_importance_loss: TrainFeatureImportanceRow[]
   ave_per_feature: TrainAvePerFeatureRow[]
+  /** An interactive build's actual and expected by level for each column its model left out. */
+  ave_left_out: TrainAvePerFeatureRow[]
   residuals_histogram: TrainResidualHistogramRow[]
   actual_vs_predicted: ActualVsPredictedRow[]
   lorenz_curve: LorenzCurvePoint[]

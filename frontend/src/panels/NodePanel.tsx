@@ -48,6 +48,12 @@ import {
 } from "./useNodePanelSession"
 import { NodeConfigEditor } from "./NodeConfigEditor"
 import { useRecordedNodeColumns } from "./useRecordedNodeColumns"
+import {
+  clearCachedResultShape,
+  columnsSignature,
+  edgeSourceColumns,
+  useUpstreamColumns,
+} from "./nodePanelData"
 
 type NodePanelProps = {
   node: SimpleNode | null
@@ -122,41 +128,6 @@ const EXPLORE_PANES = [
   { key: "charts", label: "Charts" },
   { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ExplorePane; label: string }[]
-
-type ColumnInfo = { name: string; dtype: string }
-
-/**
- * The columns an edge carries: the source's columns for the output handle
- * the edge leaves from (a submodel output), else the source's columns.
- */
-function edgeSourceColumns(edge: SimpleEdge, nodeMap: Record<string, SimpleNode>): ColumnInfo[] | undefined {
-  const data = nodeMap[edge.source]?.data as Record<string, unknown> | undefined
-  const frames = data?._frameColumns as Record<string, ColumnInfo[]> | undefined
-  const handle = edge.sourceHandle
-  if (handle && frames?.[handle]) return frames[handle]
-  return data?._columns as ColumnInfo[] | undefined
-}
-
-/** Collect upstream columns from already-filtered incoming edges. */
-function collectColumnsFromEdges(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): ColumnInfo[] {
-  const cols: ColumnInfo[] = []
-  const seen = new Set<string>()
-  edges.forEach(e => {
-    const srcCols = edgeSourceColumns(e, nodeMap)
-    if (srcCols) srcCols.forEach(c => { if (!seen.has(c.name)) { seen.add(c.name); cols.push(c) } })
-  })
-  return cols
-}
-
-function columnsSignature(columns: ColumnInfo[] | undefined): string {
-  return columns?.map((column) => `${column.name}\u0002${column.dtype}`).join("\u0001") ?? ""
-}
-
-function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
-  return edges
-    .map((edge) => `${edge.source}\u0003${edge.sourceHandle ?? ""}\u0003${columnsSignature(edgeSourceColumns(edge, nodeMap))}`)
-    .join("\u0004")
-}
 
 function inputSourceForEdge(
   edge: SimpleEdge,
@@ -260,37 +231,6 @@ function UnknownNodeTypeDiagnostic({
       </div>
     </div>
   )
-}
-
-// Cached preview-result fields cleared on user config edits.  Listing the
-// keys explicitly (rather than stripping every leading-underscore field)
-// lets selected_columns-only edits preserve `_availableColumns`: that
-// pre-filter schema remains valid while the post-filter preview is stale.
-// preserves selection/trace state — `_status`, `_traceActive`, etc. — which
-// are intentionally NOT invalidated by a config change.  Adding a new cached
-// field to ``HauteNodeData`` will not surface here automatically — the choice
-// to clear or preserve a new field must be made deliberately by extending
-// this list.
-const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
-  "_columns",
-  "_availableColumns",
-  "_frameColumns",
-  "_schemaWarnings",
-  "_notes",
-  "_columnsSource",
-  "_columnsStructuralVersion",
-]
-
-function clearCachedResultShape<T extends Record<string, unknown>>(
-  data: T,
-  { preserveAvailableColumns = false }: { preserveAvailableColumns?: boolean } = {},
-): T {
-  const next = { ...data }
-  for (const key of CACHED_PREVIEW_KEYS) {
-    if (preserveAvailableColumns && key === "_availableColumns") continue
-    delete next[key as keyof T]
-  }
-  return next
 }
 
 type NodeRecoveryStatusProps = {
@@ -1351,14 +1291,7 @@ function NodePanelContent({
     // state can all change while the edge id stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, upstreamInputSourceSig, submodels])
-  const upstreamSchemaSignature = upstreamColumnsSignature(upstreamEdges, nodeMap)
-  const upstreamColumns = useMemo(() => {
-    return collectColumnsFromEdges(upstreamEdges, nodeMap)
-    // Intentionally keyed by selected node plus upstream schema content.
-    // Selected-node config/label edits rebuild nodeMap but do not change the
-    // upstream schema, so they should preserve this array identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNodeId, upstreamSchemaSignature])
+  const upstreamColumns = useUpstreamColumns(selectedNodeId, upstreamEdges, nodeMap)
   const nodeColumns = useRecordedNodeColumns(node.data as HauteNodeData, activeSource)
   const pivotColumns = useMemo(
     () =>
@@ -1379,7 +1312,9 @@ function NodePanelContent({
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
   const modellingPanes = modellingPanesFor(algorithm)
+  // An interactive build is edited in the Modelling view: its panel has no panes of its own.
   const showModellingPanes = isKnownNodeType && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
+    && config.interactive_build !== true
   const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
   const flaggedModellingPanes = showModellingPanes && modellingPaneIssues.nodeId === node.id
     ? modellingPaneIssues.panes

@@ -335,9 +335,8 @@ def test_skipped_refit_counts_only_the_saved_validation_fit() -> None:
         check_completed(raw)
 
 
-def test_a_tuned_response_without_a_refit_counts_the_trials_and_the_published_fit() -> None:
-    # A validation-fit family (t-boost) publishes the winning trial's holdout fit
-    # instead of a refit; it is still the one fit beyond the trials.
+def test_a_tuned_response_counts_the_trials_and_the_one_fit_beyond_them() -> None:
+    # A study ends in its refit, so one saved holdout fit cannot be a study's count.
     raw = saved_holdout_response()
     raw["tuning"] = tuning_payload()
     with pytest.raises(ValueError, match="fit_count must equal tuning total_fit_count"):

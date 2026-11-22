@@ -15,10 +15,15 @@ import type {
 import type {
   TrainEstimateResponse,
   TrainResponse as GeneratedTrainResponse,
+  StageStatePayload,
+  StagePathInspectionPayload,
+  StageRevisionPayload,
 } from "../generated/api-contracts.generated"
 import { validateTrainEstimateResponse } from "../generated/api-contracts.modelling.validators.mjs"
 import {
   validateTrainResponse,
+  validateStageStatePayload,
+  validateStagePathInspectionPayload,
   validateTrainStatusResponse,
 } from "../generated/api-contracts.training.validators.mjs"
 import { expectGeneratedContract } from "./generatedContractValidation"
@@ -450,6 +455,7 @@ function trainResponseFromContract(response: GeneratedTrainResponse): TrainRespo
     shap_summary: parseArray(p, response.shap_summary, "shap_summary", parseShapSummaryRow),
     feature_importance_loss: parseArray(p, response.feature_importance_loss, "feature_importance_loss", parseFeatureImportanceRow),
     ave_per_feature: parseArray(p, response.ave_per_feature, "ave_per_feature", parseAvePerFeatureRow),
+    ave_left_out: parseArray(p, response.ave_left_out, "ave_left_out", parseAvePerFeatureRow),
     residuals_histogram: parseArray(p, response.residuals_histogram, "residuals_histogram", parseResidualHistogramRow),
     actual_vs_predicted: parseArray(p, response.actual_vs_predicted, "actual_vs_predicted", parseActualVsPredictedRow),
     lorenz_curve: parseArray(p, response.lorenz_curve, "lorenz_curve", parseLorenzCurvePoint),
@@ -607,4 +613,30 @@ export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
     throw new Error("parseTrainEstimateResponse: only a row_count_unprovable estimate lacks a row total")
   }
   return estimate
+}
+
+
+export type StageRevision = Omit<StageRevisionPayload, "result"> & {
+  result: { graph_digest: string; response: TrainResponse; config?: Record<string, unknown> | null }
+}
+export type StageState = Omit<StageStatePayload, "current" | "preview" | "final"> & {
+  current: StageRevision | null
+  preview: StageRevision | null
+  final: StageRevision | null
+}
+export function parseStageState(data: unknown): StageState {
+  const response = expectGeneratedContract<StageStatePayload>(
+    "parseStageState", validateStageStatePayload, data,
+  )
+  const revision = (value: StageRevisionPayload | null | undefined): StageRevision | null =>
+    value == null ? null : { ...value, result: { ...value.result, response: parseTrainResponse(value.result.response) } }
+  return { ...response, current: revision(response.current), preview: revision(response.preview), final: revision(response.final) }
+}
+
+export type PathInspection = Omit<StagePathInspectionPayload, "response"> & { response: TrainResponse }
+export function parsePathInspection(data: unknown): PathInspection {
+  const value = expectGeneratedContract<StagePathInspectionPayload>(
+    "parsePathInspection", validateStagePathInspectionPayload, data,
+  )
+  return { ...value, response: parseTrainResponse(value.response) }
 }

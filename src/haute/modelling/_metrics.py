@@ -464,6 +464,7 @@ def compute_ave_per_feature(
     y_pred: np.ndarray,
     weight: np.ndarray | None = None,
     *,
+    exposure: np.ndarray | None = None,
     n_bins: int = 10,
     max_features: int | None = None,
     max_categories: int = 15,
@@ -474,7 +475,15 @@ def compute_ave_per_feature(
     the caller should pre-sort by importance):
     - Numeric features are quantile-binned into *n_bins*.
     - Categorical features are grouped by category (top *max_categories*
-      by weight, remainder lumped into ``"Other"``).
+      by mass, remainder lumped into ``"Other"``).
+
+    A row's mass is its weight (one without a weight), times its *exposure* when
+    one is given. A bin's ``exposure`` is its summed mass, and its averages are
+    its weighted actual and predicted totals over that mass. Pass *exposure* for
+    a model that predicts a rate times an exposure (a log-link offset), so the
+    averages are rates per unit of exposure; without it they are weighted means
+    per row. It must be finite and positive on every row the non-finite filter
+    keeps.
 
     Returns a list of dicts::
 
@@ -494,6 +503,8 @@ def compute_ave_per_feature(
         df = df.filter(pl.Series(finite_mask))
 
     w = weight if weight is not None else np.ones(len(y_true))
+    if exposure is not None:
+        exposure = _ave_exposure(exposure, finite_mask)
     cat_set = set(cat_features)
     results: list[dict[str, Any]] = []
 
@@ -505,10 +516,10 @@ def compute_ave_per_feature(
         is_cat = feat in cat_set
 
         if is_cat:
-            bins = _ave_categorical_bins(col, y_true, y_pred, w, max_categories)
+            bins = _ave_categorical_bins(col, y_true, y_pred, w, exposure, max_categories)
             feat_type = "categorical"
         else:
-            bins = _ave_numeric_bins(col, y_true, y_pred, w, n_bins)
+            bins = _ave_numeric_bins(col, y_true, y_pred, w, exposure, n_bins)
             feat_type = "numeric"
 
         results.append({"feature": feat, "type": feat_type, "bins": bins})
@@ -516,14 +527,33 @@ def compute_ave_per_feature(
     return results
 
 
+def _ave_exposure(exposure: np.ndarray, finite_mask: np.ndarray) -> np.ndarray:
+    """The exposure of the rows AvE keeps, refused unless finite and positive on each."""
+    exposure_arr = _as_float_array(exposure, name="exposure")
+    if len(exposure_arr) != len(finite_mask):
+        raise HauteValidationError(
+            "exposure must have the same length as y_true/y_pred; "
+            f"got {len(exposure_arr)} and {len(finite_mask)}"
+        )
+    kept: np.ndarray = exposure_arr[finite_mask]
+    invalid = int((~(np.isfinite(kept) & (kept > 0))).sum())
+    if invalid:
+        raise HauteValidationError(
+            "The exposure for diagnostic 'ave_per_feature' must be finite and positive, but "
+            f"{invalid:,} of {len(kept):,} rows are non-finite, zero, or negative."
+        )
+    return kept
+
+
 def _ave_numeric_bins(
     col: pl.Series,
     y_true: np.ndarray,
     y_pred: np.ndarray,
     weight: np.ndarray,
+    exposure: np.ndarray | None,
     n_bins: int,
 ) -> list[dict[str, Any]]:
-    """Bin a numeric feature by quantile and compute weighted AvE per bin."""
+    """Bin a numeric feature by quantile and compute weighted AvE per unit of mass per bin."""
     vals = col.to_numpy().astype(float)
     n = len(vals)
 
@@ -555,8 +585,8 @@ def _ave_numeric_bins(
             if not mask.any():
                 continue
             bw = weight[mask]
-            total_w = bw.sum()
-            if total_w == 0:
+            total_mass = (bw if exposure is None else bw * exposure[mask]).sum()
+            if total_mass == 0:
                 continue
 
             bin_vals = vals[mask]
@@ -566,23 +596,23 @@ def _ave_numeric_bins(
             bins.append(
                 {
                     "label": label,
-                    "exposure": round(float(total_w), 4),
-                    "avg_actual": round(float(np.average(y_true[mask], weights=bw)), 6),
-                    "avg_predicted": round(float(np.average(y_pred[mask], weights=bw)), 6),
+                    "exposure": round(float(total_mass), 4),
+                    "avg_actual": round(float((y_true[mask] * bw).sum() / total_mass), 6),
+                    "avg_predicted": round(float((y_pred[mask] * bw).sum() / total_mass), 6),
                 }
             )
 
     # NaN bin
     if nan_mask.any():
         bw = weight[nan_mask]
-        total_w = bw.sum()
-        if total_w > 0:
+        total_mass = (bw if exposure is None else bw * exposure[nan_mask]).sum()
+        if total_mass > 0:
             bins.append(
                 {
                     "label": "Missing",
-                    "exposure": round(float(total_w), 4),
-                    "avg_actual": round(float(np.average(y_true[nan_mask], weights=bw)), 6),
-                    "avg_predicted": round(float(np.average(y_pred[nan_mask], weights=bw)), 6),
+                    "exposure": round(float(total_mass), 4),
+                    "avg_actual": round(float((y_true[nan_mask] * bw).sum() / total_mass), 6),
+                    "avg_predicted": round(float((y_pred[nan_mask] * bw).sum() / total_mass), 6),
                 }
             )
 
@@ -594,64 +624,55 @@ def _ave_categorical_bins(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     weight: np.ndarray,
+    exposure: np.ndarray | None,
     max_categories: int,
 ) -> list[dict[str, Any]]:
-    """Group a categorical feature by category and compute weighted AvE."""
+    """Group a categorical feature by category and compute weighted AvE per unit of mass."""
     if len(col) == 0:
         return []
 
-    # Vectorized groupby: no Python row loops
-    tmp = pl.DataFrame(
-        {
-            "cat": col.cast(pl.Utf8).fill_null("__MISSING__"),
-            "w": weight,
-            "wa": y_true * weight,
-            "wp": y_pred * weight,
+    # Dictionary codes avoid scheduling a separate group query for each feature.
+    # All arrays are O(rows + levels), including high-cardinality columns.
+    encoded = col.cast(pl.Utf8).fill_null("__MISSING__").to_arrow().dictionary_encode()
+    labels = np.asarray(encoded.dictionary.to_pylist(), dtype=object)
+    codes = encoded.indices.to_numpy()
+    mass = np.bincount(
+        codes, weights=weight if exposure is None else weight * exposure, minlength=len(labels)
+    )
+    actual = np.bincount(codes, weights=y_true * weight, minlength=len(labels))
+    predicted = np.bincount(codes, weights=y_pred * weight, minlength=len(labels))
+    # Preserve top levels by mass and the lexical tie break of the original report.
+    ordered = np.lexsort((labels, -mass))
+
+    def entry(label: str, total: float, a: float, p: float) -> dict[str, Any]:
+        return {
+            "label": label,
+            "exposure": round(total, 4),
+            "avg_actual": round(a / total, 6),
+            "avg_predicted": round(p / total, 6),
         }
-    )
-    grouped = (
-        tmp.group_by("cat")
-        .agg(
-            pl.col("w").sum().alias("exposure"),
-            pl.col("wa").sum().alias("sum_actual"),
-            pl.col("wp").sum().alias("sum_predicted"),
+
+    bins = [
+        entry(
+            "Missing" if labels[index] == "__MISSING__" else str(labels[index]),
+            float(mass[index]),
+            float(actual[index]),
+            float(predicted[index]),
         )
-        # Equal exposure ordered by level, so the cut is the same on every run.
-        .sort(["exposure", "cat"], descending=[True, False])
-    )
-
-    top = grouped.head(max_categories)
-    remainder = grouped.slice(max_categories)
-
-    bins: list[dict[str, Any]] = []
-    for row in top.iter_rows(named=True):
-        if row["exposure"] == 0:
-            continue
-        label = "Missing" if row["cat"] == "__MISSING__" else row["cat"]
+        for index in ordered[:max_categories]
+        if mass[index] != 0
+    ]
+    remainder = ordered[max_categories:]
+    other_mass = float(mass[remainder].sum())
+    if len(remainder) and other_mass > 0:
         bins.append(
-            {
-                "label": label,
-                "exposure": round(row["exposure"], 4),
-                "avg_actual": round(row["sum_actual"] / row["exposure"], 6),
-                "avg_predicted": round(row["sum_predicted"] / row["exposure"], 6),
-            }
-        )
-
-    # Lump remaining categories into "Other"
-    if remainder.height > 0:
-        other_exposure = float(remainder["exposure"].sum())
-        if other_exposure > 0:
-            bins.append(
-                {
-                    "label": "Other",
-                    "exposure": round(other_exposure, 4),
-                    "avg_actual": round(float(remainder["sum_actual"].sum()) / other_exposure, 6),
-                    "avg_predicted": round(
-                        float(remainder["sum_predicted"].sum()) / other_exposure, 6
-                    ),
-                }
+            entry(
+                "Other",
+                other_mass,
+                float(actual[remainder].sum()),
+                float(predicted[remainder].sum()),
             )
-
+        )
     return bins
 
 

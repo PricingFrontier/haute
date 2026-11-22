@@ -195,6 +195,17 @@ describe("useJobPolling - solve and train share poll cadence", () => {
 // ═════════════════════════════════════════════════════════════════
 
 describe("useJobPolling - shared completion semantics", () => {
+  it("records completion without a toast when a caller groups work into a staged run", async () => {
+    const onComplete = vi.fn(), addToast = vi.fn()
+    const cfg = trainConfig({ jobs: { n1: { jobId: "stage", nodeLabel: "Model" } },
+      pollFn: vi.fn().mockResolvedValue({ status: "completed", message: "", progress: 1, result: { metrics: {} } }),
+      onComplete, addToast, notifySuccess: () => false })
+    renderHook(() => useJobPolling(cfg))
+    await advance(500)
+    expect(onComplete).toHaveBeenCalledOnce()
+    expect(addToast).not.toHaveBeenCalled()
+  })
+
   it("calls onComplete + success toast with the panel-specific label for both types", async () => {
     const solvePoll = vi.fn<(id: string) => Promise<SolveLikeStatus>>().mockResolvedValue({
       status: "completed", message: "", progress: 1, result: { converged: true },

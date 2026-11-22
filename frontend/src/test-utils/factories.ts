@@ -233,6 +233,7 @@ export function makeTrainResult(
     shap_link: null,
     feature_importance_loss: [],
     ave_per_feature: [],
+    ave_left_out: [],
     residuals_histogram: [],
     residuals_stats: {},
     actual_vs_predicted: [],
@@ -252,6 +253,7 @@ export function makeTrainResult(
     diagnostics_errors: [],
     feature_selection: null,
     evaluation: {
+      purpose: null,
       schema_version: 1,
       strategy: "random",
       validation_method: "single",

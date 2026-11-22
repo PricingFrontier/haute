@@ -110,6 +110,7 @@ nav:
     - Project Files: building-models/project-files.md
     - Versions: building-models/versions.md
     - Workbench: building-models/workbench.md
+    - Modelling: building-models/modelling.md
     - Recovering a Pipeline: building-models/recovering-a-pipeline.md
     - Node Types:
       - building-models/nodes/index.md

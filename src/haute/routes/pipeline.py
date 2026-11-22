@@ -1824,15 +1824,14 @@ async def _preview_canonical_graph(
     "/pipeline/preview/progress/{request_id}",
     response_model=PreviewProgressResponse,
 )
-def preview_progress_of(request_id: str) -> PreviewProgressResponse:
+def preview_progress_of(request_id: str) -> PreviewProgressResponse | Response:
     """The step progress of the caller's own in-flight preview.
 
-    404 when the id is unknown or its preview has settled, which the client
-    treats as "nothing to show", not as a failure of the preview.
+    No content when the id is not registered yet or its preview has settled.
     """
     progress = preview_progress.get(request_id)
     if progress is None:
-        raise HTTPException(status_code=404, detail="No preview in progress with this id.")
+        return Response(status_code=204)
     return PreviewProgressResponse(
         request_id=request_id,
         phase=progress.phase,

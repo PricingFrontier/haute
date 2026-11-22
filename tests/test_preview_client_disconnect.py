@@ -15,7 +15,7 @@ import time
 from typing import Any, cast
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import Request
 
 from haute.errors import RequestRefusedError
 from haute.routes import pipeline as pipeline_routes
@@ -185,13 +185,13 @@ async def test_a_running_preview_reports_its_steps_to_its_own_request_id(
         2,
         "Caching join",
     )
-    with pytest.raises(HTTPException) as unknown:
-        pipeline_routes.preview_progress_of("someone-else")
-    assert unknown.value.status_code == 404
+    unknown = pipeline_routes.preview_progress_of("someone-else")
+    assert unknown.status_code == 204
+    assert unknown.body == b""
 
     release.set()
     with contextlib.suppress(Exception):
         await preview
-    with pytest.raises(HTTPException) as settled:
-        pipeline_routes.preview_progress_of("req-1")
-    assert settled.value.status_code == 404
+    settled = pipeline_routes.preview_progress_of("req-1")
+    assert settled.status_code == 204
+    assert settled.body == b""

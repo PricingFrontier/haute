@@ -38,6 +38,11 @@ export function trainingIdentityConfig(config: Record<string, unknown>): Record<
   return withoutKeys(config, MODELLING_EXPORT_CONFIG_KEYS)
 }
 
+/** Post-fit recipes do not change the data or resources needed by the GBM estimate. */
+export function trainingEstimateConfig(config: Record<string, unknown>): Record<string, unknown> {
+  return withoutKeys(trainingIdentityConfig(config), ["stages"])
+}
+
 /** The optimiser config minus its export settings: what a solve result depends on. */
 export function solveIdentityConfig(config: Record<string, unknown>): Record<string, unknown> {
   return withoutKeys(config, OPTIMISER_EXPORT_CONFIG_KEYS)

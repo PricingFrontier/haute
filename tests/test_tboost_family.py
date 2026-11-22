@@ -140,9 +140,7 @@ def test_fit_evidence_records_the_ceiling_the_fitted_trees_and_why_they_stopped(
 
 def test_the_loss_history_is_the_bag_mean_deviance_per_round() -> None:
     data = frame(1500)
-    result = fit_adapter(
-        data, offset="exposure", params={**FAST, "n_bags": 2}, eval_df=frame(400, seed=9)
-    )
+    result = fit_adapter(data, offset="exposure", params={**FAST, "n_bags": 2})
     evals = result.model.estimator.evals_result_
     history = result.loss_history
     assert len(history) == max(len(bag) for bag in evals["eval"]["deviance"])
@@ -167,12 +165,12 @@ def test_each_round_report_carries_a_live_loss_row_for_its_round() -> None:
         threads=1,
         offset="exposure",
         params={**FAST, "n_bags": 2},
-        eval_df=frame(400, seed=9),
         on_iteration=on_iteration,
     )
     for iteration, metrics, row in reports:
         assert row["iteration"] == iteration
-        assert set(row) == {"iteration", "train_deviance", "eval_deviance"}
+        assert {"iteration", "train_deviance", "eval_deviance"} <= set(row)
+        assert "bag_1_iteration" in row
         assert metrics == {
             "deviance": row["train_deviance"],
             "validation_deviance": row["eval_deviance"],
@@ -253,6 +251,48 @@ def test_an_offset_scores_the_rate_times_exposure_and_adds_log_offset_to_the_mar
     np.testing.assert_allclose(model.predict(doubled), 2 * model.predict(data), rtol=1e-12)
     with pytest.raises(HauteValidationError, match="offset column 'exposure' is missing"):
         model.predict(data.drop("exposure"))
+
+
+def test_ave_reports_claims_per_unit_of_a_log_link_offset(tmp_path: Path) -> None:
+    data = frame()
+    evaluation = {**EVALUATION, "validation": {"method": "none"}}
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=data,
+        evaluation=evaluation,
+    )
+    # With no validation or test rows the diagnostics are computed on every row.
+    assert (result.diagnostics_set, result.development_rows) == ("development", data.height)
+    region = next(entry for entry in result.ave_per_feature if entry["feature"] == "region")
+    north = next(level for level in region["bins"] if level["label"] == "north")
+    rows = data.filter(pl.col("region") == "north")
+    exposure = rows["exposure"].sum()
+    # The job has no weight, so the level's mass is its exposure. The result rounds
+    # the exposure to four decimal places and the average to six.
+    assert north["exposure"] == pytest.approx(exposure, abs=1e-4)
+    assert north["avg_actual"] == pytest.approx(rows["claims"].sum() / exposure, abs=1e-6)
+
+
+def test_ave_stays_per_row_under_an_identity_link_offset(tmp_path: Path) -> None:
+    """An identity-link offset is an additive base value, not an exposure to divide by."""
+    data = frame()
+    evaluation = {**EVALUATION, "validation": {"method": "none"}}
+    _job, result = train(
+        tmp_path,
+        target="severity",
+        loss="RMSE",
+        offset="exposure",
+        data=data,
+        evaluation=evaluation,
+    )
+    region = next(entry for entry in result.ave_per_feature if entry["feature"] == "region")
+    north = next(level for level in region["bins"] if level["label"] == "north")
+    rows = data.filter(pl.col("region") == "north")
+    assert north["exposure"] == rows.height
+    assert north["avg_actual"] == pytest.approx(rows["severity"].mean(), abs=1e-6)
 
 
 def test_the_fit_matches_an_independent_native_fit_with_the_weight_and_exposure() -> None:
@@ -454,7 +494,7 @@ def _fit_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, int, dict[str
     return calls
 
 
-def test_the_early_stopped_validation_fit_is_the_published_model(
+def test_no_fit_is_given_validation_rows_and_a_holdout_measures_then_refits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _fit_calls(monkeypatch)
@@ -462,19 +502,37 @@ def test_the_early_stopped_validation_fit_is_the_published_model(
     _job, result = train(
         tmp_path, target="claims", loss="Poisson", offset="exposure", evaluation=evaluation
     )
-    # One fit: the training partition, early-stopped on the validation rows. No refit.
-    assert len(calls) == 1
-    fitted, rows, kwargs = calls[0]
+    # Two fits: the training partition, scored on the validation rows, then every
+    # development row. Neither is given the validation rows.
     fit = result.evaluation["selection_fits"][0]
-    assert (rows, len(kwargs["eval_set"][0])) == (fit["train_rows"], fit["validation_rows"])
-    assert result.evaluation["refit_on_development"] is False
-    assert result.evaluation["fit_count"] == 1
+    assert [rows for _fitted, rows, _kwargs in calls] == [
+        fit["train_rows"],
+        result.development_rows,
+    ]
+    for _fitted, _rows, kwargs in calls:
+        assert set(kwargs) <= {"sample_weight", "exposure", "offset", "groups", "callbacks"}
+    assert result.evaluation["refit_on_development"] is True
+    assert result.evaluation["fit_count"] == 2
     assert result.diagnostics_set == "final_test"
     published = TBoostModel.load(result.model_path).estimator
-    assert published.n_trees_per_bag_ == fitted.n_trees_per_bag_
+    assert published.n_trees_per_bag_ == calls[-1][0].n_trees_per_bag_
 
 
-def test_without_validation_the_one_fit_stops_on_its_own_holdout(
+def test_a_holdout_with_its_refit_off_publishes_the_training_partition_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fit_calls(monkeypatch)
+    _job, result = train(
+        tmp_path, target="claims", loss="Poisson", offset="exposure", refit_on_development=False
+    )
+    fit = result.evaluation["selection_fits"][0]
+    assert [rows for _fitted, rows, _kwargs in calls] == [fit["train_rows"]]
+    assert result.evaluation["refit_on_development"] is False
+    assert result.evaluation["fit_count"] == 1
+    assert result.diagnostics_set == "validation"
+
+
+def test_without_validation_the_one_fit_trains_on_every_development_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _fit_calls(monkeypatch)
@@ -482,40 +540,24 @@ def test_without_validation_the_one_fit_stops_on_its_own_holdout(
     _job, result = train(
         tmp_path, target="claims", loss="Poisson", offset="exposure", evaluation=evaluation
     )
-    assert len(calls) == 1
-    _fitted, rows, kwargs = calls[0]
-    assert (rows, kwargs.get("eval_set")) == (result.development_rows, None)
+    assert [rows for _fitted, rows, _kwargs in calls] == [result.development_rows]
+    assert result.evaluation["fit_count"] == 1
 
 
-def test_a_source_changed_during_the_trials_is_refused_before_the_winning_fit(
+def test_cross_validation_scores_each_fold_and_refits_on_every_development_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = TrainingJob._run_tuning_trials
-
-    def trials_then_change_source(self: Any, **kwargs: Any) -> Any:
-        outcome = original(self, **kwargs)
-        path = kwargs["prepared"].data_path
-        changed = pl.read_parquet(path).with_columns(pl.col("age") + 1.0)
-        changed.write_parquet(path)
-        return outcome
-
-    monkeypatch.setattr(TrainingJob, "_run_tuning_trials", trials_then_change_source)
-    with pytest.raises(HauteValidationError, match="source changed before the winning"):
-        train(
-            tmp_path,
-            target="severity",
-            loss="RMSE",
-            tuning={
-                "schema_version": 1,
-                "trial_count": 5,
-                "seed": 7,
-                "metric": "rmse",
-                "search_space": {"learning_rate": [0.1, 0.3]},
-            },
-        )
+    calls = _fit_calls(monkeypatch)
+    evaluation = {**EVALUATION, "validation": {"method": "cross_validation", "fold_count": 3}}
+    _job, result = train(
+        tmp_path, target="claims", loss="Poisson", offset="exposure", evaluation=evaluation
+    )
+    assert len(calls) == 4
+    assert calls[-1][1] == result.development_rows
+    assert result.evaluation["fit_count"] == 4
 
 
-def test_t_boost_has_no_refit_and_no_cross_validation() -> None:
+def test_t_boost_takes_validation_and_a_refit_setting_as_an_ebm_does() -> None:
     config = {
         "target": "claims",
         "algorithm": "tboost",
@@ -524,30 +566,16 @@ def test_t_boost_has_no_refit_and_no_cross_validation() -> None:
         "evaluation": EVALUATION,
         "feature_columns": ["region", "age"],
     }
-    assert build_training_job_kwargs(config, data="d.parquet")["refit_on_development"] is False
-    none = {**config, "evaluation": {**EVALUATION, "validation": {"method": "none"}}}
-    assert build_training_job_kwargs(none, data="d.parquet")["refit_on_development"] is True
-    for refit in (True, False):
-        with pytest.raises(TrainingConfigError, match="t-boost is never refit"):
-            build_training_job_kwargs({**config, "refit_on_development": refit}, data="d.parquet")
+    assert build_training_job_kwargs(config, data="d.parquet")["refit_on_development"] is True
+    kept = {**config, "refit_on_development": False}
+    assert build_training_job_kwargs(kept, data="d.parquet")["refit_on_development"] is False
     folds = {
         **config,
         "evaluation": {**EVALUATION, "validation": {"method": "cross_validation", "fold_count": 3}},
     }
-    with pytest.raises(TrainingConfigError, match="not cross-validation"):
-        build_training_job_kwargs(folds, data="d.parquet")
-    with pytest.raises(HauteValidationError, match="t-boost is never refit"):
-        TrainingJob(
-            name="tb",
-            data=frame(),
-            target="claims",
-            algorithm="tboost",
-            loss_function="Poisson",
-            params=FAST,
-            evaluation=EVALUATION,
-            feature_columns=["region", "age"],
-            refit_on_development=True,
-        )
+    assert build_training_job_kwargs(folds, data="d.parquet")["refit_on_development"] is True
+    with pytest.raises(TrainingConfigError, match="Skipping the final refit requires holdout"):
+        build_training_job_kwargs({**folds, "refit_on_development": False}, data="d.parquet")
 
 
 def test_a_fit_is_identical_whatever_the_thread_allotment() -> None:
@@ -587,11 +615,14 @@ def test_a_group_plan_passes_its_column_to_every_fit_as_groups(
         evaluation=evaluation,
         feature_columns=features,
     )
-    assert len(calls) == 1  # the published validation fit; t-boost is never refit
     for columns, groups in calls:
         assert columns == features
         assert groups is not None and set(groups) <= set(data["policy"].to_list())
-    assert len(calls[-1][1]) == result.evaluation["selection_fits"][0]["train_rows"]
+    # The validation fit, then the refit on every development row.
+    assert [len(groups) for _columns, groups in calls] == [
+        result.evaluation["selection_fits"][0]["train_rows"],
+        result.development_rows,
+    ]
 
 
 def _cell(axis: dict[str, Any], value: Any) -> int:
@@ -672,7 +703,8 @@ def test_a_cell_with_no_training_rows_reports_the_value_the_model_scores_there()
         -2 + 0.6 * (age < 30) + 0.3 * (region == "b") + 0.5 * ((age < 30) & (region == "b"))
     )
     data = pl.DataFrame({"region": region, "age": age, "claims": rng.poisson(rate).astype(float)})
-    params = {**FAST, "n_trees": 400, "max_interaction_order": 2}
+    # Unbanded: banding would merge the empty cell into a neighbour that has rows.
+    params = {**FAST, "n_trees": 400, "max_interaction_order": 2, "band_tolerance": None}
     model = fit_adapter(data, params=params, threads=4).model
     table = next(t for t in TBoostAlgorithm().tboost_tables(model)["tables"] if t["order"] == 2)
     row = {"region": "c", "age": 20.0}
@@ -1038,8 +1070,7 @@ def test_config_rejects_invalid_tboost_settings(params: dict, message: str) -> N
         build_training_job_kwargs(config, data="d.parquet")
 
 
-def test_config_refuses_pruning_main_effects_of_a_monotone_fit() -> None:
-    """t-boost refuses the pair only once the fit starts; Haute says so before training."""
+def test_a_monotone_fit_may_prune_main_effects_and_stays_monotone() -> None:
     config = {
         "target": "claims",
         "algorithm": "tboost",
@@ -1049,14 +1080,14 @@ def test_config_refuses_pruning_main_effects_of_a_monotone_fit() -> None:
         "feature_columns": ["region", "age"],
         "monotone_constraints": {"age": 1},
     }
-    with pytest.raises(TrainingConfigError, match="cannot prune main effects of a monotone fit"):
-        build_training_job_kwargs(config, data="d.parquet")
-    # A zero direction, or a constraint on an unselected feature, constrains nothing.
-    for constraints in ({"age": 0}, {"policy": 1}):
-        accepted = build_training_job_kwargs(
-            {**config, "monotone_constraints": constraints}, data="d.parquet"
-        )
-        assert accepted["algorithm"] == "tboost"
+    assert build_training_job_kwargs(config, data="d.parquet")["algorithm"] == "tboost"
+    model = fit_adapter(
+        frame(3000, seed=2),
+        params={**FAST, "n_bags": 4, "prune": True, "prune_main_effects": True},
+        monotone_constraints={"age": 1},
+    ).model
+    ages = pl.DataFrame({"region": ["north"] * 63, "age": np.arange(18.0, 81.0)})
+    assert (np.diff(model.predict_margin(ages)) >= 0).all()
 
 
 def test_pruning_main_effects_drops_a_noise_feature_and_still_scores_every_input(
@@ -1120,13 +1151,30 @@ def test_a_study_searches_parameters_and_refits_with_the_winning_ones(tmp_path: 
     winner = tuning["trials"][tuning["winner_trial_index"]]
     assert tuning["final_params"] == winner["resolved_params"]
     assert tuning["final_tree_count"] is None
-    # No refit: the published model is the winning trial's holdout fit, reproduced
-    # exactly, as the one fit beyond the trials.
-    assert result.evaluation["refit_on_development"] is False
+    # The winning parameters are refit on every development row, as the one fit
+    # beyond the trials.
+    assert result.evaluation["refit_on_development"] is True
     assert result.evaluation["fit_count"] == tuning["total_fit_count"]
-    assert result.diagnostics_set == "validation"
-    assert result.metrics["rmse"] == pytest.approx(winner["objective"], rel=1e-9)
+    assert result.diagnostics_set == "development"
     payload = TuningReportPayload.model_validate(
         {key: value for key, value in tuning.items() if value is not None}
     )
     assert payload.final_tree_count is None
+
+
+def test_bag_curves_keep_their_rounds_and_stopped_bags_in_the_mean() -> None:
+    from haute.modelling._tboost import _loss_history, _RoundProgress
+
+    history = _loss_history({"train": {"deviance": [[8.0, 6.0], [4.0, 3.0, 2.0]]}})
+    assert [row["train_deviance"] for row in history] == [6.0, 4.5, 4.0]
+    assert history[-1]["bag_1_iteration"] == 2
+    assert history[-1]["bag_1_train_deviance"] == 6.0
+    assert history[-1]["bag_2_iteration"] == 3
+    rows = []
+    progress = _RoundProgress(lambda iteration, total, metrics, row: rows.append(row), 10)
+    progress({"bag": 0, "round": 1, "train_deviance": 8.0})
+    progress({"bag": 0, "round": 2, "train_deviance": 6.0})
+    progress({"bag": 1, "round": 1, "train_deviance": 4.0})
+    assert rows[-1]["bag_1_iteration"] == 2
+    assert rows[-1]["bag_2_iteration"] == 1
+    assert rows[-1]["bag_2_train_deviance"] == 4.0

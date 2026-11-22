@@ -291,3 +291,193 @@ class TestAveEmpty:
             np.array([]),
         )
         assert result == []
+
+
+def _bin_values(feature):
+    """Each bin's (exposure, avg_actual, avg_predicted), by label in the order reported."""
+    return {
+        b["label"]: (b["exposure"], b["avg_actual"], b["avg_predicted"]) for b in feature["bins"]
+    }
+
+
+def _bin(exposure, avg_actual, avg_predicted):
+    """An expected bin, to the six decimal places the averages are rounded to."""
+    return pytest.approx((exposure, avg_actual, avg_predicted), abs=1e-6)
+
+
+class TestAveWithExposure:
+    """With an exposure, a bin's averages are per unit of it and its strip is the mass."""
+
+    # Six rows of claim counts and expected claims (the rate times the exposure). ``x``
+    # bins as rows 0-2 and 3-5; ``c`` groups them as a = 0, 1, 3 and b = 2, 4, 5.
+    FRAME = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "c": ["a", "a", "b", "a", "b", "b"]})
+    CLAIMS = np.array([1.0, 1.0, 2.0, 0.0, 1.0, 0.0])
+    EXPECTED = np.array([0.2, 0.1, 0.5, 0.1, 0.05, 0.3])
+    EXPOSURE = np.array([0.5, 0.25, 1.0, 0.5, 0.25, 0.5])
+
+    def test_bins_report_claims_per_unit_of_exposure_and_the_summed_exposure(self):
+        numeric, categorical = compute_ave_per_feature(
+            self.FRAME,
+            ["x", "c"],
+            ["c"],
+            self.CLAIMS,
+            self.EXPECTED,
+            exposure=self.EXPOSURE,
+            n_bins=2,
+        )
+        # Rows 0-2 hold 4 claims and 0.8 expected over 1.75 of exposure; a per-row
+        # mean would report 4/3 and 3 rows.
+        assert _bin_values(numeric) == {
+            "1–3": _bin(1.75, 4 / 1.75, 0.8 / 1.75),
+            "4–6": _bin(1.25, 0.8, 0.36),
+        }
+        assert _bin_values(categorical) == {
+            "b": _bin(1.75, 3 / 1.75, 0.85 / 1.75),
+            "a": _bin(1.25, 1.6, 0.32),
+        }
+
+    def test_a_weight_multiplies_the_exposure_and_weights_the_claims(self):
+        weight = np.array([1.0, 2.0, 3.0, 4.0, 2.0, 2.0])
+        numeric, categorical = compute_ave_per_feature(
+            self.FRAME,
+            ["x", "c"],
+            ["c"],
+            self.CLAIMS,
+            self.EXPECTED,
+            weight,
+            exposure=self.EXPOSURE,
+            n_bins=2,
+        )
+        # Mass is weight times exposure: 0.5, 0.5, 3, 2, 0.5, 1. Weighted claims are
+        # 1, 2, 6, 0, 2, 0 and weighted expected claims 0.2, 0.2, 1.5, 0.4, 0.1, 0.6.
+        assert _bin_values(numeric) == {
+            "1–3": _bin(4.0, 2.25, 0.475),
+            "4–6": _bin(3.5, 2 / 3.5, 1.1 / 3.5),
+        }
+        assert _bin_values(categorical) == {
+            "b": _bin(4.5, 8 / 4.5, 2.2 / 4.5),
+            "a": _bin(3.0, 1.0, 0.8 / 3),
+        }
+
+    def test_the_missing_bin_and_other_lump_are_rates_and_levels_rank_by_mass(self):
+        frame = pl.DataFrame(
+            {
+                "x": [1.0, 2.0, 3.0, 4.0, None, None, 5.0],
+                "c": ["big", "many", "many", "many", "few", "few", None],
+            }
+        )
+        numeric, categorical = compute_ave_per_feature(
+            frame,
+            ["x", "c"],
+            ["c"],
+            np.array([2.0, 1.0, 0.0, 2.0, 0.0, 1.0, 3.0]),
+            np.array([1.5, 0.2, 0.1, 0.3, 0.1, 0.2, 1.0]),
+            np.array([1.0, 0.25, 0.25, 0.5, 3.0, 3.0, 2.0]),
+            exposure=np.array([4.0, 1.0, 1.0, 1.0, 0.125, 0.125, 1.0]),
+            n_bins=2,
+            max_categories=2,
+        )
+        # The two rows missing ``x`` hold 3 weighted claims and 0.9 weighted expected
+        # claims over a mass of 0.75.
+        assert _bin_values(numeric)["Missing"] == _bin(0.75, 4.0, 1.2)
+        # By mass the levels rank big 4, Missing 2, many 1, few 0.75. The two kept would
+        # be few and Missing by weight, big and many by exposure, many and few by rows.
+        values = _bin_values(categorical)
+        assert list(values) == ["big", "Missing", "Other"]
+        assert values == {
+            "big": _bin(4.0, 0.5, 0.375),
+            "Missing": _bin(2.0, 3.0, 1.0),
+            "Other": _bin(1.75, 4.25 / 1.75, 1.125 / 1.75),
+        }
+
+    def test_a_row_dropped_as_non_finite_takes_its_exposure_with_it(self):
+        """A missing exposure scores a non-finite prediction; the row is dropped whole."""
+        expected = self.EXPECTED.copy()
+        exposure = self.EXPOSURE.copy()
+        expected[1] = exposure[1] = np.nan
+
+        (categorical,) = compute_ave_per_feature(
+            self.FRAME, ["c"], ["c"], self.CLAIMS, expected, exposure=exposure
+        )
+        assert _bin_values(categorical) == {
+            "b": _bin(1.75, 3 / 1.75, 0.85 / 1.75),
+            "a": _bin(1.0, 1.0, 0.3),
+        }
+
+    @pytest.mark.parametrize("invalid", [0.0, -0.5, float("nan"), float("inf")])
+    def test_an_exposure_that_is_not_finite_and_positive_is_refused(self, invalid):
+        exposure = self.EXPOSURE.copy()
+        exposure[3] = invalid
+        with pytest.raises(ValueError, match="'ave_per_feature' must be finite and positive"):
+            compute_ave_per_feature(
+                self.FRAME, ["x"], [], self.CLAIMS, self.EXPECTED, exposure=exposure
+            )
+
+
+@pytest.mark.parametrize("categorical", [False, True])
+def test_categorical_ave_matches_manual_weighted_groups_with_missing_and_other(categorical):
+    rng = np.random.default_rng(142)
+    levels = ["a", "b", "c", "d", "long" * 1000, None]
+    values = rng.choice(levels, 1200)
+    column = pl.Series("region", values)
+    if categorical:
+        column = column.cast(pl.Categorical)
+    actual, predicted = rng.random(1200), rng.random(1200)
+    weight = rng.integers(0, 4, 1200).astype(float)
+    exposure = rng.integers(1, 4, 1200).astype(float)
+    result = compute_ave_per_feature(
+        pl.DataFrame([column]),
+        ["region"],
+        ["region"],
+        actual,
+        predicted,
+        weight,
+        exposure=exposure,
+        max_categories=3,
+    )
+    groups = []
+    for level in levels:
+        mask = np.array([value == level for value in values])
+        groups.append(
+            (
+                "__MISSING__" if level is None else level,
+                float((weight[mask] * exposure[mask]).sum()),
+                float((weight[mask] * actual[mask]).sum()),
+                float((weight[mask] * predicted[mask]).sum()),
+            )
+        )
+    groups.sort(key=lambda row: (-row[1], row[0]))
+    kept = groups[:3] + [("Other", *[sum(row[i] for row in groups[3:]) for i in (1, 2, 3)])]
+    expected = [
+        dict(
+            label="Missing" if label == "__MISSING__" else label,
+            exposure=round(mass, 4),
+            avg_actual=round(a / mass, 6),
+            avg_predicted=round(p / mass, 6),
+        )
+        for label, mass, a, p in kept
+    ]
+    assert result[0]["bins"] == expected
+
+
+def test_categorical_ave_keeps_mixed_length_labels_compact():
+    import tracemalloc
+
+    # A single long label must not pad thousands of ordinary levels to its width.
+    levels = [f"a{i:04}" for i in range(2000)] + ["z" * 4096]
+    data = pl.DataFrame({"level": levels})
+    actual = np.ones(len(levels))
+    predicted = actual * 1.5
+    tracemalloc.start()
+    try:
+        result = compute_ave_per_feature(
+            data, ["level"], ["level"], actual, predicted, max_categories=3
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024**2
+    assert result[0]["bins"] == [
+        dict(label=label, exposure=mass, avg_actual=1.0, avg_predicted=1.5)
+        for label, mass in [("a0000", 1.0), ("a0001", 1.0), ("a0002", 1.0), ("Other", 1998.0)]
+    ]

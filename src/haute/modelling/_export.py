@@ -80,6 +80,8 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     if kwargs["params"]:
         parts.append(f"    params={kwargs['params']!r},")
 
+    if kwargs.get("stages") is not None:
+        parts.append(f"    stages={kwargs['stages']!r},")
     parts.append(f"    evaluation={kwargs['evaluation']!r},")
     parts.append(f"    metrics={kwargs['metrics']!r},")
     if kwargs["tuning"] is not None:

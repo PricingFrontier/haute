@@ -219,6 +219,7 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     shap_link: null,
     feature_importance_loss: [],
     ave_per_feature: [],
+    ave_left_out: [],
     residuals_histogram: [],
     residuals_stats: {},
     actual_vs_predicted: [],
@@ -772,14 +773,14 @@ describe("endpoint contracts", () => {
     expect(JSON.parse(init.body as string).request_id).toBe("req-1")
   })
 
-  it("getPreviewProgress reads a running request and treats 404 as nothing to show", async () => {
+  it("getPreviewProgress reads a running request and treats 204 as nothing to show", async () => {
     mockFetch.mockReturnValueOnce(jsonResponse({ request_id: "req-1", phase: "running", done: 1, total: 2, label: "Caching join" }))
     await expect(getPreviewProgress("req-1")).resolves.toEqual({
       request_id: "req-1", phase: "running", done: 1, total: 2, label: "Caching join",
     })
     expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/preview/progress/req-1")
 
-    mockFetch.mockReturnValueOnce(jsonResponse({ detail: "No preview in progress with this id." }, 404))
+    mockFetch.mockReturnValueOnce(new Response(null, { status: 204 }))
     await expect(getPreviewProgress("req-1")).resolves.toBeNull()
   })
 

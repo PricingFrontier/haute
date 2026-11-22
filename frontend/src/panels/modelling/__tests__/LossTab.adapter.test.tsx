@@ -1,6 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
-import { LossTab } from "../LossTab"
+import { LossHistoryChart, LossTab } from "../LossTab"
 import { makeTrainResult } from "../../../test-utils/factories"
 
 // LossTab adapts the loss history onto the shared IterationLinesChart; these
@@ -51,4 +51,29 @@ describe("LossTab adapter", () => {
     expect(screen.getAllByText("Train").length).toBeGreaterThan(0)
     expect(screen.queryByText("Eval")).toBeNull()
   })
+})
+
+
+it("shows every bag at its own rounds with split and visibility controls", () => {
+  const history = [
+    { iteration: 1, train_deviance: 6, eval_deviance: 7, bag_1_iteration: 1, bag_1_train_deviance: 8, bag_1_eval_deviance: 9, bag_2_iteration: 1, bag_2_train_deviance: 4, bag_2_eval_deviance: 5 },
+    { iteration: 3, train_deviance: 4, eval_deviance: 5, bag_1_iteration: 2, bag_1_train_deviance: 6, bag_1_eval_deviance: 7, bag_2_iteration: 3, bag_2_train_deviance: 2, bag_2_eval_deviance: 3 },
+  ]
+  render(<LossTab width={600} result={{ ...baseResult, loss_history: history }} />)
+  expect(screen.getByRole("checkbox", { name: "Bag 1" })).toBeChecked()
+  expect(screen.getByRole("checkbox", { name: "Bag 2" })).toBeChecked()
+  const first = document.querySelector('path[data-series="Bag 1"]')!
+  const second = document.querySelector('path[data-series="Bag 2"]')!
+  expect(first.getAttribute("d")).toMatch(/L322\.0,/)
+  expect(second.getAttribute("d")).toMatch(/L584\.0,/)
+  expect(document.querySelector('path[data-series="Mean of bags"]')).not.toBeNull()
+  fireEvent.click(screen.getByRole("checkbox", { name: "Bag 1" }))
+  expect(document.querySelector('path[data-series="Bag 1"]')).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Training" }))
+  expect(screen.getByRole("button", { name: "Training" })).toHaveAttribute("aria-pressed", "true")
+  expect(document.querySelector('path[data-series="Bag 2"]')).not.toBeNull()
+  cleanup()
+  render(<LossHistoryChart width={600} height={280} fit={{ history, thinned: false, bestIteration: null, intro: null, live: true }} />)
+  expect(screen.queryByRole("checkbox", { name: "Mean of bags" })).toBeNull()
+  expect(screen.getByRole("checkbox", { name: "Bag 1" })).toBeChecked()
 })

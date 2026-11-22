@@ -248,3 +248,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   boundary for bundle inventories. Its default check mode fails on stale
   digests or inventory drift; `--write` is the only supported digest refresh
   and still rejects unsafe, duplicate, missing, or undeclared resources.
+
+The compact modelling diagnostic contracts and on-demand table reader add approximately
+4.4 KiB gzip to the complete bundle, while reducing routine model response sizes. The
+aggregate JavaScript ceiling is 1,858 KiB (about 3 KiB headroom); the initial JavaScript
+ceiling stays 300 KiB, with existing vendor and individual chunk ceilings unchanged.

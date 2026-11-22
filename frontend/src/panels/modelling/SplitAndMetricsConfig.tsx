@@ -19,9 +19,6 @@ export type SplitAndMetricsConfigProps = {
   onEvaluationChange: (value: Evaluation) => void
   refitOnDevelopment: boolean
   onRefitOnDevelopmentChange: (value: boolean) => void
-  /** The family's early-stopped validation fit is the model (t-boost): no refit
-   *  setting and no cross-validation. */
-  publishesValidationFit?: boolean
   tuningEnabled: boolean
   preview: EvaluationPreview | null
   /** The server's message for a failed evaluation preview; it names the preview. */
@@ -72,7 +69,6 @@ export function SplitAndMetricsConfig({
   refitOnDevelopment,
   onRefitOnDevelopmentChange,
   tuningEnabled,
-  publishesValidationFit = false,
   preview,
   previewError = null,
 }: SplitAndMetricsConfigProps) {
@@ -227,9 +223,7 @@ export function SplitAndMetricsConfig({
       </ConfigSection>
       <ConfigSection title="Validation strategy">
         <div className="flex flex-wrap gap-2">
-          {methods
-            .filter((x) => !(publishesValidationFit && x.value === "cross_validation"))
-            .map((x) => (
+          {methods.map((x) => (
             <button
               type="button"
               key={x.value}
@@ -307,7 +301,7 @@ export function SplitAndMetricsConfig({
             />
           </div>
         )}
-        {method === "single" && !publishesValidationFit && (
+        {method === "single" && (
           <label className="flex items-center gap-2 text-[13px] cursor-pointer select-none">
             <input
               type="checkbox"

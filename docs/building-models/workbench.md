@@ -27,8 +27,8 @@ versioned beside the pipeline: a file for each table and each sheet
 
     While it is enabled, the node palette offers the [Workbench Input](nodes/workbench-input.md)
     in place of the Quote Input and the [Workbench Output](nodes/workbench-output.md) in
-    place of the Quote Response, and **Workbench** appears beside **Pricing** at the bottom
-    of the palette.
+    place of the Quote Response, and **Workbench** appears beside **Pricing** and
+    [**Modelling**](modelling.md) at the bottom of the palette.
 
 ## Switching views
 

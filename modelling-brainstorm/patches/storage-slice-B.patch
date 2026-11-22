@@ -1,0 +1,1861 @@
+diff --git a/before/src/haute/_file_ops.py b/after/src/haute/_file_ops.py
+index 5da1ea5..853dfab 100644
+--- a/before/src/haute/_file_ops.py
++++ b/after/src/haute/_file_ops.py
+@@ -284,13 +284,24 @@ def publish_staged_file(staged: Path, target: Path, *, replace: bool) -> None:
+ 
+     ``replace=True`` replaces *target* with the bounded Windows contention retry.
+     ``replace=False`` never clobbers: a *target* that appeared since the caller looked
+-    raises ``FileExistsError`` and *staged* is left for the caller to remove.
++    raises ``FileExistsError`` and *staged* is left for the caller to remove. On Windows
++    it retries the same transient access and sharing violations, but never an existing
++    target.
+     """
+     if replace:
+         _replace_with_windows_contention_retry(staged, target)
+     elif _IS_WINDOWS:
+         # MoveFileExW without MOVEFILE_REPLACE_EXISTING refuses an existing target.
+-        os.rename(staged, target)
++        for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS, None):
++            try:
++                os.rename(staged, target)
++                return
++            except FileExistsError:
++                raise
++            except OSError as exc:
++                if getattr(exc, "winerror", None) not in {5, 32} or delay is None:
++                    raise
++                time.sleep(delay)
+     else:
+         # rename(2) would replace; link(2) refuses an existing target atomically.
+         os.link(staged, target)
+diff --git a/before/src/haute/_node_snapshots.py b/after/src/haute/_node_snapshots.py
+index 1847cad..1c7c053 100644
+--- a/before/src/haute/_node_snapshots.py
++++ b/after/src/haute/_node_snapshots.py
+@@ -1399,7 +1399,7 @@ class NodeSnapshotStore(SourceCacheStore):
+                 if remaining:
+                     return
+                 generation_dir = self._generation_dir(identity.digest, generation_id)
+-                token = self._coordination.token
++                token = self._coordination.tokens.current
+                 if token is not None:
+                     (generation_dir / f"{_LEASE_PREFIX}{token}").unlink(missing_ok=True)
+                 if (
+diff --git a/after/src/haute/_process_tokens.py b/after/src/haute/_process_tokens.py
+new file mode 100644
+index 0000000..4e70865
+--- /dev/null
++++ b/after/src/haute/_process_tokens.py
+@@ -0,0 +1,154 @@
++"""Process liveness tokens: one lifetime-locked file per process in a directory.
++
++A process holds an exclusive lock on its own token file for its whole lifetime. A token
++whose file no process holds therefore names a process that has exited. Stores name the
++owner of a lease marker or a staging file by its token, and remove markers whose owners
++have gone.
++
++There is one token per directory per process. A spawned child gets a fresh one, because
++the registry is keyed by process id.
++"""
++
++from __future__ import annotations
++
++import os
++import threading
++import time
++import uuid
++from collections.abc import Callable
++from pathlib import Path
++from typing import Any, ClassVar
++
++from haute._file_lock import (
++    UnsafeCachePathError,
++    _acquire_file_lock,
++    _assert_path_ancestors_plain,
++    _LockFileReplacedError,
++    _open_lock_file,
++    _path_names_handle,
++    _release_file_lock,
++    remove_unheld_lock_file,
++)
++
++TOKEN_LENGTH = 12
++# A token file younger than this may still be in creation by its owner.
++SWEEP_GRACE_SECONDS = 60.0
++
++
++def is_token(value: str) -> bool:
++    return len(value) == TOKEN_LENGTH and all(
++        character in "0123456789abcdef" for character in value
++    )
++
++
++class ProcessTokens:
++    """This process's token in one directory, and the liveness of other processes' tokens."""
++
++    _registry: ClassVar[dict[tuple[Path, int], ProcessTokens]] = {}
++    _registry_lock: ClassVar[threading.Lock] = threading.Lock()
++
++    def __init__(self, directory: Path) -> None:
++        self.directory = directory
++        self._guard = threading.Lock()
++        self._token: str | None = None
++        self._handle: Any | None = None
++
++    @classmethod
++    def for_directory(cls, directory: Path) -> ProcessTokens:
++        key = (directory.resolve(), os.getpid())
++        with cls._registry_lock:
++            tokens = cls._registry.get(key)
++            if tokens is None:
++                tokens = cls._registry[key] = cls(directory)
++            return tokens
++
++    @property
++    def current(self) -> str | None:
++        """This process's token, or ``None`` before it has needed one."""
++        return self._token
++
++    @property
++    def handle(self) -> Any | None:
++        """The open, locked token file, while this process holds a token."""
++        return self._handle
++
++    def close(self) -> None:
++        """Release this process's token; a later `own` takes a new one."""
++        with self._guard:
++            if self._handle is not None:
++                self._handle.close()
++            self._token, self._handle = None, None
++
++    def own(self) -> str:
++        """This process's token, created and locked on first use."""
++        with self._guard:
++            while self._token is None:
++                token = uuid.uuid4().hex[:TOKEN_LENGTH]
++                path = self.directory / f"{token}.lock"
++                _assert_path_ancestors_plain(path)
++                path.parent.mkdir(parents=True, exist_ok=True)
++                handle = _open_lock_file(path)
++                try:
++                    handle.write(b"\0")
++                    handle.flush()
++                    if not _acquire_file_lock(handle, blocking=False):
++                        raise RuntimeError("a fresh lease-owner token file is already locked")
++                    named = _path_names_handle(path, handle)
++                except BaseException:
++                    handle.close()
++                    raise
++                if not named:
++                    # A sweep removed the file before this process locked it, so other
++                    # processes would read the token as dead: take another.
++                    handle.close()
++                    continue
++                self._token, self._handle = token, handle
++            return self._token
++
++    def alive(self, token: str) -> bool:
++        """Whether *token* names a live process. An unlocked token file is removed."""
++        if token == self._token:
++            return True
++        if not is_token(token):
++            return False
++        path = self.directory / f"{token}.lock"
++        if not path.exists():
++            return False
++        try:
++            handle = _open_lock_file(path)
++        except _LockFileReplacedError:
++            # A sweep removed it meanwhile, which it does only to a file no process holds.
++            return False
++        try:
++            if not _acquire_file_lock(handle, blocking=False):
++                return True
++            _release_file_lock(handle)
++        finally:
++            handle.close()
++        try:
++            path.unlink()
++        except OSError:
++            pass
++        return False
++
++    def sweep_dead(self, on_removed: Callable[[str], None] | None = None) -> None:
++        """Remove the token files of processes that have exited.
++
++        A file is removed only while this process holds its lock
++        (`remove_unheld_lock_file`). An owner that locked it meanwhile finds it gone and
++        takes another token. Files younger than the grace period, and this process's own,
++        are left.
++        """
++        cutoff = time.time() - SWEEP_GRACE_SECONDS
++        for path in tuple(self.directory.glob("*.lock")):
++            token = path.stem
++            if not is_token(token) or token == self._token:
++                continue
++            try:
++                if path.lstat().st_mtime > cutoff or not remove_unheld_lock_file(path):
++                    continue
++            except (OSError, UnsafeCachePathError):
++                # A racing or unreadable entry is not proven dead.
++                continue
++            if on_removed is not None:
++                on_removed(token)
+diff --git a/before/src/haute/_source_cache.py b/after/src/haute/_source_cache.py
+index a719c01..0b8162d 100644
+--- a/before/src/haute/_source_cache.py
++++ b/after/src/haute/_source_cache.py
+@@ -15,7 +15,7 @@ import uuid
+ from collections.abc import Callable, Iterable, Iterator, Mapping
+ from dataclasses import dataclass, field, replace
+ from pathlib import Path
+-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, runtime_checkable
++from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
+ 
+ import polars as pl
+ 
+@@ -25,15 +25,7 @@ from haute._credential_security import is_credential_name, validate_credential_f
+ from haute._env import float_env
+ from haute._file_lock import (
+     FileLock,
+-    UnsafeCachePathError,
+-    _acquire_file_lock,
+-    _assert_path_ancestors_plain,
+     _is_reparse_point,
+-    _LockFileReplacedError,
+-    _open_lock_file,
+-    _path_names_handle,
+-    _release_file_lock,
+-    remove_unheld_lock_file,
+ )
+ from haute._file_ops import atomic_write_text, ensure_disk_headroom
+ from haute._hashing import content_hash
+@@ -44,6 +36,7 @@ from haute._map_columns import (
+     map_entries_frame,
+     map_entries_table,
+ )
++from haute._process_tokens import ProcessTokens
+ 
+ if TYPE_CHECKING:
+     import pyarrow as pa
+@@ -73,7 +66,6 @@ _DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+ # most this often (or once per staging age, when that is shorter).
+ _STAGING_SWEEP_INTERVAL_SECONDS = 300.0
+ # A token file younger than this may belong to a process still creating it.
+-_TOKEN_SWEEP_GRACE_SECONDS = 60.0
+ _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
+ # Provider of node-output snapshots; their publication, leases, and retirement
+ # live in ``haute._node_snapshots``.
+@@ -89,7 +81,6 @@ _LEASE_PREFIX = ".lease-"
+ # A retired generation is renamed to this prefix beside ``generations/`` under
+ # the lease lock, and its files are deleted once the lock is released.
+ _RETIRED_PREFIX = ".retired-"
+-_TOKEN_LENGTH = 12
+ 
+ logger = get_logger(component="source_cache")
+ 
+@@ -463,6 +454,7 @@ class _SourceCacheCoordination:
+     """Process-local locks and leases shared by every handle to one cache root."""
+ 
+     lease_lock: FileLock
++    tokens: ProcessTokens
+     lock: threading.RLock = field(default_factory=threading.RLock)
+     identity_locks: dict[str, threading.RLock] = field(default_factory=dict)
+     leases: dict[tuple[str, str], int] = field(default_factory=dict)
+@@ -471,19 +463,11 @@ class _SourceCacheCoordination:
+     guard: threading.Lock = field(default_factory=threading.Lock)
+     publication_locks: dict[str, FileLock] = field(default_factory=dict)
+     budget_lock: FileLock | None = None
+-    token: str | None = None
+-    token_handle: Any | None = None
+     retired_cleaned: bool = False
+     staging_swept_at: float | None = None
+     publication_locks_swept: bool = False
+ 
+ 
+-def _is_token(value: str) -> bool:
+-    return len(value) == _TOKEN_LENGTH and all(
+-        character in "0123456789abcdef" for character in value
+-    )
+-
+-
+ def _verification_key(
+     identity_digest: str,
+     generation_id: str,
+@@ -608,7 +592,8 @@ class SourceCacheStore:
+             coordination = self._coordination_by_root.get(coordination_key)
+             if coordination is None:
+                 coordination = _SourceCacheCoordination(
+-                    lease_lock=FileLock(self._locks_dir / "leases.lock")
++                    lease_lock=FileLock(self._locks_dir / "leases.lock"),
++                    tokens=ProcessTokens(self._processes_dir),
+                 )
+                 self._coordination_by_root[coordination_key] = coordination
+         self._coordination = coordination
+@@ -677,77 +662,16 @@ class SourceCacheStore:
+             return self._identity_locks.setdefault(identity.digest, threading.RLock())
+ 
+     def _own_token(self) -> str:
+-        coordination = self._coordination
+-        with coordination.guard:
+-            while coordination.token is None:
+-                token = uuid.uuid4().hex[:_TOKEN_LENGTH]
+-                path = self._processes_dir / f"{token}.lock"
+-                _assert_path_ancestors_plain(path)
+-                path.parent.mkdir(parents=True, exist_ok=True)
+-                handle = _open_lock_file(path)
+-                try:
+-                    handle.write(b"\0")
+-                    handle.flush()
+-                    if not _acquire_file_lock(handle, blocking=False):
+-                        raise RuntimeError("a fresh lease-owner token file is already locked")
+-                    named = _path_names_handle(path, handle)
+-                except BaseException:
+-                    handle.close()
+-                    raise
+-                if not named:
+-                    # A sweep removed the file before this process locked it, so
+-                    # other processes would read the token as dead: take another.
+-                    handle.close()
+-                    continue
+-                coordination.token = token
+-                coordination.token_handle = handle
+-            return coordination.token
++        return self._coordination.tokens.own()
+ 
+     def _sweep_dead_tokens(self) -> None:
+-        """Remove the token files of processes that have exited.
+-
+-        A token file is locked by its live owner for the owner's lifetime, so
+-        one no process holds names a process that has gone. It is removed while
+-        this process holds its lock (:func:`remove_unheld_lock_file`), and an
+-        owner that locked it meanwhile finds it gone and takes another token. One
+-        younger than the grace may be one its owner is still creating, so it is
+-        left, as is this process's own.
+-        """
+-        cutoff = time.time() - _TOKEN_SWEEP_GRACE_SECONDS
+-        for path in tuple(self._processes_dir.glob("*.lock")):
+-            token = path.stem
+-            if not _is_token(token) or token == self._coordination.token:
+-                continue
+-            try:
+-                if path.lstat().st_mtime > cutoff or not remove_unheld_lock_file(path):
+-                    continue
+-            except (OSError, UnsafeCachePathError):
+-                # A racing or unreadable entry is not proven dead.
+-                continue
+-            logger.info("source_cache_dead_token_removed", token=token)
++        """Remove the token files of processes that have exited (see `ProcessTokens`)."""
++        self._coordination.tokens.sweep_dead(
++            lambda token: logger.info("source_cache_dead_token_removed", token=token)
++        )
+ 
+     def _token_alive(self, token: str) -> bool:
+-        if token == self._coordination.token:
+-            return True
+-        if not _is_token(token):
+-            return False
+-        path = self._processes_dir / f"{token}.lock"
+-        if not path.exists():
+-            return False
+-        try:
+-            handle = _open_lock_file(path)
+-        except _LockFileReplacedError:
+-            # A sweep removed it meanwhile, which it does only to a file no process holds.
+-            return False
+-        try:
+-            if not _acquire_file_lock(handle, blocking=False):
+-                return True
+-            _release_file_lock(handle)
+-        finally:
+-            handle.close()
+-        with contextlib.suppress(OSError):
+-            path.unlink()
+-        return False
++        return self._coordination.tokens.alive(token)
+ 
+     def _in_process_lease_count(self, identity_digest: str, generation_id: str) -> int:
+         with self._lock:
+@@ -764,7 +688,7 @@ class SourceCacheStore:
+         identity_digest = generation_dir.parent.parent.name
+         generation_id = generation_dir.name
+         live = False
+-        own = self._coordination.token
++        own = self._coordination.tokens.current
+         for marker in markers:
+             token = marker.name.removeprefix(_LEASE_PREFIX)
+             if token == own:
+diff --git a/after/src/haute/modelling/_stage_objects.py b/after/src/haute/modelling/_stage_objects.py
+new file mode 100644
+index 0000000..5713603
+--- /dev/null
++++ b/after/src/haute/modelling/_stage_objects.py
+@@ -0,0 +1,761 @@
++"""Content-addressed stage objects, revision manifests, reader pins and reachability.
++
++One `StageObjects` manages one model scope's directory, `.haute/staged-training/<key>/`:
++
++```text
++revisions/<revision>.json   immutable revision manifests
++objects/<sha256>            immutable content-addressed files
++staging/<token>-<id>.tmp    ingest temporaries, named by the owning process token
++leases/<revision>.<token>   reader pins: multi-holder marker files
++processes/<token>.lock      process liveness tokens (`haute._process_tokens`)
++objects.lock                serialises pin registration, installation and collection
++```
++
++The caller (`StageStore`) owns the pointer manifest and its lock. Collection receives the
++pointer's root revisions from the caller, under that lock. The lock order is always the
++pointer lock, then `objects.lock`. See "Stage storage (version 2)" in
++`specs/modelling/low-level.md`.
++
++**Publication** (`publishing`):
++1. pin the new revision;
++2. write its manifest (a root while pinned);
++3. install its staged objects;
++4. let the caller swap the pointer.
++
++A failure never deletes an installed object; collection decides. The guarantee is
++against process crashes; directory fsyncs are not performed. Every directory from the
++project root down is checked for links and reparse points before any read, write or
++deletion.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import io
++import json
++import math
++import os
++import re
++import stat
++import threading
++import uuid
++import zipfile
++from collections import OrderedDict
++from collections.abc import Iterable, Iterator, Mapping
++from contextlib import contextmanager
++from dataclasses import dataclass, field
++from pathlib import Path
++from types import MappingProxyType
++from typing import IO, Any, Literal
++
++from haute._file_lock import (
++    UnsafeCachePathError,
++    _is_reparse_point,
++    _plain_directory_stat,
++    file_lock_for,
++    remove_unheld_lock_file,
++)
++from haute._file_ops import atomic_path, publish_staged_file
++from haute._logging import get_logger
++from haute._process_tokens import ProcessTokens, is_token
++from haute.errors import HauteValidationError
++
++logger = get_logger(component="stage_objects")
++
++REVISION_FORMAT = "haute-stage-revision"
++ARCHIVE_FORMAT = "haute-stage-archive"
++VERSION = 2
++REVISION_LIMIT = 4 * 1024 * 1024
++JSON_OBJECT_LIMIT = 256 * 1024 * 1024
++EXPANDED_LIMIT = 4 * 1024**3
++_HEADER_LIMIT = 64 * 1024
++_HEX32 = re.compile(r"[a-f0-9]{32}\Z")
++_HEX64 = re.compile(r"[a-f0-9]{64}\Z")
++_FIT = r"(?:development|validation-(?:[0-9]|10))"
++_POINT = r"(?:unchanged|point-(?:[1-9]|1[0-6]))"
++# Logical member names and the kind each must have.
++_NAMES: tuple[tuple[re.Pattern[str], Literal["json", "binary"]], ...] = (
++    (re.compile(r"source\.parquet\Z"), "binary"),
++    (re.compile(r"plan\.json\Z"), "json"),
++    (re.compile(r"result\Z"), "json"),
++    (re.compile(r"view\Z"), "json"),
++    (re.compile(rf"fit/{_FIT}/(?:evidence|chain)\Z"), "binary"),
++    (re.compile(rf"path/[a-f0-9]{{64}}/{_POINT}/{_FIT}\.candidate\Z"), "binary"),
++    (re.compile(rf"path/[a-f0-9]{{64}}/{_POINT}\.result\Z"), "json"),
++    (re.compile(r"(?:snapshot|table|history)/[a-f0-9]{64}\Z"), "json"),
++    (
++        re.compile(
++            r"export/(?:model\.native|feature-contract\.json|plan\.json"
++            r"|evaluation-results\.json|evaluation-report\.json)\Z"
++        ),
++        "binary",
++    ),
++)
++_LEGACY = re.compile(
++    r"[a-f0-9]{32}\.(?:hstage|pending|result\.json|view\.json|lease"
++    r"|(?:result|view)\.[a-f0-9]{8}\.tmp)\Z"
++)
++_STAGING = re.compile(r"([a-f0-9]{12})-[a-f0-9]{32}\.tmp\Z")
++_REVISION_FILE = re.compile(r"([a-f0-9]{32})\.json\Z")
++_CHUNK = 1 << 20
++
++
++class CollectionHaltedError(HauteValidationError):
++    """A root revision manifest is missing or corrupt, so nothing may be deleted."""
++
++
++def _fault_point(name: str) -> None:
++    """Deterministic interleaving point for transaction tests; a no-op in production."""
++    del name
++
++
++def _finite_float(value: str) -> float:
++    number = float(value)
++    if not math.isfinite(number):
++        raise ValueError("Stage JSON requires finite numbers")
++    return number
++
++
++def _invalid_constant(value: str) -> None:
++    raise ValueError(f"Stage JSON cannot contain {value}")
++
++
++def strict_json_loads(data: bytes) -> Any:
++    """Decode stage JSON, refusing NaN, infinities and numbers that overflow to them."""
++    return json.loads(data, parse_float=_finite_float, parse_constant=_invalid_constant)
++
++
++def canonical_json(value: Any) -> bytes:
++    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
++
++
++def object_kind(name: str) -> Literal["json", "binary"]:
++    for pattern, kind in _NAMES:
++        if pattern.match(name):
++            return kind
++    raise HauteValidationError(f"Unknown stage member name {name!r}")
++
++
++@dataclass(frozen=True)
++class ObjectRef:
++    sha256: str
++    size: int
++    kind: Literal["json", "binary"]
++
++    def to_plain_data(self) -> dict[str, Any]:
++        return {"sha256": self.sha256, "size": self.size, "kind": self.kind}
++
++
++@dataclass(frozen=True)
++class RevisionManifest:
++    """One revision: its complete object closure, typed result envelope and metadata.
++
++    Construction validates, so a manifest that could not be read back is never written.
++    """
++
++    revision: str
++    objects: Mapping[str, ObjectRef]
++    result: Mapping[str, Any]
++    metadata: Mapping[str, Any]
++
++    def __post_init__(self) -> None:
++        # Validate a private, read-only copy: later changes to the caller's mapping cannot
++        # reach a validated manifest.
++        if not isinstance(self.objects, Mapping):
++            raise HauteValidationError("Invalid stage revision objects")
++        object.__setattr__(self, "objects", MappingProxyType(dict(self.objects)))
++        if not isinstance(self.revision, str) or not _HEX32.fullmatch(self.revision):
++            raise HauteValidationError("Invalid stage revision id")
++        if not isinstance(self.result, Mapping) or not isinstance(self.metadata, Mapping):
++            raise HauteValidationError("Invalid stage revision envelope")
++        total = 0
++        for name, ref in self.objects.items():
++            if (
++                not isinstance(name, str)
++                or not isinstance(ref, ObjectRef)
++                or not isinstance(ref.sha256, str)
++                or not _HEX64.fullmatch(ref.sha256)
++                or type(ref.size) is not int
++                or ref.size < 0
++                or ref.kind != object_kind(name)
++            ):
++                raise HauteValidationError(f"Invalid stage object reference {name!r}")
++            if ref.kind == "json" and ref.size > JSON_OBJECT_LIMIT:
++                raise HauteValidationError(f"Stage JSON object {name!r} exceeds its size limit")
++            total += ref.size
++        if total > EXPANDED_LIMIT:
++            raise HauteValidationError("Stage revision exceeds its expanded size budget")
++
++    def encode(self) -> bytes:
++        encoded = canonical_json(
++            {
++                "format": REVISION_FORMAT,
++                "version": VERSION,
++                "revision": self.revision,
++                "objects": {name: ref.to_plain_data() for name, ref in self.objects.items()},
++                "result": self.result,
++                "metadata": self.metadata,
++            }
++        )
++        if len(encoded) > REVISION_LIMIT:
++            raise HauteValidationError("Stage revision manifest exceeds its size limit")
++        return encoded
++
++    @classmethod
++    def decode(cls, data: bytes, *, revision: str | None = None) -> RevisionManifest:
++        if len(data) > REVISION_LIMIT:
++            raise HauteValidationError("Stage revision manifest exceeds its size limit")
++        try:
++            value = strict_json_loads(data)
++        except (ValueError, UnicodeError) as exc:
++            raise HauteValidationError("Invalid stage revision manifest") from exc
++        if (
++            not isinstance(value, dict)
++            or set(value) != {"format", "version", "revision", "objects", "result", "metadata"}
++            or value["format"] != REVISION_FORMAT
++            or type(value["version"]) is not int
++            or value["version"] != VERSION
++            or (revision is not None and value["revision"] != revision)
++            or not isinstance(value["objects"], dict)
++            or not isinstance(value["result"], dict)
++            or not isinstance(value["metadata"], dict)
++        ):
++            raise HauteValidationError("Unsupported or invalid stage revision manifest")
++        objects: dict[str, ObjectRef] = {}
++        for name, raw in value["objects"].items():
++            if not isinstance(raw, dict) or set(raw) != {"sha256", "size", "kind"}:
++                raise HauteValidationError(f"Invalid stage object reference {name!r}")
++            objects[name] = ObjectRef(raw["sha256"], raw["size"], raw["kind"])
++        return cls(value["revision"], objects, value["result"], value["metadata"])
++
++    def digests(self) -> set[str]:
++        return {ref.sha256 for ref in self.objects.values()}
++
++
++@dataclass(frozen=True)
++class StagedObject:
++    path: Path
++    sha256: str
++    size: int
++
++
++@dataclass
++class CollectionReport:
++    roots: set[str] = field(default_factory=set)
++    removed_objects: int = 0
++    removed_revisions: int = 0
++    removed_staging: int = 0
++    skipped: list[str] = field(default_factory=list)
++
++
++class _ChecksumCache:
++    """Verified digests keyed by file identity; a change to the file is a cache miss."""
++
++    def __init__(self, capacity: int = 65536) -> None:
++        self._entries: OrderedDict[tuple[str, tuple[int, ...]], tuple[str, int]] = OrderedDict()
++        self._capacity = capacity
++        self._lock = threading.Lock()
++
++    def get(self, key: tuple[str, tuple[int, ...]]) -> tuple[str, int] | None:
++        with self._lock:
++            found = self._entries.get(key)
++            if found is not None:
++                self._entries.move_to_end(key)
++            return found
++
++    def put(self, key: tuple[str, tuple[int, ...]], value: tuple[str, int]) -> None:
++        with self._lock:
++            self._entries[key] = value
++            self._entries.move_to_end(key)
++            while len(self._entries) > self._capacity:
++                self._entries.popitem(last=False)
++
++
++_CHECKSUMS = _ChecksumCache()
++_PIN_COUNTS: dict[tuple[str, str], int] = {}
++_PIN_LOCK = threading.Lock()
++
++
++def _signature(info: os.stat_result) -> tuple[int, ...]:
++    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++
++
++class StageObjects:
++    """One model scope's objects; *anchor* is the project root, below which no link is allowed."""
++
++    def __init__(self, directory: Path, *, anchor: Path) -> None:
++        if (
++            not anchor.is_absolute()
++            or anchor not in directory.parents
++            or any(part in {"..", "."} for part in (*anchor.parts, *directory.parts))
++        ):
++            raise HauteValidationError("A stage scope must lie inside its project")
++        self.directory = directory
++        self.anchor = anchor
++        self.revisions = directory / "revisions"
++        self.objects = directory / "objects"
++        self.staging = directory / "staging"
++        self.leases = directory / "leases"
++        self._plain(directory, create=True)
++        self._lock = file_lock_for(directory / "objects.lock")
++        processes = self._plain(directory / "processes", create=True)
++        self._tokens = ProcessTokens.for_directory(processes)
++        self._scope = str(directory.resolve())
++
++    # -- paths ----------------------------------------------------------------------------
++
++    def _plain(self, path: Path, *, create: bool = False) -> Path:
++        """Check every directory from the anchor down to *path*: no links or reparse points."""
++        relative = path.relative_to(self.anchor)
++        if any(part in {"..", "."} for part in relative.parts):
++            raise HauteValidationError("Stage store paths cannot traverse directories")
++        current = self.anchor
++        for part in relative.parts:
++            current = current / part
++            try:
++                _plain_directory_stat(current)
++            except FileNotFoundError:
++                if not create:
++                    raise
++                current.mkdir(exist_ok=True)
++                _plain_directory_stat(current)
++            except UnsafeCachePathError as exc:
++                raise HauteValidationError("Stage store paths cannot be links") from exc
++        return path
++
++    def _plain_file(self, path: Path) -> os.stat_result:
++        self._plain(path.parent)
++        info = path.lstat()
++        if not stat.S_ISREG(info.st_mode) or _is_reparse_point(info):
++            raise HauteValidationError("Stage store files must be plain regular files")
++        return info
++
++    def _entries(self, directory: Path) -> tuple[Path, ...]:
++        if not directory.exists():
++            return ()
++        self._plain(directory)
++        return tuple(directory.iterdir())
++
++    def object_path(self, digest: str) -> Path:
++        if not _HEX64.fullmatch(digest):
++            raise HauteValidationError("Invalid stage object digest")
++        return self.objects / digest
++
++    def revision_path(self, revision: str) -> Path:
++        if not _HEX32.fullmatch(revision):
++            raise HauteValidationError("Invalid stage revision id")
++        return self.revisions / f"{revision}.json"
++
++    # -- objects --------------------------------------------------------------------------
++
++    def stage_stream(self, reader: IO[bytes], *, limit: int | None = None) -> StagedObject:
++        """Copy *reader* into a staging file owned by this process, hashing as it goes."""
++        directory = self._plain(self.staging, create=True)
++        path = directory / f"{self._tokens.own()}-{uuid.uuid4().hex}.tmp"
++        digest, size = hashlib.sha256(), 0
++        try:
++            with path.open("xb") as writer:
++                for chunk in iter(lambda: reader.read(_CHUNK), b""):
++                    size += len(chunk)
++                    if limit is not None and size > limit:
++                        raise HauteValidationError("Stage object exceeds its size limit")
++                    digest.update(chunk)
++                    writer.write(chunk)
++                writer.flush()
++                os.fsync(writer.fileno())
++        except BaseException:
++            path.unlink(missing_ok=True)
++            raise
++        return StagedObject(path, digest.hexdigest(), size)
++
++    def stage_bytes(self, data: bytes) -> StagedObject:
++        return self.stage_stream(io.BytesIO(data))
++
++    def install(self, staged: StagedObject) -> str:
++        """Install *staged* as its digest's object without clobbering; dedupe if present.
++
++        The store lock serialises installs, so no installer observes another's transient
++        link-then-unlink. The staging copy is always removed.
++        """
++        target = self.object_path(staged.sha256)
++        self._plain(self.objects, create=True)
++        try:
++            with self._lock:
++                if not target.exists():
++                    try:
++                        publish_staged_file(staged.path, target, replace=False)
++                        _fault_point("object_installed")
++                        return staged.sha256
++                    except FileExistsError:
++                        pass
++                with self.open(staged.sha256, size=staged.size):
++                    pass  # an existing object must verify
++                return staged.sha256
++        finally:
++            staged.path.unlink(missing_ok=True)
++
++    @contextmanager
++    def open(self, digest: str, *, size: int | None = None) -> Iterator[IO[bytes]]:
++        """A verified read handle: the bytes it reads are the bytes that hash to *digest*."""
++        path = self.object_path(digest)
++        try:
++            before = self._plain_file(path)
++        except FileNotFoundError as exc:
++            raise HauteValidationError("Stage object is missing; build the GBM again") from exc
++        if before.st_nlink != 1:
++            raise HauteValidationError("Stage objects must be unlinked regular files")
++        with path.open("rb") as handle:
++            info = os.fstat(handle.fileno())
++            if (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino) or info.st_nlink != 1:
++                raise HauteValidationError("Stage object changed while opening")
++            key = (str(path), _signature(info))
++            known = _CHECKSUMS.get(key)
++            if known is None:
++                hasher, length = hashlib.sha256(), 0
++                for chunk in iter(lambda: handle.read(_CHUNK), b""):
++                    hasher.update(chunk)
++                    length += len(chunk)
++                if _signature(os.fstat(handle.fileno())) != key[1]:
++                    raise HauteValidationError("Stage object changed while verifying")
++                known = (hasher.hexdigest(), length)
++                handle.seek(0)
++            if known[0] != digest or (size is not None and known[1] != size):
++                raise HauteValidationError("Stage object checksum/size mismatch")
++            _CHECKSUMS.put(key, known)
++            yield handle
++
++    def read_bytes(self, ref: ObjectRef) -> bytes:
++        with self.open(ref.sha256, size=ref.size) as handle:
++            return handle.read()
++
++    def read_json(self, ref: ObjectRef) -> Any:
++        if ref.kind != "json":
++            raise HauteValidationError("Stage object is not JSON")
++        try:
++            return strict_json_loads(self.read_bytes(ref))
++        except (ValueError, UnicodeError) as exc:
++            raise HauteValidationError("Invalid stage JSON object") from exc
++
++    # -- revisions ------------------------------------------------------------------------
++
++    def write_revision(self, manifest: RevisionManifest) -> None:
++        """Write an immutable revision manifest; an existing different one is refused."""
++        path = self.revision_path(manifest.revision)
++        self._plain(self.revisions, create=True)
++        encoded = manifest.encode()
++        staged = self.stage_bytes(encoded)
++        try:
++            publish_staged_file(staged.path, path, replace=False)
++        except FileExistsError:
++            if self.read_revision(manifest.revision).encode() != encoded:
++                raise HauteValidationError(
++                    "Stage revision id already names another revision"
++                ) from None
++        finally:
++            staged.path.unlink(missing_ok=True)
++
++    def read_revision(self, revision: str) -> RevisionManifest:
++        path = self.revision_path(revision)
++        try:
++            info = self._plain_file(path)
++        except FileNotFoundError as exc:
++            raise HauteValidationError("This stage revision is no longer available") from exc
++        if info.st_size > REVISION_LIMIT:
++            raise HauteValidationError("Stage revision manifest exceeds its size limit")
++        return RevisionManifest.decode(path.read_bytes(), revision=revision)
++
++    # -- pins -----------------------------------------------------------------------------
++
++    @contextmanager
++    def pin(self, revision: str) -> Iterator[None]:
++        """Keep *revision* a collection root while held; many holders may pin one revision.
++
++        Registration and release happen under the store lock, so a collection either sees
++        this pin or runs wholly before it.
++        """
++        self.revision_path(revision)  # validates the id
++        key = (self._scope, revision)
++        leases = self._plain(self.leases, create=True)
++        marker = leases / f"{revision}.{self._tokens.own()}"
++        with self._lock, _PIN_LOCK:
++            count = _PIN_COUNTS.get(key, 0)
++            if count == 0:
++                marker.touch()
++            _PIN_COUNTS[key] = count + 1
++        try:
++            yield
++        finally:
++            with self._lock, _PIN_LOCK:
++                remaining = _PIN_COUNTS[key] - 1
++                if remaining:
++                    _PIN_COUNTS[key] = remaining
++                else:
++                    del _PIN_COUNTS[key]
++                    marker.unlink(missing_ok=True)
++
++    def pinned(self) -> set[str]:
++        """Revisions any live process pins. Markers of exited processes are removed."""
++        with self._lock:
++            return self._pinned_locked()
++
++    def _pinned_locked(self) -> set[str]:
++        own = self._tokens.current
++        live: set[str] = set()
++        for marker in self._entries(self.leases):
++            revision, _, token = marker.name.partition(".")
++            if not _HEX32.fullmatch(revision) or not is_token(token):
++                continue
++            if token == own:
++                with _PIN_LOCK:
++                    held = _PIN_COUNTS.get((self._scope, revision), 0) > 0
++            else:
++                held = self._tokens.alive(token)
++            if held:
++                live.add(revision)
++            else:
++                marker.unlink(missing_ok=True)
++        return live
++
++    # -- publication and collection --------------------------------------------------------
++
++    @contextmanager
++    def publishing(
++        self, manifest: RevisionManifest, staged: Iterable[StagedObject]
++    ) -> Iterator[None]:
++        """Pin, write the manifest, install objects; the caller swaps the pointer inside."""
++        pending = list(staged)
++        sizes = {ref.sha256: ref.size for ref in manifest.objects.values()}
++        try:
++            for item in pending:
++                if sizes.get(item.sha256) != item.size:
++                    raise HauteValidationError("Staged object disagrees with the revision")
++            with self.pin(manifest.revision):
++                self.write_revision(manifest)
++                _fault_point("revision_written")
++                for item in pending:
++                    self.install(item)
++                for name, ref in manifest.objects.items():
++                    try:
++                        size: int | None = self._plain_file(self.object_path(ref.sha256)).st_size
++                    except FileNotFoundError:
++                        size = None
++                    if size != ref.size:
++                        raise HauteValidationError(f"Stage revision object {name!r} is missing")
++                _fault_point("objects_installed")
++                yield
++        finally:
++            for item in pending:
++                item.path.unlink(missing_ok=True)
++
++    def collect(self, roots: Iterable[str]) -> CollectionReport:
++        """Delete everything unreachable from *roots* and live pins.
++
++        The caller holds the pointer lock, so the root set cannot change meanwhile. A
++        missing or corrupt root manifest halts collection before anything is deleted
++        (`CollectionHaltedError`).
++        """
++        with self._lock:
++            return self._collect_locked(set(roots))
++
++    def _collect_locked(self, roots: set[str]) -> CollectionReport:
++        report = CollectionReport()
++        report.roots = roots | self._pinned_locked()
++        reachable: set[str] = set()
++        for revision in sorted(report.roots):
++            try:
++                reachable |= self.read_revision(revision).digests()
++            except HauteValidationError as exc:
++                logger.error("stage_collection_halted", revision=revision, error=str(exc))
++                raise CollectionHaltedError(f"Stage revision {revision} cannot be read") from exc
++        _fault_point("collection_marked")
++        for path in self._entries(self.revisions):
++            match = _REVISION_FILE.fullmatch(path.name)
++            if match is not None and match.group(1) not in report.roots:
++                report.removed_revisions += self._remove(path, report)
++        for path in self._entries(self.objects):
++            if _HEX64.fullmatch(path.name) and path.name not in reachable:
++                report.removed_objects += self._remove(path, report)
++        for path in self._entries(self.staging):
++            match = _STAGING.fullmatch(path.name)
++            if match is None or match.group(1) == self._tokens.current:
++                continue
++            if not self._tokens.alive(match.group(1)):
++                report.removed_staging += self._remove(path, report)
++        self._tokens.sweep_dead()
++        return report
++
++    def _remove(self, path: Path, report: CollectionReport) -> bool:
++        info = path.lstat()
++        if not stat.S_ISREG(info.st_mode) or _is_reparse_point(info):
++            report.skipped.append(path.name)  # only plain files are ever deleted
++            return False
++        try:
++            path.unlink(missing_ok=True)
++            return True
++        except PermissionError:
++            # Windows refuses to delete an open file; a later collection retries.
++            report.skipped.append(path.name)
++            return False
++
++    # -- legacy stores ----------------------------------------------------------------------
++
++    def legacy_entries(self) -> list[Path]:
++        """Files of the pre-version-2 store layout in this scope."""
++        return sorted(p for p in self._entries(self.directory) if _LEGACY.fullmatch(p.name))
++
++    def reclaim_legacy(self) -> int:
++        """Delete pre-version-2 files, holding each revision's legacy lease while deleting.
++
++        A revision whose lease another process holds keeps its files.
++        """
++        removed = 0
++        report = CollectionReport()
++        for revision in sorted({path.name.split(".", 1)[0] for path in self.legacy_entries()}):
++            lease_path = self.directory / f"{revision}.lease"
++            lease = file_lock_for(lease_path)
++            if not lease.acquire(blocking=False):
++                continue
++            try:
++                for path in self.legacy_entries():
++                    if path.name.split(".", 1)[0] == revision and path != lease_path:
++                        removed += self._remove(path, report)
++            finally:
++                lease.release()
++            removed += remove_unheld_lock_file(lease_path)
++        return removed
++
++    # -- portable and delta archives --------------------------------------------------------
++
++    def write_archive(
++        self, destination: Path, manifest: RevisionManifest, *, inherited: Iterable[str] = ()
++    ) -> None:
++        """A stored zip of *manifest* plus its objects, omitting *inherited* member names.
++
++        The header does not list inherited members: the reader derives them as the closure
++        members whose objects the archive does not carry. An object also needed by a
++        carried member is carried.
++        """
++        omitted = set(inherited)
++        if omitted - set(manifest.objects):
++            raise HauteValidationError("Inherited members must belong to the revision")
++        carried = {ref.sha256 for name, ref in manifest.objects.items() if name not in omitted}
++        with atomic_path(destination) as temporary, temporary.open("wb") as handle:
++            with zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_STORED) as archive:
++                archive.writestr(
++                    zipfile.ZipInfo("archive.json", (1980, 1, 1, 0, 0, 0)),
++                    canonical_json(
++                        {
++                            "format": ARCHIVE_FORMAT,
++                            "version": VERSION,
++                            "delta": manifest.digests() != carried,
++                        }
++                    ),
++                )
++                archive.writestr(
++                    zipfile.ZipInfo("revision.json", (1980, 1, 1, 0, 0, 0)), manifest.encode()
++                )
++                written: set[str] = set()
++                for _, ref in sorted(manifest.objects.items()):
++                    if ref.sha256 not in carried or ref.sha256 in written:
++                        continue
++                    written.add(ref.sha256)
++                    member = zipfile.ZipInfo(f"objects/{ref.sha256}", (1980, 1, 1, 0, 0, 0))
++                    with (
++                        self.open(ref.sha256, size=ref.size) as source,
++                        archive.open(member, "w", force_zip64=True) as target,
++                    ):
++                        for chunk in iter(lambda: source.read(_CHUNK), b""):
++                            target.write(chunk)
++
++
++@dataclass(frozen=True)
++class StageArchive:
++    """A validated portable or delta archive: its manifest and the objects it carries."""
++
++    path: Path
++    manifest: RevisionManifest
++    inherited: frozenset[str]
++    carried: frozenset[str]
++
++    @classmethod
++    def read(cls, path: Path) -> StageArchive:
++        try:
++            with zipfile.ZipFile(path) as archive:
++                entries = archive.infolist()
++                names = [entry.filename for entry in entries]
++                if len(names) != len(set(names)):
++                    raise HauteValidationError("Stage archive repeats a member")
++                if sum(entry.file_size for entry in entries) > EXPANDED_LIMIT + 2 * REVISION_LIMIT:
++                    raise HauteValidationError("Stage archive exceeds its expanded size budget")
++                if {"archive.json", "revision.json"} - set(names):
++                    raise HauteValidationError("Stage archive is missing its manifest")
++                if archive.getinfo("archive.json").file_size > _HEADER_LIMIT:
++                    raise HauteValidationError("Stage archive header exceeds its size limit")
++                if archive.getinfo("revision.json").file_size > REVISION_LIMIT:
++                    raise HauteValidationError("Stage revision manifest exceeds its size limit")
++                carried = set()
++                for name in names:
++                    if name in {"archive.json", "revision.json"}:
++                        continue
++                    digest = name.removeprefix("objects/")
++                    if not name.startswith("objects/") or not _HEX64.fullmatch(digest):
++                        raise HauteValidationError(f"Unknown stage archive member {name!r}")
++                    carried.add(digest)
++                header = strict_json_loads(archive.read("archive.json"))
++                if (
++                    not isinstance(header, dict)
++                    or set(header) != {"format", "version", "delta"}
++                    or header["format"] != ARCHIVE_FORMAT
++                    or header["version"] != VERSION
++                    or type(header["delta"]) is not bool
++                ):
++                    raise HauteValidationError(
++                        "Unsupported stage archive; build the GBM again with this version"
++                    )
++                manifest = RevisionManifest.decode(archive.read("revision.json"))
++                if carried - manifest.digests():
++                    raise HauteValidationError("Stage archive carries an object it does not list")
++                inherited = frozenset(
++                    name for name, ref in manifest.objects.items() if ref.sha256 not in carried
++                )
++                if bool(inherited) != header["delta"]:
++                    raise HauteValidationError("Stage archive objects disagree with its manifest")
++                for digest in carried:
++                    sizes = {ref.size for ref in manifest.objects.values() if ref.sha256 == digest}
++                    if {archive.getinfo(f"objects/{digest}").file_size} != sizes:
++                        raise HauteValidationError("Stage archive object size mismatch")
++        except HauteValidationError:
++            raise
++        except (zipfile.BadZipFile, ValueError, UnicodeError, KeyError) as exc:
++            raise HauteValidationError("Invalid stage archive") from exc
++        return cls(path, manifest, inherited, frozenset(carried))
++
++    def stage_into(
++        self, store: StageObjects, *, parent: RevisionManifest | None
++    ) -> list[StagedObject]:
++        """Stream-copy carried objects into *store* staging, verifying every digest.
++
++        Inherited members must appear in *parent*'s closure with identical references.
++        """
++        for name in self.inherited:
++            if parent is None or parent.objects.get(name) != self.manifest.objects[name]:
++                raise HauteValidationError(
++                    f"Stage archive inherits {name!r}, which its parent does not hold"
++                )
++        staged: list[StagedObject] = []
++        try:
++            with zipfile.ZipFile(self.path) as archive:
++                for digest in sorted(self.carried):
++                    size = next(
++                        ref.size for ref in self.manifest.objects.values() if ref.sha256 == digest
++                    )
++                    with archive.open(f"objects/{digest}") as reader:
++                        item = store.stage_stream(reader, limit=size)
++                    staged.append(item)
++                    if (item.sha256, item.size) != (digest, size):
++                        raise HauteValidationError("Stage archive object checksum mismatch")
++        except BaseException:
++            for item in staged:
++                item.path.unlink(missing_ok=True)
++            raise
++        return staged
+diff --git a/before/src/haute/modelling/_stage_paths.py b/after/src/haute/modelling/_stage_paths.py
+index 03be6b9..1ea180e 100644
+--- a/before/src/haute/modelling/_stage_paths.py
++++ b/after/src/haute/modelling/_stage_paths.py
+@@ -14,7 +14,7 @@ from pathlib import Path
+ from typing import Any
+ 
+ from haute.errors import HauteValidationError
+-from haute.modelling._stage_store import strict_json_loads
++from haute.modelling._stage_objects import strict_json_loads
+ from haute.modelling._staged_config import StagedConfig
+ from haute.modelling._staged_runtime import StageBundle, StageRuntime, _json, _pack
+ 
+diff --git a/before/src/haute/modelling/_stage_store.py b/after/src/haute/modelling/_stage_store.py
+index a8becaf..b78b029 100644
+--- a/before/src/haute/modelling/_stage_store.py
++++ b/after/src/haute/modelling/_stage_store.py
+@@ -5,7 +5,6 @@ from __future__ import annotations
+ import copy
+ import hashlib
+ import json
+-import math
+ import os
+ import re
+ import shutil
+@@ -23,6 +22,7 @@ from haute._file_lock import FileLock, file_lock_for
+ from haute._file_ops import atomic_path, publish_staged_file
+ from haute._process_memory import process_is_alive
+ from haute.errors import ConflictError, HauteValidationError
++from haute.modelling._stage_objects import strict_json_loads
+ from haute.modelling._stage_views import compact_result
+ 
+ _HEX32 = re.compile(r"[a-f0-9]{32}\Z")
+@@ -37,22 +37,6 @@ def _json(value: Any) -> bytes:
+     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+ 
+ 
+-def _finite_float(value: str) -> float:
+-    number = float(value)
+-    if not math.isfinite(number):
+-        raise ValueError("Stage results require finite numbers")
+-    return number
+-
+-
+-def _invalid_constant(value: str) -> None:
+-    raise ValueError(f"Stage results cannot contain {value}")
+-
+-
+-def strict_json_loads(data: bytes) -> Any:
+-    """Decode stage JSON, refusing NaN, infinities and numbers that overflow to them."""
+-    return json.loads(data, parse_float=_finite_float, parse_constant=_invalid_constant)
+-
+-
+ def _digest(path: Path) -> tuple[str, int]:
+     try:
+         info = path.lstat()
+diff --git a/before/src/haute/modelling/_staged_runtime.py b/after/src/haute/modelling/_staged_runtime.py
+index 6af8557..c0fddc1 100644
+--- a/before/src/haute/modelling/_staged_runtime.py
++++ b/after/src/haute/modelling/_staged_runtime.py
+@@ -23,7 +23,7 @@ from haute._file_ops import atomic_path
+ from haute.errors import HauteValidationError
+ from haute.modelling._candidate_run import training_identity_sha256
+ from haute.modelling._evaluation import EvaluationPlan
+-from haute.modelling._stage_store import strict_json_loads
++from haute.modelling._stage_objects import strict_json_loads
+ from haute.modelling._stage_views import table_summary
+ from haute.modelling._staged_config import StagedConfig
+ 
+diff --git a/before/tests/conftest.py b/after/tests/conftest.py
+index 1953753..5fa72e9 100644
+--- a/before/tests/conftest.py
++++ b/after/tests/conftest.py
+@@ -124,11 +124,7 @@ def _isolate_repository_source_cache(
+     finally:
+         try:
+             for coordination in coordination_by_root.values():
+-                handle = coordination.token_handle
+-                if handle is not None:
+-                    handle.close()
+-                coordination.token = None
+-                coordination.token_handle = None
++                coordination.tokens.close()
+             coordination_by_root.clear()
+         finally:
+             patch.undo()
+diff --git a/before/tests/test_file_ops.py b/after/tests/test_file_ops.py
+index 6ef1e7c..463b0cb 100644
+--- a/before/tests/test_file_ops.py
++++ b/after/tests/test_file_ops.py
+@@ -31,6 +31,7 @@ Writer contract (F6):
+ 
+ from __future__ import annotations
+ 
++import os
+ import sys
+ import threading
+ from pathlib import Path
+@@ -171,6 +172,45 @@ class TestAtomicWriteBytes:
+         assert target.read_bytes() == b"old"
+         assert not tuple(tmp_path.glob("*.tmp"))
+ 
++    def test_windows_no_clobber_publish_retries_sharing_violations_never_an_existing_target(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        from haute._file_ops import publish_staged_file
++
++        class SimulatedSharingViolationError(PermissionError):
++            winerror = 32
++
++        staged, target = tmp_path / "staged.tmp", tmp_path / "object"
++        staged.write_bytes(b"payload")
++        real_rename = os.rename
++        attempts = 0
++
++        def transient_rename(source: Path, destination: Path) -> None:
++            nonlocal attempts
++            attempts += 1
++            if attempts < 3:
++                raise SimulatedSharingViolationError("transient sharing violation")
++            real_rename(source, destination)
++
++        monkeypatch.setattr("haute._file_ops._IS_WINDOWS", True)
++        with (
++            patch("haute._file_ops.os.rename", transient_rename),
++            patch("haute._file_ops.time.sleep") as sleep,
++        ):
++            publish_staged_file(staged, target, replace=False)
++        assert attempts == 3 and target.read_bytes() == b"payload"
++        assert [item.args[0] for item in sleep.call_args_list] == [0.01, 0.025]
++
++        staged.write_bytes(b"other")
++        with (
++            patch("haute._file_ops.os.rename", side_effect=FileExistsError("exists")) as rename,
++            patch("haute._file_ops.time.sleep") as sleep,
++        ):
++            with pytest.raises(FileExistsError):
++                publish_staged_file(staged, target, replace=False)
++        assert rename.call_count == 1 and not sleep.called
++        assert target.read_bytes() == b"payload"
++
+     def test_winerror_shaped_failure_is_not_retried_off_windows(
+         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+     ) -> None:
+diff --git a/before/tests/test_node_snapshot_retention.py b/after/tests/test_node_snapshot_retention.py
+index 4247da1..4de120c 100644
+--- a/before/tests/test_node_snapshot_retention.py
++++ b/after/tests/test_node_snapshot_retention.py
+@@ -1411,7 +1411,10 @@ def test_clear_reads_a_token_the_sweep_removes_mid_probe_as_dead(
+         probed.append(path)
+         raise _LockFileReplacedError("swept while the probe opened it")
+ 
+-    monkeypatch.setattr(source_cache_module, "_open_lock_file", swept_while_opening)
++    import haute._process_tokens as process_tokens_module
++
++    # Token liveness probes live in the shared process-token helper.
++    monkeypatch.setattr(process_tokens_module, "_open_lock_file", swept_while_opening)
+ 
+     store.clear_slot(slot)
+ 
+diff --git a/before/tests/test_run_mutation_pytest.py b/after/tests/test_run_mutation_pytest.py
+index 64812f5..122c429 100644
+--- a/before/tests/test_run_mutation_pytest.py
++++ b/after/tests/test_run_mutation_pytest.py
+@@ -164,7 +164,7 @@ def test_source_cache_session_isolation_owns_and_closes_coordination_tokens(
+         store = SourceCacheStore(tmp_path_factory.mktemp("short-cache-root"))
+         store._own_token()
+         coordination = next(iter(SourceCacheStore._coordination_by_root.values()))
+-        handle = coordination.token_handle
++        handle = coordination.tokens.handle
+         assert handle is not None and not handle.closed
+     finally:
+         try:
+diff --git a/before/tests/test_source_cache.py b/after/tests/test_source_cache.py
+index 736a3c7..6e8675d 100644
+--- a/before/tests/test_source_cache.py
++++ b/after/tests/test_source_cache.py
+@@ -24,6 +24,7 @@ import pyarrow as pa
+ import pytest
+ from polars.testing import assert_frame_equal
+ 
++import haute._process_tokens as process_tokens_module
+ import haute._source_cache as source_cache_module
+ from haute._execution_context import ExecutionProfile
+ from haute._hashing import content_hash
+@@ -639,7 +640,7 @@ def test_a_fresh_token_file_another_process_holds_is_refused(
+ ) -> None:
+     store = SourceCacheStore(tmp_path)
+     closed: list[bool] = []
+-    real_open = source_cache_module._open_lock_file
++    real_open = process_tokens_module._open_lock_file
+ 
+     def tracked_open(path: Path) -> Any:
+         handle = real_open(path)
+@@ -652,14 +653,14 @@ def test_a_fresh_token_file_another_process_holds_is_refused(
+         handle.close = close
+         return handle
+ 
+-    monkeypatch.setattr(source_cache_module, "_open_lock_file", tracked_open)
+-    monkeypatch.setattr(source_cache_module, "_acquire_file_lock", lambda *_a, **_k: False)
++    monkeypatch.setattr(process_tokens_module, "_open_lock_file", tracked_open)
++    monkeypatch.setattr(process_tokens_module, "_acquire_file_lock", lambda *_a, **_k: False)
+ 
+     with pytest.raises(RuntimeError, match="already locked"):
+         store._own_token()
+ 
+     assert closed == [True]
+-    assert store._coordination.token is None
++    assert store._coordination.tokens.current is None
+ 
+ 
+ def test_transient_generation_access_error_is_not_reported_as_corruption(
+@@ -1125,14 +1126,14 @@ def test_a_token_whose_file_was_swept_before_it_locked_is_replaced(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+     store = SourceCacheStore(tmp_path)
+-    real_check = source_cache_module._path_names_handle
++    real_check = process_tokens_module._path_names_handle
+     checked: list[Path] = []
+ 
+     def swept_once(path: Path, handle: Any) -> bool:
+         checked.append(path)
+         return len(checked) > 1 and real_check(path, handle)
+ 
+-    monkeypatch.setattr(source_cache_module, "_path_names_handle", swept_once)
++    monkeypatch.setattr(process_tokens_module, "_path_names_handle", swept_once)
+ 
+     token = store._own_token()
+ 
+@@ -1143,7 +1144,7 @@ def test_a_token_whose_file_was_swept_before_it_locked_is_replaced(
+ 
+ def _dead_token_file(directory: Path) -> Path:
+     directory.mkdir(parents=True, exist_ok=True)
+-    path = directory / f"{'f' * source_cache_module._TOKEN_LENGTH}.lock"
++    path = directory / f"{'f' * process_tokens_module.TOKEN_LENGTH}.lock"
+     path.write_bytes(b"\0")
+     old = time.time() - 3600
+     os.utime(path, (old, old))
+@@ -1194,7 +1195,7 @@ def test_the_token_sweep_leaves_entries_that_are_not_live_tokens_it_can_judge(
+     not_a_token.write_bytes(b"\0")
+     target = tmp_path / "elsewhere.lock"
+     target.write_bytes(b"\0")
+-    linked = processes / f"{'a' * source_cache_module._TOKEN_LENGTH}.lock"
++    linked = processes / f"{'a' * process_tokens_module.TOKEN_LENGTH}.lock"
+     linked.symlink_to(target)
+     old = time.time() - 3600
+     for path in (not_a_token, target):
+diff --git a/after/tests/test_stage_objects.py b/after/tests/test_stage_objects.py
+new file mode 100644
+index 0000000..6a42591
+--- /dev/null
++++ b/after/tests/test_stage_objects.py
+@@ -0,0 +1,453 @@
++"""Stage storage v2 objects: verified content, pins, publication order and collection."""
++
++import os
++import zipfile
++from pathlib import Path
++
++import pytest
++
++import haute.modelling._stage_objects as module
++from haute.errors import HauteValidationError
++from haute.modelling._stage_objects import (
++    CollectionHaltedError,
++    ObjectRef,
++    RevisionManifest,
++    StageArchive,
++    StageObjects,
++    canonical_json,
++)
++
++FIT = "validation-0"
++
++
++def _store(tmp_path: Path, name: str = "scope") -> StageObjects:
++    return StageObjects(tmp_path / ".haute" / "staged-training" / name, anchor=tmp_path)
++
++
++def _revision(store: StageObjects, objects: dict[str, bytes], revision: str | None = None):
++    """Stage *objects* and build their manifest (nothing installed yet)."""
++    staged, refs = [], {}
++    for name, data in objects.items():
++        item = store.stage_bytes(data)
++        staged.append(item)
++        refs[name] = ObjectRef(item.sha256, item.size, module.object_kind(name))
++    manifest = RevisionManifest(revision or os.urandom(16).hex(), refs, {"k": 1}, {})
++    return manifest, staged
++
++
++def _publish(store: StageObjects, objects: dict[str, bytes], revision: str | None = None):
++    manifest, staged = _revision(store, objects, revision)
++    with store.publishing(manifest, staged):
++        pass
++    return manifest
++
++
++def test_objects_are_verified_deduplicated_and_never_clobbered(tmp_path):
++    store = _store(tmp_path)
++    first = store.stage_bytes(b"evidence")
++    digest = store.install(first)
++    again = store.stage_bytes(b"evidence")
++    assert store.install(again) == digest and not again.path.exists()
++    ref = ObjectRef(digest, len(b"evidence"), "binary")
++    assert store.read_bytes(ref) == b"evidence"
++    path = store.object_path(digest)
++    path.write_bytes(b"tampered")  # a changed file misses the checksum cache
++    with pytest.raises(HauteValidationError, match="checksum"):
++        store.read_bytes(ObjectRef(digest, len(b"tampered"), "binary"))
++
++
++def test_an_interrupted_link_then_unlink_install_is_repaired_by_collection(tmp_path):
++    store = _store(tmp_path)
++    staged = store.stage_bytes(b"payload")
++    target = store.object_path(staged.sha256)
++    target.parent.mkdir(parents=True)
++    os.link(staged.path, target)  # the crash fell between link(2) and unlink
++    dead = staged.path.with_name(f"{'f' * 12}-{os.urandom(16).hex()}.tmp")
++    staged.path.rename(dead)
++    with pytest.raises(HauteValidationError, match="unlinked regular"):
++        store.read_bytes(ObjectRef(staged.sha256, staged.size, "binary"))
++    manifest = RevisionManifest(
++        os.urandom(16).hex(),
++        {"source.parquet": ObjectRef(staged.sha256, staged.size, "binary")},
++        {},
++        {},
++    )
++    store.write_revision(manifest)
++    store.collect([manifest.revision])
++    assert not dead.exists() and target.stat().st_nlink == 1
++    assert store.read_bytes(manifest.objects["source.parquet"]) == b"payload"
++
++
++@pytest.mark.parametrize(
++    "change, message",
++    [
++        (lambda v: v["objects"].update({"../escape": v["objects"]["plan.json"]}), "Unknown"),
++        (lambda v: v["objects"]["plan.json"].update(kind="binary"), "Invalid stage object"),
++        (lambda v: v["objects"]["plan.json"].update(size=-1), "Invalid stage object"),
++        (lambda v: v.update(version=1), "Unsupported"),
++        (lambda v: v["objects"]["plan.json"].update(size=module.JSON_OBJECT_LIMIT + 1), "limit"),
++        (lambda v: v["objects"]["source.parquet"].update(size=module.EXPANDED_LIMIT + 1), "budget"),
++    ],
++)
++def test_revision_manifests_are_strict_and_capped(change, message):
++    manifest = RevisionManifest(
++        "a" * 32,
++        {
++            "plan.json": ObjectRef("b" * 64, 3, "json"),
++            "source.parquet": ObjectRef("c" * 64, 9, "binary"),
++        },
++        {},
++        {},
++    )
++    import json
++
++    value = json.loads(manifest.encode())
++    change(value)
++    with pytest.raises(HauteValidationError, match=message):
++        RevisionManifest.decode(json.dumps(value).encode())
++    with pytest.raises(HauteValidationError):
++        RevisionManifest.decode(manifest.encode().replace(b'"k"', b'"k"') + b"x")
++    assert RevisionManifest.decode(manifest.encode()) == manifest
++    big = RevisionManifest("a" * 32, {}, {"blob": "x" * module.REVISION_LIMIT}, {})
++    with pytest.raises(HauteValidationError, match="size limit"):
++        big.encode()
++
++
++def test_pins_hold_many_readers_and_dead_owners_release(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    manifest = _publish(store, {"plan.json": b"{}"})
++    with store.pin(manifest.revision), store.pin(manifest.revision):
++        assert store.pinned() == {manifest.revision}
++    assert store.pinned() == set()
++    # Another process's pin counts while that process lives, and is removed once it exits.
++    marker = store.leases / f"{manifest.revision}.{'e' * 12}"
++    marker.touch()
++    monkeypatch.setattr(store._tokens, "alive", lambda token: token == "e" * 12)
++    assert store.pinned() == {manifest.revision}
++    monkeypatch.setattr(store._tokens, "alive", lambda token: False)
++    assert store.pinned() == set() and not marker.exists()
++
++
++def test_collection_keeps_roots_and_pins_and_removes_the_rest(tmp_path):
++    store = _store(tmp_path)
++    shared = b"shared source"
++    kept = _publish(store, {"source.parquet": shared, "plan.json": b'{"a":1}'})
++    pinned = _publish(store, {"source.parquet": shared, "plan.json": b'{"b":2}'})
++    dropped = _publish(store, {"source.parquet": b"orphan", "plan.json": b'{"c":3}'})
++    with store.pin(pinned.revision):
++        report = store.collect([kept.revision])
++    assert report.roots == {kept.revision, pinned.revision}
++    assert not store.revision_path(dropped.revision).exists()
++    assert {path.name for path in store.objects.iterdir()} == kept.digests() | pinned.digests()
++    assert report.removed_revisions == 1 and report.removed_objects == 2
++
++
++def test_a_missing_or_corrupt_root_halts_collection_before_any_deletion(tmp_path):
++    store = _store(tmp_path)
++    root = _publish(store, {"plan.json": b"{}"})
++    orphan = _publish(store, {"plan.json": b'{"o":1}'})
++    store.revision_path(root.revision).write_bytes(b"{not json")
++    with pytest.raises(CollectionHaltedError):
++        store.collect([root.revision])
++    assert store.revision_path(orphan.revision).exists()
++    assert all(store.object_path(d).exists() for d in orphan.digests())
++
++
++@pytest.mark.parametrize("step", ["revision_written", "object_installed", "objects_installed"])
++def test_concurrent_collection_at_each_publication_step_keeps_the_pending_revision(
++    tmp_path, monkeypatch, step
++):
++    """Write-ahead: a pending revision is a pinned root before any of its objects exist."""
++    store = _store(tmp_path)
++    old = _publish(store, {"source.parquet": b"reused", "plan.json": b'{"old":1}'})
++    store.collect([])  # `old` is now unreachable; its objects are deleted
++    manifest, staged = _revision(
++        store, {"source.parquet": b"reused", "plan.json": b'{"new":1}', "result": b"{}"}
++    )
++    seen = []
++
++    def collect_now(name):
++        if name == step:
++            seen.append(store.collect([]))
++
++    monkeypatch.setattr(module, "_fault_point", collect_now)
++    with store.publishing(manifest, staged):
++        assert seen, "the fault point ran"
++        for ref in manifest.objects.values():
++            assert store.read_bytes(ref) is not None
++    monkeypatch.setattr(module, "_fault_point", lambda name: None)
++    store.collect([manifest.revision])
++    assert store.read_revision(manifest.revision) == manifest
++    assert not store.revision_path(old.revision).exists()
++
++
++def test_a_failed_publication_never_deletes_an_object_another_revision_shares(
++    tmp_path, monkeypatch
++):
++    store = _store(tmp_path)
++    survivor = _publish(store, {"source.parquet": b"shared", "plan.json": b'{"s":1}'})
++    manifest, staged = _revision(store, {"source.parquet": b"shared", "plan.json": b'{"f":1}'})
++
++    def fail(name):
++        if name == "objects_installed":
++            raise RuntimeError("crash after installing")
++
++    monkeypatch.setattr(module, "_fault_point", fail)
++    with pytest.raises(RuntimeError, match="crash"):
++        with store.publishing(manifest, staged):
++            pass
++    monkeypatch.setattr(module, "_fault_point", lambda name: None)
++    assert not any(item.path.exists() for item in staged)
++    store.collect([survivor.revision])
++    assert store.read_bytes(survivor.objects["source.parquet"]) == b"shared"
++    assert not store.revision_path(manifest.revision).exists()
++    assert not store.object_path(manifest.objects["plan.json"].sha256).exists()
++
++
++def test_portable_and_delta_archives_round_trip_through_one_validator(tmp_path):
++    source, target = _store(tmp_path), _store(tmp_path, "other")
++    parent = _publish(source, {"source.parquet": b"rows", "fit/validation-0/evidence": b"ev"})
++    child_objects = {
++        **{n: source.read_bytes(r) for n, r in parent.objects.items()},
++        "fit/validation-0/chain": b"chain",
++    }
++    child = _publish(source, child_objects)
++    full, delta = tmp_path / "full.hstage", tmp_path / "delta.hstage"
++    source.write_archive(full, parent)
++    source.write_archive(delta, child, inherited=parent.objects)
++    imported = StageArchive.read(full)
++    with target.publishing(imported.manifest, imported.stage_into(target, parent=None)):
++        pass
++    received = StageArchive.read(delta)
++    assert received.carried == {child.objects["fit/validation-0/chain"].sha256}
++    with target.publishing(received.manifest, received.stage_into(target, parent=parent)):
++        pass
++    assert target.read_bytes(child.objects["fit/validation-0/chain"]) == b"chain"
++    # A delta may inherit only what its parent holds, identically.
++    stranger = _publish(source, {"source.parquet": b"other rows"})
++    with pytest.raises(HauteValidationError, match="parent does not hold"):
++        received.stage_into(target, parent=stranger)
++
++
++@pytest.mark.parametrize("damage", ["duplicate", "unknown", "missing", "size"])
++def test_malformed_archives_are_refused(tmp_path, damage):
++    store = _store(tmp_path)
++    manifest = _publish(store, {"source.parquet": b"rows", "plan.json": b"{}"})
++    path = tmp_path / "archive.hstage"
++    store.write_archive(path, manifest)
++    with zipfile.ZipFile(path) as archive:
++        members = [(info.filename, archive.read(info)) for info in archive.infolist()]
++    if damage == "duplicate":
++        members.append(members[-1])
++    elif damage == "unknown":
++        members.append(("../escape", b"x"))
++    elif damage == "missing":
++        members = [m for m in members if not m[0].startswith("objects/")][:2] + members[3:]
++    else:
++        members = [(n, d + b"x" if n.startswith("objects/") else d) for n, d in members]
++    with zipfile.ZipFile(path, "w") as archive:
++        for name, data in members:
++            archive.writestr(name, data)
++    with pytest.raises(HauteValidationError):
++        StageArchive.read(path)
++
++
++def test_legacy_files_are_listed_and_reclaimed_but_held_leases_are_kept(tmp_path):
++    import threading
++
++    from haute._file_lock import file_lock_for
++
++    store = _store(tmp_path)
++    free, held = "a" * 32, "b" * 32
++    for name in (f"{free}.hstage", f"{free}.result.json", f"{free}.view.json", f"{held}.hstage"):
++        (store.directory / name).write_bytes(b"old")
++    (store.directory / "manifest.json").write_text(canonical_json({"schema_version": 2}).decode())
++    acquired, release = threading.Event(), threading.Event()
++
++    def hold():  # another holder: FileLock is reentrant within one thread
++        with file_lock_for(store.directory / f"{held}.lease"):
++            acquired.set()
++            release.wait(10)
++
++    holder = threading.Thread(target=hold)
++    holder.start()
++    acquired.wait(10)
++    assert {p.name for p in store.legacy_entries()} >= {f"{free}.hstage", f"{held}.hstage"}
++    store.reclaim_legacy()
++    assert (store.directory / f"{held}.hstage").exists()
++    assert not (store.directory / f"{free}.hstage").exists()
++    release.set()
++    holder.join(10)
++    store.reclaim_legacy()
++    assert store.legacy_entries() == []
++    assert (store.directory / "manifest.json").exists()  # the pointer is the caller's
++
++
++def test_links_anywhere_below_the_project_are_refused_and_never_followed(tmp_path):
++    outside = tmp_path / "outside"
++    outside.mkdir()
++    victim = outside / ("a" * 64)
++    victim.write_bytes(b"not ours")
++    (tmp_path / ".haute" / "staged-training").mkdir(parents=True)
++    (tmp_path / ".haute" / "staged-training" / "linked").symlink_to(outside)
++    with pytest.raises(HauteValidationError, match="links"):
++        StageObjects(tmp_path / ".haute" / "staged-training" / "linked", anchor=tmp_path)
++    store = _store(tmp_path)
++    store.objects.symlink_to(outside)
++    with pytest.raises(HauteValidationError, match="links"):
++        store.collect([])
++    assert victim.read_bytes() == b"not ours"
++
++
++def test_manifests_validate_on_construction_so_invalid_ones_are_never_written(tmp_path):
++    with pytest.raises(HauteValidationError, match="Unknown"):
++        RevisionManifest("a" * 32, {"../x": ObjectRef("b" * 64, 1, "binary")}, {}, {})
++    with pytest.raises(HauteValidationError, match="budget"):
++        RevisionManifest(
++            "a" * 32,
++            {"source.parquet": ObjectRef("b" * 64, module.EXPANDED_LIMIT + 1, "binary")},
++            {},
++            {},
++        )
++    store = _store(tmp_path)
++    manifest, staged = _revision(store, {"plan.json": b"{}"})
++    wrong = RevisionManifest(
++        manifest.revision, {"plan.json": ObjectRef(staged[0].sha256, 99, "json")}, {}, {}
++    )
++    with pytest.raises(HauteValidationError, match="disagrees"):
++        with store.publishing(wrong, staged):
++            pass
++    assert not store.revision_path(manifest.revision).exists()
++
++
++def test_a_collection_in_progress_holds_back_pin_registration(tmp_path, monkeypatch):
++    """Reverse order: a publisher arriving mid-collection waits, so its objects survive."""
++    import threading
++
++    store = _store(tmp_path)
++    manifest, staged = _revision(store, {"plan.json": b'{"late":1}', "source.parquet": b"x"})
++    finished = threading.Event()
++    publisher_done = threading.Event()
++    states = []
++
++    def publish():
++        with store.publishing(manifest, staged):
++            pass
++        publisher_done.set()
++
++    def midway(name):
++        if name == "collection_marked" and not states:
++            thread = threading.Thread(target=publish)
++            thread.start()
++            states.append(publisher_done.wait(0.3))  # must still be blocked
++            states.append(thread)
++
++    monkeypatch.setattr(module, "_fault_point", midway)
++    store.collect([])
++    finished.set()
++    states[1].join(10)
++    monkeypatch.setattr(module, "_fault_point", lambda name: None)
++    assert states[0] is False and publisher_done.is_set()
++    with store.pin(manifest.revision):
++        store.collect([])
++        for ref in manifest.objects.values():
++            assert store.read_bytes(ref)
++
++
++def test_concurrent_installers_of_one_digest_both_succeed(tmp_path, monkeypatch):
++    import threading
++
++    store = _store(tmp_path)
++    first, second = store.stage_bytes(b"same"), store.stage_bytes(b"same")
++    real = module.publish_staged_file
++    linked, results = threading.Event(), []
++
++    def slow_link_then_unlink(staged, target, *, replace):
++        os.link(staged, target)  # the transient two-link state another installer could see
++        linked.set()
++        threading.Event().wait(0.2)
++        staged.unlink()
++
++    monkeypatch.setattr(module, "publish_staged_file", slow_link_then_unlink)
++    thread = threading.Thread(target=lambda: results.append(store.install(first)))
++    thread.start()
++    linked.wait(5)
++    monkeypatch.setattr(module, "publish_staged_file", real)
++    results.append(store.install(second))
++    thread.join(5)
++    assert results == [first.sha256, first.sha256]
++    assert store.object_path(first.sha256).stat().st_nlink == 1
++
++
++def test_legacy_reclaim_holds_each_lease_while_deleting(tmp_path, monkeypatch):
++    from haute._file_lock import file_lock_for
++
++    store = _store(tmp_path)
++    revision = "c" * 32
++    (store.directory / f"{revision}.hstage").write_bytes(b"old")
++    held_while_deleting = []
++    real_remove = StageObjects._remove
++
++    def observed(self, path, report):
++        if path.suffix != ".lease":
++            held_while_deleting.append(
++                file_lock_for(self.directory / f"{revision}.lease").owned_by_current_thread()
++            )
++        return real_remove(self, path, report)
++
++    monkeypatch.setattr(StageObjects, "_remove", observed)
++    store.reclaim_legacy()
++    assert held_while_deleting == [True]
++    assert store.legacy_entries() == []
++
++
++def test_an_oversized_archive_header_is_refused_before_it_is_read(tmp_path):
++    path = tmp_path / "header.hstage"
++    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
++        archive.writestr("archive.json", b" " * (module._HEADER_LIMIT + 1))
++        archive.writestr("revision.json", b"{}")
++    with pytest.raises(HauteValidationError, match="header exceeds"):
++        StageArchive.read(path)
++
++
++def test_traversal_out_of_the_project_is_refused(tmp_path):
++    project = tmp_path / "project"
++    project.mkdir()
++    outside = tmp_path / "outside"
++    with pytest.raises(HauteValidationError, match="inside its project"):
++        StageObjects(project / ".." / "outside", anchor=project)
++    assert not outside.exists()
++    store = _store(tmp_path)
++    with pytest.raises(HauteValidationError, match="traverse"):
++        store._plain(store.directory / ".." / "escape", create=True)
++    assert not (store.directory.parent / "escape").exists()
++
++
++def test_a_validated_manifest_ignores_later_changes_to_the_callers_mapping():
++    objects = {"plan.json": ObjectRef("b" * 64, 3, "json")}
++    manifest = RevisionManifest("a" * 32, objects, {}, {})
++    objects["../escape"] = ObjectRef("c" * 64, 1, "binary")
++    assert set(manifest.objects) == {"plan.json"}
++    with pytest.raises(TypeError):
++        manifest.objects["x"] = ObjectRef("d" * 64, 1, "binary")  # type: ignore[index]
++    assert RevisionManifest.decode(manifest.encode()) == manifest
++
++
++def test_a_delta_over_a_large_inherited_closure_round_trips(tmp_path):
++    source, target = _store(tmp_path), _store(tmp_path, "other")
++    histories = {f"history/{i:064x}": f'{{"h":{i}}}'.encode() for i in range(900)}
++    parent = _publish(source, histories)
++    child = _publish(source, {**histories, "result": b'{"new":true}'})
++    full, delta = tmp_path / "full.hstage", tmp_path / "delta.hstage"
++    source.write_archive(full, parent)
++    source.write_archive(delta, child, inherited=histories)
++    with zipfile.ZipFile(delta) as archive:
++        assert archive.getinfo("archive.json").file_size < 100
++    imported = StageArchive.read(full)
++    with target.publishing(imported.manifest, imported.stage_into(target, parent=None)):
++        pass
++    received = StageArchive.read(delta)
++    assert received.inherited == frozenset(histories)
++    with target.publishing(received.manifest, received.stage_into(target, parent=parent)):
++        pass
++    assert target.read_json(child.objects["result"]) == {"new": True}

@@ -1,6 +1,7 @@
 /**
- * The view switcher (specs/workbench): Pricing and Workbench at the bottom of the left
- * palette while the workbench is enabled, pressing the view that shows.
+ * The view switcher (specs/workbench, specs/frontend-modelling-optimiser-ui): Pricing and
+ * Modelling at the bottom of the left column, with Workbench while the workbench is
+ * enabled, pressing the view that shows.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
@@ -17,11 +18,15 @@ describe("ViewSwitcher", () => {
     useWorkbenchStore.setState({ enabled: false, activeView: "pipeline" })
   })
 
-  it("renders nothing while the workbench is not enabled", () => {
+  it("offers Pricing and Modelling, and no Workbench, while the workbench is not enabled", () => {
     useWorkbenchStore.setState({ enabled: false })
-    const { container } = render(<ViewSwitcher compact={false} />)
+    render(<ViewSwitcher compact={false} />)
+    const group = screen.getByRole("group", { name: "Views" })
 
-    expect(container).toBeEmptyDOMElement()
+    expect(within(group).getAllByRole("button").map((button) => button.textContent)).toEqual(["Pricing", "Modelling"])
+    fireEvent.click(within(group).getByRole("button", { name: "Modelling" }))
+    expect(useWorkbenchStore.getState().activeView).toBe("modelling")
+    expect(within(group).getByRole("button", { name: "Modelling" })).toHaveAttribute("aria-pressed", "true")
   })
 
   it("offers Pricing and Workbench, pressing the view that shows, and switches on click", () => {
@@ -49,7 +54,7 @@ describe("ViewSwitcher", () => {
 
     expect(group).toHaveClass("flex-col")
     const buttons = within(group).getAllByRole("button")
-    expect(buttons.map((button) => button.textContent)).toEqual(["Pricing", "Workbench"])
+    expect(buttons.map((button) => button.textContent)).toEqual(["Pricing", "Workbench", "Modelling"])
     for (const button of buttons) expect(button).toHaveClass("w-full")
   })
 

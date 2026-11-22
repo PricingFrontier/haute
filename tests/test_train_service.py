@@ -1453,6 +1453,42 @@ def _evaluation_preview_request(**config_overrides: object):
 
 
 class TestEvaluationPreviewFailures:
+    @pytest.mark.parametrize("total_rows, row_limit", [(100, None), (10_000_000, 100)])
+    def test_small_evaluation_preview_runs_alongside_a_training_stage(
+        self, monkeypatch, total_rows, row_limit
+    ):
+        from haute._execution_admission import create_admitted_execution_context
+        from haute.routes import _training_lifecycle
+        from tests._execution_context_helpers import _clear_execution_memory_env
+
+        _clear_execution_memory_env(monkeypatch)
+        monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * 1024**3)
+        monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * 1024**3)
+        stage = create_admitted_execution_context(
+            operation="training_stage", profile=ExecutionProfile.TRAINING_PREP
+        )
+        try:
+            with (
+                patch.object(TrainService, "_compile_preamble", return_value=None),
+                patch.object(
+                    _training_lifecycle, "open_seed_plan", return_value=contextlib.nullcontext()
+                ),
+                patch.object(
+                    _training_lifecycle,
+                    "execute_lazy_graph",
+                    return_value=({"train": pl.LazyFrame({"y": list(range(100))})},),
+                ),
+            ):
+                result = TrainService(JobStore()).evaluation_preview(
+                    _evaluation_preview_request(),
+                    row_limit=row_limit,
+                    estimated_rows=total_rows,
+                )
+            assert result is not None
+            assert result["development_rows"] > 0
+        finally:
+            stage.release_admission()
+
     def test_incomplete_or_invalid_config_has_no_preview(self) -> None:
         service = TrainService(JobStore())
         assert (
@@ -2249,7 +2285,18 @@ class TestProtocolCallbackValidation:
                     "execution metrics must be an object",
                 ),
             )
+            from haute.routes._training_artifacts import _stage_training_response
+
             for result, message in cases:
+                if isinstance(result.metadata, dict) and "response" in result.metadata:
+                    root = captured["artifact_root"]
+                    (root / "output").mkdir(exist_ok=True)
+                    artifact = _stage_training_response(
+                        result.metadata["response"], artifact_root=root
+                    )
+                    result = WorkerResultManifest(
+                        metadata={}, artifacts=(*result.artifacts, artifact)
+                    )
                 with pytest.raises(WorkerProtocolError, match=message):
                     completed_fields(result)
         finally:

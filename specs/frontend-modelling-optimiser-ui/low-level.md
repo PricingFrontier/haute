@@ -16,8 +16,32 @@ Only a current, accepted save response may acknowledge this revision transition.
 
 | File | Responsibility |
 | --- | --- |
+| `frontend/src/modelling/runProgress.ts` | Continuous work fractions across requested and automatic jobs. |
+| `frontend/src/panels/modelling/BagLossChart.tsx` | Individual bag curves, split selection and visibility controls. |
+| `frontend/src/modelling/ModelPaths.tsx` | Lazy shared Paths canvas, labelled evidence, bounded candidate chart, select/apply controls; candidate inspection lives in the separate Factor/Tables panes. |
+| `frontend/src/modelling/PathCandidateSummary.tsx` | Compact saved-candidate banding cell-count histogram and paged smoothing factor-average mini-charts; read-only predecessor comparison. |
+| `frontend/src/modelling/pathSelection.ts` | Lightweight immutable selection resolver shared by Training, Factor and Tables, without eager chart-validator imports. |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring, the per-pane issue alerts, and the report of the panes holding an issue, which the node panel marks on their tabs. |
-| `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the `ModalShell` Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
+| `frontend/src/modelling/TrainingPane.tsx` | Four stage configuration disclosures with independent run/cancel actions and preview controls. |
+| `frontend/src/modelling/stageSettings.ts` | Typed stage drafts and explicit supported legacy-parameter migration. |
+| `frontend/src/modelling/useStageTableResult.ts` | On-demand dense table reads, bounded to the current revision and document. |
+| `frontend/src/modelling/useStagedTraining.ts` | Durable stage reads/actions with document fences, live marker polling and persistent view preferences. |
+| `frontend/src/modelling/StageRestorer.tsx` | Restore non-selected models and resume polling their live jobs. |
+| `frontend/src/modelling/stageResults.ts` | Validated cached projections of stage diagnostics for existing chart components. |
+| `frontend/src/modelling/StageVisibility.tsx` | Independent stage prediction checkboxes in the model settings disclosure. |
+| `frontend/src/modelling/PruningPath.tsx` | Accessible OOB path selection with separate minimum, recommendation, selected and applied markers. |
+| `frontend/src/modelling/AddModelPicker.tsx` | Add-model menu listing the supported interactive model families. |
+| `frontend/src/modelling/FactorList.tsx` | One searchable feature list for chart selection, inclusion and independent settings disclosures. |
+| `frontend/src/modelling/ModelEntries.tsx` | Model selection, chart-visibility boxes and settings menus with duplicate, rename and confirmed removal. |
+| `frontend/src/modelling/ModelsAveChart.tsx` | Shared actual/exposure chart with comparable model prediction series and an accessible value table. |
+| `frontend/src/modelling/disclosures.css` | Smooth disclosure expansion, focus and reduced-motion behavior for the modelling palettes. |
+| `frontend/src/modelling/interactiveModels.ts` | `INTERACTIVE_MODEL_KEYS`, model configuration projection, names, colours and immutable identifiers. |
+| `frontend/src/modelling/modelRuns.ts` | Per-model result keys and training/last-run state selectors. |
+| `frontend/src/panels/modelling/FeatureMonotonicity.tsx` | Shared compact feature-direction controls used by the modelling node and interactive feature settings. |
+| `frontend/src/modelling/ModellingView.tsx` | Lazy interactive modelling workspace with Main Menu, shared setup/split settings, left model palette, right Features/Training tabs and central Factor/Learning curve/Tables/Paths tabs. Projects per-model config through `applyModelUpdate`; restores all saved stage results; draws visible stage predictions only on comparable evaluation identities and bins; selects tables independently of the applied recipe and keeps the learning curve on the full GBM. Retains palette layout, feature controls, keyboard shortcuts, document editing fences and side panels. |
+| `frontend/src/modelling/ModellingToolbar.tsx` | Main Menu, Model Setup and Training Split with shared project controls. Stage actions live in Training, so no toolbar Train/Cancel action is rendered. |
+| `frontend/src/stores/useModellingViewStore.ts` | The Modelling view's own state, none of it saved or undone: the open node's id (null for the list), its chosen model's id, the unticked models (`hiddenModels`), the right-hand `panel` (`model`, `setup` or `split`; `togglePanel` back to `model` when asked for the one that shows), the pane, the charted factor and the chosen model's `trainAction`, which its editor publishes (`TrainAction`: training, busy, issues, error, train and cancel). Opening another node starts at its first model, every model ticked, its settings and the Factor pane with no factor; opening the open one keeps them. Choosing a factor shows the factor chart, or retains Paths while a path point is selected. `openModelInModellingView` opens a model and shows the view. |
+| `frontend/src/panels/ResultsWorkspace.tsx` | The results workspace shell modelling and optimiser results share: the ModalShell Focus view toggle, `PreviewPanelFrame` with a remembered docked height, an optional progress bar, `PreviewPanelTabs appearance="results"` with an `idPrefix`, an optional notices slot, a provenance slot, a per-tab intro (`{title}`) and the `role="tabpanel"` body keyed by tab (`aria-labelledby` its tab, class `validation-workspace`). It owns only the Focus state; the tab, height and content belong to the caller. It imports `modelling/validation.css` and sets the body's `--results-accent`/`--results-accent-soft` from its `accent` prop, which defaults to the model tokens. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset on the `ResultsWorkspace` shell (ariaLabel "Model validation", `idPrefix` "modelling-preview", model accent, `modellingPreviewHeight`). Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. Its collapsed bar summarises the first two of the metrics the result leads with (`headlineMetrics`). |
 | `frontend/src/panels/modelling/diagnosticsSet.ts` | The diagnostics partition's label (Test, Validation, Training) and row count, shared by the workspace's diagnostics strip and the Summary tab; `validationMetricsLead` (a validation fit ran and the diagnostics are in-sample) and `headlineMetrics` (test metrics, else the validation selection means when they lead, else the diagnostics), shared by the Summary's first card and the collapsed bar. Validation diagnostics without an evaluation selection fit throw instead of reporting a count. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
@@ -90,6 +114,10 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
 | `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, `isStringOrCategoricalDtype` (the String and Categorical dtypes CatBoost trains as categorical features, as the backend detects them; Enum is not one), and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns; `castFamily` names a column type's family in the step renderer's cast table (`cast_family`) and `decimalScale` reads a Decimal type's scale, for the step editor. |
+
+| `frontend/src/modelling/StageDecision.tsx` | Candidate comparisons and explicit inspection actions. |
+| `frontend/src/modelling/stageEvidence.ts` | Compatible metrics, complexity, evidence and applied recipe labels. |
+| `frontend/src/modelling/ModelCheckpoints.tsx` | Named checkpoint save, restore and delete controls. |
 
 ## Key types and data structures
 
@@ -783,6 +811,29 @@ constraint without one bound, and
 `frontend/src/panels/optimiser/__tests__/useOptimiserAutoRange.test.ts` a save mid-run leaving
 the job polling and its ranges published while a document reset retires it.
 
+The Modelling view is covered by `frontend/src/modelling/__tests__/ModellingView.test.tsx`
+(the list of interactive builds and no other model, opening one with the node's columns as
+its factors, both in the palette column with the view switcher at its foot and the factors
+named in it with their fitting controls collapsed, the model disclosures with chart checkboxes, progress bars and no state words, the failure alert at the settings column’s foot, several models drawn on the factor chart and an unticked one left off, Add, Duplicate, Rename and Remove, the single right feature list's expand/collapse, model-specific inclusion and numeric direction edits, read-only browsing and disabled edits, and Features/Training tabs on the right with the editor retained across toolbar panel changes, with Model setup and Training split from the store and the chosen factor handed to the editor, an edit through the
+node's update, the factor chart's states, the learning
+curve of the latest run and of a running boost, the tables, each panel's panes and **Go to**, the editing
+fence, save, undo and redo from the keyboard, the toolbar's panels in the settings' place,
+the node selected once on opening, and the columns' loading, failed and Refresh states, with
+the node's editor and the panels stand-ins that show what the view hands them),
+`frontend/src/modelling/__tests__/ModellingToolbar.test.tsx` (one Train/Cancel button,
+its idle/running/terminal transitions, pending-request guards and the other-model guard),
+`frontend/src/stores/__tests__/useModellingViewStore.test.ts`, the Interactive build, summary
+and stacked-pane cases of `frontend/src/panels/__tests__/ModellingConfig.test.tsx`, the
+factor case of `frontend/src/panels/modelling/__tests__/CommonFeatureConfig.test.tsx`,
+`frontend/src/workbench/__tests__/ViewSwitcher.test.tsx`, and two host cases in
+`frontend/src/__tests__/App.integration.test.tsx` with the real editor: the view over the
+hidden, inert pipeline editor under its own toolbar, a factor edit landing in the graph
+store, undone by Ctrl+Z and redone from the toolbar, Ctrl+S saving the pipeline with the
+node's marker and null band tolerance, Boost's Train sending the node's training request
+with them, the way back, a model opened on a pipeline just loaded previewing its node and
+listing the factors the preview's schema brings, and an interactive build's node panel
+opening it in the view.
+
 ## Modelling config panes
 
 The behavioural contract is defined in
@@ -795,6 +846,40 @@ The behavioural contract is defined in
   identity.
   The gateway handles only an unset algorithm; unsupported values render an explicit diagnostic,
   and supported nodes expose no algorithm mutation action.
+  The gateway's seventh button, **Interactive build**, writes one update: `algorithm: "tboost"`,
+  `interactive_build: true`, `INTERACTIVE_BUILD_PARAMS` (the boost-only recipe),
+  `defaultEvaluation("tboost")` and, when the upstream columns are known, every column's name
+  as `feature_columns`.
+  The default export is a wrapper over the editor (`ModellingEditor`). For a node with
+  `interactive_build: true` and no `panes` prop it renders `InteractiveBuildSummary` (the
+  model, the target and **Open in Modelling**, which calls `openModelInModellingView` once
+  an open utility panel has saved) and mounts no editor, so the node has one editor at a time.
+  With `panes`, the Modelling view's mount, the editor renders those panes stacked in one
+  `[data-pane]` section each, with each pane's issue alerts above its body, in place of the
+  single tab panel, sends a **Go to** link's pane to `onReviewPane` in place of the
+  node's remembered pane, and passes `resultsInPreviewPanel={false}` to the Train pane, whose
+  completion line (`TrainingActionsAndResults.tsx`) then reads "Model trained".
+  `reviewablePanes` names the panes the host can lead to (every pane when absent): the Train
+  pane's `validationDestinations` holds null for an issue on any other pane, which
+  `TrainingActionsAndResults.tsx` lists without a **Go to**, and without Split among them
+  the Parameters pane gets no `onReviewSplit` and `tuningOffered={false}`, so
+  `HyperparametersConfig.tsx` shows no Fixed | Tune switch unless the node already tunes.
+  `trainingConfigurationIssues` words the `feature-selection` issue of an interactive build
+  "Tick at least one factor.", and an interactive build's Features pane passes
+  `noun="factor"` to `CommonFeatureConfig` and is named Factors in the Train pane's
+  `validationDestinations`, so its link reads **Go to Factors**.
+  `LossTab.tsx` exports `LossHistoryChart`, the chart of one `ShownFit`, for the view's
+  Learning curve pane. With `onTrainAction` the editor reports its `TrainAction` each time
+  training starts or stops, a request starts or settles, or its issues or last failure
+  change, and `null` on unmount. With `modelId` the editor keeps its training job and run under
+  `modelResultKey` and names the model in its train and estimate requests (`model`). The
+  gateway's Interactive build writes the shared settings on the node and one model, `m1`
+  named t-boost, holding `algorithm`, the boost-only `params` and the factors; the node
+  panel's summary names the node's models. `forgetDeletedNodes` also forgets the runs kept
+  under a deleted node's model keys. The editor passes the view's `chosenFactor` to `CommonFeatureConfig`
+  as `chosen`, which marks that factor's row (`aria-current`, the model accent's soft
+  background) and scrolls it into view whenever the chosen factor changes; a row the
+  search or filter hides is not scrolled to.
 - `frontend/src/panels/modelling/featureSelection.ts` owns role exclusion and final algorithm
   selection. The configured target, weight, offset, fold, identifiers, and active evaluation
   group/date key are never offered as features. A tree family's final selection is its
@@ -805,6 +890,9 @@ The behavioural contract is defined in
   `CommonFeatureConfig.tsx` serves every tree family: case-insensitive search, the
   All/Included/Excluded filters, Include all / Exclude all, dtype labels, stale feature repair,
   and one row per eligible feature with its inclusion checkbox and monotonicity selector.
+  For an interactive build it takes `noun="factor"`: the heading, the labels and the
+  reasons say factor. The heading and its counts wrap onto two lines where they do not fit
+  on one.
   `glmTerms.ts` owns every GLM editor transition as a pure
   config-to-config function (add term, native type switch, field edit, expression rename/edit
   with grammar and column checks, remove, fit all, remove all, membership, interaction slot rules
@@ -839,8 +927,8 @@ The behavioural contract is defined in
   configured selection metric and the search space JSON, whose accessible name is
   "<family label> search space JSON". The note states whether `evaluation.test` holds a test
   set, offers **Review split →** (the caller's `onReviewSplit`, which selects Split), and shows
-  `fitBudgetLabel` (`trainingFitBudget.ts`) for its evaluation, tuning,
-  `publishesValidationFit` and `refitOnDevelopment` props, the run summary's own words. The
+  `fitBudgetLabel` (`trainingFitBudget.ts`) for its evaluation, tuning and
+  `refitOnDevelopment` props, the run summary's own words. The
   gateway's CatBoost starter parameters are `iterations: 1000`, `learning_rate: 0.05`,
   `depth: 6`, `l2_leaf_reg: 3`, `early_stopping_rounds: 50` and `one_hot_max_size: 10`; the
   backend applies no default of its own, so a node without the key trains with CatBoost's.
@@ -1033,7 +1121,7 @@ Verification is deliberately assigned to the owning seams:
   canonical evaluation transitions/preview with the fraction-sum issue placed by its code, a
   coded evaluation-preview failure shown in Split and an uncoded estimate failure kept out of
   it, tuning enablement/search-space drafts with each family's starter space, the tuning
-  note's family-labelled search space and run-summary fit budget (t-boost's winning validation
+  note's family-labelled search space and run-summary fit budget (a t-boost study's final
   fit), evaluation/result/progress fit counts, result labels, and live progress presentation.
   `frontend/src/utils/__tests__/trainingObjective.test.ts` pins the issue codes, including
   `evaluation-fraction-sum`, the GLM conflicts' wording and each issue's pane, and
@@ -1134,3 +1222,423 @@ confirmation withdrawn by an experiment or availability change; and
 keyed by path and model format; `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
 the pane list and resolution; `NodePanel.test.tsx` and `useUIStore.test.ts` cover strip gating,
 per-node memory and the active-solve indicator.
+
+### Combined factor list
+
+`modelling/FactorList.tsx` owns search and the one expanded factor name. A name click calls
+`onSelect` and closes any open options. A schema `IconButton` with `SlidersHorizontal`,
+labelled `{name} settings`, toggles `aria-expanded`/`aria-controls` independently of chart
+selection and sits immediately left of an always-visible Include checkbox. No chevron
+icons are rendered. Rounded rows use a soft selected surface and inset outline, plain UI
+text for names, and a subtle divider above the expanded controls; bulk actions use equal
+width compact buttons. `disclosures.css` owns the row hover and disclosure transitions:
+200ms grid rows from 0fr to 1fr and opacity, with an overflow-hidden inner wrapper. Each
+factor's controls mount on first expansion and remain mounted for smooth reversal; closed
+wrappers are `inert` and `aria-hidden`. Under `prefers-reduced-motion: reduce`, transitions
+are disabled. Hover changes only an unselected row's soft background, never the name
+button's background or the selected colour. Its relative
+scroll area contains each row's labelled Include checkbox and expanded shared
+`FeatureMonotonicity` controls. Checking a feature never selects its chart or opens its
+settings. Missing saved features show a checked checkbox that can remove them, and retain
+the expanded Not found/removal controls. `readOnly` disables editing only. `onUpdate` is the workspace's
+existing model-scoped update; changing the chosen model changes the controls' config without
+copying settings. Bulk inclusion preserves dormant roles and missing stored names. Missing
+saved features have expandable removal controls. `orderedFeatureSelection` in
+`featureSelection.ts` preserves upstream order then missing saved names in both editors.
+`FeatureMonotonicity.tsx` supplies the existing numeric-only direction buttons to both the
+node editor and the condensed list, with identical constraint writes and unavailable reasons.
+
+Tests cover one expanded row, collapse without clearing the chart, edits isolated to the
+chosen model, numeric/excluded/read-only guards, missing-feature removal and retained bulk
+selection semantics. Browser verification checks scrolling stays within the viewport and
+long model names fit the palette and fitting controls fit the Features pane at desktop and narrower window sizes.
+
+### Modelling workspace navigation
+
+`ModellingToolbar` owns Main Menu, which calls `closeModel` even while read-only. Neither
+`ModelWorkspace` nor `NoModels` renders a back arrow. The workspace's left `PaletteColumn`
+holds the Models header, a Models navigation containing vertical `ModelEntries`, and the view
+switcher at its foot. Model entries fill the width, truncate long names with a title, and
+keep progress and their chart checkbox visible beside the name; direct model actions expand below it.
+Expanded names wrap, and collapsed names truncate.
+
+On the right, `PreviewPanelTabs` renders Features and Parameters. The Features `tabpanel`
+contains the existing `FactorList` and column-loading/Refresh states. Both feature list and
+one `ModellingConfig` per model stay mounted when hidden. `ModellingConfig` renders Parameters
+while the model panel shows and Target/Split for shared settings. `onReviewPane` can select
+Features or Parameters. Only the editor body is inert in read-only mode; feature browsing
+and settings tabs remain interactive. Tests cover Main Menu, the models' location, both
+settings tabs, preserved drafts/search/expansion, model-specific edits and hidden-editor
+training registration. Browser checks cover long names, disclosure animation and viewport scrolling.
+
+
+The Modelling left column reuses `PaletteHeader` (Models), `PaletteColumn` and
+`PaletteRevealStrip` from `haute-ui`, including Pricing's chrome background and typography,
+with no panel-background override. `useUIStore.paletteOpen` and `setPaletteOpen` share its
+collapse state across views. The collapsed strip is labelled "Show model palette" and ends
+with `ViewSwitcher compact`; expanded, the models scroll beneath the header and the full
+switcher stays at the foot. Tests cover collapsing and reopening without changing the
+chosen model, feature selection or expanded controls, and retaining access to Pricing.
+
+
+Modelling readiness messages never occupy a row above the chart or settings panes.
+`ModellingToolbar` disables Train natively whenever it is unavailable (including invalid
+configuration), keeps the first reason in its tooltip, and emits no toast on a blocked click.
+Cancel remains available during training unless its request is pending. The stacked
+`ModellingConfig` panes render `issueAlerts` after their controls, including the tuning
+validation warning below the parameter editor. Training failures remain visible as
+`TrainFailure` at the right settings column's foot. Tests cover the missing central banner,
+blocked Train, preserved Cancel, and the warning following the tuning controls.
+
+
+### Expandable model entries
+
+`ModelEntries` holds the expanded model id independently of chart visibility. A name button
+selects the model and closes any open actions. The schema’s `IconButton` with
+`SlidersHorizontal` sits immediately before the chart checkbox and independently toggles
+the actions (`aria-expanded`, `aria-controls`, accessible label `{name} settings`). Opening
+another model’s actions closes the previous disclosure without changing model selection.
+`ModelEntry` retains the colour dot, selected/failed name and progress bar in its header.
+Its controls use an animated CSS grid body with `aria-hidden` and `inert` when closed,
+direct Duplicate/Rename/Remove buttons. A labelled Show on charts checkbox sits beside the
+name button outside the disclosure, available while collapsed and read-only. Toggling it
+does not select the model, change the settings pane or expand/collapse the row. The old
+ellipsis menu and its portal are replaced by these inline actions; the rename dialog and
+last-model/read-only restrictions stay. `disclosures.css` shares the feature list's styles
+and reduced-motion rule. Tests cover selection versus expansion, one open row, preserved
+chart visibility, model operations, read-only controls and progress while collapsed.
+
+The workspace omits the node-name subtitle in the left palette and the model-name heading
+above Features/Parameters. Shared Model setup and Training split headings remain; the
+settings aside retains its accessible name identifying the selected model.
+
+Both Modelling tab strips use `PreviewPanelTabs` with its default appearance and
+content-sized tabs (`equalWidth` omitted): matching 11px semibold uppercase labels, letter
+spacing, vertical padding, active background and underline. Tabs group at the left of each
+bar; the chart strip no longer uses the larger results appearance.
+
+`ModelEntries` lays out its expanded actions as one column. Removal uses `confirmed` from
+`useQuestionStore` and the app's existing `QuestionDialog`, titled `Remove model "{name}"?`,
+with Cancel and Remove (`danger: true`). After acceptance it calls the latest removal
+handler only if the same node is mounted, editing is allowed, the model still exists and
+another model remains. Cancellation makes no update. Tests verify no mutation while the
+question is pending, cancellation, and one removal after confirmation.
+
+`ModelEntries` renders `AddModelPicker`: Add opens a menu labelled Add model, with t-boost
+as its sole menu item. Only choosing that item calls the existing `onAdd`; opening, Escape
+and outside dismissal make no update. The button exposes `aria-haspopup`, `aria-expanded`
+and `aria-controls`, and is disabled read-only. The menu uses a body portal, viewport-clamped
+positioning beside Add, `MenuBackdrop` and `useMenuKeyboard`, returning focus to Add when
+closed. Tests cover the extra selection step, dismissal without edits and the existing
+copy-and-select outcome. Browser checks include keyboard access and scroll-boundary placement.
+
+### Staged training controls
+
+Interactive t-boost's right model tabs are Features, Parameters and Training. Parameters
+renders GBM, Pruning, Banding and Smoothing cards with animated settings disclosures.
+Training renders separate cards with fixed headings and visible stage actions. Only the active operation's action becomes Cancel; all
+other actions wait while any training job runs. The toolbar holds Main Menu, Model Setup,
+Training Split and project controls, with no Train button. Readiness and last-run errors
+remain at the foot of the right column. The existing node editor retains ordinary training.
+
+`modelling/stageSettings.ts` splits supported legacy post-fit keys out of GBM parameters on
+an explicit stage edit/build. Disabled legacy switches do not erase their editable stage
+settings. Unsupported legacy selection/budget controls produce a visible migration issue;
+never silently discard them. Existing `stages` settings and applied recipes are preserved.
+The first staged build starts with an empty applied recipe. Edits use the same canonical
+model update path and the submitted graph contains exactly those settings.
+
+`modelling/TrainingPane.tsx` renders the stage cards and their settings. Pruning offers path
+resolution/OOB threshold/main effects and automatic or explicit table cutoff; the current
+prepared path has Apply and Clear prepared path directly in Training. Banding and Smoothing use the nearest earlier enabled stage.
+Post-fit actions require saved current evidence and the selected parent; missing OOB path
+explains why Pruning is unavailable. A full GBM can still be built without a path.
+
+`modelling/useStagedTraining.ts` restores state through the project-scoped stage endpoints,
+uses the canonical training job/store for start/progress/cancel and refreshes durable state
+when jobs settle. Document fences prevent late replies crossing documents. Saved state is
+kept separately from a latest failed attempt; a failed preview cannot erase applied plots.
+Visibility and selected table-stage are local view choices, never part of the model recipe.
+Tests cover migration, unsupported keys, individual actions/cancellation, collapsed controls,
+parent readiness, preview apply/discard, retained state on failure, and restoration.
+
+Stage views: saved snapshots are projected by `stageResults.ts` through the existing response
+parser once per snapshot. Full/pruned/banded/smoothed use distinct line patterns and point
+markers, with explicit stage legend labels; a left-out feature is labelled separately.
+The model checkbox gates all of its stage lines without erasing their visibility choices.
+A post-fit candidate is labelled Selected and cannot replace applied results until Apply.
+Charts require equal evaluation identities and bins before overlaying stages. Tables chooses
+one available stage; its selection and stage visibility persist as local view preferences,
+never changing output recipes. Learning Curve always reads full-fit evidence. Paths exposes
+immutable candidate selection; its optional OOB pruning chart retains the native evidence label.
+Keyboard or pointer selection changes only transient inspection, never the pruning draft.
+
+
+The Training pane's Final model card dispatches `finalise` against the current revision,
+with Cancel in the same action position. An outstanding candidate does not block finalisation
+of the applied model. Export final model restores durable inference artifacts into the
+existing ExportPane's Save/Log contract, without exposing training checkpoints. OOF runs
+label curves as validation and path/tables as the development reference fit. Pending stage
+settings are labelled; descendants cannot run on a parent whose settings are pending.
+
+Background model restorers synchronise applied recipes through the same effect as the
+selected editor. Starting a GBM submits an empty recipe without clearing the saved applied
+recipe until success. A new stage job invalidates cached final export handles; Refresh export
+can always rehydrate a still-valid final revision. Model removal releases its durable store
+before removing the canonical entry, with errors retaining the entry.
+
+The completed staged Modelling workspace adds no frontend dependency. Its stage controls,
+persisted-state/overlay handling and runtime contracts load with the modelling panels.
+The measured production build is 1,835.7 KiB gzip in total (previous first-slice baseline
+1,810.6 KiB), with 299.8 KiB on initial load. Its aggregate allowance is 1,838 KiB,
+retaining about 2 KiB headroom; the 300 KiB initial-load, vendor and single-chunk caps
+remain unchanged.
+
+### Parameter/action separation (21 November 2026)
+
+`ModellingView` keeps one mounted `ModellingConfig` for Parameters and Training, passing a
+`stagedPane` display selection while retaining the `params` editor body. `TrainingPane`
+keeps parameter controls mounted but hidden in its action view, preserving numeric drafts
+and validity. Parameter cards contain settings only; action cards have fixed headings and
+visible buttons. Apply / Clear prepared path are outside disclosures. Selecting a
+path point stays in Paths and updates linked read-only inspection. Tabpanel IDs track the selected tab. Shared Model Setup
+and Training Split remain unchanged. Tests prove view separation, invalid drafts blocking
+training across tab switches, reachable pruning decisions and cancellation.
+
+`StageSettings.enabled` contains booleans for pruned, banded and smoothed. The frontend
+resolves banding.parent to pruned/full and smoothing.parent to banded/pruned/full from these
+flags. Default is all post-fit phases enabled. On opening older settings without flags,
+the existing smoothing-parent chain determines which earlier phases are enabled (including
+banding's parent when smoothing starts from banded); the saved applied recipe is untouched.
+An explicit subsequent edit/build persists the migrated draft. Disabled numeric drafts do
+not block enabled actions, but become invalid again if re-enabled. A saved downstream stage
+whose parent chain no longer matches is pending and cannot be reused until rebuilt.
+
+### Decision support in staged training
+
+Training remains separate from Parameters (the GBM editor remains JSON). Each stage card
+shows its applied/built, pending, disabled, missing-parent, running or candidate state.
+First-fit development-only exploration requires an explicit acknowledgement in the GBM
+card; choosing validation removes that acknowledgement. Setup and Split links open existing
+panes. Chart metadata identifies Development, Validation or OOF validation; training OOB
+and development reference table evidence retain their distinct labels.
+
+Every post-fit operation creates a candidate. Apply promotes precisely that revision;
+Discard preserves the applied model. Candidate comparisons show compatible saved metrics,
+metric direction and differences without a quality verdict, plus table/cell/shape changes
+where available. Explicit comparison isolates parent/full and candidate lines without
+mutating normal visibility preferences; ending comparison restores the ordinary view.
+No completion automatically changes the canvas pane or selected factor.
+
+Named checkpoints retain an applied model and its per-model settings across later builds
+and restarts. Saving/restoring/deleting uses revision checks and refuses running jobs.
+Restore does not roll back shared evaluation/target settings: incompatible shared settings
+or changed upstream data are refused. The Training pane provides bounded named checkpoints
+and explicit restore/delete controls. The Final model card names the applied recipe and
+final export output, with final-test metrics separate from exploration diagnostics.
+
+Testing: candidate apply/discard for all post-fit phases; compatible comparison and no
+cross-evaluation deltas; comparison restores visibility; development-only acknowledgement;
+checkpoint retention/restore/delete, stale revision, corruption and active-job refusal;
+final output follows the applied recipe rather than toggles or draft parameters.
+
+`frontend/src/modelling/StageDecision.tsx` renders the candidate's before/after evidence
+and explicit comparison/factor inspection actions. `frontend/src/modelling/stageEvidence.ts`
+owns compatible metric/table comparisons, evidence labels and the actual recipe label.
+`frontend/src/modelling/ModelCheckpoints.tsx` renders named checkpoint controls and
+restore/delete confirmations in Training.
+
+Decision support and named checkpoints add about 5.2 KiB gzip in lazy modelling chunks;
+the measured build is 1,840.9 KiB total and 299.8 KiB initial. The aggregate budget is
+1,843 KiB with the existing initial/vendor/individual chunk caps retained.
+
+GBM readiness must distinguish a required evaluation choice from saved-model changes.
+A model with an existing development-only fit has already chosen development exploration:
+editing GBM settings or upstream data does not ask for that acknowledgement again. A new
+model, or one changing from validation to development-only evidence, still requires an
+explicit choice. Its GBM card says Choose evaluation and explains the checkbox/split link.
+A stale saved GBM says Rebuild needed, while its Train GBM action remains available when
+configuration is valid. Later stages still require the rebuilt parent. Tests cover stale
+saved development evidence, first-fit choice, and switching validation to development.
+
+Interactive GBM training and explicit Apply request automatic next-stage preparation.
+Training describes the next enabled phase it will prepare. A ready candidate's main action
+is Apply; there is no obligatory separate Preview click after its parent finishes. Retain
+Build phase actions for changed settings, retry and previously saved builds. Queued
+preparation is polled and disables conflicting actions; its failure is shown inside the
+right pane. Cancel remains on the running phase. Draft changes do not silently change the
+candidate being applied: applying an inspected point adopts its exact saved policy. A changed
+logical parent requires a newly prepared path.
+Tests cover request opt-in, ready-candidate primary action, changed-preview refresh, queued
+polling and no follow-up on discard or checkpoint restore.
+
+Automatic follow-up work is visually part of the preceding applied stage: its card stays
+Running/Cancel through queued and running continuation, including after reload. Do not show
+preparation captions or mark the next stage as running. Automatic jobs use the existing durable/background polling and completion handling.
+Staged successes do not emit intermediate completion toasts; the cards show the outcome. Cancellation targets the actual running
+job, including the continuation. Queued handoff temporarily waits for the cancellable job.
+A prepared candidate never blocks Train GBM, another stage with an available valid parent,
+or finalising the explicitly named applied output. Rebuilding may replace the candidate.
+Keep legitimate configuration, stale-parent, disabled-phase, missing-path, concurrent-run
+and evaluation-choice guards, with every reason shown below the Training controls. Local
+invalid phase fields only block that phase; invalid pruning-path fields also block GBM,
+which computes that path. Do not make unrelated stage drafts block GBM. Preserve separate
+Parameters/Training panes and explicit Apply decisions.
+Tests cover ready candidates not blocking rebuilds, missing parents, bottom reasons,
+phase-local invalid fields, queued/running automatic work remaining on its applied parent,
+manual work retaining its own stage, and cancellation targeting the automatic job.
+
+
+## Post-fit path families
+
+The shared Paths canvas has Pruning, Banding and Smoothing views. Candidate inspection is
+transient and read-only: selecting a point changes linked factor/table diagnostics without
+changing canonical parameters, applied recipes, stages or the durable preview revision.
+Suggested, Selected and Applied are separate markers. Applying a point commits the exact
+candidate evaluated and its selected settings; unchanged means use the logical parent and
+skip that phase, including when rebuilding from an already-applied descendant.
+
+The preceding stage prepares the next enabled path inside its existing running/cancel state.
+No preview button, additional preview wording or global disabled state is introduced.
+Parameters remain in their own pane. Actual blocking reasons remain at the bottom.
+
+A bounded preview envelope stores typed path summaries plus a compact artifact containing
+source and parent checkpoints once, per-fit candidate deltas and per-point canonical
+responses. A read-only point endpoint validates current/preview/path/point identity, leases
+that artifact and returns diagnostics. Apply verifies the same identities and materialises
+only the selected checkpoint. Inspection has its own request fence for rapid A/B selections.
+No read endpoint fits trees, transforms candidates, publishes a preview or rewrites config.
+
+Each band/smooth setting transforms every retained training fit and scores matching held-out
+rows with the canonical evaluator. CV evidence pools those fold predictions; development
+reference complexity is labelled separately. Final-test data is untouched. Pruning retains
+its native OOB evidence label. Without held-out evidence, show development evidence and do
+not claim a validation recommendation. Curves include the unchanged parent and explicit
+rejected/unchanged points. Loss deltas remain finite near zero. A configurable practical
+loss tolerance chooses the simplest feasible point within tolerance of BOTH the best point
+and unchanged parent. Internal banding budgets remain hard maxima, distinct from this
+selection tolerance. Final refit replays policy and recomputes fold-specific proposals.
+
+Testing: inspection leaves canonical state unchanged, linked factor/tables show the same
+point, out-of-order reads cannot replace newer selections, stale Apply changes nothing,
+chosen settings are adopted only after success, and baseline restores its logical parent.
+Verify retained-fit evidence and labels, exact applied predictions, reload/cancel lifecycle,
+nearest enabled successor preparation and bounded artifacts without row/candidate matrices.
+
+
+Path module map: `frontend/src/modelling/ModelPaths.tsx` lazily renders shared stage selectors,
+budget/strength/complexity versus relative-loss charts, explicit identity/rejected/no-op points and selection controls. Factor/Tables inspection uses the separate canvas panes.
+`frontend/src/modelling/pathSelection.ts` resolves one transient selection for Factor, Tables
+and Training without importing chart parsers into the initial bundle. Per-model request IDs
+and document/current/artifact identities fence point replies; inspection never sets global
+training busy. Apply shares action-busy state and adopts the selected phase only after success.
+
+The shared immutable Paths workflow adds a lazy path canvas and bounded response contracts.
+The measured production build is 1,852.7 KiB gzip, with initial load still 299.9 KiB.
+Its aggregate allowance is 1,853 KiB; the 300 KiB initial-load and all vendor/single-chunk
+caps remain unchanged. No chart dependency enters the startup graph.
+
+Equivalent path outcomes remain individually selectable policies and identify their shared
+outcome; chart lines deduplicate coincident equivalent outcomes. An alias never changes
+which policy Apply stores or which policy final refit recomputes.
+
+### Paths chart refinement (21 November 2026)
+
+Banding plots the logical budget fraction (0–100% of configured maxima) on x, including
+identity at zero; actual table/cell complexity is supporting information, never the banding
+x coordinate. The y-axis for all paths is percentage objective-loss change relative to the
+unchanged predecessor when its loss is nonzero. Near-zero baseline loss uses explicitly
+labelled absolute change. Zero and the exact recommendation ceiling (within tolerance of
+both best feasible and unchanged) remain visible. Describe changes as higher/lower loss,
+and tolerance as a user-chosen trade-off, not statistical significance. Factor and Tables
+remain standalone canvas panes; Paths contains no embedded factor/table explorer.
+
+Testing: equal-complexity banding points have distinct budget x coordinates; percent change
+and tolerance ceiling match underlying losses; zero-baseline display stays finite and
+absolute; selection remains read-only and keyboard accessible.
+
+
+### Compact path candidate summaries
+
+`frontend/src/modelling/PathCandidateSummary.tsx` renders beneath path selection for Banding/Smoothing only. It
+receives the resolved selected response and the path parent; get before diagnostics from
+that response's parent snapshot, never from the currently applied descendant. Hide stale
+content while inspection loads/fails. Selection is transient and starts no training, extra
+point fetch or new diagnostics. Existing read-only request fencing remains authoritative.
+
+Banding compares histograms of cell counts per materialised interaction table (order > 1),
+counting displayed score cells with the same helper as stage comparisons. Shared power-of-4
+cell-count bins include both before/selected sets. Display totals, table counts and labels;
+exclude factored effects with no dense grid and state their count. Empty/missing diagnostics
+are explicit. This describes the reference fit, not an average over CV fold complexities.
+
+Smoothing shows saved average predictions by observed factor bins, labelled as grouped
+validation/development averages rather than PDPs. Compare only matching evaluation identity,
+diagnostic partition, factor type, labels, exposure and actuals. Numerical lines exclude
+Missing from connections; categorical levels use points. Each pair shares a y-scale, with
+visible limits, factor name and level labels; scales may differ across factors. Axis limits
+and paired point details use adaptive precision so close values remain distinguishable. Order fitted
+factors by largest absolute change in their average prediction; page six at a time with
+accessible controls so rendering stays bounded. Missing/incompatible factors are named, not
+plotted as comparable. Reuse diagnostics and SVG helpers; no new dependency or backend work.
+
+Testing: histogram bins/totals distinguish changed cell counts, omit main effects and label
+factored effects; absent/empty cases stay honest. Mini-chart lines use correct before/after
+values on shared scales, do not join categorical/Missing bins, and suppress incomparable
+evidence. All fitted factors remain reachable through pagination. Switching candidates
+updates charts without changing the applied recipe. Browser-check compact layout in Paths
+and standalone Factor/Tables at 1440/1024 widths.
+
+Compact summaries own the displayed cell counts; omit the old redundant point-level cell
+label, whose persisted summaries may predate the native tensor-count fix. Rebuilding a
+banding path refreshes its stored complexity and recommendation; saved models stay intact.
+# Frequency workflow responsiveness
+
+Stage refreshes and path selection request compact diagnostics; dense tables are loaded
+only when the table pane needs them and remain fenced to their owner revision. Path
+selection retains cell-count histograms and smoothing factor mini-charts. A selected point
+that is already applied is labelled Applied, not Candidate ready, and does not offer a
+duplicate Apply action; another point in the retained path remains selectable.
+Post-fit recipe changes must not invalidate the evaluation/RAM preview input identity.
+Only changes affecting data, features, evaluation, objective or training resource needs
+request a new estimate. Existing training-result staleness remains independent.
+
+Staged reads/inspection use the same migrated parameter draft as stage training, without
+committing that draft merely by opening the view. Reloading an older flat t-boost config
+must not falsely invalidate an unchanged retained GBM. Genuine GBM parameter changes
+remain stale. An unchanged path point is committed only once its phase is disabled and
+its path selection is recorded; it must remain actionable before then. When comparing
+legacy dense evidence with compact evidence, use a matching immutable snapshot's summary
+where available; never compare hashes from different encodings or claim changed shapes
+when comparable shape evidence is unavailable.
+
+`frontend/src/modelling/useStageTableResult.ts` owns on-demand dense table reads and
+revision fencing. It loads with the Modelling view rather than the initial document store.
+
+### Continuous staged progress and bag learning curves
+
+The model palette treats the requested fit and its automatically prepared next path
+as one run. Progress never retreats within that run or disappears during the queued
+handoff. Fitting owns the first half and automatic preparation the second half of
+the approximate bar; completion reaches 100%, failure/cancellation ends the run,
+and an explicit new run resets it. Background preparation keeps the existing stage
+label. A reloaded automatic job starts in the second half.
+
+The learning curve shows every t-boost bag, coloured consistently across Training
+and Validation views, with an accessible checkbox per bag and an overall mean.
+Individual curves stop at their last reported round; the completed mean carries
+each stopped bag's final loss forward so its population does not change. During
+fitting, bag points use their own reported rounds, not the fastest bag's round;
+the mean is shown only for the completed, aligned history. The mean is explicitly
+a mean of bag losses, not an ensemble prediction score. Legacy results without
+bag histories keep the existing aggregate chart. Thinning retains the individual
+bags' endpoints and uses numeric iteration spacing.
+
+Tests cover asynchronous bag reports, unequal stopping rounds, persisted bag
+curves, accessible visibility and split controls, numeric point positions, and
+progress through fitting, queued handoff, automatic preparation, terminal states
+and a subsequent explicit run.
+
+`frontend/src/modelling/runProgress.ts` owns the monotonic work-fraction transition.
+`frontend/src/panels/modelling/BagLossChart.tsx` adapts the individual bag histories
+to numeric iteration axes, split controls and curve visibility.
