@@ -68,7 +68,6 @@ session ran each again on 16 November 2026.
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
-| WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 
 ## Planned improvements
@@ -747,32 +746,6 @@ agree the same way.
 `src/haute/deploy/_request_rows.py::record_digests`;
 `src/haute/_hashing.py::content_hash`;
 `src/haute/_scaffold_files.py`.
-
-### WB-70 — A creation repeated under its key is answered with the quote it made
-**Why:** Reproduced on 16 November 2026 with two instances of the
-underwriter app on one quote store. Both were sent the same creation, with
-the same operation key and reference, a few milliseconds apart, as a page
-or a proxy does when the first answer is slow. In 100 rounds the second
-was answered 409 "K-000004/1 already holds the reference K-000004: open
-it, or create an alternative of it" 37 times on SQL Server with read
-committed snapshot off and 5 times on PostgreSQL; never on SQLite, and
-not in this run on SQL Server with it on, where a worker saw 5% to 9%.
-One quote is stored each time. The specification says a request repeated
-under its key answers what the first did. The replay check runs before
-the insert; when the first copy commits in between, the insert finds the
-reference taken, and that refusal is not the one whose handler checks the
-key again. The underwriter is told their own new quote is someone else's.
-
-**Plan:** Check the operation key again before answering that a
-reference is taken, and answer with the quote the key made.
-
-**Acceptance:** 100 rounds of the pair above answer 200 twice with the
-one quote on PostgreSQL and on SQL Server with either setting.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_book.py`;
-`specs/workbench/high-level.md`.
 
 ### WB-74 — A password corrected in `.env` is used without restarting the editor
 **Why:** Reproduced on 16 November 2026 with the editor's real server

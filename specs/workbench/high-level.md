@@ -2816,8 +2816,10 @@ Out of scope:
   creation the quote it made as it stands, a save the quote while that save is still its
   newest change, and otherwise a refusal of its own (`write_superseded`) saying when the
   save landed and who changed the quote after it, which the page takes as done; two sent at
-  once under one key are one write. The key of another person, another quote or another
-  kind of write is refused.
+  once under one key are one write, both answered with it, a creation finding its
+  reference taken looking its key up again before it says so, since the copy that took
+  it may be its own. The key of another person, another quote or another kind of write is
+  refused.
 
   A new quote, a duplicate and a renewal take the reference the underwriter keys, and option
   1; an alternative takes its source's reference and the next option, its source's option 1

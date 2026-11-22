@@ -7,14 +7,17 @@ environment names (tests/_store_servers.py)."""
 from __future__ import annotations
 
 import re
+import threading
 import unicodedata
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 import pytest
+from sqlalchemy.engine import make_url
 
 from haute._project_context import context_thread
 from haute._quote_store import (
@@ -33,7 +36,7 @@ from haute._quote_store import (
 )
 from haute._workbench_form import FormSpec, with_quote_details
 from haute._workbench_tables import finite_document, priced_tables
-from tests._store_servers import Target, backends, database
+from tests._store_servers import Target, backends, configured, database
 
 PROJECT = "motor"
 ANA = "ana@example.com"
@@ -360,6 +363,92 @@ def test_a_creation_repeated_under_its_key_makes_one_quote(book: QuoteBook, stor
     # A repeat answers what the quote holds, as the first write did.
     assert again.values == made.values
     assert sql(store, "SELECT COUNT(*) FROM quote_details") == [(2,)]
+
+
+def test_a_creation_whose_first_copy_lands_while_it_is_made_answers_that_quote(
+    book: QuoteBook, store: Target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WB-70: two copies of one creation sent at once. The second checks its key before the
+    first has committed, then finds the reference taken by the first: it is answered with
+    the quote its key made, never told the reference is someone else's."""
+    key = op()
+    made = book.create(operation=key, actor=ANA, values=values(), at=book.now(), reference="A-1")
+    looked_up = QuoteBook._replayed
+    checks: list[str] = []
+
+    def before_the_first_landed(self: QuoteBook, *args: Any, **kwargs: Any) -> Any:
+        checks.append("checked")
+        # The second copy's first check, inside its transaction, as the first copy commits.
+        return None if len(checks) == 1 else looked_up(self, *args, **kwargs)
+
+    monkeypatch.setattr(QuoteBook, "_replayed", before_the_first_landed)
+
+    again = book.create(operation=key, actor=ANA, values=values(), at=book.now(), reference="A-1")
+
+    assert (again.quote.reference, again.quote.option) == (made.quote.reference, 1)
+    assert sql(store, "SELECT COUNT(*) FROM quote_details") == [(1,)]
+    # Another key's creation of that reference is still told it is taken.
+    with pytest.raises(ReferenceTakenError, match="already holds the reference A-1"):
+        book.create(operation=op(), actor=ANA, values=values(), at=book.now(), reference="A-1")
+
+
+def _created_by_two_apps_at_once(store: Target, rounds: int = 30) -> None:
+    """WB-70, as a page or a proxy sends a creation again while the first answer is slow:
+    two apps on one database, each sent it at once, round after round, both answered with
+    the one quote it made."""
+    store.make(FORM)
+
+    def opened() -> QuoteBook:
+        return open_book(
+            store.url,
+            FORM,
+            environment=store.environment,
+            haute_version=HAUTE,
+            sign_in=store.sign_in,
+        )
+
+    with opened() as first, opened() as second, ThreadPoolExecutor(max_workers=2) as apps:
+        for each in range(rounds):
+            key, reference = op(), f"R-{each}"
+            together = threading.Barrier(2)
+
+            def create(book: QuoteBook, key: str = key, reference: str = reference) -> Any:
+                together.wait()
+                made = book.create(
+                    operation=key, actor=ANA, values=values(), at=book.now(), reference=reference
+                )
+                return made.quote.reference, made.quote.option
+
+            assert list(apps.map(create, (first, second))) == [(reference, 1)] * 2, each
+
+    assert sql(store, "SELECT COUNT(*) FROM quote_details") == [(rounds,)]
+
+
+def test_two_apps_sent_one_creation_at_once_answer_the_one_quote_it_made(store: Target) -> None:
+    _created_by_two_apps_at_once(store)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param(name, marks=pytest.mark.store_servers)
+        for name in configured()
+        if name == "sqlserver"
+    ]
+)
+def sqlserver_locking(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Target]:
+    """A database of the test's own on SQL Server, read committed by its locks: snapshot off."""
+    with database(request.param, tmp_path) as target:
+        name = make_url(target.url).database
+        target.script(
+            f"ALTER DATABASE {name} SET READ_COMMITTED_SNAPSHOT OFF WITH ROLLBACK IMMEDIATE"
+        )
+        yield target
+
+
+def test_two_apps_sent_one_creation_at_once_on_a_locking_sql_server(
+    sqlserver_locking: Target,
+) -> None:
+    _created_by_two_apps_at_once(sqlserver_locking)
 
 
 def test_a_key_reused_for_another_quote_or_person_is_refused(book: QuoteBook) -> None:

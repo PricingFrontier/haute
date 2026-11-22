@@ -879,8 +879,11 @@ class QuoteBook:
                 done = self._replayed(connection, operation, actor, "created", None, None)
                 if done is None:
                     return self._insert(connection, operation, actor, values, at, keyed, source)
-        except IntegrityError:
-            # Another creation of the same reference or option, or of the same key, came first.
+        except (IntegrityError, ReferenceTakenError):
+            # Another creation of the same reference or option, or of the same key, came first:
+            # its key is looked up again once it has landed, so a copy of this creation that
+            # committed after the check above is answered as the quote it made, never as a
+            # reference another quote holds.
             again = self.replayed(operation, actor, "created")
             if again is not None:
                 return again
