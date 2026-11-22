@@ -490,6 +490,10 @@ class TestPreCommitChmodWindowsSkip:
         # Force the code path to believe it's running on Windows regardless
         # of the actual host OS.
         monkeypatch.setattr(sys, "platform", "win32")
+        # Git runs through Windows' own process API under that platform, which another
+        # system has not: the hook's record in git's index has tests of its own
+        # (tests/test_cli_init.py::TestTheHookReachesEveryCloneExecutable).
+        monkeypatch.setattr("haute.cli._init_cmd._record_executable_files", lambda _project: None)
 
         chmod_spy = MagicMock(name="Path.chmod")
         with patch("pathlib.Path.chmod", chmod_spy):
