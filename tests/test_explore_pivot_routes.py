@@ -25,7 +25,7 @@ def test_infinite_pivot_dimension_has_a_public_remediation(value: float) -> None
     from haute.routes._pivot_service import PivotContractError, _member_key
 
     with pytest.raises(PivotContractError) as caught:
-        _member_key(value)
+        _member_key(value, "float")
     assert caught.value.failure.reason_code == "invalid_pivot_member"
     assert "infinite" in caught.value.failure.remediation
 
@@ -2221,6 +2221,190 @@ def test_pivot_runtime_members_and_exact_filters_cover_all_persisted_kinds(
         ("datetime", "2024-02-29T12:30:00"),
         ("time", "12:30:00.123456"),
     } <= observed_keys
+
+
+#: Nanoseconds from 1970 to 09:00:00 UTC on 1 March 2024.
+_NINE_AM = 1_709_283_600 * 1_000_000_000
+
+
+@pytest.mark.parametrize(
+    ("dtype", "texts"),
+    [
+        (
+            pl.Datetime("ns"),
+            [
+                "2024-03-01T09:00:00.000000100",
+                "2024-03-01T09:00:00.000000200",
+                "2024-03-01T09:00:01",
+            ],
+        ),
+        (
+            pl.Datetime("ns", "Europe/London"),
+            [
+                "2024-03-01T09:00:00.000000100+00:00",
+                "2024-03-01T09:00:00.000000200+00:00",
+                "2024-03-01T09:00:01+00:00",
+            ],
+        ),
+        (pl.Time(), ["09:00:00.000000100", "09:00:00.000000200", "09:00:01"]),
+    ],
+    ids=["naive", "aware", "time"],
+)
+def test_a_pivot_keeps_the_rows_of_values_that_differ_below_a_microsecond(
+    client: TestClient,
+    tmp_path: Path,
+    dtype: pl.DataType,
+    texts: list[str],
+) -> None:
+    """XPL-03: a pandas-written nanosecond timestamp, grouped as Polars groups it."""
+    physical = [_NINE_AM + 100, _NINE_AM + 200, _NINE_AM + 1_000_000_000]
+    if dtype == pl.Time:
+        physical = [value % (86_400 * 1_000_000_000) for value in physical]
+    path = tmp_path / "nanoseconds.parquet"
+    pl.DataFrame(
+        {
+            "moment": pl.Series(physical, dtype=pl.Int64).cast(dtype),
+            "claims": [100, 200, 300],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    kind = "time" if dtype == pl.Time else "datetime"
+    pivot = _pivot(columns=[], rows=[{"id": "row_1", "field": "moment"}])
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    rows = [path for path in result["row_paths"] if not path["is_grand_total"]]
+    assert [path["members"] for path in rows] == [[{"kind": kind, "value": t}] for t in texts]
+    cells = [_cell(result, [(kind, text)], [], "sum_claims") for text in texts]
+    assert cells == [100, 200, 300]
+    assert _cell(result, None, [], "sum_claims") == sum(cells) == 600
+
+    members = client.post(
+        "/api/explore/pivots/members",
+        json={"graph": graph, "target": _EXPLORE_TARGET, "source": "live", "field": "moment"},
+    ).json()
+    assert members["status"] == "ok", members
+    assert sorted(
+        (member["key"]["value"], member["label"], member["count"]) for member in members["members"]
+    ) == [(text, text, 1) for text in texts]
+    for text, claims in zip(texts, cells, strict=True):
+        final, filtered = _run_pivot(
+            client,
+            graph,
+            _pivot(
+                filters=[
+                    {
+                        "id": "filter_moment",
+                        "field": "moment",
+                        "members": [{"kind": kind, "value": text}],
+                    }
+                ],
+                columns=[],
+                rows=[{"id": "row_1", "field": "moment"}],
+            ),
+        )
+        assert final["status"] == "completed", final
+        assert filtered is not None
+        assert _cell(filtered, [(kind, text)], [], "sum_claims") == claims
+        assert _cell(filtered, None, [], "sum_claims") == claims
+
+    searched = client.post(
+        "/api/explore/pivots/members",
+        json={
+            "graph": graph,
+            "target": _EXPLORE_TARGET,
+            "source": "live",
+            "field": "moment",
+            "search": "00.0000002",
+        },
+    ).json()
+    assert [member["label"] for member in searched["members"]] == [texts[1]]
+
+
+def test_a_min_or_max_of_a_nanosecond_value_keeps_its_nine_digits(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "nanosecond-values.parquet"
+    pl.DataFrame(
+        {
+            "region": ["All", "All"],
+            "year": [2024, 2024],
+            "moment": pl.Series([_NINE_AM + 100, _NINE_AM + 200]).cast(pl.Datetime("ns")),
+            "clock": pl.Series([100, 1_000_000_200]).cast(pl.Time),
+            "wait": pl.Series([100, -86_400_000_000_100]).cast(pl.Duration("ns")),
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    values = [
+        {
+            "id": f"{aggregation}_{field}",
+            "field": field,
+            "aggregation": aggregation,
+            "reference": f"{field}_{aggregation}",
+            "display_name": f"{aggregation} {field}",
+        }
+        for field in ("moment", "clock", "wait")
+        for aggregation in ("min", "max")
+    ]
+    formula = {
+        "id": "latest",
+        "display_name": "Latest",
+        "reference": "latest",
+        "expression": 'pl.col("moment").max()',
+    }
+
+    final, result = _run_pivot(client, graph, _pivot(values=values, formulas=[formula]))
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    cell_of = {
+        value_id: _cell(result, [("string", "All")], [("integer", "2024")], value_id)
+        for value_id in [*(value["id"] for value in values), "latest"]
+    }
+    assert cell_of == {
+        "min_moment": "2024-03-01T09:00:00.000000100",
+        "max_moment": "2024-03-01T09:00:00.000000200",
+        "min_clock": "00:00:00.000000100",
+        "max_clock": "00:00:01.000000200",
+        "min_wait": "-2 days, 23:59:59.999999900",
+        "max_wait": "0:00:00.000000100",
+        "latest": "2024-03-01T09:00:00.000000200",
+    }
+
+
+def test_a_filter_member_finer_than_its_columns_unit_is_refused(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "microseconds.parquet"
+    pl.DataFrame(
+        {
+            "moment": pl.Series([datetime(2024, 3, 1, 9)]).dt.cast_time_unit("us"),
+            "claims": [1.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    member = {"kind": "datetime", "value": "2024-03-01T09:00:00.000000100"}
+
+    final, _ = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            filters=[{"id": "filter_moment", "field": "moment", "members": [member]}],
+            rows=[],
+            columns=[],
+        ),
+    )
+
+    assert final["status"] == "contract_error", final
+    assert final["failure"]["reason_code"] == "invalid_pivot_filter_member"
+    assert "finer than" in final["failure"]["message"]
 
 
 def test_a_member_of_a_time_zone_aware_datetime_filters_its_rows(

@@ -1,7 +1,8 @@
 /** The one check of each ISO 8601 calendar form the browser validates. */
 
 const DAY = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/
-const TIME = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/
+/** Up to nine fraction digits: a nanosecond datetime or time keeps its whole value. */
+const TIME = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})?$/
 
 /**
  * A real calendar day written YYYY-MM-DD, from year 1 (the Gregorian calendar

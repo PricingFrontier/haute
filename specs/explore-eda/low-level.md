@@ -9,6 +9,7 @@
 | `src/haute/_frame_profile.py` | The data profile computation itself: per-column statistics and the overview summary (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`), independent of any node or cache. |
 | `src/haute/routes/_pivot_service.py` | Pivot service: resolves the Explore node's shared data point, leases it for the whole calculation, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by `(point digest, data version, calculation identity)`. Members answer inside the request through the shared synchronous-analysis helper. |
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
+| `src/haute/_temporal_text.py` | `temporal_text`: the exact text of a datetime, time or duration value, written inside the query at the column's own precision, so a value never reaches Python as a `datetime`, `time` or `timedelta`, which hold only microseconds. Python's spelling extended to nanoseconds: no fraction for a whole second, six digits for a whole microsecond and nine otherwise; an aware datetime carries its offset (with its seconds when it has any, as an old local mean time does); a duration reads as `str(timedelta)` does, with three more digits for a part-microsecond. A `separator` joins a datetime's day and time: `"T"` (ISO 8601) for pivot members and cells, `" "` (as `str(datetime)` writes it) for the profile. The pivot and the profile both write temporal text through it and nowhere else. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
 | `src/haute/_explore_chart_contracts.py` | Canonical Pydantic structural authority for version-1 PivotChart cards and their nested category, value, series, style, axes, and legend models. It accepts only finite recursive JSON extension values and owns field shape, required values, literals, and scalar bounds; model validators own Python-side identity, stack, and axis relationships. |
@@ -199,9 +200,13 @@
   null, while `count` and `distinct_count` return integer zero. Result normalisation preserves
   finite JSON scalar types, renders Decimal exactly, renders integers beyond JavaScript's exact
   range (|value| > 2^53 − 1) as canonical decimal strings so a JS client cannot silently round
-  them, uses ISO strings for date/time values, lossily decodes Binary as UTF-8, and renders
-  Duration with `str(timedelta)`. Row and column grand totals are explicit paths assembled from
-  the same filtered frame.
+  them, writes a date as its ISO text, lossily decodes Binary as UTF-8, and writes every
+  datetime, time and duration in a collected result, whether a row or column key, a Value or a
+  formula's output, through `temporal_text` (separator `"T"`) before its rows reach Python
+  (`_exact_rows`), so a nanosecond value keeps all nine digits and two values that differ below
+  a microsecond stay two rows. A `datetime`, `time` or `timedelta` reaching cell normalisation
+  is a defect and raises. Row and column grand totals are explicit paths assembled from the same
+  filtered frame.
 - `options.sort_by` is null or the placement id of exactly one Row/Value. A missing field on an
   older v1 card derives the active Value id when one `sort_rows` direction exists, otherwise null.
   Row paths are compared level-by-level: only a selected Row uses its persisted `sort` direction,
@@ -213,14 +218,23 @@
   direction; Row/default sorting requires every Value direction to be none.
 - A typed member key uses closed kinds `null|string|boolean|integer|float|nan|date|datetime|time|decimal`.
   Integer and decimal payloads are canonical decimal strings, temporal payloads are ISO strings,
-  finite floats are JSON numbers, and null/NaN carry `value: null`. The members endpoint returns
-  a display label and count beside the key, sorted by count descending then typed canonical key.
-  A time-zone-aware `Datetime` member carries its offset; the filter literal is built in the
-  column's own dtype (unit and time zone), so it compares as the same instant. A member whose
-  awareness differs from the column's (an offset against a naive column, or none against an
-  aware one) is refused as `invalid_pivot_filter_member`. An aware member is converted through
-  UTC into the column's zone, so both occurrences of a local time the clocks repeat (the hour
-  daylight saving ends) keep their own instants.
+  finite floats are JSON numbers, and null/NaN carry `value: null`. A key is made from its
+  column's kind and the column's own value (`_member_key(value, kind)`), never from the type of
+  a Python object: a datetime or time payload is the `temporal_text` the query wrote, so it
+  keeps the column's whole fraction, up to nine digits, and rows, members and filters that
+  differ below a microsecond stay apart; both validators (`_TIME_PATTERN` and the browser's
+  `isTime`) accept one to nine fraction digits. The members endpoint returns a display label
+  and count beside the key, sorted by count descending then typed canonical key; a member search
+  of a datetime or time field matches the same text the label shows.
+  A datetime or time filter literal is built from the member text as the column's physical
+  integer, in its own unit and time zone (`_temporal_literal`), never through a Python
+  `datetime`, so it compares as exactly the value the member names. A time-zone-aware
+  `Datetime` member carries its offset and names its instant through it, so both occurrences
+  of a local time the clocks repeat (the hour daylight saving ends) keep their own instants. A
+  member whose awareness differs from the column's (an offset against a naive column, or none
+  against an aware one), a time member with an offset, and a member with a fraction finer than
+  its column's unit (nanoseconds against a microsecond column) are refused as
+  `invalid_pivot_filter_member`: no value of the column could equal it.
 - Explore materialisation and pivot calculation share the Explore job-store namespace, and every
   job record carries its owning kind: `kind: "explore"` for materialisation jobs and
   `kind: "pivot"` for pivot jobs. Each service's status and cancel reject a job id whose kind it
@@ -363,6 +377,10 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
      aliased `categorical_label_groups::{name}`.
    - text-like dtypes additionally aggregate min/mean/max display-label character length;
      temporal dtypes aggregate `max - min` as a duration-like span.
+   - A datetime, time or duration column's min and max, and every temporal span, are written
+     as text inside the query by `temporal_text` (separator `" "`, as `str(datetime)` writes
+     it), after the aggregation, so they keep the column's whole fraction instead of a
+     Python `datetime`'s six digits.
 2. The shared I/O-layer helper
    `cancellable_streaming_collect(lf.select(aggregations), execution_context=execution_context)`
    checkpoints before starting native work, then calls
@@ -478,7 +496,8 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   weighted mean, so a large mean cannot round the variance away; it is clamped to [0, 1] and is 0
   when the centred spread is below 1e-12 of the target's scale. Relationships are ranked by
   strength, then feature name. Categorical labels use the profile's `categorical_label_expr`
-  (Binary decoded leniently, Duration formatted), so every groupable dtype the pane offers works.
+  (Binary decoded leniently; datetimes, times and durations written exactly by `temporal_text`),
+  so every groupable dtype the pane offers works and no two levels the column holds apart merge.
 - **Internal columns and query count.** The weight and weighted-target columns added beside the
   data are named `__w` and `__wy`, prefixed with underscores until neither is a column of the
   data, so a target or weight with either name is read as data. A question reads the data in a
@@ -517,12 +536,13 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   `map_elements(_lossy_decode_binary, ...)` instead of `cast(pl.String)`; undecodable bytes
   become `"�"` (the invariant under test in
   `test_build_frame_stats_survives_non_utf8_binary_column`).
-- **Duration columns**: `map_elements(_format_duration, ...)` (i.e. `str(timedelta)`) instead of
-  `cast`, because Polars cannot cast `Duration` to `String`; the same formatting is reused for
-  min/max display via `_STRING_MIN_MAX_DTYPE_BASES` *not* including `Duration`, so Duration
-  min/max go through the generic `_format_display_value(str(value))` path and happen to produce
-  identical text to the value-count labels (documented as intentional, not incidental, in the
-  module docstring of `_format_duration`).
+- **Datetime, time and duration columns**: `categorical_label_expr` writes them with
+  `temporal_text` (separator `" "`), the same text as their min and max, instead of
+  `cast(pl.String)`: Polars cannot cast a `Duration` to `String` at all, its `Time` cast drops
+  the whole fraction (1.5 s and 1.7 s would both count as `00:00:01`), and a Python
+  `timedelta` holds only microseconds. Value counts, display-label group counts and the
+  relationship levels built from the same labels therefore never merge two values the column
+  holds apart.
 - **Boolean columns**: cast to `String` for both min/max and value counts
   (`_STRING_MIN_MAX_DTYPE_BASES` includes `pl.Boolean`) so `"true"`/`"false"` display identically
   in the Schema and Categorical cards, instead of Python's `str(bool)` capitalisation.
@@ -608,7 +628,8 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   the full data-quality summary issue set and ordering, bounded categorical value counts
   (including exactly-50 and >50 truncation boundaries), unsupported (nested/list) categorical
   profiles, the `count`-named-column aliasing collision guard, Binary/Duration lenient
-  formatting, and sequential bounded-width batches (call-count assertion plus query-plan
+  formatting, Time, nanosecond Datetime and Duration values that differ below a second or a
+  microsecond counted apart with their min, max and span written to the nanosecond, and sequential bounded-width batches (call-count assertion plus query-plan
   inspection for absence of `UNION`/`CACHE`). The three-way missingness split added: NaN counts
   populated only for float columns (`test_build_frame_stats_reports_nan_counts_for_float_columns_only`),
   the NaN data-quality issue and its danger/warning severity threshold
@@ -655,7 +676,12 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   integer, finite float, decimal, date, datetime, and time), dtype-mismatch failures, and
   unsupported dimension/value dtypes rather than stopping at config validation, and a
   `Europe/London` datetime member filters its row while a naive member against that column is
-  refused. An invalid card answers HTTP 400 naming its field; each formula failure kind answers
+  refused. Nanosecond datetimes and times that differ below a microsecond are separate rows,
+  members and filters whose rows sum to the Total, a Max of each and of a nanosecond duration
+  keeps its nine digits, a member search matches the label's text, and a member finer than
+  its column's unit is refused. `tests/test_temporal_text.py` checks `temporal_text` against
+  Python's own `isoformat()` and `str(timedelta)` wherever Python holds the value, across
+  units and zones, and pins the nine-digit forms and an offset with seconds. An invalid card answers HTTP 400 naming its field; each formula failure kind answers
   its exact message; a memory limit during a formula pivot ends `memory_limited`; and a copied
   Explore node served the first node's cached matrix is answered under its own id. The four hard
   bounds (row groups, column groups, displayed cells, and filter members) are each pinned at and

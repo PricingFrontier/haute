@@ -22,4 +22,11 @@ describe("isoDate", () => {
     expect(isDateTime("2023-02-29T08:30:00")).toBe(false)
     expect(isDateTime("T08:30:00")).toBe(false)
   })
+
+  it("keeps a nanosecond fraction, nine digits at most", () => {
+    expect(isTime("09:00:00.000000100")).toBe(true)
+    expect(isDateTime("2024-03-01T09:00:00.000000100+00:00")).toBe(true)
+    expect(isTime("09:00:00.0000001000")).toBe(false)
+    expect(isTime("09:00:00.")).toBe(false)
+  })
 })

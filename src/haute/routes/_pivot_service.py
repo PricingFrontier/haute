@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ast
 import math
+import re
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
@@ -52,6 +53,7 @@ from haute._polars_dtypes import TEXT_KINDS, ColumnKind, column_kind, integer_ra
 from haute._polars_utils import cancellable_streaming_collect
 from haute._project_context import context_thread, current_project
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
+from haute._temporal_text import TEMPORAL_TEXT_KINDS, temporal_text
 from haute.errors import ConfigError, InvalidRequestError, NotFoundError
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -174,12 +176,17 @@ TypedMemberTuple = tuple[ExplorePivotMemberKind, str | float | int | bool | None
 TypedPathTuple = tuple[TypedMemberTuple, ...]
 
 
-def _member_key(value: Any) -> ExplorePivotMemberKey:
-    """Encode one Polars scalar without collapsing typed missing values."""
+def _member_key(value: Any, column: ColumnKind) -> ExplorePivotMemberKey:
+    """Encode one value of a column of kind *column*, as :func:`_exact_rows` reads it.
+
+    The kind comes from the column, never from the Python object: a datetime or time
+    arrives as the exact text Polars wrote, which a Python ``datetime`` (microseconds)
+    could not hold.
+    """
 
     if value is None:
         return ExplorePivotMemberKey(kind="null", value=None)
-    if isinstance(value, float):
+    if column == "float":
         if math.isnan(value):
             return ExplorePivotMemberKey(kind="nan", value=None)
         if not math.isfinite(value):
@@ -189,19 +196,19 @@ def _member_key(value: Any) -> ExplorePivotMemberKey:
                 "Clean infinite dimension values before building the pivot.",
             )
         return ExplorePivotMemberKey(kind="float", value=value)
-    if isinstance(value, bool):
+    if column == "boolean":
         return ExplorePivotMemberKey(kind="boolean", value=value)
-    if isinstance(value, int):
+    if column == "integer":
         return ExplorePivotMemberKey(kind="integer", value=str(value))
-    if isinstance(value, Decimal):
+    if column == "decimal":
         return ExplorePivotMemberKey(kind="decimal", value=str(value))
-    if isinstance(value, datetime):
-        return ExplorePivotMemberKey(kind="datetime", value=value.isoformat())
-    if isinstance(value, date):
+    if column == "datetime":
+        return ExplorePivotMemberKey(kind="datetime", value=value)
+    if column == "time":
+        return ExplorePivotMemberKey(kind="time", value=value)
+    if column == "date":
         return ExplorePivotMemberKey(kind="date", value=value.isoformat())
-    if isinstance(value, datetime_time):
-        return ExplorePivotMemberKey(kind="time", value=value.isoformat())
-    if isinstance(value, str):
+    if column in TEXT_KINDS:
         return ExplorePivotMemberKey(kind="string", value=value)
     raise PivotContractError(
         "invalid_pivot_field",
@@ -211,13 +218,27 @@ def _member_key(value: Any) -> ExplorePivotMemberKey:
     )
 
 
-def _member_tuple(value: Any) -> TypedMemberTuple:
-    key = _member_key(value)
-    return key.kind, key.value
+def _exact_rows(frame: pl.DataFrame) -> Iterator[dict[str, Any]]:
+    """The rows of a collected result, each datetime, time and duration as its exact text.
+
+    Python's ``datetime``, ``time`` and ``timedelta`` hold microseconds, so a nanosecond
+    value read into one would merge with its neighbours: two rows of a pivot would become
+    one key, and a cell would lose digits. Every row a pivot reads goes through here.
+    """
+    exact = frame.with_columns(
+        temporal_text(pl.col(name), dtype).alias(name)
+        for name, dtype in frame.schema.items()
+        if column_kind(dtype) in TEMPORAL_TEXT_KINDS
+    )
+    return exact.iter_rows(named=True)
 
 
-def _path_tuple(row: Mapping[str, Any], fields: Sequence[str]) -> TypedPathTuple:
-    return tuple(_member_tuple(row[field]) for field in fields)
+def _path_tuple(
+    row: Mapping[str, Any], fields: Sequence[str], kinds: Mapping[str, ColumnKind]
+) -> TypedPathTuple:
+    return tuple(
+        (key.kind, key.value) for key in (_member_key(row[field], kinds[field]) for field in fields)
+    )
 
 
 def _path_model(path: TypedPathTuple) -> ExplorePivotPath:
@@ -373,11 +394,73 @@ def _member_literal(member: ExplorePivotMember) -> Any:
         return Decimal(cast(str, value))
     if kind == "date":
         return date.fromisoformat(cast(str, value))
-    if kind == "datetime":
-        return datetime.fromisoformat(cast(str, value))
-    if kind == "time":
-        return datetime_time.fromisoformat(cast(str, value))
     return value
+
+
+#: A datetime or time member ``validate_explore_pivots`` accepted: its whole seconds, the
+#: fraction's digits, and an offset.
+_TEMPORAL_MEMBER = re.compile(
+    r"(?P<whole>.*?[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.(?P<fraction>[0-9]{1,9}))?"
+    r"(?P<offset>Z|[+-][0-9]{2}:[0-9]{2})?"
+)
+_NAIVE_EPOCH = datetime(1970, 1, 1)
+_AWARE_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_UNITS_PER_SECOND = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+_NANOSECONDS_PER_SECOND = 1_000_000_000
+
+
+def _filter_member_refusal(field: str, kind: str, message: str) -> PivotContractError:
+    return PivotContractError(
+        "invalid_pivot_filter_member",
+        message,
+        "Refresh the filter members and choose a value for this field.",
+        field=field,
+        member_kind=kind,
+    )
+
+
+def _temporal_literal(field: str, dtype: pl.DataType, member: ExplorePivotMember) -> pl.Expr:
+    """A datetime or time member as a literal of its column's own type, exactly.
+
+    The literal is the column's physical integer, read from the member's text, never a
+    Python ``datetime`` or ``time``: those hold microseconds and would drop a nanosecond
+    member's last three digits, matching a neighbour or nothing.
+    """
+    kind = member["kind"]
+    text = cast(str, member["value"])
+    parts = _TEMPORAL_MEMBER.fullmatch(text)
+    if parts is None:
+        raise AssertionError(f"validate_explore_pivots accepted {kind} member {text!r}")
+    fraction = int((parts["fraction"] or "").ljust(9, "0"))
+    if kind == "time":
+        if parts["offset"]:
+            raise _filter_member_refusal(
+                field, kind, f"Filter member {text} has a time zone, which field '{field}' has not."
+            )
+        clock = datetime_time.fromisoformat(parts["whole"])
+        seconds = (clock.hour * 60 + clock.minute) * 60 + clock.second
+        return pl.lit(seconds * _NANOSECONDS_PER_SECOND + fraction, dtype=pl.Int64).cast(pl.Time)
+    datetime_dtype = cast(pl.Datetime, dtype)
+    moment = datetime.fromisoformat(parts["whole"] + (parts["offset"] or ""))
+    if (moment.tzinfo is None) != (datetime_dtype.time_zone is None):
+        raise _filter_member_refusal(
+            field, kind, f"Filter member {text} does not match the time zone of field '{field}'."
+        )
+    per_second = _UNITS_PER_SECOND[datetime_dtype.time_unit]
+    step = _NANOSECONDS_PER_SECOND // per_second
+    if fraction % step:
+        raise _filter_member_refusal(
+            field,
+            kind,
+            f"Filter member {text} is finer than field '{field}' holds "
+            f"({datetime_dtype.time_unit}).",
+        )
+    # An aware member names its instant through its offset, so both occurrences of a
+    # local time the clocks repeat keep their own: the physical value is UTC.
+    epoch = _NAIVE_EPOCH if moment.tzinfo is None else _AWARE_EPOCH
+    seconds = (moment - epoch) // timedelta(seconds=1)
+    physical = seconds * per_second + fraction // step
+    return pl.lit(physical, dtype=pl.Int64).cast(datetime_dtype)
 
 
 def _filter_member_expression(
@@ -387,42 +470,17 @@ def _filter_member_expression(
 ) -> pl.Expr:
     kind = member["kind"]
     if not _member_kind_matches_dtype(kind, dtype):
-        raise PivotContractError(
-            "invalid_pivot_filter_member",
-            f"Filter member kind '{kind}' does not match field '{field}'.",
-            "Refresh the filter members and choose a value for this field.",
-            field=field,
-            member_kind=kind,
+        raise _filter_member_refusal(
+            field, kind, f"Filter member kind '{kind}' does not match field '{field}'."
         )
     column = pl.col(field)
     if kind == "null":
         return column.is_null()
     if kind == "nan":
         return column.is_nan()
-    literal = _member_literal(member)
-    if kind == "datetime":
-        # The literal takes the column's time zone and unit: an offset-carrying
-        # member is otherwise typed UTC, which Polars refuses to compare.
-        datetime_dtype = cast(pl.Datetime, dtype)
-        time_zone = datetime_dtype.time_zone
-        if (literal.tzinfo is None) != (time_zone is None):
-            raise PivotContractError(
-                "invalid_pivot_filter_member",
-                f"Filter member {member['value']} does not match the time zone of field '{field}'.",
-                "Refresh the filter members and choose a value for this field.",
-                field=field,
-                member_kind=kind,
-            )
-        if time_zone is None:
-            return column.eq(pl.lit(literal, dtype=dtype))
-        # Through UTC, so each occurrence of a local time the clocks repeat
-        # keeps its own instant: the ISO text carries the offset, not the fold.
-        return column.eq(
-            pl.lit(literal.astimezone(UTC))
-            .dt.convert_time_zone(time_zone)
-            .dt.cast_time_unit(datetime_dtype.time_unit)
-        )
-    return column.eq(pl.lit(literal))
+    if kind in {"datetime", "time"}:
+        return column.eq(_temporal_literal(field, dtype, member))
+    return column.eq(pl.lit(_member_literal(member)))
 
 
 def _unique_filter_members(members: Sequence[ExplorePivotMember]) -> list[ExplorePivotMember]:
@@ -639,9 +697,9 @@ def _normalise_cell(value: Any, warnings: set[str]) -> str | float | int | bool 
         return str(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).decode("utf-8", errors="replace")
-    if isinstance(value, timedelta):
-        return str(value)
-    if isinstance(value, (datetime, date, datetime_time)):
+    if isinstance(value, (datetime, datetime_time, timedelta)):
+        raise AssertionError(f"a pivot cell read a {type(value).__name__} past _exact_rows")
+    if isinstance(value, date):
         return value.isoformat()
     raise PivotContractError(
         "invalid_pivot_result",
@@ -1183,8 +1241,9 @@ class PivotService:
         warnings: set[str],
     ) -> dict[TypedPathTuple, tuple[str | float | int | bool | None, ...]]:
         result: dict[TypedPathTuple, tuple[str | float | int | bool | None, ...]] = {}
-        for row in frame.iter_rows(named=True):
-            path = _path_tuple(row, group_fields)
+        kinds = {field: column_kind(frame.schema[field]) for field in group_fields}
+        for row in _exact_rows(frame):
+            path = _path_tuple(row, group_fields, kinds)
             result[path] = tuple(
                 _normalise_cell(row[_value_alias(value["id"])], warnings)
                 for value in [*values, *formulas]
@@ -1298,18 +1357,15 @@ class PivotService:
                 schema,
                 context,
             )
-            base = self._aggregate_map(
-                base_frame,
-                self._unique_fields([*row_fields, *column_fields]),
-                values,
-                formulas,
-                warnings,
-            )
-            row_members: set[TypedPathTuple] = set()
-            column_members: set[TypedPathTuple] = set()
-            for row in base_frame.iter_rows(named=True):
-                row_members.add(_path_tuple(row, row_fields))
-                column_members.add(_path_tuple(row, column_fields))
+            base_fields = self._unique_fields([*row_fields, *column_fields])
+            base = self._aggregate_map(base_frame, base_fields, values, formulas, warnings)
+            # Each Rows and Columns path is read from the keys just made, so it is the
+            # same exact member the cells are keyed by.
+            position = {field: index for index, field in enumerate(base_fields)}
+            row_members = {tuple(path[position[field]] for field in row_fields) for path in base}
+            column_members = {
+                tuple(path[position[field]] for field in column_fields) for path in base
+            }
             row_paths = list(row_members)
             column_paths = sorted(column_members, key=_path_sort_key)
 
@@ -1511,9 +1567,14 @@ class PivotService:
                 .otherwise(column.cast(pl.String))
             )
         else:
-            label = (
-                pl.when(column.is_null()).then(pl.lit("(blank)")).otherwise(column.cast(pl.String))
+            # A datetime or time is searched in the text its label shows, which a String cast
+            # spells another way (and, for a time, without its fraction).
+            text = (
+                temporal_text(column, dtype)
+                if column_kind(dtype) in TEMPORAL_TEXT_KINDS
+                else column.cast(pl.String)
             )
+            label = pl.when(column.is_null()).then(pl.lit("(blank)")).otherwise(text)
         # ``str.lower()`` mirrors Polars ``str.to_lowercase`` on the column side;
         # ``casefold()`` would be stricter than the column transform and could
         # match queries the column expression never produces.
@@ -1601,8 +1662,10 @@ class PivotService:
             execution_context=context,
         )
         options = []
-        for value, count in grouped.iter_rows():
-            member_key = _member_key(value)
+        kind = column_kind(schema[body.field])
+        for row in _exact_rows(grouped):
+            member_key = _member_key(row[body.field], kind)
+            count = row["__haute_count"]
             options.append(
                 ExplorePivotMemberOption(
                     key=member_key,

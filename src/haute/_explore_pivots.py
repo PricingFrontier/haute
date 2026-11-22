@@ -45,8 +45,9 @@ _REFERENCE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
 _DECIMAL_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?\Z")
 _DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+#: Up to nine fraction digits: a nanosecond datetime or time member keeps its whole value.
 _TIME_PATTERN = re.compile(
-    r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})?\Z"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})?\Z"
 )
 _MISSING = object()
 
