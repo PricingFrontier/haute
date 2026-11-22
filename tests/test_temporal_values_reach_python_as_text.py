@@ -117,23 +117,36 @@ def _readers() -> Counter[tuple[str, str]]:
         relative = path.relative_to(SOURCE).as_posix()
         if relative == "_temporal_text.py":
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        _visit(tree, relative, "<module>", found)
+        _scan(ast.parse(path.read_text(encoding="utf-8")), relative, found)
     return found
 
 
+def _scan(tree: ast.Module, relative: str, found: Counter[tuple[str, str]]) -> None:
+    """Count one module's unexact row reads: its own at module level and every function's."""
+    _count_reads(tree, relative, "<module>", found)
+    _visit(tree, relative, "<module>", found)
+
+
 def _visit(node: ast.AST, relative: str, scope: str, found: Counter[tuple[str, str]]) -> None:
+    """Count the unexact row reads of every function and class under *node*, however deep:
+    a function defined inside an ``if``, a ``with`` or a ``try`` is found too."""
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             inner = child.name if scope == "<module>" else f"{scope}.{child.name}"
             if not isinstance(child, ast.ClassDef):
-                for call in _own_calls(child):
-                    assert isinstance(call.func, ast.Attribute)
-                    if not _exact(call.func.value):
-                        found[(relative, inner)] += 1
+                _count_reads(child, relative, inner, found)
             _visit(child, relative, inner, found)
-        elif scope == "<module>":
+        else:
             _visit(child, relative, scope, found)
+
+
+def _count_reads(
+    owner: ast.AST, relative: str, scope: str, found: Counter[tuple[str, str]]
+) -> None:
+    for call in _own_calls(owner):
+        assert isinstance(call.func, ast.Attribute)
+        if not _exact(call.func.value):
+            found[(relative, scope)] += 1
 
 
 def _own_nodes(function: ast.AST) -> list[ast.AST]:
@@ -196,7 +209,8 @@ def _exact(node: ast.AST) -> bool:
 
 def test_the_guard_sees_through_no_read_that_only_looks_exact() -> None:
     """Codex review: a chain that can add a column, a name read before its conversion or
-    changed after it, and a read inside a lambda are each reported."""
+    changed after it, a read inside a lambda, a function defined inside an ``if`` and a read
+    at module level are each reported."""
     source = """
 def joined(left, right):
     return with_temporal_text(left).join(right, on="id").to_dicts()
@@ -217,17 +231,28 @@ def mutated(frame, timestamps):
 def in_a_lambda(frames):
     return list(map(lambda frame: frame.to_dicts(), frames))
 
+def conditional(frame, include_details):
+    if include_details:
+        def render(rows):
+            return rows.to_dicts()
+        return render(frame)
+    return []
+
+rows_at_import = FRAME.to_dicts()
+
 def kept(frame):
     return with_temporal_text(frame).head(5).to_dicts(), with_temporal_text(frame).rows()
 """
     found: Counter[tuple[str, str]] = Counter()
-    _visit(ast.parse(source), "example.py", "<module>", found)
+    _scan(ast.parse(source), "example.py", found)
     assert dict(found) == {
         ("example.py", "joined"): 1,
         ("example.py", "read_before"): 1,
         ("example.py", "selected"): 1,
         ("example.py", "mutated"): 1,
         ("example.py", "in_a_lambda"): 1,
+        ("example.py", "conditional.render"): 1,
+        ("example.py", "<module>"): 1,
     }
 
 
