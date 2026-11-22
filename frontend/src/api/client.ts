@@ -925,6 +925,9 @@ export interface ScopedNodeSaveRequest {
   savedSteps: string | null
   /** The node's settings as saved, when they were not edited: the node is written from them. */
   savedSettings: string | null
+  /** The node's settings as saved, when they were edited: each number the edit left as it was
+   * keeps the spelling they give it. */
+  settingsEditedFrom: string | null
 }
 
 /** Save one `scoped_editable` node in isolation while the document stays fenced. */
@@ -941,6 +944,7 @@ export function saveNodeScoped(
     saved_code: args.savedCode,
     saved_steps: args.savedSteps,
     saved_settings: args.savedSettings,
+    settings_edited_from: args.settingsEditedFrom,
   }, options, parsePipelineEditorDocument, "saveNodeScoped")
 }
 
@@ -1854,6 +1858,8 @@ export interface SolveOptimiserArgs {
   graph: PreparedGraph
   /** The optimiser node, by address. */
   target: NodeAddressPayload
+  /** The toolbar's active source; under `live` the solve runs on the one non-live source. */
+  source: string
   signal?: AbortSignal
   timeout?: number
 }
@@ -1944,6 +1950,8 @@ export interface StartOptimiserFrontierAutoRangeArgs {
   graph: PreparedGraph
   /** The optimiser node, by address. */
   target: NodeAddressPayload
+  /** The toolbar's active source, as a solve takes it. */
+  source: string
   signal?: AbortSignal
   timeout?: number
 }

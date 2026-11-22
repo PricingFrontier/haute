@@ -1364,7 +1364,6 @@ def test_optimiser_execute_pipeline_forwards_execution_context() -> None:
     with (
         contextlib.ExitStack() as resources,
         patch("haute.routes._optimiser_service.execute_lazy_graph", side_effect=fake_execute_lazy),
-        patch("haute.executor._resolve_batch_scenario", return_value="batch"),
         patch("haute.executor._compile_preamble", return_value={}),
     ):
         service._execute_pipeline(

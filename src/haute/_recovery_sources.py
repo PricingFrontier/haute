@@ -156,6 +156,7 @@ def read_raw_node_settings(
             raw,
             function.name,
             node_type,
+            inputs=params,
             declaration=body_dropped or is_declaration_body(body),
         )
         if not body_dropped and holds_incomplete_steps_placeholder(body):

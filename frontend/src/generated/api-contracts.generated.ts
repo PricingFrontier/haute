@@ -969,11 +969,14 @@ export interface RecoveryPipelineNode {
  * CGEN-13): an editor document gives them for each of its nodes, and a request that
  * carries the document sends them back for each part its editor did not edit. The
  * request reads them before the node is built, so a built node never carries one.
+ * Edited settings are sent with ``settings_edited_from``, the saved settings the edit began
+ * from, which keeps the spelling of each number the edit left as it was (CGEN-09).
  */
 export interface NodeEditorState {
   saved_code?: string;
   saved_settings?: string;
   saved_steps?: string;
+  settings_edited_from?: string;
   steps_discarded: string | null;
   steps_error: string | null;
 }
@@ -3019,6 +3022,7 @@ export interface SavedNodeParts {
 }
 export interface CreateSubmodelResponse {
   graph: PipelineGraph;
+  moved: MovedNode[];
   parent_file: string;
   source_revision: string;
   status: string;
@@ -4896,10 +4900,24 @@ export interface SubmodelOutputPort {
   name: string;
   source: SubmodelEndpoint;
 }
+/**
+ * A node a graph change moved: its scope and id in the request and in the answer.
+ *
+ * A scope is a submodel definition's id, ``None`` for the pipeline's own nodes. The editor
+ * finds a moved node's saved baseline through it (codegen high-level, "Which parts a
+ * request reads").
+ */
+export interface MovedNode {
+  from_node_id: string;
+  from_submodel: string | null;
+  to_node_id: string;
+  to_submodel: string | null;
+}
 export interface CreateNodeInstanceResponse {
   definition_id: string;
   graph: PipelineGraph;
   instance_name: string;
+  moved: MovedNode[];
   owner_name: string;
   source_revision: string;
   status: string;
@@ -4915,6 +4933,7 @@ export interface DissolveSubmodelResponse {
   definition_id: string;
   graph: PipelineGraph;
   instance_id: string;
+  moved: MovedNode[];
   source_revision: string;
   status: string;
 }

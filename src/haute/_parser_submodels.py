@@ -17,7 +17,6 @@ from typing import TypeVar
 
 from haute._ast_helpers import (
     _chained_receiver_calls,
-    _constructor_call,
     _extract_connect_calls,
     _extract_global_constants_declaration,
     _extract_preamble,
@@ -25,6 +24,7 @@ from haute._ast_helpers import (
     _extract_submodel_meta,
     _is_submodel_authored_decorator,
     _reject_reserved_global_constants_bindings,
+    constructor_arguments,
     is_submodel_import,
 )
 from haute._config_validation import camel_case_endpoint_message
@@ -424,12 +424,12 @@ def extract_submodel_registrations(
     return registrations
 
 
-def _submodel_constructor(tree: ast.Module) -> ast.Call:
-    """The module-level ``submodel = haute.Submodel(...)`` call."""
-    call = _constructor_call(tree, "submodel")
-    if call is None:
+def _submodel_arguments(tree: ast.Module) -> dict[str, ast.expr]:
+    """The module-level ``submodel = haute.Submodel(...)`` call's arguments, by parameter."""
+    arguments = constructor_arguments(tree, "submodel")
+    if arguments is None:
         raise ParseError("Submodel source must assign a haute.Submodel constructor.")
-    return call
+    return arguments
 
 
 def _validate_pipeline_dir(tree: ast.Module, source_file: str, base_dir: Path | None) -> None:
@@ -439,18 +439,16 @@ def _validate_pipeline_dir(tree: ast.Module, source_file: str, base_dir: Path | 
     value that disagrees with where the file sits fails here rather than
     reading another pipeline's sidecars.
     """
-    keywords = [kw for kw in _submodel_constructor(tree).keywords if kw.arg == "pipeline_dir"]
-    if len(keywords) > 1:
-        raise ParseError("Submodel constructor contains a duplicate keyword.", field="pipeline_dir")
+    node = _submodel_arguments(tree).get("pipeline_dir")
     value: object = "."
-    if keywords:
+    if node is not None:
         try:
-            value = ast.literal_eval(keywords[0].value)
+            value = ast.literal_eval(node)
         except (SyntaxError, ValueError) as exc:
             raise ParseError(
                 "Submodel pipeline_dir must be a literal value.",
                 field="pipeline_dir",
-                line=getattr(keywords[0].value, "lineno", None),
+                line=getattr(node, "lineno", None),
             ) from exc
     if not is_pipeline_dir(value):
         raise ParseError(
@@ -487,30 +485,18 @@ def _extract_definition_contract(
     list[SubmodelOutputPort],
 ]:
     """Return the required literal identity and public ports."""
-    constructor = _submodel_constructor(tree)
+    arguments = _submodel_arguments(tree)
     values: dict[str, object] = {}
-    for keyword in constructor.keywords:
-        if keyword.arg == "outputs":
-            raise ParseError(
-                "Submodel outputs is not supported; declare input_ports and output_ports.",
-                field="outputs",
-                line=getattr(keyword.value, "lineno", None),
-            )
-        if keyword.arg not in {"definition_id", "input_ports", "output_ports"}:
+    for field in ("definition_id", "input_ports", "output_ports"):
+        if field not in arguments:
             continue
-        if keyword.arg in values:
-            raise ParseError(
-                "Submodel constructor contains a duplicate keyword.",
-                field=keyword.arg,
-                line=getattr(keyword.value, "lineno", None),
-            )
         try:
-            values[keyword.arg] = ast.literal_eval(keyword.value)
+            values[field] = ast.literal_eval(arguments[field])
         except (SyntaxError, ValueError) as exc:
             raise ParseError(
-                f"Submodel {keyword.arg} must be a literal value.",
-                field=keyword.arg,
-                line=getattr(keyword.value, "lineno", None),
+                f"Submodel {field} must be a literal value.",
+                field=field,
+                line=getattr(arguments[field], "lineno", None),
             ) from exc
 
     missing_fields = sorted({"definition_id", "input_ports", "output_ports"} - set(values))

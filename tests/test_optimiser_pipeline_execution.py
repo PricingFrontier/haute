@@ -551,14 +551,16 @@ class TestExecutePipelineArgs:
         }
 
     def test_execute_pipeline_passes_scenario_and_seed_plan(self, scored_data):
-        """The lazy execution receives scenario != 'live', the run's seed plan, and preamble_ns."""
+        """The lazy execution receives the request's source, its seed plan, and preamble_ns."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
 
         graph_dict = _make_optimiser_graph(scored_data)
-        body = optimiser_request(OptimiserSolveRequest, graph_dict)
+        body = optimiser_request(OptimiserSolveRequest, graph_dict).model_copy(
+            update={"source": "ism_scenario"}
+        )
 
         store = JobStore()
         service = OptimiserSolveService(store)
@@ -585,17 +587,13 @@ class TestExecutePipelineArgs:
                 side_effect=fake_execute_lazy,
             ),
             patch(
-                "haute.executor._resolve_batch_scenario",
-                return_value="ism_scenario",
-            ),
-            patch(
                 "haute.executor._compile_preamble",
                 return_value={"helper": lambda x: x},
             ),
         ):
             service._execute_pipeline(body, job_id, resources)
 
-        # source should come from _resolve_batch_scenario (not default "batch")
+        # the request names a source that is not live: the run routes on it
         assert captured["source"] == "ism_scenario"
         # preamble_ns is the dict returned by _compile_preamble
         assert captured["preamble_ns"] is not None
@@ -638,7 +636,6 @@ class TestExecutePipelineArgs:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             service._execute_pipeline(
@@ -768,7 +765,6 @@ class TestExecutePipelineArgs:
                     missing=["volume"],
                 ),
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(RequestRefusedError) as exc_info:
@@ -820,7 +816,7 @@ class TestExecutePipelineArgs:
         }
 
     def test_execute_pipeline_defaults_to_batch_when_no_ism(self, scored_data):
-        """When _resolve_batch_scenario returns None, scenario defaults to 'batch'."""
+        """With no Source Switch, a solve under live routes on 'batch'."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -850,7 +846,6 @@ class TestExecutePipelineArgs:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             service._execute_pipeline(body, job_id, resources)
@@ -888,7 +883,6 @@ class TestExecutePipelineArgs:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             service._execute_pipeline(body, job_id, resources)
@@ -1010,7 +1004,6 @@ class TestExecutePipelineCleanup:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             lazy_outputs = service._execute_pipeline(body, job_id, resources)
@@ -1052,7 +1045,6 @@ class TestExecutePipelineCleanup:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(RequestRefusedError):
@@ -1090,7 +1082,6 @@ class TestExecutePipelineCleanup:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(RequestRefusedError) as exc_info:
@@ -1134,7 +1125,6 @@ class TestExecutePipelineCleanup:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=failing_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(RequestRefusedError) as exc_info:
@@ -1191,7 +1181,6 @@ class TestExecutePipelineExtended:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             service._execute_pipeline(body, job_id, resources)
@@ -1225,7 +1214,6 @@ class TestExecutePipelineExtended:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=RuntimeError("pipeline broke"),
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(RequestRefusedError) as exc_info:
@@ -1266,7 +1254,6 @@ class TestExecutePipelineExtended:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=fake_execute_lazy,
             ) as execute,
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             service._execute_pipeline(body, job_id, resources)
@@ -2124,7 +2111,6 @@ class TestExecutePipelineRefusalPassthrough:
                 "haute.routes._optimiser_service.execute_lazy_graph",
                 side_effect=original_exc,
             ),
-            patch("haute.executor._resolve_batch_scenario", return_value=None),
             patch("haute.executor._compile_preamble", return_value={}),
         ):
             with pytest.raises(RequestRefusedError) as exc_info:

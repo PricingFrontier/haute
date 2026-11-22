@@ -104,7 +104,7 @@ function makeCreateResponse(
 ): Awaited<ReturnType<typeof createSubmodel>> {
   return {
     status: "ok",
-    submodel_file: "modules/pricing.py",
+    submodel_file: "modules/pricing.py", moved: [],
     parent_file: "test.py",
     source_revision: "parent-rev-1",
     graph,
@@ -265,6 +265,7 @@ describe("useSubmodelNavigation", () => {
     await act(async () => {
       resolve({
         status: "ok",
+        moved: [],
         source_revision: "parent-rev-1",
         instance_id: INSTANCE_ID,
         definition_id: DEFINITION_ID,
@@ -349,6 +350,8 @@ describe("useSubmodelNavigation", () => {
     mockCreate.mockResolvedValue({
       status: "ok",
       submodel_file: "pricing.py",
+      // The answer names each node it moved, which keeps the place its saved baseline holds it.
+      moved: [{ from_submodel: null, from_node_id: "child1", to_submodel: DEFINITION_ID, to_node_id: "child1" }],
       parent_file: "test.py",
       source_revision: "parent-rev-2",
       graph: {
@@ -382,6 +385,8 @@ describe("useSubmodelNavigation", () => {
     expect(useGraphStore.getState().nodes[0]?.data._functionName).toBe("resolved_create")
     expect((useGraphStore.getState().submodels[DEFINITION_ID] as SubmodelDefinition)
       .graph.nodes[0]?.data._functionName).toBe("resolved_child")
+    expect((useGraphStore.getState().submodels[DEFINITION_ID] as SubmodelDefinition)
+      .graph.nodes[0]?.data._savedAddress).toEqual({ submodel: null, nodeId: "child1" })
     const toasts = useToastStore.getState().toasts
     expect(toasts.some((t) => t.type === "success")).toBe(true)
     vi.useRealTimers()
@@ -396,7 +401,7 @@ describe("useSubmodelNavigation", () => {
     const currentSubmodels = {}
     mockCreate.mockResolvedValue({
       status: "ok",
-      submodel_file: "modules/two_inputs.py",
+      submodel_file: "modules/two_inputs.py", moved: [],
       parent_file: "test.py",
       source_revision: "parent-rev-2",
       graph: { nodes: [], edges: [], submodels: {} },
@@ -461,7 +466,7 @@ describe("useSubmodelNavigation", () => {
   it("creates against the current source revision and preserves source blocks", async () => {
     mockCreate.mockResolvedValue({
       status: "ok",
-      submodel_file: "modules/pricing.py",
+      submodel_file: "modules/pricing.py", moved: [],
       parent_file: "main.py",
       source_revision: "parent-rev-2",
       graph: { nodes: [], edges: [], submodels: {} },
@@ -636,7 +641,7 @@ describe("useSubmodelNavigation", () => {
       status: "ok",
       definition_id: DEFINITION_ID,
       submodel_name: "pricing",
-      submodel_file: "generated/submodels/pricing_v2.py",
+      submodel_file: "generated/submodels/pricing_v2.py", moved: [],
       graph: { nodes: [makeNode("child1")], edges: [] },
     } as Awaited<ReturnType<typeof loadSubmodel>>)
     const params = makeParams({
@@ -959,6 +964,7 @@ describe("useSubmodelNavigation", () => {
     vi.useFakeTimers()
     mockDissolve.mockResolvedValue({
       status: "ok",
+      moved: [],
       source_revision: "parent-rev-2",
       instance_id: INSTANCE_ID,
       definition_id: DEFINITION_ID,
@@ -992,6 +998,7 @@ describe("useSubmodelNavigation", () => {
   it("dissolves with concurrency metadata and preserves transform metadata", async () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
+      moved: [],
       source_revision: "parent-rev-2",
       instance_id: INSTANCE_ID,
       definition_id: DEFINITION_ID,
@@ -1159,6 +1166,7 @@ describe("useSubmodelNavigation", () => {
   it("dissolves a reusable occurrence by occurrence name", async () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
+      moved: [],
       source_revision: "parent-rev-2",
       instance_id: "scoring_primary",
       definition_id: "definition_scoring",
@@ -1212,7 +1220,7 @@ describe("useSubmodelNavigation", () => {
     const definition = makeDefinition([makeNode("child1")])
     mockCreate.mockResolvedValue({
       status: "ok",
-      submodel_file: "modules/pricing.py",
+      submodel_file: "modules/pricing.py", moved: [],
       parent_file: "test.py",
       source_revision: "parent-rev-1",
       graph: {
@@ -1280,6 +1288,7 @@ describe("useSubmodelNavigation", () => {
     })
     mockDissolve.mockResolvedValue({
       status: "ok",
+      moved: [],
       source_revision: "parent-rev-1",
       instance_id: INSTANCE_ID,
       definition_id: DEFINITION_ID,
@@ -1325,7 +1334,7 @@ describe("useSubmodelNavigation", () => {
     const owner = { ...makeOccurrence(), selected: true }
     const copy = makeOccurrence("pricing_2", "pricing")
     vi.mocked(createNodeInstance).mockResolvedValueOnce({
-      status: "ok", owner_name: "pricing", instance_name: copy.id,
+      status: "ok", owner_name: "pricing", moved: [], instance_name: copy.id,
       definition_id: DEFINITION_ID, source_revision: "parent-rev-1",
       graph: { nodes: [owner, copy], edges: [], submodels: { [DEFINITION_ID]: makeDefinition() } },
     })
@@ -1350,7 +1359,7 @@ describe("useSubmodelNavigation", () => {
       // The canvas as an edit made while the request ran left it.
       let editedMeanwhile: Node[] | null = null
       const copy = makeOccurrence("pricing_2", "pricing")
-      const response = { status: "ok" as const, owner_name: "pricing", instance_name: "pricing_2",
+      const response = { status: "ok" as const, owner_name: "pricing", moved: [], instance_name: "pricing_2",
         definition_id: DEFINITION_ID, source_revision: "parent-rev-1",
         graph: { nodes: failure === "missing instance" ? [makeOccurrence()] : [makeOccurrence(), copy],
           edges: [], submodels: { [DEFINITION_ID]: makeDefinition() } } }

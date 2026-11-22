@@ -201,6 +201,52 @@ pipeline.connect("quotes", "join_rates", target_port="base")
     }
 
 
+_EMPTY_SETTINGS_JOIN = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("joins")
+
+
+@pipeline.polars
+def quotes() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.polars
+def lookup() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.edge_join(how="left", on=["region"], maintain_order="left", {setting})
+def join_rates(quotes, lookup): ...
+
+
+pipeline.connect("lookup", "join_rates", target_port="join")
+pipeline.connect("quotes", "join_rates", target_port="base")
+"""
+
+
+@pytest.mark.parametrize(
+    "setting", ['suffix=""', 'suffix="_right"', "selected_columns=[]", "left_on=None"]
+)
+def test_a_setting_a_save_writes_as_no_keyword_reads_as_no_setting(
+    tmp_path: Path, setting: str
+) -> None:
+    """CGEN-05: an empty value, or the default suffix, is the setting's absence to the
+    writer, so the parse reads it so too: parse, save and parse read the same."""
+    from haute.codegen import graph_to_code
+    from haute.parser import parse_pipeline_source
+
+    graph = parse_pipeline_file(
+        _write_pipeline(tmp_path, _EMPTY_SETTINGS_JOIN.format(setting=setting))
+    )
+    config = graph.node_map["join_rates"].data.config
+    assert config == {"how": "left", "on": ["region"], "maintain_order": "left"}
+    again = parse_pipeline_source(graph_to_code(graph, pipeline_name="joins"))
+    assert again.node_map["join_rates"].data.config == config
+
+
 @pytest.mark.parametrize("order", [None, "sideways"])
 def test_the_parser_refuses_an_edge_join_that_does_not_state_its_order(
     tmp_path: Path, order: str | None

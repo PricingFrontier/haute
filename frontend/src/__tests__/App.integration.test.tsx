@@ -3177,7 +3177,7 @@ describe("App integration - panel open/close", () => {
       },
     } }
     vi.mocked(api.createNodeInstance).mockResolvedValueOnce({ status: "ok", graph,
-      owner_name: "First", instance_name: "First_2", definition_id: "First", source_revision: "revision-instance" })
+      owner_name: "First", moved: [], instance_name: "First_2", definition_id: "First", source_revision: "revision-instance" })
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
       nodes: [makeNode("polars_1", "First")], edges: [], preamble: "", preserved_blocks: [],
       source_file: "main.py", source_revision: "revision-instance", submodels: {},
@@ -3288,6 +3288,7 @@ describe("App integration - panel open/close", () => {
 
     finishDissolve({
       status: "ok",
+      moved: [],
       instance_id: "pricing",
       definition_id: "definition_pricing",
       source_revision: "revision-dissolve",

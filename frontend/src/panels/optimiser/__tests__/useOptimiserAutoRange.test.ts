@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import useDocumentStatusStore from "../../../stores/useDocumentStatusStore"
 import useGraphStore from "../../../stores/useGraphStore"
+import useSettingsStore from "../../../stores/useSettingsStore"
 import { useOptimiserAutoRange } from "../useOptimiserAutoRange"
 import { preparedGraph } from "../../../test-utils/factories"
 
@@ -41,6 +42,7 @@ describe("useOptimiserAutoRange", () => {
     api.cancel.mockResolvedValue(undefined)
     useDocumentStatusStore.getState().reset()
     useGraphStore.setState({ structuralVersion: 0 })
+    useSettingsStore.setState({ sources: ["live", "batch", "backtest"], activeSource: "batch" })
   })
 
   it("cancels a job whose start response arrives after unmount", async () => {
@@ -96,6 +98,34 @@ describe("useOptimiserAutoRange", () => {
     expect(statusSignal?.aborted).toBe(true)
     expect(result.current.autoRangeLoading).toBe(false)
 
+    await act(async () => {
+      status.resolve({
+        status: "completed",
+        message: "",
+        result: { ranges: { loss_ratio: { min: 0.1, max: 0.9 } } },
+      })
+      await status.promise
+    })
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("sends the run's source and retires the run when the toolbar's source changes", async () => {
+    const status = deferred<{ status: "completed"; message: string; result: { ranges: Record<string, { min: number; max: number }> } }>()
+    api.start.mockResolvedValue({ status: "started", job_id: "batch-job" })
+    api.status.mockImplementation(() => status.promise)
+    const { result, onUpdate } = renderAutoRange()
+
+    act(() => result.current.run(["loss_ratio"]))
+    await waitFor(() => expect(api.status).toHaveBeenCalledWith(
+      "batch-job",
+      { signal: expect.any(AbortSignal) },
+    ))
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ source: "batch" }))
+
+    act(() => useSettingsStore.setState({ activeSource: "backtest" }))
+
+    await waitFor(() => expect(api.cancel).toHaveBeenCalledWith("batch-job"))
+    expect(result.current.autoRangeLoading).toBe(false)
     await act(async () => {
       status.resolve({
         status: "completed",

@@ -874,9 +874,9 @@ def _render_module(
     if registrations:
         body.append(_Block("\n".join(registrations)))
     pairs = list(dict.fromkeys(connect_pairs)) if dedup_connects else connect_pairs
-    pairs = [
-        pair for pair in pairs if not _signature_states(pair, _positional_parameters(functions))
-    ]
+    # Read once: each read parses every function, and a save has one pair per edge.
+    parameters = _positional_parameters(functions)
+    pairs = [pair for pair in pairs if not _signature_states(pair, parameters)]
     if pairs:
         calls = [_connect_call(obj_name, pair) for pair in pairs]
         body.append(_Block("\n".join(calls)))

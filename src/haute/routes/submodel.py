@@ -12,6 +12,7 @@ from haute._logging import get_logger
 from haute._node_specs import node_spec
 from haute._project_context import current_project
 from haute._sandbox import contained_path
+from haute._submodel_instances import qualified_runtime_node_id
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     validate_submodel_definition_id,
@@ -39,6 +40,7 @@ from haute.schemas import (
     CreateSubmodelResponse,
     DissolveSubmodelRequest,
     DissolveSubmodelResponse,
+    MovedNode,
     SubmodelGraphResponse,
 )
 
@@ -165,6 +167,28 @@ def _refuse_new_name_violations(
         )
 
 
+def moved_nodes(
+    answer: PipelineGraph,
+    places: list[tuple[tuple[str | None, str], tuple[str | None, str]]],
+) -> list[MovedNode]:
+    """Each of *places*, a node's scope and id in a graph change's request and in its
+    answer, whose node *answer* holds at the second: the moves the editor follows to find
+    a moved node's saved baseline (codegen high-level, "Which parts a request reads")."""
+    from haute._edited_parts import scoped_nodes
+
+    held = scoped_nodes(answer)
+    return [
+        MovedNode(
+            from_submodel=before[0],
+            from_node_id=before[1],
+            to_submodel=after[0],
+            to_node_id=after[1],
+        )
+        for before, after in places
+        if after in held and before != after
+    ]
+
+
 @router.post("/create", response_model=CreateSubmodelResponse)
 async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse:
     """Group selected nodes in memory and return the transformed graph.
@@ -245,6 +269,10 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             parent_file=body.source_file,
             source_revision=source_revision,
             graph=response_graph,
+            moved=moved_nodes(
+                response_graph,
+                [((None, node_id), (result.sm_name, node_id)) for node_id in body.node_ids],
+            ),
         )
 
     async with save_lock:
@@ -315,12 +343,20 @@ async def create_node_instance(body: CreateNodeInstanceRequest) -> CreateNodeIns
             service.validate_new_module_files([result.sm_file])
         except ConfigError as exc:
             raise InvalidRequestError(str(exc)) from None
+        definition = (result.graph.submodels or {})[result.definition_id]
         return CreateNodeInstanceResponse(
             graph=result.graph.model_copy(update={"source_revision": revision}),
             owner_name=result.owner_name,
             instance_name=result.instance_name,
             definition_id=result.definition_id,
             source_revision=revision,
+            moved=moved_nodes(
+                result.graph,
+                [
+                    ((None, body.node_id), (result.definition_id, child.id))
+                    for child in definition.graph.nodes
+                ],
+            ),
         )
 
     async with save_lock:
@@ -448,6 +484,16 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
             definition_id=definition_id,
             graph=response_graph,
             source_revision=source_revision,
+            moved=moved_nodes(
+                response_graph,
+                [
+                    (
+                        (definition_id, child.id),
+                        (None, qualified_runtime_node_id(target_instance_id, child.id)),
+                    )
+                    for child in definition.graph.nodes
+                ],
+            ),
         )
 
     async with save_lock:

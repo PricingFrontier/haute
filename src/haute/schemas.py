@@ -1923,6 +1923,14 @@ class PipelineNodeSaveRequest(BaseModel):
             "``config`` are not read (CGEN-13)."
         ),
     )
+    settings_edited_from: BoundedText | None = Field(
+        default=None,
+        description=(
+            "The node's settings as saved (JSON text), sent in place of ``saved_settings`` "
+            "when they were edited: the settings in ``config`` are written, each number the "
+            "edit left as it was spelt as this form spells it (CGEN-09)."
+        ),
+    )
 
 
 class PipelineRepairChange(BaseModel):
@@ -3719,12 +3727,29 @@ class CreateSubmodelRequest(DocumentRequest):
     pipeline_description: BoundedText | None = None
 
 
+class MovedNode(BaseModel):
+    """A node a graph change moved: its scope and id in the request and in the answer.
+
+    A scope is a submodel definition's id, ``None`` for the pipeline's own nodes. The editor
+    finds a moved node's saved baseline through it (codegen high-level, "Which parts a
+    request reads")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_submodel: str | None
+    from_node_id: str
+    to_submodel: str | None
+    to_node_id: str
+
+
 class CreateSubmodelResponse(BaseModel):
     status: str = "ok"
     submodel_file: str = ""
     parent_file: str = ""
     source_revision: RevisionToken
     graph: Graph = Field(default_factory=Graph)
+    #: Each selected node, moved into the new definition.
+    moved: list[MovedNode]
 
 
 class CreateNodeInstanceRequest(DocumentRequest):
@@ -3747,6 +3772,8 @@ class CreateNodeInstanceResponse(BaseModel):
     instance_name: str
     definition_id: str
     source_revision: RevisionToken
+    #: The node, moved into the new definition.
+    moved: list[MovedNode]
 
 
 class DissolveSubmodelRequest(DocumentRequest):
@@ -3781,6 +3808,8 @@ class DissolveSubmodelResponse(BaseModel):
     source_revision: RevisionToken
     instance_id: str
     definition_id: str
+    #: Each of the definition's nodes, moved to the pipeline under its runtime id.
+    moved: list[MovedNode]
 
 
 class SubmodelGraphResponse(BaseModel):
@@ -4864,6 +4893,7 @@ class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
 
 class OptimiserSolveRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
+    source: BoundedName = "live"
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -4912,6 +4942,7 @@ class OptimiserEstimateResponse(BaseModel):
 
 class OptimiserFrontierAutoRangeRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
+    source: BoundedName = "live"
 
 
 class OptimiserFrontierRange(BaseModel):

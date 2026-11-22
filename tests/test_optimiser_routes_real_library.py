@@ -919,6 +919,62 @@ class TestSolveResultContract:
         assert result["diagnostics_errors"] == []
         assert result["adjustments"]["n_quotes"] == 5
 
+    def test_a_solve_runs_on_the_chosen_source_among_several(self, client, tmp_path):
+        """EXE-01: with a switch mapping live, batch and backtest, a solve under
+        backtest runs on the backtest input and records it; under live it is
+        refused naming the two non-live sources."""
+        graph = _online_graph(str(tmp_path / "unused.parquet"))
+        switch_map = {"live_in": "live", "batch_in": "batch", "backtest_in": "backtest"}
+        inputs = []
+        for n_quotes, name in enumerate(switch_map, start=3):
+            path = tmp_path / f"{name}.parquet"
+            _scored_frame(n_quotes=n_quotes, n_steps=3).write_parquet(path)
+            inputs.append(
+                {
+                    "id": name,
+                    "data": {
+                        "label": name,
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(str(path)),
+                    },
+                }
+            )
+        switch = {
+            "id": "sw",
+            "data": {
+                "label": "sw",
+                "nodeType": "liveSwitch",
+                "config": {"input_scenario_map": switch_map},
+            },
+        }
+        optimiser = next(node for node in graph["nodes"] if node["id"] == "opt")
+        graph = make_graph(
+            {
+                "nodes": [*inputs, switch, optimiser],
+                "edges": [
+                    *(make_edge(name, "sw").model_dump() for name in switch_map),
+                    make_edge("sw", "opt").model_dump(),
+                ],
+            }
+        ).model_dump()
+        target = {"occurrence": None, "node_id": "opt"}
+
+        refused = client.post(
+            "/api/optimiser/solve", json={"graph": graph, "target": target, "source": "live"}
+        )
+        assert refused.status_code == 422, refused.text
+        detail = refused.json()["detail"]
+        assert detail["error_code"] == "batch_source_ambiguous"
+        assert detail["sources"] == ["backtest", "batch"]
+
+        started = client.post(
+            "/api/optimiser/solve", json={"graph": graph, "target": target, "source": "backtest"}
+        )
+        assert started.status_code == 200, started.text
+        result = _poll_until_done(client, started.json()["job_id"])["result"]
+        assert result["input_summary"]["data_source"] == "backtest"
+        assert result["adjustments"]["n_quotes"] == 5
+
     def test_a_transform_upstream_calls_a_preamble_helper(self, client, tmp_path):
         path = tmp_path / "online_preamble.parquet"
         _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)

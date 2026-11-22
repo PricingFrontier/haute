@@ -41,12 +41,12 @@ from haute._ast_helpers import (
     _strip_docstring,
 )
 from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
-from haute._config_builder import _copy_config_keys, _resolve_node_config
+from haute._config_builder import _resolve_node_config
 from haute._config_io import has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
 from haute._node_specs import SINGLETON_NODE_NAMES
 from haute._types import NodeEditorState, NodeType
-from haute.errors import ParseError
+from haute.errors import ConfigError, ParseError
 
 # ===========================================================================
 # _eval_ast_literal
@@ -617,12 +617,12 @@ class TestExtractMeta:
         name, desc = _extract_pipeline_meta(tree)
         assert name == "main"
 
-    def test_multi_target_assignment_skipped(self):
+    def test_a_multi_target_assignment_is_the_constructor(self):
+        """As the module's boundaries count it (CGEN-01)."""
         source = 'pipeline = submodel = haute.Pipeline("test")'
         tree = ast.parse(source)
         name, _ = _extract_pipeline_meta(tree)
-        # multi-target: len(targets) != 1, so skipped
-        assert name == "main"
+        assert name == "test"
 
     # --- Remediation 5.5: non-literal metadata is rejected loudly ---------
 
@@ -643,9 +643,9 @@ class TestExtractMeta:
     def test_factory_constructed_pipeline_raises(self):
         """A factory call would be silently rewritten to a literal
         ``haute.Pipeline(...)`` line on save — loud rejection protects it."""
-        source = "pipeline = build_pipeline(cfg)"
+        source = 'pipeline = build_pipeline("motor")'
         tree = ast.parse(source)
-        with pytest.raises(ParseError):
+        with pytest.raises(ParseError, match=r"assigned .build_pipeline\(.*not haute.Pipeline"):
             _extract_pipeline_meta(tree)
 
     def test_non_literal_submodel_name_raises(self):
@@ -654,12 +654,12 @@ class TestExtractMeta:
         with pytest.raises(ParseError, match="name"):
             _extract_submodel_meta(tree)
 
-    def test_non_string_literal_name_falls_back_to_default(self):
-        """A literal-but-not-string name keeps the historical skip semantics."""
+    def test_a_name_that_is_not_text_is_refused(self):
+        """It was read as ``main`` and saved over (CGEN-01)."""
         source = "pipeline = haute.Pipeline(123)"
         tree = ast.parse(source)
-        name, _ = _extract_pipeline_meta(tree)
-        assert name == "main"
+        with pytest.raises(ParseError, match="name must be a string literal: got 123"):
+            _extract_pipeline_meta(tree)
 
 
 # ===========================================================================
@@ -1091,7 +1091,9 @@ class TestResolveNodeConfig:
             "arguments": {},
         }
         original = dict(kwargs)
-        _resolve_node_config(kwargs, "", [], None)
+        # A transform declares none of these keywords (CGEN-05).
+        with pytest.raises(ConfigError, match="'arguments'"):
+            _resolve_node_config(kwargs, "", [], None)
         assert kwargs == original
 
     def test_no_mutation_with_multiple_keys(self):
@@ -1230,46 +1232,6 @@ class TestExtractUserCodeEdgeCases:
             assert wrapped.startswith("    df: pl.LazyFrame\n")
             code = extract_user_code(wrapped, kind="polars", param_names=["quotes"])
         assert code == "quotes.select('b')"
-
-
-# ===========================================================================
-# _copy_config_keys
-# ===========================================================================
-
-
-class TestCopyConfigKeys:
-    def test_copies_present_keys(self):
-        config: dict[str, Any] = {}
-        kwargs = {"a": 1, "b": 2, "c": 3}
-        _copy_config_keys(config, kwargs, ["a", "c"])
-        assert config == {"a": 1, "c": 3}
-
-    def test_skips_missing_keys(self):
-        config: dict[str, Any] = {}
-        kwargs = {"a": 1}
-        _copy_config_keys(config, kwargs, ["a", "missing", "also_missing"])
-        assert config == {"a": 1}
-
-    def test_empty_keys_does_nothing(self):
-        config: dict[str, Any] = {}
-        kwargs = {"a": 1}
-        _copy_config_keys(config, kwargs, [])
-        assert config == {}
-
-    def test_empty_kwargs_does_nothing(self):
-        config: dict[str, Any] = {}
-        _copy_config_keys(config, {}, ["a", "b"])
-        assert config == {}
-
-    def test_preserves_existing_config(self):
-        config: dict[str, Any] = {"existing": "value"}
-        _copy_config_keys(config, {"a": 1}, ["a"])
-        assert config == {"existing": "value", "a": 1}
-
-    def test_accepts_tuple_keys(self):
-        config: dict[str, Any] = {}
-        _copy_config_keys(config, {"x": 10, "y": 20}, ("x", "y"))
-        assert config == {"x": 10, "y": 20}
 
 
 # ===========================================================================

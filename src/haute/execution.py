@@ -31,6 +31,7 @@ from haute._cache import (
     preamble_execution_fingerprint,
     selected_live_switch_path,
 )
+from haute._column_lineage import UNSUPPORTED_JOIN_OPTION
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import (
     ExecutionContext,
@@ -47,6 +48,7 @@ from haute._path_resolution import resolve_node_input_path
 from haute._polars_selectors import preamble_selector_aliases
 from haute._project_context import current_project, graph_pipeline_dir
 from haute._ram_estimate import (
+    CROSS_JOIN_UNMEASURED_DETAIL,
     MaterialisationEstimate,
     MaterialisationEstimateBasis,
     MaterialisationEstimateState,
@@ -564,12 +566,36 @@ def _named_detail(detail: str, node_name: Callable[[str], str]) -> str:
     return ":".join(node_name(part) for part in detail.split(":"))
 
 
-def _with_many_to_many_join_remediation(remediation: str, detail: str | None) -> str:
-    """Append the validate= contract advice when the gap is an unbounded join."""
+_CAPPED_SURFACES = "a surface with a hard memory cap (the editor's preview, a container deployment)"
 
-    if detail is None or not detail.endswith(MANY_TO_MANY_JOIN_DETAIL):
-        return remediation
-    return f"{remediation} {_MANY_TO_MANY_JOIN_REMEDIATION}"
+_CROSS_JOIN_REMEDIATION = (
+    "A cross join's memory cannot be estimated when both sides may hold more than one "
+    "row: cross with a one-row input such as a Constant, use an Edge Join set to Cross, "
+    f"or run on {_CAPPED_SURFACES}."
+)
+
+
+def _estimate_gap_remedy(detail: str | None) -> str | None:
+    """What works instead when the estimator's *detail* names a gap that source metadata
+    cannot close, or ``None`` when readable metadata would give the estimate.
+
+    The detail ends with the estimator's reason code (``<node>:<reason>``), which is the
+    one place each gap's remedy is chosen.
+    """
+    if detail is None:
+        return None
+    reason = detail.rsplit(":", 1)[-1]
+    if reason == MANY_TO_MANY_JOIN_DETAIL:
+        return _MANY_TO_MANY_JOIN_REMEDIATION
+    if reason == CROSS_JOIN_UNMEASURED_DETAIL:
+        return _CROSS_JOIN_REMEDIATION
+    option = reason.removeprefix(f"{UNSUPPORTED_JOIN_OPTION}=")
+    if option != reason:
+        return (
+            f"The planner cannot bound a join carrying {option!r}: drop that option, or "
+            f"run on {_CAPPED_SURFACES}."
+        )
+    return None
 
 
 def _materialisation_rejection(
@@ -583,34 +609,40 @@ def _materialisation_rejection(
     node_name: Callable[[str], str],
     estimate_detail: str | None = None,
 ) -> GroupByExecutionUnsupportedError:
-    remediation = {
-        "execution_admission_unavailable": (
-            "Create an admitted execution context with positive memory-limit and "
-            f"headroom values before running this '{operator}'."
-        ),
-        "materialisation_estimate_unavailable": (
-            "Provide readable source/schema metadata so Haute can estimate the full "
-            f"'{operator}' materialisation boundary before execution."
-        ),
-        "materialisation_exceeds_headroom": (
-            "Increase the configured memory headroom, narrow the input, or pre-aggregate "
-            f"the source before this '{operator}'."
-        ),
-    }[reason_code]
+    remedy = _estimate_gap_remedy(estimate_detail)
+    sentences = [
+        {
+            "execution_admission_unavailable": (
+                "Create an admitted execution context with positive memory-limit and "
+                f"headroom values before running this '{operator}'."
+            ),
+            # Readable metadata cannot close a gap that has a remedy of its own.
+            "materialisation_estimate_unavailable": (
+                ""
+                if remedy is not None
+                else "Provide readable source/schema metadata so Haute can estimate the "
+                f"full '{operator}' materialisation boundary before execution."
+            ),
+            "materialisation_exceeds_headroom": (
+                "Increase the configured memory headroom, narrow the input, or "
+                f"pre-aggregate the source before this '{operator}'."
+            ),
+        }[reason_code]
+    ]
     if estimate_detail:
         # The estimator already knows which node it could not measure and why.
         # Discarding that left the analyst with "provide readable metadata" and
         # no way to tell an unreadable file from an unsummarisable source shape.
-        remediation = (
-            f"{remediation} Estimator reported: {_named_detail(estimate_detail, node_name)}."
-        )
+        sentences.append(f"Estimator reported: {_named_detail(estimate_detail, node_name)}.")
     if reason_code == "materialisation_estimate_unavailable":
         # Without a hard cap there is no bounded envelope to run inside.
-        remediation = (
-            f"{remediation} This surface runs without a hard worker memory cap, "
+        sentences.append(
+            "This surface runs without a hard worker memory cap, "
             "so Haute cannot run the plan conservatively here."
         )
-    remediation = _with_many_to_many_join_remediation(remediation, estimate_detail)
+    if remedy is not None:
+        sentences.append(remedy)
+    remediation = " ".join(sentence for sentence in sentences if sentence)
     return GroupByExecutionUnsupportedError(
         f"Materialisation of '{operator}' could not be admitted for this execution.",
         node_id=node_id,
@@ -665,13 +697,18 @@ def _plan_unproven_materialisation(
         )
     # A hard worker cap bounds the process, so the run continues under
     # its full reserved envelope instead of being rejected outright.
+    remedy = _estimate_gap_remedy(detail)
     remediation = (
         "The run continued under its full reserved memory envelope of "
         f"{headroom_bytes} bytes because the materialisation estimate was "
-        f"unavailable ({_named_detail(detail, node_name)}). Provide readable source "
-        f"metadata or rewrite '{operator}' at '{node_name(node_id)}' so Haute can prove the "
-        "estimate; the run "
-        "may use more memory and time than an estimated boundary."
+        f"unavailable ({_named_detail(detail, node_name)}). "
+        + (
+            ""
+            if remedy is not None
+            else f"Provide readable source metadata or rewrite '{operator}' at "
+            f"'{node_name(node_id)}' so Haute can prove the estimate; "
+        )
+        + "The run may use more memory and time than an estimated boundary."
     )
     return _UnprovenMaterialisation(
         projection_plan=with_materialisation_boundaries(
@@ -688,7 +725,7 @@ def _plan_unproven_materialisation(
         ),
         # The envelope narrative is capped, then the contract advice is appended
         # so it is never the half that gets cut.
-        remediation=_with_many_to_many_join_remediation(remediation[:512], detail),
+        remediation=remediation[:512] if remedy is None else f"{remediation[:512]} {remedy}",
     )
 
 

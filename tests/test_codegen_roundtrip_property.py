@@ -50,7 +50,7 @@ from haute._api_input_schema import columns_from_sidecar
 from haute._banding_config import expand_banding_config_from_sidecar
 from haute._config_io import collect_node_configs
 from haute._graph_utils import _sanitize_func_name
-from haute._polars_steps import STEPS_FROM_CODE, PolarsStepError
+from haute._polars_steps import STEPS_FROM_CODE, PolarsStepError, referenced_step_inputs
 from haute._polars_steps_lift import StepLiftError, canonical_steps, lift_steps
 from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -652,9 +652,12 @@ def _steps_as_reloaded(node_type: NodeType, config: dict[str, Any]) -> dict[str,
     steps = config.get("steps")
     try:
         if isinstance(steps, list):
-            return {**config, "steps": canonical_steps(node_type, steps)}
+            return {
+                **config,
+                "steps": canonical_steps(node_type, steps, inputs=referenced_step_inputs(steps)),
+            }
         if config.get("code"):
-            return {**config, "steps": lift_steps(node_type, str(config["code"]))}
+            return {**config, "steps": lift_steps(node_type, str(config["code"]), inputs=())}
     except (PolarsStepError, StepLiftError):
         # An unfinished list waits in .haute.json; code that does not rebuild stays code.
         return config

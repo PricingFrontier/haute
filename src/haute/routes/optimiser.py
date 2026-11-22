@@ -284,14 +284,16 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     is never invoked.
     """
     from haute._ram_estimate import _detailed_ancestor_source_metadata
+    from haute.executor import batch_source
 
     body = cast(OptimiserEstimateRequest, _prepare_optimiser_execution_request(body))
     # The resolver answers an unknown source size with no row count; anything
-    # it raises is a failure, not an unknown total.
+    # it raises is a failure, not an unknown total. It reads the source the
+    # counts below run on, as a solve would.
     total_rows = _detailed_ancestor_source_metadata(
         body.graph,
         body.node_id,
-        body.source,
+        batch_source(body.graph, body.source),
     ).row_count
 
     try:

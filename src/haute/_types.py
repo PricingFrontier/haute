@@ -180,6 +180,8 @@ class NodeEditorState(BaseModel):
     CGEN-13): an editor document gives them for each of its nodes, and a request that
     carries the document sends them back for each part its editor did not edit. The
     request reads them before the node is built, so a built node never carries one.
+    Edited settings are sent with ``settings_edited_from``, the saved settings the edit began
+    from, which keeps the spelling of each number the edit left as it was (CGEN-09).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -190,6 +192,7 @@ class NodeEditorState(BaseModel):
     saved_code: str | None = Field(default=None, exclude_if=lambda value: value is None)
     saved_steps: str | None = Field(default=None, exclude_if=lambda value: value is None)
     saved_settings: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    settings_edited_from: str | None = Field(default=None, exclude_if=lambda value: value is None)
     _steps_recorded: bool = PrivateAttr(default=False)
 
     @property
@@ -243,7 +246,12 @@ class NodeData(BaseModel):
         from haute._node_specs import STEPPED_NODE_TYPES
         from haute._polars_steps import PolarsStepError, render_node_steps
 
-        saved = (self.editor.saved_code, self.editor.saved_steps, self.editor.saved_settings)
+        saved = (
+            self.editor.saved_code,
+            self.editor.saved_steps,
+            self.editor.saved_settings,
+            self.editor.settings_edited_from,
+        )
         if any(form is not None for form in saved):
             # A request reads a node's saved forms before the node is built
             # (``haute.schemas.DocumentRequest``); one that reaches a node went round it.

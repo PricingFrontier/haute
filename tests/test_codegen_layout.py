@@ -1586,3 +1586,60 @@ def test_a_form_feed_between_two_nodes_leaves_both_bodies_intact() -> None:
     }
     regenerated = graph_to_code(graph, pipeline_name="main")
     assert "# a\x0cb\n" in regenerated
+
+
+def _transform_chain(length: int) -> PipelineGraph:
+    """A chain of *length* four-line transforms, each reading the one before it."""
+    nodes = [
+        GraphNode(
+            id="t0",
+            data=NodeData(
+                label="t0",
+                nodeType=NodeType.POLARS,
+                config={"code": 'df = pl.LazyFrame({"x": [1]})'},
+            ),
+        )
+    ]
+    for index in range(1, length):
+        code = (
+            f"df = t{index - 1}\n"
+            'df = df.with_columns(y=pl.col("x") + 1)\n'
+            'df = df.filter(pl.col("y") > 0)\n'
+            'df = df.select("x", "y")'
+        )
+        nodes.append(
+            GraphNode(
+                id=f"t{index}",
+                data=NodeData(label=f"t{index}", nodeType=NodeType.POLARS, config={"code": code}),
+            )
+        )
+    edges = [
+        GraphEdge(id=f"e{index}", source=f"t{index - 1}", target=f"t{index}")
+        for index in range(1, length)
+    ]
+    return PipelineGraph(nodes=nodes, edges=edges)
+
+
+def test_generation_parses_each_function_a_fixed_number_of_times(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CGEN-04: the parses a save makes grow with the nodes, not with nodes times edges."""
+    real_parse = ast.parse
+    calls = 0
+
+    def counting(*args: object, **kwargs: object) -> ast.AST:
+        nonlocal calls
+        calls += 1
+        return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+    def parses(length: int) -> int:
+        nonlocal calls
+        graph = _transform_chain(length)
+        calls = 0
+        with monkeypatch.context() as patched:
+            patched.setattr(ast, "parse", counting)
+            graph_to_code(graph, pipeline_name="main")
+        return calls
+
+    small, large = parses(25), parses(100)
+    assert large <= 4 * small + 10, (small, large)

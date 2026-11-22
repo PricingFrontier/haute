@@ -39,22 +39,29 @@ def normalise_edge_join_decorator_kwargs(kwargs: dict[str, Any]) -> dict[str, An
     return dict(kwargs)
 
 
+def decorator_value_written(key: str, value: object) -> bool:
+    """Whether a save writes the decorator keyword *key* holding *value*, for a node that
+    keeps its settings on its decorator (an Edge Join or a transform).
+
+    An empty value (``None``, ``""``, ``[]``) and an Edge Join's default suffix, which a
+    join reads for an absent one (READ-13), are the setting's absence: a save writes them
+    as no keyword, so the parse reads them as no setting, and parse, save and parse read
+    the same (CGEN-05).
+    """
+    if value is None or value == "" or value == []:
+        return False
+    return not (key == "suffix" and value == EDGE_JOIN_DEFAULT_SUFFIX)
+
+
 def edge_join_config_to_decorator_kwargs(config: dict[str, Any]) -> list[tuple[str, Any]]:
     """The config's settings as decorator keywords, in a stable order."""
-    items: list[tuple[str, Any]] = []
     # Column metadata belongs to the node, rather than LazyFrame.join, but
     # must survive the same decorator round trip as the join settings.
-    for key in (*EDGE_JOIN_CONFIG_KEYS, *COLUMN_CONFIG_KEYS):
-        if key not in config:
-            continue
-        value = config[key]
-        if value is None or value == "" or value == []:
-            continue
-        if key == "suffix" and value == EDGE_JOIN_DEFAULT_SUFFIX:
-            # The default a join reads for an absent suffix (READ-13).
-            continue
-        items.append((key, value))
-    return items
+    return [
+        (key, config[key])
+        for key in (*EDGE_JOIN_CONFIG_KEYS, *COLUMN_CONFIG_KEYS)
+        if key in config and decorator_value_written(key, config[key])
+    ]
 
 
 def resolve_edge_join_role_indices(
@@ -197,8 +204,13 @@ def narrow_join_parent_demand(
     right_schema: set[str],
     how: str,
     suffix: str,
+    value_only: bool = False,
 ) -> tuple[set[str], set[str]] | None:
     """Route a join's demanded OUTPUT columns to ``(left_demand, right_demand)``.
+
+    With *value_only* each output is routed only to the column its values come from: the
+    join keys, and the left copy a suffixed right-hand output needs to exist, are what
+    executing the join reads, not what an output holds.
 
     The single source of truth shared by the static projection rule
     (:class:`haute.projection.EdgeJoinFanInRule`, which passes the parents'
@@ -223,10 +235,12 @@ def narrow_join_parent_demand(
         return None
     if suffix == "":
         return None
-    left_demand: set[str] = set(left_keys)
-    right_demand: set[str] = set(right_keys)
+    left_demand: set[str] = set() if value_only else set(left_keys)
+    right_demand: set[str] = set() if value_only else set(right_keys)
     for column in demanded:
         if column in left_keys:
+            if value_only:
+                left_demand.add(column)
             continue
         mapped = False
         if column.endswith(suffix):
@@ -235,7 +249,8 @@ def narrow_join_parent_demand(
                 if column in left_schema or column in right_schema:
                     # The suffixed name is itself a real column — ambiguous.
                     return None
-                left_demand.add(original)
+                if not value_only:
+                    left_demand.add(original)
                 right_demand.add(original)
                 mapped = True
         if mapped:
@@ -246,7 +261,9 @@ def narrow_join_parent_demand(
         if column in right_schema and column not in left_schema:
             right_demand.add(column)
             mapped = True
-        if column in right_keys:
+        # A right key is read to join; it is a value's source only when nothing else
+        # supplies the column (a left column of its name is the one Polars keeps).
+        if column in right_keys and not (value_only and mapped):
             right_demand.add(column)
             mapped = True
         if not mapped:

@@ -159,6 +159,7 @@ export function useScopedNodeSave({
           savedCode: saved.saved_code ?? null,
           savedSteps: saved.saved_steps ?? null,
           savedSettings: saved.saved_settings ?? null,
+          settingsEditedFrom: saved.settings_edited_from ?? null,
         }), {
           ok: ({ value: document, documentFingerprint }) => {
             editedNodeIdsRef.current.delete(target.id)

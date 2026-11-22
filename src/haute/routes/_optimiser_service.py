@@ -264,6 +264,7 @@ def _solve_input_provenance(
     graph: PipelineGraph,
     node_id: str,
     *,
+    source: str,
     graph_fingerprint: str,
 ) -> dict[str, Any]:
     """Cheap provenance for a solve's published artifacts, recorded at job creation.
@@ -271,11 +272,11 @@ def _solve_input_provenance(
     Every value is already at hand when the solve starts; nothing is hashed or read. The
     node is its address and authored label, never the key it runs under.
     """
-    from haute.executor import _resolve_batch_scenario
+    from haute.executor import batch_source
 
     return {
         "node": address_entry(graph, node_id).model_dump(mode="json"),
-        "data_source": _resolve_batch_scenario(graph) or "batch",
+        "data_source": batch_source(graph, source),
         "source_file": graph.source_file,
         "graph_fingerprint": graph_fingerprint,
     }
@@ -292,6 +293,8 @@ class _FrontierAutoRangeRunningJob(RunningJobFields):
     progress: float
     config: dict[str, Any]
     node_label: str
+    # The batch source it runs on; a request for another source never shares it.
+    data_source: str
 
 
 _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
@@ -1178,6 +1181,7 @@ class OptimiserSolveService:
                 "input_provenance": _solve_input_provenance(
                     body.graph,
                     body.node_id,
+                    source=body.source,
                     graph_fingerprint=setup_job_key[2],
                 ),
                 "start_time": start_time,
@@ -1998,14 +2002,18 @@ class OptimiserSolveService:
         body: OptimiserFrontierAutoRangeRequest,
     ) -> OptimiserFrontierAutoRangeStartResponse:
         """Start auto-range in a background thread and return a pollable job."""
+        from haute.executor import batch_source
+
         body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
+        # Resolved before any job exists, so an ambiguous source is refused at the start.
+        data_source = batch_source(body.graph, body.source)
         job_key = self._frontier_auto_range_job_key(body)
         setup_job_key = self._graph_node_setup_job_key(body.graph, body.node_id)
         node, prepared = self._prepare_frontier_auto_range(body)
         config = prepared["config"]
         self._wait_out_finished_setup_owner(setup_job_key)
         with self._start_lock:
-            active = self._active_frontier_auto_range_start(setup_job_key)
+            active = self._active_frontier_auto_range_start(setup_job_key, data_source=data_source)
             if active is not None:
                 return active
             initial_job: _FrontierAutoRangeRunningJob = {
@@ -2015,6 +2023,7 @@ class OptimiserSolveService:
                 "message": "Estimating frontier range",
                 "config": dict(config),
                 "node_label": node.data.label,
+                "data_source": data_source,
             }
             job_id = self._store.create_job(initial_job)
             execution_token = ExecutionCancellationToken()
@@ -2050,18 +2059,25 @@ class OptimiserSolveService:
     def _active_frontier_auto_range_start(
         self,
         setup_job_key: tuple[str, str, str],
+        *,
+        data_source: str,
     ) -> OptimiserFrontierAutoRangeStartResponse | None:
-        """Return the running auto-range job for this node, or raise the setup conflict.
+        """Return the running auto-range job for this node and source, or raise the setup
+        conflict.
 
         Must be called under ``_start_lock``. ``None`` means no setup job owns
-        the node and a new job may be created.
+        the node and a new job may be created. A running auto-range on another source is
+        a conflict like any other setup: its ranges are not this request's.
         """
         active_setup = self._active_graph_node_setup(setup_job_key)
         if active_setup is None:
             return None
         if active_setup.kind == _FRONTIER_AUTO_RANGE_JOB_TYPE:
             active_job = self._store.require_job(active_setup.job_id)
-            if active_job.get("status") == "running":
+            if (
+                active_job.get("status") == "running"
+                and active_job.get("data_source") == data_source
+            ):
                 return OptimiserFrontierAutoRangeStartResponse(
                     status="started",
                     job_id=active_setup.job_id,
@@ -2982,10 +2998,9 @@ class OptimiserSolveService:
         the same cache decision and a capture either publishes serves the
         other. The plan decides separately which consumed nodes it can capture.
         """
-        from haute.executor import _resolve_batch_scenario
+        from haute.executor import batch_source
 
-        # Resolve scenario: optimiser runs on batch data, not live.
-        scenario = _resolve_batch_scenario(body.graph) or "batch"
+        scenario = batch_source(body.graph, body.source)
         execution_target_node_id, _preserved, consumed_node_ids = self._setup_execution_scope(
             body, target_node_id
         )
@@ -3058,10 +3073,10 @@ class OptimiserSolveService:
             from haute.executor import (
                 _build_node_fn,
                 _compile_preamble,
-                _resolve_batch_scenario,
+                batch_source,
             )
 
-            scenario = _resolve_batch_scenario(body.graph) or "batch"
+            scenario = batch_source(body.graph, body.source)
             pinned = (
                 preamble_fingerprint
                 if preamble_fingerprint is not None

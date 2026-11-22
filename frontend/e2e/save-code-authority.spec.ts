@@ -8,7 +8,8 @@ import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
 
 // A save reads from the browser only the parts of a node that were edited (CGEN-11, CGEN-13):
 // a step list or a setting the browser held has lost what JavaScript cannot hold, `1.0`
-// arriving as `1`.
+// arriving as `1`. Within a part read each number keeps its spelling: a step's as its `text`,
+// a setting's from the saved settings the edit began from (CGEN-09).
 const mainPath = resolve(e2eProjectRoot, "rating", "main.py")
 // A Rating Step's settings file, whose default is written `1.0`.
 const ratingPath = resolve(e2eProjectRoot, "rating", "config", "rating_step", "browser_rating.json")
@@ -27,6 +28,19 @@ def hand_written(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
 def rated_rows(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
     df = raw_rows
     df = df.with_columns(pl.lit(2.5).alias("rate"))
+    return df
+`
+
+/** One Transform holding the four forms a browser writes otherwise. */
+const FOUR_NUMBERS = `
+
+@pipeline.polars
+def four_numbers(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+    df = raw_rows
+    df = df.with_columns(pl.lit(1.0).alias("relativity"))
+    df = df.with_columns((pl.col("value") * 2.0).alias("value"))
+    df = df.with_columns(pl.col("value").fill_null(0.0))
+    df = df.filter(pl.col("value") == 9007199254740993)
     return df
 `
 
@@ -170,5 +184,83 @@ test.describe("A save writes only the parts that were edited", () => {
     await page.unroute("**/api/pipeline/polars-steps/render")
     expect(nodeFunction(read(), "hand_written")).toBe(handWritten)
     expect(readRating()).toBe(rating)
+  })
+
+  test("keeps the numbers of an edited node's other steps as they were written", async ({ page }) => {
+    test.slow()
+    writeFileSync(mainPath, read().trimEnd() + "\n" + FOUR_NUMBERS, "utf8")
+    await openApp(page)
+
+    await openNode(page, "four_numbers")
+    await addLimit(page, 5)
+    const code = page.getByTestId("polars-generated-code")
+    await expect(code).toContainText("df = df.head(5)")
+    await expect(code).toContainText('pl.lit(1.0).alias("relativity")')
+    await closePanel(page)
+    await save(page)
+
+    const written = nodeFunction(read(), "four_numbers")
+    expect(written).toContain("df = df.head(5)")
+    for (const statement of [
+      'pl.lit(1.0).alias("relativity")',
+      '(pl.col("value") * 2.0).alias("value")',
+      'pl.col("value").fill_null(0.0)',
+      'pl.col("value") == 9007199254740993',
+    ]) {
+      expect(written).toContain(statement)
+    }
+  })
+
+  test("keeps a Rating Step's other numbers when its output column is renamed", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+    expect(readRating()).toContain('"default_value": 1.0')
+
+    await page.getByLabel("Rating Step node: browser_rating").click()
+    const panel = page.getByTestId("node-panel")
+    await expect(panel).toBeVisible()
+    await panel.getByRole("button", { name: /^browser_relativity / }).dblclick()
+    const name = panel.getByLabel("Rename browser_relativity")
+    await name.fill("browser_factor")
+    await name.press("Enter")
+    await closePanel(page)
+    await save(page)
+
+    const written = readRating()
+    expect(written).toContain('"output_column": "browser_factor"')
+    expect(written).toContain('"default_value": 1.0')
+  })
+  test("keeps a Rating Step's numbers when it is grouped into a submodel, saved, dissolved and saved", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+    expect(readRating()).toContain('"default_value": 1.0')
+
+    // A graph change gives the node a new place; it finds its saved settings through the one
+    // it came from (CGEN-09).
+    await page.getByRole("button", { name: /browser_mixed_banding/i }).click()
+    await page.getByRole("button", { name: /browser_rating/i }).click({
+      modifiers: [process.platform === "darwin" ? "Meta" : "Control"],
+    })
+    await dispatchAppShortcut(page, "g")
+    await expect(page.getByText("Create Submodel")).toBeVisible()
+    await page.getByPlaceholder("e.g. model_scoring").fill("browser_group")
+    await page.getByRole("button", { name: "Create" }).click()
+    const group = page.getByRole("button", { name: /browser_group/i })
+    await expect(group).toBeVisible()
+    await save(page)
+    expect(readRating()).toContain('"default_value": 1.0')
+
+    // Dissolved after that save, the node keeps the identity the load gave it, which the
+    // baseline the save made keeps too.
+    await group.click({ button: "right" })
+    const contextMenu = page.getByTestId("context-menu")
+    if (!(await contextMenu.isVisible({ timeout: 2000 }).catch(() => false))) {
+      await group.dispatchEvent("contextmenu")
+    }
+    await contextMenu.getByRole("menuitem", { name: "Dissolve Submodel" }).click()
+    await expect(group).toHaveCount(0)
+    await save(page)
+
+    expect(readRating()).toContain('"default_value": 1.0')
   })
 })

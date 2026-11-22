@@ -9,6 +9,7 @@ import {
   savedCodeForSteps,
   savedFormsFor,
   withoutSavedForms,
+  withSavedAddresses,
   withSavedForms,
   withSavedParts,
 } from "../documentRequest"
@@ -81,7 +82,9 @@ describe("document request", () => {
     }
 
     expect(savedFormsFor(baseline, document, null, document.nodes[0])).toEqual({ saved_settings: '{"rate":1.0}' })
-    expect(savedFormsFor(baseline, document, null, document.nodes[1])).toEqual({})
+    // Edited settings go with the saved ones they began from, which keep the spelling of every
+    // number the edit left (CGEN-09).
+    expect(savedFormsFor(baseline, document, null, document.nodes[1])).toEqual({ settings_edited_from: "{}" })
     expect(savedFormsFor(baseline, document, null, document.nodes[2])).toEqual({})
     expect(savedFormsFor(baseline, document, "sub", document.submodels.sub.graph.nodes[0])).toEqual({ saved_settings: "{}" })
     expect(document.nodes.map((node) => savedFormsFor(null, document, null, node))).toEqual([{}, {}, {}])
@@ -109,7 +112,7 @@ describe("document request", () => {
 
     const sent = documentRequestGraph({ nodes: [stale], edges: [] }, baseline)
 
-    expect(editor(sent.nodes[0])).toEqual({ ...live, saved_code: savedCode })
+    expect(editor(sent.nodes[0])).toEqual({ ...live, saved_code: savedCode, settings_edited_from: '{"rate":1.0}' })
     expect(editor(documentRequestGraph({ nodes: [stale], edges: [] }, null).nodes[0])).toEqual(live)
   })
 
@@ -192,5 +195,138 @@ describe("the one way a request carries the document", () => {
       .filter((path) => !BUILDERS.has(path))
 
     expect(callers).toEqual([])
+  })
+})
+
+describe("a node a graph change moved", () => {
+  // The rating Transform `t` moved into the definition `grouped` (Create Submodel), keeping its
+  // id; then out again under a runtime id (Dissolve).
+  const moved = (node: Node, submodel: string | null, nodeId: string): Node => ({
+    ...node, data: { ...node.data, _savedAddress: { submodel, nodeId } },
+  })
+
+  it("finds its saved baseline through the place it was moved from", () => {
+    const node = moved(transform("t", { steps, code: "", rate: 1 }, live), null, "t")
+    const document = { nodes: [], submodels: { grouped: { ...definition([node]), definitionId: "grouped" } } }
+
+    // Its inputs are as saved (none in either place), so its steps keep their saved form too.
+    expect(savedFormsFor(baseline, document, "grouped", node)).toEqual({ saved_code: savedCode, saved_settings: '{"rate":1.0}' })
+    const edited = moved(transform("t", { steps, code: "", rate: 2 }, live), null, "t")
+    expect(savedFormsFor(baseline, document, "grouped", edited)).toEqual({ saved_code: savedCode, settings_edited_from: '{"rate":1.0}' })
+    expect(savedFormsFor(baseline, document, "grouped", transform("t", { steps, code: "", rate: 1 }, live))).toEqual({})
+  })
+
+  it("is found by its identity after a save, after an Undo past one, and only as a node of its type", () => {
+    // A save makes the moved document the baseline: its nodes keep their identity.
+    const grouped = moved(transform("t", { steps, code: savedCode, rate: 1 }, { ...live, saved_code: savedCode, saved_settings: '{"rate":1.0}' }), null, "t")
+    const saved = { nodes: [], submodels: { grouped: { ...definition([grouped]), definitionId: "grouped" } } }
+    const movedLive = moved(transform("t", { steps, code: "", rate: 1 }, live), null, "t")
+    expect(savedFormsFor(saved, saved, "grouped", movedLive).saved_settings).toBe('{"rate":1.0}')
+    // Undo past that save restores the node where it was loaded, with no recorded place.
+    const undone = transform("t", { steps, code: "", rate: 1 }, live)
+    expect(savedFormsFor(saved, { nodes: [undone], submodels: {} }, null, undone).saved_settings).toBe('{"rate":1.0}')
+    // Dissolved after the save: the identity goes with it.
+    const dissolved = moved(transform("submodel_runtime/grouped/t", { steps, code: "", rate: 1 }, live), null, "t")
+    expect(savedFormsFor(saved, { nodes: [dissolved], submodels: {} }, null, dissolved).saved_settings).toBe('{"rate":1.0}')
+    // Only a node of its type.
+    const occurrence: Node = {
+      id: "t", position: { x: 0, y: 0 },
+      data: { nodeType: "submodel", label: "t", config: { definition_id: "grouped" }, editor: { ...live, saved_settings: "{}" } },
+    }
+    const held = { nodes: [occurrence], submodels: {} }
+    expect(savedFormsFor(held, held, null, transform("t", { rate: 1 }, live))).toEqual({})
+  })
+
+  it("keeps an earlier move's identity through a later graph change that leaves the node in place", () => {
+    const earlier = moved(transform("t", { steps, code: "", rate: 1 }, live), null, "t")
+    const before = { nodes: [], submodels: { grouped: { ...definition([earlier]), definitionId: "grouped" } } }
+    // The answer is built on the server: its nodes carry no identity of the editor's.
+    const answer = { nodes: [], submodels: { grouped: { ...definition([transform("t", { steps, code: "", rate: 1 }, live)]), definitionId: "grouped" } } }
+
+    const placed = withSavedAddresses(answer, [], before)
+
+    const inner = (placed.submodels.grouped as ReturnType<typeof definition>).graph.nodes[0]
+    expect(inner.data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
+  })
+
+  it("gives a copy its own identity, so an edited copy saved is never another node's", () => {
+    // Codex r6: a definition two occurrences use. Dissolving one copies its node; the copy is
+    // edited and saved; then the other occurrence, the last, is dissolved, which moves the node.
+    const child = moved(transform("rated_node", { rate: 1 }, { ...live, saved_settings: '{"rate":1.0}' }), null, "rated")
+    const shared = { ...definition([child]), definitionId: "rated" }
+    const loaded = { nodes: [], submodels: { rated: shared } }
+    const copyPlace = "submodel_runtime/rated_2/rated_node"
+    const copied = withSavedAddresses(
+      { nodes: [transform(copyPlace, { rate: 1 }, live)], submodels: { rated: shared } },
+      [{ from_submodel: "rated", from_node_id: "rated_node", to_submodel: null, to_node_id: copyPlace }],
+      loaded,
+    )
+    const copy = copied.nodes[0]
+    expect((copy.data._savedAddress as { nodeId: string }).nodeId).toMatch(/^copy:/)
+    expect(copy.data._savedOrigins).toEqual([{ submodel: null, nodeId: "rated" }])
+    // Before a save the copy finds the node it was copied from.
+    expect(savedFormsFor(loaded, copied, null, copy).saved_settings).toBe('{"rate":1.0}')
+
+    // Edited and saved: the baseline holds the copy, with its own identity, beside the original.
+    const edited: Node = { ...copy, data: { ...copy.data, config: { rate: 2 }, editor: { ...live, saved_settings: '{"rate":2}' } } }
+    const saved = { nodes: [edited], submodels: { rated: shared } }
+    const ownerPlace = "submodel_runtime/rated/rated_node"
+    const dissolved = withSavedAddresses(
+      { nodes: [edited, transform(ownerPlace, { rate: 1 }, live)], submodels: {} },
+      [{ from_submodel: "rated", from_node_id: "rated_node", to_submodel: null, to_node_id: ownerPlace }],
+      saved,
+    )
+    const owner = dissolved.nodes[1]
+    expect(owner.data._savedAddress).toEqual({ submodel: null, nodeId: "rated" })
+    expect(savedFormsFor(saved, dissolved, null, owner)).toEqual({ saved_settings: '{"rate":1.0}' })
+  })
+
+  it("gives each copy a fresh identity, so one made where a deleted copy was finds its original", () => {
+    // Codex r7: a copy dissolved, edited and saved, then deleted; another occurrence made and
+    // dissolved before a save reuses its alias, and so its place.
+    const child = moved(transform("rated_node", { rate: 1 }, { ...live, saved_settings: '{"rate":1.0}' }), null, "rated")
+    const shared = { ...definition([child]), definitionId: "rated" }
+    const place = "submodel_runtime/rated_2/rated_node"
+    const make = (before: { nodes: Node[]; submodels: Record<string, unknown> }) => withSavedAddresses(
+      { nodes: [transform(place, { rate: 1 }, live)], submodels: { rated: shared } },
+      [{ from_submodel: "rated", from_node_id: "rated_node", to_submodel: null, to_node_id: place }],
+      before,
+    ).nodes[0]
+    const first = make({ nodes: [], submodels: { rated: shared } })
+    const edited: Node = { ...first, data: { ...first.data, config: { rate: 2 }, editor: { ...live, saved_settings: '{"rate":2}' } } }
+    // Saved, the baseline holds the edited copy under its identity; then the copy is deleted.
+    const saved = { nodes: [edited], submodels: { rated: shared } }
+    const again = make({ nodes: [], submodels: { rated: shared } })
+
+    expect(again.data._savedAddress).not.toEqual(first.data._savedAddress)
+    expect(savedFormsFor(saved, { nodes: [again], submodels: { rated: shared } }, null, again))
+      .toEqual({ saved_settings: '{"rate":1.0}' })
+  })
+
+  it("records where the baseline holds each node an answer moved, through a second move", () => {
+    const before = { nodes: [transform("t", { steps, code: "", rate: 1 }, live)], submodels: {} }
+    const grouped = {
+      nodes: [],
+      submodels: { grouped: { ...definition([transform("t", { steps, code: "", rate: 1 }, live)]), definitionId: "grouped" } },
+    }
+
+    const placed = withSavedAddresses(
+      grouped,
+      [{ from_submodel: null, from_node_id: "t", to_submodel: "grouped", to_node_id: "t" }],
+      before,
+    )
+
+    const inner = (placed.submodels.grouped as ReturnType<typeof definition>).graph.nodes[0]
+    expect(inner.data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
+    const dissolved = withSavedAddresses(
+      { nodes: [transform("submodel_runtime/grouped/t", { steps, code: "", rate: 1 }, live)], submodels: {} },
+      [{ from_submodel: "grouped", from_node_id: "t", to_submodel: null, to_node_id: "submodel_runtime/grouped/t" }],
+      placed,
+    )
+    expect(dissolved.nodes[0].data._savedAddress).toEqual({ submodel: null, nodeId: "t" })
+    // An address, never sent: the request carries the saved forms it finds.
+    const sent = documentRequestGraph({ nodes: dissolved.nodes, edges: [] }, baseline)
+    expect(JSON.stringify(sent)).not.toContain("_savedAddress")
+    expect(editor(sent.nodes[0])?.saved_settings).toBe('{"rate":1.0}')
   })
 })

@@ -1718,7 +1718,9 @@ node's proposed configuration to `/api/pipeline/node/save` and parses the
 authoritative document. `useScopedNodeSave` sends each part of the node that is as the
 saved baseline holds it with its saved form (`saved_code`, the code saved for its steps, also
 as the config's `code`, or `saved_steps` for a node saved with unfinished steps, and
-`saved_settings`), and every other part without one (`utils/documentRequest.savedFormsFor`).
+`saved_settings`), edited settings with the saved ones they began from
+(`settings_edited_from`), and every other part without one
+(`utils/documentRequest.savedFormsFor`).
 
 ## Recovery surfaces
 

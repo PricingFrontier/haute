@@ -16,6 +16,7 @@ import pytest
 
 from haute._config_io import collect_node_configs, config_path_for_node, load_node_config
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._polars_steps import referenced_step_inputs
 from haute._polars_steps_lift import canonical_steps
 from haute._types import NodeType, SubmodelDefinition, SubmodelEndpoint, SubmodelOutputPort
 from haute.codegen import graph_to_code, graph_to_code_multi
@@ -121,7 +122,9 @@ def test_the_sidecar_holds_no_steps_and_the_code_gives_them_back(
     assert "steps" not in _sidecar(tmp_path, node_type)
     assert 'df = df.filter(pl.col("premium") > 100)' in code
     node = _loaded(tmp_path)
-    assert node.data.config["steps"] == canonical_steps(node_type, STEPS)
+    assert node.data.config["steps"] == canonical_steps(
+        node_type, STEPS, inputs=referenced_step_inputs(STEPS)
+    )
     assert node.data.editor.steps_discarded is None
 
 
@@ -138,7 +141,7 @@ def test_a_hand_edit_to_one_statement_keeps_the_other_steps(
     steps = node.data.config["steps"]
     assert [step["kind"] for step in steps] == ["free_code", "with_column"]
     assert steps[0]["code"] == "df = df.pipe(lambda frame: frame)"
-    assert steps[1] == canonical_steps(node_type, STEPS)[1]
+    assert steps[1] == canonical_steps(node_type, STEPS, inputs=referenced_step_inputs(STEPS))[1]
 
 
 # A Model Score with no code is generated from its model's columns, which needs a model.
@@ -196,7 +199,9 @@ def test_an_unfinished_step_list_waits_in_the_pipeline_sidecar(
     assert "unfinished_steps" not in json.loads(
         (tmp_path / "main.haute.json").read_text(encoding="utf-8")
     )
-    assert _loaded(tmp_path).data.config["steps"] == canonical_steps(node_type, STEPS)
+    assert _loaded(tmp_path).data.config["steps"] == canonical_steps(
+        node_type, STEPS, inputs=referenced_step_inputs(STEPS)
+    )
 
 
 def _join(input_name: str) -> dict[str, Any]:

@@ -1604,6 +1604,70 @@ def _cross_join(root: Path, columns: Columns) -> Written:
     )
 
 
+#: Every option Polars' ``join`` takes that ``_regions_joined`` does not already pass.
+_JOIN_OPTIONS = (
+    'suffix="_right"',
+    "coalesce=True",
+    "coalesce=False",
+    "nulls_equal=True",
+    'build_side="prefer_right"',
+    "allow_parallel=False",
+    "force_parallel=True",
+)
+
+
+def _regions_joined(option: str, how: str = "left") -> Callable[[Path, Columns], Written]:
+    """A Transform joining the quotes to their region's name, its join carrying *option*."""
+
+    def write(root: Path, columns: Columns) -> Written:
+        joined_columns = (
+            [*_QUOTE_COLUMNS, "region_right", "region_name"]
+            if how == "full" and option != "coalesce=True"
+            else [*_QUOTE_COLUMNS, "region_name"]
+        )
+        return Written(
+            [
+                _QUOTE_INPUT,
+                _regions(root),
+                _Def(
+                    "joined",
+                    "@pipeline.polars\n"
+                    "def joined(quotes: pl.LazyFrame, regions: pl.LazyFrame) -> pl.LazyFrame:\n"
+                    f'    return quotes.join(regions, on="region", how="{how}", '
+                    f'validate="m:1", maintain_order="left_right", {option})',
+                    (_from_quotes(), ("regions", None, None)),
+                ),
+            ],
+            joined_columns,
+        )
+
+    return write
+
+
+@pytest.mark.parametrize(
+    ("option", "how"),
+    [*((option, "left") for option in _JOIN_OPTIONS), ("coalesce=True", "full")],
+)
+def test_a_join_option_polars_accepts_answers_every_way(
+    tmp_path: Path,
+    option: str,
+    how: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EXE-04: a join option that cannot change how many rows a join returns is read as
+    such, so the join previews, runs from the command line and deploys alike. A full join
+    can answer a quote with other than one row, which a deployment answers alone
+    (``MEANT["one row per quote"]``), so it is held at the node."""
+    project = _generated_project(
+        tmp_path, Generated(NodeType.POLARS, "joined", _regions_joined(option, how))
+    )
+    if how == "full":
+        _assert_one_answer(_answers(project, Target("joined", leaf="leaf.py"), capsys, monkeypatch))
+        return
+    _assert_every_target(project, capsys, monkeypatch)
+
+
 def test_an_unmeasured_boundary_is_refused_without_a_cap(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1622,6 +1686,13 @@ def test_an_unmeasured_boundary_is_refused_without_a_cap(
         assert refused.refusal is not None and meant.words in refused.refusal, (
             f"{way}: {refused.show()}"
         )
+        # EXE-05: one message naming the node, the join and what works instead.
+        assert "crossed" in refused.refusal, f"{way}: {refused.show()}"
+        assert "Edge Join set to Cross" in refused.refusal, f"{way}: {refused.show()}"
+        assert "hard memory cap" in refused.refusal, f"{way}: {refused.show()}"
+        assert "metadata" not in refused.refusal, f"{way}: {refused.show()}"
+    assert "group-by" not in (answers[Way.DRY_RUN].refusal or "")
+    assert "'join' at node 'crossed'" in (answers[Way.DRY_RUN].refusal or "")
     assert "not admitted" in MEANT
     assert capped.refusal is None, capped.show()
     assert capped.rows == ran.rows
@@ -1774,25 +1845,16 @@ def _constant_cross_join(root: Path, columns: Columns) -> Written:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="EXE-05: a cross join with a one-row Constant is refused without a cap",
-)
 def test_a_transform_crossing_a_constant_answers_every_way(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """EXE-05: a cross join whose other side is a one-row Constant cannot grow, so it is
+    admitted every way, without a memory cap."""
     project = _generated_project(
         tmp_path, Generated(NodeType.POLARS, "priced", _constant_cross_join)
     )
 
-    answers = _answers(project, Target("quote_response"), capsys, monkeypatch)
-    admitted = {
-        way: lambda answer: _refuses(answer, "cross_join_unmeasured")
-        for way in answers
-        if way is not Way.PYTHON
-    }
-    _owned("EXE-05", answers, admitted)
+    _assert_one_answer(_answers(project, Target("quote_response"), capsys, monkeypatch))
 
 
 def _csv_quotes(root: Path, columns: Columns) -> Written:

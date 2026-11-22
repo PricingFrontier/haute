@@ -13,6 +13,10 @@ export type LiteralOperand = {
   kind: "literal"
   type: LiteralType
   value: number | string | boolean | null
+  /** A number's spelling as Python writes it, while the server would write the number as
+   * this browser sends it otherwise: `1.0`, `1e20`, `-0.0`, an integer past 2^53
+   * (`numberSpelling.ts`, CGEN-09). */
+  text?: string
 }
 
 export type ColumnOperand = { kind: "column"; name: string }

@@ -19,5 +19,6 @@ tests/test_property.py
 tests/test_rating_step.py
 tests/test_save_precondition_properties.py
 tests/test_scoring_metamorphic_properties.py
+tests/test_spelled_settings_properties.py
 tests/test_submodel_endpoint_properties.py
 tests/test_v2_codec_and_shred.py

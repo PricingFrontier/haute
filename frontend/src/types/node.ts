@@ -68,6 +68,7 @@ export interface NodeEditorState {
   saved_code?: string
   saved_steps?: string
   saved_settings?: string
+  settings_edited_from?: string
 }
 
 export interface HauteNodeData extends Record<string, unknown> {
@@ -116,6 +117,15 @@ export interface HauteNodeData extends Record<string, unknown> {
   _defaultInputName?: string | null
   _sourceHandleInputNames?: Record<string, string>
   _configReference?: string
+  /** Where this node was when the document was loaded, once a graph change has moved it
+   * (its answer's `moved`): its identity in every saved baseline since, whose nodes keep it
+   * too, by which `utils/documentRequest.savedFormsFor` finds its baseline node. An address,
+   * never a copy. Kept through later moves, saves, Undo and Redo; never sent. */
+  _savedAddress?: { submodel: string | null; nodeId: string }
+  /** For a copy a graph change made (a dissolve of one occurrence of a definition others use),
+   * the identities of what it was copied from, nearest first: its saved forms until a save
+   * holds its own. Kept like `_savedAddress`; never sent. */
+  _savedOrigins?: { submodel: string | null; nodeId: string }[]
   _sourceFile?: string
   _sourceSpan?: {
     start_line: number

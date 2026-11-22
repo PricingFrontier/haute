@@ -19,6 +19,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._polars_steps import (
     RenderedSteps,
+    referenced_step_inputs,
     render_polars_steps,
 )
 from haute._polars_steps_lift import canonical_steps
@@ -311,7 +312,7 @@ def _lifted(
 ) -> list[dict[str, Any]]:
     """The steps a stepped node's code loads back as (READ-22, READ-44): their canonical
     form."""
-    return canonical_steps(NodeType(node_type), steps)
+    return canonical_steps(NodeType(node_type), steps, inputs=referenced_step_inputs(steps))
 
 
 # ---------------------------------------------------------------------------

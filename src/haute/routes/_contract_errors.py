@@ -15,6 +15,7 @@ from haute._output_assembler import OutputNestingKeyError
 from haute._workbench_input import WorkbenchInputError
 from haute._workbench_tables import WorkbenchTablesError
 from haute.errors import (
+    BatchSourceAmbiguousError,
     ConfigError,
     ContractMismatchError,
     ContractResolutionError,
@@ -67,6 +68,7 @@ PUBLIC_CONTRACT_ERROR_TYPES: tuple[type[HauteError], ...] = (
     RatingFactorMissingError,
     RatingFactorDtypeContractError,
     LiveSwitchScenarioError,
+    BatchSourceAmbiguousError,
     NodeConfigError,
     OutputNestingKeyError,
     InputPreparationError,

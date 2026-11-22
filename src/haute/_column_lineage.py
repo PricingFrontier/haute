@@ -136,6 +136,10 @@ class ColumnLineageAnalysis:
     demands_by_input: Mapping[str, frozenset[str]]
     reason: str
     unsupported_operation: str | None = None
+    recomputed_columns: frozenset[str] = frozenset()
+    """Names an operation computes rather than carries: a ``select``/``with_columns``
+    output that is not the unchanged input column, an aggregate, a rename's target or a
+    produced column. Every other output column is an input column carried by name."""
 
 
 _NO_OPERANDS: Mapping[str, int] = MappingProxyType({})
@@ -1586,6 +1590,18 @@ def _parse_group_by_agg(
     )
 
 
+UNSUPPORTED_JOIN_OPTION = "unsupported_join_option"
+"""The reason, as ``unsupported_join_option=<argument>``, a join argument is not read."""
+
+# Join arguments that choose how Polars runs a join, never its rows or its columns.
+_JOIN_EXECUTION_KEYWORDS = frozenset({"build_side", "allow_parallel", "force_parallel"})
+# Join arguments a row bound may ignore. ``coalesce`` changes the key columns, never the
+# rows. ``nulls_equal`` lets null keys match, and a ``validate=`` contract then counts a
+# null key as a key: Polars refuses a duplicated null key on the unique side, so the
+# contract's bound still holds. Column lineage reads neither.
+_JOIN_ROW_NEUTRAL_KEYWORDS = frozenset({"coalesce", "nulls_equal"})
+
+
 def _parse_join(
     call: ast.Call,
     input_names: frozenset[str],
@@ -1632,8 +1648,12 @@ def _parse_join(
             left_on_node = keyword.value
         elif keyword.arg == "right_on":
             right_on_node = keyword.value
+        elif keyword.arg in _JOIN_EXECUTION_KEYWORDS or (
+            cardinality_only and keyword.arg in _JOIN_ROW_NEUTRAL_KEYWORDS
+        ):
+            continue
         else:
-            return _ParseFailure("unsupported_join_option", "join")
+            return _ParseFailure(f"{UNSUPPORTED_JOIN_OPTION}={keyword.arg or '**'}", "join")
     supported_how = _CARDINALITY_JOIN_HOW if cardinality_only else _SUPPORTED_JOIN_HOW
     if how not in supported_how or (not cardinality_only and not suffix):
         return _ParseFailure("unsupported_join_semantics", "join")
@@ -2977,8 +2997,14 @@ def analyze_polars_lineage(
     selector_aliases: frozenset[str] = frozenset(),
     df_input: str | None = None,
     value_names: frozenset[str] = frozenset(),
+    value_dependencies: bool = False,
 ) -> ColumnLineageAnalysis:
     """Prove exact output schema and per-input demand for linear Polars code.
+
+    By default the demand is what execution reads: every expression a ``select``
+    evaluates, a filter's predicate, a sort's keys. With ``value_dependencies`` it is
+    only the input columns the demanded outputs' values are computed from (a join's keys
+    included), which is what sizes a computed column; it is never a projection.
 
     ``None`` input schemas are allowed for operations whose ownership does not
     depend on the complete schema.  A join requires exact schemas on both sides
@@ -3033,6 +3059,14 @@ def analyze_polars_lineage(
     demands_by_input: dict[str, set[str]] = {name: set() for name in normalised_inputs}
     for item in reversed(evaluated):
         operation = item.operation
+        value_demand = (
+            _value_demand_before(operation, demand, item.before_schema)
+            if value_dependencies
+            else None
+        )
+        if value_demand is not None:
+            demand = value_demand
+            continue
         if operation.kind is LineageOperationKind.SELECT:
             mapping = dict(operation.output_to_inputs)
             # Exact-output validation (or the forward SELECT transfer) proves
@@ -3110,6 +3144,7 @@ def analyze_polars_lineage(
                 right_schema=set(right_schema),
                 how=operation.how or "",
                 suffix=operation.suffix or "",
+                value_only=value_dependencies,
             )
             if routed is None:
                 # The shared router refuses a suffixed name that is also a real
@@ -3137,13 +3172,18 @@ def analyze_polars_lineage(
     # carry; a joined port always demands its keys).
     root_demand = demands_by_input[program.root_input]
     root_schema = normalised_inputs.get(program.root_input)
-    if root_schema and not _ensure_root_carrier(
-        program,
-        evaluated,
-        normalised_inputs,
-        root_schema,
-        root_demand,
-        input_dtypes,
+    # A value's dependencies are no projection, so they need no carrier.
+    if (
+        root_schema
+        and not value_dependencies
+        and not _ensure_root_carrier(
+            program,
+            evaluated,
+            normalised_inputs,
+            root_schema,
+            root_demand,
+            input_dtypes,
+        )
     ):
         return _unsupported("carrier_unresolvable", program.operations[-1].method)
     return ColumnLineageAnalysis(
@@ -3154,7 +3194,79 @@ def analyze_polars_lineage(
         ),
         reason="lineage_proven",
         unsupported_operation=None,
+        recomputed_columns=_recomputed_columns(evaluated),
     )
+
+
+def _value_demand_before(
+    operation: LineageOperation, demand: set[str], before_schema: frozenset[str] | None
+) -> set[str] | None:
+    """The columns before *operation* that the values of *demand* after it come from, or
+    ``None`` to take the execution demand, a safe superset, for an operation not modelled
+    here (a join routes its own, ``value_only``).
+
+    A computed output comes from what its own expression reads, an unpivot's value from
+    any of its ``on`` columns, a renamed column from its source, a ``fill_null`` value
+    from the column or from what fills it, and a generated row index from nothing. A
+    filter, a sort, a ``unique``, a drop of nulls, a drop and a row-only step carry their
+    columns' values unchanged: they read columns only to choose rows.
+    """
+    mapping = dict(operation.output_to_inputs)
+    kind = operation.kind
+    if kind in {LineageOperationKind.SELECT, LineageOperationKind.GROUP_BY_AGG}:
+        return {column for output in demand for column in mapping.get(output, ())}
+    if kind is LineageOperationKind.WITH_COLUMNS:
+        return (demand - set(mapping)) | {
+            column for output in demand & set(mapping) for column in mapping[output]
+        }
+    if kind is LineageOperationKind.RENAME:
+        reverse = {target: source for source, target in operation.renamed_columns}
+        return {reverse.get(column, column) for column in demand}
+    if kind is LineageOperationKind.WITH_ROW_INDEX:
+        return demand - set(operation.produced_columns)
+    if kind is LineageOperationKind.UNPIVOT:
+        assert operation.index_columns is not None
+        on = (
+            set(operation.subset_columns)
+            if operation.subset_columns is not None
+            else set(before_schema or ()) - set(operation.index_columns)
+        )
+        return (demand & set(operation.index_columns)) | (
+            on if demand - set(operation.index_columns) else set()
+        )
+    if kind is LineageOperationKind.READ_COLUMNS and operation.method == "fill_null":
+        return demand | set(operation.referenced_columns) if demand else demand
+    if (kind is LineageOperationKind.READ_COLUMNS and operation.method == "filter") or kind in {
+        LineageOperationKind.SORT,
+        LineageOperationKind.UNIQUE,
+        LineageOperationKind.DROP_NULLS,
+        LineageOperationKind.DROP,
+        LineageOperationKind.ROW_ONLY,
+    }:
+        return demand
+    return None
+
+
+def _recomputed_columns(evaluated: Sequence[_EvaluatedOperation]) -> frozenset[str]:
+    """The names any of *evaluated* computes rather than carries unchanged."""
+    names: set[str] = set()
+    for item in evaluated:
+        operation = item.operation
+        names.update(
+            name
+            for name, _refs in operation.output_to_inputs
+            if name not in operation.identity_outputs
+        )
+        names.update(target for _source, target in operation.renamed_columns)
+        names.update(operation.produced_columns)
+        if (
+            operation.kind is LineageOperationKind.READ_COLUMNS
+            and operation.method == "fill_null"
+            and operation.referenced_columns
+        ):
+            # Filled from columns: every column may now hold another column's values.
+            names.update(item.after_schema or ())
+    return frozenset(names)
 
 
 def analyze_polars_cardinality(
@@ -3204,10 +3316,16 @@ def analyze_polars_cardinality(
         if operation.kind is LineageOperationKind.JOIN:
             assert operation.right_input is not None
             assert operation.how is not None
-            if operation.how == "cross":
+            right_rows = normalised_inputs[operation.right_input]
+            # A cross join with a frame of at most one row (a Constant) cannot grow:
+            # it is the chain's rows with that row's columns added, bounded by the
+            # chain like a join on a unique key. A cross join with a frame that may
+            # hold more is the product nobody has measured, whatever the chain holds.
+            grows_by_product = operation.how != "cross" or right_rows > 1
+            if operation.how == "cross" and grows_by_product:
                 has_cross_join = True
             # An absent ``validate=`` normalises to ``m:m`` at parse time.
-            if operation.validate == "m:m":
+            if operation.validate == "m:m" and grows_by_product:
                 # Nothing bounds this join by an operand, so only the row
                 # product bounds it.
                 depends_on_many_to_many_join = True
@@ -3216,15 +3334,15 @@ def analyze_polars_cardinality(
             )
             # The frame this join consumes is whatever the chain holds now, not
             # the program's original root input.
-            operand_peak = max(operand_peak, current, normalised_inputs[operation.right_input])
+            operand_peak = max(operand_peak, current, right_rows)
             bound = join_cardinality_upper_bound(
                 current,
-                normalised_inputs[operation.right_input],
+                right_rows,
                 how=operation.how,
                 validate=operation.validate,
             )
             current = bound.max_rows
-            peak = max(peak, normalised_inputs[operation.right_input], current)
+            peak = max(peak, right_rows, current)
             evidence.extend(f"operation[{index}].{item}" for item in bound.evidence)
         elif operation.kind in {LineageOperationKind.SELECT, LineageOperationKind.WITH_COLUMNS}:
             operand_peak = max(operand_peak, current)

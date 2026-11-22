@@ -376,6 +376,7 @@ class TestSchemas:
             parent_file="main.py",
             source_revision="revision-2",
             graph={"nodes": [], "edges": []},
+            moved=[],
         )
         assert resp.status == "ok"
         assert resp.submodel_file == "modules/scoring.py"
@@ -444,6 +445,7 @@ class TestSchemas:
             source_revision="revision-2",
             instance_id="scoring",
             definition_id="definition_scoring",
+            moved=[],
         )
         assert resp.instance_id == "scoring"
         assert resp.definition_id == "definition_scoring"

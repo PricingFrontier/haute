@@ -416,6 +416,33 @@ class TestParseSubmodelSource:
         with pytest.raises(ParseError, match="outputs is not supported"):
             parse_submodel_source(source, "modules/pricing.py")
 
+    @pytest.mark.parametrize(
+        "construction",
+        [
+            'submodel = haute.Submodel(\n    "pricing",\n    "Pricing submodel",',
+            'submodel = haute.Submodel(\n    name="pricing",\n    description="Pricing submodel",',
+            'submodel: haute.Submodel = haute.Submodel(\n    "pricing",\n    "Pricing submodel",',
+        ],
+    )
+    def test_reads_its_name_and_description_however_the_constructor_gives_them(
+        self, construction: str
+    ) -> None:
+        """CGEN-01: as a pipeline's constructor is read."""
+        source = _VALID_SUBMODEL.replace(
+            'submodel = haute.Submodel(\n    "pricing",\n    description="Pricing submodel",',
+            construction,
+        )
+        assert source != _VALID_SUBMODEL
+        graph = parse_submodel_source(source, "modules/pricing.py")
+        assert (graph.pipeline_name, graph.pipeline_description) == ("pricing", "Pricing submodel")
+
+    def test_rejects_an_unknown_constructor_keyword(self) -> None:
+        source = _VALID_SUBMODEL.replace(
+            "    output_ports=[", '    colour="red",\n    output_ports=['
+        )
+        with pytest.raises(ParseError, match="unknown keyword 'colour'"):
+            parse_submodel_source(source, "modules/pricing.py")
+
     def test_rejects_missing_definition_contract(self) -> None:
         source = 'import haute\nsubmodel = haute.Submodel("pricing")\n'
 
@@ -429,7 +456,7 @@ class TestParseSubmodelSource:
                 'import haute\nsubmodel = haute.Submodel("pricing", '
                 'definition_id="one", definition_id="two", '
                 "input_ports=[], output_ports=[])\n",
-                "duplicate keyword",
+                "given 'definition_id' twice",
             ),
             (
                 'import haute\nsubmodel = haute.Submodel("pricing", '

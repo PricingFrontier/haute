@@ -4759,6 +4759,7 @@ def _analyse_polars_node_lineage(
     submodels: Mapping[str, Any] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
     known_port_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
+    value_dependencies: bool = False,
 ) -> tuple[ColumnLineageAnalysis, tuple[_LineageInputBinding, ...]] | None:
     # Node kinds whose ``code`` runs over their incoming frames are analysed with
     # compositional column lineage. An External File also binds its loaded
@@ -4805,6 +4806,7 @@ def _analyse_polars_node_lineage(
             selector_aliases=selector_aliases,
             df_input=df_input,
             value_names=value_names,
+            value_dependencies=value_dependencies,
         ),
         bindings,
     )

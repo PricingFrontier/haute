@@ -705,6 +705,127 @@ class TestWidthsFollowTheLineage:
         assert estimate.estimated_bytes is not None
         assert estimate.estimated_bytes / _OVERHEAD_MULTIPLIER >= 8 * rows
 
+    @pytest.mark.parametrize("name", ["risk_text", "risk_text_new"])
+    def test_a_column_replaced_under_its_own_name_is_sized_as_what_it_reads(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """EXE-08: a column the code replaces under an input column's name is as wide as
+        what it is computed from, as it is under a new name, never the old column's width."""
+        rows = self.ROWS
+        frame = pl.DataFrame(
+            {
+                "risk_text": ["abc"] * rows,
+                "description": [f"{i:04d}" + "x" * 4093 for i in range(rows)],
+            }
+        )
+        frame.write_parquet(tmp_path / "quotes.parquet")
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / "quotes.parquet"),
+        )
+        renamed = _make_transform_node(
+            node_id="t",
+            label="t",
+            config={"code": f"df = src.select(pl.col('description').alias('{name}'))"},
+        )
+        distinct = _make_transform_node(node_id="u", label="u", config={"code": "df = t.unique()"})
+        graph = PipelineGraph(
+            nodes=[source, renamed, distinct],
+            edges=[
+                GraphEdge(id="e1", source="src", target="t"),
+                GraphEdge(id="e2", source="t", target="u"),
+            ],
+        )
+
+        estimate = _boundary_estimate(graph, "u")
+
+        assert estimate.estimated_peak_bytes is not None
+        assert estimate.estimated_peak_bytes >= 4097 * rows
+
+    def test_a_recomputed_column_is_not_charged_what_the_other_expressions_read(
+        self, tmp_path: Path
+    ) -> None:
+        """EXE-08: a ``select`` evaluates every expression, but a recomputed numeric column
+        is sized from its own value's input, never as wide as a text column beside it."""
+        rows = self.ROWS
+        pl.DataFrame(
+            {
+                "n": list(range(rows)),
+                "description": [f"{i:04d}" + "x" * 4093 for i in range(rows)],
+            }
+        ).write_parquet(tmp_path / "quotes.parquet")
+
+        def estimate(code: str) -> int:
+            source = _make_source_node(
+                node_id="src",
+                label="src",
+                node_type="dataInput",
+                config=_ready_file_input_config(tmp_path / "quotes.parquet"),
+            )
+            selected = _make_transform_node(node_id="t", label="t", config={"code": code})
+            distinct = _make_transform_node(
+                node_id="u", label="u", config={"code": "df = t.unique()"}
+            )
+            graph = PipelineGraph(
+                nodes=[source, selected, distinct],
+                edges=[
+                    GraphEdge(id="e1", source="src", target="t"),
+                    GraphEdge(id="e2", source="t", target="u"),
+                ],
+            )
+            peak = _boundary_estimate(graph, "u").estimated_peak_bytes
+            assert peak is not None
+            return peak
+
+        carried = estimate("df = src.select('description', pl.col('n'))")
+        recomputed = estimate("df = src.select('description', (pl.col('n') + 1).alias('n'))")
+        assert recomputed == carried
+        # A column filled from the wide one can hold its values, so it is sized as it.
+        filled = estimate(
+            "df = src.select(pl.col('n').cast(pl.String), 'description')"
+            ".fill_null(pl.col('description')).select(pl.col('n').alias('result'))"
+        )
+        assert filled >= 4097 * rows
+
+    def test_a_column_filled_from_a_wider_one_keeps_its_name_and_takes_its_width(
+        self, tmp_path: Path
+    ) -> None:
+        """EXE-08: ``fill_null`` from a column can give a column kept under its own name the
+        other column's values, so it is sized as the wider of the two."""
+        rows = self.ROWS
+        pl.DataFrame(
+            {
+                "short": [None if i % 2 else "abc" for i in range(rows)],
+                "description": [f"{i:04d}" + "x" * 4093 for i in range(rows)],
+            }
+        ).write_parquet(tmp_path / "quotes.parquet")
+        source = _make_source_node(
+            node_id="src",
+            label="src",
+            node_type="dataInput",
+            config=_ready_file_input_config(tmp_path / "quotes.parquet"),
+        )
+        filled = _make_transform_node(
+            node_id="t",
+            label="t",
+            config={"code": "df = src.fill_null(pl.col('description')).select('short')"},
+        )
+        distinct = _make_transform_node(node_id="u", label="u", config={"code": "df = t.unique()"})
+        graph = PipelineGraph(
+            nodes=[source, filled, distinct],
+            edges=[
+                GraphEdge(id="e1", source="src", target="t"),
+                GraphEdge(id="e2", source="t", target="u"),
+            ],
+        )
+
+        peak = _boundary_estimate(graph, "u").estimated_peak_bytes
+
+        assert peak is not None
+        assert peak >= 4097 * rows
+
     def test_a_nested_column_is_measured(self, tmp_path: Path) -> None:
         path = tmp_path / "nested.parquet"
         self._frames()["nested"].write_parquet(path)
