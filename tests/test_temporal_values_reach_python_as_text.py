@@ -46,8 +46,8 @@ READERS_WITHOUT_TEMPORAL_COLUMNS: dict[tuple[str, str], tuple[int, str]] = {
     ),
     ("deploy/_scorer.py", "request_records"): (
         1,
-        "a request's own records, for readers that infer each value's type; a JSON request "
-        "already arrives as text",
+        "a frame request's records for readers that type each value: a value below a "
+        "microsecond is refused first (first_value_finer_than_microseconds)",
     ),
     ("routes/_banding_stats.py", "BandingStatsService._with_rule_counts"): (
         1,
@@ -72,7 +72,16 @@ READERS_WITHOUT_TEMPORAL_COLUMNS: dict[tuple[str, str], tuple[int, str]] = {
     ),
     ("routes/_optimiser_segments.py", "_categorical_levels"): (
         1,
-        "a level is shown by its label, written by _level_text; the row holds its bucket and sums",
+        "reads only each level's bucket and sums; the level itself is shown by its label, "
+        "written by _level_text",
+    ),
+    ("assistant/_tools.py", "_column_profile"): (
+        1,
+        "levels are listed for text and boolean columns only (_PROFILABLE_LEVEL_KINDS)",
+    ),
+    ("modelling/_metrics.py", "_ave_categorical_bins"): (
+        1,
+        "the category column is written through with_temporal_text before its frame is built",
     ),
     ("routes/_optimiser_service.py", "_ScenarioFrontierRangeAccumulator._carry_batch"): (
         1,
@@ -102,6 +111,7 @@ READERS_WITHOUT_TEMPORAL_COLUMNS: dict[tuple[str, str], tuple[int, str]] = {
 
 
 def _readers() -> Counter[tuple[str, str]]:
+    """Each function's row reads whose frame is not written through ``with_temporal_text``."""
     found: Counter[tuple[str, str]] = Counter()
     for path in sorted(SOURCE.rglob("*.py")):
         relative = path.relative_to(SOURCE).as_posix()
@@ -114,50 +124,84 @@ def _readers() -> Counter[tuple[str, str]]:
 
 def _visit(node: ast.AST, relative: str, scope: str, found: Counter[tuple[str, str]]) -> None:
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             inner = child.name if scope == "<module>" else f"{scope}.{child.name}"
-            if not _calls(child, _EXACT):
+            if not isinstance(child, ast.ClassDef):
+                exact_names = _exact_names(child)
                 for call in _own_calls(child):
-                    found[(relative, inner)] += 1
+                    assert isinstance(call.func, ast.Attribute)
+                    if not _exact(call.func.value, exact_names):
+                        found[(relative, inner)] += 1
             _visit(child, relative, inner, found)
-        elif isinstance(child, ast.ClassDef):
-            _visit(
-                child,
-                relative,
-                child.name if scope == "<module>" else f"{scope}.{child.name}",
-                found,
-            )
         elif scope == "<module>":
             _visit(child, relative, scope, found)
 
 
-def _own_calls(function: ast.AST) -> list[ast.Call]:
-    """The row reads in *function* itself, not in the functions it defines."""
-    calls: list[ast.Call] = []
+def _own_nodes(function: ast.AST) -> list[ast.AST]:
+    """The nodes of *function* itself, not of the functions or classes it defines."""
+    nodes: list[ast.AST] = []
     stack = list(ast.iter_child_nodes(function))
     while stack:
         node = stack.pop()
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
             continue
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in _ROW_READERS
-        ):
-            calls.append(node)
+        nodes.append(node)
         stack.extend(ast.iter_child_nodes(node))
-    return calls
+    return nodes
 
 
-def _calls(function: ast.AST, name: str) -> bool:
-    return any(
-        isinstance(node, ast.Call)
-        and (
-            (isinstance(node.func, ast.Name) and node.func.id == name)
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == name)
-        )
-        for node in ast.walk(function)
+def _own_calls(function: ast.AST) -> list[ast.Call]:
+    """The row reads in *function* itself."""
+    return [
+        node
+        for node in _own_nodes(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _ROW_READERS
+    ]
+
+
+def _is_exact_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id == _EXACT)
+        or (isinstance(node.func, ast.Attribute) and node.func.attr == _EXACT)
     )
+
+
+def _exact(node: ast.AST, exact_names: set[str]) -> bool:
+    """Whether *node*, a read's frame, was written through ``with_temporal_text``: the call
+    itself, a method chain on it (``with_temporal_text(frame).head(5)``), or a name this
+    function assigns only from one of those."""
+    while True:
+        if _is_exact_call(node):
+            return True
+        if isinstance(node, ast.Name):
+            return node.id in exact_names
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            node = node.func.value
+            continue
+        return False
+
+
+def _exact_names(function: ast.AST) -> set[str]:
+    """The names *function* assigns only from frames written through ``with_temporal_text``."""
+    values: dict[str, list[ast.AST]] = {}
+    for node in _own_nodes(function):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    values.setdefault(target.id, []).append(node.value)
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign) and isinstance(node.target, ast.Name):
+            values.setdefault(node.target.id, []).append(node.value or node.target)
+    exact: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, assigned in values.items():
+            if name not in exact and all(_exact(value, exact) for value in assigned):
+                exact.add(name)
+                changed = True
+    return exact
 
 
 def test_every_row_read_writes_temporal_columns_as_text_or_says_why_it_holds_none() -> None:

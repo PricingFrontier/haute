@@ -1398,16 +1398,17 @@ later write and cleanup checks still compare against the captured identities.
   (`config/<type>/<function name>.json`, a character outside ASCII written as six or seven)
   and a submodel's module and sidecar (`modules/<name>.py`, `modules/<name>.haute.json`) are
   named from the name, so one rule, `_file_ops.written_file_length_problem`, judges them as
-  a write makes them: each file's name, and on Windows without long paths each path, plus
-  the eight to ten characters its atomic write's staging name adds (`_temp_path_for`), must
-  fit in 255 characters for a name and 259 for a path. The editor identity request applies
-  it to each named node whose type keeps a settings file, under the project's pipeline
-  folder (`settings_file_problem`): the refusal is the node's `collision`, "Node '<name>'
-  would keep its settings in config/<type>/<file>, and its file name would have N
-  characters, more than the L a saved file's name may have. Choose a shorter name." (or
-  the path's count and Windows' limit), so the rename dialog and the node panel show it
-  before anything is saved. `POST /api/submodel/create` refuses a submodel name whose module
-  or sidecar fails it with a 400 in the same words, naming the submodel.
+  a write makes them: every folder's name and the file's, counted as the filesystem counts
+  them (UTF-16 units on Windows, UTF-8 bytes elsewhere), may be at most 255 long, less for
+  the file what its write's staging names add (`_temp_path_for`, or the save's own); on
+  Windows without long paths the whole path at most 259, less the same. The editor identity
+  request applies it to each named node whose type keeps a settings file, under the
+  project's pipeline folder (`settings_file_problem`): the refusal is the node's
+  `collision`, "Node '<name>' would keep its settings in config/<type>/<file>, and its file
+  name would be N bytes long, more than the L a saved file's name may be. Choose a shorter
+  name." (or the path's count and Windows' limit), so the rename dialog and the node panel
+  show it before anything is saved. `POST /api/submodel/create` refuses a submodel name
+  whose module or sidecar fails it with a 400 in the same words, naming the submodel.
 - **`apiInput` validation guardrails**: An unknown column `type` string is rejected at
   validate time; two table labels whose filesystem-safe sanitisation collides *casefolded*
   are rejected (case-insensitive filesystems would otherwise let the second table's parquet

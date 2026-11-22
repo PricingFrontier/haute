@@ -2790,3 +2790,65 @@ class TestLiveSyncWatchesWhatItReads:
         timings = asyncio.run(_run())
         assert len(timings) == 20
         assert max(timings) < 0.1, timings
+
+
+def test_a_flush_still_running_when_the_watcher_fails_is_finished_before_it_exits(
+    pipeline_dir: Path,
+) -> None:
+    """Codex review: a batch's thread is running, a newer event restarts the debounce, then
+    the watcher fails. The watcher does not exit, nor so restart, before that batch has
+    published: a restarted watcher's batches never overlap it."""
+    import threading
+
+    from haute.server import _file_watcher
+
+    use_project(pipeline_dir)
+    first = pipeline_dir / "first.py"
+    second = pipeline_dir / "second.py"
+    first.write_text("first = True\n")
+    second.write_text("second = True\n")
+    known = {str(first.resolve()): first, str(second.resolve()): second}
+    in_thread = threading.Event()
+    published: list[str] = []
+
+    class _FakeDocument:
+        load_status = "ready"
+        nodes: list[object] = []
+
+        def model_dump(self, **_kwargs: object) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+    def _load(path: Path, **_kwargs: object) -> _FakeDocument:
+        if path == first:
+            in_thread.set()
+            # Still loading when the watcher fails; finishes a moment later.
+            threading.Event().wait(0.3)
+        return _FakeDocument()
+
+    class _BusStub:
+        def publish(self, event: str, payload: dict[str, Any]) -> None:
+            published.append(Path(payload["source_file"]).name)
+
+    async def _changes_then_failure(*dirs, **kw):
+        del dirs, kw
+        yield [(Change.modified, str(first))]
+        assert await asyncio.to_thread(in_thread.wait, 10)
+        yield [(Change.modified, str(second))]
+        raise RuntimeError("the watcher failed")
+
+    async def _run() -> list[str]:
+        with (
+            patch("watchfiles.awatch", _changes_then_failure),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._known_pipeline_paths", return_value=known),
+            patch("haute.server._discovered_pipeline_paths", return_value=known),
+            patch("haute.server.invalidate_pipeline_index"),
+            patch("haute.server.load_pipeline_editor_document", side_effect=_load),
+            patch("haute.server.default_bus", _BusStub()),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+            with pytest.raises(RuntimeError, match="the watcher failed"):
+                await _file_watcher()
+            return list(published)
+
+    assert asyncio.run(_run()) == ["first.py"]

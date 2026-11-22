@@ -277,7 +277,7 @@ def test_a_name_too_long_for_its_settings_file_is_refused_when_it_is_typed(
     collision = refused["identities"][0]["collision"]
     assert collision.startswith(f"Node {too_long!r} would keep its settings in config/banding/")
     # {name}.json is staged as {name}.<8 hex>.tmp: 8 longer than 255 allows.
-    assert "its file name would have 257 characters, more than the 247" in collision
+    assert "its file name would be 257 bytes long, more than the 247" in collision
 
 
 def test_a_name_too_long_for_its_settings_path_on_windows_is_refused(

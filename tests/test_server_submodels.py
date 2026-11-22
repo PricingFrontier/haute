@@ -131,7 +131,7 @@ class TestCreateSubmodel:
         detail = resp.json()["detail"]
         assert detail.startswith(f"Submodel {'r' * 240!r} would keep its module in modules/")
         # Its sidecar, {name}.haute.json, is staged as {name}.haute.<8 hex>.tmp: 8 longer.
-        assert "would have 251 characters, more than the 247 a saved file's name" in detail
+        assert "would be 251 bytes long, more than the 247 a saved file's name" in detail
         assert not (pipeline_dir / "modules").exists()
 
     def test_create_submodel_too_few_nodes_returns_400(

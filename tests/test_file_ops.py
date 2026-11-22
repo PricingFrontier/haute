@@ -1097,8 +1097,9 @@ def test_a_server_start_removes_the_staging_files_left_under_haute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SRV-05: a settings write, an undelete or a branch-away killed at its rename leaves
-    its staging file under .haute; the next start removes it. A staging file newer than
-    the start is a live writer's and stays, as does every other file."""
+    its staging file under .haute; the next start removes it. A staging file written
+    within the minute before the start may be another server's live write and stays, as
+    does a newer one and every other file."""
     import os
 
     from haute import _file_ops, server
@@ -1107,7 +1108,8 @@ def test_a_server_start_removes_the_staging_files_left_under_haute(
     use_project(tmp_path)
     haute_dir = tmp_path / ".haute"
     (haute_dir / "uploads").mkdir(parents=True)
-    before_start = _file_ops.PROCESS_STARTED - 60
+    before_start = _file_ops.PROCESS_STARTED - 2 * _file_ops.ATOMIC_STAGE_SETTLE_SECONDS
+    just_before = _file_ops.PROCESS_STARTED - 1
     left = [
         haute_dir / "pipeline-settings.3b78e6a0.tmp",
         haute_dir / "trash.0123abcd.tmp",
@@ -1119,9 +1121,12 @@ def test_a_server_start_removes_the_staging_files_left_under_haute(
     for path in left:
         os.utime(path, (before_start, before_start))
     live = haute_dir / "state.fedcba98.tmp"
+    settling = haute_dir / "trash.76543210.tmp"
     kept = haute_dir / "state.json"
     live.write_text("{}")
+    settling.write_text("{}")
     kept.write_text("{}")
+    os.utime(settling, (just_before, just_before))
     os.utime(kept, (before_start, before_start))
 
     server._remove_leftover_staging()
@@ -1129,4 +1134,54 @@ def test_a_server_start_removes_the_staging_files_left_under_haute(
     assert sorted(p.name for p in haute_dir.rglob("*") if p.is_file()) == [
         "state.fedcba98.tmp",
         "state.json",
+        "trash.76543210.tmp",
     ]
+
+
+def test_a_haute_folder_reached_through_a_link_is_not_searched(tmp_path: Path) -> None:
+    """Codex review: a .haute that links elsewhere could take startup cleanup outside the
+    project, so it is not searched at all."""
+    import os
+
+    from haute import _file_ops, server
+    from tests._project import use_project
+
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    project.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "settings.0123abcd.tmp").write_text("{}")
+    before_start = _file_ops.PROCESS_STARTED - 2 * _file_ops.ATOMIC_STAGE_SETTLE_SECONDS
+    os.utime(elsewhere / "settings.0123abcd.tmp", (before_start, before_start))
+    try:
+        (project / ".haute").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this machine cannot make a directory link")
+    use_project(project)
+
+    server._remove_leftover_staging()
+
+    assert (elsewhere / "settings.0123abcd.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    ("windows", "refused"),
+    [(False, True), (True, False)],
+    ids=["utf-8-bytes", "utf-16-units"],
+)
+def test_a_name_is_counted_as_its_filesystem_counts_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool, refused: bool
+) -> None:
+    """Codex review: 100 Japanese characters and .json are 305 UTF-8 bytes, past what ext4
+    and APFS hold, and 105 UTF-16 units, which NTFS holds."""
+    from haute import _file_ops
+
+    monkeypatch.setattr(_file_ops, "_IS_WINDOWS", windows)
+    monkeypatch.setattr(_file_ops, "windows_long_paths_enabled", lambda: True)
+    target = tmp_path / ("日" * 100 + ".json")
+
+    problem = _file_ops.written_file_length_problem([target])
+
+    assert (problem is not None) == refused
+    if refused:
+        assert "its file name would be 305 bytes long" in problem

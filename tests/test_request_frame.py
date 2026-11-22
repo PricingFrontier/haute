@@ -518,3 +518,19 @@ def test_the_databricks_model_frames_by_the_schema(tmp_path):
     assert pl.from_pandas(
         exposed.predict(MagicMock(), pd.DataFrame({"quote_id": [1]}))
     ).to_dicts() == [{"quote_id": 1, "age": None, "rate": None}]
+
+
+def test_a_frame_request_read_as_records_refuses_a_value_below_a_microsecond() -> None:
+    """Codex review: a frame passed to an input that reads records hands on Python values,
+    which hold microseconds, so a value below one is refused by its column and quote
+    rather than cut short; a value a microsecond holds passes as it is."""
+    from haute.deploy._scorer import request_records
+    from haute.errors import QuoteInputError
+
+    at = pl.Series([1_000, 1_100], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    with pytest.raises(QuoteInputError, match="below a microsecond") as refused:
+        request_records(pl.DataFrame({"x": [1, 2], "at": at}))
+    assert (refused.value.column, refused.value.quote) == ("at", 1)
+
+    whole = pl.Series([1_000, 2_000], dtype=pl.Int64).cast(pl.Datetime("ns"))
+    assert len(request_records(pl.DataFrame({"at": whole}))) == 2

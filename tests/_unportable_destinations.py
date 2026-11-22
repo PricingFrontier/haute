@@ -19,8 +19,9 @@ UNPORTABLE_DESTINATIONS = [
     pytest.param("exports/run./rate{ext}", "ends with a dot or a space", id="trailing-dot"),
     pytest.param("exports/run /rate{ext}", "ends with a dot or a space", id="trailing-space"),
     pytest.param("exports/con{ext}", "reserved device name", id="device-name"),
-    pytest.param("exports/" + "r" * 300 + "{ext}", "a saved file's name may have", id="long"),
+    pytest.param("exports/" + "r" * 300 + "{ext}", "a saved file's name may be", id="long"),
     pytest.param("exports/taken/rate{ext}", "which is a file, not a folder", id="file-folder"),
+    pytest.param("exports/" + "f" * 300 + "/rate{ext}", "a folder's name may be", id="long-folder"),
 ]
 
 

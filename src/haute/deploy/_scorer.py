@@ -37,10 +37,12 @@ from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_utils import streaming_collect
 from haute._ram_estimate import RuntimeSourceFiles
+from haute._temporal_text import first_value_finer_than_microseconds
 from haute._types import GraphNode, PipelineGraph, _Frame
 from haute._workbench_input import workbench_request_frames
 from haute._workbench_output import as_response
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_quote_input, is_workbench_input
+from haute.errors import QuoteInputError
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
     execute_lazy_graph,
@@ -137,8 +139,25 @@ def reads_records(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
 
 
 def request_records(input_df: DeployInput) -> tuple[Mapping[str, Any], ...]:
-    """The request's quotes as records, whichever form the request came in."""
-    return input_df.records if isinstance(input_df, QuoteRequest) else tuple(input_df.to_dicts())
+    """The request's quotes as records, whichever form the request came in.
+
+    A frame's records hold Python values, which the readers of records type from the values
+    themselves, so a temporal value stays a ``datetime``; one below a microsecond, which a
+    ``datetime`` cannot hold, is refused naming its column and quote rather than cut short.
+    A JSON request arrives as its text and loses nothing.
+    """
+    if isinstance(input_df, QuoteRequest):
+        return input_df.records
+    finer = first_value_finer_than_microseconds(input_df)
+    if finer is not None:
+        column, row = finer
+        raise QuoteInputError(
+            f"Quote {row}'s {column!r} has a part-second below a microsecond, which a request "
+            "read as records cannot carry: send it as ISO text, or round it to microseconds.",
+            column=column,
+            quote=row,
+        )
+    return tuple(input_df.to_dicts())
 
 
 @dataclass(slots=True)

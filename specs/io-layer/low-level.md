@@ -126,21 +126,28 @@ The codes are retried only on Windows; every error on another platform and every
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
 
-A writer killed before its rename leaves its stage, and nothing else would remove it. A stage
-is left by a process that is gone exactly when it was last written before this process started
-(`_file_ops.PROCESS_STARTED`, this module's import): every live writer of this process stages
-after it, and another live process's stage is newer. `remove_files_left_before_start(paths)`
-removes each regular file of `paths` older than that, follows and removes no link, and returns
-the files it could not remove for the caller to log; `staging_files_under(folder)` lists every
-atomic-write stage in a folder tree. The editor's server runs both over the project's `.haute`
-folder when it starts (`server.py::_remove_leftover_staging`, after the save records are
-settled), so a settings write, an undelete or a branch-away killed at its rename leaves nothing
-there after the next start. A Data Output's Write clears its destination's leftover staged
-copies (`.<stem>.haute-stage-<32 hex><suffix>`) the same way before it stages its own
-(`executor.remove_leftover_data_output_staging`): the route's parent does it before it hands
-its worker the staging path, and `prepare_data_output` when it stages the file itself. After a
-Write cut short as it published its file, the next Write to that destination leaves the output
-alone in its folder.
+A writer killed before its rename leaves its stage, and nothing else would remove it. This
+process's start (`_file_ops.PROCESS_STARTED`, this module's import) does not alone prove
+another process's writer dead, so each removal names what does.
+`remove_files_left_before_start(paths, settled_seconds=)` removes each regular file of
+`paths` last written before the start and at least `settled_seconds` before it, follows and
+removes no link, and returns the files it could not remove for the caller to log;
+`staging_files_under(folder)` lists every atomic-write stage in a folder tree, entering
+neither the folder nor any folder under it through a link or junction. The editor's server
+runs both over the project's `.haute` folder when it starts (`server.py::_remove_leftover_staging`,
+after the save records are settled), with `ATOMIC_STAGE_SETTLE_SECONDS` (60): an atomic write
+renames within seconds, another server's included. A `.haute` reached through a link, or
+outside the project (`ordinary_path_problem`), is not searched. So a settings write, an
+undelete or a branch-away killed at its rename leaves nothing there after the next start.
+
+A Data Output's Write holds its destination's lock from staging its copy to publishing it
+(`executor.data_output_destination_lock`, a `FileLock` under the temporary folder's
+`haute-output-locks/`, keyed by the destination's path): the route's transaction and
+`write_data_output` take it, so a second server or a run writing the same file waits. Holding
+it, the Write removes every staged copy of that destination but its own
+(`remove_leftover_data_output_staging`, which refuses to run without the lock), whatever its
+age, since no other Write of the file can be live. After a Write cut short as it published
+its file, the next Write to that destination leaves the output alone in its folder.
 
 A path Windows refuses for its length is named rather than left a bare "file not found".
 While `LongPathsEnabled` is off, Windows takes a file path of at most `MAX_PATH` less its NUL

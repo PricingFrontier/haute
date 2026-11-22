@@ -140,40 +140,62 @@ def atomic_copy_names(target: Path) -> list[Path]:
     return [_temp_path_for(target), _backup_path_for(target)]
 
 
+def _name_units(name: str) -> int:
+    """*name*'s length as the filesystem counts it: UTF-16 code units on Windows (NTFS),
+    UTF-8 bytes elsewhere (ext4, APFS)."""
+    return len(name.encode("utf-16-le")) // 2 if _IS_WINDOWS else len(name.encode("utf-8"))
+
+
+def _unit_name() -> str:
+    return "characters" if _IS_WINDOWS else "bytes"
+
+
 def written_file_length_problem(
     targets: Iterable[Path], *, staged_as: Callable[[Path], Sequence[Path]] = atomic_write_names
 ) -> str | None:
     """Why files written at *targets* cannot be held for their length, or ``None``.
 
-    Counts each file as a write of it is made: a write stages it under longer sibling
-    names first (*staged_as*: an atomic write's, :func:`_temp_path_for`, unless the caller
-    writes another way), so the limit a target's own name or path must meet is the
-    platform's less the longest difference. A file name may have at most
-    ``MAX_FILE_NAME_CHARS`` characters everywhere; on Windows without long paths, a path
-    at most ``WINDOWS_MAX_PATH_CHARS``. The words name the first target past a limit and
+    Counts every name of each path as the filesystem does (:func:`_name_units`): each
+    folder's, and the file's as a write of it is made, which stages it under longer
+    sibling names first (*staged_as*: an atomic write's, :func:`_temp_path_for`, unless
+    the caller writes another way), so the limit a target's own name must meet is the
+    platform's less the longest difference. A name may be at most ``MAX_FILE_NAME_CHARS``
+    long everywhere; on Windows without long paths, a path at most
+    ``WINDOWS_MAX_PATH_CHARS``. The words name the first name or path past a limit and
     that limit, for a caller to say which name made it.
     """
     staging_extra = {
-        target: max([0, *(len(staged.name) - len(target.name) for staged in staged_as(target))])
+        target: max(
+            [0, *(_name_units(s.name) - _name_units(target.name) for s in staged_as(target))]
+        )
         for target in targets
     }
+    units = _unit_name()
     # A name too long is too long everywhere, so it is told before a path.
     for target, extra in staging_extra.items():
+        folders = target.parent.parts[1:] if target.anchor else target.parent.parts
+        for folder in folders:
+            if _name_units(folder) > MAX_FILE_NAME_CHARS:
+                shown = folder if len(folder) <= 40 else folder[:40] + "…"
+                return (
+                    f"its folder {shown!r} would be {_name_units(folder)} {units} "
+                    f"long, more than the {MAX_FILE_NAME_CHARS} a folder's name may be"
+                )
         name_limit = MAX_FILE_NAME_CHARS - extra
-        if len(target.name) > name_limit:
+        if _name_units(target.name) > name_limit:
             return (
-                f"its file name would have {len(target.name)} characters, more than the "
-                f"{name_limit} a saved file's name may have"
+                f"its file name would be {_name_units(target.name)} {units} long, more than "
+                f"the {name_limit} a saved file's name may be"
             )
     if not _IS_WINDOWS or windows_long_paths_enabled():
         return None
     for target, extra in staging_extra.items():
         path = os.path.abspath(target)
         path_limit = WINDOWS_MAX_PATH_CHARS - extra
-        if len(path) > path_limit:
+        if _name_units(path) > path_limit:
             return (
-                f"its path would have {len(path)} characters, more than the {path_limit} "
-                "Windows allows a saved file's path while long paths are disabled"
+                f"its path would be {_name_units(path)} characters long, more than the "
+                f"{path_limit} Windows allows a saved file's path while long paths are disabled"
             )
     return None
 
@@ -272,27 +294,55 @@ def is_staging_name(name: str) -> bool:
 PROCESS_STARTED = time.time()
 
 
+#: How long an atomic write may hold its stage before the rename: it writes a small file
+#: and renames it within seconds, so a stage older than this was left by a writer that died.
+ATOMIC_STAGE_SETTLE_SECONDS = 60.0
+
+
+def _plain_directory(path: Path) -> bool:
+    """Whether *path* is a directory reached as itself: not a link, junction or other
+    reparse point, which would take a walk outside the folder it was asked to search."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+    )
+    return stat.S_ISDIR(info.st_mode) and not reparse
+
+
 def staging_files_under(folder: Path) -> list[Path]:
     """Every atomic write's staging file (:func:`is_staging_name`) in *folder* and the
-    folders under it; none when *folder* does not exist."""
+    folders under it; none when *folder* does not exist. Neither *folder* nor any folder
+    under it is entered through a link or junction, so nothing outside it is listed."""
+    if not _plain_directory(folder):
+        return []
     found: list[Path] = []
-    for directory, _folders, names in os.walk(folder):
+    for directory, folders, names in os.walk(folder):
+        folders[:] = [name for name in folders if _plain_directory(Path(directory, name))]
         found.extend(Path(directory, name) for name in names if is_staging_name(name))
     return found
 
 
-def remove_files_left_before_start(paths: Iterable[Path]) -> list[tuple[Path, OSError]]:
+def remove_files_left_before_start(
+    paths: Iterable[Path], *, settled_seconds: float = 0.0
+) -> list[tuple[Path, OSError]]:
     """Remove each regular file of *paths* last written before this process started
-    (:data:`PROCESS_STARTED`), and leave every other one: a live writer's file is newer.
+    (:data:`PROCESS_STARTED`) and at least *settled_seconds* before then, and leave every
+    other one.
 
-    Returns the files that could not be removed, each with its error, for the caller to
-    log; a file already gone is no failure. A link is never followed or removed.
+    The start alone proves nothing of another process still writing: a caller either holds
+    the lock every writer of those files holds (a Data Output's destination lock), or names
+    how long a live writer can take (*settled_seconds*). Returns the files that could not
+    be removed, each with its error, for the caller to log; a file already gone is no
+    failure. A link is never followed or removed.
     """
     failed: list[tuple[Path, OSError]] = []
     for path in paths:
         try:
             info = path.lstat()
-            if stat.S_ISREG(info.st_mode) and info.st_mtime < PROCESS_STARTED:
+            if stat.S_ISREG(info.st_mode) and info.st_mtime < PROCESS_STARTED - settled_seconds:
                 path.unlink()
         except FileNotFoundError:
             continue

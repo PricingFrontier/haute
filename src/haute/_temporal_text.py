@@ -181,15 +181,37 @@ def _nested_text(expression: pl.Expr, dtype: pl.DataType, separator: str) -> pl.
     return expression
 
 
+def first_value_finer_than_microseconds(frame: pl.DataFrame) -> tuple[str, int] | None:
+    """The first top-level datetime, time or duration column of *frame* holding a value
+    below a microsecond, with that value's row, or ``None``: what a Python value, which
+    holds microseconds, would cut short. A caller that must hand rows on as Python values
+    refuses them rather than lose the digits."""
+    for name, dtype in frame.schema.items():
+        if column_kind(dtype) not in TEMPORAL_TEXT_KINDS:
+            continue
+        if column_kind(dtype) != "time" and getattr(dtype, "time_unit", None) != "ns":
+            continue
+        below = frame.select(
+            (pl.col(name).to_physical() % _NANOSECONDS_PER_MICROSECOND != 0).arg_true().first()
+        ).item()
+        if below is not None:
+            return name, int(below)
+    return None
+
+
 class TemporalTextError(ValueError):
     """Text that names no value of its column's type, or one finer than the column holds."""
 
 
 # A datetime's or time's text: its whole seconds (a datetime's day may be all of it), a
 # part-second of up to nine digits, and an offset ("Z", "+05:30", "+05:21:10").
+# The day and clock hold no fraction mark, so a part-second is always the fraction group's,
+# after a full stop or a comma (both ISO 8601's), and its offset may be written with
+# colons or without ("+00:00", "+0000"). Text of any other shape matches nothing and is
+# refused: a part-second never reaches fromisoformat, which would cut it to six digits.
 _TEMPORAL_PARTS = re.compile(
-    r"(?P<whole>.*?(?:[0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?)(?:\.(?P<fraction>[0-9]+))?"
-    r"(?P<offset>Z|[+-][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?"
+    r"(?P<whole>[^.,]*?(?:[0-9]{2}:?[0-9]{2}(?::?[0-9]{2})?)?)(?:[.,](?P<fraction>[0-9]+))?"
+    r"(?P<offset>Z|[+-][0-9]{2}(?::?[0-9]{2}(?::?[0-9]{2})?)?)?"
 )
 # A duration's text as temporal_text writes it, str(timedelta)'s layout to nanoseconds.
 _DURATION_PARTS = re.compile(
@@ -332,7 +354,8 @@ def _physical_dtype(dtype: pl.DataType) -> pl.DataType:
     if isinstance(dtype, pl.List):
         return pl.List(_physical_dtype(_instance(dtype.inner)))
     if isinstance(dtype, pl.Array):
-        return pl.Array(_physical_dtype(_instance(dtype.inner)), dtype.shape)
+        # The inner type holds the dimensions past the first: give the first alone.
+        return pl.Array(_physical_dtype(_instance(dtype.inner)), dtype.size)
     return dtype
 
 
@@ -356,6 +379,7 @@ def _physical_value(value: Any, dtype: pl.DataType) -> Any:
 __all__ = [
     "TEMPORAL_TEXT_KINDS",
     "TemporalTextError",
+    "first_value_finer_than_microseconds",
     "temporal_frame",
     "temporal_literal",
     "temporal_physical",

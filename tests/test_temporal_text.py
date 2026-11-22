@@ -11,6 +11,7 @@ import pytest
 from haute._temporal_text import (
     TemporalTextError,
     temporal_frame,
+    temporal_physical,
     temporal_text,
     with_temporal_text,
 )
@@ -221,3 +222,41 @@ def test_text_finer_than_its_column_is_refused_when_a_frame_is_read() -> None:
         temporal_frame(
             [{"at": "2024-03-01T09:00:00.000000100"}], pl.Schema({"at": pl.Datetime("us")})
         )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2024-03-01T09:00:00,123456789",
+        "2024-03-01T09:00:00.123456789+0000",
+        "2024-03-01T09:00:00.123456789+00:00",
+    ],
+)
+def test_every_accepted_iso_spelling_of_a_part_second_is_read_exactly(text: str) -> None:
+    """A comma before the part-second and an offset without colons are ISO 8601's too:
+    each is read to the nanosecond, never cut to whole seconds."""
+    zoned = "+" in text
+    dtype = pl.Datetime("ns", "UTC" if zoned else None)
+
+    assert temporal_physical(text, dtype) % 1_000_000_000 == 123_456_789
+    with pytest.raises(TemporalTextError, match="finer than a us datetime holds"):
+        temporal_physical(text, pl.Datetime("us", "UTC" if zoned else None))
+
+
+def test_text_of_another_shape_is_refused_rather_than_read_in_part() -> None:
+    with pytest.raises(TemporalTextError, match="is not a datetime"):
+        temporal_physical("2024-03-01T09:00:00.1.2", pl.Datetime("ns"))
+
+
+def test_a_multidimensional_temporal_array_is_read_back_whole() -> None:
+    frame = pl.DataFrame(
+        {"a": pl.Series([[[1, 2], [3, 4]], [[5, 100], [7, 8]]], dtype=pl.Array(pl.Int64, (2, 2)))}
+    ).with_columns(pl.col("a").cast(pl.Array(pl.Datetime("ns"), (2, 2))))
+
+    back = temporal_frame(with_temporal_text(frame).to_dicts(), frame.schema)
+
+    assert back.schema == frame.schema
+    assert back["a"].cast(pl.Array(pl.Int64, (2, 2))).to_list() == [
+        [[1, 2], [3, 4]],
+        [[5, 100], [7, 8]],
+    ]

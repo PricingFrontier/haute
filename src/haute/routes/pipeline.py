@@ -7,7 +7,7 @@ import dataclasses
 import json
 import time
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -176,6 +176,7 @@ from haute.executor import (
     PreviewProjectionError,
     _preview_required_columns_by_node,
     commit_prepared_data_output,
+    data_output_destination_lock,
     data_output_seed_plan_request,
     discard_data_output_staging_path,
     discard_prepared_data_output,
@@ -2433,6 +2434,43 @@ def _output_write_transaction(
     display_path: str,
     execution_context: ExecutionContext,
 ) -> WriteOutputResponse:
+    """Run one Data Output Write's transaction holding its destination's lock, so no other
+    Write of the file, here or in another process, is live from staging to publishing: the
+    staged copies beside it are dead Writes' to remove (:func:`_held_output_write`)."""
+    with (
+        nullcontext()
+        if final_path is None or staging_path is None
+        else data_output_destination_lock(final_path)
+    ):
+        return _held_output_write(
+            graph,
+            output_node_id,
+            source,
+            project_root,
+            overwrite,
+            final_path,
+            staging_path,
+            budget,
+            cancellation_requested,
+            display_path=display_path,
+            execution_context=execution_context,
+        )
+
+
+def _held_output_write(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str,
+    project_root: Path,
+    overwrite: bool,
+    final_path: Path | None,
+    staging_path: Path | None,
+    budget: IsolatedExecutionBudget,
+    cancellation_requested: WorkerCancellationGate,
+    *,
+    display_path: str,
+    execution_context: ExecutionContext,
+) -> WriteOutputResponse:
     """Prepare inputs and open the seed plan, supervise the sink child, and publish.
 
     A node's signature signs its prepared inputs, so this process prepares them
@@ -2445,7 +2483,7 @@ def _output_write_transaction(
     deadline = time.monotonic() + _pipeline_time_limit()
     try:
         if final_path is not None and staging_path is not None:
-            remove_leftover_data_output_staging(final_path)
+            remove_leftover_data_output_staging(final_path, own_staging=staging_path)
         if cancellation_requested.is_set():
             raise WorkerStoppedError(terminal_reason="cancelled")
         # Preparing inputs here stops with the request.

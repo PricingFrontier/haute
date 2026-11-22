@@ -988,8 +988,9 @@ class TestExecuteSinkDataOutput:
         self, haute_scratch: Path, struct_frame: pl.DataFrame
     ) -> None:
         """SRV-05: a Write killed as it published its file left its staged copy beside the
-        output; the next Write to that destination removes it. A copy newer than this
-        process's start is a live Write's and stays, as does another destination's."""
+        output; the next Write to that destination removes it, however recent, since it
+        holds the destination's lock and no other Write of it can be live. Another
+        destination's copy stays."""
         import os
 
         from haute import _file_ops
@@ -1005,8 +1006,8 @@ class TestExecuteSinkDataOutput:
         other.write_bytes(b"a cut-short Write's copy")
         for leftover in (left, other):
             os.utime(leftover, (before_start, before_start))
-        live = outputs / f".result.haute-stage-{'b' * 32}.parquet"
-        live.write_bytes(b"a live Write's copy")
+        recent = outputs / f".result.haute-stage-{'b' * 32}.parquet"
+        recent.write_bytes(b"a copy left a moment ago")
         graph = PipelineGraph(
             nodes=[
                 _ready_data_input_node(
@@ -1027,8 +1028,27 @@ class TestExecuteSinkDataOutput:
         write_data_output(graph, "dout")
 
         assert sorted(path.name for path in outputs.iterdir()) == sorted(
-            ["result.parquet", live.name, other.name]
+            ["result.parquet", other.name]
         )
+
+    def test_a_write_s_staged_copies_are_removed_only_under_its_destination_s_lock(
+        self, tmp_path: Path
+    ) -> None:
+        from haute.executor import (
+            data_output_destination_lock,
+            remove_leftover_data_output_staging,
+        )
+
+        final = tmp_path / "result.parquet"
+        left = tmp_path / f".result.haute-stage-{'a' * 32}.parquet"
+        left.write_bytes(b"a dead Write's copy")
+
+        with pytest.raises(RuntimeError, match="only under its destination's lock"):
+            remove_leftover_data_output_staging(final)
+        assert left.exists()
+        with data_output_destination_lock(final):
+            remove_leftover_data_output_staging(final)
+        assert not left.exists()
 
     def test_eager_write_format_reports_row_count(self, haute_scratch, struct_frame) -> None:
         src_path = haute_scratch / "in.parquet"
@@ -2756,6 +2776,7 @@ def test_executor_manifest_helpers_reject_invalid_states_and_cleanup_failures(
         executor_module._validate_plain_output_artifact(tmp_path)
 
     monkeypatch.setattr(executor_module, "prepare_data_output", lambda *_args, **_kwargs: staged)
+    monkeypatch.setattr(executor_module, "data_output_file_destination", lambda *_a, **_k: None)
     monkeypatch.setattr(
         executor_module,
         "commit_prepared_data_output",
@@ -2798,6 +2819,7 @@ def test_executor_rejects_unexpected_optional_manifest_fields_and_cleanup_failur
 
     clean = replace(transactional, final_path=None)
     monkeypatch.setattr(executor_module, "prepare_data_output", lambda *_args, **_kwargs: clean)
+    monkeypatch.setattr(executor_module, "data_output_file_destination", lambda *_a, **_k: None)
     monkeypatch.setattr(
         executor_module, "commit_prepared_data_output", lambda _prepared: clean.response
     )

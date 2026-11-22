@@ -30,12 +30,17 @@ from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
 from haute import __version__
+from haute._artifact_paths import ordinary_path_problem
 from haute._cpu_performance import configure_process_high_qos
 from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
 from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._failure_answers import answer_failure
-from haute._file_ops import remove_files_left_before_start, staging_files_under
+from haute._file_ops import (
+    ATOMIC_STAGE_SETTLE_SECONDS,
+    remove_files_left_before_start,
+    staging_files_under,
+)
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
@@ -473,11 +478,21 @@ def _settle_saves() -> None:
 
 def _remove_leftover_staging() -> None:
     """Remove the atomic writer's staging files under the project's ``.haute`` folder that a
-    process gone before this one started left: a settings write, an undelete or a
-    branch-away killed at its rename leaves one, which nothing else would remove. One that
-    cannot be removed is logged, and tried again at the next start."""
-    leftovers = staging_files_under(current_project().root / ".haute")
-    for path, exc in remove_files_left_before_start(leftovers):
+    writer which died left: a settings write, an undelete or a branch-away killed at its
+    rename leaves one, which nothing else would remove. A stage counts as left when it was
+    last written over a minute before this process started (an atomic write renames within
+    seconds, another server's included). A ``.haute`` reached through a link or junction,
+    or outside the project, is not searched. One that cannot be removed is logged, and tried
+    again at the next start."""
+    root = current_project().root
+    _folder, problem = ordinary_path_problem(root, ".haute", private=True)
+    if problem is not None:
+        logger.warning("leftover_staging_not_searched", folder=".haute", problem=problem)
+        return
+    leftovers = staging_files_under(root / ".haute")
+    for path, exc in remove_files_left_before_start(
+        leftovers, settled_seconds=ATOMIC_STAGE_SETTLE_SECONDS
+    ):
         logger.warning("leftover_staging_not_removed", file=str(path), error=str(exc))
 
 
@@ -1117,6 +1132,7 @@ async def _file_watcher() -> None:
 
     pending_changes: set[tuple[Change, str]] = set()
     debounce_task: asyncio.Task[None] | None = None
+    flushes: set[asyncio.Task[None]] = set()
     completed_normally = False
     # One batch at a time: a newer batch's thread never races an older one's.
     flush_lock = asyncio.Lock()
@@ -1253,16 +1269,20 @@ async def _file_watcher() -> None:
             if debounce_task and not debounce_task.done():
                 debounce_task.cancel()
             debounce_task = asyncio.create_task(_flush())
+            # A cancelled flush whose thread has taken its batch still runs until it has
+            # published, so every flush is kept until done, not only the newest.
+            flushes.add(debounce_task)
+            debounce_task.add_done_callback(flushes.discard)
         completed_normally = True
     finally:
-        if debounce_task is not None:
-            if completed_normally:
-                with suppress(asyncio.CancelledError):
-                    await debounce_task
-            else:
-                debounce_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await debounce_task
+        # Nothing of this watcher outlives it: a restarted watcher has its own lock, so a
+        # flush left running could overlap the next one's batch.
+        if not completed_normally:
+            for flush in flushes:
+                flush.cancel()
+        for outcome in await asyncio.gather(*flushes, return_exceptions=True):
+            if isinstance(outcome, Exception):
+                logger.error("file_watcher_flush_failed_at_exit", error=str(outcome))
 
 
 # ---------------------------------------------------------------------------
