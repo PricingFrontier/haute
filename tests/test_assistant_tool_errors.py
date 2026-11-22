@@ -833,12 +833,13 @@ class TestActionableErrors:
         )
 
         error = result["error"]
-        # The plan names a transform's steps as its reload will: kind and place (READ-22).
+        # A step list that does not render against the node's inputs is kept as authored
+        # (CGEN-10), so the error names the plan's own id.
         assert error["where"] == {
             "op_index": 0,
             "node": "august_totals",
             "field": "steps",
-            "step": "source-1",
+            "step": "start",
         }
         assert error["fix"] == (
             "Connect 'quotes' to 'august_totals' in the same plan: {\"op\": \"add_edge\", "
@@ -931,12 +932,13 @@ class TestActionableErrors:
 
         error = result["error"]
         assert (error["code"], error["retryable"]) == ("invalid_ops", True)
-        # The plan names a transform's steps as its reload will: kind and place (READ-22).
+        # A step list that does not render against the node's inputs is kept as authored
+        # (CGEN-10), so the error names the plan's own id.
         assert error["where"] == {
             "op_index": 1,
             "node": "claims_agg",
             "field": "steps",
-            "step": "source-1",
+            "step": "start",
         }
         assert f"Unknown input {read!r}" in error["message"]
         assert error["fix"] == fix

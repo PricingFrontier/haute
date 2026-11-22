@@ -133,7 +133,9 @@ def test_two_rating_tables_swapped_keep_their_numbers(tmp_path: Path) -> None:
             "rows": [[9007199254740993, 2.0]],
         },
     ]
-    rated = root / "config" / "rating_step" / "rated.json"
+    # Spelled from tmp_path, the project's root (`make_project`), for the sandbox lint.
+    rated = tmp_path / "project" / "config" / "rating_step" / "rated.json"
+    assert rated.parent.parent.parent == root
     rated.write_text(json.dumps({**RATED, "tables": tables}), encoding="utf-8")
     document = BrowserDocument(root, root / "main.py")
     _browser_save(document)
