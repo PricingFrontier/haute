@@ -40,6 +40,14 @@ READER = "haute._typed_numbers"
 #: anyone. Each exception covers its one call (a second of the same call in one function is
 #: ``call#2``), so another conversion beside it is still refused.
 NOT_TYPED: dict[str, str] = {
+    "haute._temporal_text._matched_digits::int(digits)": (
+        "digits a pattern matched in a temporal value's text, its column's own or an ISO "
+        "8601 value, read exactly to the column's unit"
+    ),
+    'haute.modelling._evaluation._parsed_dates::int(past.group(2).ljust(3, "0"))': (
+        "the nanoseconds past the microsecond in a date column's exact text, which "
+        "with_temporal_text wrote"
+    ),
     "haute._project_settings._parse_bytes::int(at.group(1))": (
         "the line tomllib's own refusal names in digits, not text anyone types"
     ),

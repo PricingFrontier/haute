@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -64,8 +65,21 @@ def _sha256(value: object, name: str) -> str:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class TemporalKey:
+    """A datetime, time or duration group value as its exact text
+    (:func:`haute._temporal_text.with_temporal_text`): keyed as ``<kind>:<text>``, which
+    is what a Python value's ``isoformat()`` wrote for every value a microsecond holds, so
+    two values that differ below a microsecond stay two groups."""
+
+    kind: str
+    text: str
+
+
 def _json_key(value: object) -> str:
     """Canonicalise a finite JSON value so unhashable group values remain valid keys."""
+    if isinstance(value, TemporalKey):
+        return f"{value.kind}:{value.text}"
     if isinstance(value, datetime):
         return f"datetime:{value.isoformat()}"
     if isinstance(value, date):
@@ -75,17 +89,32 @@ def _json_key(value: object) -> str:
     return canonical_json_bytes(value).decode("utf-8")
 
 
-def _parsed_dates(values: Sequence[object]) -> list[datetime]:
+#: A date value's part-second past the microsecond, which a Python ``datetime`` cannot hold.
+_PAST_MICROSECONDS = re.compile(r"\.([0-9]{6})([0-9]{1,3})")
+
+#: A date value as the plan compares it: the moment to the microsecond and its nanoseconds
+#: past it, so two dates that differ below a microsecond stay two, in order.
+ExactMoment = tuple[datetime, int]
+
+
+def _parsed_dates(values: Sequence[object]) -> list[ExactMoment]:
     if not values:
         return []
-    parsed: list[datetime] = []
+    parsed: list[ExactMoment] = []
     aware: bool | None = None
     for value in values:
+        nanoseconds = 0
         if isinstance(value, datetime):
             parsed_value = value
         elif isinstance(value, date):
             parsed_value = datetime.combine(value, time.min)
         elif isinstance(value, str):
+            # A datetime column's value is its exact text (with_temporal_text), up to nine
+            # digits: the three past the sixth are kept beside the datetime, not dropped.
+            past = _PAST_MICROSECONDS.search(value)
+            if past is not None:
+                nanoseconds = int(past.group(2).ljust(3, "0"))
+                value = value[: past.start()] + "." + past.group(1) + value[past.end() :]
             parsed_value = datetime.fromisoformat(value.replace("Z", "+00:00"))
         else:
             raise TypeError("date values must be ISO strings or native date/datetime values")
@@ -94,7 +123,7 @@ def _parsed_dates(values: Sequence[object]) -> list[datetime]:
             aware = this_aware
         elif aware != this_aware:
             raise HauteValidationError("date values must not mix timezone awareness")
-        parsed.append(parsed_value)
+        parsed.append((parsed_value, nanoseconds))
     return parsed
 
 
@@ -809,7 +838,7 @@ def _canonical_positions(
 
 def _date_codes(
     date_values: Sequence[object], boundaries: Sequence[object]
-) -> tuple[np.ndarray, list[datetime], list[datetime]]:
+) -> tuple[np.ndarray, list[ExactMoment], list[ExactMoment]]:
     """Each row's index among the distinct dates, those dates parsed, and *boundaries* parsed."""
     distinct: dict[object, int] = {}
     codes = np.empty(len(date_values), dtype=np.int64)
@@ -903,9 +932,12 @@ def generate_evaluation_plan(
             k = config.validation["fold_count"]
             if len(ordered) < k + 1:
                 raise HauteValidationError("temporal cross_validation needs enough distinct dates")
-            blocks = np.array_split(np.asarray(ordered, dtype=object), k + 1)
+            # Split the dates' positions: a date is a pair, which an array would split apart.
+            blocks = np.array_split(np.arange(len(ordered)), k + 1)
             block_of_date = {
-                value: index for index, block in enumerate(blocks) for value in block.tolist()
+                ordered[position]: index
+                for index, block in enumerate(blocks)
+                for position in block.tolist()
             }
             # A final-test date belongs to no block.
             row_block = np.array([block_of_date.get(v, -1) for v in dates], dtype=np.int64)[codes]

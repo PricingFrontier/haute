@@ -189,7 +189,7 @@ def temporal_physical(text: str, dtype: pl.DataType) -> int:
         raise TemporalTextError(
             f"{text!r} is finer than a {unit} {kind} holds: reading it would cut it short."
         )
-    fraction = int(digits.ljust(len(str(per_second)) - 1, "0")[: len(str(per_second)) - 1] or 0)
+    fraction = _fraction_units(digits, per_second)
     try:
         if kind == "time":
             if parts["offset"]:
@@ -224,14 +224,25 @@ def _duration_physical(text: str, unit: str) -> int:
         raise TemporalTextError(
             f"{text!r} is finer than a {unit} duration holds: reading it would cut it short."
         )
-    fraction = int(digits.ljust(len(str(per_second)) - 1, "0")[: len(str(per_second)) - 1] or 0)
+    fraction = _fraction_units(digits, per_second)
     seconds = (
-        int(parts["days"] or 0) * 86_400
-        + int(parts["hours"]) * 3_600
-        + int(parts["minutes"]) * 60
-        + int(parts["seconds"])
+        _matched_digits(parts["days"] or "0") * 86_400
+        + _matched_digits(parts["hours"]) * 3_600
+        + _matched_digits(parts["minutes"]) * 60
+        + _matched_digits(parts["seconds"])
     )
     return seconds * per_second + fraction
+
+
+def _fraction_units(digits: str, per_second: int) -> int:
+    """A part-second's digits as whole units of a column holding *per_second* a second."""
+    width = len(str(per_second)) - 1
+    return _matched_digits(digits.ljust(width, "0")[:width] or "0")
+
+
+def _matched_digits(digits: str) -> int:
+    """Digits, a sign allowed, that a pattern of this module matched in a value's text."""
+    return int(digits)
 
 
 def temporal_literal(text: str, dtype: pl.DataType) -> pl.Expr:
