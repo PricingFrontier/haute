@@ -32,7 +32,6 @@ signals and pipes. The main session ran each case again on 15 November
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 | CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
-| CLI-09 | Planned | P3 | A second `haute init` lists the `.gitattributes` it writes, and the file is recorded like the others. |
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
@@ -134,27 +133,6 @@ an executable hook.
 
 **Evidence:** `src/haute/cli/_init_cmd.py::handle_init`;
 `src/haute/_scaffold.py::pre_commit_hook`.
-
-### CLI-09 — A second `haute init` lists and records the `.gitattributes` it writes
-**Why:** Reproduced on 14 November 2026. In a project whose
-`.gitattributes` is gone (deleted, or made before Haute wrote one),
-`haute init` run again writes the file. Its summary lists every other
-generated file and not this one. On a working branch the editor then has
-no pending save for it, and Commit answers "No new saves to commit — the
-working branch is up to date." while `git status` shows the file
-untracked. The specification has every generated, untracked file recorded
-as a save or named as not captured.
-
-**Plan:** Put `.gitattributes` in the list of files the command wrote, so
-it is reported and captured like the others.
-
-**Acceptance:** After the steps above the summary names `.gitattributes`
-as written and the file is in the working branch's history, or is named as
-not captured.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py`; `specs/cli/high-level.md`.
 
 ### CLI-11 — A command piped into `head` ends quietly
 **Why:** Reproduced on 15 November 2026 on Linux with a valid two-node

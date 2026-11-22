@@ -253,9 +253,9 @@ def test_update_rewrites_the_generated_files(runner, project: Path) -> None:
     expected = ci_files("databricks", "github", python_version="3.11")
     assert staging.read_text(encoding="utf-8") == expected[".github/workflows/deploy-staging.yml"]
     assert (project / ".env.example").read_text(encoding="utf-8") == env_example("databricks")
-    assert "updated   .github/workflows/deploy-staging.yml" in result.output
-    assert "updated   .env.example" in result.output
-    assert "unchanged .github/workflows/ci.yml" in result.output
+    assert "updated    .github/workflows/deploy-staging.yml" in result.output
+    assert "written    .env.example" in result.output
+    assert "unchanged  .github/workflows/ci.yml" in result.output
 
 
 def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
@@ -271,7 +271,7 @@ def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
     written = (project / ".env.example").read_text(encoding="utf-8")
     assert written == env_example("databricks", connection_variables(project))
     assert "HAUTE_DEV_USERNAME=\n" in written and "HAUTE_PROD_PASSWORD=\n" in written
-    assert "updated   .env.example" in result.output
+    assert "updated    .env.example" in result.output
 
     # A connections.toml that cannot be read is said, and nothing is rewritten.
     (project / "connections.toml").write_text("[dev\n", encoding="utf-8")
@@ -289,7 +289,7 @@ def test_update_gives_a_github_project_the_python_its_jobs_read(runner, project:
 
     assert result.exit_code == 0, result.output
     assert (project / ".python-version").read_text(encoding="utf-8") == "3.11\n"
-    assert "updated   .python-version" in result.output
+    assert "written    .python-version" in result.output
 
 
 def test_update_leaves_a_python_version_the_project_has(runner, project: Path) -> None:
@@ -299,7 +299,8 @@ def test_update_leaves_a_python_version_the_project_has(runner, project: Path) -
 
     assert result.exit_code == 0, result.output
     assert (project / ".python-version").read_text(encoding="utf-8") == "3.12.8\n"
-    assert ".python-version" not in result.output
+    # Named, since the pin is recorded in version history when Git does not track it.
+    assert "  unchanged  .python-version\n" in result.output
 
 
 def test_update_writes_no_python_version_for_another_provider(runner, project: Path) -> None:
@@ -429,7 +430,7 @@ def test_update_records_a_workflow_an_earlier_run_left_uncommitted(runner, proje
     result = runner.invoke(cli, ["ci", "update"])
 
     assert result.exit_code == 0, result.output
-    assert "unchanged .gitlab-ci.yml" in result.output
+    assert "unchanged  .gitlab-ci.yml" in result.output
     saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
     assert ".gitlab-ci.yml" in saved
     assert "Recorded in version history: .gitlab-ci.yml" in result.output
@@ -534,8 +535,8 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
     assert (workbench_project / ".env.example").read_text(encoding="utf-8") == app_env_example(
         "azure-container-apps", connection_variables(workbench_project)
     )
-    assert "updated   .github/workflows/release.yml" in result.output
-    assert "unchanged .github/workflows/ci.yml" in result.output
+    assert "updated    .github/workflows/release.yml" in result.output
+    assert "unchanged  .github/workflows/ci.yml" in result.output
 
 
 def test_update_refuses_a_workbench_project_naming_no_host(runner, workbench_project: Path) -> None:

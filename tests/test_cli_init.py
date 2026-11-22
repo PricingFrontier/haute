@@ -1165,6 +1165,34 @@ class TestInitAgain:
         assert ".python-version" in saved.splitlines()
         assert pin.read_text(encoding="utf-8") == kept
 
+    @pytest.mark.parametrize("gone", [".gitattributes", ".gitignore", ".python-version"])
+    def test_a_re_run_lists_and_records_every_file_it_writes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gone: str
+    ):
+        """CLI-09: the summary and what is recorded are one list, so a file the re-run writes
+        again (one deleted, or a project made before Haute wrote it) is named and recorded."""
+        from haute._git_setup import set_working_branch
+
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False).exit_code == 0
+        git_run(tmp_path, "init", "-b", "main")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "rm", "-q", "--cached", gone)
+        (tmp_path / gone).unlink()
+        git_run(tmp_path, "commit", "-m", "The project")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        result = runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert f"  written    {gone}\n" in result.output
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert gone in saved.splitlines()
+        assert git_run(tmp_path, "status", "--porcelain", "--", gone) == ""
+        assert f"Recorded in version history: {gone}" in result.output
+
     def test_a_re_run_prunes_stale_gitlab_and_azure_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

@@ -95,9 +95,12 @@ Out of scope, owned elsewhere:
   `[project] name`; the previous file is left to git, and the summary says to copy back
   from it what was set by hand, the `[mlflow]` settings saved from the app among them. It
   writes the workflows (pruning every generated file the new set does not hold),
-  `.env.example` and the pre-commit hook again, reporting each as written, updated or
-  unchanged and each workflow it removed, records each file it wrote or generates that Git
-  does not track yet in version history as a save, as `haute ci update` does,
+  `.env.example` and the pre-commit hook again. Its summary and what it records are one
+  list: every file the re-run writes or regenerates (`pyproject.toml`, `.python-version`,
+  `haute.toml`, the form folder and `connections.toml` when written, `.env.example`, the
+  hook, the workflows, `.gitignore` and `.gitattributes`) is named as written, updated or
+  unchanged, each workflow it removed as removed, and each of them Git does not track yet
+  is recorded in version history as a save, as `haute ci update` does,
   and writes nothing in `rating/` or `tests/`, which are the project's, beyond the
   workbench's form folder when it has none. The kind of project may change: an automated
   project set up as a workbench gets the blank form folder and `connections.toml` where
@@ -185,6 +188,9 @@ Out of scope, owned elsewhere:
   uncommitted, is recorded in version history as a save on the working branch, so the next
   Commit takes it: Commit takes a new
   file only in the pipeline folder ([git integration](../git-integration/high-level.md)).
+  It names each file it wrote, updated, found unchanged or removed, a GitHub project's
+  `.python-version` among them, from the one list it records from, and says the CI files
+  are up to date only when it changed none.
   Without a chosen working branch or a git identity it names such files as not yet in
   version history, for `git status`, which lists them where `git diff` does not. What it
   changes in tracked files is left for review and the next Commit.

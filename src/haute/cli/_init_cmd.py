@@ -14,9 +14,9 @@ import re
 import sys
 import tomllib
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import click
 from packaging.requirements import Requirement
@@ -233,6 +233,68 @@ def write_generated_files(project_dir: Path, files: Mapping[str, str]) -> list[s
         write_lf(path, content)
         changed.append(rel)
     return changed
+
+
+#: What a run did to a file it reports: wrote it new, changed it, found it as it would write
+#: it, removed it, or (the git hook) installed it outside the project.
+FileState = Literal["written", "updated", "unchanged", "removed", "installed"]
+
+
+def file_state(*, existed: bool, changed: bool) -> FileState:
+    """A file's state from whether it was there before the run and whether the run changed it."""
+    if not changed:
+        return "unchanged"
+    return "updated" if existed else "written"
+
+
+@dataclass(frozen=True, slots=True)
+class _Reported:
+    shown: str
+    state: FileState
+    #: The project files the entry stands for, recorded in version history when Git does not
+    #: track them yet; none for a removed file or one outside the project.
+    paths: tuple[str, ...]
+
+
+@dataclass
+class FileReport:
+    """Every file a re-run of ``haute init`` or a ``haute ci update`` writes, regenerates,
+    removes or installs, in the order it does, and what became of each.
+
+    The one record of the run's files: :meth:`echo` prints an entry for each and
+    :meth:`capture` records in version history each of them Git does not track yet
+    (:func:`capture_new_files`), so no file is written without being named or recorded
+    (CLI-09).
+    """
+
+    entries: list[_Reported] = field(default_factory=list)
+
+    def add(self, shown: str, state: FileState, paths: Sequence[str] | None = None) -> None:
+        """Report *shown* as *state*, standing for *paths* (*shown* itself by default; none
+        for a file removed or installed outside the project)."""
+        if paths is None:
+            paths = () if state in ("removed", "installed") else (shown,)
+        self.entries.append(_Reported(shown, state, tuple(paths)))
+
+    def write_generated(self, project_dir: Path, files: Mapping[str, str]) -> None:
+        """Write each generated file (:func:`write_generated_files`) and report it."""
+        existed = {rel for rel in files if (project_dir / rel).is_file()}
+        changed = set(write_generated_files(project_dir, files))
+        for rel in files:
+            self.add(rel, file_state(existed=rel in existed, changed=rel in changed))
+
+    @property
+    def changed(self) -> bool:
+        """Whether the run changed any file: one written, updated, removed or installed."""
+        return any(entry.state != "unchanged" for entry in self.entries)
+
+    def echo(self) -> None:
+        for entry in self.entries:
+            click.echo(f"  {entry.state:<10} {entry.shown}")
+
+    def capture(self, project_dir: Path) -> None:
+        """Record each reported file Git does not track yet (:func:`capture_new_files`)."""
+        capture_new_files(project_dir, [path for entry in self.entries for path in entry.paths])
 
 
 def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
@@ -895,13 +957,20 @@ def handle_init(config: InitConfig) -> None:
     leftovers = [] if rerun else remove_uv_init_leftovers(project_dir, pyproject_path)
     for leftover in leftovers:
         click.echo(f"  Removed {leftover}, which uv init wrote and nothing uses.")
+    # Every file the run writes or regenerates from here on, as a re-run's summary names it
+    # and records those Git does not track yet: one list for both.
+    report = FileReport()
+    pyproject_existed = pyproject_path.exists()
     pyproject_changed = _ensure_haute_dependency(pyproject_path, name, requirement)
+    report.add("pyproject.toml", file_state(existed=pyproject_existed, changed=pyproject_changed))
 
     # -- .python-version - one Python for local, CI and the deployed model -----
     python_version_file = project_dir / ".python-version"
     wrote_python_version = not python_version_file.exists()
     if wrote_python_version:
         write_lf(python_version_file, f"{python_version}\n")
+    # GitHub's jobs name no Python, so a pin already there must reach the repository too.
+    report.add(".python-version", "written" if wrote_python_version else "unchanged")
 
     # -- Directories -----------------------------------------------------------
     (project_dir / "data").mkdir(exist_ok=True)
@@ -959,15 +1028,22 @@ def handle_init(config: InitConfig) -> None:
         assert answers.target is not None
         toml_text = haute_toml(name, answers.target, ci, python_version=python_version)
     write_settings_text(project_dir, toml_text)
+    report.add("haute.toml", "written")
 
     # -- rating/workbench/ - the workbench's blank form folder ------------------
     if form_files:
         _write_form_folder(form_folder, form_files)
+        report.add(
+            f"rating/{FORM_FOLDER}/ (the blank form)",
+            "written",
+            [f"rating/{FORM_FOLDER}/{rel}" for rel in form_files],
+        )
 
     # -- connections.toml - each environment's database, for this machine -------
     if write_connections:
         assert answers.store is not None and answers.sign_in is not None
         write_lf(connections_path, connections_toml(answers.store, answers.sign_in))
+        report.add(CONNECTIONS_FILE, "written")
 
     # -- .env.example, the pre-commit hook and the CI/CD workflow files ---------
     variables = connection_variables(project_dir)
@@ -992,8 +1068,11 @@ def handle_init(config: InitConfig) -> None:
         ".githooks/pre-commit": pre_commit_hook(),
         **generated_ci,
     }
-    existed = {rel for rel in generated if (project_dir / rel).is_file()}
-    changed = write_generated_files(project_dir, generated)
+    # Every generated file, not only those just changed: one an earlier run wrote and never
+    # committed is recorded too.
+    report.write_generated(project_dir, generated)
+    for rel in removed:
+        report.add(rel, "removed")
     # Path.chmod is a silent no-op on NTFS, and git on Windows ignores the
     # POSIX executable bit anyway. Skip the call on Windows and document the
     # manual workaround so maintainers know the escape hatch.
@@ -1012,6 +1091,7 @@ def handle_init(config: InitConfig) -> None:
         # chmod. On Windows, run: git update-index --chmod=+x .git/hooks/pre-commit
         if sys.platform != "win32":
             installed.chmod(0o755)
+        report.add(".git/hooks/pre-commit", "installed")
 
     # -- .gitignore - append if exists, create if not --------------------------
     # The guard entries (and the stable-layer *.haute.json caveat) live in
@@ -1021,29 +1101,20 @@ def handle_init(config: InitConfig) -> None:
     wrote_gitignore = not gitignore_path.exists()
     if wrote_gitignore:
         write_lf(gitignore_path, "__pycache__/\n*.pyc\n.venv/\n")
-    ensure_gitignore_guards(project_dir)
-    ensure_gitattributes(project_dir)
+    guarded = bool(ensure_gitignore_guards(project_dir))
+    report.add(
+        ".gitignore", "written" if wrote_gitignore else file_state(existed=True, changed=guarded)
+    )
+    gitattributes_existed = (project_dir / ".gitattributes").exists()
+    attributed = bool(ensure_gitattributes(project_dir))
+    report.add(".gitattributes", file_state(existed=gitattributes_existed, changed=attributed))
 
     # -- Summary ---------------------------------------------------------------
     kind = f"workbench on {credentials}" if workbench else credentials
     first = "release" if workbench else "deploy"
     if rerun:
         click.echo(f"Set up Haute project '{name}' again ({kind} + {ci})\n")
-        click.echo(f"  {'written':<10} haute.toml")
-        click.echo(f"  {'updated' if pyproject_changed else 'unchanged':<10} pyproject.toml")
-        for rel in generated:
-            state = (
-                "unchanged" if rel not in changed else "updated" if rel in existed else "written"
-            )
-            click.echo(f"  {state:<10} {rel}")
-        for rel in removed:
-            click.echo(f"  {'removed':<10} {rel}")
-        if form_files:
-            click.echo(f"  {'written':<10} rating/{FORM_FOLDER}/ (the blank form)")
-        if write_connections:
-            click.echo(f"  {'written':<10} {CONNECTIONS_FILE}")
-        if hook_installed:
-            click.echo(f"  {'installed':<10} .git/hooks/pre-commit")
+        report.echo()
         click.echo("\nrating/ and tests/ are left as they are.")
         click.echo(
             "haute.toml is written afresh from the answers: copy back from the previous "
@@ -1052,19 +1123,7 @@ def handle_init(config: InitConfig) -> None:
         )
         if workbench != defaults.workbench:
             click.echo(_NODES_TO_REPLACE[workbench])
-        # What the re-run wrote, every generated file among it (one an earlier run wrote and
-        # never committed too): those Git does not track yet are recorded in version history.
-        written = [
-            "haute.toml",
-            *(["pyproject.toml"] if pyproject_changed else []),
-            # GitHub's jobs name no Python, so an existing pin must reach the repository too.
-            *([".python-version"] if wrote_python_version or ci == "github" else []),
-            *(f"rating/{FORM_FOLDER}/{rel}" for rel in form_files),
-            *([CONNECTIONS_FILE] if write_connections else []),
-            *generated,
-            *([".gitignore"] if wrote_gitignore else []),
-        ]
-        capture_new_files(project_dir, written)
+        report.capture(project_dir)
     else:
         click.echo(f"Initialised Haute project '{name}' ({kind} + {ci})\n")
         click.echo(f"  pyproject.toml        - {requirement} added as dependency")
