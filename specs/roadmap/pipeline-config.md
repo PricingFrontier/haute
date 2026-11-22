@@ -20,7 +20,6 @@ worker built each run and the main session ran each again on 14 November
 |---|---|---:|---|
 | PCF-05 | Planned | P2 | A node's absolute path and a node's path in another letter case than its file are each refused or rewritten on Windows when saved and linted, instead of running there and failing on Linux. |
 | PCF-06 | Planned | P2 | A node whose placeholder body was replaced by hand is no longer called unfinished: the editor, `haute lint`, `haute run` and plain Python agree. |
-| PCF-07 | Planned | P3 | Recover settings rebuilds a Model Score that follows an alias, instead of refusing a version it added itself. |
 
 ## Planned improvements
 
@@ -90,26 +89,3 @@ loader's rule here is the save's too.
 
 **Evidence:** `src/haute/_sidecar.py`; `src/haute/_builders.py`;
 `specs/pipeline-config/high-level.md`.
-
-### PCF-07 — Recover settings keeps a Model Score that follows an alias
-**Why:** Reproduced on 14 November 2026 through the editor's routes. A
-Model Score's settings name a registered model and the alias `champion`,
-no version, and hold one key the node type no longer declares. The node
-loads unavailable, and Recover settings answers 409: "modelScore config
-names both a version and an alias; choose one ... (alias=champion,
-version=latest)". The file names no version. Recovery fills the missing
-key with a new node's default, `latest`, and then refuses its own result.
-With a pinned version and no alias, the same recovery removes the old key
-and succeeds.
-
-**Plan:** When recovery fills missing keys from a new node's defaults,
-leave out a default the kept settings exclude, here a version beside an
-alias.
-
-**Acceptance:** Recover settings on the file above removes the obsolete
-key and keeps the model and its alias, with no version.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_node_config_recovery.py`;
-`src/haute/_config_validation.py`.

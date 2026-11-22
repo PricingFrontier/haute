@@ -538,6 +538,40 @@ def _palette_is_branch_of(
     )
 
 
+def _engine_refusal(node_type: NodeType, config: Mapping[str, Any]) -> Exception | None:
+    """The model's engine rules' refusal of *config*, or ``None`` when they accept it."""
+    check = NODE_CONFIG_MODELS[node_type].check
+    if check is None:
+        return None
+    try:
+        check(config)
+    except CONFIG_REFUSALS as exc:
+        return exc
+    return None
+
+
+def _default_the_settings_exclude(
+    node_type: NodeType, candidate: Mapping[str, Any], filled: Mapping[str, str]
+) -> str | None:
+    """The one key of *filled* whose default the kept settings exclude, or ``None``.
+
+    The engine refuses *candidate* and accepts it without that key alone, as it refuses a
+    Model Score's default ``version`` beside the ``alias`` it kept: the key stays absent,
+    as the saved settings had it. A refusal no single default explains is left to
+    ``_replace_refused_values`` and the model.
+    """
+    if not filled or _engine_refusal(node_type, candidate) is None:
+        return None
+    return next(
+        (
+            key
+            for key in filled
+            if _engine_refusal(node_type, {k: v for k, v in candidate.items() if k != key}) is None
+        ),
+        None,
+    )
+
+
 def reconcile_config(
     node_type: NodeType, raw: dict[str, Any], *, reset: bool = False
 ) -> ConfigRecoveryResult:
@@ -640,6 +674,7 @@ def reconcile_config(
         # A field added or renamed since the file was saved takes the palette
         # default, as a new node would. An absent ``steps`` stays absent: it
         # means the body's code runs, and ``[]`` would discard that code.
+        filled: dict[str, str] = {}
         for key, default in defaults.items():
             if key in source or key == "steps":
                 continue
@@ -649,9 +684,15 @@ def reconcile_config(
                 default = dependent.value(candidate, default)
                 reason = dependent.reason
             candidate[key] = default
-            changes.append(
-                RecoveryFieldChange(path=_pointer("", key), outcome="defaulted", reason=reason)
-            )
+            filled[key] = reason
+        excluded = _default_the_settings_exclude(node_type, candidate, filled)
+        if excluded is not None:
+            candidate.pop(excluded)
+        changes.extend(
+            RecoveryFieldChange(path=_pointer("", key), outcome="defaulted", reason=reason)
+            for key, reason in filled.items()
+            if key != excluded
+        )
     candidate = _replace_refused_values(node_type, candidate, defaults, changes, issues)
     issues.extend(validate_recovery_config(node_type, candidate))
     return ConfigRecoveryResult(candidate, changes, issues)
@@ -674,16 +715,9 @@ def _replace_refused_values(
     whole config) is left in the candidate, which then fails the model, and the recover
     is refused rather than discarding valid settings beside it.
     """
-    check = NODE_CONFIG_MODELS[node_type].check
-    if check is None:
-        return candidate
 
     def refusal(config: dict[str, Any]) -> Exception | None:
-        try:
-            check(config)
-        except CONFIG_REFUSALS as exc:
-            return exc
-        return None
+        return _engine_refusal(node_type, config)
 
     for _ in range(len(candidate) + 1):
         exc = refusal(candidate)

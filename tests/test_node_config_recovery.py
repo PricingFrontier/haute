@@ -669,3 +669,18 @@ def test_a_load_file_naming_catboost_is_an_unsupported_file_type() -> None:
         NodeType.EXTERNAL_FILE, {"path": "model.cbm", "file_type": "catboost"}
     )
     assert [(issue.path, issue.code) for issue in issues] == [("/file_type", "invalid_value")]
+
+
+def test_a_default_the_kept_settings_exclude_is_neither_filled_nor_reported() -> None:
+    """A Model Score that follows an alias gets the palette's other missing keys, not its
+    version, which the alias excludes."""
+    result = reconcile_config(
+        NodeType.MODEL_SCORE,
+        {"source_type": "registered", "registered_model": "motor_freq", "alias": "champion"},
+    )
+    assert result.config["alias"] == "champion"
+    assert "version" not in result.config
+    defaulted = {change.path for change in result.changes if change.outcome == "defaulted"}
+    assert "/version" not in defaulted
+    assert "/output_column" in defaulted
+    assert not [issue for issue in result.issues if issue.severity == "error"]

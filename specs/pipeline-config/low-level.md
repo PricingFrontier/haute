@@ -595,7 +595,10 @@ setting's, repaired in its turn; a refused scalar takes its own branch's
 palette default where that default passes (`defaulted`, with a warning) and is otherwise
 removed (`needs_input`). A top-level field the saved configuration lacks takes its
 palette default, reported as `defaulted`, when the palette belongs to the configuration's branch
-(an Edge Join's absent `maintain_order` the order of its join type), as a new node would; a stepped
+(an Edge Join's absent `maintain_order` the order of its join type), as a new node would, except
+one the kept settings exclude: when the engine's `check` refuses the filled configuration and
+accepts it without one filled default, that key stays absent (a Model Score's `version` beside the
+`alias` it kept); a stepped
 node's absent `steps` stays absent, and recover never takes a default from another provider branch
 ([node recovery actions](../server-api/node-recovery-actions.md)). The candidate must then pass
 the model's shape and `check`, so a recovered config always loads: one that does not (an unknown

@@ -1759,3 +1759,42 @@ def test_a_parsed_node_names_the_config_file_its_decorator_names(tmp_path, broke
 
     assert [node.config_reference for node in nodes] == ["config/shared_input.json"] * 2
     assert not any(node.scoped_editable for node in nodes)
+
+
+@pytest.mark.parametrize(
+    ("source", "kept"),
+    [
+        ({"alias": "champion"}, {"alias": "champion"}),
+        ({"version": "3"}, {"version": "3"}),
+        ({}, {"version": "latest"}),
+    ],
+    ids=["follows-an-alias", "pins-a-version", "names-neither"],
+)
+def test_recover_gives_a_model_score_no_default_its_settings_exclude(tmp_path, source, kept):
+    """A key a new node's defaults fill is left out where the kept settings exclude it:
+    a version beside an alias. Without the alias the default version still fills it."""
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    sidecar = tmp_path / "config" / "model_scoring" / "scored.json"
+    sidecar.parent.mkdir(parents=True)
+    saved = {
+        "source_type": "registered",
+        "registered_model": "motor_freq",
+        "task": "regression",
+        "output_column": "prediction",
+        "retired_setting": True,
+        **source,
+    }
+    sidecar.write_text(json.dumps(saved))
+    (tmp_path / "main.py").write_text(
+        _TWO_SOURCES + '@pipeline.model_score(config="config/model_scoring/scored.json")\n'
+        "def scored(quotes): ...\n"
+        'pipeline.connect("quotes", "scored")\n'
+    )
+
+    result = _apply(tmp_path, _request(tmp_path, "scored", "recover"))
+
+    assert result.document.load_status == "ready"
+    written = json.loads(sidecar.read_text())
+    assert "retired_setting" not in written
+    assert written["registered_model"] == "motor_freq"
+    assert {key: written.get(key) for key in ("alias", "version") if key in written} == kept

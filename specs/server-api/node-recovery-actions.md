@@ -77,7 +77,10 @@ carries as its remediation (for the file path, `from modules import rates`, then
   audited default only where that default is structurally valid; a top-level field the
   saved configuration lacks (one added or renamed since it was written) takes its palette
   default, reported as `defaulted`, so the node comes back as a new node would with the
-  unchanged fields kept. The palette is used only when it belongs to the configuration's
+  unchanged fields kept. A default the kept settings exclude is left out: when the
+  engine refuses the filled configuration and accepts it without one filled default, that
+  key stays absent and is not reported (a Model Score that follows an `alias` keeps no
+  `version`). The palette is used only when it belongs to the configuration's
   branch: the discriminant (`input_type`, `output_type`, `source_type`, `algorithm`, `mode`)
   is present and equals the palette's, and for Data Input/Output so do a present `format`
   and `mode`; recovery never fills a default from a different provider/format/mode
