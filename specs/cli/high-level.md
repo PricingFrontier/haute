@@ -318,7 +318,9 @@ Invariants that hold across every command:
   command is a local editor surface, not an application-hosting surface.
 - **The development UI has one deterministic address.** Vite binds
   `127.0.0.1:5173` with strict-port mode. `serve` refuses to start if either the API port or
-  Vite port is occupied, waits for both listeners before opening the browser, and never follows
+  Vite port is occupied by a listener (a stopped server's connection that a browser tab still
+  holds is not one, so a restart straight after a stop starts), waits for both listeners
+  before opening the browser, and never follows
   Vite's automatic port rollover to a different, unreported origin.
 - **Command-scoped failure rules.** Missing Node/npm and a missing production frontend build
   fail rather than guessing; malformed TOML fails. What each command needs of the

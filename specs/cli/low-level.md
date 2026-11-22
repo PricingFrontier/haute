@@ -228,8 +228,11 @@ write (documented as load-bearing — `click.echo(nl=False)` alone can leave the
 **`serve`**: `handle_serve` runs, in order: `_require_loopback_host` (rejects every non-loopback
 value before any startup side effect), `_configure_trusted_hosts` (clears any stale
 `TRUSTED_HOSTS_ENV` remote-bind policy), `_detect_dev_frontend_dir` to choose dev vs. prod mode,
-then `_abort_if_port_in_use` (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows
-to avoid a false-negative from `SO_REUSEADDR`; dev mode also runs `_abort_if_vite_port_in_use` to
+then `_abort_if_port_in_use` (pre-flight socket bind/close probe, `_port_is_available`, which
+binds as the listener will: `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
+`SO_REUSEADDR`, and `SO_REUSEADDR` on POSIX, as uvicorn and Vite bind, so a port that a stopped
+server's connection still lingers on, a browser tab's in FIN-WAIT-2, is free while a second
+listener is still refused; dev mode also runs `_abort_if_vite_port_in_use` to
 pre-flight the fixed Vite listener at `127.0.0.1:5173`). Frontend detection first considers the
 nearest `frontend/package.json` in the working directory's ancestor chain. If that candidate has
 no installed `node_modules`, or no such candidate exists, it considers the `frontend/` beside the

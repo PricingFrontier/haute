@@ -35,7 +35,6 @@ signals and pipes. The main session ran each case again on 15 November
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 | CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
 | CLI-09 | Planned | P3 | A second `haute init` lists the `.gitattributes` it writes, and the file is recorded like the others. |
-| CLI-10 | Planned | P3 | `haute serve` starts on its port straight after the last server there was stopped, with a browser tab still open. |
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
@@ -209,29 +208,6 @@ not captured.
 **Dependencies:** None.
 
 **Evidence:** `src/haute/cli/_init_cmd.py`; `specs/cli/high-level.md`.
-
-### CLI-10 — `haute serve` restarts on its port straight after it is stopped
-**Why:** Reproduced on 15 November 2026 on Linux (WSL2, kernel 6.18). A
-server that answered one request on a kept-alive connection, as a browser
-tab holds, was stopped with SIGTERM and started again at once on the same
-port. The second start exits 1 with "Error: port 28197 already in use. Use
---port to choose another." although nothing listens there: the old
-connection sits in FIN-WAIT-2 for up to a minute. The pre-flight probe
-binds a plain socket, and on Linux a plain bind is refused while an old
-connection lingers. Uvicorn itself binds with `SO_REUSEADDR`, so the
-server would have started. The same restart works on Windows.
-
-**Plan:** On POSIX, set `SO_REUSEADDR` on the probe, as the server's own
-bind does. A second listening server is still refused, because that option
-does not let two sockets listen on one port there.
-
-**Acceptance:** The restart above serves. A start while another server
-listens on the port still ends with the "already in use" line.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_serve.py::_port_is_available`;
-`specs/cli/high-level.md`.
 
 ### CLI-11 — A command piped into `head` ends quietly
 **Why:** Reproduced on 15 November 2026 on Linux with a valid two-node
