@@ -328,6 +328,58 @@ def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     assert not (project / ".github").exists()
 
 
+@pytest.mark.parametrize("command", [["ci", "update"], ["init"]], ids=" ".join)
+def test_a_workflow_of_the_teams_own_under_one_of_haute_s_names_is_left(
+    runner, tmp_path: Path, command: list[str]
+) -> None:
+    """CLI-06: a container project on GitHub never had a ``release.yml`` from Haute (a
+    workbench project's workflow has that name). The team's own is left in place, and a run
+    that removed nothing says the files are up to date."""
+    use_project(tmp_path)
+    assert runner.invoke(cli, ["init", "--target", "container", "--ci", "github"]).exit_code == 0
+    _in_a_repository(tmp_path, working_branch=None)
+    own = tmp_path / ".github" / "workflows" / "release.yml"
+    own.write_text("name: Release\non: push\njobs: {}\n", encoding="utf-8", newline="\n")
+    git_run(tmp_path, "add", "--", ".github/workflows/release.yml")
+    git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The team's release")
+
+    result = runner.invoke(cli, command)
+
+    assert result.exit_code == 0, result.output
+    assert own.read_text(encoding="utf-8") == "name: Release\non: push\njobs: {}\n"
+    assert git_run(tmp_path, "status", "--porcelain", "--", ".github") == ""
+    assert "removed" not in result.output
+    if command == ["ci", "update"]:
+        assert "The CI files are up to date." in result.output
+
+
+@pytest.mark.parametrize("command", [["ci", "update"], ["init"]], ids=" ".join)
+def test_a_change_of_provider_removes_and_names_what_haute_wrote(
+    runner, project: Path, command: list[str]
+) -> None:
+    written = sorted(ci_files("databricks", "github", python_version="3.11"))
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, command)
+
+    assert result.exit_code == 0, result.output
+    for rel in written:
+        assert not (project / rel).exists(), rel
+        assert f"  removed    {rel}\n" in result.output
+    assert "up to date" not in result.output
+
+
+def test_every_generated_ci_file_carries_the_record_that_it_is_haute_s() -> None:
+    from haute._scaffold import CI_FILE_MARK
+
+    for files in (
+        *(ci_files("databricks", ci, python_version="3.13") for ci in ("github", "gitlab")),
+        workbench_ci_files("azure-container-apps", "azure-devops", python_version="3.13"),
+    ):
+        for path, text in files.items():
+            assert text.startswith(f"{CI_FILE_MARK}\n"), path
+
+
 def _to_provider(project: Path, provider: str) -> None:
     toml = project / "haute.toml"
     toml.write_text(
@@ -513,8 +565,10 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
     workflows = workbench_project / ".github" / "workflows"
     release = workflows / "release.yml"
     release.write_text("name: edited\n", encoding="utf-8")
-    # An endpoint's workflow left from before: a workbench project deploys none.
-    (workflows / "deploy-staging.yml").write_text("name: stale\n", encoding="utf-8")
+    # An endpoint's workflow Haute wrote before: a workbench project deploys none.
+    (workflows / "deploy-staging.yml").write_text(
+        ci_files("databricks", "github")[".github/workflows/deploy-staging.yml"], encoding="utf-8"
+    )
     # The endpoint's staging suffix reaches none of its workflows, so it is never checked.
     toml = workbench_project / "haute.toml"
     toml.write_text(

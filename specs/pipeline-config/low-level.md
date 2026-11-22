@@ -960,8 +960,12 @@ chosen `ci` value, path to content (`"none"` has none, an unknown provider raise
 update` and a re-run of `handle_init` first calling `_prune_stale_ci_files(project_dir,
 keep=...)` (defined in `src/haute/cli/_init_cmd.py`) with the set about to be written (a new
 project's `handle_init` prunes nothing: its folder's workflows are the team's own),
-which deletes every other generated path (from that module's `GENERATED_CI_FILES`)
-and removes the folders that leaves empty under `.github/`, and `.github/` itself, before writing the new provider's files.
+which deletes every other generated path (from that module's `GENERATED_CI_FILES`) whose file
+Haute wrote, `haute._scaffold.is_haute_ci_file`: it holds `CI_FILE_MARK`, the line
+`ci_files` and `workbench_ci_files` head every file with (`_marked`), so a file at a listed
+path without it is the team's and is left; it then removes the folders that leaves empty under
+`.github/`, and `.github/` itself, before writing the new provider's files. Each file removed
+is named as removed in the command's report.
 Every generator result must parse as one complete YAML document for every
 `TARGETS` entry. Structural tests locate the actual validate, staging, smoke,
 impact, and production jobs/stages, assert their branch/manual conditions, and

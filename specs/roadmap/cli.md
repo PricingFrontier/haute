@@ -30,7 +30,6 @@ signals and pipes. The main session ran each case again on 15 November
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
-| CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
@@ -66,45 +65,6 @@ nodes inside it. A name held by two occurrences is refused naming both.
 
 **Evidence:** `src/haute/cli/_run.py::_run_in_project`;
 `specs/cli/high-level.md`; `docs/building-models/nodes/submodel.md`.
-
-### CLI-06 — `haute ci update` removes only the CI files Haute wrote
-**Why:** Reproduced on 13 November 2026 with the real executable. A project
-made by `haute init --target container --ci github` has three workflows:
-`ci.yml`, `deploy-staging.yml` and `deploy-production.yml`. The team adds a
-workflow of its own, `.github/workflows/release.yml`, and commits it.
-`haute ci update` then lists its five files as unchanged, says "The CI
-files are up to date." and exits 0. The team's `release.yml` is gone, and
-`git status` shows it deleted.
-
-The command holds a fixed list of eight file names, every CI file either
-kind of project could have on any provider, and removes each one this run
-does not write, "so a switch of provider ... leaves no orphaned workflow
-behind". `release.yml` is on the list because a workbench project's
-workflow has that name; this project never had one from Haute. The list of
-what was removed is not printed. A second `haute init` in the project
-removes the file as well, and does list it as removed.
-By the same list a workbench project would lose a `deploy-staging.yml` of
-its own, and a GitHub project a `.gitlab-ci.yml` or an
-`azure-pipelines.yml` it keeps for a mirror (read from the list, not run).
-The CLI specification gives the command "the CI files `haute init`
-generated" and no others.
-
-**Plan:** Remove a file only when Haute wrote it: keep a record of the CI
-files a run generated, in the project, and prune from that record. A file
-with a listed name that is not in the record is left where it is. Print
-every file a run removes.
-
-**Acceptance:** In the project above, `haute ci update` and a second
-`haute init` leave the team's `release.yml` in place. After a real
-change of provider, the files the earlier run wrote are removed and each is
-named in the output. A run that removed a file does not say the CI files
-are up to date.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py::_prune_stale_ci_files`;
-`src/haute/cli/_ci.py::handle_ci_update`;
-`src/haute/cli/_init_cmd.py::handle_init`; `specs/cli/high-level.md`.
 
 ### CLI-11 — A command piped into `head` ends quietly
 **Why:** Reproduced on 15 November 2026 on Linux with a valid two-node

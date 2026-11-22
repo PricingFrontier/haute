@@ -173,10 +173,10 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str, requirement: str =
     return True
 
 
-#: Every CI file Haute generates, relative to the project root: both kinds of project's, for
-#: every provider. ``haute init --force`` and ``haute ci update`` prune each one the set they
-#: write does not hold, so a switch of provider (github -> gitlab, say) or of the kind of
-#: project leaves no orphaned workflow behind.
+#: Every path Haute writes a CI file at, relative to the project root: both kinds of
+#: project's, for every provider. A re-run of ``haute init`` and ``haute ci update`` remove
+#: each one the set they write does not hold when Haute wrote it, so a switch of provider
+#: (github -> gitlab, say) or of the kind of project leaves no orphaned workflow behind.
 GENERATED_CI_FILES: tuple[str, ...] = (
     ".github/workflows/ci.yml",
     ".github/workflows/deploy-staging.yml",
@@ -191,18 +191,23 @@ GENERATED_CI_FILES: tuple[str, ...] = (
 
 def _prune_stale_ci_files(project_dir: Path, keep: Collection[str]) -> list[str]:
     """Remove each of :data:`GENERATED_CI_FILES` that *keep*, the set about to be written,
-    does not hold; return those removed.
+    does not hold, and Haute wrote; return those removed.
 
-    Only touches the specific files Haute generates. When no GitHub file is kept, the
-    now-empty directories under ``.github``, and ``.github`` itself, are cleaned up (but only
-    if empty, so a user's other GitHub config is left untouched).
+    A file is Haute's when it holds the record every generated CI file is headed by
+    (``haute._scaffold.is_haute_ci_file``); one at a listed path without it is the team's own
+    (a GitHub project's ``release.yml``, a ``.gitlab-ci.yml`` kept for a mirror) and is left.
+    When no GitHub file is kept, the now-empty directories under ``.github``, and
+    ``.github`` itself, are cleaned up (but only if empty, so a user's other GitHub config is
+    left untouched).
     """
+    from haute._scaffold import is_haute_ci_file
+
     removed: list[str] = []
     for rel in GENERATED_CI_FILES:
         if rel in keep:
             continue
         path = project_dir / rel
-        if path.exists():
+        if path.is_file() and is_haute_ci_file(read_user_text(path)):
             path.unlink()
             removed.append(rel)
 
@@ -384,11 +389,6 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
     _not_in_version_history(capture.uncaptured)
 
 
-def _not_in_version_history(paths: Sequence[str]) -> None:
-    click.echo(f"Not yet in version history: {', '.join(paths)}")
-    click.echo("  git status lists them (git diff does not): add them before you commit.")
-
-
 def _record_executable_files(project_dir: Path) -> None:
     """Record the project's executable files, the pre-commit hook, as executable in git's
     index (:func:`haute._git_core.record_executable_files`) inside a repository, on every
@@ -410,6 +410,11 @@ def _record_executable_files(project_dir: Path) -> None:
     except GitBlockedError as blocked:
         click.echo(f"\n{blocked}")
         click.echo(f"Not recorded as executable in version history: {PRE_COMMIT_HOOK}")
+
+
+def _not_in_version_history(paths: Sequence[str]) -> None:
+    click.echo(f"Not yet in version history: {', '.join(paths)}")
+    click.echo("  git status lists them (git diff does not): add them before you commit.")
 
 
 def _form_folder_problem(project_dir: Path, relative: str, files: Mapping[str, str]) -> str | None:

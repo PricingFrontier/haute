@@ -158,8 +158,9 @@ writes `.env.example` (`env_example` for the target, `app_env_example` for the a
 each naming the variables `connections.toml` names), writes the starter tests on a new project, writes `.python-version` with the project's Python when it has none
 (`haute._project_python.project_python_version`), writes CI workflow files for the chosen
 provider on that Python, `ci_files` for the target or `workbench_ci_files` for the host
-(on a re-run pruning first each file Haute generates that the new set does not hold:
-another provider's, or the other kind of project's; a new project prunes none, since its
+(on a re-run removing first each CI file Haute wrote, its first line `CI_FILE_MARK`, that the
+new set does not hold: another provider's, or the other kind of project's, a team's own file at
+one of those paths left; a new project prunes none, since its
 folder's workflows are the team's own), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, unless a `pre-commit` there is not
 Haute's (`_is_haute_hook`: it does not hold the Haute hook's header comment), which is kept
@@ -439,8 +440,9 @@ with its Python,
 `[ci.staging] endpoint_suffix` and `[ci.production] environment`, plus `.env.example`, and
 `.python-version` on a GitHub project that has none, so a
 project takes up a newer haute's workflows, a changed staging suffix or an environment that
-gates production; every other generated file is pruned (another provider's, or the other kind
-of project's), and nothing else is touched. The files it wrote go to `capture_new_files`
+gates production; every other CI file Haute wrote is removed (another provider's, or the other
+kind of project's: one holding `CI_FILE_MARK`, `_prune_stale_ci_files`), each named as
+removed, and nothing else is touched, a team's own workflow at one of Haute's paths included. The files it wrote go to `capture_new_files`
 (`_init_cmd.py`, which a `haute init` re-run calls the same way), which records those Git does
 not track yet as one ledger save through `capture_save_in_ledger`
 ([git integration](../git-integration/low-level.md)) and reports the capture, or prints its
@@ -662,7 +664,8 @@ Key files and what they cover:
   `[project] name`, each question defaulting to the project's current answer (with and
   without a terminal) and one it holds no answer to refused without its flag, a malformed
   `haute.toml` refused before any question, stale CI-file pruning (another provider's and the
-  other kind of project's), the kind of project switched both ways naming the nodes to
+  other kind of project's, a team's own file at one of Haute's paths left, `test_cli_ci.py`
+  holding the same for `ci update`), the kind of project switched both ways naming the nodes to
   replace, and a changed database writing `connections.toml` afresh while an unchanged one
   keeps it unasked; and a workbench project: its `haute.toml`, connections and workflows for
   each database and sign-in, the questions asked at a terminal and their defaults, and the

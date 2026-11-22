@@ -96,7 +96,8 @@ Out of scope, owned elsewhere:
   question. The re-run writes `haute.toml` afresh from the answers, keeping
   `[project] name`; the previous file is left to git, and the summary says to copy back
   from it what was set by hand, the `[mlflow]` settings saved from the app among them. It
-  writes the workflows (pruning every generated file the new set does not hold),
+  writes the workflows (removing each CI file Haute wrote, which its first line records, that
+  the new set does not hold; a team's own file at one of Haute's paths is left),
   `.env.example` and the pre-commit hook again. Its summary and what it records are one
   list: every file the re-run writes or regenerates (`pyproject.toml`, `.python-version`,
   `haute.toml`, the form folder and `connections.toml` when written, `.env.example`, the
@@ -179,7 +180,8 @@ Out of scope, owned elsewhere:
   and reports any a later Push finds missing so the push panel can offer to set them
   ([frontend git UI](../frontend-git-ui/high-level.md)); the editor sets only secrets the
   repository lacks, and the command is how a changed value reaches CI.
-- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, with
+- `haute ci update` rewrites the CI files `haute init` generated, and no others (it removes
+  only a CI file Haute wrote, as the re-run does), and `.env.example`, with
   the variables `connections.toml` names when the project has one, for the
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
