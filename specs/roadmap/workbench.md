@@ -59,7 +59,6 @@ session ran each again on 16 November 2026.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
 | WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
@@ -484,40 +483,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-46 — The quote store's connections and the gate have deadlines
-**Why:** Read from the source. The server-database engine is created with a
-pre-ping only: no connect timeout, no statement timeout and the default pool,
-and the URL builder adds none. A sweep of the quote store, the workbench
-modules and the database IO for a connect, login, statement or pool timeout
-found none. The driver's default is to wait as long as the operating system
-does, which is minutes for a host that drops packets. The store's gate runs
-its opener (connect, catalogue read, privilege probe) while holding its lock,
-and every quote route, the price route and the release route take that lock
-on a worker thread. So when the database stops answering, each request parks
-a worker thread behind the gate, or on a statement with no deadline, instead
-of getting the 503 "cannot reach its quote store" the module promises; after
-the refusal's ten seconds the next request blocks them all again. An
-exhausted pool surfaces as SQLAlchemy's timeout, which the quote routes
-answer as a 500.
-
-**Plan:** Give each provider an explicit connect timeout and statement
-timeout, and the pool a bounded wait that is answered as the 503. Have the
-gate hand waiters the check already in flight instead of the lock, so one
-slow open delays one answer.
-
-**Acceptance:** With the database made to accept connections and never
-answer, a quote read is answered 503 within the configured deadline, twenty
-concurrent requests are all answered within it, and no worker thread is left
-waiting. A statement that outlives its deadline is cancelled and reported as
-the store being unreachable.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_providers.py::make_server_engine`;
-`src/haute/_quote_store/_providers.py::server_url`;
-`src/haute/_workbench_app_store.py::StoreGate`;
-`src/haute/_workbench_app_quotes.py::_call`.
 
 ### WB-47 — A release with a Workbench Output column nothing fills
 **Why:** Read from the source. While an analyst edits, a declared output

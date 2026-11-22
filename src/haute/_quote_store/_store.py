@@ -28,6 +28,7 @@ from typing import Any, TypeVar
 from sqlalchemy import Connection, Dialect, Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from haute._logging import get_logger
 from haute._quote_store._catalogue import (
@@ -255,8 +256,26 @@ def unreached(exc: BaseException) -> bool:
     """Whether *exc* is a server database's refusal of a connection, or one that never came:
     an error the driver raised before any statement, whose text names where the database is
     and who signs in to it, or Entra ID refusing the sign-in's token as the connection is
-    made."""
-    return (isinstance(exc, DBAPIError) and exc.statement is None) or _entra_refused(exc)
+    made; or a database that stopped answering: a statement ended at its deadline
+    (:func:`past_deadline`), or every connection taken past the pool's."""
+    return (
+        (isinstance(exc, DBAPIError) and exc.statement is None)
+        or _entra_refused(exc)
+        or past_deadline(exc)
+        or isinstance(exc, PoolTimeoutError)
+    )
+
+
+def past_deadline(exc: BaseException) -> bool:
+    """Whether *exc* is a statement the database or its driver ended at its deadline
+    (:data:`._providers.STATEMENT_TIMEOUT_SECONDS`): PostgreSQL's cancelled statement,
+    SQLSTATE 57014, or SQL Server's driver's query timeout, which mssql-python names alone."""
+    if not isinstance(exc, DBAPIError) or exc.statement is None:
+        return False
+    original = exc.orig
+    return getattr(original, "sqlstate", None) == "57014" or (
+        getattr(original, "driver_error", None) == "Timeout expired"
+    )
 
 
 def rerun_asked(exc: BaseException) -> bool:

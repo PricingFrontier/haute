@@ -188,22 +188,33 @@ async def _book(app: QuoteApp) -> QuoteBook:
 async def _call(
     app: QuoteApp, work: Callable[[QuoteBook], T], identity: tuple[str, int] | None = None
 ) -> T:
-    """*work* on the open book, on a worker thread, the store's refusals answered as the app's;
-    a quote moved on with the quote *identity* names as it is now. A store whose tables changed
-    under the running app is checked again at once and, while they fit, *work* done once more
-    on the store as it opens now, as nothing was written."""
+    """*work* on the open book (:func:`_answered`). A store whose tables changed under the
+    running app is checked again at once and, while they fit, *work* done once more on the
+    store as it opens now, as nothing was written; answered 503 when they no longer fit, or
+    changed again meanwhile."""
+    book = await _book(app)
     try:
-        book = await _book(app)
-        try:
-            return await run_in_threadpool(work, book)
-        except QuoteStoreChangedError:
-            refusal = await run_in_threadpool(app.gate.recheck, book)
-            if refusal is not None:
-                raise RequestRefusedError(refusal.detail, status_code=503) from None
-            return await run_in_threadpool(work, await _book(app))
+        return await _answered(app, work, book, identity)
+    except QuoteStoreChangedError:
+        refusal = await run_in_threadpool(app.gate.recheck, book)
+        if refusal is not None:
+            raise RequestRefusedError(refusal.detail, status_code=503) from None
+    try:
+        return await _answered(app, work, await _book(app), identity)
     except QuoteStoreChangedError as exc:
-        # Changed again between the check and the work: nothing was written.
         raise _refusal(503, exc) from None
+
+
+async def _answered(
+    app: QuoteApp, work: Callable[[QuoteBook], T], book: QuoteBook, identity: tuple[str, int] | None
+) -> T:
+    """*work* on *book*, on a worker thread, the store's refusals answered as the app's; a
+    quote moved on with the quote *identity* names as it is now; a
+    :class:`QuoteStoreChangedError` raised on, for :func:`_call` to check the store again."""
+    try:
+        return await run_in_threadpool(work, book)
+    except QuoteStoreChangedError:
+        raise
     except QuoteNotFoundError as exc:
         raise _refusal(404, exc) from None
     except StaleQuoteError as exc:
@@ -243,8 +254,9 @@ async def _call(
             # the gate's lock may be held by a check still waiting.
             await run_in_threadpool(app.gate.unreachable)
         elif answer.code == "quote_store_refused":
-            # A statement refused: the tables may have changed under the running app.
-            refusal = await run_in_threadpool(app.gate.recheck)
+            # A statement refused: the tables may have changed under the running app. The
+            # book it was refused on is named, so a check another request made since stands.
+            refusal = await run_in_threadpool(app.gate.recheck, book)
             if refusal is not None:
                 raise RequestRefusedError(refusal.detail, status_code=503) from None
         raise answer.refusal() from None

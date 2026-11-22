@@ -10,9 +10,13 @@ and privileges, and a release started apart from its project signing in as it de
 from __future__ import annotations
 
 import json
+import socket
 import struct
+import threading
+import time
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
@@ -21,14 +25,17 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.dialects import mssql, postgresql
 from sqlalchemy.dialects.mssql.mssqlpython import MSDialect_mssqlpython
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.schema import CreateTable
 
 import haute._quote_store._providers as providers_module
 from haute._credential_security import validate_credential_free_uri
+from haute._failure_answers import classify_failure
 from haute._project_context import current_project
 from haute._quote_store import (
     HOST_VARIABLES,
@@ -42,15 +49,17 @@ from haute._quote_store import (
 from haute._quote_store._migrate import offline_plan, plan
 from haute._quote_store._providers import (
     PROVIDERS,
+    SQL_ATTR_LOGIN_TIMEOUT,
     SQL_COPT_SS_ACCESS_TOKEN,
     connect_hook,
+    deadline_hook,
     make_server_engine,
     missing_privileges,
     server_url,
 )
 from haute._quote_store._rows import KEPT_KEY
 from haute._quote_store._schema import store_schema, structure
-from haute._quote_store._store import make_engine, reaching
+from haute._quote_store._store import make_engine, reaching, unreached
 from haute._workbench_app import create_app, hosted_store, read_release, store_dependencies
 from haute._workbench_app_store import StoreGate
 from haute._workbench_config import StoreEnvironment
@@ -352,10 +361,83 @@ def test_a_server_engine_signs_in_through_its_hook_and_checks_a_connection_befor
     engine = make_server_engine("postgresql+psycopg://localhost:1/quotes", sign_in)
     try:
         assert engine.pool._pre_ping
-        assert len(engine.dialect.dispatch.do_connect) == 1
+        # Its deadlines, then its sign-in.
+        assert len(engine.dialect.dispatch.do_connect) == 2
         assert "hidden" not in repr(engine)
     finally:
         engine.dispose()
+
+
+def test_each_connection_is_given_its_deadlines_beside_its_sign_in() -> None:
+    pg: dict[str, Any] = {"options": "-c search_path=quotes"}
+    deadline_hook(PROVIDERS["postgresql"])(None, None, [], pg)
+    assert pg == {
+        "options": "-c search_path=quotes -c statement_timeout=30000",
+        "connect_timeout": 10,
+        "tcp_user_timeout": 10000,
+    }
+    sqlserver: dict[str, Any] = {}
+    deadline_hook(PROVIDERS["sqlserver"])(None, None, ["Server=s"], sqlserver)
+    connect_hook(PROVIDERS["sqlserver"], SignIn("managed-identity"), Credential())(
+        None, None, ["Server=s"], sqlserver
+    )
+    assert sqlserver == {
+        "attrs_before": {SQL_ATTR_LOGIN_TIMEOUT: 10, SQL_COPT_SS_ACCESS_TOKEN: _packed("token-1")}
+    }
+
+
+@pytest.fixture
+def silent() -> Iterator[int]:
+    """A port that takes connections and never answers, as a database that stopped answering
+    does."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(64)
+    held: list[socket.socket] = []
+
+    def accept() -> None:
+        while True:
+            try:
+                held.append(listener.accept()[0])
+            except OSError:
+                return
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield listener.getsockname()[1]
+    finally:
+        listener.close()
+        for each in held:
+            each.close()
+
+
+@pytest.mark.parametrize(("provider", "address"), [("postgresql", "{}"), ("sqlserver", "tcp:{}")])
+def test_a_database_that_never_answers_closes_the_quotes_within_the_deadline(
+    silent: int, provider: str, address: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(providers_module, "CONNECT_TIMEOUT_SECONDS", 1)
+    separator = ":" if provider == "postgresql" else ","
+    url = server_url(PROVIDERS[provider], address.format(f"127.0.0.1{separator}{silent}"), "q")
+    gate = StoreGate(
+        partial(
+            open_book,
+            url,
+            form(POLICY),
+            environment=TEST,
+            haute_version="1",
+            sign_in=SignIn("password", username="app", secret="unused"),
+        )
+    )
+    started = time.monotonic()
+
+    with ThreadPoolExecutor(max_workers=20) as requests:
+        states = list(requests.map(lambda _: gate.state(), range(20)))
+
+    # Every request is answered within the deadline, one check serving them all.
+    assert time.monotonic() - started < 5
+    assert {(state.open, state.error_code) for state in states} == {
+        (False, "quote_store_unreachable")
+    }
 
 
 # ── The store's types on each engine ──────────────────────────────────────
@@ -846,6 +928,55 @@ def test_a_sign_in_the_server_refuses_closes_the_quotes_naming_no_server_or_user
     state = StoreGate(opened).state()
     assert (state.open, state.error_code) == (False, "quote_store_unreachable")
     assert host not in str(state.message) and "haute_nobody" not in str(state.message)
+
+
+def test_a_statement_past_its_deadline_is_cancelled_as_the_store_not_answering(
+    server: Target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(providers_module, "STATEMENT_TIMEOUT_SECONDS", 1)
+    server.script(server.sql(form(POLICY)))
+    adding = (
+        "ALTER TABLE policy ADD held INT NULL"
+        if server.backend == "sqlserver"
+        else "ALTER TABLE policy ADD COLUMN held INT NULL"
+    )
+    with (
+        open_book(
+            server.url, form(POLICY), environment=TEST, haute_version="1", sign_in=server.sign_in
+        ) as book,
+        make_engine(server.url, sign_in=server.sign_in).connect() as other,
+    ):
+        # Another session holds the table's schema lock, as a migration left open does.
+        holding = other.begin()
+        other.execute(text(adding))
+        started = time.monotonic()
+        with pytest.raises(DBAPIError) as waited:
+            book.read("A-1", 1)
+        elapsed = time.monotonic() - started
+        holding.rollback()
+
+    assert elapsed < 5
+    assert unreached(waited.value)
+    answer = classify_failure(waited.value)
+    assert answer is not None and answer.code == "quote_store_unreachable"
+
+
+def test_a_request_waiting_on_every_connection_taken_is_the_store_not_answering(
+    server: Target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(providers_module, "POOL_TIMEOUT_SECONDS", 1)
+    engine = make_engine(server.url, sign_in=server.sign_in)
+    taken = [engine.connect() for _ in range(engine.pool.size() + engine.pool._max_overflow)]  # type: ignore[attr-defined]
+    try:
+        started = time.monotonic()
+        with pytest.raises(PoolTimeoutError) as waited:
+            engine.connect()
+        assert time.monotonic() - started < 5
+        assert unreached(waited.value)
+    finally:
+        for each in taken:
+            each.close()
+        engine.dispose()
 
 
 def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Target) -> None:

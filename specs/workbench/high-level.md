@@ -2045,7 +2045,12 @@ Out of scope:
   database's tables differ from the release's form and each privilege its sign-in lacks,
   `quote_store_unreachable` for a server database the app cannot reach or that refuses its
   sign-in, said naming the variables that place it and sign in to it, never what the driver
-  said, which names the server, its port and the user, and logged without it, and
+  said, which names the server, its port and the user, and logged without it, and the same
+  for one that stopped answering: a connection is made and signed in within 10 seconds, a
+  statement runs within 30 before it is cancelled, and a request waits 10 for a connection
+  while every one is taken, so a database that never answers is refused in seconds, every
+  request waiting on the one check under way, rather than when the operating system gives
+  up; and
   `quote_store_environment` for an app started with no environment named, naming
   `HAUTE_ENVIRONMENT`, or one whose environment or database cannot be resolved, naming the
   variable to set. `GET /api/app/release` says whether the quotes are open (`quotes`) and,
