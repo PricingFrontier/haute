@@ -306,6 +306,7 @@ Invariants that hold across every command:
 - `run`, `lint`, and `deploy` delegate CLI/default pipeline discovery to
   `haute._project.resolve_pipeline_file`; a TOML-configured deploy pipeline is passed through
   that same resolver before `DeployConfig` and `resolve_config` consume it.
+- A command piped into a reader that stops reading ends quietly (Failure model, below).
 - A command piped or redirected to a file writes every mark it prints (`✓`, `✗`), whatever
   the locale: a stream that is not UTF-8 is written in UTF-8, or, when `PYTHONIOENCODING`
   chose its encoding or it is a terminal of another encoding, keeps that encoding and shows
@@ -434,8 +435,14 @@ type and a read-only file each end in their sentence; and anything else, a `Type
 as "Haute hit a failure it does not recognise (incident <id>) …" and where its traceback was
 written, `.haute/incidents/<id>.txt` in the project, or `haute-incidents/` in the system's
 temporary folder outside one. A record that cannot be written is said with its reason, and
-the traceback follows. Click's own usage errors (a port out of range among them) exit 2, an
-abort and a reader that stopped reading (`| head`) end as Click ends them.
+the traceback follows. Click's own usage errors (a port out of range among them) exit 2, and
+an abort ends as Click ends it. A reader that stopped reading the command's output (a pipe into
+`head` that took its lines, a pager quit early) ends the command quietly, exit 1, whatever was
+writing (the command's own line or a log line): nothing is said, neither a parse error nor
+the interpreter's notice. The process's own standard output and error, when not a terminal,
+raise `OutputClosed` for it, which is no `OSError`, so no command's handler of its own
+failures takes it for one; any other failure of a stream, or a broken pipe to a program a
+command runs, is answered as a failure.
 
 The Databricks smoke readiness loop retries only the SDK's explicit not-found response while an
 endpoint is being created. Authentication, permission, transport, and other SDK failures stop

@@ -30,7 +30,6 @@ signals and pipes. The main session ran each case again on 15 November
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
-| CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
 
@@ -66,25 +65,3 @@ nodes inside it. A name held by two occurrences is refused naming both.
 **Evidence:** `src/haute/cli/_run.py::_run_in_project`;
 `specs/cli/high-level.md`; `docs/building-models/nodes/submodel.md`.
 
-### CLI-11 — A command piped into `head` ends quietly
-**Why:** Reproduced on 15 November 2026 on Linux with a valid two-node
-project. `haute lint | head -1` prints "✗ Parse error: [Errno 32] Broken
-pipe", then Python's "Exception ignored ... BrokenPipeError" notice, and
-exits 120. `haute run --node rated | head -1` prints "Error parsing
-pipeline: [Errno 32] Broken pipe" the same way. Nothing is wrong with the
-pipeline: the reader closed the pipe, the parser's next log line to
-standard output raised an `OSError`, and both commands catch `OSError`
-around the parse and call it a parse error. `| less` quit early does the
-same.
-
-**Plan:** Handle a closed standard output once, at the command group: end
-without a message and without the interpreter's notice. Keep the parse
-handlers from naming it a parse error.
-
-**Acceptance:** Both commands above print the one line `head` asked for,
-write nothing to standard error, and never print "Parse error".
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_lint.py`; `src/haute/cli/_run.py`;
-`src/haute/cli/_helpers.py`.

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import polars as pl
@@ -178,6 +178,57 @@ class TestOutputEncoding:
         stream.flush()
 
         assert raw.getvalue() == "? £100".encode("cp1252")
+
+    @pytest.mark.parametrize("command", [["lint"], ["run", "--node", "transform"]], ids=" ".join)
+    def test_a_reader_that_stopped_reading_ends_the_command_quietly(
+        self, project_dir: Path, command: list[str]
+    ) -> None:
+        """CLI-11: ``| head`` closes the pipe; the next line the command or a log writes to
+        standard output fails. The command ends there, saying nothing: no parse error, no
+        interpreter notice. The reader is gone before the command's first line, so the
+        failure is certain whatever the timing."""
+        child = subprocess.Popen(
+            [sys.executable, "-m", "haute", *command, str(project_dir / "main.py")],
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert child.stdout is not None and child.stderr is not None
+        child.stdout.close()
+        said = child.stderr.read().decode("utf-8", "replace")
+        assert child.wait(timeout=120) == 1
+        assert said == ""
+
+    def test_a_closed_reader_is_no_failure_of_the_command(self) -> None:
+        """A write to a stream whose reader has gone raises ``OutputClosed``, which no
+        ``except OSError`` (``EXPECTED_FAILURES``) takes; any other failure of the stream is
+        the OSError it is."""
+        from haute.cli._helpers import EXPECTED_FAILURES
+        from haute.cli._output import OutputClosed, _ReaderGuard
+
+        class Pipe(io.RawIOBase):
+            def __init__(self, failure: OSError) -> None:
+                self.failure = failure
+
+            def writable(self) -> bool:
+                return True
+
+            def write(self, data: Any) -> int:
+                raise self.failure
+
+        assert not issubclass(OutputClosed, EXPECTED_FAILURES)
+        closed = _ReaderGuard(
+            io.BufferedWriter(Pipe(BrokenPipeError(32, "Broken pipe"))), encoding="utf-8"
+        )
+        closed.write("✓ checked\n")
+        with pytest.raises(OutputClosed):
+            closed.flush()
+        full = _ReaderGuard(
+            io.BufferedWriter(Pipe(OSError(28, "No space left on device"))), encoding="utf-8"
+        )
+        full.write("✓ checked\n")
+        with pytest.raises(OSError, match="No space left"):
+            full.flush()
 
     def test_a_stream_a_caller_put_in_the_process_s_place_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch
