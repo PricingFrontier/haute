@@ -907,3 +907,66 @@ def test_a_run_whose_resolution_runs_past_the_deadline_fails(
     assert run["outcome"] == "failed" and "took longer than" in run["why"]
     assert run["basis"] is None
     assert saved.status_code == 422 and "took longer than" in saved.json()["detail"]
+
+
+def _coded(codes: list[str]) -> FormSpec:
+    """A form whose cover table has a row for each of *codes*, an Integer index of values
+    from a params file, and a limit allowed as the file writes it, ``1000.00``."""
+    source = {"file": "codes.csv", "column": "code"}
+    cover = {
+        "name": "cover",
+        "rows": "many",
+        "inputs": [
+            {
+                "name": "code",
+                "type": "int",
+                "index": "values",
+                "options": codes,
+                "options_source": source,
+            },
+            {"name": "amount", "type": "float"},
+        ],
+    }
+    policy = {
+        "name": "policy",
+        "rows": "one",
+        "inputs": [
+            {
+                "name": "limit",
+                "type": "float",
+                "options": ["500.00", "1000.00"],
+                "options_source": {**source, "column": "limit"},
+            }
+        ],
+    }
+    return FormSpec.model_validate({**form(), "schema": {"tables": [policy, cover]}})
+
+
+def test_an_opened_test_quotes_rows_are_placed_by_their_values_compared_as_their_type() -> None:
+    """WB-66: a saved value is one of a column's allowed values as its type reads both, and a
+    row goes back to its index value's place wherever the params file now puts it."""
+    request = {
+        "policy": {"limit": 1000.0},
+        "cover": [{"code": 1, "amount": 100.0}, {"code": 2, "amount": 200.0}],
+    }
+
+    values, not_opened = test_quotes.opened_values(_coded(["01", "02"]), request)
+
+    assert not_opened == []
+    # The limit as the sheets' choices write it, which the sheet then shows chosen.
+    assert values["policy"] == [{"limit": "1000.00"}]
+    assert values["cover"] == [{"code": "01", "amount": "100"}, {"code": "02", "amount": "200"}]
+
+    reordered, not_opened = test_quotes.opened_values(_coded(["02", "01"]), request)
+
+    assert not_opened == []
+    assert reordered["cover"] == [{"code": "02", "amount": "200"}, {"code": "01", "amount": "100"}]
+
+
+def test_an_opened_test_quotes_row_whose_value_is_no_longer_allowed_is_left_out_whole() -> None:
+    request = {"cover": [{"code": 3, "amount": 300.0}, {"code": 2, "amount": 200.0}]}
+
+    values, not_opened = test_quotes.opened_values(_coded(["01", "02"]), request)
+
+    assert not_opened == ["cover[1]"]
+    assert values["cover"] == [{"code": "01"}, {"code": "02", "amount": "200"}]

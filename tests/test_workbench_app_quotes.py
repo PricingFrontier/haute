@@ -534,6 +534,27 @@ def test_a_hidden_cell_opens_at_its_default_only_where_that_changes_nothing_show
     assert values["policy_details"] == [{"state": "NY", "cover_limit": "5000"}]
 
 
+def test_a_saved_value_one_of_its_allowed_values_reopens_as_its_choice_writes_it(
+    tmp_path: Path,
+) -> None:
+    """A Decimal chosen as ``1000.00`` is stored as 1000 and reopens as ``1000.00``, so the
+    sheet shows it chosen rather than as no allowed value."""
+    spec = json.loads(json.dumps(FORM))
+    policy = next(t for t in spec["schema"]["tables"] if t["name"] == "policy_details")
+    exposure = next(c for c in policy["inputs"] if c["name"] == "exposure")
+    exposure.update(
+        options=["1000.00", "2000.00"], options_source={"file": "bands.csv", "column": "band"}
+    )
+    release = _write_release(tmp_path / "banded", spec)
+    url = _prepared(tmp_path / "banded.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        made = Page(client).create()
+        assert made.status_code == 200, made.text
+        opened = client.get(address(made.json()["quote"]), headers=ANA).json()
+
+    assert opened["values"]["policy_details"] == [{"state": "NY", "exposure": "1000.00"}]
+
+
 def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page) -> None:
     # An option no number, sent by a page, is the app's to set, never read.
     sent = {**VALUES, "quote_details": [{**DETAILS, "quote_option": "invalid"}]}

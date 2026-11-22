@@ -806,7 +806,8 @@ def test_integer_params_indexes_reopen_without_losing_their_rows_values(store: T
         values = {"perils": [{"peril": "02", "limit": "200"}, {"peril": "01", "limit": "100"}]}
         book.create(operation=op(), actor=ANA, at=book.now(), reference="I-1", values=values)
 
-        expected = [{"peril": "2", "limit": "200"}, {"peril": "1", "limit": "100"}]
+        # Each row's index as the params file writes it, which the sheet's choices show.
+        expected = [{"peril": "02", "limit": "200"}, {"peril": "01", "limit": "100"}]
         opened = book.read("I-1", 1)
         assert opened.values["perils"] == expected
         assert opened.dropped == []

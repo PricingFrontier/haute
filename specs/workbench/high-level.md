@@ -1911,9 +1911,11 @@ Out of scope:
     sample's place, one undo step, onto the form as the view holds it, unless the sample
     was typed into or another quote opened while it was being read, by table and column name as the sheets hold values
     (true and false as ticks, a number as plain text, a date as ISO text, a column's
-    preset rows placed by their values); each value whose table or column the form no
-    longer has, or that its column's type or allowed values no longer take, is listed as
-    not opened. What is opened can be changed and saved as a new test quote, or replace
+    preset rows placed by their values, wherever the allowed values now put them); each
+    value whose table or column the form no longer has, or that its column's type or
+    allowed values no longer take, compared as the column's type reads both, is listed as
+    not opened, and a row whose index value is no longer allowed is listed and left out
+    whole. What is opened can be changed and saved as a new test quote, or replace
     the one opened, after asking.
   - **Run.** Run prices every test quote, or those ticked, one at a time, showing how far
     it has come and able to be stopped, each from its stored request (never rebuilt from
@@ -2827,9 +2829,10 @@ Out of scope:
   opens.
 
   A quote opens from its rows, read together and read again when the quote moved on while
-  they were read: each typed value as the cell text it reads as (an Integer its digits, a
-  Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
-  none, and null a blank), a many-row table's rows in their places by its index (numbered,
+  they were read: each typed value as the cell text it reads as (one of its column's allowed
+  values as that value is written, so a Decimal chosen as `1000.00` shows chosen, else an
+  Integer its digits, a Decimal the shortest text that reads back as it, a Date its ISO
+  text, True/false a tick or none, and null a blank), a many-row table's rows in their places by its index (numbered,
   each in its numbered place, a gap a blank row, and a row whose index is not a number as
   Haute writes one (digits with no sign or leading zero, so `"01"` is none), as one saved
   before the index was numbered holds, after them in the order it was stored, so no row

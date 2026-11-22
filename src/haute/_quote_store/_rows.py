@@ -44,6 +44,7 @@ from haute._workbench_tables import (
     priced_tables,
     quote_request_rows,
     request_columns,
+    sheet_cell,
     starting_value,
     typed_index_problems,
 )
@@ -390,23 +391,6 @@ def rendered_outputs(form: FormSpec, rows: Mapping[str, Rows]) -> PricedTables:
     return priced_tables(prune_document(document))
 
 
-def _cell(value: Any) -> Cell | None:
-    """A stored value as the cell text it reads as: an Integer its digits, a Decimal the
-    shortest text that reads back as it (``1000`` for 1000.0), a Date its ISO text, a tick for
-    true; None, no cell, for false and null."""
-    if value is None or value is False:
-        return None
-    if value is True:
-        return True
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        return repr(value).removesuffix(".0")
-    if isinstance(value, date):
-        return value.isoformat()
-    return str(value)
-
-
 def _row_cells(
     table: SchemaTable, row: Mapping[str, Any], kept: Sequence[tuple[str, str]] = ()
 ) -> dict[str, Cell]:
@@ -415,7 +399,7 @@ def _row_cells(
     for column in table.inputs:
         if column.index == "numbered" or (not details and column.name in IDENTITY_NAMES):
             continue
-        cell = _cell(row.get(column.name))
+        cell = sheet_cell(column, row.get(column.name))
         if cell is not None:
             cells[column.name] = cell
     carried = _kept_json(row, kept)

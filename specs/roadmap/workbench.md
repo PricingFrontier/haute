@@ -68,7 +68,6 @@ session ran each again on 16 November 2026.
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
-| WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
 
@@ -748,30 +747,6 @@ agree the same way.
 `src/haute/deploy/_request_rows.py::record_digests`;
 `src/haute/_hashing.py::content_hash`;
 `src/haute/_scaffold_files.py`.
-
-### WB-66 — A test quote's rows are opened by their values after a list of codes is reordered
-**Why:** Reproduced on 14 November 2026 through the designer's routes. A
-table's index takes its allowed values from a params file holding `01`
-and `02`. A test quote is saved with 100 against the first code and 200
-against the second. The file is reordered to `02`, `01` and the quote is
-opened: the sheet shows `02` with 100 and `01` with 200. Both codes are
-listed as not opened, yet their amounts are kept, paired by position. The
-specification has "preset rows placed by their values". With the
-file unchanged the codes are still listed as not opened, and so is a
-limit of 1000 whose allowed value is written `1000.00`: the saved number
-is compared as text with the file's spelling.
-
-**Plan:** Compare a saved value with an allowed value as the column's
-type, and place the saved rows by the index value. Leave a row out whole
-when its index value is no longer allowed.
-
-**Acceptance:** With the file unchanged nothing is listed as not opened.
-After the reorder `01` shows 100 and `02` shows 200.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_test_quotes.py`;
-`src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
 
 ### WB-70 — A creation repeated under its key is answered with the quote it made
 **Why:** Reproduced on 16 November 2026 with two instances of the
