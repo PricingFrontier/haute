@@ -2923,7 +2923,8 @@ Out of scope:
   the swap moved is retyped, and in a plan from the database with a column added under the
   name the refused rename keeps, the database's other column kept as an extra; a type
   change as the
-  engine's ALTER in place, with a note that a value which does not convert stops it, and on
+  engine's ALTER in place, the column taking a null or none as it did, with a note that a
+  value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows or
   of its index's type as a note of what the table needs, since either changes the key its
   rows are held by; a change of how its index gets its values (numbered, typed or a row

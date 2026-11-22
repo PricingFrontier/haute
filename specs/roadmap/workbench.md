@@ -71,7 +71,6 @@ session ran each again on 16 November 2026.
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
-| WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
 | WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
@@ -846,26 +845,6 @@ agree the same way.
 `src/haute/deploy/_request_rows.py::record_digests`;
 `src/haute/_hashing.py::content_hash`;
 `src/haute/_scaffold_files.py`.
-
-### WB-64 — The migration SQL for SQL Server leaves a column's NOT NULL as it says it does
-**Why:** Reproduced on 14 November 2026. A column of the store was made
-`BIGINT NOT NULL` by its owner, and the form declares it Decimal. The
-migration SQL Haute writes says "Not changed here: policy_details.exposure
-takes no null, unlike the store's." and then, on SQL Server, runs
-`ALTER COLUMN exposure FLOAT(53) NULL`. After it the column takes nulls.
-On PostgreSQL the statement changes the type only and the column still
-refuses them.
-
-**Plan:** Write the column's present nullability into the SQL Server
-statement that changes its type.
-
-**Acceptance:** After the SQL above the column on SQL Server is a float
-that takes no null.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_migrate.py`;
-`specs/workbench/high-level.md`.
 
 ### WB-66 — A test quote's rows are opened by their values after a list of codes is reordered
 **Why:** Reproduced on 14 November 2026 through the designer's routes. A
