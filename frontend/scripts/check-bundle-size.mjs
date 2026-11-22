@@ -300,8 +300,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // outside Haute, the toolbar's Git refused state, branch changes told to every tab and the
 // save naming its branch bring the total to 1,822.8 KiB (initial 305.8 KiB); 1,823 KiB
 // (approved). Merged with CGEN-09 (22 November 2026), the two bring the total to
-// 1,825.2 KiB (initial 306.6 KiB); 1,826 KiB (approved).
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1826
+// 1,825.2 KiB (initial 306.6 KiB); 1,826 KiB (approved). The node editors' roadmap (an
+// "is one of" list typed by its column and splitting pasted cells, the Rename refusal, and
+// Banding asking for its input's columns as it opens) brings it to 1,826.2 KiB (initial
+// 306.6 KiB); 1,828 KiB (approved, 22 November 2026).
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1828
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

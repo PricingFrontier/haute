@@ -117,9 +117,31 @@ test.describe("node editor fields", () => {
 
   test("a Rename to a name the data already has is refused at the field and not saved", async ({ page }) => {
     await openApp(page)
-    await seedSteppedInput(page, "renamed_input", [{ id: "r", kind: "rename", renames: [{ from: "channel", to: "sales_channel" }] }])
-    const editor = await openSteps(page, "renamed_input")
-    await editor.getByRole("button", { name: /^Step 1:/ }).click()
+    // A stepped Transform over raw_rows, whose columns its preview records exactly.
+    await seedGraph(page, (nodes, edges) => {
+      nodes.push({
+        id: "renamed_rows",
+        type: "custom",
+        position: { x: 60, y: 520 },
+        data: {
+          label: "renamed_rows",
+          nodeType: "polars",
+          config: {
+            steps: [
+              { id: "source-1", kind: "source", input: "raw_rows" },
+              { id: "rename-2", kind: "rename", renames: [{ from: "channel", to: "sales_channel" }] },
+            ],
+          },
+        },
+      })
+      edges.push({ id: "e_renamed_rows", source: "raw_rows", target: "renamed_rows", sourceHandle: null, targetHandle: null })
+    })
+    await page.getByRole("button", { name: /Data Input node: raw_rows/i }).click()
+    await expect(page.getByText(/rows · 6 cols/)).toBeVisible()
+    await page.getByRole("button", { name: /Transform node: renamed_rows/i }).click()
+    const editor = page.getByTestId("node-panel").getByTestId("polars-steps-editor")
+    await expect(editor).toBeVisible()
+    await editor.getByRole("button", { name: "Step 1: Rename columns", exact: true }).click()
 
     const to = editor.getByLabel("Rename 1 to")
     await to.fill("value")

@@ -16,6 +16,8 @@ type DataInputColumn = { name: string; dtype: string }
 type UseDataInputColumnsOptions = {
   enabled?: boolean
   fallbackColumns?: DataInputColumn[]
+  /** The input's output read, when it has named outputs (a collapsed submodel's `out__<port>`). */
+  handle?: string | null
 }
 
 const EMPTY_COLUMNS: DataInputColumn[] = []
@@ -44,14 +46,17 @@ export function useDataInputColumns(
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
   const enabled = options.enabled ?? true
   const fallbackColumns = options.fallbackColumns ?? EMPTY_COLUMNS
+  const handle = options.handle ?? null
   const fallbackColumnsFingerprint = useMemo(
     () => columnFingerprint(fallbackColumns),
     [fallbackColumns],
   )
 
-  // Source-aware cache key: "<result key>:source", the input's result key
-  // taken here and used after the fetch. An empty id is no input.
-  const inputKey = useResultKey(dataInput || null)
+  // Source-aware cache key: "<result key>:source", the input's result key (with the
+  // output read, for an input of several) taken here and used after the fetch. An
+  // empty id is no input.
+  const resultKey = useResultKey(dataInput || null)
+  const inputKey = resultKey && handle ? `${resultKey}#${handle}` : resultKey
   const cacheKey = inputKey ? `${inputKey}:${activeSource}` : ""
 
   // Split into two leaf selectors so Zustand's Object.is check works
@@ -152,7 +157,7 @@ export function useDataInputColumns(
     const asked = ask([newest(columnReads)])
     const requestStructuralVersion = structuralVersion
     void asked.answer((signal) => {
-      const target = prepareNodeRequest(requestScope, canvasTarget(dataInput))
+      const target = prepareNodeRequest(requestScope, canvasTarget(dataInput, handle))
       return previewNode({
         graph: target.graph,
         target: target.wireTarget,
@@ -184,6 +189,7 @@ export function useDataInputColumns(
   }, [
     requestScope,
     dataInput,
+    handle,
     inputKey,
     structuralVersion,
     graphFingerprint,

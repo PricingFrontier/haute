@@ -104,10 +104,11 @@ export default function BandingEditor({
 
   // The input's columns: those its last preview recorded, else asked for as the editor
   // opens, so a factor whose column the input no longer has is marked at once.
-  const inputNode = inputSources.length === 1 && !workbench ? inputSources[0].sourceNodeId : ""
-  const fetchedColumns = useDataInputColumns(inputNode, graph.allNodes, graph.edges, graph.submodels, graph.preamble, {
-    enabled: upstreamColumns.length === 0 && inputNode !== "",
+  const input = inputSources.length === 1 && !workbench && !inputSources[0].frameUnresolved ? inputSources[0] : null
+  const fetchedColumns = useDataInputColumns(input?.sourceNodeId ?? "", graph.allNodes, graph.edges, graph.submodels, graph.preamble, {
+    enabled: upstreamColumns.length === 0 && input !== null,
     fallbackColumns: upstreamColumns,
+    handle: input?.sourceHandle,
   })
   const inputColumns = upstreamColumns.length > 0 ? upstreamColumns : fetchedColumns
   const colMap = Object.fromEntries(inputColumns.map(c => [c.name, c.dtype]))

@@ -85,6 +85,23 @@ describe("useDataInputColumns", () => {
     expect(result.current[1].name).toBe("premium")
   })
 
+  it("reads the output an input's handle names, and keeps its columns apart", async () => {
+    const withSubmodel = [
+      ...nodes,
+      { id: "pricing", position: { x: 0, y: 0 }, data: { label: "pricing", description: "", nodeType: "submodel" } },
+    ]
+    useGraphStore.getState().loadGraphSnapshot({ nodes: withSubmodel, edges, preamble: "", submodels: {} })
+    mockPreview.mockResolvedValue(makePreviewResponse({ status: "ok", columns: sampleColumns }))
+    const { result } = renderHook(() =>
+      useDataInputColumns("pricing", withSubmodel, edges, undefined, undefined, { handle: "out__premium" }),
+    )
+    await waitFor(() => expect(result.current).toHaveLength(2))
+    expect(mockPreview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ target: { kind: "occurrence_output", occurrence: "pricing", port: "premium" } }),
+    )
+    expect(Object.keys(useNodeResultsStore.getState().columnCache)).toEqual(["pricing#out__premium:live"])
+  })
+
   it("never shows the previous input's columns for the next one", () => {
     mockPreview.mockReturnValue(new Promise(() => {}))
     useNodeResultsStore.setState({

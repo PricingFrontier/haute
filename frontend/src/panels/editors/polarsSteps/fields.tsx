@@ -1137,7 +1137,15 @@ const LIST_VALUE_WORDS: Record<LiteralType, string> = {
   null: "missing values",
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+/** Whether `text` is a date written `YYYY-MM-DD` that the calendar has (not 2026-02-30). */
+function isCalendarDate(text: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (!match) return false
+  const [year, month, day] = match.slice(1).map(Number)
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
 
 /**
  * Membership values: one type for the whole list, then plain values as chips.
@@ -1206,7 +1214,7 @@ function LiteralListField({
           ? literal("boolean", trimmed.toLowerCase() === "true")
           : { refusal: `Pasted "${trimmed}" is not true or false.` }
       case "date":
-        return ISO_DATE.test(trimmed) && !Number.isNaN(Date.parse(trimmed))
+        return isCalendarDate(trimmed)
           ? literal("date", trimmed)
           : { refusal: `Pasted "${trimmed}" is not a date written as YYYY-MM-DD.` }
       default:

@@ -401,11 +401,14 @@ entry moves focus into the new card. The chooser covers filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
 group by, join, concat, pivot, unpivot, fill null, limit, and variable. Short forms read as
 sentences (`Keep the first [100] rows`, `Sort by [column] [ascending]`, `Rename [column]
-to [name]`); a Rename's new name that the frame keeps ("The data already has a column named
-value.") or another rename of the step gives ("Another rename already names a column
-value.") is refused at its box, the typed name kept and nothing written, since Polars
-refuses a duplicate column; a name a rename of the same step frees may be taken, as Polars
-renames them at once (a swap); other fields carry short sentence-case labels with any note beside them;
+to [name]`); a Rename's new name that another rename of the step gives ("Another rename
+already names a column value."), or that the frame surely keeps where its columns are
+exactly known (a Transform's previewed input carried through steps that keep the list
+exact: "The data already has a column named value."), is refused at its box, the typed
+name kept and nothing written, since Polars refuses a duplicate column; a name a rename of
+the same step frees may be taken, as Polars renames them at once (a swap), and a name the
+columns there may no longer hold (after a Drop by type, or over a Data Input's recorded
+columns) is left for the run to judge; other fields carry short sentence-case labels with any note beside them;
 options read in plain words with the Polars name where it helps (fill strategies such as
 "the previous row's value (forward)", the common cast types first with their meaning, such
 as "Int64 (whole number)"); secondary actions are quiet text buttons ("+ Add condition");

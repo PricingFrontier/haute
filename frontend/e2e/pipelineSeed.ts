@@ -15,12 +15,14 @@ export async function openApp(page: Page): Promise<void> {
 
 /** The node list as the save route wants it, from the editor document. */
 export type SeedNode = { id: string; type: string; position: unknown; data: Record<string, unknown> }
+/** An edge as the save route wants it. */
+export type SeedEdge = { id: string; source: string; target: string; sourceHandle: string | null; targetHandle: string | null }
 
 /**
- * Save the current pipeline with `mutate` applied to its node list, so a spec
+ * Save the current pipeline with `mutate` applied to its node and edge lists, so a spec
  * can put a node into step mode (or add one) through the real save route.
  */
-export async function seedGraph(page: Page, mutate: (nodes: SeedNode[]) => void): Promise<void> {
+export async function seedGraph(page: Page, mutate: (nodes: SeedNode[], edges: SeedEdge[]) => void): Promise<void> {
   const status = await page.evaluate(async (mutateSource: string) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     const graphRes = await fetch("/api/pipeline", { headers })
@@ -62,7 +64,7 @@ export async function seedGraph(page: Page, mutate: (nodes: SeedNode[]) => void)
         targetHandle: edge.target_handle,
       }),
     )
-    new Function("nodes", mutateSource)(nodes)
+    new Function("nodes", "edges", mutateSource)(nodes, edges)
     const res = await fetch("/api/pipeline/save", {
       method: "POST",
       headers,
@@ -80,7 +82,7 @@ export async function seedGraph(page: Page, mutate: (nodes: SeedNode[]) => void)
     })
     if (!res.ok) throw new Error(`POST /api/pipeline/save ${res.status} ${await res.text()}`)
     return (await res.json()).status
-  }, `(${mutate.toString()})(nodes)`)
+  }, `(${mutate.toString()})(nodes, edges)`)
   expect(status).toBe("saved")
   await page.reload()
   await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()

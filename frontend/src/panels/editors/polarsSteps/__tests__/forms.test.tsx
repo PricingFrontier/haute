@@ -8,6 +8,7 @@ import { MAX_EXPR_DEPTH, createStep, renameRefusal, stepProblem } from "../catal
 import { calculationExpr } from "../calculations"
 import { parseFormula } from "../formula"
 import { StepForm, type StepFormContext } from "../forms"
+import { columnsAtEachStep } from "../derivedColumns"
 import { schemaFor } from "../stepSchema"
 import type { Expr, Operand, Step } from "../types"
 
@@ -1092,7 +1093,11 @@ describe("step forms only build schema-valid payloads", () => {
 
   it("a rename to a name the data already has is refused at the field and not written", () => {
     const spy = vi.fn()
-    render(<Stateful initial={{ id: "r", kind: "rename", renames: [{ from: "premium", to: "net" }, { from: "", to: "" }] }} spy={spy} />)
+    const exact: StepFormContext = {
+      ...ctx,
+      schema: schemaFor({ columns: ["premium", "region"].map((name) => ({ name, dtype: null, made: false })), complete: true, exact: true }),
+    }
+    render(<StatefulIn initial={{ id: "r", kind: "rename", renames: [{ from: "premium", to: "net" }, { from: "", to: "" }] }} spy={spy} context={exact} />)
     const to = screen.getByLabelText("Rename 1 to")
 
     fireEvent.change(to, { target: { value: "region" } })
@@ -1109,12 +1114,29 @@ describe("step forms only build schema-valid payloads", () => {
     expect(spy).not.toHaveBeenCalled()
   })
 
-  it("a rename may take a name another entry of the step frees", () => {
-    const renames = [{ from: "premium", to: "region" }, { from: "region", to: "premium" }]
-    expect(renameRefusal(renames, 0, "region", ctx.columns)).toBeNull()
-    expect(renameRefusal(renames, 1, "premium", ctx.columns)).toBeNull()
-    expect(renameRefusal([{ from: "premium", to: "" }], 0, "premium", ctx.columns)).toBeNull()
-    expect(renameRefusal([{ from: "premium", to: "" }], 0, "region", [])).toBeNull()
+  it("a rename may take a name another entry of the step frees, but never one another entry gives", () => {
+    const exists = (name: string) => ["premium", "region"].includes(name)
+    const swap = [{ from: "premium", to: "region" }, { from: "region", to: "premium" }]
+    expect(renameRefusal(swap, 0, "region", exists)).toBeNull()
+    expect(renameRefusal(swap, 1, "premium", exists)).toBeNull()
+    expect(renameRefusal([{ from: "premium", to: "" }], 0, "premium", exists)).toBeNull()
+    // Back to its own name while the other entry gives that name: Polars refuses the duplicate.
+    expect(renameRefusal(swap, 1, "region", exists)).toBe("Another rename already names a column region.")
+  })
+
+  it("a rename is not refused for a name the columns there may no longer hold", () => {
+    // A Transform's input is known exactly; dropping every text column leaves region listed,
+    // since its type is taken as unknown, so the list is no longer exact.
+    const steps: Step[] = [
+      { id: "s", kind: "source", input: "quotes" },
+      { id: "d", kind: "drop", columns: [], dtypes: ["String"] },
+      { id: "r", kind: "rename", renames: [{ from: "premium", to: "" }] },
+    ]
+    const states = columnsAtEachStep({ inputs: { quotes: [{ name: "premium", dtype: "Int64" }, { name: "region", dtype: "String" }] }, frame: [], freeCode: new Map() }, steps)
+    expect(renameRefusal([{ from: "premium", to: "" }], 0, "region", schemaFor(states[1]).exists)).toBe("The data already has a column named region.")
+    expect(states[2].columns.map((column) => column.name)).toContain("region")
+    expect(renameRefusal([{ from: "premium", to: "" }], 0, "region", schemaFor(states[2]).exists)).toBeNull()
+    expect(renameRefusal([{ from: "premium", to: "" }], 0, "region", null)).toBeNull()
   })
 
   it("cast rows pair a column with a type and can be added", () => {
@@ -1975,6 +1997,22 @@ describe("steps offer only what Polars 2 runs on the column types the editor kno
       number_type: "integer",
     })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("a pasted date the calendar does not have adds none of the paste", () => {
+    const spy = vi.fn()
+    const context = contextFor([["start", "Date"]])
+    const step: Step = { id: "f", kind: "filter", match: "all", conditions: [{ column: "start", operator: "is_in", values: [] }] }
+    render(<StatefulIn initial={step} spy={spy} context={context} />)
+    const box = screen.getByLabelText("Filter condition 1 values new value")
+
+    fireEvent.paste(box, { clipboardData: { getData: () => "2026-02-28\t2026-02-30" } })
+    expect(screen.getByRole("alert")).toHaveTextContent('Pasted "2026-02-30" is not a date written as YYYY-MM-DD.')
+    expect(spy).not.toHaveBeenCalled()
+
+    fireEvent.paste(box, { clipboardData: { getData: () => "2026-02-28\t2024-02-29" } })
+    const next = spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "filter" }>
+    expect(next.conditions[0].values).toEqual(["2026-02-28", "2024-02-29"].map((value) => ({ kind: "literal", type: "date", value })))
   })
 
   it("a membership list keeps its kind of number when a value is removed", () => {

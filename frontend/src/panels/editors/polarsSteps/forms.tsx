@@ -1133,7 +1133,7 @@ function RenameForm({ step, onChange, ctx }: FormProps<RenameStep>) {
             <TextField
               value={entry.to}
               onCommit={(to) => set({ ...entry, to })}
-              validate={(to) => renameRefusal(step.renames, index, to, ctx.columns)}
+              validate={(to) => renameRefusal(step.renames, index, to, ctx.schema?.exists ?? null)}
               ariaLabel={`Rename ${index + 1} to`}
               placeholder="new name"
               mono
