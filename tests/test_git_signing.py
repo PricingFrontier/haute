@@ -66,18 +66,18 @@ def test_every_commit_haute_makes_is_signed_when_git_is_set_to_sign(
     first = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save 1")
     milestone = commit_milestone("M1", repo, cwd=repo).sha
     pending = _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save 2")
-    _write_and_save(repo, WORKING, {"rating.py": "# v4\n"}, message="save 3")
-    assert first is not None and pending is not None
+    last = _write_and_save(repo, WORKING, {"rating.py": "# v4\n"}, message="save 3")
+    assert first is not None and pending is not None and last is not None
 
     # A branch forked at a pending save opens at a milestone made for it.
     create_working_branch("exp", repo, at=pending, cwd=repo)
-    # Create & Move copies the saves after the milestone onto the new branch.
-    create_working_branch("moved", repo, move=True, cwd=repo)
-    moved = _commits(repo, "moved..moved-save")
+    # Create & Move from a pending save copies the saves after it onto the new branch.
+    create_working_branch("moved", repo, at=pending, move=True, cwd=repo)
+    copies = _commits(repo, "moved..moved-save")
     restored = restore_version(milestone, repo, cwd=repo).sha
 
-    made = [first, milestone, _git(repo, "rev-parse", "exp"), *moved, restored]
-    assert len(moved) == 2
+    made = [first, milestone, _git(repo, "rev-parse", "exp"), *copies, restored]
+    assert len(copies) == 1 and copies[0] != last
     assert [commit for commit in made if not _signed(repo, commit)] == []
 
 
@@ -127,6 +127,66 @@ def test_a_commit_that_cannot_be_signed_is_refused_with_its_cause_and_moves_noth
     assert milestone.value.cause == save.value.cause == "signing"
     assert "could not be signed" in str(milestone.value)
     assert (_rev_parse(WORKING, cwd=repo), _rev_parse(LEDGER, cwd=repo)) == (working, ledger)
+
+
+def test_a_signing_setting_git_cannot_read_refuses_and_makes_no_unsigned_commit(
+    repo: Path,
+) -> None:
+    set_working_branch(WORKING, repo, cwd=repo)
+    _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save 1")
+    _git(repo, "config", "commit.gpgsign", "tru")
+    working, ledger = _rev_parse(WORKING, cwd=repo), _rev_parse(LEDGER, cwd=repo)
+
+    with pytest.raises(GitBlockedError) as milestone:
+        commit_milestone("M1", repo, cwd=repo)
+    with pytest.raises(GitBlockedError) as save:
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save 2")
+
+    assert milestone.value.cause == save.value.cause == "damaged-config"
+    assert "commit.gpgsign is set to 'tru'" in str(milestone.value)
+    assert (_rev_parse(WORKING, cwd=repo), _rev_parse(LEDGER, cwd=repo)) == (working, ledger)
+
+
+def test_a_copy_create_and_move_makes_is_signed_by_whoever_moves_it(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Saves another analyst made, moved: each copy keeps its author and committer, and is
+    signed with the mover's key, which GPG with no key set finds by the mover's identity
+    (a stand-in signing program records the key it is asked for)."""
+    asked = tmp_path / "asked.txt"
+    program = tmp_path / "sign.sh"
+    program.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> '{asked}'\n"
+        "cat > /dev/null\n"
+        "printf '\\n[GNUPG:] SIG_CREATED D 22 8 00 0 STANDIN\\n' >&2\n"
+        "printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nSTANDIN\\n-----END PGP SIGNATURE-----\\n'\n",
+        encoding="utf-8",
+    )
+    program.chmod(0o755)
+    _git(repo, "config", "gpg.program", str(program))
+    _git(repo, "config", "commit.gpgsign", "true")
+    set_working_branch(WORKING, repo, cwd=repo)
+    _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save 1")
+    commit_milestone("M1", repo, cwd=repo)
+    _git(repo, "config", "user.name", "Other Actuary")
+    _git(repo, "config", "user.email", "other@example.com")
+    pending = _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save 2")
+    last = _write_and_save(repo, WORKING, {"rating.py": "# v4\n"}, message="save 3")
+    _git(repo, "config", "user.name", "Test Actuary")
+    _git(repo, "config", "user.email", "test@example.com")
+    asked.unlink()
+
+    create_working_branch("moved", repo, at=pending, move=True, cwd=repo)
+
+    (copy,) = _commits(repo, "moved..moved-save")
+    assert copy != last
+    assert _git(repo, "log", "-1", "--format=%an <%ae> / %cn <%ce>", copy) == (
+        "Other Actuary <other@example.com> / Other Actuary <other@example.com>"
+    )
+    keys = asked.read_text(encoding="utf-8").splitlines()
+    assert len(keys) == 2  # the milestone the branch opens at, and the copy
+    assert all(key.endswith("-bsau Test Actuary <test@example.com>") for key in keys), keys
 
 
 def test_an_ssh_key_s_words_are_a_signing_failure_only_from_a_commit() -> None:

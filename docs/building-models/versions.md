@@ -121,7 +121,8 @@ reads **Git refused**, and its tooltip says why and what to do:
   network share. The tooltip gives the command that trusts it, `git config --global --add
   safe.directory` and the folder. Run it, then reload the page.
 - **Damaged settings.** A line of git's settings file, usually `.git/config`, cannot be
-  read. The tooltip names the file and the line. Correct or remove that line.
+  read, or a setting that must be true or false is neither. The message names the line or
+  the setting. Correct or remove it.
 
 Saving still writes your work to disk. Its warning gives the same reason, and the files are
 captured at the next save once git works again. Two more causes are named when a save or a
@@ -158,6 +159,7 @@ passphrase while Haute runs: load it into your SSH agent, or use a key without o
 works the same way, without the first line.
 
 When a commit cannot be signed, nothing is recorded and Haute says so (see **Signing** above).
+A mistyped `commit.gpgsign` is refused the same way, never read as "don't sign".
 The saves Create & Move copies are signed by whoever moves them; the copies keep each save's
 original author. Version labels are not signed; the milestone each one names is.
 

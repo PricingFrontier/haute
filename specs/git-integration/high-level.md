@@ -120,8 +120,9 @@ none is set up.
 **Signed commits.** When git is set to sign every commit (`commit.gpgsign`, in the
 repository's settings or the analyst's), every commit Haute makes is signed with the key and
 format git is set to use: a save, a milestone, a restore, a branch's first milestone made at
-a save, the copies of the saves Create & Move relocates (signed by whoever moves them, each
-keeping its original author and committer), and a new repository's root commit. Where an
+a save, the copies of the saves Create & Move relocates (signed with the key of whoever moves
+them, each keeping its original author and committer), and a new repository's root commit.
+A signing setting git cannot read as true or false is refused, never read as "don't sign". Where an
 audit asks who recorded each version, a team sets git to sign. Nothing is signed otherwise,
 and a commit that cannot be signed records nothing and is refused with that cause
 (`GitBlockedError`, below). Version labels, tag objects Haute writes itself, are not signed;

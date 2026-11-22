@@ -32,7 +32,8 @@ conversion in the routes).
     - `GitBlockedError(GitDomainError)` — git refused for a cause outside Haute that its
       message names (`_blocked_by`), carrying `cause`: `lock` ("Unable to create
       '<path>.lock': File exists"), `untrusted-folder` ("detected dubious ownership"),
-      `damaged-config` ("bad config line <n> in file <file>") or `signing`, read only of a
+      `damaged-config` ("bad config line <n> in file <file>", or "bad boolean config value
+      '<value>' for '<setting>'") or `signing`, read only of a
       command that commits (`commit`, `commit-tree`), since an SSH key's words can be a
       push's ("failed to sign the data" from gpg or gpgsm; for the SSH format, no
       `user.signingkey` set, "Couldn't load public key", "No private key found for public
@@ -43,7 +44,9 @@ conversion in the routes).
       because another account owns it (as on a network share), so it will not work in it.
       To trust the folder, run: git config --global --add safe.directory <the value git
       proposes>"; "Git can't read its settings: line <n> of <file> is damaged. Correct or
-      remove that line, then try again."; "Git is set to sign every commit, and this one
+      remove that line, then try again." (for a setting that is neither true nor false: "Git
+      can't read its settings: <setting> is set to '<value>', which is neither true nor
+      false. Correct it, then try again."); "Git is set to sign every commit, and this one
       could not be signed, so nothing was recorded. Check that the signing key git uses is
       available and signs without asking for a passphrase, then try again." A file inside
       the project is named relative to it.
@@ -336,7 +339,12 @@ hooks, `prepare-commit-msg` and `post-commit` included (which `--no-verify` woul
 run); they run at a milestone over every save it records. `git commit` signs a save when git
 is set to sign every commit; every other commit Haute makes is
 `src/haute/_git_core.py::_commit_tree`, which asks `commit-tree` (which reads no such
-setting) for the signature with `-S` when `signs_commits` reads `commit.gpgsign` true, and
+setting) for the signature with `-S` when `signs_commits` reads `commit.gpgsign` true. Only
+a setting left unset or false signs nothing: one git cannot read as a boolean raises
+`GitBlockedError` (`damaged-config`), so no unsigned commit is made. A copy `_replay_onto`
+makes keeps its original's author and committer through the environment, so for GPG or X.509
+with no `user.signingkey`, which git would pick by that committer, `_signature` names the
+analyst's own identity (`git var GIT_COMMITTER_IDENT`, read before the copy's) as the key.
 `tests/test_git_signing.py` fails any `commit-tree` named outside the git core. Every path reaches Git as a
 `:(literal)` pathspec, so a filename holding `*`, `?` or `[` names only itself, as in the
 unborn-repo seed. A canvas save passes no

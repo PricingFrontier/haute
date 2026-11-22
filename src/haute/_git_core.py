@@ -642,6 +642,7 @@ _LOCK_HELD = re.compile(r"Unable to create '([^'\n]+\.lock)': File exists")
 _UNTRUSTED = re.compile(r"detected dubious ownership in repository at '([^'\n]+)'")
 _SAFE_DIRECTORY = re.compile(r"git config --global --add safe\.directory (.+)")
 _DAMAGED_CONFIG = re.compile(r"bad config (?:file )?line (\d+) in (?:file )?(.+)")
+_BAD_BOOLEAN = re.compile(r"bad boolean config value '([^'\n]*)' for '([^'\n]+)'")
 # A commit git could not sign: git's words when gpg or gpgsm fails, then those of git and
 # ssh-keygen for the ssh format (no key set, the key file missing, no private key for it, a
 # key that asks for a passphrase, an ssh-keygen too old to sign). Read only of a commit.
@@ -698,6 +699,13 @@ def _blocked_by(
             "damaged-config",
             f"Git can't read its settings: line {line} of {settings} is damaged. Correct or "
             "remove that line, then try again.",
+        )
+    if (bad := _BAD_BOOLEAN.search(stderr)) is not None:
+        value, setting = bad.group(1), bad.group(2)
+        return GitBlockedError(
+            "damaged-config",
+            f"Git can't read its settings: {setting} is set to '{value}', which is neither "
+            "true nor false. Correct it, then try again.",
         )
     if committing and _UNSIGNED.search(stderr) is not None:
         return GitBlockedError(
@@ -809,9 +817,33 @@ def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
 
 def signs_commits(cwd: Path | None = None) -> bool:
     """Whether git is set to sign every commit (``commit.gpgsign``, in the repository's
-    settings or the analyst's own)."""
-    ok, raw = _run_git_ok("config", "--type=bool", "--get", "commit.gpgsign", cwd=cwd)
-    return ok and raw.strip() == "true"
+    settings or the analyst's own). Only a setting left unset, or set false, signs nothing:
+    one git cannot read as true or false refuses (``GitBlockedError``), so a mistyped
+    setting never makes an unsigned commit where a team asked for signed ones."""
+    code, raw = _run_git_rc("config", "--type=bool", "--get", "commit.gpgsign", cwd=cwd)
+    if code == 1:  # not set
+        return False
+    if code != 0:
+        raise GitError("Git could not read whether to sign commits (commit.gpgsign).")
+    return raw == "true"
+
+
+def _signature(cwd: Path | None, env: dict[str, str] | None) -> tuple[str, ...]:
+    """What asks ``commit-tree`` for a signature when git is set to sign every commit: the
+    key git is set to use. A commit keeping another committer (a copy Create & Move makes)
+    is still signed by the analyst making it: git picks a GPG or X.509 key with none set by
+    the committer, so their own identity names the key."""
+    if not signs_commits(cwd):
+        return ()
+    if env is None or not any(name.startswith("GIT_COMMITTER_") for name in env):
+        return ("-S",)
+    keyed, _key = _run_git_ok("config", "--get", "user.signingkey", cwd=cwd)
+    _formatted, form = _run_git_ok("config", "--get", "gpg.format", cwd=cwd)
+    if keyed or form.strip() == "ssh":
+        # A key set, or SSH's own default key command: no identity picks it.
+        return ("-S",)
+    identity = _run_git("var", "GIT_COMMITTER_IDENT", cwd=cwd)
+    return (f"-S{identity.rsplit('>', 1)[0]}>",)
 
 
 def _commit_tree(
@@ -825,8 +857,8 @@ def _commit_tree(
     milestone, a restore, a branch's first milestone, the copies Create & Move makes, a new
     repository's first commit): signed, with the key and format git is set to use, when git
     is set to sign every commit, as ``git commit`` signs a save. ``commit-tree`` reads no
-    such setting itself, so the commit asks for its signature."""
-    signed = ("-S",) if signs_commits(cwd) else ()
+    such setting itself, so the commit asks for its signature (:func:`_signature`)."""
+    signed = _signature(cwd, env)
     on = [arg for parent in parents for arg in ("-p", parent)]
     return _run_git("commit-tree", *signed, tree, *on, "-m", message, cwd=cwd, env=env)
 
