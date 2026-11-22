@@ -14,9 +14,6 @@ and `EXE-08` come from the review plan's phase 5, a reader from a second model
 family (Codex) over the code changed since the 31 October audit; a worker
 built each run and the main session ran it again on 13 November.
 
-`EXE-01` also changes what the optimiser runs on, so it is read together with
-[the optimiser specification](../optimiser/high-level.md).
-
 `tests/test_run_parity.py` runs every pipeline each way the specification's
 **Ways of running a pipeline** names and holds `EXE-05`'s difference as an
 expected failure naming it, so its delivery turns the case green.
@@ -25,7 +22,6 @@ expected failure naming it, so its delivery turns the case green.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXE-01 | Planned | P2 | A pipeline with more than one non-live source can be optimised and written from, on the source the analyst chose. |
 | EXE-03 | Planned | P3 | A preamble failure is reported at the preamble's own line, wherever the project folder is. |
 | EXE-04 | Planned | P2 | A join that previews in the editor runs from the command line and in a deployment, whatever Polars options it carries. |
 | EXE-05 | Planned | P2 | The Constant page's own example, a Transform that cross-joins a Constant, runs from the command line and deploys. |
@@ -33,48 +29,6 @@ expected failure naming it, so its delivery turns the case green.
 | EXE-08 | Planned | P3 | A column replaced under its own name is estimated at its new width, so work that cannot fit is refused before it runs. |
 
 ## Planned improvements
-
-### EXE-01 — A second non-live source no longer stops the optimiser and a write
-**Why:** Reproduced. A Data Output written while the toolbar's source is
-`live`, and every optimiser solve, run under "the" non-live source, found by
-scanning the Source Switch maps. As soon as the maps name two different
-non-live sources, in two switches or in one, the scan raises a bare
-`ValueError`: "Conflicting batch scenarios across live_switch nodes: 'batch'
-vs 'backtest'. All live_switch nodes must use the same non-live scenario
-name." Nothing else has that rule: the settings check accepts any names, the
-editor lets the analyst add any number of sources and offers them all on a
-switch, and preview, trace and a write under a named source all work. With
-the example switch mapped to `live`, `batch` and `backtest`, a write under
-`batch` or `backtest` resolved, and a write under `live` and the optimiser
-raised. The optimiser's solve request carries no source at all, so with two
-non-live sources it cannot run, and with one the analyst cannot see which
-source it used. The message names an internal node type and a rule the
-product never states. How the route answers the bare `ValueError` was not
-traced.
-
-**Plan:** The optimiser and a Data Output write take the source the analyst
-chose: the toolbar's active source when it is not `live`, carried on the
-request as preview and trace carry it. Under `live` with exactly one non-live
-source, keep today's behaviour. Under `live` with several, refuse with a
-message that names the sources and says to choose one in the toolbar. Remove
-the scan's "same name" rule, or state it in the settings check where the
-analyst meets it.
-
-**Acceptance:** On a pipeline whose switch maps `live`, `batch` and
-`backtest`: a solve started under `backtest` runs on the backtest input and
-records `backtest` as its data source; a write under `live` is refused naming
-`batch` and `backtest`; no path raises the "Conflicting batch scenarios"
-error.
-
-**Dependencies:** A decision on the source a solve uses when the toolbar is
-on `live` and the pipeline has one non-live source (today: that source).
-
-**Evidence:** `src/haute/executor.py::_resolve_batch_scenario`;
-`src/haute/executor.py::_data_output_scenario`;
-`src/haute/routes/_optimiser_service.py::_resolve_batch_scenario` (imported at
-its three call sites); `src/haute/_node_config_models.py::_check_live_switch`
-accepts any source names; `frontend/src/stores/useSettingsStore.ts::addSource`;
-`frontend/src/panels/editors/LiveSwitchEditor.tsx::setMapping`.
 
 ### EXE-03 — A preamble failure is attributed by the utility package, not a path substring
 **Why:** Read from the source, not run. When a preamble fails, the executor

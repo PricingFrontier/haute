@@ -1042,6 +1042,7 @@ describe("client runtime contracts", () => {
     const startedRange = await startOptimiserFrontierAutoRange({
       graph: dummyGraph,
       target: { occurrence: null, node_id: "opt1" },
+      source: "live",
     })
 
     expect(startedRange.job_id).toBe("range-job-1")
@@ -1313,7 +1314,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "solveOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("solve_optimiser_response"), job_id: 42 },
-      call: () => solveOptimiser({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" } }),
+      call: () => solveOptimiser({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" }, source: "live" }),
       error: "OptimiserSolveResponse: invalid contract at /job_id: type",
     },
     {
@@ -1343,7 +1344,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "startOptimiserFrontierAutoRange",
       response: { status: "started", job_id: 42, error: null },
-      call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" } }),
+      call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, target: { occurrence: null, node_id: "opt1" }, source: "live" }),
       error: "OptimiserFrontierAutoRangeStartResponse: invalid contract at /job_id: type",
     },
     {

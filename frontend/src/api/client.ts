@@ -1851,6 +1851,8 @@ export interface SolveOptimiserArgs {
   graph: PreparedGraph
   /** The optimiser node, by address. */
   target: NodeAddressPayload
+  /** The toolbar's active source; under `live` the solve runs on the one non-live source. */
+  source: string
   signal?: AbortSignal
   timeout?: number
 }
@@ -1941,6 +1943,8 @@ export interface StartOptimiserFrontierAutoRangeArgs {
   graph: PreparedGraph
   /** The optimiser node, by address. */
   target: NodeAddressPayload
+  /** The toolbar's active source, as a solve takes it. */
+  source: string
   signal?: AbortSignal
   timeout?: number
 }

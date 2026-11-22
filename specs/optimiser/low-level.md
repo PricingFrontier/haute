@@ -119,7 +119,8 @@ once in `_finalize_solve_result` before the apply dataframe is persisted, with e
 frame inside it converted to JSON records; `null` if the summary could not be built),
 `input_provenance` (recorded when the solve job is created: `node`, the optimiser node's
 address and authored label (`address_entry`, never the key it runs under), the batch `data_source`
-the solve executes against, the graph's `source_file`, and the `graph_fingerprint` the setup
+the solve executes against (`executor.batch_source` of the request's `source`, see
+[execution-engine](../execution-engine/low-level.md), "Batch source"), the graph's `source_file`, and the `graph_fingerprint` the setup
 single-flight key already computes), and, only while heavy state is retained, `solver`,
 `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
 `scenario_grid` (recorded by setup right after the grid build, in both modes: the solver
@@ -275,6 +276,11 @@ contextvar resets to `False` after the context exits, including via `finally`).
 
 `POST /api/optimiser/solve` flattens the graph, calls `OptimiserSolveService.start(body)`
 in `src/haute/routes/_optimiser_service.py`, which:
+
+0. Takes the request's `source` (the toolbar's active source; the estimate and auto-range
+   requests carry it too) and runs every setup execution on `executor.batch_source` of it.
+   Under `live` with Source Switches naming several non-live sources the solve is refused
+   with `BatchSourceAmbiguousError` (422) before a job is created.
 
 1. Finds the `OPTIMISER` node and validates its config (`_validate_config`, static) —
    objective present, `mode` in `{online, ratebook}`, ratebook has `factor_columns`, `timeout`

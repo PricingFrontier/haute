@@ -16,6 +16,7 @@ import useDocumentStatusStore, {
   executionPart,
 } from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useSettingsStore from "../../stores/useSettingsStore"
 import { waitForJob } from "../../hooks/jobPollingController"
 import { useRequestKind } from "../../hooks/useRequestKind"
 import { ask, newest, watch, type Asked } from "../../utils/answers"
@@ -320,6 +321,7 @@ export function useOptimiserAutoRange({
         return startOptimiserFrontierAutoRange({
           graph: target.graph,
           target: target.node,
+          source: useSettingsStore.getState().activeSource,
           signal,
         })
       }, {

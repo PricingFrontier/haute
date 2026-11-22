@@ -511,7 +511,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   node work. This policy is independent of projection/materialisation strictness.
 - **Node code reads the run's global constants.** Every execution binds
   `global_constants` in node code to the pipeline's constants resolved for the source it
-  routes on (the request's source, the batch scenario for the optimiser and a Data Output
+  routes on (the request's source, the batch source for the optimiser and a Data Output
   write started under `live`, and `live` for deployed scoring), as concrete values each
   code's own reads restrict; [pipeline-config](../pipeline-config/high-level.md) owns their
   meaning and errors.

@@ -583,6 +583,26 @@ class LiveSwitchScenarioError(ExecutionError):
         )
 
 
+class BatchSourceAmbiguousError(ConfigError):
+    """A batch run under ``live`` whose Source Switches map more than one non-live source.
+
+    A Data Output write and the optimiser never run on ``live``; under it they take the
+    one non-live source the switches map. With several there is no such source, so the
+    run is refused by name until the analyst chooses one in the toolbar.
+    """
+
+    error_code = "batch_source_ambiguous"
+    public_fields = ("sources",)
+
+    def __init__(self, *, sources: Sequence[str]) -> None:
+        self.sources = tuple(sorted(sources))
+        named = ", ".join(repr(source) for source in self.sources)
+        super().__init__(
+            f"This run needs a batch source, and the Source Switches map {named}. "
+            "Choose one of them as the source in the toolbar and run again."
+        )
+
+
 class TraceCorrelationUnsupportedError(ExecutionError):
     """Raised when trace row relocation cannot compare its identity columns."""
 

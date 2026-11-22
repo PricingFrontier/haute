@@ -264,6 +264,7 @@ def _solve_input_provenance(
     graph: PipelineGraph,
     node_id: str,
     *,
+    source: str,
     graph_fingerprint: str,
 ) -> dict[str, Any]:
     """Cheap provenance for a solve's published artifacts, recorded at job creation.
@@ -271,11 +272,11 @@ def _solve_input_provenance(
     Every value is already at hand when the solve starts; nothing is hashed or read. The
     node is its address and authored label, never the key it runs under.
     """
-    from haute.executor import _resolve_batch_scenario
+    from haute.executor import batch_source
 
     return {
         "node": address_entry(graph, node_id).model_dump(mode="json"),
-        "data_source": _resolve_batch_scenario(graph) or "batch",
+        "data_source": batch_source(graph, source),
         "source_file": graph.source_file,
         "graph_fingerprint": graph_fingerprint,
     }
@@ -1178,6 +1179,7 @@ class OptimiserSolveService:
                 "input_provenance": _solve_input_provenance(
                     body.graph,
                     body.node_id,
+                    source=body.source,
                     graph_fingerprint=setup_job_key[2],
                 ),
                 "start_time": start_time,
@@ -2982,10 +2984,9 @@ class OptimiserSolveService:
         the same cache decision and a capture either publishes serves the
         other. The plan decides separately which consumed nodes it can capture.
         """
-        from haute.executor import _resolve_batch_scenario
+        from haute.executor import batch_source
 
-        # Resolve scenario: optimiser runs on batch data, not live.
-        scenario = _resolve_batch_scenario(body.graph) or "batch"
+        scenario = batch_source(body.graph, body.source)
         execution_target_node_id, _preserved, consumed_node_ids = self._setup_execution_scope(
             body, target_node_id
         )
@@ -3058,10 +3059,10 @@ class OptimiserSolveService:
             from haute.executor import (
                 _build_node_fn,
                 _compile_preamble,
-                _resolve_batch_scenario,
+                batch_source,
             )
 
-            scenario = _resolve_batch_scenario(body.graph) or "batch"
+            scenario = batch_source(body.graph, body.source)
             pinned = (
                 preamble_fingerprint
                 if preamble_fingerprint is not None

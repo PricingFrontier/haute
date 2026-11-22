@@ -970,7 +970,7 @@ identity digest of its slot, so traversal syntax, platform-reserved names, overl
 and case-distinct ids all get their own opaque generation directory.
 
 A Data Output run executes under a seed plan (`executor.data_output_seed_plan_request`: the
-batch scenario, the Data Output node consumed — a pass-through, so its producer is seeded or
+batch source, the Data Output node consumed — a pass-through, so its producer is seeded or
 captured with the node's `selected_columns` — `LAZY_SINK`). `POST /api/pipeline/write-output`'s
 parent prepares inputs and opens the plan under its admitted context, bounded by the sink
 timeout (`open_seed_plan(..., deadline=)`), and hands it to the sink worker, which adopts it
@@ -1398,10 +1398,25 @@ The graph walker's build step (`src/haute/_graph_walker.py`) and the chain build
 mapping that adds the run's global-constants table, resolved for the run's routing source and
 never for a per-node builder override. Previews, Explore, training, the optimiser, Data Output
 writes, the assistant's checks and deployed scoring all build node functions through these two,
-so each reads the constants of the source it routes on: the request's source, the batch scenario
-(`_resolve_batch_scenario`, or `"batch"`) for the optimiser and a Data Output write started
-under `live`, and `live` for deployed scoring. `_exec_user_code` then binds each code's own view.
+so each reads the constants of the source it routes on: the request's source, the batch source
+(`executor.batch_source`, below) for the optimiser and a Data Output write, and `live` for
+deployed scoring. `_exec_user_code` then binds each code's own view.
 [Pipeline-config](../pipeline-config/low-level.md) owns the table, its views and their errors.
+
+### Batch source
+
+A Data Output write and every optimiser execution (solve, auto-range, estimate) never run on
+`live`, because model scoring then takes the disk-batched path. `executor.batch_source(graph,
+source)` is the one place that chooses what they run on, and their requests all carry the
+toolbar's active `source` as preview and trace do. A source that is not `live` is taken as it
+is. Under `live` the run takes the one non-live source the graph's Source Switch maps name, in
+one switch or across several, or `"batch"` when they name none. When they name more than one,
+there is no such source: `BatchSourceAmbiguousError` (a `ConfigError`, public code
+`batch_source_ambiguous`, field `sources`, HTTP 422) is raised before any node runs, naming
+the sources and saying to choose one in the toolbar. The settings check accepts any source
+names; no rule asks switches to agree. A solve records the source it ran on as its
+`input_provenance.data_source`, and the estimate's `total_rows` reads the same source as its
+counts.
 
 ### Pipeline settings
 
@@ -3011,6 +3026,14 @@ present a structural or schema result as execution evidence.
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- **Batch source** — `tests/test_executor.py::TestBatchSource` holds `batch_source`: a named
+  source is taken whatever the switches map; under `live` the one non-live source, or
+  `"batch"`, is taken; several are refused by `BatchSourceAmbiguousError` naming them.
+  `TestExecuteSink::test_a_write_takes_the_chosen_source_among_several` writes the backtest
+  rows under `backtest` and refuses a write under `live` before anything is written, and
+  `tests/test_optimiser_routes_real_library.py::TestSolveResultContract::test_a_solve_runs_on_the_chosen_source_among_several`
+  holds the same through `POST /api/optimiser/solve`, with the solve's recorded `data_source`.
 
 - `tests/test_executable_names.py::test_execution_preserves_swapped_logical_input_bindings`
   checks the rows read through two swapped logical input names after ordinary

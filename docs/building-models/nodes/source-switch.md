@@ -40,6 +40,9 @@ When the active source is `live`, the node outputs data from the `quotes` input.
 !!! warning "Unmatched source"
     If the active source doesn't match any input mapping, the Source Switch node itself fails with an error naming the missing source, such as `Live switch 'switch' has no input for scenario 'batch'`. A Source Switch with no input mapped, whether new or with every input set back to `-`, passes through its first input.
 
+!!! note "Writing outputs and optimising"
+    A Data Output write and an optimiser solve never run on `live`. They run on the toolbar's source when it is not `live`. When it is `live`, they run on the one other source the Source Switches map, or on `batch` when they map none. When the Source Switches map several other sources, the write or solve is refused with a message naming them: choose one of them in the toolbar and run again.
+
 !!! note "At deployment"
     The deployed pipeline runs with the `live` source active, so every Source Switch must map one input to the source named exactly `live`.
 

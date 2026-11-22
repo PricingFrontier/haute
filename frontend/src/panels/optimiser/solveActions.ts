@@ -92,7 +92,7 @@ export async function startOptimiserSolve({ nodeId, config, allNodes, requestSco
   const startupFailureId = `startup-failure:${key}`
   await answer([documentFence], async () => {
     const target = prepareNodeRequest(requestScope, canvasTarget(nodeId))
-    return solveOptimiser({ graph: target.graph, target: target.node })
+    return solveOptimiser({ graph: target.graph, target: target.node, source })
   }, {
     ok: (result) => {
       if (result.status === "started" && result.job_id) {

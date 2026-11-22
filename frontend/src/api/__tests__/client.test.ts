@@ -969,13 +969,14 @@ describe("endpoint contracts", () => {
     expect(body.source).toBe("live")
   })
 
-  it("solveOptimiser posts to /api/optimiser/solve", async () => {
-    await solveOptimiser({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
+  it("solveOptimiser posts to /api/optimiser/solve with the active source", async () => {
+    await solveOptimiser({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" }, source: "backtest" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/optimiser/solve")
     const body = JSON.parse(opts.body)
     expect(body.target).toEqual({ occurrence: null, node_id: "opt1" })
     expect(body).not.toHaveProperty("node_id")
+    expect(body.source).toBe("backtest")
   })
 
   it("listFiles GETs /api/files with dir and optional extensions", async () => {
@@ -1930,7 +1931,7 @@ describe("no request carries streaming_chunk_size", () => {
   })
 
   it("solveOptimiser body omits streaming_chunk_size", async () => {
-    await solveOptimiser({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
+    await solveOptimiser({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" }, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
@@ -1946,7 +1947,7 @@ describe("no request carries streaming_chunk_size", () => {
   it("startOptimiserFrontierAutoRange body omits streaming_chunk_size", async () => {
     const { startOptimiserFrontierAutoRange } = await import("../client")
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" } })
+    await startOptimiserFrontierAutoRange({ graph: preparedDummyGraph, target: { occurrence: null, node_id: "opt1" }, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
