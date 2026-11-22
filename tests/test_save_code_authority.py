@@ -119,6 +119,36 @@ def test_a_rating_step_whose_output_column_is_renamed_keeps_its_other_numbers(
     assert [type(value) for _, value in written["tables"][0]["rows"]] == [float, float]
 
 
+def test_two_rating_tables_swapped_keep_their_numbers(tmp_path: Path) -> None:
+    """Codex r4: a table moved is the saved table, its whole-number decimals and a factor
+    level past 2**53 spelt as its file spells them."""
+    root = make_project(tmp_path)
+    tables = [
+        {**RATED["tables"][0], "output_column": "band_factor"},
+        {
+            "factors": ["id"],
+            "output_column": "id_factor",
+            "default_value": 1.0,
+            "rows": [[9007199254740993, 2.0]],
+        },
+    ]
+    rated = root / "config" / "rating_step" / "rated.json"
+    rated.write_text(json.dumps({**RATED, "tables": tables}), encoding="utf-8")
+    document = BrowserDocument(root, root / "main.py")
+    _browser_save(document)
+    before = _rated_file(root)
+    assert "9007199254740993" in before
+    document = BrowserDocument(root, root / "main.py")
+    config = node_at(document.live, (None, "rated"))["data"]["config"]
+    config["tables"] = list(reversed(config["tables"]))
+
+    _browser_save(document)
+
+    assert json.loads(_rated_file(root))["tables"] == list(reversed(tables))
+    assert "9007199254740993" in _rated_file(root)
+    assert '"default_value": 1.0' in _rated_file(root)
+
+
 def test_without_the_settings_an_edit_began_from_the_browsers_numbers_are_written(
     tmp_path: Path,
 ) -> None:
@@ -164,6 +194,18 @@ def test_without_the_settings_an_edit_began_from_the_browsers_numbers_are_writte
             [["young", 1.2], ["experienced", 1.0]],
             [["experienced", 1.0]],
             id="a-row-removed",
+        ),
+        pytest.param(
+            [["experienced", 1], ["young", 1.2]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["experienced", 1.0], ["young", 1.2]],
+            id="rows-moved",
+        ),
+        pytest.param(
+            [["experienced", 1], ["young", 3]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["experienced", 1.0], ["young", 3]],
+            id="a-row-moved-and-another-changed",
         ),
         pytest.param(
             [["young", 3], ["experienced", 1]],

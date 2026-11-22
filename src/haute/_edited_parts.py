@@ -31,8 +31,8 @@ carries.
 
 from __future__ import annotations
 
-import difflib
 import json
+from collections import deque
 from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -107,12 +107,13 @@ def spelled_as(sent: Any, saved: Any) -> Any:
     saved settings the edit began from, spells the number at the same place, where a browser
     holds the two alike (CGEN-09).
 
-    An object's values are walked by key; a list's elements in order, aligned by content,
-    so a row added, removed or moved does not shift the others, and a changed element is
-    walked against the saved one it replaced. A number takes the saved number when a browser
-    holds the saved number as the number sent, both whole or both not (``1.0`` for ``1``,
-    ``9007199254740993`` for ``9007199254740992``; ``True`` never for ``1``). Every other
-    value is *sent*'s: no value changes, only how one a browser cannot hold is spelt.
+    An object's values are walked by key. A list's elements are matched by content first,
+    wherever they now stand, so a row added, removed or moved keeps its numbers and shifts
+    no other; a changed element is then walked against the saved one it replaced. A number
+    takes the saved number when a browser holds the saved number as the number sent, both
+    whole or both not (``1.0`` for ``1``, ``9007199254740993`` for ``9007199254740992``;
+    ``True`` never for ``1``). Every other value is *sent*'s: no value changes, only how one
+    a browser cannot hold is spelt.
     """
     if isinstance(sent, Mapping) and isinstance(saved, Mapping):
         return {
@@ -128,22 +129,60 @@ def spelled_as(sent: Any, saved: Any) -> Any:
 
 
 def _spelled_list(sent: list[Any], saved: list[Any]) -> list[Any]:
-    """*sent*'s elements, each walked against the element of *saved* it stands for."""
+    """*sent*'s elements, each walked against the element of *saved* it stands for.
+
+    First, an element a browser holds as it holds a saved element is that element, wherever
+    it now stands: each saved element stands for one sent element, the first in order, so a
+    moved element keeps its numbers. Then each element left, which the edit changed, is
+    walked against a saved element left: the one after the same matched neighbour, as an
+    edit in place leaves it, else the first left in order. Pairing a changed element with
+    another saved element changes no value, as :func:`spelled_as` changes none, only how many
+    of its numbers keep a spelling.
+    """
     held = [_held_key(_browser_held(item)) for item in saved]
     keys = [_held_key(item) for item in sent]
     if held == keys:
         return list(saved)
+    by_content: dict[str, deque[int]] = {}
+    for index, key in enumerate(held):
+        by_content.setdefault(key, deque()).append(index)
+    stands_for: list[int | None] = []
+    for key in keys:
+        free = by_content.get(key)
+        stands_for.append(free.popleft() if free else None)
+    matched = {index for index in stands_for if index is not None}
+
+    # A changed element, and the saved ones left, by the matched element before it.
+    after_sent: dict[int, deque[int]] = {}
+    neighbour = -1
+    for position, index in enumerate(stands_for):
+        if index is None:
+            after_sent.setdefault(neighbour, deque()).append(position)
+        else:
+            neighbour = index
+    after_saved: dict[int, deque[int]] = {}
+    neighbour = -1
+    for index in range(len(saved)):
+        if index in matched:
+            neighbour = index
+        else:
+            after_saved.setdefault(neighbour, deque()).append(index)
+    for anchor, positions in after_sent.items():
+        left = after_saved.get(anchor)
+        while positions and left:
+            stands_for[positions.popleft()] = left.popleft()
+    unpaired = deque(sorted(i for queue in after_saved.values() for i in queue))
     out: list[Any] = []
-    matcher = difflib.SequenceMatcher(a=held, b=keys, autojunk=False)
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            out.extend(saved[i1:i2])
-        elif tag == "replace":
-            paired = min(i2 - i1, j2 - j1)
-            out.extend(spelled_as(sent[j1 + k], saved[i1 + k]) for k in range(paired))
-            out.extend(sent[j1 + paired : j2])
-        elif tag == "insert":
-            out.extend(sent[j1:j2])
+    for position, item in enumerate(sent):
+        index = stands_for[position]
+        if index is None and unpaired:
+            index = unpaired.popleft()
+        if index is None:
+            out.append(item)
+        elif index in matched and keys[position] == held[index]:
+            out.append(saved[index])
+        else:
+            out.append(spelled_as(item, saved[index]))
     return out
 
 

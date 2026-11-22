@@ -17,6 +17,7 @@ import copy
 import json
 import shutil
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -234,11 +235,13 @@ def make_project(tmp_path: Path, source: Path | None = None) -> Path:
 
 def as_javascript_holds_it(value: Any) -> Any:
     """*value* after ``JSON.stringify`` and ``JSON.parse`` in a browser: every number a
-    double, written as an integer whenever it is a whole number."""
+    double, written as its shortest digits, which Python reads back as an integer whenever
+    it is a whole number below 10**21 (``36028797018963952`` is written
+    ``36028797018963950``)."""
 
     def number(token: str) -> int | float:
         held = float(token)
-        return int(held) if held.is_integer() and abs(held) < 1e21 else held
+        return int(Decimal(repr(held))) if held.is_integer() and abs(held) < 1e21 else held
 
     return json.loads(json.dumps(value), parse_int=number, parse_float=number)
 

@@ -535,10 +535,11 @@ a part sent without one is read from the request.
   from, so renaming a Rating Step's output column keeps its `default_value: 1.0`. Only a
   number the edit changed is written as the browser sent it, a whole number as an integer.
 - **The same place.** `spelled_as` walks the settings sent and the settings the edit began
-  from together: an object's value by its key, and a list's elements in order, aligned by
-  their content (an element a browser holds as it holds an element of the saved list is
-  that element, so a row added, removed or moved does not shift the others; a changed
-  element is walked against the saved element it replaced). A number takes the saved
+  from together: an object's value by its key, and a list's elements by their content first
+  (an element a browser holds as it holds an element of the saved list is that element,
+  wherever it now stands, so a row added, removed or moved keeps its numbers and shifts no
+  other); an element the edit changed is then walked against a saved element left, the one
+  after the same matched neighbour, as an edit in place leaves it, else the first left. A number takes the saved
   number's spelling when a browser holds the saved number as the number sent, both whole
   or both not: one double, read back as Python reads JSON (`_polars_steps.js_held`), so
   `1.0` matches `1` and `9007199254740993` matches `9007199254740992`, and `true` never
