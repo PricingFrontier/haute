@@ -26,7 +26,7 @@ from haute._scaffold import (
     workbench_ci_files,
 )
 from haute.cli import cli
-from tests._git_helpers import git_run, install_hook
+from tests._git_helpers import git_run, install_hook, untrusted_folder
 from tests._project import use_project
 
 _VALUES = {
@@ -399,13 +399,13 @@ def test_update_names_a_file_it_adds_that_it_could_not_record(runner, project: P
 
 
 def test_update_says_why_a_repository_git_does_not_trust_recorded_nothing(
-    runner, project: Path, monkeypatch: pytest.MonkeyPatch
+    runner, project: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # A folder another account owns, as on a network share: the repository is there, so the
     # update says git refuses it, never that the project has none.
     _in_a_repository(project, working_branch="pricing-dev")
     _to_provider(project, "gitlab")
-    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    untrusted_folder(monkeypatch, tmp_path)
 
     result = runner.invoke(cli, ["ci", "update"])
 

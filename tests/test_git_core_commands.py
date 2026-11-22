@@ -22,6 +22,7 @@ from tests._git_engine_helpers import (
     LEDGER,
     WORKING,
 )
+from tests._git_helpers import untrusted_folder
 
 
 class TestNamingAndCategories:
@@ -182,8 +183,8 @@ def _block(root: Path, cause: str, monkeypatch: pytest.MonkeyPatch) -> None:
     if cause == "lock":
         (root / ".git" / "index.lock").write_text("")
     elif cause == "untrusted-folder":
-        # Git's own switch for a folder another account owns, as on a network share.
-        monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+        # The identity is the repository's own, which git reads only in a folder it trusts.
+        untrusted_folder(monkeypatch, root.parent)
     elif cause == "damaged-config":
         with (root / ".git" / "config").open("a", encoding="utf-8") as config:
             config.write("[core\n")

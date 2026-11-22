@@ -460,8 +460,11 @@ def capture_save_in_ledger(
         # these probes in words (GitBlockedError) rather than reading as no repository or
         # no identity.
         working = read_working_branch(root)
+        # The repository first: in a folder git does not trust it reads none of the
+        # repository's own settings, so an identity set there would read as missing.
+        in_repository = _is_git_repo(root)
         if working is None:
-            if not _is_git_repo(root):
+            if not in_repository:
                 return LedgerCapture(None, False, [])
             warnings.append(
                 "Changes saved, but no working branch is chosen, so version history doesn't "
