@@ -395,13 +395,20 @@ class TestDeleteProtectedBranch:
         _git(tmp_path, "checkout", "-b", "pricing/test-user/work")
         return repo
 
+    # A branch as no listing showed it: the guardrail refuses before the branch is read.
+    _UNSEEN = {"tip": "0" * 40, "ledger_tip": None, "is_current": False, "is_checked_out": False}
+
     def test_delete_main_via_api(self, client: TestClient) -> None:
-        resp = client.request("DELETE", "/api/git/branches", json={"branch": "main"})
+        resp = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "main", "seen": self._UNSEEN}
+        )
         assert resp.status_code == 403
         assert "protected" in resp.json()["detail"].lower()
 
     def test_delete_develop_via_api(self, client: TestClient) -> None:
-        resp = client.request("DELETE", "/api/git/branches", json={"branch": "develop"})
+        resp = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "develop", "seen": self._UNSEEN}
+        )
         assert resp.status_code == 403
         assert "protected" in resp.json()["detail"].lower()
 

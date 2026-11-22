@@ -74,6 +74,8 @@ const REPLACING_FILES = new Set([
   "gitFastForward",
   "gitBranchAway",
   "pullGitUpstream",
+  // The git store's catch-up, which forwards the choice to pullGitUpstream.
+  "pullUpstream",
 ])
 
 function sourceFiles(folder: string): string[] {
@@ -93,7 +95,11 @@ it("every call of an operation that replaces the project's files goes through cl
     const visit = (node: ts.Node, cleared: boolean) => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
         const callee = node.expression.text
-        if (REPLACING_FILES.has(callee) && !cleared) outside.push(`${name}: ${callee}`)
+        // A call forwarding a caller's choice (`...settled`) is answered where it is asked.
+        const forwards = node.arguments.some(
+          (argument) => ts.isSpreadElement(argument) && ts.isIdentifier(argument.expression) && argument.expression.text === "settled",
+        )
+        if (REPLACING_FILES.has(callee) && !cleared && !forwards) outside.push(`${name}: ${callee}`)
         if (callee === "clearingTheWay") {
           node.arguments.forEach((argument) => visit(argument, true))
           return

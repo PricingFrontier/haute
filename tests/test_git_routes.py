@@ -1703,3 +1703,65 @@ class TestOpenTabsLearnTheBranch:
 
         assert told, "no branch change was told"
         assert told[0]["checkout"] in ("refs/heads/mine", "refs/heads/main")
+
+
+class TestBranchWatcherQuietCases:
+    def test_a_branch_that_cannot_be_read_tells_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+        from haute._event_bus import default_bus
+        from haute._git_core import GitError
+
+        def unreadable(_root: Path) -> tuple[str, str | None]:
+            raise GitError("unreadable")
+
+        monkeypatch.setattr(server, "_branch_told", ("refs/heads/a", "a"))
+        monkeypatch.setattr(server, "_branch_now", unreadable)
+        told: list[dict[str, object]] = []
+        unsubscribe = default_bus.subscribe("git.branch.changed", told.append)
+        try:
+            server._tell_branch_change()
+        finally:
+            unsubscribe()
+
+        assert told == []
+        assert server._branch_told == ("refs/heads/a", "a")
+
+    def test_outside_a_repository_nothing_is_watched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from haute import server
+
+        outside = tmp_path / "no-repository"
+        outside.mkdir()
+        # The module's own repository is the folder above: git looks no further up.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        use_project(outside)
+
+        assert server._git_dir(outside) is None
+        asyncio.run(asyncio.wait_for(server._branch_watcher(), timeout=5))
+
+    def test_a_change_while_a_git_route_holds_the_pause_is_left_to_the_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        import watchfiles
+
+        from haute import server
+
+        calls: list[str] = []
+
+        async def one_change(*_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+            yield {(watchfiles.Change.modified, str(tmp_path / ".git" / "HEAD"))}
+
+        monkeypatch.setattr(watchfiles, "awatch", one_change)
+        monkeypatch.setattr(server, "watcher_is_paused", lambda: True)
+        monkeypatch.setattr(server, "_tell_branch_change", lambda: calls.append("told"))
+
+        asyncio.run(asyncio.wait_for(server._branch_watcher(), timeout=5))
+
+        assert calls == ["told"]  # the baseline only: the paused change is the route's

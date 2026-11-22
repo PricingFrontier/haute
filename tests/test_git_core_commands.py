@@ -241,3 +241,61 @@ def test_a_failure_git_names_no_cause_for_stays_gits_own(tmp_path: Path) -> None
         git_core._run_git("rev-parse", "--verify", "no-such-ref", cwd=root)
     assert type(failed.value) is GitError
     assert git_core._run_git_ok("rev-parse", "--verify", "no-such-ref", cwd=root)[0] is False
+
+
+def test_a_staged_rename_is_one_change_to_the_fence_and_two_files_to_settle(
+    tmp_path: Path,
+) -> None:
+    """The tree fence compares the changes before and after a checkout by the names git
+    gives them now; settling a refusal takes both names, since the source's removal is part
+    of the change."""
+    root = tmp_path / "project"
+    root.mkdir()
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("config", "user.name", "T"),
+        ("config", "user.email", "t@example.com"),
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True)
+    (root / "old.csv").write_text("a\n")
+    subprocess.run(["git", "add", "old.csv"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
+    subprocess.run(["git", "mv", "old.csv", "new.csv"], cwd=root, check=True)
+
+    assert git_core._tracked_changes(root) == {"new.csv"}
+    assert git_core._tracked_changes(root, with_sources=True) == {"new.csv", "old.csv"}
+
+
+def test_a_refusal_over_many_files_names_five_and_counts_the_rest() -> None:
+    files = [f"rating/files/data/{n}.csv" for n in range(7)]
+
+    refused = git_core.GitUnrecordedFilesError("switching to 'other'", files, "token")
+
+    assert refused.files == files
+    assert str(refused).startswith(
+        "rating/files/data/0.csv, rating/files/data/1.csv, rating/files/data/2.csv, "
+        "rating/files/data/3.csv, rating/files/data/4.csv and 2 more have changed on disk"
+    )
+
+
+def test_the_checkout_a_record_is_anchored_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No history outside a repository; the commit in one; unknown where git refuses."""
+    from haute._save_records import UNKNOWN_AT, checkout_anchor, holds_here
+
+    root = _blocked_project(tmp_path)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert checkout_anchor(outside) is None
+    assert checkout_anchor(root) == head
+    assert holds_here(root, head, None) is False
+    monkeypatch.setattr(git_core, "git_binary_available", lambda: False)
+    assert checkout_anchor(root) is None
+    monkeypatch.undo()
+    _block(root, "damaged-config", monkeypatch)
+    assert checkout_anchor(root) == UNKNOWN_AT

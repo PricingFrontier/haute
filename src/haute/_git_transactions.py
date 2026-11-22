@@ -1034,7 +1034,5 @@ def settle_unrecorded(
     for path in (path for path in files if path not in in_head):
         # Version history has no such file: a staged addition is unstaged, and the file goes.
         _run_git("rm", "--cached", "-q", "--ignore-unmatch", "--", _literal(path), cwd=cwd)
-        target = root / path
-        if target.is_file() or target.is_symlink():
-            target.unlink()
+        (root / path).unlink(missing_ok=True)
     logger.info("unrecorded_files_put_back", files=len(files))
