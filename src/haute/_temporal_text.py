@@ -256,7 +256,9 @@ def _physical_value(value: Any, held: pl.DataType | DataTypeClass) -> Any:
             field.name: _physical_value(value.get(field.name), field.dtype)
             for field in dtype.fields
         }
-    if isinstance(dtype, pl.List | pl.Array):
+    if isinstance(dtype, pl.List):
+        return [_physical_value(item, dtype.inner) for item in value]
+    if isinstance(dtype, pl.Array):
         return [_physical_value(item, dtype.inner) for item in value]
     return value
 

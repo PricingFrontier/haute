@@ -36,6 +36,7 @@ from typing import Any, ClassVar
 import numpy as np
 import polars as pl
 
+from haute._polars_dtypes import column_kind
 from haute._temporal_text import temporal_text
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._algorithm_base import (
@@ -433,7 +434,7 @@ def _group_labels(column: pl.Series) -> np.ndarray:
     fraction and refuses a duration, so those two are written by ``temporal_text``.
     """
     dtype = column.dtype
-    if isinstance(dtype, (pl.Time, pl.Duration)):
+    if column_kind(dtype) in ("time", "duration"):
         return (
             column.to_frame()
             .select(temporal_text(pl.col(column.name), dtype))

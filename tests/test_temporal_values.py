@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from haute._types import GraphNode, NodeData, PipelineGraph
 from tests._project import project_app, use_project
+from tests._source_files import source_files
 from tests.conftest import make_ready_file_input_config
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -667,7 +668,7 @@ def _reading_calls(source: str) -> Counter[str]:
 def _inventory() -> dict[str, dict[str, int]]:
     root = _REPO / "src" / "haute"
     found = {}
-    for path in sorted(root.rglob("*.py")):
+    for path in source_files(root):
         calls = _reading_calls(path.read_text(encoding="utf-8"))
         if calls:
             found[path.relative_to(_REPO).as_posix()] = dict(sorted(calls.items()))

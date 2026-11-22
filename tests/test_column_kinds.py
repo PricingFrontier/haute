@@ -740,6 +740,10 @@ _NOT_DRIVEN: dict[str, str] = {
     "src/haute/_workbench_test_quotes.py": _PYTHON_NUMBER,
     "src/haute/modelling/_training_job.py": _PYTHON_NUMBER,
     "src/haute/modelling/_tuning.py": _PYTHON_NUMBER,
+    "src/haute/modelling/_tboost.py": (
+        "writes a time or duration group column's labels with temporal_text, as Polars' String "
+        "cast drops a time's fraction and refuses a duration (tests/test_tboost_family.py)"
+    ),
 }
 
 
