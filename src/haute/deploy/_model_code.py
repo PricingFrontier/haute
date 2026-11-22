@@ -29,7 +29,7 @@ def _plain(value: Any) -> Any:
     if isinstance(value, list | tuple | np.ndarray):
         return [_plain(item) for item in value]
     if isinstance(value, np.datetime64):
-        return None if np.isnat(value) else np.datetime_as_string(value)
+        return None if np.isnat(value) else str(np.datetime_as_string(value))
     if isinstance(value, np.generic):
         return value.item()
     return value

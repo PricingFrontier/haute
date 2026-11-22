@@ -702,6 +702,51 @@ class TestNanosecondTimestamps:
         assert table["status"] == "matched"
         assert table["selected_value"] == (1.1, 1.2, 1.3)[row]
 
+    @pytest.mark.parametrize(
+        ("dtype", "texts"),
+        [
+            (pl.Time(), ("00:00:01", "00:00:01.000000100", "00:00:01.000000200")),
+            (pl.Duration("ns"), ("0:00:01", "0:00:01.000000100", "0:00:01.000000200")),
+        ],
+        ids=["time", "duration"],
+    )
+    @pytest.mark.parametrize("row", [0, 1, 2])
+    def test_rows_told_apart_by_a_time_or_a_duration_are_traced_apart(
+        self, tmp_path, dtype, texts, row
+    ):
+        p = tmp_path / "spans.parquet"
+        second = 10**9
+        pl.DataFrame(
+            {
+                "at": pl.Series([second, second + 100, second + 200], dtype=pl.Int64).cast(dtype),
+                "amount": [10, 10, 10],
+            }
+        ).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "priced", "df = src.with_columns(premium=pl.col('amount') * 2)"
+                    ),
+                    _transform_node("kept", "df = priced"),
+                ],
+                "edges": [_edge("src", "priced"), _edge("priced", "kept")],
+            }
+        )
+
+        result = execute_trace(
+            graph,
+            row_index=row,
+            target_node_id="kept",
+            column="premium",
+            row_values={"at": texts[row], "amount": 10, "premium": 20},
+        )
+
+        assert _step_ids(result) == ["src", "priced", "kept"]
+        for step in result.steps:
+            assert step.output_values["at"] == texts[row], step.node_id
+
 
 class TestRatingStepMultiplyTables:
     """C.2: data_source -> rating_step(multiple tables, multiply) -> output

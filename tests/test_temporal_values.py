@@ -292,6 +292,9 @@ _READING_METHODS = frozenset(
 
 _HERE = "tests/test_temporal_values.py"
 _TRACED = "tests/test_trace_integration.py::test_each_row_is_traced_to_its_own_rows_and_level"
+_TRACED_SPANS = (
+    "tests/test_trace_integration.py::test_rows_told_apart_by_a_time_or_a_duration_are_traced_apart"
+)
 _FACTOR_LEVELS = (
     "tests/test_optimiser_segments.py::test_nanosecond_factor_levels_100_ns_apart_are_two_levels"
 )
@@ -323,8 +326,8 @@ _DRIVEN: dict[str, tuple[str, ...]] = {
     "src/haute/deploy/_model_code.py": (
         f"{_HERE}::test_a_numpy_date_time_in_a_hand_built_table_keeps_its_nanoseconds",
     ),
-    "src/haute/_trace_correlation.py": (_TRACED,),
-    "src/haute/trace.py": (_TRACED,),
+    "src/haute/_trace_correlation.py": (_TRACED, _TRACED_SPANS),
+    "src/haute/trace.py": (_TRACED, _TRACED_SPANS),
     "src/haute/_rating.py": (
         _TRACED,
         f"{_HERE}::test_a_rating_steps_missing_temporal_keys_are_logged_with_all_nine_digits",
