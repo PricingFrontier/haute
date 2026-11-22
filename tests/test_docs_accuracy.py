@@ -154,7 +154,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "cli",
     "codegen",
     "engineering-quality",
-    "execution-engine",
     "explore-eda",
     "frontend-graph-canvas",
     "frontend-modelling-optimiser-ui",

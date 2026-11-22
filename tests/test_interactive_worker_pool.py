@@ -28,6 +28,7 @@ from haute._worker_failures import (
     WorkerHostError,
     WorkerMemoryLimitError,
     WorkerRemoteError,
+    WorkerRestartedError,
     WorkerStoppedError,
     WorkerTimeoutError,
 )
@@ -112,6 +113,9 @@ class _Queue:
 
     def close(self) -> None:
         self.closed += 1
+
+    def cancel_join_thread(self) -> None:
+        self.join_cancelled = True
 
     def join_thread(self) -> None:
         self.joined += 1
@@ -235,6 +239,92 @@ def test_pool_reuses_warm_affinity_worker() -> None:
     assert first_pid == second_pid
     assert first_pid != os.getpid()
     assert (first_value, second_value) == (1, 2)
+
+
+def _worker_payload_size(payload: bytes) -> tuple[int, int]:
+    return os.getpid(), len(payload)
+
+
+def _within(seconds: float, call: Any) -> Any:
+    """*call*'s result or exception, failing the test if it has not returned in *seconds*."""
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = call()
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = context_thread(run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), f"no answer within {seconds} seconds"
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+@pytest.mark.parametrize("payload_bytes", [4_000, 200_000])
+def test_a_worker_that_died_idle_is_replaced_whatever_the_next_request_s_size(
+    payload_bytes: int,
+) -> None:
+    """EXE-07: a worker killed while idle is found dead before a request reaches it; the
+    request is answered that the worker stopped and was started again, the next request
+    runs, and the pool closes, however large the request."""
+    from haute._failure_answers import answer_failure
+
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    payload = b"x" * payload_bytes
+    try:
+        original_pid, _ = pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
+        idle = pool._slots[0].process
+        idle.kill()
+        idle.join(timeout=10)
+
+        with pytest.raises(WorkerRestartedError) as restarted:
+            _within(
+                30,
+                lambda: pool.run(
+                    _worker_payload_size, payload, affinity_key="lineage", timeout_seconds=30
+                ),
+            )
+        pid, size = _within(
+            30,
+            lambda: pool.run(
+                _worker_payload_size, payload, affinity_key="lineage", timeout_seconds=30
+            ),
+        )
+    finally:
+        _within(30, pool.close)
+
+    assert (pid != original_pid, size) == (True, payload_bytes)
+    answer = answer_failure(restarted.value, operation="preview")
+    assert (answer.status, answer.code) == (503, "worker_restarted")
+    assert "started again" in answer.message
+
+
+def test_a_dead_worker_s_unsent_request_does_not_hold_its_replacement() -> None:
+    """EXE-07: a request put to a worker that died before reading it is abandoned when the
+    slot closes, rather than joined behind a pipe nothing reads."""
+    pool = InteractiveWorkerPool(size=1, polars_threads=2, poll_interval_seconds=0.01)
+    try:
+        pool.run(_worker_identity, affinity_key="lineage", timeout_seconds=30)
+        slot = pool._slots[0]
+        slot.process.kill()
+        slot.process.join(timeout=10)
+        slot.request_queue.put(b"x" * 200_000)
+
+        _within(30, lambda: pool._replace_slot(slot, WorkerCrashedError(slot.process.exitcode)))
+        pid, size = _within(
+            30,
+            lambda: pool.run(
+                _worker_payload_size, b"y", affinity_key="lineage", timeout_seconds=30
+            ),
+        )
+    finally:
+        _within(30, pool.close)
+
+    assert pid != slot.process.pid and size == 1
 
 
 def test_timeout_kills_and_replaces_exact_worker() -> None:

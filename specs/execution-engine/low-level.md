@@ -32,7 +32,7 @@
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction (`_edge_id`, the injective four-field encoding the browser's `edgeId` mints identically; frontend-graph-canvas, Failure model). |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; it raises the `_worker_failures.py` family for every terminal state. |
-| `src/haute/_worker_failures.py` | The one worker-failure family every worker mechanism raises — the one-shot isolated worker, the warm interactive pool, the dedicated worker and the version-1 job transport: `WorkerError` (its `terminal_reason` the job's end state) and `WorkerStartError`, `WorkerHostError`, `WorkerRemoteError` (type, module, message, traceback, the child's curated public payload, whether it was a memory error), `WorkerCrashedError`, `WorkerTimeoutError`, `WorkerStoppedError`, `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerTerminationError`, `WorkerProtocolError`, `WorkerBusyError` and `WorkerPreemptedError`; `remote_failure_terminal_reason()` and `exitcode_looks_memory_limited()`, the two rules every parent classifies a child's end by; and the shared supervisor helpers `worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit). |
+| `src/haute/_worker_failures.py` | The one worker-failure family every worker mechanism raises — the one-shot isolated worker, the warm interactive pool, the dedicated worker and the version-1 job transport: `WorkerError` (its `terminal_reason` the job's end state) and `WorkerStartError`, `WorkerHostError`, `WorkerRemoteError` (type, module, message, traceback, the child's curated public payload, whether it was a memory error), `WorkerCrashedError`, `WorkerRestartedError` (the warm pool's worker had stopped while idle and was started again before the request reached it), `WorkerTimeoutError`, `WorkerStoppedError`, `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerTerminationError`, `WorkerProtocolError`, `WorkerBusyError` and `WorkerPreemptedError`; `remote_failure_terminal_reason()` and `exitcode_looks_memory_limited()`, the two rules every parent classifies a child's end by; and the shared supervisor helpers `worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit). |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | The chunk-local classifiers only: the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists, admitting only chunk-proven operations; lazy execution's input-sliced write recipe (`_execute_lazy.py`) and trace edge alignment (`_trace_correlation.py`) use it. `classify_row_local_expression()` runs the same walk and argument guards over one expression in a row-semantics mode, admitting every operation the operation registry classes as row-local (and a `when` chained on a conditional) rather than only the chunk-proven ones; trace formula evaluation (`_expression_parser.py`) uses it. There is no chunk planner or runner. |
@@ -1354,7 +1354,18 @@ worker answered it and was acknowledged and released, so it stays warm for the n
 request. A replacement that fails to start leaves the closed slot in place and its error
 as a note on the error the request ends with; the next request on the index starts the
 slot again under its lock (`_current_slot`), so one failed start costs one request, not
-the slot for the server's life. `_start_slot` creates its queues and progress cell inside
+the slot for the server's life. A worker that stopped while idle (ended outside Haute, or
+by the system when memory ran short) is found by `_current_slot` before any request is
+sent to it: the slot is closed and replaced under its lock, and the request that found it
+raises `WorkerRestartedError` (503 `worker_restarted`: the background process had
+stopped while idle and was started again, try again), so the next request runs on the
+new worker; `run_preemptible` refuses such a slot as not running and leaves it to the
+next interactive request. Closing a slot whose worker is dead never waits on the request
+queue's feeder: a request the worker never read is still in that thread, blocked writing
+into a pipe whose only reader left is the parent's own end, so `_close_slot` cancels the
+join (`cancel_join_thread`) and abandons what was not sent. A request, a replacement and
+the pool's own close therefore end within their bounds after any worker death, however
+large the request. `_start_slot` creates its queues and progress cell inside
 the guard that closes what it opened on any failure, an `WorkerHostError`
 included. The optimiser estimate route answers a worker that could not start, or a host
 that cannot start one, 503 with the reason, and a protocol failure an internal 500.
@@ -3062,6 +3073,13 @@ present a structural or schema result as execution evidence.
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- **A worker that died idle** — `tests/test_interactive_worker_pool.py::test_a_worker_that_died_idle_is_replaced_whatever_the_next_request_s_size`
+  kills the idle worker of a real pool and sends a 4 kB and a 200 kB request: each is
+  answered `WorkerRestartedError` (503 `worker_restarted`) within its time limit, the next
+  request runs on the new worker and the pool closes;
+  `test_a_dead_worker_s_unsent_request_does_not_hold_its_replacement` puts a 200 kB
+  request to a dead worker and replaces its slot within a bound.
 
 - **Replaced column width** — `tests/test_ram_estimate.py::TestWidthsFollowTheLineage::test_a_column_replaced_under_its_own_name_is_sized_as_what_it_reads`:
   a column selected from a 4,097-byte `description` under the name of a three-byte

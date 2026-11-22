@@ -174,6 +174,23 @@ class WorkerCrashedError(WorkerError):
         self.exitcode = exitcode
 
 
+class WorkerRestartedError(WorkerError):
+    """The worker a request was for had stopped while idle, and was started again.
+
+    Nothing the request did stopped it, and the request never reached it: it was ended
+    outside Haute, or by the system when memory ran short, while it held no job. The
+    message is parent-authored, for the user; the next request runs on the new worker.
+    """
+
+    def __init__(self, exitcode: int | None) -> None:
+        exit_detail = "" if exitcode is None else f" (exit code {exitcode})"
+        super().__init__(
+            f"Haute's background process had stopped{exit_detail} while it was idle, so "
+            "this did not run. It has been started again: try again."
+        )
+        self.exitcode = exitcode
+
+
 class WorkerTimeoutError(WorkerError):
     """The parent stopped a worker that exceeded its time limit.
 
