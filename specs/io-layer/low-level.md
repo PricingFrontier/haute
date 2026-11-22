@@ -205,8 +205,8 @@ platforms, and on Windows with long paths on, nothing is renamed.
    checks the whole graph.
 
    **A path every checkout reads alike.** A node's path settings
-   (`execution.node_file_path_settings`: its local runtime inputs, and a file Data Output's
-   `path` from the `_WRITTEN_PATHS` table) must name the same file in every checkout of the
+   (its local runtime inputs from `execution._RUNTIME_INPUTS`, and a file Data Output's
+   `path` from the `execution._WRITTEN_PATHS` table) must name the same file in every checkout of the
    project, on any computer or system. `_path_resolution.portable_path_refusal` says why a
    path a node reads would not, and what to write instead: a path outside the project; an
    absolute path, which names this computer's folders (write the path from the project root,

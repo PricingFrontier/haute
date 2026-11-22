@@ -305,11 +305,12 @@ def _project_frames(root: Path) -> tuple[GraphNode, GraphNode]:
 def _from_project_root(graph: PipelineGraph, root: Path) -> PipelineGraph:
     """*graph* with each node's path settings written from *root*, as a save stores them:
     it refuses an absolute path (``haute._path_resolution.portable_path_refusal``)."""
-    from haute.execution import node_file_path_settings
+    from haute.execution import _WRITTEN_PATHS, _local_runtime_input_path_fields
 
     def relative(node: GraphNode) -> GraphNode:
         config = dict(node.data.config)
-        for key in node_file_path_settings(node):
+        written = _WRITTEN_PATHS[node.data.nodeType](config)
+        for key in (*_local_runtime_input_path_fields(node), *(key for key, _ in written)):
             if isinstance(config.get(key), str) and Path(config[key]).is_absolute():
                 config[key] = Path(config[key]).relative_to(root).as_posix()
         return node.with_config(config)

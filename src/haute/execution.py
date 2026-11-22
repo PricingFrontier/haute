@@ -1052,15 +1052,6 @@ _WRITTEN_PATHS: Mapping[NodeType, Callable[[Mapping[str, Any]], tuple[tuple[str,
 )
 
 
-def node_file_path_settings(node: GraphNode) -> tuple[str, ...]:
-    """The config fields naming a file of the project that *node* reads or writes: its
-    local runtime inputs (``_RUNTIME_INPUTS``) and what it writes (``_WRITTEN_PATHS``, a
-    file Data Output's ``path``). Each must name the same file in every checkout
-    (:func:`haute._path_resolution.portable_path_refusal`)."""
-    written = _WRITTEN_PATHS[node.data.nodeType](node.data.config)
-    return (*_local_runtime_input_path_fields(node), *(setting for setting, _path in written))
-
-
 def node_path_refusals(node: GraphNode, *, pipeline_dir: Path, project_root: Path) -> list[str]:
     """Each path setting of *node* that another checkout of the project would not read or
     write as this one does, naming the node and the setting: a path it reads by
