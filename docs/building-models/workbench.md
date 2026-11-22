@@ -346,14 +346,25 @@ one:
   right. It holds no values; give it the conditions of the section it names and it hides
   with it.
 - An **Import** is a button that fills an input table from a CSV or an Excel workbook the
-  underwriter picks, or from a database.
+  underwriter picks, from a database, or from an API.
 - An **Export** is a button that takes the quote's tables out to a CSV or an Excel
   workbook, or writes chosen fields into the cells of an Excel workbook. A saved quote is
   in the quote store's database already, so an Export writes files only.
 
-For now you can lay Imports and Exports out and set what they will do, but most do not
-run yet: in Preview and the underwriter app they are greyed out and pressing one does
-nothing. The exception is an Export to Excel laid out as **Cells**. In Preview, press it
+In Preview and the underwriter app an Import runs. Press it: a file Import asks for the
+file, and one of a database or an API reads it. What it reads lands on the sheets as if
+typed, priced as typing is and marked where it breaks a column's rules. Replacing rows
+already typed asks first. In Preview the Import is one step of Undo; in the app it fills
+the quote open, which you then save. An Import reads at most 10,000 rows. It runs on the
+server, signed in as the server is: in the editor and `haute app serve` with your sign-in
+(its connections are in `connections.toml`, as [the underwriter app](#the-underwriter-app)
+says), in the hosted app with the
+app's own. When a database or an API fails, the editor says what it answered, and the
+hosted app gives an incident to pass on, its details in the app's log. An Import is greyed
+out while it has a problem, and while a quote in the app may not change.
+
+Most Exports do not run yet: in Preview and the underwriter app they are greyed out and
+pressing one does nothing. The exception is an Export to Excel laid out as **Cells**. In Preview, press it
 and your browser downloads the workbook of the sample as it was last priced; it is greyed
 out from the moment you change the sample until its new price arrives. In the underwriter
 app it runs on a final quote: the workbook holds the quote as it was saved, records the
@@ -407,7 +418,7 @@ shows, its layout and its look. A Heading's properties are its **Text** and
 
 An Import's and an Export's properties are in the same two panes: **Display** holds its
 **Label**, the text on the button, and when it shows; **Config** starts with its
-**Format**, CSV, Excel or SQL. Changing the format starts that format's settings afresh,
+**Format**: CSV, Excel, SQL or API for an Import, CSV or Excel for an Export. Changing the format starts that format's settings afresh,
 though an Export keeps its file name, and its headers and values between CSV and Excel with
 a sheet per table.
 
@@ -416,7 +427,17 @@ a sheet per table.
   its columns; from **SQL**, the **Connection** (a name your environment supplies the
   credentials for, never the credentials themselves), the **Query**, and a row under
   **Parameters** for each `:name` in the query, where you choose the one-row input column
-  whose value it takes. **Into** is the input table it fills. For a many-row table,
+  whose value it takes. The query is one read: it starts `SELECT` or `WITH` and holds no
+  `;`, no comment and no word that changes a database (`INSERT`, `UPDATE`, `DELETE`,
+  `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`, `EXECUTE`,
+  `CALL`, `INTO`). From an **API**, the **Connection**, the **Method** (GET or POST), the
+  **Path** after the connection's address, where `{name}` takes a parameter's value, and
+  **Rows**, where the answer's rows are, keys joined by dots (`data.items`), or blank for the
+  answer itself, a list of objects or one object. **Parameters** has a row for each
+  `{name}` in the path; a POST sends its parameters as JSON, and **Send a field** adds
+  another. From SQL or an API, **Lookup** offers the Import again beside one of its
+  parameters' fields as a search button, so an underwriter types a reference and looks it
+  up where they typed it. **Into** is the input table it fills. For a many-row table,
   **Rows** says whether the rows it brings **Replace** the table's rows, **Append** to
   them, or **Update by key**, matching rows on the table's index; a table with a row for
   each value only takes Update by key, and leaves out a row whose value is not one of its
@@ -993,6 +1014,32 @@ builder on screen. With a quote store it is where they manage their quotes too.
   its `database`, the file's path from the project root. A password or a connection string
   written into the file is refused, as is `managed-identity`, which is the hosted app's own.
   The hosted app never reads `connections.toml`.
+- An Import's connections are in `connections.toml` too, named as the Import names them.
+  Besides the databases above, a connection can be a Databricks SQL warehouse, signed in
+  with the `DATABRICKS_*` variables a Databricks Data Input uses, or an API, whose
+  `base_url` is the only host the Import reaches, with `headers` naming the variable that
+  holds each header's value:
+
+  ```toml
+  [warehouse]
+  provider = "databricks"
+  http_path = "/sql/1.0/warehouses/abc123"
+
+  [crm]
+  provider = "http"
+  base_url = "https://crm.example.com/api"
+  headers = { Authorization = "HAUTE_CRM_AUTHORIZATION" }
+  ```
+
+  The hosted app reads an Import's connection from variables named for it, `<NAME>` the
+  connection's name in capitals with `-` as `_`:
+
+  | Variable | Holds |
+  |---|---|
+  | `HAUTE_CONNECTION_<NAME>_URL` | A database's URL with no sign-in in it (`postgresql+psycopg://host/db`), a Databricks warehouse as `databricks://<host>/<http_path>`, or an API's base URL |
+  | `HAUTE_CONNECTION_<NAME>_USERNAME`, `_PASSWORD` | A database login; without them the app signs in with its own managed identity |
+  | `HAUTE_CONNECTION_<NAME>_TOKEN` | A Databricks token, or an API's bearer token |
+
 - Haute never changes an environment's tables, `dev` included. Open **Schema** and
   choose an environment in **Database** to compare its tables with your working schema.
   **Local** shows the schema without a database comparison. Previously fetched database

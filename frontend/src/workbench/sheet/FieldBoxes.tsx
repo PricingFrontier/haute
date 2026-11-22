@@ -5,6 +5,8 @@ import { columnKey } from "../../utils/sheetVisibility"
 import { COLUMN_WIDTH_MIN, type CollectionOptions, type ColumnLookOptions, type ShownField } from "../../utils/workbenchForm"
 import { ShowWhenMark } from "../ShowWhenEditor"
 import { useSheetValues } from "../useSheetValues"
+import { LookupButton } from "./ButtonBody"
+import { useLookups } from "./importRun"
 import { Cell, FieldLabel } from "./Cell"
 import {
   BOX_GAPS,
@@ -85,7 +87,12 @@ export function FieldBoxes({
   options: CollectionOptions
   colours: SheetColours
 }) {
-  const { rows, setCell, price, basis, problems, readOnly, locked } = useSheetValues()
+  const { rows, setCell, price, basis, problems, readOnly, locked, importRows } = useSheetValues()
+  // An Import's lookup is offered beside its field while the values may take its rows.
+  const lookups = useLookups(
+    fields.flatMap(({ found }) => (found === null ? [] : [columnKey(found.table.name, found.column.name)])),
+    importRows !== null,
+  )
   const stale = price !== null && price.basis !== basis
   const height = ROW_HEIGHT[options.density]
   const beside = options.labels === "beside"
@@ -131,6 +138,22 @@ export function FieldBoxes({
         const boxPlace: CSSProperties =
           width === null ? (beside ? TAKES_THE_REST : {}) : { width, minWidth: 0, maxWidth: "100%", ...(beside ? {} : BOX_PLACE[boxAlign]) }
         const valueText: CSSProperties = { fontSize: options.font_size, ...(look.bold ? { fontWeight: 600 } : {}), ...valueAcross }
+        const cellOf = (field: NonNullable<typeof found>) => (
+          <Cell
+            found={field}
+            value={rows[field.table.name]?.[0]?.[field.column.name]}
+            onChange={(value) => setCell(field.table.name, 0, field.column.name, value)}
+            label={fieldLabel(field)}
+            height={height}
+            box={boxStyle(look.cell_color ?? colours.input)}
+            font={look.font_color ?? colours.font}
+            textStyle={valueText}
+            problem={problems[cellKey(field.table.name, 0, field.column.name)] ?? null}
+            disabled={readOnly || locked.has(columnKey(field.table.name, field.column.name))}
+          />
+        )
+        // The Imports offered beside its cell (an Import's lookup).
+        const offered = found === null ? [] : (lookups.get(columnKey(found.table.name, found.column.name)) ?? [])
         const mark = marks.get(key)
         return (
           <Fragment key={key}>
@@ -152,19 +175,17 @@ export function FieldBoxes({
                 {mark !== undefined && <ShowWhenMark hidden={mark.hidden} title={mark.conditions} className="ml-1" />}
               </span>
               {found !== null && fillable(found) ? (
-                <div className="pointer-events-auto" style={boxPlace} onPointerDown={typeHere}>
-                  <Cell
-                    found={found}
-                    value={rows[found.table.name]?.[0]?.[found.column.name]}
-                    onChange={(value) => setCell(found.table.name, 0, found.column.name, value)}
-                    label={fieldLabel(found)}
-                    height={height}
-                    box={boxStyle(look.cell_color ?? colours.input)}
-                    font={look.font_color ?? colours.font}
-                    textStyle={valueText}
-                    problem={problems[cellKey(found.table.name, 0, found.column.name)] ?? null}
-                    disabled={readOnly || locked.has(columnKey(found.table.name, found.column.name))}
-                  />
+                <div className={`pointer-events-auto ${offered.length > 0 ? "flex items-center gap-1" : ""}`} style={boxPlace} onPointerDown={typeHere}>
+                  {offered.length === 0 ? (
+                    cellOf(found)
+                  ) : (
+                    <>
+                      <div className="min-w-0 flex-1">{cellOf(found)}</div>
+                      {offered.map(({ widget, problem }) => (
+                        <LookupButton key={widget.id} widget={widget} problem={problem} height={height} frame={options.box_color ?? colours.frame} />
+                      ))}
+                    </>
+                  )}
                 </div>
               ) : (
                 <div

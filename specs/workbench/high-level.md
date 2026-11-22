@@ -1792,7 +1792,7 @@ Out of scope:
   any component with a problem has.
 - **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
   box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
-  Import, a database's), with no label its mark alone, in a frame of the sheets' border colour on the
+  Import, a database's or an API's, a globe), with no label its mark alone, in a frame of the sheets' border colour on the
   components' background, in their font, and is a button to a screen reader, named by its
   label. Neither shows schema columns nor takes anything typed. While building each is
   inert, as every component's picture is. In Preview and in the underwriter app an Import
@@ -1902,14 +1902,15 @@ Out of scope:
     `;`, no comment and none of the words that change a database (`INSERT`, `UPDATE`,
     `DELETE`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`,
     `EXECUTE`, `CALL`, `INTO`), each refused naming why before anything is sent, and run
-    read-only where the engine holds a transaction so (PostgreSQL's `READ ONLY`, SQLite's
-    `query_only`), each `:name` bound to its parameter's value, never written into the
-    text.
+    read-only where the engine allows (a PostgreSQL transaction `READ ONLY`, a SQLite file
+    opened read-only, so nothing of it is written and a file not there is not made), within
+    the statement deadline the quote store's connections keep, each `:name` bound to its
+    parameter's value, never written into the text.
   - **An API.** A request to a named connection of `provider = "http"`, whose `base_url`
     is the only host it reaches (an allow-list of one): its `method`, `GET` or `POST`, its
     `path` after the base URL, each `{name}` in it the URL-encoded value of that parameter,
-    and for `POST` a JSON body of the parameters by name; answered within 30 seconds, a
-    redirect never followed, the answer JSON, its rows found at `rows`, a dotted path of
+    and for `POST` a JSON body of the parameters by name; answered within 30 seconds and
+    in at most 32 MiB, a redirect never followed, the answer JSON, its rows found at `rows`, a dotted path of
     keys (`data.items`), empty for the answer itself: a list of objects, or one object as
     one row.
 
@@ -1942,7 +1943,7 @@ Out of scope:
     `base_url`, and `headers`, each header's name and the variable holding its value). A
     hosted app reads a connection from the host's variables named for it alone,
     `HAUTE_CONNECTION_<NAME>_URL` (a database's credential-free URL, a Databricks
-    `https://<host>/<http_path>`, an API's base URL), with `_USERNAME` and `_PASSWORD` for a
+    `databricks://<host>/<http_path>`, an API's base URL), with `_USERNAME` and `_PASSWORD` for a
     password sign-in, `_TOKEN` for a Databricks token or an API's bearer token: no file a
     release carries says where a source is or how to sign in to it.
   - **A lookup.** An Import that names a column of a one-row table as its `lookup`, one
@@ -3614,13 +3615,29 @@ Out of scope:
   and which tables and columns it touches are the sheets' design, decided with them and
   kept in the form beside the schema whose names they hold, so a rename changes them and a
   removal takes them away as it takes a field; how they run (the route, the drivers and
-  the credentials) is WB-09's and WB-11's to decide, building on that shape. They are two
+  the credentials) is decided on that shape (An Import run on the server, and An Excel
+  workbook of cells, below). They are two
   kinds rather than one Button with an action, or one per format: an Import names one
   input table and where its inputs come from, an Export the tables it writes, and a
   format is a choice within either, changed without laying the button out again. A
   connection is a name the environment resolves, never a credential, as a Data Input's
-  is. Until they run, a press does nothing and the button is drawn disabled, rather than
-  hidden, so a sheet is laid out as it will be used.
+  is. A button that cannot run is drawn disabled, rather than hidden, so a sheet is laid
+  out as it will be used.
+- **An Import run on the server, declared, its rows landing as typing.** An Import is
+  settings, never code, so the form a release carries runs nothing an analyst wrote in
+  the underwriter's session, and its query is held to one read. It runs on the server
+  under the server's identity, never the underwriter's: no credential reaches the browser,
+  and the hosted app reaches a source as a service does, one variable set per connection
+  by whoever hosts it, rather than through each underwriter's own permissions, which a
+  pricing session cannot hold or delegate. Its rows land on the sheets as typed values do,
+  priced as typing is and marked where they break a rule, rather than priced on the
+  server: pricing stays the pure function of the sheets' values it is, so a quote priced
+  again from its kept values gives the same price whether or not a source has changed
+  since. It runs in Preview and the app, never while building, since building holds no
+  quote to fill. A source's own failure is the analyst's to read in the editor and an
+  incident in the hosted app, as a failed pricing is, since an underwriter can do nothing
+  with a driver's words and they may name a server. The cap of 10,000 rows is the
+  request's own limit on a table, so an Import never fills a quote that cannot be saved.
 - **An Excel workbook of cells, made by Haute, run in Preview first.** A workbook a
   system reads, or a person checks, at fixed cells is the first export WB-11 takes on:
   each field written where its reader looks for it. Haute makes the workbook, so nothing

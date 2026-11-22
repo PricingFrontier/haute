@@ -14,7 +14,7 @@ import { ComponentNameField } from "./ComponentNameField"
 import { WIDGET_PANES } from "./FieldsSettings"
 import { Section } from "./Section"
 
-const FORMAT_LABELS: Record<ImportFormat, string> = { csv: "CSV", excel: "Excel", sql: "SQL" }
+const FORMAT_LABELS: Record<ImportFormat, string> = { csv: "CSV", excel: "Excel", sql: "SQL", http: "API" }
 
 /** A button's Format, among `formats`, each with its mark, in the kind's colour; choosing the one it has records nothing. */
 export function FormatToggle<F extends ImportFormat>({ widget, formats, format, onChange }: { widget: ButtonWidget; formats: readonly F[]; format: F; onChange: (format: F) => void }) {

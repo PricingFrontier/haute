@@ -33,6 +33,7 @@ from haute._workbench_form import (
     ExcelImport,
     FormSpec,
     HttpImport,
+    ImportMode,
     ImportWidget,
     SchemaColumn,
     SchemaTable,
@@ -45,6 +46,8 @@ from haute._workbench_tables import quote_request, sheet_cell
 IMPORT_ROW_LIMIT = 10_000
 #: How long an API is given to answer, in seconds.
 HTTP_TIMEOUT_SECONDS = 30
+#: The most of an API's answer read, in bytes.
+HTTP_ANSWER_LIMIT_BYTES = 32 * 1024 * 1024
 #: The variables a hosted app reads a connection from, ``<NAME>`` the connection's name in
 #: capitals, dashes as underscores.
 HOSTED_PREFIX = "HAUTE_CONNECTION_"
@@ -193,7 +196,7 @@ class Imported:
     each the cells the sheets hold by column name."""
 
     table: str
-    mode: str
+    mode: ImportMode
     rows: list[dict[str, Cell]]
 
 
@@ -412,15 +415,11 @@ def _sql_rows(source: Source, query: str, parameters: Mapping[str, Any]) -> tupl
     from sqlalchemy import text
     from sqlalchemy.exc import SQLAlchemyError
 
-    from haute._quote_store._store import make_engine
-
-    engine = make_engine(source.url, sign_in=source.sign_in)
+    engine = _source_engine(source)
     try:
         with engine.connect() as connection:
             # Held read-only where the engine holds a transaction so.
-            if source.provider == "sqlite":
-                connection.exec_driver_sql("PRAGMA query_only = ON")
-            elif source.provider == "postgresql":
+            if source.provider == "postgresql":
                 connection.exec_driver_sql("SET TRANSACTION READ ONLY")
             result = connection.execute(text(query), dict(parameters))
             names = [str(name) for name in result.keys()]
@@ -434,6 +433,26 @@ def _sql_rows(source: Source, query: str, parameters: Mapping[str, Any]) -> tupl
         ) from exc
     finally:
         engine.dispose()
+
+
+def _source_engine(source: Source) -> Any:
+    """An engine reading *source*: a server's as the quote store makes one, signed in and
+    each statement within its deadline; a SQLite file's opened read-only, so nothing is
+    written to it, its journal included, and a file that is not there is not made."""
+    if source.provider != "sqlite":
+        from haute._quote_store._store import make_engine
+
+        return make_engine(source.url, sign_in=source.sign_in)
+    import sqlite3
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    located = Path(str(make_url(source.url).database)).resolve()
+    return create_engine(
+        "sqlite://",
+        creator=lambda: sqlite3.connect(f"{located.as_uri()}?mode=ro", uri=True),
+    )
 
 
 def _databricks_rows(
@@ -502,7 +521,13 @@ def _http_rows(
         with urllib.request.build_opener(_NoRedirect).open(
             request, timeout=HTTP_TIMEOUT_SECONDS
         ) as response:
-            answer = json.loads(response.read().decode("utf-8"))
+            body = response.read(HTTP_ANSWER_LIMIT_BYTES + 1)
+            if len(body) > HTTP_ANSWER_LIMIT_BYTES:
+                raise ImportRefusedError(
+                    f"The {source.name} API answered more than "
+                    f"{HTTP_ANSWER_LIMIT_BYTES // (1024 * 1024)} MiB."
+                )
+            answer = json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise ImportSourceError(f"The {source.name} API answered HTTP {exc.code}.") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

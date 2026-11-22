@@ -13,8 +13,7 @@ delivery of a workbench project through CI, from a merge to `main` to that app; 
 changes and environments that keep the quote store, the form's own tables in the user's
 database, in step with the form, and the server databases it runs on; how underwriters
 manage their quotes in the app;
-exports from the app; test quotes analysts keep and price again; and the actions
-that fill the sheets from databases and APIs.
+exports from the app; and test quotes analysts keep and price again.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
@@ -47,7 +46,6 @@ built the run and the main session ran it again on 16 November 2026.
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
 | WB-08 | Planned | P3 | An export template's change starts a workbench project's release, and CI drives the packaged app's sheets in a browser. |
-| WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-11 | Planned | P3 | An Export fills the analyst's own workbook template, writes a cell for each row of a table, and names its cells as a template names them. |
 | WB-12 | Planned | P3 | An analyst saves the quote typed in Preview as a test quote in `tests/quotes`, prices every test quote again from Preview as the pipeline changes and accepts what moved, and CI reports the test quotes whose outputs moved. |
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
@@ -129,84 +127,6 @@ whose packaged app's page cannot open a quote or save one fails before any host 
 
 **Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (the trigger paths and the
 validate jobs); `src/haute/_workbench_app_test.py` (the packaged app's test).
-
-### WB-09 — Actions that fill the sheets
-**Why:** Underwriters key in what other systems already hold: the broker and the assured
-from a CRM, last year's layers from a policy database, a schedule of items from a
-reference table. Today every cell on a sheet is typed. The ruling is that buttons populate
-the workbench: nothing calls a database or an API at scoring time, so the test quotes, the
-impact analysis and the dry-run deploy keep assuming pure scoring, a deployed pipeline
-needs no warehouse, and a filled cell is a typed cell as far as pricing can tell. What
-exists: one path for a sheet's values, the sample in Preview and the quote in the
-underwriter app, through which a result can land exactly as typing does, so the rule marks
-follow it and it is priced as typing is; a Databricks SQL reach on the server, which
-validates a statement as a single SELECT, builds connection settings from the workspace
-credentials and takes a service principal's, used today to snapshot tables; a
-credential policy for the editor's data access, environment variables named in the docs
-and never a value in a file; and the Import, a button on the sheets whose settings, kept
-in the form, name its format (a CSV the underwriter picks, an Excel workbook's sheet and
-header row, or a database's named connection, its query and the column giving each of
-its parameters), the input table it fills, how it fills a many-row table (replace,
-append or update by key) and the names its columns are read from, flagged on its frame
-as a component is, and drawn disabled in Preview and the app since nothing runs it.
-What does not exist: a driver for any database but Databricks, an outbound HTTP
-pattern, a route that runs an Import, the file read in the browser, and a credential
-model for a project whose sheets reach several systems.
-
-**Plan:** Decision first, recorded here before the first slice. The auth model: how a
-source's credentials are named and supplied (a variable per source, a secret scope on
-Databricks, the CI provider's secrets for the generated workflows), and whose identity an
-action runs under, the app's service principal or the signed-in underwriter's, which
-decides whether a database's row-level permissions apply. The sources: Databricks SQL
-first, then databases that are not Databricks, each a driver behind an optional extra as
-the Databricks one is, with SELECT-only validation per dialect generalising the validator
-that exists, and HTTP APIs with allow-listed hosts, a timeout and a mapping from the
-response's JSON onto columns. Whether actions are declared alone (a statement or a
-request with named parameters) or Python actions are allowed too. Where the pieces live:
-the Import's settings beside the schema in the form file, as they are, since they name
-tables and columns by id and version with the sheets; the connection its name stands
-for in `connections.toml`, the file of named connections the editor and `haute app serve`
-already read ([workbench](../workbench/high-level.md)), with the names
-of its credential variables; the values in `.env`, never in a file the ledger pushes. Whether a press in Build writes the
-sample, which Save then writes to disk, or actions run in Preview alone. Then the
-slices: the connections of `connections.toml`, which an Import's connection names; a route
-under the workbench router that takes the sheet's values, resolves the Import's
-parameters, runs its query on the server with a row cap and returns rows in the
-sample's shape, typed by the columns they fill; a CSV or a workbook the underwriter
-picks read into the same shape; the Import enabled in Preview, its rows landing as
-typing does, replacing, adding to or updating the table's rows as its settings say,
-asking first before it replaces rows already typed; an HTTP request as another of its
-formats; a lookup beside a key cell as the same action from a column property; and the
-underwriter app running the same actions on its server.
-
-**Acceptance:** With a source declared in `haute.toml` and an Import in the form, pressing
-it in Preview fills the bound input cells with the query's values, typed by their
-columns and marked where a value breaks a rule, and priced as typed values are, the
-action itself never calling the pipeline; the same action runs against a database that is not
-Databricks, and an HTTP action fills cells from a response; no credential value appears
-in the form file, in `haute.toml`, in an API response or in a log; a statement that is
-not a single SELECT, a host not allowed, a result over the cap and a bound column no
-longer in the schema are each refused naming the cause; a project with no actions behaves
-exactly as now.
-
-**Dependencies:** The decisions above, recorded here before the first slice. For
-production, the underwriter app, which runs the actions on its server, and, on Databricks,
-[hosted-databricks-app](../hosted-databricks-app/high-level.md), whose secret handling
-the sources follow. The Host, Origin and session checks of
-[sandbox-security](../sandbox-security/high-level.md) apply to the new route as to any
-other.
-
-**Evidence:** `frontend/src/workbench/useSheetValues.ts::useSampleValues` and
-`::useQuoteValues` (the one path for a sheet's values);
-`frontend/src/stores/useWorkbenchPricingStore.ts::priceForm` (the sample priced as it is typed);
-`src/haute/_workbench_form.py::ImportWidget` (the Import's settings, read strictly);
-`frontend/src/workbench/panel/ImportSettings.tsx` (where they are chosen);
-`frontend/src/utils/workbenchForm.ts::importProblems` (what the view flags on it);
-`src/haute/routes/workbench.py` (the workbench router);
-`src/haute/_databricks_io.py::_validate_select_clause`, `::_resolve_connection` and
-`::_service_principal_credentials` (the Databricks SQL reach); `pyproject.toml` (the
-Databricks extra); `docs/deployment/targets/databricks.md` (credentials as CI secrets
-and the editor's data-access pair).
 
 ### WB-11 — Exports from templates
 **Why:** The underwriter app exports a final quote as the Excel workbook of cells the

@@ -347,12 +347,16 @@ def handle_app_serve(config: AppServeConfig) -> None:
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
     with _said():
+        from haute._workbench_import import project_source
+
         application = create_app(
             release_dir,
             local_principal=principal,
             static_dir=config.static_dir,
             store=store,
             local_reader=config.reader,
+            # An Import reaches the project's connections, signed in from .env read afresh.
+            sources=lambda name: project_source(project_dir, name, project_environ(project_dir)),
         )
     reading = ", reading quotes only" if config.reader else ""
     click.echo(f"  ✓ Signed in as {principal} (your git identity){reading}")

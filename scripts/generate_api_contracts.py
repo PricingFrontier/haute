@@ -158,6 +158,7 @@ from haute.schemas import (
     UtilityWriteResponse,
     WarehouseListResponse,
     WorkbenchAppFormResponse,
+    WorkbenchAppImportRequest,
     WorkbenchAppPeopleResponse,
     WorkbenchAppPriceRequest,
     WorkbenchAppPriceResponse,
@@ -174,6 +175,7 @@ from haute.schemas import (
     WorkbenchAppReleaseResponse,
     WorkbenchFormResponse,
     WorkbenchFormSaveResponse,
+    WorkbenchImportResponse,
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
     WorkbenchStoreCatalogueResponse,
@@ -222,6 +224,7 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
     "modelling-requests": (ModelSaveDestinationRequest, SaveModelRequest),
     "optimiser-requests": (OptimiserApplyRequest, OptimiserSaveRequest, OptimiserMlflowLogRequest),
     "workbench-app-requests": (
+        WorkbenchAppImportRequest,
         WorkbenchAppPriceRequest,
         WorkbenchAppQuoteCreateRequest,
         WorkbenchAppQuoteSaveRequest,
@@ -403,6 +406,9 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
         WorkbenchAppQuoteActivityResponse,
         WorkbenchAppPeopleResponse,
     ),
+    # An Import's rows, which the builder's Preview and the app's page both read: a module of
+    # its own, so neither loads the other's.
+    "workbench-import": (WorkbenchImportResponse,),
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,

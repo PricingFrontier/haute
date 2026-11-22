@@ -15,7 +15,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { createWidget, findSection, findWidget, removeSchemaColumn, removeSchemaTable, setExportCellColumn, updateWidget } from "../../utils/workbenchForm"
 import { answerQuestion, asked } from "../../test-utils/question"
 import PropertiesPanel from "../PropertiesPanel"
-import type { ExcelCellsExport, ExportWidget, FieldRef, FormSpec, ImportWidget, Section } from "../../api/types"
+import type { ExcelCellsExport, ExportWidget, FieldRef, FormSpec, HttpImport, ImportWidget, Section } from "../../api/types"
 import { COMPONENT_COLOR } from "../widgetKinds"
 import { addTo, chartWidget, column, coverForm, currentForm, fieldsWidget, headingWidget, loadForm, sectionedForm, sheetForm, table, widgetsOf } from "./fixtures"
 
@@ -1282,6 +1282,37 @@ describe("PropertiesPanel", () => {
     })
     // Only a one-row input table's columns are offered.
     expect(choices(screen.getByRole("combobox", { name: ":state column" })).map(([value]) => value)).toEqual(["", "policy:state", "policy:year"])
+    // Offered beside a field one of its parameters reads.
+    expect(choices(screen.getByRole("combobox", { name: "Lookup beside" }))).toEqual([
+      ["", "None"],
+      ["policy:state", "State"],
+    ])
+    fireEvent.change(screen.getByRole("combobox", { name: "Lookup beside" }), { target: { value: "policy:state" } })
+    expect(imported().lookup).toEqual({ table: "policy", column: "state" })
+
+    fireEvent.click(screen.getByRole("radio", { name: "API" }))
+    commit("Connection", "crm")
+    commit("Path", "/policies/{state}")
+    commit("Rows", "data.items")
+    fireEvent.change(screen.getByRole("combobox", { name: ":state column" }), { target: { value: "policy:state" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Method" }), { target: { value: "POST" } })
+    fireEvent.change(screen.getByRole("combobox", { name: "Send a field" }), { target: { value: "policy.year" } })
+    expect(imported().source).toEqual({
+      format: "http",
+      connection: "crm",
+      method: "POST",
+      path: "/policies/{state}",
+      rows: "data.items",
+      parameters: [
+        { name: "state", table: "policy", column: "state" },
+        { name: "year", table: "policy", column: "year" },
+      ],
+    })
+    expect(screen.getByRole("combobox", { name: ":year column" })).toHaveValue("policy:year")
+    // A field sent beside the path's is taken away by its cross; the path's own is not.
+    expect(screen.queryByRole("button", { name: "Remove :state" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Remove :year" }))
+    expect((imported().source as HttpImport).parameters.map((given) => given.name)).toEqual(["state"])
 
     showPane("Display")
     commit("Label", "Look up the policy")

@@ -26,6 +26,7 @@ import type {
   SchemaTable,
   Section,
   ShowWhen,
+  HttpImport,
   SqlImport,
   Theme,
 } from "../api/types"
@@ -445,7 +446,8 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
     }
     if (widget.type === "import") {
       if (widget.table !== null) widget.table = renamed(widget.table)
-      if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map((given) => ({ ...given, table: renamed(given.table) }))
+      if (widget.source.format === "sql" || widget.source.format === "http") widget.source.parameters = widget.source.parameters.map((given) => ({ ...given, table: renamed(given.table) }))
+      if (widget.lookup !== null) widget.lookup = { ...widget.lookup, table: renamed(widget.lookup.table) }
     } else if (widget.type === "export") {
       widget.tables = widget.tables.map(renamed)
       if (widget.target.format === "excel_cells") {
@@ -468,7 +470,7 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
 /**
  * Each use of the column `from` of the table `tableName` made a use of `to`, its new name
  * (READ-23): where it is shown, labels a Chart's rows or has a look, what the conditions
- * test of it, what Imports read of it or give a parameter, the Exports' cells it is
+ * test of it, what Imports read of it, give a parameter or look up beside, the Exports' cells it is
  * written into, and its sample values.
  */
 function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: string): void {
@@ -480,7 +482,8 @@ function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: 
     if (widget.type === "tableInput" || widget.type === "collection") widget.column_looks = widget.column_looks.map(field)
     if (widget.type === "import") {
       if (widget.table === tableName) widget.column_names = widget.column_names.map((named) => ({ ...named, column: own(named.column) }))
-      if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map(field)
+      if (widget.source.format === "sql" || widget.source.format === "http") widget.source.parameters = widget.source.parameters.map(field)
+      if (widget.lookup !== null) widget.lookup = field(widget.lookup)
     }
     if (widget.type === "export" && widget.target.format === "excel_cells") {
       widget.target.cells = widget.target.cells.map(field)
@@ -558,7 +561,8 @@ const dropButtonUses = (widget: Widget, table: (id: string) => boolean, column: 
     } else if (filled !== null) {
       widget.column_names = widget.column_names.filter((named) => !column({ table: filled, column: named.column }))
     }
-    if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.filter((given) => !table(given.table) && !column(given))
+    if (widget.source.format === "sql" || widget.source.format === "http") widget.source.parameters = widget.source.parameters.filter((given) => !table(given.table) && !column(given))
+    if (widget.lookup !== null && (table(widget.lookup.table) || column(widget.lookup))) widget.lookup = null
   } else if (widget.type === "export") {
     widget.tables = widget.tables.filter((id) => !table(id))
     // An Export of cells keeps them, each named as a problem (`cellsProblems`).
@@ -851,8 +855,10 @@ const buttonUsesColumn = (widget: ButtonWidget, tableId: string, columnId: strin
   const reads =
     widget.table === tableId && (columnId === undefined || read.has(columnId) || widget.column_names.some((named) => named.column === columnId))
   const gives =
-    widget.source.format === "sql" && widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
-  return reads || gives
+    (widget.source.format === "sql" || widget.source.format === "http") &&
+    widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
+  const looks = widget.lookup !== null && widget.lookup.table === tableId && (columnId === undefined || widget.lookup.column === columnId)
+  return reads || gives || looks
 }
 
 /** The Imports and Exports using a schema table, or one of its columns (`buttonUsesColumn`). */
@@ -1351,7 +1357,7 @@ export function createWidget(type: WidgetType, rect: Rect, spec: FormSpec): Widg
     case "heading":
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
     case "import":
-      return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [] }
+      return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [], lookup: null }
     case "export":
       return { ...placed, type, label: "Export", show_when: alwaysShown(), target: structuredClone(EXPORT_TARGETS.csv), tables: [] }
   }
@@ -1794,7 +1800,7 @@ export type ExportFormat = ExportWidget["target"]["format"]
 /** The kinds of file an Export writes, as its Format offers them: a workbook of either layout is Excel. */
 export type ExportFileFormat = Exclude<ExportFormat, "excel_cells">
 /** The formats each kind of button offers: an Import reads a file or a database, an Export writes a file, a saved quote being in the store's database already. */
-export const IMPORT_FORMATS: readonly ImportFormat[] = ["csv", "excel", "sql"]
+export const IMPORT_FORMATS: readonly ImportFormat[] = ["csv", "excel", "sql", "http"]
 export const EXPORT_FORMATS: readonly ExportFileFormat[] = ["csv", "excel"]
 /** How an Export's Excel workbook is laid out: a sheet per table, or chosen fields in cells. */
 export type ExcelLayout = "tables" | "cells"
@@ -1816,6 +1822,7 @@ export const IMPORT_SOURCES: { readonly [F in ImportFormat]: Readonly<Extract<Im
   csv: { format: "csv", delimiter: "auto" },
   excel: { format: "excel", sheet: "", header_row: 1 },
   sql: { format: "sql", connection: "", query: "", parameters: [] },
+  http: { format: "http", connection: "", method: "GET", path: "", parameters: [], rows: "" },
 }
 
 /** Each format's settings as a new Export starts them, in the file's order: a file named by the quote's reference and option, headed by names, its values raw, a CSV's split by commas; a workbook of cells holding none; no connection. */
@@ -1849,11 +1856,16 @@ export const setImportFormat = (spec: FormSpec, id: string, format: ImportFormat
       })
 
 /** The settings a format of an Import has of its own, beside the query and its parameters. */
-export type ImportSourcePatch = Partial<Pick<CsvImport, "delimiter"> & Pick<ExcelImport, "sheet" | "header_row"> & Pick<SqlImport, "connection">>
+export type ImportSourcePatch = Partial<Pick<CsvImport, "delimiter"> & Pick<ExcelImport, "sheet" | "header_row"> & Pick<SqlImport, "connection"> & Pick<HttpImport, "method" | "rows">>
 
-const SOURCE_KEYS: Record<ImportFormat, readonly string[]> = { csv: ["delimiter"], excel: ["sheet", "header_row"], sql: ["connection"] }
+const SOURCE_KEYS: Record<ImportFormat, readonly string[]> = {
+  csv: ["delimiter"],
+  excel: ["sheet", "header_row"],
+  sql: ["connection"],
+  http: ["connection", "method", "rows"],
+}
 
-/** Change the settings of an Import's format: a CSV's delimiter, a workbook's sheet or header row, a database's connection. */
+/** Change the settings of an Import's format: a CSV's delimiter, a workbook's sheet or header row, a database's or an API's connection, an API's method and where its rows are. */
 export function updateImportSource(spec: FormSpec, id: string, patch: ImportSourcePatch): FormSpec {
   const { source } = importOf(spec, id)
   const foreign = Object.keys(patch).find((key) => !SOURCE_KEYS[source.format].includes(key))
@@ -1911,6 +1923,51 @@ function sqlImportOf(spec: FormSpec, id: string): SqlImport {
   return source
 }
 
+/** A path's parameters, each `{name}` it holds, once each in order. */
+export const pathParameters = (path: string): string[] => [...new Set(Array.from(path.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g), (found) => found[1]))]
+
+/** The parameters an Import's source holds: a query's `:name`s, a path's `{name}`s and, for a POST, every parameter it sends. */
+export function heldParameters(source: SqlImport | HttpImport): string[] {
+  if (source.format === "sql") return queryParameters(source.query)
+  const inPath = pathParameters(source.path)
+  return source.method === "POST" ? [...new Set([...inPath, ...source.parameters.map((given) => given.name)])] : inPath
+}
+
+function parameterisedOf(spec: FormSpec, id: string): SqlImport | HttpImport {
+  const { source } = importOf(spec, id)
+  if (source.format !== "sql" && source.format !== "http") throw new Error(`Component ${id} imports from ${source.format}, which takes no parameters`)
+  return source
+}
+
+function httpImportOf(spec: FormSpec, id: string): HttpImport {
+  const { source } = importOf(spec, id)
+  if (source.format !== "http") throw new Error(`Component ${id} imports from ${source.format}, which has no path`)
+  return source
+}
+
+/** An API Import's path, each parameter it no longer holds losing its column, but for a POST, which sends them all. */
+export const setImportPath = (spec: FormSpec, id: string, path: string): FormSpec =>
+  httpImportOf(spec, id).path === path
+    ? spec
+    : edit(spec, (draft) => {
+        const source = httpImportOf(draft, id)
+        source.path = path
+        if (source.method === "GET") {
+          const held = new Set(pathParameters(path))
+          source.parameters = source.parameters.filter((given) => held.has(given.name))
+        }
+      })
+
+/** The column of a one-row table beside whose cell an Import is also offered, or none. */
+export const setImportLookup = (spec: FormSpec, id: string, lookup: FieldRef | null): FormSpec =>
+  sameField(importOf(spec, id).lookup, lookup)
+    ? spec
+    : edit(spec, (draft) => {
+        importOf(draft, id).lookup = lookup
+      })
+
+const sameField = (a: FieldRef | null, b: FieldRef | null): boolean => (a === null || b === null ? a === b : a.table === b.table && a.column === b.column)
+
 /** An Import's query, each parameter it no longer holds losing its column. */
 export const setImportQuery = (spec: FormSpec, id: string, query: string): FormSpec =>
   sqlImportOf(spec, id).query === query
@@ -1924,10 +1981,10 @@ export const setImportQuery = (spec: FormSpec, id: string, query: string): FormS
 
 /** Give a parameter of an Import's query the value of a column, or none. */
 export function bindParameter(spec: FormSpec, id: string, name: string, field: FieldRef | null): FormSpec {
-  const given = sqlImportOf(spec, id).parameters.find((parameter) => parameter.name === name)
+  const given = parameterisedOf(spec, id).parameters.find((parameter) => parameter.name === name)
   if (field === null ? given === undefined : given?.table === field.table && given.column === field.column) return spec
   return edit(spec, (draft) => {
-    const source = sqlImportOf(draft, id)
+    const source = parameterisedOf(draft, id)
     if (field === null) source.parameters = source.parameters.filter((parameter) => parameter.name !== name)
     else if (given !== undefined) source.parameters = source.parameters.map((parameter) => (parameter.name === name ? { name, ...field } : parameter))
     else source.parameters.push({ name, ...field })
@@ -2478,11 +2535,12 @@ function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
       problems.push(`${widget.mode === "replace" ? "replaces" : "adds to"} the rows of ${table.name}, which has a row for each allowed value; only Update by key keeps them`)
     }
   }
-  if (widget.source.format === "sql") {
-    const { connection, query, parameters } = widget.source
+  if (widget.source.format === "sql" || widget.source.format === "http") {
+    const { source } = widget
+    const { connection, parameters } = source
     if (connection.trim() === "") problems.push("names no connection")
-    if (query.trim() === "") problems.push("has no query")
-    const held = queryParameters(query)
+    if (source.format === "sql" && source.query.trim() === "") problems.push("has no query")
+    const held = heldParameters(source)
     for (const name of held) {
       const given = parameters.find((parameter) => parameter.name === name)
       const found = given === undefined ? undefined : fieldColumn(spec, given)
@@ -2492,8 +2550,14 @@ function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
       else if (found.table.rows === "many") problems.push(`gives :${name} a column of a many-row table`)
     }
     for (const given of parameters) {
-      if (!held.includes(given.name)) problems.push(`gives a column to :${given.name}, which its query does not hold`)
+      if (!held.includes(given.name)) problems.push(`gives a column to :${given.name}, which its ${source.format === "sql" ? "query" : "path"} does not hold`)
     }
+  }
+  if (widget.lookup !== null) {
+    const { lookup } = widget
+    const given = widget.source.format === "sql" || widget.source.format === "http" ? widget.source.parameters : []
+    if (fieldColumn(spec, lookup) === null) problems.push("looks up beside a column that is no longer in the schema")
+    else if (!given.some((parameter) => parameter.table === lookup.table && parameter.column === lookup.column)) problems.push("looks up beside a column that is none of its parameters")
   }
   return problems
 }

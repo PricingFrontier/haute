@@ -1,4 +1,4 @@
-"""An Import run (specs/workbench, Running an Import; WB-09): the rows a file, a database or an
+"""An Import run (specs/workbench, Running an Import): the rows a file, a database or an
 API gives the table an Import fills, read on the server and answered as the cells the sheets
 hold. The databases run on SQLite and on each server the environment names
 (tests/_store_servers.py); the API on a server of the test's own."""
@@ -355,3 +355,183 @@ def test_a_hosted_app_reads_a_connection_from_the_variables_named_for_it() -> No
     assert "tok" not in repr(crm) and "pw" not in repr(policies)
     with pytest.raises(ImportRefusedError, match="sets no HAUTE_CONNECTION_OTHER_URL"):
         hosted_source("other", environ)
+
+
+# ── Through the routes ─────────────────────────────────────────────────────
+
+
+def _encoded(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode("ascii")
+
+
+def test_preview_runs_an_import_of_the_form_the_view_holds(tmp_path: Path) -> None:
+    from tests._project import use_project
+    from tests.test_workbench_routes import client, enable
+
+    use_project(tmp_path)
+    enable(tmp_path, "[workbench]\nenabled = true\n")
+    _rates(tmp_path / "rates.sqlite")
+    (tmp_path / "connections.toml").write_text(
+        '[rates]\nprovider = "sqlite"\ndatabase = "rates.sqlite"\n', encoding="utf-8"
+    )
+    held = _form(SQL).model_dump(mode="json", by_alias=True)
+
+    answered = client().post(
+        "/api/workbench/import", json={"form": held, "component": "w_in", "values": VALUES}
+    )
+    refused = client().post(
+        "/api/workbench/import", json={"form": held, "component": "w_in", "values": {}}
+    )
+    sent = client().post(
+        "/api/workbench/import",
+        json={
+            "form": _form({"format": "csv", "delimiter": "comma"}).model_dump(
+                mode="json", by_alias=True
+            ),
+            "component": "w_in",
+            "values": VALUES,
+            "file": _encoded(b"layer,limit\n4,40\n"),
+        },
+    )
+
+    assert answered.status_code == 200, answered.text
+    assert answered.json() == {
+        "table": "layers",
+        "mode": "replace",
+        "rows": [
+            {"layer": "1", "limit": "1000", "excess": "500"},
+            {"layer": "2", "limit": "2000.5"},
+        ],
+    }
+    assert refused.status_code == 422
+    assert "Fill Reference first" in refused.text
+    assert sent.json()["rows"] == [{"layer": "4", "limit": "40"}]
+
+
+def _app_form(source: dict[str, Any]) -> dict[str, Any]:
+    """The app tests' form with an Import filling its policy's one row."""
+    from tests.test_workbench_app_quotes import FORM
+
+    spec = json.loads(json.dumps(FORM))
+    spec["pages"][0]["sections"][0]["widgets"] = [
+        _import(source, table="policy_details", mode="replace", column_names=[])
+    ]
+    return spec
+
+
+def _app_import(client: Any, component: str, headers: dict[str, str], **fields: Any) -> Any:
+    from tests.test_workbench_app_quotes import ANA  # noqa: F401 - the headers' source
+
+    release = client.get("/api/app/release", headers=headers).json()
+    form = client.get("/api/app/form", headers=headers).json()["form"]
+    (widget,) = [w for page in form["pages"] for s in page["sections"] for w in s["widgets"]]
+    body = {
+        "form_revision": release["form_revision"],
+        "release": release["id"],
+        "component": widget["id"],
+        "values": {"policy_details": [{"state": "NY"}]},
+        **fields,
+    }
+    return client.post("/api/app/import", json=body, headers=headers)
+
+
+def test_the_app_runs_an_import_for_one_who_may_change_quotes(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute._quote_store import StoreLocation
+    from haute._workbench_app import create_app
+    from tests.test_workbench_app_quotes import ANA, TEST, _prepared, _write_release
+
+    release = _write_release(tmp_path / "rel", _app_form({"format": "csv", "delimiter": "comma"}))
+    url = _prepared(tmp_path / "store.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        answered = _app_import(
+            client, "w_in", ANA, file=_encoded(b"state,exposure\nCA,2000\nNY,1\n")
+        )
+
+    assert answered.status_code == 200, answered.text
+    assert answered.json() == {
+        "table": "policy_details",
+        "mode": "replace",
+        "rows": [{"state": "CA", "exposure": "2000"}, {"state": "NY", "exposure": "1"}],
+    }
+
+
+def test_a_hosted_apps_failed_source_is_an_incident_its_words_logged(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+    from structlog.testing import capture_logs
+
+    from haute._quote_store import StoreLocation
+    from haute._workbench_app import create_app
+    from tests._failure_assertions import incident_in
+    from tests.test_workbench_app_quotes import ANA, TEST, _prepared, _write_release
+
+    sql = {
+        "format": "sql",
+        "connection": "rates",
+        "query": "SELECT missing FROM nowhere WHERE x = :state",
+        "parameters": [{"name": "state", "table": "policy_details", "column": "state"}],
+    }
+    release = _write_release(tmp_path / "rel", _app_form(sql))
+    url = _prepared(tmp_path / "store.sqlite", release)
+    rates = tmp_path / "rates.sqlite"
+    _rates(rates)
+    reached = Source("rates", "sqlite", f"sqlite:///{rates}", "rates")
+    hosted = create_app(release, store=StoreLocation(TEST, url), sources=lambda _n: reached)
+    with TestClient(hosted) as client, capture_logs() as logs:
+        failed = _app_import(client, "w_in", ANA)
+
+    assert failed.status_code == 502
+    incident = incident_in(failed.json()["detail"])
+    assert "nowhere" not in failed.text
+    assert "nowhere" in str([entry for entry in logs if entry.get("incident") == incident])
+
+
+def test_one_who_may_only_read_quotes_runs_no_import(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute._quote_store import StoreLocation
+    from haute._workbench_app import create_app
+    from tests.test_workbench_app_quotes import DEV, _prepared, _write_release
+
+    release = _write_release(tmp_path / "rel", _app_form({"format": "csv", "delimiter": "comma"}))
+    url = _prepared(tmp_path / "store.sqlite", release)
+    reading = create_app(
+        release, store=StoreLocation(DEV, url), local_principal="ana@example.com", local_reader=True
+    )
+    with TestClient(reading, base_url="http://127.0.0.1") as client:
+        refused = _app_import(client, "w_in", {}, file=_encoded(b"state\nCA\n"))
+
+    assert refused.status_code == 403
+
+
+def test_a_sqlite_source_is_read_and_never_written(tmp_path: Path) -> None:
+    rates = tmp_path / "rates.sqlite"
+    _rates(rates)
+    with sqlite3.connect(rates) as raw:
+        raw.execute("PRAGMA journal_mode=WAL")
+    before = rates.read_bytes()
+    reached = Source("rates", "sqlite", f"sqlite:///{rates}", "rates")
+    missing = Source("rates", "sqlite", f"sqlite:///{tmp_path / 'none.sqlite'}", "rates")
+
+    imported = run_import(_form(SQL), "w_in", VALUES, source=lambda _n: reached)
+    with pytest.raises(ImportSourceError, match="did not answer the Import's query"):
+        run_import(_form(SQL), "w_in", VALUES, source=lambda _n: missing)
+
+    assert len(imported.rows) == 2
+    assert rates.read_bytes() == before
+    with sqlite3.connect(rates) as raw:
+        assert raw.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert not (tmp_path / "none.sqlite").exists()
+
+
+def test_an_apis_answer_past_its_limit_is_refused(
+    api: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(imports, "HTTP_ANSWER_LIMIT_BYTES", 10)
+    reached = Source("crm", "http", api, "crm")
+
+    with pytest.raises(ImportRefusedError, match="The crm API answered more than"):
+        run_import(_form(_http()), "w_in", VALUES, source=lambda _n: reached)

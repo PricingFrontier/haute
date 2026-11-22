@@ -4,7 +4,7 @@
  * and what would stop the schema being the pipeline's tables.
  */
 import { describe, expect, it } from "vitest"
-import type { ChartWidget, CollectionWidget, Condition, ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSchema, FormSpec, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
+import type { ChartWidget, CollectionWidget, Condition, ExcelCellsExport, ExportBlock, ExportWidget, FieldRef, FormSchema, FormSpec, HttpImport, ImportWidget, RowCount, RowsCondition, RowTotal, SchemaColumn, SchemaTable, Section, ShowWhen, SqlImport } from "../../api/types"
 import {
   addBlockColumn,
   addExportBlock,
@@ -16,6 +16,8 @@ import {
   addSpacer,
   addWidget,
   bindParameter,
+  heldParameters,
+  pathParameters,
   buttonUses,
   cellAddress,
   cellColumns,
@@ -103,6 +105,8 @@ import {
   setExportFormat,
   setImportFormat,
   setImportMode,
+  setImportLookup,
+  setImportPath,
   setImportQuery,
   setImportTable,
   setPageHeight,
@@ -2672,6 +2676,7 @@ describe("Imports and Exports", () => {
       table: null,
       mode: "replace",
       column_names: [],
+      lookup: null,
     })
     expect(exported(spec).target).toEqual({ file_name: "{quote_reference}-{quote_option}", headers: "names", values: "raw", format: "csv", delimiter: "comma" })
     expect(showsFields(imported(spec))).toBe(false)
@@ -2750,6 +2755,40 @@ describe("Imports and Exports", () => {
     const stray = structuredClone(spec)
     parameters(stray).push({ name: "gone", table: QUOTE_DETAILS_NAME, column: "insured" })
     expect(problems(stray, "w_in")).toEqual(['Import "Import" gives a column to :gone, which its query does not hold'])
+  })
+
+  it("gives an API's path parameters, and for a POST those it sends, a column, and says what its settings lack", () => {
+    let spec = setImportTable(setImportFormat(buttons(), "w_in", "http"), "w_in", "layers")
+    expect(imported(spec).source).toEqual(IMPORT_SOURCES.http)
+    expect(problems(spec, "w_in")).toEqual(['Import "Import" names no connection'])
+    spec = updateImportSource(spec, "w_in", { connection: "crm", rows: "data.layers" })
+    spec = setImportPath(spec, "w_in", "/policies/{ref}/layers")
+    expect(pathParameters("/a/{ref}/{opt}/{ref}")).toEqual(["ref", "opt"])
+    expect(problems(spec, "w_in")).toEqual(['Import "Import" gives :ref no column'])
+    spec = bindParameter(spec, "w_in", "ref", { table: QUOTE_DETAILS_NAME, column: "quote_reference" })
+    expect(problems(spec, "w_in")).toEqual([])
+    // A GET's path no longer holding a parameter drops its column; a POST sends every one given.
+    expect(parameters(setImportPath(spec, "w_in", "/policies"))).toEqual([])
+    spec = setImportPath(updateImportSource(spec, "w_in", { method: "POST" }), "w_in", "/quote")
+    spec = bindParameter(spec, "w_in", "insured", { table: QUOTE_DETAILS_NAME, column: "insured" })
+    expect(heldParameters(imported(spec).source as HttpImport)).toEqual(["ref", "insured"])
+    expect(problems(spec, "w_in")).toEqual([])
+    expect(() => setImportQuery(spec, "w_in", "select 1")).toThrow("which has no query")
+  })
+
+  it("offers an Import beside one of its parameters' fields, the field followed as it is renamed and dropped as it goes", () => {
+    let spec = setImportTable(setImportFormat(buttons(), "w_in", "sql"), "w_in", "layers")
+    spec = updateImportSource(spec, "w_in", { connection: "db" })
+    spec = bindParameter(setImportQuery(spec, "w_in", "select :ins"), "w_in", "ins", { table: QUOTE_DETAILS_NAME, column: "insured" })
+    spec = setImportLookup(spec, "w_in", { table: QUOTE_DETAILS_NAME, column: "insured" })
+    expect(problems(spec, "w_in")).toEqual([])
+    expect(setImportLookup(spec, "w_in", { table: QUOTE_DETAILS_NAME, column: "insured" })).toBe(spec)
+    expect(buttonUses(spec, QUOTE_DETAILS_NAME, "insured").map((w) => w.id)).toEqual(["w_in"])
+    expect(problems(setImportLookup(spec, "w_in", { table: QUOTE_DETAILS_NAME, column: "stage" }), "w_in")).toEqual([
+      'Import "Import" looks up beside a column that is none of its parameters',
+    ])
+    expect(imported(updateSchemaColumn(spec, QUOTE_DETAILS_NAME, "insured", { name: "named" })).lookup).toEqual({ table: QUOTE_DETAILS_NAME, column: "named" })
+    expect(imported(removeSchemaColumn(spec, QUOTE_DETAILS_NAME, "insured")).lookup).toBeNull()
   })
 
   it("says what stops an Import filling its table", () => {

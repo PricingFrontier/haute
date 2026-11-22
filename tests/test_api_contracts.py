@@ -1018,6 +1018,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": None,
         },
     },
+    "/api/workbench/import": {
+        "POST": {
+            "request_ref": "#/components/schemas/WorkbenchImportRequest",
+            "success_schema": {"$ref": "#/components/schemas/WorkbenchImportResponse"},
+        },
+    },
     "/api/workbench/form": {
         "GET": {
             "request_ref": None,

@@ -13,7 +13,7 @@
  */
 import { createContext, useContext, useMemo, useState } from "react"
 import type { FormSchema, FormSpec, Page } from "../api/types"
-import { exportWorkbenchFile, type CellsExporter } from "../api/workbench"
+import { exportWorkbenchFile, importWorkbenchRows, type CellsExporter, type RowsImporter } from "../api/workbench"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore, { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"
@@ -48,6 +48,11 @@ export interface SheetValues {
    * quote while it is final; null while none runs, and while building.
    */
   exportCells: CellsExporter | null
+  /**
+   * What runs an Import on these values: in Preview on the sample, in the app on the quote
+   * while it may change; null while building and while the values may not change.
+   */
+  importRows: RowsImporter | null
 }
 
 export const SheetValuesContext = createContext<SheetValues | null>(null)
@@ -144,6 +149,7 @@ export function useNewQuoteValues(active = true): SheetValues {
       readOnly: false,
       locked: NOTHING_LOCKED,
       exportCells: null,
+      importRows: null,
     }),
     [rows, visibility, quoted],
   )
@@ -174,6 +180,10 @@ export function useSampleValues(active = true): SheetValues {
     () => (form === null || price === null || price.basis !== basis ? null : (componentId) => exportWorkbenchFile(form, componentId, price)),
     [form, price, basis],
   )
+  const importRows = useMemo<RowsImporter | null>(
+    () => (form === null ? null : (componentId, file) => importWorkbenchRows(form, componentId, form.sample, file)),
+    [form],
+  )
   return useMemo<SheetValues>(
     () => ({
       rows,
@@ -187,8 +197,9 @@ export function useSampleValues(active = true): SheetValues {
       readOnly: false,
       locked: NOTHING_LOCKED,
       exportCells,
+      importRows,
     }),
-    [rows, change, price, basis, problems, visibility, quoted, exportCells],
+    [rows, change, price, basis, problems, visibility, quoted, exportCells, importRows],
   )
 }
 
@@ -206,6 +217,7 @@ export function useQuoteValues(active = true): SheetValues {
   const readOnly = useWorkbenchPreviewStore((s) => s.readOnly)
   const locked = useWorkbenchPreviewStore((s) => s.locked)
   const exportCells = useWorkbenchPreviewStore((s) => s.exporter)
+  const importer = useWorkbenchPreviewStore((s) => s.importer)
   const schema = form?.schema ?? null
   const rows = useMemo(() => (schema === null ? quote : withPresetRows(schema, quote)), [schema, quote])
   const shown = useMemo(() => (form === null ? NO_VISIBILITY : withPrice(form, quote, sheetVisibility(form, quote), price)), [form, quote, price])
@@ -215,9 +227,13 @@ export function useQuoteValues(active = true): SheetValues {
   const typed = useMemo(() => !readOnly && form !== null && quoteEligible(form, quote, locked), [readOnly, form, quote, locked])
   const problems = useMemo(() => (typed && form !== null ? cellProblems(form, quoted, rows) : NO_PROBLEMS), [typed, form, quoted, rows])
   const basis = useMemo(() => (form === null ? "" : basisOf(form, quote, visibility.hidden)), [form, visibility, quote])
+  const importRows = useMemo<RowsImporter | null>(
+    () => (importer === null || readOnly ? null : (componentId, file) => importer(componentId, quote, file)),
+    [importer, readOnly, quote],
+  )
   return useMemo<SheetValues>(
-    () => ({ rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked, exportCells }),
-    [rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked, exportCells],
+    () => ({ rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked, exportCells, importRows }),
+    [rows, setCell, setRows, price, basis, problems, visibility, quoted, readOnly, locked, exportCells, importRows],
   )
 }
 

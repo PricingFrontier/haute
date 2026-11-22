@@ -6050,10 +6050,11 @@ export interface ImportWidget {
   h: number;
   id: string;
   label: string;
+  lookup: FieldRef | null;
   mode: 'replace' | 'append' | 'update';
   name: string;
   show_when: ShowWhen;
-  source: CsvImport | ExcelImport | SqlImport;
+  source: CsvImport | ExcelImport | SqlImport | HttpImport;
   table: string | null;
   type: 'import';
   w: number;
@@ -6102,6 +6103,20 @@ export interface QueryParameter {
   column: string;
   name: string;
   table: string;
+}
+/**
+ * A request to a named connection's API (``provider = "http"``), whose base URL is the
+ * one host it reaches: its ``method``, its ``path`` after the base URL, each ``{name}`` in
+ * it a parameter's value, its ``parameters`` as a query's, and ``rows``, where the
+ * answer's rows are, a dotted path of keys, empty for the answer itself.
+ */
+export interface HttpImport {
+  connection: string;
+  format: 'http';
+  method: 'GET' | 'POST';
+  parameters: QueryParameter[];
+  path: string;
+  rows: string;
 }
 /**
  * An Export: a button an underwriter presses to take the quote's tables out to a file;
@@ -6657,6 +6672,17 @@ export interface WorkbenchAppPeopleResponse {
   people: string[];
 }
 /**
+ * What an Import gives its table: the table, how its rows land (``replace``, ``append`` or
+ * ``update``), and its rows, each the cells the sheets hold by column name.
+ */
+export interface WorkbenchImportResponse {
+  mode: 'replace' | 'append' | 'update';
+  rows: {
+    [k: string]: string | boolean;
+  }[];
+  table: string;
+}
+/**
  * A node by address: a pipeline node (``occurrence`` null; an occurrence is itself the
  * pipeline's node of its instance id), or a child of ``occurrence`` by its local id.
  */
@@ -6803,6 +6829,24 @@ export interface OptimiserMlflowLogRequest {
   job_id: string;
   point_index?: number | null;
   stale?: boolean;
+}
+/**
+ * An Import run in the app on the quote typed: as :class:`WorkbenchImportRequest`, named
+ * by the form revision and the release the page was drawn from in place of a form.
+ */
+export interface WorkbenchAppImportRequest {
+  component: string;
+  file?: string | null;
+  form_revision: string;
+  release: string;
+  values: {
+    /**
+     * @maxItems 10000
+     */
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
 }
 /**
  * A quote typed into the app's sheets, with the form revision and the release the page

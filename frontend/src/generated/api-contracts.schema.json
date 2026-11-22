@@ -12697,6 +12697,54 @@
       "title": "HeadingWidget",
       "type": "object"
     },
+    "HttpImport": {
+      "additionalProperties": false,
+      "description": "A request to a named connection's API (``provider = \"http\"``), whose base URL is the\none host it reaches: its ``method``, its ``path`` after the base URL, each ``{name}`` in\nit a parameter's value, its ``parameters`` as a query's, and ``rows``, where the\nanswer's rows are, a dotted path of keys, empty for the answer itself.",
+      "properties": {
+        "connection": {
+          "title": "Connection",
+          "type": "string"
+        },
+        "format": {
+          "const": "http",
+          "title": "Format",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/QueryParameter"
+          },
+          "title": "Parameters",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "rows": {
+          "title": "Rows",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "connection",
+        "method",
+        "path",
+        "parameters",
+        "rows"
+      ],
+      "title": "HttpImport",
+      "type": "object"
+    },
     "ImportWidget": {
       "additionalProperties": false,
       "description": "An Import: a button an underwriter presses to fill an input table from a file or a\ndatabase. It shows no schema columns and takes nothing typed; nothing runs it yet, so\nit is drawn disabled where the sheets are used.",
@@ -12720,6 +12768,17 @@
         "label": {
           "title": "Label",
           "type": "string"
+        },
+        "lookup": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "mode": {
           "enum": [
@@ -12747,6 +12806,9 @@
             },
             {
               "$ref": "#/$defs/SqlImport"
+            },
+            {
+              "$ref": "#/$defs/HttpImport"
             }
           ],
           "title": "Source"
@@ -12796,7 +12858,8 @@
         "source",
         "table",
         "mode",
-        "column_names"
+        "column_names",
+        "lookup"
       ],
       "title": "ImportWidget",
       "type": "object"
@@ -27754,6 +27817,77 @@
       "title": "WorkbenchAppFormResponse",
       "type": "object"
     },
+    "WorkbenchAppImportRequest": {
+      "description": "An Import run in the app on the quote typed: as :class:`WorkbenchImportRequest`, named\nby the form revision and the release the page was drawn from in place of a form.",
+      "properties": {
+        "component": {
+          "maxLength": 512,
+          "title": "Component",
+          "type": "string"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "maxLength": 14680064,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "form_revision": {
+          "maxLength": 512,
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "release": {
+          "maxLength": 512,
+          "title": "Release",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maxLength": 16777216,
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
+              "type": "object"
+            },
+            "maxItems": 10000,
+            "type": "array"
+          },
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "form_revision",
+        "release",
+        "component",
+        "values"
+      ],
+      "title": "WorkbenchAppImportRequest",
+      "type": "object"
+    },
     "WorkbenchAppPeopleResponse": {
       "description": "Everyone a quote is with, or was made, saved or changed by: those a quote can be\nassigned to without typing a name.",
       "properties": {
@@ -29133,6 +29267,48 @@
         "revision"
       ],
       "title": "WorkbenchFormSaveResponse",
+      "type": "object"
+    },
+    "WorkbenchImportResponse": {
+      "description": "What an Import gives its table: the table, how its rows land (``replace``, ``append`` or\n``update``), and its rows, each the cells the sheets hold by column name.",
+      "properties": {
+        "mode": {
+          "enum": [
+            "replace",
+            "append",
+            "update"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "mode",
+        "rows"
+      ],
+      "title": "WorkbenchImportResponse",
       "type": "object"
     },
     "WorkbenchInputConfig": {
@@ -30789,6 +30965,9 @@
     "WorkbenchAppFormResponse": {
       "$ref": "#/$defs/WorkbenchAppFormResponse"
     },
+    "WorkbenchAppImportRequest": {
+      "$ref": "#/$defs/WorkbenchAppImportRequest"
+    },
     "WorkbenchAppPeopleResponse": {
       "$ref": "#/$defs/WorkbenchAppPeopleResponse"
     },
@@ -30836,6 +31015,9 @@
     },
     "WorkbenchFormSaveResponse": {
       "$ref": "#/$defs/WorkbenchFormSaveResponse"
+    },
+    "WorkbenchImportResponse": {
+      "$ref": "#/$defs/WorkbenchImportResponse"
     },
     "WorkbenchParamFileResponse": {
       "$ref": "#/$defs/WorkbenchParamFileResponse"
@@ -30904,6 +31086,7 @@
     "OptimiserApplyRequest",
     "OptimiserSaveRequest",
     "OptimiserMlflowLogRequest",
+    "WorkbenchAppImportRequest",
     "WorkbenchAppPriceRequest",
     "WorkbenchAppQuoteCreateRequest",
     "WorkbenchAppQuoteSaveRequest",
@@ -31028,6 +31211,7 @@
     "WorkbenchAppQuoteChangeResponse",
     "WorkbenchAppQuoteActivityResponse",
     "WorkbenchAppPeopleResponse",
+    "WorkbenchImportResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -31150,6 +31334,7 @@
       "OptimiserMlflowLogRequest"
     ],
     "workbench-app-requests": [
+      "WorkbenchAppImportRequest",
       "WorkbenchAppPriceRequest",
       "WorkbenchAppQuoteCreateRequest",
       "WorkbenchAppQuoteSaveRequest",
@@ -31350,6 +31535,9 @@
       "WorkbenchAppQuoteChangeResponse",
       "WorkbenchAppQuoteActivityResponse",
       "WorkbenchAppPeopleResponse"
+    ],
+    "workbench-import": [
+      "WorkbenchImportResponse"
     ]
   },
   "x-haute-shared-response-groups": [

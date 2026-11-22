@@ -41,7 +41,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from haute._env import int_env
 from haute._execution_admission import ExecutionAdmissionError
-from haute._failure_answers import answer_app_pricing_failure, answer_failure
+from haute._failure_answers import answer_app_pricing_failure, answer_failure, record_incident
 from haute._hashing import content_hash, content_hash_bytes
 from haute._json_safe import to_json_safe
 from haute._local_security import DEFAULT_TRUSTED_HOSTS, LocalTrustedHostMiddleware
@@ -53,6 +53,13 @@ from haute._types import PipelineGraph
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate, no_environment
 from haute._workbench_config import ENVIRONMENT_ENV, StoreEnvironment, store_environments
 from haute._workbench_form import FormSpec, form_revision, render_form
+from haute._workbench_import import (
+    ImportRefusedError,
+    ImportSourceError,
+    Source,
+    hosted_source,
+    run_import,
+)
 from haute._workbench_tables import finite_document, priced_tables, quote_request
 from haute.deploy._request_limits import (
     RequestBodyHeaderError,
@@ -71,10 +78,13 @@ from haute.errors import (
 )
 from haute.routes._error_handlers import install_failure_answers
 from haute.schemas import (
+    MAX_IMPORT_FILE_TEXT,
     WorkbenchAppFormResponse,
+    WorkbenchAppImportRequest,
     WorkbenchAppPriceRequest,
     WorkbenchAppPriceResponse,
     WorkbenchAppReleaseResponse,
+    WorkbenchImportResponse,
     WorkbenchPricedTables,
     WorkbenchValues,
 )
@@ -92,6 +102,8 @@ FORM_FILE = "form.json"
 MANIFEST_FILE = "deploy_manifest.json"
 #: The page Haute's frontend builds for the app, apart from the builder's, in ``_STATIC``.
 APP_PAGE = "app.html"
+#: What an Import's body holds past its file: the quote typed and the names.
+_IMPORT_BODY_HEADROOM = 2 * 1024 * 1024
 #: How long one pricing may take before the app answers that it timed out.
 PRICE_TIMEOUT_SECONDS = 60.0
 #: How many quotes the app prices at once, unless :data:`PRICING_WORKERS_ENV` names another
@@ -714,6 +726,7 @@ def create_app(
     static_dir: Path | None = None,
     store: StoreLocation | Callable[[], StoreLocation | None] | None = None,
     local_reader: bool = False,
+    sources: Callable[[str], Source] | None = None,
 ) -> FastAPI:
     """The app serving the release in *release_dir*.
 
@@ -729,6 +742,8 @@ def create_app(
     database holding the
     release's form's tables, and closed, every quote route and the pricing answering 503
     with the refusal, while it does not, while it cannot be reached and without a store.
+    *sources* resolves the connection an Import names: the project's ``connections.toml``
+    for ``haute app serve``, else the host's variables named for it (``hosted_source``).
     """
     release, form, manifest = read_release(release_dir)
     # The pipeline reads what it ships from the release, wherever the host starts the app:
@@ -967,6 +982,60 @@ def create_app(
             raise RequestRefusedError(refusal.detail, status_code=503) from None
         pricing = await price_values(body.values)
         return WorkbenchAppPriceResponse(tables=pricing.tables, request=pricing.request)
+
+    reach: Callable[[str], Source] = (
+        sources if sources is not None else (lambda name: hosted_source(name, os.environ))
+    )
+
+    @app.post("/api/app/import", response_model=WorkbenchImportResponse)
+    async def run_import_route(http: Request) -> WorkbenchImportResponse:
+        """An Import run on the quote typed in the app: the rows it gives its table as the
+        sheets hold them, which the page lands as typing does. A source's own failure is said
+        in its words on the analyst's machine, and as an incident in a hosted app, whose
+        underwriters do not read a database's or an API's words."""
+        if not http.state.can_edit:
+            raise ForbiddenError(
+                "You can read quotes in this app; filling one needs its edit role."
+            )
+        try:
+            # A file sent whole as base64, past a quote's own limit.
+            raw = await read_limited_json_body(
+                http,
+                operation="workbench_app_import",
+                limit_bytes=max(body_limit, MAX_IMPORT_FILE_TEXT + _IMPORT_BODY_HEADROOM),
+            )
+        except RequestBodyLimitError as exc:
+            return JSONResponse(status_code=413, content=exc.to_payload())  # type: ignore[return-value]
+        except (RequestBodyHeaderError, RequestBodyParseError) as exc:
+            return JSONResponse(status_code=400, content=exc.to_payload())  # type: ignore[return-value]
+        try:
+            body = WorkbenchAppImportRequest.model_validate(raw)
+        except ValidationError as exc:
+            raise RequestValidationError(exc.errors()) from None
+        if body.form_revision != release.form_revision or body.release != release.id:
+            raise ConflictError(
+                "This page was drawn for another release of the app: reload it to import on "
+                "this one."
+            )
+        from haute.routes.workbench import file_sent
+
+        upload = file_sent(body.file)
+        try:
+            imported = await run_in_threadpool(
+                lambda: run_import(form, body.component, body.values, source=reach, upload=upload)
+            )
+        except ImportRefusedError as exc:
+            raise UnprocessableError(exc.message) from None
+        except ImportSourceError as exc:
+            if local_principal is not None:
+                raise UnprocessableError(exc.message) from None
+            incident = record_incident(exc, event="import_failed")
+            raise RequestRefusedError(
+                f"The Import's source failed (incident {incident}). Pass the incident to "
+                "whoever looks after this app: what failed is recorded under it.",
+                status_code=502,
+            ) from None
+        return WorkbenchImportResponse(table=imported.table, mode=imported.mode, rows=imported.rows)
 
     from haute._workbench_app_quotes import QuoteApp, quote_router
 

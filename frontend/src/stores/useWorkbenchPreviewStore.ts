@@ -9,7 +9,7 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import type { CellsExporter } from "../api/workbench"
+import type { CellsExporter, RowsImporter } from "../api/workbench"
 import { basisOf, columnKey, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
@@ -48,6 +48,9 @@ interface WorkbenchPreviewState {
   /** What runs an Export of the quote the sheets show, which the app sets while it may be exported, a final quote; null while none may run. */
   exporter: CellsExporter | null
   setExporter: (exporter: CellsExporter | null) => void
+  /** What runs an Import on a quote's values, which the app sets for its release; null while none may run. */
+  importer: QuoteImporter | null
+  setImporter: (importer: QuoteImporter | null) => void
   /** Price the quote once typing pauses (`PRICING_DELAY_MS`). */
   schedule: () => void
   /**
@@ -69,6 +72,9 @@ interface WorkbenchPreviewState {
    */
   settle: () => Promise<void>
 }
+
+/** What runs an Import, by its id, on the quote's `values`, with the file picked for a file Import. */
+export type QuoteImporter = (componentId: string, values: Record<string, SampleRow[]>, file: File | null) => ReturnType<RowsImporter>
 
 /** The pricing asked for last; an answer to an earlier one is dropped. */
 const pricings = requestKind()
@@ -112,6 +118,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     readOnly: false,
     locked: NOTHING_LOCKED,
     exporter: null,
+    importer: null,
     setCell: (tableId, row, columnId, value) => {
       const { quote, readOnly, locked } = get()
       if (readOnly || locked.has(columnKey(tableId, columnId))) return
@@ -135,6 +142,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     },
     setLocked: (locked) => set({ locked }),
     setExporter: (exporter) => set({ exporter }),
+    setImporter: (importer) => set({ importer }),
     schedule: loop.schedule,
     priceNow: loop.priceNow,
     settle: loop.settle,

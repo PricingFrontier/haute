@@ -13,10 +13,12 @@ import {
   formattedNumber,
   newQuoteValues,
   indexProblemCells,
+  landedRows,
   presetRows,
   pricedRows,
   quoteProblems,
   quoteTyped,
+  replacesTyped,
   rowFilled,
   typedIndexProblems,
   valuesBasis,
@@ -552,5 +554,47 @@ describe("reading through a quoted schema", () => {
       undefined,
       { row_number: 2, premium: 20 },
     ])
+  })
+})
+
+describe("an Import's rows landing", () => {
+  it("gives a one-row table the first row's values, keeping its others", () => {
+    const landed = landedRows(policy, [{ state: "CA", years: "3" }], { mode: "replace", rows: [{ years: "5" }, { years: "9" }] })
+    expect(landed).toEqual([{ state: "CA", years: "5" }])
+    expect(landedRows(policy, [{ state: "CA" }], { mode: "replace", rows: [] })).toEqual([{ state: "CA" }])
+    // A one-row table's row is never replaced whole: nothing asks first.
+    expect(replacesTyped(policy, [{ state: "CA" }], { mode: "replace", rows: [] })).toBe(false)
+  })
+
+  it("replaces a many-row table's rows, asking first over filled ones, or adds them after its filled rows", () => {
+    const held: SampleRow[] = [{ site_name: "Leeds", site_value: "1" }, {}]
+    expect(landedRows(sites, held, { mode: "replace", rows: [{ site_name: "York" }] })).toEqual([{ site_name: "York" }])
+    expect(replacesTyped(sites, held, { mode: "replace", rows: [] })).toBe(true)
+    expect(replacesTyped(sites, [{}], { mode: "replace", rows: [] })).toBe(false)
+    expect(replacesTyped(sites, held, { mode: "append", rows: [] })).toBe(false)
+    expect(landedRows(sites, held, { mode: "append", rows: [{ site_name: "York" }] })).toEqual([{ site_name: "Leeds", site_value: "1" }, { site_name: "York" }])
+  })
+
+  it("updates by a typed index the row each value names, adding a row none names", () => {
+    const held = [{ site_name: "Leeds", site_value: "1", site_note: "kept" }]
+    const landed = landedRows(sites, held, { mode: "update", rows: [{ site_name: " Leeds ", site_value: "2" }, { site_name: "York", site_value: "3" }] })
+    expect(landed).toEqual([
+      { site_name: " Leeds ", site_value: "2", site_note: "kept" },
+      { site_name: "York", site_value: "3" },
+    ])
+  })
+
+  it("updates by an index of values its fixed rows, leaving out a row none names", () => {
+    const landed = landedRows(coverage, [{ peril: "EQ", limit: "5" }], { mode: "update", rows: [{ peril: "AOP", limit: "1" }, { peril: "FL", limit: "9" }] })
+    expect(landed).toEqual([
+      { peril: "AOP", limit: "1" },
+      { peril: "EQ", limit: "5" },
+    ])
+  })
+
+  it("updates by a numbered index the row of each number, the number itself the sheets' to give", () => {
+    const held = [{ item: "Crane", value: "1" }, { item: "Truck", value: "2" }]
+    const landed = landedRows(equipment, held, { mode: "update", rows: [{ row_number: "2", value: "20" }, { row_number: "7", item: "Van" }] })
+    expect(landed).toEqual([{ item: "Crane", value: "1" }, { item: "Truck", value: "20" }, { item: "Van" }])
   })
 })

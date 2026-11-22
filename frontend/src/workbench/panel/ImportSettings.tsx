@@ -1,6 +1,6 @@
 /** An Import's panel (specs/workbench). */
 import { X } from "lucide-react"
-import type { FormSpec, ImportWidget, SchemaColumn, SchemaTable, SqlImport } from "../../api/types"
+import type { FormSpec, HttpImport, ImportWidget, SchemaColumn, SchemaTable, SqlImport } from "../../api/types"
 import { CommittedTextArea, CommittedTextField, FIELD_CLASS, INPUT_STYLE, LabelledRow, NumberField, SelectRow } from "../../components/form"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import { hasInputs, tableColumns } from "../../utils/quoteIdentity"
@@ -11,11 +11,14 @@ import {
   HEADER_ROW_MAX,
   importColumns,
   parameterColumns,
+  pathParameters,
   queryParameters,
   readableName,
   setColumnName,
   setImportFormat,
+  setImportLookup,
   setImportMode,
+  setImportPath,
   setImportQuery,
   setImportTable,
   updateImportSource,
@@ -94,6 +97,7 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
         </Section>
       )}
       {source.format === "sql" && <DatabaseSettings form={form} widget={widget} source={source} />}
+      {source.format === "http" && <ApiSettings form={form} widget={widget} source={source} />}
       <Section title="Into">
         <select
           aria-label="Into"
@@ -133,6 +137,7 @@ export function ImportSettings({ form, widget }: { form: FormSpec; widget: Impor
         </Section>
       )}
       {table !== undefined && hasInputs(table) && <ColumnNames widget={widget} table={table} />}
+      {(source.format === "sql" || source.format === "http") && <LookupSetting form={form} widget={widget} source={source} />}
     </ButtonPanes>
   )
 }
@@ -181,6 +186,123 @@ function DatabaseSettings({ form, widget, source }: { form: FormSpec; widget: Im
   )
 }
 
+const METHODS: ReadonlyArray<{ value: HttpImport["method"]; label: string }> = [
+  { value: "GET", label: "GET" },
+  { value: "POST", label: "POST" },
+]
+
+/**
+ * An API's Connection, its Method, its Path after the connection's base URL, where its
+ * answer's Rows are, and Parameters: a row for each `{name}` the path holds and one for each
+ * other column given a parameter, which a POST sends and a GET's path does not hold, with a
+ * cross that takes it away; and for a POST one more to send another column under its name.
+ */
+function ApiSettings({ form, widget, source }: { form: FormSpec; widget: ImportWidget; source: HttpImport }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const inPath = pathParameters(source.path)
+  const others = source.parameters.filter((given) => !inPath.includes(given.name)).map((given) => given.name)
+  const named = new Set([...inPath, ...others])
+  const tables = form.schema.tables.filter((table) => parameterColumns(table).length > 0)
+  const unsent = tables.flatMap((table) => parameterColumns(table).map((column) => ({ table: table.name, column: column.name, label: columnLabel(column) }))).filter((field) => !named.has(field.column))
+  return (
+    <>
+      <Section title="Connection">
+        <CommittedTextField
+          aria-label="Connection"
+          value={source.connection}
+          placeholder="None"
+          onCommit={(connection) => change((spec) => updateImportSource(spec, widget.id, { connection }))}
+          className={`${FIELD_CLASS} w-full font-mono`}
+          style={INPUT_STYLE}
+        />
+      </Section>
+      <Section title="Request">
+        <SelectRow label="Method" value={source.method} choices={METHODS} onChange={(method) => change((spec) => updateImportSource(spec, widget.id, { method }))} />
+        <LabelledRow label="Path">
+          <CommittedTextField
+            aria-label="Path"
+            value={source.path}
+            placeholder="/policies/{reference}"
+            onCommit={(path) => change((spec) => setImportPath(spec, widget.id, path))}
+            className={`${FIELD_CLASS} min-w-0 flex-1 font-mono`}
+            style={INPUT_STYLE}
+          />
+        </LabelledRow>
+        <LabelledRow label="Rows">
+          <CommittedTextField
+            aria-label="Rows"
+            value={source.rows}
+            placeholder="The answer"
+            onCommit={(rows) => change((spec) => updateImportSource(spec, widget.id, { rows }))}
+            className={`${FIELD_CLASS} min-w-0 flex-1 font-mono`}
+            style={INPUT_STYLE}
+          />
+        </LabelledRow>
+      </Section>
+      {(named.size > 0 || source.method === "POST") && (
+        <Section title="Parameters">
+          {[...inPath, ...others].map((name) => (
+            <ParameterRow key={name} form={form} widget={widget} source={source} tables={tables} name={name} held={inPath.includes(name)} />
+          ))}
+          {source.method === "POST" && unsent.length > 0 && (
+            <select
+              aria-label="Send a field"
+              value=""
+              onChange={(event) => {
+                const field = unsent.find((each) => `${each.table}.${each.column}` === event.target.value)
+                if (field !== undefined) change((spec) => bindParameter(spec, widget.id, field.column, { table: field.table, column: field.column }))
+              }}
+              className={`${FIELD_CLASS} w-full`}
+              style={INPUT_STYLE}
+            >
+              <option value="">Send a field…</option>
+              {unsent.map((field) => (
+                <option key={`${field.table}.${field.column}`} value={`${field.table}.${field.column}`}>
+                  {field.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </Section>
+      )}
+    </>
+  )
+}
+
+/** Lookup: the parameter's field beside whose cell the Import is also offered, or None. */
+function LookupSetting({ form, widget, source }: { form: FormSpec; widget: ImportWidget; source: SqlImport | HttpImport }) {
+  const change = useWorkbenchFormStore((s) => s.change)
+  const choices = source.parameters.flatMap((given) => {
+    const found = fieldColumn(form, given)
+    return found === null ? [] : [{ key: columnKey(given.table, given.column), field: { table: given.table, column: given.column }, label: columnLabel(found.column) }]
+  })
+  const key = widget.lookup === null ? "" : columnKey(widget.lookup.table, widget.lookup.column)
+  const kept = widget.lookup === null ? null : fieldColumn(form, widget.lookup)
+  return (
+    <Section title="Lookup">
+      <select
+        aria-label="Lookup beside"
+        value={key}
+        onChange={(event) => change((spec) => setImportLookup(spec, widget.id, choices.find((choice) => choice.key === event.target.value)?.field ?? null))}
+        className={`${FIELD_CLASS} w-full`}
+        style={INPUT_STYLE}
+      >
+        <option value="">None</option>
+        {key !== "" && !choices.some((choice) => choice.key === key) && (
+          <option value={key} disabled>
+            {kept === null ? "Missing column" : columnLabel(kept.column)}
+          </option>
+        )}
+        {choices.map((choice) => (
+          <option key={choice.key} value={choice.key}>
+            {choice.label}
+          </option>
+        ))}
+      </select>
+    </Section>
+  )
+}
+
 function ParameterRow({
   form,
   widget,
@@ -191,10 +313,10 @@ function ParameterRow({
 }: {
   form: FormSpec
   widget: ImportWidget
-  source: SqlImport
+  source: SqlImport | HttpImport
   tables: readonly SchemaTable[]
   name: string
-  /** Whether the query holds it. */
+  /** Whether the query or the path holds it: no cross takes it away. */
   held: boolean
 }) {
   const change = useWorkbenchFormStore((s) => s.change)

@@ -1,4 +1,4 @@
-import { ChartColumn, Database, FileInput, FileOutput, FileSpreadsheet, FileText, Heading, LayoutGrid, Rows3, Table2, type LucideIcon } from "lucide-react"
+import { ChartColumn, Database, FileInput, FileOutput, FileSpreadsheet, FileText, Globe, Heading, LayoutGrid, Rows3, Table2, type LucideIcon } from "lucide-react"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 import type { Size } from "../utils/sheetGeometry"
 import type { ImportFormat, PaletteType, WidgetType } from "../utils/workbenchForm"
@@ -92,7 +92,7 @@ export const WIDGET_KINDS: Record<WidgetType, WidgetKind> = {
 }
 
 /** The mark of each format a button reads or writes: a CSV's, a workbook's or a database's. */
-export const FORMAT_MARKS: Record<ImportFormat, LucideIcon> = { csv: FileText, excel: FileSpreadsheet, sql: Database }
+export const FORMAT_MARKS: Record<ImportFormat, LucideIcon> = { csv: FileText, excel: FileSpreadsheet, sql: Database, http: Globe }
 
 /** What the palette offers, in order: a section, then the components. */
 export const PALETTE_KINDS: readonly PaletteType[] = ["section", "heading", "collection", "tableInput", "chart", "import", "export"]

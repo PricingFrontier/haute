@@ -12,10 +12,11 @@
 import type { SampleRow } from "../utils/workbenchForm"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 import { post, postRawStream, request, sendKeyed } from "./client"
-import { exportedFile, type ExportedFile } from "./workbench"
+import { exportedFile, fileText, importedRows, IMPORT_TIMEOUT_MS, type ExportedFile } from "./workbench"
 import type { KeyedTicket } from "./keyedWrites"
 import type {
   WorkbenchAppFormResponse,
+  WorkbenchAppImportRequest,
   WorkbenchAppPeopleResponse,
   WorkbenchAppPriceRequest,
   WorkbenchAppPriceResponse,
@@ -31,6 +32,7 @@ import type {
   WorkbenchAppQuoteSource,
   WorkbenchAppQuotesResponse,
   WorkbenchAppReleaseResponse,
+  WorkbenchImportResponse,
 } from "./types"
 
 const workbenchValidators = () => import("../generated/api-contracts.workbench-app.validators.mjs")
@@ -75,6 +77,18 @@ export async function fetchAppForm(): Promise<WorkbenchAppFormResponse> {
 }
 
 /** The quote typed into the sheets drawn from form revision `revision` of release `release`, priced. */
+/** The rows the Import `componentId` gives its table, run on the quote typed, `values`, drawn for that revision of release `release`. */
+export async function importAppRows(
+  revision: string,
+  release: string,
+  componentId: string,
+  values: Record<string, SampleRow[]>,
+  file: File | null,
+): Promise<WorkbenchImportResponse> {
+  const body: WorkbenchAppImportRequest = { form_revision: revision, release, component: componentId, values, file: file === null ? null : await fileText(file) }
+  return importedRows(await heard(post<unknown>("/api/app/import", body, { timeout: IMPORT_TIMEOUT_MS })))
+}
+
 export async function priceAppQuote(
   revision: string,
   release: string,
