@@ -7,8 +7,9 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { ApiError } from "../../api/client"
-import type { WorkbenchAppQuoteActivityEntry } from "../../api/types"
-import { coverForm, detailsTable, fieldsWidget, sheetForm } from "../../workbench/__tests__/fixtures"
+import type { FormSpec, SchemaColumn, ShowWhen, WorkbenchAppQuoteActivityEntry } from "../../api/types"
+import { TABLE_OPTIONS, type Widget } from "../../utils/workbenchForm"
+import { addTo, column, coverForm, detailsTable, fieldsWidget, indexColumn, sheetForm, table } from "../../workbench/__tests__/fixtures"
 import {
   activityText,
   appDetails,
@@ -115,6 +116,61 @@ describe("a quote's identity and the details the app sets", () => {
     const answered = { quote_details: [{ modified_by: "jo@example.com" }], policy: [{ state: "NY" }] }
 
     expect(withHiddenCells(form, answered, sent)).toEqual({ ...answered, policy: [{ state: "NY", year: "1990" }] })
+  })
+
+  // A table keyed by an index the underwriter types, whose limits show only while the policy's box is ticked.
+  const keyedForm = (type: SchemaColumn["type"]): FormSpec => {
+    const form = sheetForm()
+    form.schema.tables = [
+      table("policy", { inputs: [column("show_limits", { type: "bool" })] }),
+      table("equipment", { rows: "many", inputs: [indexColumn("item", "typed"), column("units", { type: "int" }), column("limit", { type: "int" })] }),
+    ]
+    form.pages[0].sections[0].widgets = []
+    const grid = (id: string, fields: string[], showWhen: ShowWhen): Widget => ({
+      name: id,
+      id,
+      type: "tableInput",
+      x: 16,
+      y: 16,
+      w: 400,
+      h: 120,
+      title: "",
+      rows: 3,
+      ...TABLE_OPTIONS,
+      column_looks: [],
+      fields: fields.map((name) => ({ table: "equipment", column: name })),
+      show_when: showWhen,
+    })
+    addTo(form, grid("w_items", ["item", "units"], { match: "all", conditions: [] }))
+    addTo(form, grid("w_limits", ["limit"], { match: "all", conditions: [{ table: "policy", column: "show_limits", op: "ticked", values: [], field: null, days: 0 }] }))
+    form.schema.tables[1].inputs[0].type = type
+    return form
+  }
+
+  it.each([
+    ["Text", "str" as const, ["B", "A"], ["A", "B"]],
+    ["Integer", "int" as const, ["20", "03"], ["3", "20"]],
+  ])("keep each hidden cell on the row whose %s index it was typed on, in whatever order the answer gives the rows", (_kind, type, typedKeys, answeredKeys) => {
+    const form = keyedForm(type)
+    // The second key's row typed first, its limit 200; the box unticked as the quote is saved.
+    const sent = { equipment: [{ item: typedKeys[0], units: "1", limit: "200" }, { item: typedKeys[1], units: "1", limit: "100" }] }
+    // The store keeps nothing of a hidden cell, and answers the rows in their index's order.
+    const answered = { equipment: [{ item: answeredKeys[0], units: "1" }, { item: answeredKeys[1], units: "1" }] }
+
+    expect(withHiddenCells(form, answered, sent)).toEqual({
+      equipment: [
+        { item: answeredKeys[0], units: "1", limit: "100" },
+        { item: answeredKeys[1], units: "1", limit: "200" },
+      ],
+    })
+  })
+
+  it("keep a hidden cell typed on a row the answer does not hold, after the rows it does", () => {
+    const form = keyedForm("str")
+    const sent: Values = { equipment: [{ item: "B", units: "1", limit: "200" }, { limit: "50" }] }
+    const answered = { equipment: [{ item: "B", units: "1" }] }
+
+    expect(withHiddenCells(form, answered, sent)).toEqual({ equipment: [{ item: "B", units: "1", limit: "200" }, { limit: "50" }] })
   })
 })
 

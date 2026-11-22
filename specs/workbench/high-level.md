@@ -3184,7 +3184,9 @@ Out of scope:
   Leaving hidden values out makes a quote what its sheets show, whatever order it was
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
   again loses nothing: in the sample, and in the app's quote while it stays open, saved or
-  not. The store keeps only what was priced, so a quote opened again starts a hidden cell
+  not, each kept value on the row it was typed on, which a table keyed by an index typed or
+  of values knows by its index, since a save answers such rows in the index's order. The
+  store keeps only what was priced, so a quote opened again starts a hidden cell
   at its default (decided 2026-11-05: what was typed is kept for the session, not in the
   database). The server leaves them out where it makes the quote, the one place
   the sample priced in Preview, the Workbench Input's sample and the app's quote all come

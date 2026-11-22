@@ -38,10 +38,6 @@ SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the cont
 uses. The main session ran each again on the three databases. `WB-59` comes from the same
 phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
-`WB-60` comes from the plan's phase 5, a reader from a second model family (Codex) over the
-code changed since the 31 October audit. A worker ran it in a browser, and the main session
-ran its journey again on 13 November 2026.
-
 `WB-63` to `WB-66` come from the review plan's phase 5, a reader from a second
 model family (Codex) over the code changed since the 31 October audit. A
 worker built each run and the main session ran each again on 14 November
@@ -78,7 +74,6 @@ session ran each again on 16 November 2026.
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
-| WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
 | WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
 | WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
 | WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
@@ -925,38 +920,6 @@ agree the same way.
 `src/haute/_hashing.py::content_hash`;
 `src/haute/_scaffold_files.py`.
 
-### WB-60 — Hidden values stay on their own rows through a save
-**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
-app. A form has a table `equipment` of many rows, indexed by a text the
-underwriter types, `item`, with a `units` column and a `limit` column that
-shows only while `show_limits` is ticked. In a new quote with the box
-ticked, the underwriter enters item B with a limit of 200 and then item A
-with a limit of 100. The premium shown is 2,100. The box is unticked, the
-quote is saved, and the box is ticked again. The sheet now shows A with
-200 and B with 100, the next pricing request sends those limits, and the
-premium shown is 1,200. Nothing says a value moved.
-
-The save answers the table's rows in the order of their index, A then B.
-The app puts the hidden cells it kept back onto the answered rows by
-position, so each row is given the hidden value of whichever row was typed
-in its place. The specification keeps hidden values so that "hiding a
-section and showing it again loses nothing: in the sample, and in the
-app's quote while it stays open, saved or not". Rows typed out of their
-index's order are ordinary typing.
-
-**Plan:** Put a kept hidden cell back on the answered row that has the
-same index values, not the same position.
-
-**Acceptance:** In the run above A shows 100 and B shows 200 after the box
-is ticked again, and the premium is 2,100. A test types rows out of order
-into a table with a typed index of each type, hides a column, saves and
-shows it again.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/app/quoteValues.ts`;
-`frontend/src/app/useOpenQuoteStore.ts`; `specs/workbench/high-level.md`.
-
 ### WB-63 — An app opened before a column was added keeps that column's values
 **Why:** Reproduced on 14 November 2026 on SQLite, PostgreSQL 16 and SQL
 Server 2022. An app on the old release has the store open. The owner runs
@@ -1018,7 +981,7 @@ when its index value is no longer allowed.
 **Acceptance:** With the file unchanged nothing is listed as not opened.
 After the reorder `01` shows 100 and `02` shows 200.
 
-**Dependencies:** `WB-60` is the app's side of pairing by position.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_test_quotes.py`;
 `src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
