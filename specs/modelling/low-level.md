@@ -63,6 +63,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_staged_runtime.py` | Versioned worker bundles and canonical post-fit resume over retained evaluation sessions. |
 | `src/haute/modelling/_stage_views.py` | Compact diagnostic projections and table shape/count summaries for workspace reads. |
 | `src/haute/modelling/_stage_store.py` | Durable per-model stage revisions, preview/apply, job markers and artifact leases. |
+| `src/haute/modelling/_stage_objects.py` | Content-addressed stage objects, revision manifests, digest-bound reader pins, reachability collection, and portable and delta `.hstage` archives ("Stage storage (version 2)"). |
+| `src/haute/modelling/_stage_diagnostics.py` | Stage diagnostics stored once: splitting results into snapshot, table and history object references, and hydrating them back. |
 | `src/haute/modelling/_staged_config.py` | `StagedConfig`: stage-specific parameter validation, applied recipe chains and GBM-only parameter ownership. |
 | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |

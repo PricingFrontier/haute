@@ -638,8 +638,8 @@ class TBoostAlgorithm(BaseAlgorithm):
                     if direction
                 }
             )
-        # ``eval_df`` is deliberately unused: every bag stops on rows it holds back
-        # from the training rows, and t-boost takes no validation rows.
+        # Never supplied (`fit_reads_validation` is false): every bag stops on rows it
+        # holds back from the training rows, and t-boost takes no validation rows.
         del eval_df
         fit_kwargs = _rows_kwargs(model, train_df, target, weight, task)
         groups = kwargs.get("groups")

@@ -2624,9 +2624,11 @@ class TrainingJob:
 
         if frame_based:
             # GLM and the new-family adapters take DataFrames and build their
-            # own native data (no CatBoost Pool). A GLM has no early stopping, so
-            # it never reads the validation rows at fit time.
-            eval_df = load_validation() if has_validation and not is_glm else None
+            # own native data (no CatBoost Pool). Only a family that stops early on
+            # the validation rows reads them at fit time; for the others they are
+            # never loaded here (canonical evaluation scores them separately).
+            fit_reads_validation = algorithm_descriptor(self.algorithm).fit_reads_validation
+            eval_df = load_validation() if has_validation and fit_reads_validation else None
             _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
             # Every family fits with the job's seed; a GLM's keys target encoding.
             adapter_kwargs: dict[str, Any] = (

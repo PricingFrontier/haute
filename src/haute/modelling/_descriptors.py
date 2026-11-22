@@ -85,6 +85,15 @@ class AlgorithmDescriptor:
     #: returning an actionable message; key-level policy stays in validate_params.
     value_check: Callable[[Mapping[str, Any], Mapping[str, int] | None], str | None] | None = None
 
+    @property
+    def fit_reads_validation(self) -> bool:
+        """Whether fitting reads the validation rows: only families that stop early on them.
+
+        The others (a GLM, an EBM, t-boost, whose bags stop on rows they hold back) are
+        evaluated on validation rows but never fit on them, so those rows are not loaded.
+        """
+        return self.refit_policy == "validation_weighted_rounds"
+
     def __post_init__(self) -> None:
         if not self.suffix.startswith(".") or len(self.suffix) < 2:
             raise ValueError(f"descriptor {self.key!r} needs an artifact suffix like '.cbm'")

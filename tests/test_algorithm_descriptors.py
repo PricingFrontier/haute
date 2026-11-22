@@ -349,3 +349,18 @@ def test_config_builder_rejects_a_task_the_family_does_not_support() -> None:
             },
             data="d.parquet",
         )
+
+
+def test_only_early_stopping_families_read_validation_rows_at_fit_time():
+    from haute.modelling._descriptors import algorithm_descriptor
+
+    reads = {key: algorithm_descriptor(key).fit_reads_validation for key in ALGORITHM_REGISTRY}
+    # Which adapters consume the validation frame while fitting (early stopping).
+    assert reads == {
+        "catboost": True,
+        "glm": False,
+        "xgboost": True,
+        "lightgbm": True,
+        "ebm": False,
+        "tboost": False,
+    }

@@ -1,0 +1,148 @@
+diff --git a/specs/io-layer/low-level.md b/specs/io-layer/low-level.md
+index 5d8e63818..a0b731f7d 100644
+--- a/specs/io-layer/low-level.md
++++ b/specs/io-layer/low-level.md
+@@ -18,6 +18,7 @@
+ | `src/haute/_map_columns.py` | How a map column reaches a pipeline: as a list of `{key, value}` structs holding every entry. `map_entries_table` casts Arrow tables with pyarrow, sharing the map's buffers; `iter_parquet_map_entries` reads a Parquet file through pyarrow one row group at a time; `map_entries_frame` casts a frame Polars read; `parquet_map_column_names` finds a Parquet file's map columns from its footer. |
+ | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
+ | `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename; `publish_staged_file` publishes a caller's staging file, replacing the target or only while none exists; `rename_directory` renames a directory, retrying for about four seconds while Windows refuses it because a scanner holds a file just written inside; `remove_tree` removes a tree best-effort with the same retry; `PathTooLongError` and `path_too_long_error`, which name a path Windows refused for its length. |
++| `src/haute/_process_tokens.py` | Process liveness tokens: one lifetime-locked file per process in a directory, so stores can tell whether the owner of a lease marker or staging file is alive. Used by the source cache and by stage storage. |
+ | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
+ | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
+ | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
+diff --git a/specs/modelling/low-level.md b/specs/modelling/low-level.md
+index e33cf3ce5..3817fc5fa 100644
+--- a/specs/modelling/low-level.md
++++ b/specs/modelling/low-level.md
+@@ -63,6 +63,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
+ | `src/haute/modelling/_staged_runtime.py` | Versioned worker bundles and canonical post-fit resume over retained evaluation sessions. |
+ | `src/haute/modelling/_stage_views.py` | Compact diagnostic projections and table shape/count summaries for workspace reads. |
+ | `src/haute/modelling/_stage_store.py` | Durable per-model stage revisions, preview/apply, job markers and artifact leases. |
++| `src/haute/modelling/_stage_objects.py` | Content-addressed stage objects, revision manifests, digest-bound reader pins, reachability collection, and portable and delta `.hstage` archives ("Stage storage (version 2)"). |
++| `src/haute/modelling/_stage_diagnostics.py` | Stage diagnostics stored once: splitting results into snapshot, table and history object references, and hydrating them back. |
+ | `src/haute/modelling/_staged_config.py` | `StagedConfig`: stage-specific parameter validation, applied recipe chains and GBM-only parameter ownership. |
+ | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
+ | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
+diff --git a/src/haute/modelling/_descriptors.py b/src/haute/modelling/_descriptors.py
+index dc3b5ab0a..23ac036e7 100644
+--- a/src/haute/modelling/_descriptors.py
++++ b/src/haute/modelling/_descriptors.py
+@@ -85,6 +85,15 @@ class AlgorithmDescriptor:
+     #: returning an actionable message; key-level policy stays in validate_params.
+     value_check: Callable[[Mapping[str, Any], Mapping[str, int] | None], str | None] | None = None
+ 
++    @property
++    def fit_reads_validation(self) -> bool:
++        """Whether fitting reads the validation rows: only families that stop early on them.
++
++        The others (a GLM, an EBM, t-boost, whose bags stop on rows they hold back) are
++        evaluated on validation rows but never fit on them, so those rows are not loaded.
++        """
++        return self.refit_policy == "validation_weighted_rounds"
++
+     def __post_init__(self) -> None:
+         if not self.suffix.startswith(".") or len(self.suffix) < 2:
+             raise ValueError(f"descriptor {self.key!r} needs an artifact suffix like '.cbm'")
+diff --git a/src/haute/modelling/_ebm.py b/src/haute/modelling/_ebm.py
+index d47bf7507..880adf839 100644
+--- a/src/haute/modelling/_ebm.py
++++ b/src/haute/modelling/_ebm.py
+@@ -350,7 +350,7 @@ class EBMAlgorithm(BaseAlgorithm):
+ 
+         from haute.modelling._descriptors import EBM
+ 
+-        # ``eval_df`` is deliberately unused: an EBM never sees validation rows.
++        # Never supplied (`fit_reads_validation` is false): an EBM never sees validation rows.
+         del eval_df
+         if train_df is None:
+             raise HauteValidationError("EBM needs the training frame")
+diff --git a/src/haute/modelling/_tboost.py b/src/haute/modelling/_tboost.py
+index e8172fd1e..4a3cea890 100644
+--- a/src/haute/modelling/_tboost.py
++++ b/src/haute/modelling/_tboost.py
+@@ -638,8 +638,8 @@ class TBoostAlgorithm(BaseAlgorithm):
+                     if direction
+                 }
+             )
+-        # ``eval_df`` is deliberately unused: every bag stops on rows it holds back
+-        # from the training rows, and t-boost takes no validation rows.
++        # Never supplied (`fit_reads_validation` is false): every bag stops on rows it
++        # holds back from the training rows, and t-boost takes no validation rows.
+         del eval_df
+         fit_kwargs = _rows_kwargs(model, train_df, target, weight, task)
+         groups = kwargs.get("groups")
+diff --git a/src/haute/modelling/_training_job.py b/src/haute/modelling/_training_job.py
+index e5748f007..54cc76cd6 100644
+--- a/src/haute/modelling/_training_job.py
++++ b/src/haute/modelling/_training_job.py
+@@ -2624,9 +2624,11 @@ class TrainingJob:
+ 
+         if frame_based:
+             # GLM and the new-family adapters take DataFrames and build their
+-            # own native data (no CatBoost Pool). A GLM has no early stopping, so
+-            # it never reads the validation rows at fit time.
+-            eval_df = load_validation() if has_validation and not is_glm else None
++            # own native data (no CatBoost Pool). Only a family that stops early on
++            # the validation rows reads them at fit time; for the others they are
++            # never loaded here (canonical evaluation scores them separately).
++            fit_reads_validation = algorithm_descriptor(self.algorithm).fit_reads_validation
++            eval_df = load_validation() if has_validation and fit_reads_validation else None
+             _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
+             # Every family fits with the job's seed; a GLM's keys target encoding.
+             adapter_kwargs: dict[str, Any] = (
+diff --git a/tests/test_algorithm_descriptors.py b/tests/test_algorithm_descriptors.py
+index a60bc4181..d95c1ee4f 100644
+--- a/tests/test_algorithm_descriptors.py
++++ b/tests/test_algorithm_descriptors.py
+@@ -349,3 +349,18 @@ def test_config_builder_rejects_a_task_the_family_does_not_support() -> None:
+             },
+             data="d.parquet",
+         )
++
++
++def test_only_early_stopping_families_read_validation_rows_at_fit_time():
++    from haute.modelling._descriptors import algorithm_descriptor
++
++    reads = {key: algorithm_descriptor(key).fit_reads_validation for key in ALGORITHM_REGISTRY}
++    # Which adapters consume the validation frame while fitting (early stopping).
++    assert reads == {
++        "catboost": True,
++        "glm": False,
++        "xgboost": True,
++        "lightgbm": True,
++        "ebm": False,
++        "tboost": False,
++    }
+diff --git a/tests/test_tboost_family.py b/tests/test_tboost_family.py
+index 25eec19f1..1d7f97126 100644
+--- a/tests/test_tboost_family.py
++++ b/tests/test_tboost_family.py
+@@ -1178,3 +1178,28 @@ def test_bag_curves_keep_their_rounds_and_stopped_bags_in_the_mean() -> None:
+     assert rows[-1]["bag_1_iteration"] == 2
+     assert rows[-1]["bag_2_iteration"] == 1
+     assert rows[-1]["bag_2_train_deviance"] == 4.0
++
++
++def test_tboost_fits_never_load_the_validation_rows(tmp_path: Path, monkeypatch) -> None:
++    """t-boost takes no validation rows, so the fit never materialises them; the canonical
++    evaluation still scores them."""
++    from haute.modelling import _training_job
++
++    stages: list[str] = []
++    collect = _training_job._training_streaming_collect
++
++    def record(*args: Any, stage_name: str, **kwargs: Any) -> Any:
++        stages.append(stage_name)
++        return collect(*args, stage_name=stage_name, **kwargs)
++
++    monkeypatch.setattr(_training_job, "_training_streaming_collect", record)
++    _job, result = train(tmp_path / "default", target="claims", loss="Poisson", offset="exposure")
++    assert "training_validation_partition_materialise" not in stages
++    assert result.metrics and result.evaluation
++    # Control: a family that read them would load them on this same run.
++    from haute.modelling._descriptors import AlgorithmDescriptor
++
++    stages.clear()
++    monkeypatch.setattr(AlgorithmDescriptor, "fit_reads_validation", property(lambda self: True))
++    train(tmp_path / "control", target="claims", loss="Poisson", offset="exposure")
++    assert "training_validation_partition_materialise" in stages

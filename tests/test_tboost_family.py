@@ -1178,3 +1178,28 @@ def test_bag_curves_keep_their_rounds_and_stopped_bags_in_the_mean() -> None:
     assert rows[-1]["bag_1_iteration"] == 2
     assert rows[-1]["bag_2_iteration"] == 1
     assert rows[-1]["bag_2_train_deviance"] == 4.0
+
+
+def test_tboost_fits_never_load_the_validation_rows(tmp_path: Path, monkeypatch) -> None:
+    """t-boost takes no validation rows, so the fit never materialises them; the canonical
+    evaluation still scores them."""
+    from haute.modelling import _training_job
+
+    stages: list[str] = []
+    collect = _training_job._training_streaming_collect
+
+    def record(*args: Any, stage_name: str, **kwargs: Any) -> Any:
+        stages.append(stage_name)
+        return collect(*args, stage_name=stage_name, **kwargs)
+
+    monkeypatch.setattr(_training_job, "_training_streaming_collect", record)
+    _job, result = train(tmp_path / "default", target="claims", loss="Poisson", offset="exposure")
+    assert "training_validation_partition_materialise" not in stages
+    assert result.metrics and result.evaluation
+    # Control: a family that read them would load them on this same run.
+    from haute.modelling._descriptors import AlgorithmDescriptor
+
+    stages.clear()
+    monkeypatch.setattr(AlgorithmDescriptor, "fit_reads_validation", property(lambda self: True))
+    train(tmp_path / "control", target="claims", loss="Poisson", offset="exposure")
+    assert "training_validation_partition_materialise" in stages

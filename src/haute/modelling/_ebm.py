@@ -350,7 +350,7 @@ class EBMAlgorithm(BaseAlgorithm):
 
         from haute.modelling._descriptors import EBM
 
-        # ``eval_df`` is deliberately unused: an EBM never sees validation rows.
+        # Never supplied (`fit_reads_validation` is false): an EBM never sees validation rows.
         del eval_df
         if train_df is None:
             raise HauteValidationError("EBM needs the training frame")
