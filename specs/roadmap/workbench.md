@@ -21,31 +21,25 @@ that fill the sheets from databases and APIs.
 `WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
 in the Workbench view's Allowed field.
 
-`WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
+`WB-49` and `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
 it was confirmed by running the code or read from the source; none was run against a
 hosted app or a server database.
 
-`WB-51` to `WB-53` were reproduced on 10 November 2026 through the editor's and the app's
-routes. All three come from leads the October reviews left unverified; `WB-53` is a decision.
+`WB-51` and `WB-52` were reproduced on 10 November 2026 through the editor's routes. Both
+come from leads the October reviews left unverified.
 
-`WB-54` and `WB-55` come from the review plan's third sweep of failed writes on 11 November
-2026. Both were reproduced on a SQLite quote store with a second process holding the file,
-as a database browser or a backup does; no server database was used.
+`WB-55` comes from the review plan's third sweep of failed writes on 11 November 2026. It
+was reproduced on a SQLite quote store with a second process holding the file, as a
+database browser or a backup does; no server database was used.
 
 `WB-56` to `WB-58` come from the review plan's phase 4, which ran the underwriter app on
 SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the containers CI
 uses. The main session ran each again on the three databases. `WB-59` comes from the same
 phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
-`WB-63` to `WB-66` come from the review plan's phase 5, a reader from a second
-model family (Codex) over the code changed since the 31 October audit. A
-worker built each run and the main session ran each again on 14 November
-2026.
-
-`WB-70` to `WB-74` come from the review plan's phase 4, the quote store
-on PostgreSQL 16 and SQL Server 2022 under repeated requests, lost
-connections and hand-made schemas. A worker built each run and the main
-session ran each again on 16 November 2026.
+`WB-74` comes from the review plan's phase 4, the quote store on PostgreSQL 16 and SQL
+Server 2022 under repeated requests, lost connections and hand-made schemas. A worker
+built the run and the main session ran it again on 16 November 2026.
 
 ## Priorities
 
@@ -57,7 +51,7 @@ session ran each again on 16 November 2026.
 | WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
 | WB-12 | Planned | P3 | An analyst saves the quote typed in Preview as a test quote in `tests/quotes`, prices every test quote again from Preview as the pipeline changes and accepts what moved, and CI reports the test quotes whose outputs moved. |
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
+| WB-25 | Planned | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
@@ -448,16 +442,25 @@ container reached without Easy Auth in front signs in whoever names themselves, 
 rights when no edit role is set. The owner takes it up with the Azure work in the next pull
 request.
 
-**Plan:** The decision first, recorded here before a slice: a startup check that the
-host's sign-in is in front, or an explicit trust setting the operator sets, refusing the
-misconfiguration either way.
+**Plan:** Decided with the owner on 22 November 2026: an explicit trust setting that
+`haute app rollout` sets. The app trusts the host's sign-in headers only while an
+environment variable on the Container App says the host's sign-in stands in front of it;
+`haute app rollout` sets it after reading the Container App's authentication and finding
+it enabled and requiring a sign-in for every request, and refuses the rollout otherwise.
+Without the variable every request but the health check is refused 401, naming it. `haute
+app serve`, which signs the analyst in itself, is unchanged.
 
-**Acceptance:** Set by the decision.
+**Acceptance:** A release started without the variable refuses a request carrying Easy
+Auth's headers (401, naming the variable); `haute app rollout` onto a Container App whose
+authentication is off, or lets a request through unsigned, stops before the image is
+rolled out, saying so, and onto one that requires sign-in sets the variable and the
+hosted check passes; `haute app serve` signs the analyst in as before.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
-headers when the release names its host).
+headers when the release names its host); `src/haute/_workbench_rollout.py` (the Container
+App's authentication read as a rollout runs, `_client_id`).
 
 ### WB-38 — Allowed values typed into an older form
 **Why:** The Allowed field carries a branch for "values typed in, as an older form holds
