@@ -1006,6 +1006,31 @@ def test_a_table_changed_under_the_app_to_no_longer_fit_closes_the_quotes(
     assert "policy_details.exposure is missing" in detail["differences"]
 
 
+@pytest.mark.parametrize("read_only", ["file", "folder"])
+def test_a_store_the_app_cannot_write_to_is_reported_closed_naming_why(
+    release_dir: Path, tmp_path: Path, read_only: str
+) -> None:
+    """WB-54: the quotes are not offered while a save could not land."""
+    held = tmp_path / "held"
+    held.mkdir()
+    store = held / "quotes.sqlite"
+    url = _prepared(store, release_dir)
+    made = store if read_only == "file" else held
+    mode = made.stat().st_mode
+    made.chmod(0o444 if read_only == "file" else 0o555)
+    try:
+        with TestClient(create_app(release_dir, store=StoreLocation(TEST, url))) as client:
+            quotes = client.get("/api/app/release", headers=ANA).json()["quotes"]
+    finally:
+        made.chmod(mode)
+
+    assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_read_only")
+    assert quotes["message"] == (
+        "The quote store's file quotes.sqlite cannot be written to: it, or the folder it is "
+        "in, is read-only. Make both writable; the quotes open once they are."
+    )
+
+
 # ── The app's guards and pages ────────────────────────────────────────────
 
 

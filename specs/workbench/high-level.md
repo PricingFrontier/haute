@@ -2048,6 +2048,8 @@ Out of scope:
   check (below) finds nothing wrong. Until then they are closed: every quote route and
   `POST /api/app/price` answer 503 naming why, `quote_store_mismatch` with each way the
   database's tables differ from the release's form and each privilege its sign-in lacks,
+  `quote_store_read_only` for a SQLite store whose file, or the folder it is in, the app
+  cannot write to, naming the file, since no save could land,
   `quote_store_unreachable` for a server database the app cannot reach or that refuses its
   sign-in, said naming the variables that place it and sign in to it, never what the driver
   said, which names the server, its port and the user, and logged without it, and the same

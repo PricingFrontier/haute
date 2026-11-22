@@ -63,7 +63,6 @@ session ran each again on 16 November 2026.
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
 | WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
-| WB-54 | Planned | P2 | The release route does not report the quotes open while the app's store cannot be written to. |
 | WB-55 | Planned | P3 | A SQLite store held exclusively, damaged or deleted is said as such at start, naming its file. |
 | WB-56 | Planned | P3 | On SQL Server a quote address with a trailing space names no quote, as on the other databases; no row is stored under a padded reference. |
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
@@ -587,27 +586,6 @@ runs one list of names through the save, the tables route and the editor's
 `src/haute/_workbench_tables.py::check_tables`;
 `src/haute/_graph_utils.py::is_frame_label`;
 `frontend/src/utils/workbenchForm.ts::columnNameProblem`.
-
-### WB-54 — The release route reports a store the app cannot write to
-**Why:** Reproduced on 11 November 2026 on a SQLite quote store, with
-nothing patched. With the store's file read-only when the app starts,
-`GET /api/app/release` reports the quotes open, so the page opens them, and
-every save, note and change is then refused: the app answers each in words
-(the store's file is read-only, the change not saved, the quote's values
-kept), but the page offered a write it could not make. The store's check
-reads the tables and never tries a write.
-
-**Plan:** Have the store's check find a store it cannot write to (for
-SQLite, a read-only file or folder) and have the release route report the
-quotes closed for that reason, naming it.
-
-**Acceptance:** With the SQLite store's file read-only when the app starts,
-`GET /api/app/release` does not report the quotes open, and says why.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_app_store.py`;
-`src/haute/_quote_store/_store.py`; `specs/workbench/high-level.md`.
 
 ### WB-55 — A SQLite store held exclusively, damaged or deleted is called what it is
 **Why:** Reproduced on 11 November 2026, with nothing patched. A store file

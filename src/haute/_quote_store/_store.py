@@ -177,6 +177,13 @@ class QuoteStoreChangedError(QuoteStoreError):
     error_code = "quote_store_changed"
 
 
+class QuoteStoreReadOnlyError(QuoteStoreError):
+    """A SQLite store the app cannot write to: its file, or the folder its rollback journal is
+    made in, read-only. The message names the file."""
+
+    error_code = "quote_store_read_only"
+
+
 class QuoteStoreMismatchError(QuoteStoreError):
     """The database does not hold the form's tables as the store needs them: *differences*
     names each, and the message what resolves them."""
@@ -369,6 +376,30 @@ def _catalogue_differences(
     return differences
 
 
+def _refuse_unwritable(engine: Engine) -> None:
+    """Refuse (:class:`QuoteStoreReadOnlyError`) a SQLite store the app could read and not
+    write to: the database's header written as it stands and rolled back, which needs the
+    file and, for the rollback journal a save writes beside it, its folder, as a save's first
+    write does. A server's sign-in is checked by its privileges instead."""
+    from haute._failure_answers import classify_failure
+
+    with engine.connect() as connection:
+        version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+        try:
+            connection.exec_driver_sql(f"PRAGMA user_version = {int(version)}")
+        except DBAPIError as exc:
+            answer = classify_failure(exc)
+            if answer is None or answer.code != "quote_store_read_only":
+                raise
+            name = Path(str(engine.url.database)).name
+            raise QuoteStoreReadOnlyError(
+                f"The quote store's file {name} cannot be written to: it, or the folder it is "
+                "in, is read-only. Make both writable; the quotes open once they are."
+            ) from None
+        finally:
+            connection.rollback()
+
+
 def open_engine(
     url: str,
     form: FormSpec,
@@ -411,6 +442,8 @@ def open_engine(
     try:
         with reaching(url, environment, named_by):
             catalogue = read_store(engine, checked)
+        if engine.dialect.name == "sqlite":
+            _refuse_unwritable(engine)
     except Exception:
         engine.dispose()
         raise
