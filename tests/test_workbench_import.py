@@ -355,6 +355,8 @@ def test_a_hosted_app_reads_a_connection_from_the_variables_named_for_it() -> No
     assert "tok" not in repr(crm) and "pw" not in repr(policies)
     with pytest.raises(ImportRefusedError, match="sets no HAUTE_CONNECTION_OTHER_URL"):
         hosted_source("other", environ)
+    with pytest.raises(ImportRefusedError, match="is no connection's name"):
+        hosted_source("crm url", environ)
 
 
 # ── Through the routes ─────────────────────────────────────────────────────
@@ -487,6 +489,27 @@ def test_a_hosted_apps_failed_source_is_an_incident_its_words_logged(tmp_path: P
     incident = incident_in(failed.json()["detail"])
     assert "nowhere" not in failed.text
     assert "nowhere" in str([entry for entry in logs if entry.get("incident") == incident])
+
+
+def test_the_apps_import_past_its_body_limit_is_refused_before_it_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from haute import _workbench_app
+    from haute._quote_store import StoreLocation
+    from haute._workbench_app import create_app
+    from tests.test_workbench_app_quotes import ANA, TEST, _prepared, _write_release
+
+    monkeypatch.setattr(_workbench_app, "MAX_IMPORT_FILE_TEXT", 0)
+    monkeypatch.setattr(_workbench_app, "_IMPORT_BODY_HEADROOM", 100)
+    monkeypatch.setattr(_workbench_app, "deploy_quote_request_body_limit_bytes", lambda: 100)
+    release = _write_release(tmp_path / "rel", _app_form({"format": "csv", "delimiter": "comma"}))
+    url = _prepared(tmp_path / "store.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        refused = _app_import(client, "w_in", ANA, file=_encoded(b"state\n" + b"CA\n" * 100))
+
+    assert refused.status_code == 413
 
 
 def test_one_who_may_only_read_quotes_runs_no_import(tmp_path: Path) -> None:

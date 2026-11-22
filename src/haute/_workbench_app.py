@@ -997,21 +997,15 @@ def create_app(
             raise ForbiddenError(
                 "You can read quotes in this app; filling one needs its edit role."
             )
-        try:
+        from haute._workbench_app_quotes import app_body
+
+        body = await app_body(
+            http,
+            WorkbenchAppImportRequest,
+            operation="workbench_app_import",
             # A file sent whole as base64, past a quote's own limit.
-            raw = await read_limited_json_body(
-                http,
-                operation="workbench_app_import",
-                limit_bytes=max(body_limit, MAX_IMPORT_FILE_TEXT + _IMPORT_BODY_HEADROOM),
-            )
-        except RequestBodyLimitError as exc:
-            return JSONResponse(status_code=413, content=exc.to_payload())  # type: ignore[return-value]
-        except (RequestBodyHeaderError, RequestBodyParseError) as exc:
-            return JSONResponse(status_code=400, content=exc.to_payload())  # type: ignore[return-value]
-        try:
-            body = WorkbenchAppImportRequest.model_validate(raw)
-        except ValidationError as exc:
-            raise RequestValidationError(exc.errors()) from None
+            limit_bytes=max(body_limit, MAX_IMPORT_FILE_TEXT + _IMPORT_BODY_HEADROOM),
+        )
         if body.form_revision != release.form_revision or body.release != release.id:
             raise ConflictError(
                 "This page was drawn for another release of the app: reload it to import on "

@@ -1945,7 +1945,9 @@ Out of scope:
     `HAUTE_CONNECTION_<NAME>_URL` (a database's credential-free URL, a Databricks
     `databricks://<host>/<http_path>`, an API's base URL), with `_USERNAME` and `_PASSWORD` for a
     password sign-in, `_TOKEN` for a Databricks token or an API's bearer token: no file a
-    release carries says where a source is or how to sign in to it.
+    release carries says where a source is or how to sign in to it. `<NAME>` is the
+    connection's name in capitals, each `-` an `_`, so `connections.toml` refuses two names
+    making one, as `policy-db` and `policy_db` would.
   - **A lookup.** An Import that names a column of a one-row table as its `lookup`, one
     of its parameters, is also offered beside that column's cell wherever the sheets show
     it, a search button that runs the same Import, so an underwriter keys a reference and

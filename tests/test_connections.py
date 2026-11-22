@@ -182,6 +182,19 @@ def test_a_source_connection_not_as_the_file_takes_it_is_refused_naming_why(
     assert "hunter2" not in str(refused.value)
 
 
+def test_two_names_a_hosted_app_reads_from_the_same_variables_are_refused(tmp_path: Path) -> None:
+    source = 'provider = "sqlite"\ndatabase = "q.sqlite"\n'
+    write(tmp_path, f"[policy-db]\n{source}\n[policy_db]\n{source}")
+
+    with pytest.raises(ConnectionsError) as refused:
+        read_connections(tmp_path)
+
+    assert str(refused.value) == (
+        "connections.toml [policy-db] and [policy_db] are one connection to a hosted app, "
+        "which reads both from HAUTE_CONNECTION_POLICY_DB_*: rename one."
+    )
+
+
 def test_an_entra_sign_in_on_postgresql_names_the_role_it_takes(tmp_path: Path) -> None:
     entra = '[dev]\nprovider = "postgresql"\nserver = "db:5432"\ndatabase = "q"\nauth = "entra"\n'
     write(tmp_path, entra)

@@ -282,13 +282,23 @@ def _editor(http: Request) -> str:
     return principal
 
 
-async def _body(http: Request, model: type[M]) -> M:
-    """The request's body, read within the deployed quote route's limit, as *model*."""
+async def app_body(
+    http: Request,
+    model: type[M],
+    *,
+    operation: str = "workbench_app_quote",
+    limit_bytes: int | None = None,
+) -> M:
+    """The request's body as *model*, read within *limit_bytes*, else the deployed quote
+    route's limit, before it is parsed: 413 past it, 400 for a malformed length, 422 for a
+    body that is not JSON or not *model*."""
     try:
         raw = await read_limited_json_body(
             http,
-            operation="workbench_app_quote",
-            limit_bytes=deploy_quote_request_body_limit_bytes(),
+            operation=operation,
+            limit_bytes=deploy_quote_request_body_limit_bytes()
+            if limit_bytes is None
+            else limit_bytes,
         )
     except RequestBodyLimitError as exc:
         raise RequestRefusedError(exc.to_payload(), status_code=413) from None
@@ -404,7 +414,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
     @router.post("/quotes", response_model=WorkbenchAppQuoteResponse)
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteCreateRequest)
+        body = await app_body(http, WorkbenchAppQuoteCreateRequest)
         # A creation repeated with its key answers the quote it made, whichever release the
         # page was drawn for.
         replay = await _call(app, lambda book: book.replayed(body.operation, actor, "created"))
@@ -436,7 +446,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
     @router.post("/quotes/{reference}/{option}/save", response_model=WorkbenchAppQuoteResponse)
     async def save_quote(reference: str, option: int, http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteSaveRequest)
+        body = await app_body(http, WorkbenchAppQuoteSaveRequest)
         book = await _book(app)
         identity = (reference, option)
         # A save repeated with its key after its answer was lost is answered with what that key
@@ -487,7 +497,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
             reference: str, option: int, http: Request
         ) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
-            body = await _body(http, model)
+            body = await app_body(http, model)
             quote = await _call(
                 app, lambda book: apply(book, reference, option, body, actor), (reference, option)
             )
@@ -539,7 +549,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         as the store keeps them and recorded in its activity: the workbook, named by the
         Export's file name. Anyone signed in may export, as anyone may read the quote."""
         actor: str = http.state.principal
-        body = await _body(http, WorkbenchAppQuoteExport)
+        body = await app_body(http, WorkbenchAppQuoteExport)
         identity = (reference, option)
         opened = await _call(app, lambda book: book.read(reference, option), identity)
         quote = opened.quote
@@ -574,7 +584,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
     )
     async def note(reference: str, option: int, http: Request) -> WorkbenchAppQuoteChangeResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteNote)
+        body = await app_body(http, WorkbenchAppQuoteNote)
         quote = await _call(
             app, lambda book: book.set_note(reference, option, actor=actor, note=body.note)
         )

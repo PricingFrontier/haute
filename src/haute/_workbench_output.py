@@ -211,7 +211,7 @@ def with_quote_identity(filled: WorkbenchOutputTables, quote: object) -> Workben
         if carries_identity(table):
             frame = (
                 frame.drop(_IDENTITY_NAMES)
-                .join(one, how="cross")
+                .join(one, how="cross", maintain_order="left")
                 .select(pl.col(column.name).cast(column.dtype) for column in table.columns)
             )
         frames[table.port] = frame

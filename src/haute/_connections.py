@@ -143,16 +143,36 @@ def read_connections(project_root: Path) -> dict[str, Connection]:
     except UnicodeDecodeError as exc:
         raise ConnectionsError(f"{CONNECTIONS_FILE} is not UTF-8 text: {exc}") from exc
     connections: dict[str, Connection] = {}
+    stems: dict[str, str] = {}
     for name, settings in data.items():
         if not ENVIRONMENT_NAME.fullmatch(name):
             raise ConnectionsError(
                 f"{CONNECTIONS_FILE} [{name}]: a connection's name is up to 32 lower-case "
                 "letters, digits, dashes and underscores, starting with a letter"
             )
+        # A hosted app tells two connections apart by their variables alone.
+        taken = stems.setdefault(hosted_stem(name), name)
+        if taken != name:
+            raise ConnectionsError(
+                f"{CONNECTIONS_FILE} [{taken}] and [{name}] are one connection to a hosted "
+                f"app, which reads both from {hosted_stem(name)}_*: rename one."
+            )
         if not isinstance(settings, dict):
             raise ConnectionsError(f"{CONNECTIONS_FILE} [{name}] must be a table")
         connections[name] = _connection(name, settings)
     return connections
+
+
+#: How the variables a hosted app reads an Import's connection from begin.
+HOSTED_PREFIX = "HAUTE_CONNECTION_"
+
+
+def hosted_stem(name: str) -> str:
+    """The start of the names of the variables a hosted app reads the connection *name*
+    from: :data:`HOSTED_PREFIX` and the name in capitals, each ``-`` an ``_``, as a
+    variable's name holds no ``-``. One name to one stem: :func:`read_connections` refuses
+    two names making one."""
+    return HOSTED_PREFIX + name.upper().replace("-", "_")
 
 
 def _text(settings: Mapping[str, object], key: str, at: str, *, optional: bool) -> str | None:

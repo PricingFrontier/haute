@@ -48,9 +48,6 @@ IMPORT_ROW_LIMIT = 10_000
 HTTP_TIMEOUT_SECONDS = 30
 #: The most of an API's answer read, in bytes.
 HTTP_ANSWER_LIMIT_BYTES = 32 * 1024 * 1024
-#: The variables a hosted app reads a connection from, ``<NAME>`` the connection's name in
-#: capitals, dashes as underscores.
-HOSTED_PREFIX = "HAUTE_CONNECTION_"
 #: The words that change a database, refused in a query.
 _CHANGING = re.compile(
     r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|"
@@ -132,14 +129,21 @@ def project_source(project_root: Path, name: str, environ: Mapping[str, str]) ->
 
 def hosted_source(name: str, environ: Mapping[str, str]) -> Source:
     """The connection *name* as a hosted app's host gives it, by the variables named for it
-    (:data:`HOSTED_PREFIX`): ``_URL``, a database's credential-free SQLAlchemy URL, an API's
+    (``hosted_stem``): ``_URL``, a database's credential-free SQLAlchemy URL, an API's
     base URL or ``databricks://<host>/<http_path>``; ``_USERNAME`` and ``_PASSWORD`` a
     password sign-in, else the app's own managed identity; ``_TOKEN`` a Databricks token or
     an API's bearer token."""
+    from haute._connections import hosted_stem
     from haute._credential_security import validate_credential_free_uri
     from haute._quote_store._providers import SignIn, provider_of
+    from haute._workbench_config import ENVIRONMENT_NAME
 
-    stem = HOSTED_PREFIX + name.upper().replace("-", "_")
+    if not ENVIRONMENT_NAME.fullmatch(name):
+        raise ImportRefusedError(
+            f"{name!r} is no connection's name: up to 32 lower-case letters, digits, dashes "
+            "and underscores, starting with a letter."
+        )
+    stem = hosted_stem(name)
     where = f"{stem}_URL"
     url = environ.get(where, "").strip()
     if not url:

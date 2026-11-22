@@ -1032,7 +1032,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   ```
 
   The hosted app reads an Import's connection from variables named for it, `<NAME>` the
-  connection's name in capitals with `-` as `_`:
+  connection's name in capitals with `-` as `_` (so `policy-db` and `policy_db` cannot both
+  be connections):
 
   | Variable | Holds |
   |---|---|
