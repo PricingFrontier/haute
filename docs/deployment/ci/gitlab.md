@@ -40,7 +40,9 @@ A [workbench project](../../building-models/workbench.md) hosts no API: what it 
 the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
 `.gitlab-ci.yml` has three stages instead: **validate**, which lints, type-checks and runs
 tests, then builds the app's release, which checks your pipeline and schema and scores your
-test quotes, on every merge request and on main; **publish**, on main only, which builds the
+test quotes, and tests the packaged app (`haute app test`) on SQLite and, in a job of its
+own, on your production store's database engine as a throwaway service, on every merge
+request and on main; **publish**, on main only, which builds the
 app's image once, pushes it to the registry `[deploy.container]` names, rolls the staging
 app out to it and compares staging with production on saved quotes, keeping
 `impact_report.md` as the job's artifact; and **production**, a manual `deploy-production` job that rolls the production

@@ -46,7 +46,7 @@ built the run and the main session ran it again on 16 November 2026.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
-| WB-08 | Planned | P2 | A workbench project's CI tests the packaged app before any host sees it, and an export template's change starts the release. |
+| WB-08 | Planned | P3 | An export template's change starts a workbench project's release, and CI drives the packaged app's sheets in a browser. |
 | WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
 | WB-11 | Planned | P3 | An Export fills the analyst's own workbook template, writes a cell for each row of a table, and names its cells as a template names them. |
 | WB-12 | Planned | P3 | An analyst saves the quote typed in Preview as a test quote in `tests/quotes`, prices every test quote again from Preview as the pipeline changes and accepts what moved, and CI reports the test quotes whose outputs moved. |
@@ -107,47 +107,28 @@ host) and `::build_release` (the release and the image's build context);
 `src/haute/deploy/_container.py::prepare_build_directory` (the image's Dockerfile).
 
 ### WB-08 — The workbench project's CI/CD
-**Why:** A workbench project hosts no scoring API: its workflows validate the project and the
-app's release on every pull request and on a push to `main` that changes a release input;
-on that push they publish the app's image once, by digest, and roll the staging app to it,
-and by hand, after approval, roll production to the image staging ran for that commit, each
-rollout checked on the host and recorded on its Container App, and before production is
-approved `haute app impact` prices a sample of the quotes production saved on both apps and
-compares the fields the two releases share inside their response tables
-([workbench](../workbench/high-level.md)). What the release flow promised and still lacks:
-Nothing tests the packaged app before a host sees it: `haute app build` validates the
-pipeline and scores the committed test quotes, but no step starts the app the image holds,
-saves a quote through it or reopens one, against SQLite or against the server engine IT's
-instance runs. The export templates of WB-11, once they exist, start no release
-either. Pricing analysts work on their own machines: Save writes the save branch, Commit
-makes a milestone, Push publishes it, a pull request to `main` is opened and merged on the
-provider, and the merge is the release. A milestone Commit sweeps tracked files only, so a
-file the workbench adds, such as the test quotes of WB-12, needs tracking from the start.
+**Why:** A workbench project's workflows validate the project and the app's release on every
+pull request and on a push to `main` that changes a release input, test the packaged app
+there (`haute app test`: the release served on a store made for the run alone, on SQLite and
+on the server engine production's store runs, each test quote made, priced, saved, opened
+again, marked final and exported through the app's routes), publish the app's image once and
+roll staging out to it, and roll production out by hand
+([workbench](../workbench/high-level.md)). What the release flow still lacks: the export
+templates of WB-11, once they exist, start no release; and no step drives the sheets
+themselves in a browser, so a page that does not load or draw is found by an underwriter.
 
-**Plan:** The behaviour lives in Haute's commands, as `haute app rollout` does, so the YAML
-stays thin and alike across providers. The release triggers gain each release input as it
-arrives, where its specification puts it: the export templates. On every pull request, and
-again on the merge's build before it is published, the packaged app is tested in the CI
-runner, against SQLite and once against the server engine IT's instance runs (a service
-container), each a throwaway store of the branch's form made for the tests alone, since
-SQLite proves nothing of that engine's types; CI rehearses no migration, whose SQL the
-analysts write in the schema pane ([workbench](../workbench/high-level.md)) and run
-themselves: the test quotes of WB-12 re-priced one request each against their accepted
-outputs, a quote saved, reopened and, once WB-11's formats exist, exported through the app,
-and the sheets driven in a browser.
+**Plan:** The release triggers gain the export templates where their specification puts
+them, as they arrive. The packaged app's test gains a browser run of the sheets: the
+release's page loaded against the app `haute app test` serves, a test quote typed into it
+and saved, as the editor's own browser tests drive it.
 
-**Acceptance:** A pull request whose packaged app cannot save and reopen a quote, against
-SQLite or the server engine, fails before any host sees it, each test store made for the
-tests alone and no migration rehearsed; a change confined to an export template starts the
-release; no step of the workflow changes a hosted database's tables or a saved quote.
+**Acceptance:** A change confined to an export template starts the release; a pull request
+whose packaged app's page cannot open a quote or save one fails before any host sees it.
 
-**Dependencies:** WB-11 (the export templates and the export the app's tests make, once
-their formats are decided) and WB-12 (the test quotes).
+**Dependencies:** WB-11 (the export templates).
 
-**Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (validate, publish, roll out and
-impact, no packaged-app test);
-`src/haute/_git_transactions.py::_residual_tracked_changes` (a milestone sweeps tracked
-files only).
+**Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (the trigger paths and the
+validate jobs); `src/haute/_workbench_app_test.py` (the packaged app's test).
 
 ### WB-09 — Actions that fill the sheets
 **Why:** Underwriters key in what other systems already hold: the broker and the assured

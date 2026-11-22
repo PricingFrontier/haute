@@ -7,8 +7,13 @@ project name, deploy target, and CI provider.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from haute._workbench_config import StoreEnvironment
 
 from haute._project_python import DEFAULT_PYTHON, container_base_image
 from haute._workbench_folder import folder_files
@@ -818,6 +823,85 @@ _GITHUB_VALIDATE_JOB = """\
     uses: ./.github/workflows/ci.yml"""
 _DRY_RUN_CHECK = ("Dry-run deploy (score test quotes)", "uv run haute deploy --dry-run")
 _APP_BUILD_CHECK = ("Build the app's release (score test quotes)", "uv run haute app build")
+#: What tests the release built on a SQLite store made for the run (Control flow 39).
+_APP_TEST = "uv run haute app test"
+
+
+@dataclass(frozen=True)
+class _ServerEngine:
+    """A quote store's server engine as a workbench project's CI runs it for ``haute app
+    test``: a throwaway service container, its port, the URL of the database its login makes
+    the run's database from, that login and the container's own password, the check that it
+    answers, and the system libraries its driver loads on the runner."""
+
+    title: str
+    image: str
+    port: int
+    url: str
+    user: str
+    #: The container's environment, its login's password among it.
+    container_env: tuple[tuple[str, str], ...]
+    health: str
+    libraries: tuple[str, ...] = ()
+
+
+#: The password of each engine's throwaway container, which nothing outside the job reaches.
+_APP_TEST_PASSWORD = "Haute-app-test-1!"
+_SERVER_ENGINES: Mapping[str, _ServerEngine] = {
+    "sqlserver": _ServerEngine(
+        "SQL Server",
+        "mcr.microsoft.com/mssql/server:2022-latest",
+        1433,
+        "mssql+mssqlpython://{host}:1433/master?TrustServerCertificate=yes",
+        "sa",
+        (("ACCEPT_EULA", "Y"), ("MSSQL_SA_PASSWORD", _APP_TEST_PASSWORD)),
+        "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa "
+        f"-P '{_APP_TEST_PASSWORD}' -Q 'SELECT 1'",
+        ("libltdl7", "libkrb5-3", "libgssapi-krb5-2"),
+    ),
+    "postgresql": _ServerEngine(
+        "PostgreSQL",
+        "postgres:16",
+        5432,
+        "postgresql+psycopg://{host}:5432/postgres",
+        "postgres",
+        (("POSTGRES_PASSWORD", _APP_TEST_PASSWORD),),
+        "pg_isready -U postgres",
+    ),
+}
+
+
+def _server_engine(store: str) -> _ServerEngine:
+    engine = _SERVER_ENGINES.get(store)
+    if engine is None:
+        raise ValueError(f"Unknown quote store: {store}")
+    return engine
+
+
+def _libraries_script(engine: _ServerEngine, *, sudo: bool = True) -> str | None:
+    """What installs the system libraries *engine*'s driver loads on an Ubuntu or Debian
+    runner, with sudo unless it runs as root."""
+    if not engine.libraries:
+        return None
+    run = "sudo " if sudo else ""
+    return f"{run}apt-get update && {run}apt-get install -y --no-install-recommends " + " ".join(
+        engine.libraries
+    )
+
+
+def _app_test_env(engine: _ServerEngine, host: str, indent: str) -> str:
+    """The variables ``haute app test`` makes the run's store on *engine* from, at *host*."""
+    return (
+        f"{indent}HAUTE_APP_TEST_URL: {engine.url.format(host=host)}\n"
+        f"{indent}HAUTE_APP_TEST_USER: {engine.user}\n"
+        f'{indent}HAUTE_APP_TEST_PASSWORD: "{_APP_TEST_PASSWORD}"\n'
+    )
+
+
+def _container_env(engine: _ServerEngine, indent: str) -> str:
+    return "".join(f'{indent}{name}: "{value}"\n' for name, value in engine.container_env)
+
+
 #: The report a workbench project's ``haute app build`` writes of its test quotes
 #: (``haute._workbench_test_quotes.REPORT_FILE``), which its validate jobs keep.
 _TEST_QUOTES_REPORT = "test_quotes_report.md"
@@ -870,16 +954,55 @@ def github_ci_yml() -> str:
     return _github_ci_yml(_DRY_RUN_CHECK)
 
 
-def github_app_ci_yml() -> str:
-    """A workbench project's checks: :func:`_github_ci_yml` ending in the app's release build."""
-    return _github_ci_yml(_APP_BUILD_CHECK, report=True)
+def github_app_ci_yml(store: str | None) -> str:
+    """A workbench project's checks: :func:`_github_ci_yml` ending in the app's release build
+    and the packaged app tested on SQLite, then tested again on *store*'s server engine in a
+    service container (``haute app test``), but for a project whose hosted stores are files
+    (*store* None)."""
+    after = f"""\
+      - name: Test the packaged app on SQLite
+        run: {_APP_TEST}
+"""
+    checks = _github_ci_yml(_APP_BUILD_CHECK, report=True, after=after)
+    if store is None:
+        return checks
+    engine = _server_engine(store)
+    libraries = _libraries_script(engine)
+    install = (
+        f"      - name: Libraries for {engine.title}'s driver\n        run: {libraries}\n"
+        if libraries
+        else ""
+    )
+    server = f"""
+  app-test-{store}:
+    name: App test on {engine.title}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      store:
+        image: {engine.image}
+        env:
+{_container_env(engine, " " * 10)}        ports:
+          - {engine.port}:{engine.port}
+        options: >-
+          --health-cmd "{engine.health}"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+    steps:
+{_GITHUB_SETUP_STEPS}
+{install}      - name: Build the app's release
+        run: uv run haute app build
+      - name: Test the packaged app on {engine.title}
+        env:
+{_app_test_env(engine, "localhost", " " * 10)}        run: {_APP_TEST}
+"""
+    return checks + server
 
 
-def _github_ci_yml(check: tuple[str, str], *, report: bool = False) -> str:
+def _github_ci_yml(check: tuple[str, str], *, report: bool = False, after: str = "") -> str:
     """The checks for GitHub Actions, run on a pull request and called by the merge-to-main
-    workflow, the pipeline validation ending in *check*, and with *report* keeping the test
-    quotes' report whether it passes or fails. A called workflow holds no more than its caller
-    gives it, so this asks for read access alone."""
+    workflow, the pipeline validation ending in *check* and the steps *after* it, and with
+    *report* keeping the test quotes' report whether it passes or fails. A called workflow
+    holds no more than its caller gives it, so this asks for read access alone."""
     check_name, check_run = check
     upload = _GITHUB_TEST_QUOTES_UPLOAD if report else ""
     return f"""\
@@ -929,7 +1052,7 @@ jobs:
         run: uv run haute lint
       - name: {check_name}
         run: {check_run}
-{upload}"""
+{after}{upload}"""
 
 
 def github_deploy_yml(
@@ -1151,12 +1274,15 @@ def _gitlab_docker_job(target: str) -> str:
 """
 
 
-def _gitlab_head(stages: Sequence[str], check: str, *, report: bool = False) -> str:
+def _gitlab_head(
+    stages: Sequence[str], check: str, *, report: bool = False, after: Sequence[str] = ()
+) -> str:
     """The head every GitLab pipeline Haute generates opens with: its *stages*, uv's cache and
     the default job, then the validate job, run on a merge request and on the default branch,
     ending in *check*, and with *report* keeping the test quotes' report whether it passes or
     fails."""
     stage_lines = "".join(f"  - {stage}\n" for stage in stages)
+    after_lines = "".join(f"    - {line}\n" for line in after)
     artifacts = (
         f"  artifacts:\n    when: always\n    paths:\n      - {_TEST_QUOTES_REPORT}\n"
         if report
@@ -1189,7 +1315,7 @@ lint:
     - uv run pytest -v
     - uv run haute lint
     - {check}
-{artifacts}  rules:
+{after_lines}{artifacts}  rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 """
@@ -1307,13 +1433,19 @@ _AZURE_APP_BUILD_CHECK = ("uv run haute app build", "Build the app's release")
 
 
 def _azure_devops_head(
-    check: tuple[str, str], *, sequential: bool = False, report: bool = False
+    check: tuple[str, str],
+    *,
+    sequential: bool = False,
+    report: bool = False,
+    store: str | None = None,
+    app: bool = False,
 ) -> str:
     """The head every Azure DevOps pipeline Haute generates opens with: its triggers and the
     Validate stage, run on a pull request and on a push to main, its pipeline validation
     ending in *check*, with *report* keeping the test quotes' report whether it passes or
     fails; *sequential* runs one deployment of an environment at a time, under the exclusive
-    lock IT sets on it."""
+    lock IT sets on it; with *app*, a workbench project's, the packaged app tested on SQLite
+    after the check, and with *store* again on that server engine in a service container."""
     check_script, check_name = check
     publish = (
         f"          - publish: {_TEST_QUOTES_REPORT}\n"
@@ -1328,6 +1460,53 @@ def _azure_devops_head(
         if sequential
         else ""
     )
+    resources = ""
+    tested = ""
+    server_job = ""
+    if app:
+        tested = f"""\
+          - script: {_APP_TEST}
+            displayName: Test the packaged app on SQLite
+"""
+    if store is not None:
+        engine = _server_engine(store)
+        resources = f"""
+resources:
+  containers:
+    - container: store
+      image: {engine.image}
+      ports:
+        - {engine.port}:{engine.port}
+      env:
+{_container_env(engine, " " * 8)}"""
+        libraries = _libraries_script(engine)
+        install = (
+            f"          - script: {libraries}\n"
+            f"            displayName: Libraries for {engine.title}'s driver\n"
+            if libraries
+            else ""
+        )
+        server_job = f"""
+      - job: app_test_{store}
+        displayName: App test on {engine.title}
+        timeoutInMinutes: 20
+        pool:
+          vmImage: ubuntu-latest
+        services:
+          store: store
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+{install}          - script: uv run haute app build
+            displayName: Build the app's release
+          - script: {_APP_TEST}
+            displayName: Test the packaged app on {engine.title}
+            env:
+{_app_test_env(engine, "localhost", " " * 14)}"""
     return f"""\
 trigger:
   branches:
@@ -1335,7 +1514,7 @@ trigger:
   paths:
     include:
 {_azure_devops_trigger_paths()}
-
+{resources}
 pr:
   branches:
     include: [main]
@@ -1410,7 +1589,7 @@ stages:
             displayName: Lint pipeline
           - script: {check_script}
             displayName: {check_name}
-{publish}"""
+{tested}{publish}{server_job}"""
 
 
 def azure_devops_yml(
@@ -1817,12 +1996,41 @@ jobs:
 """
 
 
-def gitlab_app_ci_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+def gitlab_app_ci_yml(
+    host: str, store: str | None, *, python_version: str = DEFAULT_CI_PYTHON
+) -> str:
     """:func:`_gitlab_app_ci_yml` on *python_version*."""
-    return _pin_ci_python(_gitlab_app_ci_yml(host), python_version)
+    return _pin_ci_python(_gitlab_app_ci_yml(host, store), python_version)
 
 
-def _gitlab_app_ci_yml(host: str) -> str:
+def _gitlab_app_test_job(store: str | None) -> str:
+    """The validate job testing the packaged app on *store*'s server engine, a throwaway
+    service reached as ``store``; none for a project whose hosted stores are files."""
+    if store is None:
+        return ""
+    engine = _server_engine(store)
+    libraries = _libraries_script(engine, sudo=False)
+    install = f"    - {libraries}\n" if libraries else ""
+    return f"""\
+app-test-{store}:
+  stage: validate
+  timeout: 20 minutes
+  services:
+    - name: {engine.image}
+      alias: store
+      variables:
+{_container_env(engine, " " * 8)}  variables:
+{_app_test_env(engine, "store", " " * 4)}  script:
+{install}    - uv run haute app build
+    - {_APP_TEST}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+"""
+
+
+def _gitlab_app_ci_yml(host: str, store: str | None) -> str:
     """A workbench project's pipeline for GitLab CI/CD: validate on a merge request and on the
     default branch; on the default branch publish the underwriter app's image once and roll
     staging out to it, and roll production out by hand, logged in with *host*'s credentials,
@@ -1830,7 +2038,13 @@ def _gitlab_app_ci_yml(host: str) -> str:
     secrets_env = _gitlab_secrets_env(host)
     return (
         _app_publish_notice(host)
-        + _gitlab_head(["validate", "publish", "production"], _APP_BUILD_CHECK[1], report=True)
+        + _gitlab_head(
+            ["validate", "publish", "production"],
+            _APP_BUILD_CHECK[1],
+            report=True,
+            after=[_APP_TEST],
+        )
+        + _gitlab_app_test_job(store)
         + f"""\
 {_gitlab_docker_job(host)}# ── Publish → Staging ─────────────────────────────────────────
 publish:
@@ -1870,19 +2084,23 @@ deploy-production:
     )
 
 
-def azure_devops_app_yml(host: str, *, python_version: str = DEFAULT_CI_PYTHON) -> str:
+def azure_devops_app_yml(
+    host: str, store: str | None, *, python_version: str = DEFAULT_CI_PYTHON
+) -> str:
     """:func:`_azure_devops_app_yml` on *python_version*."""
-    return _pin_ci_python(_azure_devops_app_yml(host), python_version)
+    return _pin_ci_python(_azure_devops_app_yml(host, store), python_version)
 
 
-def _azure_devops_app_yml(host: str) -> str:
+def _azure_devops_app_yml(host: str, store: str | None) -> str:
     """A workbench project's pipeline for Azure DevOps: validate on a pull request and on a push
     to main; on main publish the underwriter app's image once and roll staging out to it, and
     roll production out by hand (``trigger: manual``), logged in with *host*'s credentials from
     the ``haute-credentials`` variable group, each a deployment under its environment, whose
     exclusive lock keeps its rollouts one at a time."""
     secrets_env = _azure_devops_secrets_env(host, indent=" " * 20)
-    head = _azure_devops_head(_AZURE_APP_BUILD_CHECK, sequential=True, report=True)
+    head = _azure_devops_head(
+        _AZURE_APP_BUILD_CHECK, sequential=True, report=True, app=True, store=store
+    )
     return (
         _app_publish_notice(host)
         + head
@@ -1961,10 +2179,24 @@ def _azure_devops_app_yml(host: str) -> str:
     )
 
 
+def ci_server_engine(environments: Sequence[StoreEnvironment]) -> str | None:
+    """The server engine a workbench project's CI tests its packaged app on: the provider of
+    production's quote store, else of staging's, while it is a server's; None for hosted
+    stores that are files."""
+    from haute._workbench_config import FILE_PROVIDERS
+
+    for name in reversed(HOSTED_ENVIRONMENTS):
+        held = next((each for each in environments if each.name == name), None)
+        if held is not None and held.provider not in FILE_PROVIDERS:
+            return held.provider
+    return None
+
+
 def workbench_ci_files(
     host: str,
     ci: str,
     *,
+    store: str | None,
     python_version: str = DEFAULT_CI_PYTHON,
 ) -> dict[str, str]:
     """The CI files a workbench ``haute init`` and ``haute ci update`` write for *ci*: path ->
@@ -1972,28 +2204,33 @@ def workbench_ci_files(
     the app's release on every change; on the default branch they publish the underwriter
     app's image, roll staging out to it and compare it with production on saved quotes, and
     roll production out by hand, logged in with *host*'s credentials; none deploys an
-    endpoint. GitLab's and Azure DevOps' jobs run *python_version*, the project's Python, and
-    GitHub's the one its ``.python-version`` names. Each file is headed by
-    :data:`CI_FILE_MARK`."""
+    endpoint. Each tests the packaged app before any host sees it, on SQLite and on *store*'s
+    server engine, none when *store* is None (``haute app test``, :func:`ci_server_engine`).
+    GitLab's and Azure DevOps' jobs run *python_version*, the project's Python, and GitHub's
+    the one its ``.python-version`` names. Each file is headed by :data:`CI_FILE_MARK`."""
     from haute._workbench_config import APP_HOSTS
 
     if host not in APP_HOSTS:
         raise ValueError(f"Unknown app host: {host}")
-    return _marked(_workbench_ci_files(host, ci, python_version=python_version))
+    return _marked(_workbench_ci_files(host, ci, store=store, python_version=python_version))
 
 
-def _workbench_ci_files(host: str, ci: str, *, python_version: str) -> dict[str, str]:
+def _workbench_ci_files(
+    host: str, ci: str, *, store: str | None, python_version: str
+) -> dict[str, str]:
     if ci == "github":
         return {
-            ".github/workflows/ci.yml": github_app_ci_yml(),
+            ".github/workflows/ci.yml": github_app_ci_yml(store),
             ".github/workflows/release.yml": github_release_yml(host),
             ".github/workflows/release-production.yml": github_release_production_yml(host),
             f"{_GITHUB_SETUP_ACTION_DIR}/action.yml": github_setup_action_yml(),
         }
     if ci == "gitlab":
-        return {".gitlab-ci.yml": gitlab_app_ci_yml(host, python_version=python_version)}
+        return {".gitlab-ci.yml": gitlab_app_ci_yml(host, store, python_version=python_version)}
     if ci == "azure-devops":
-        return {"azure-pipelines.yml": azure_devops_app_yml(host, python_version=python_version)}
+        return {
+            "azure-pipelines.yml": azure_devops_app_yml(host, store, python_version=python_version)
+        }
     if ci == "none":
         return {}
     raise ValueError(f"Unknown CI provider: {ci}")

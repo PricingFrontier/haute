@@ -1697,7 +1697,9 @@ class TestWorkbenchCiFiles:
     def _parsed(ci: str) -> dict[str, Any]:
         return {
             path: yaml.safe_load(text)
-            for path, text in workbench_ci_files("azure-container-apps", ci).items()
+            for path, text in workbench_ci_files(
+                "azure-container-apps", ci, store="sqlserver"
+            ).items()
         }
 
     _SECRETS = frozenset(ci_secret_names("azure-container-apps"))
@@ -1712,10 +1714,24 @@ class TestWorkbenchCiFiles:
         ]
         checks = files[".github/workflows/ci.yml"]
         steps = checks["jobs"]["pipeline-validate"]["steps"]
-        assert [step.get("run") for step in steps[-3:-1]] == [
+        assert [step.get("run") for step in steps[-4:-1]] == [
             "uv run haute lint",
             "uv run haute app build",
+            "uv run haute app test",
         ]
+        # The packaged app tested again on the store's server engine, in a container of the
+        # job's own (WB-08).
+        server = checks["jobs"]["app-test-sqlserver"]
+        assert server["services"]["store"]["image"] == "mcr.microsoft.com/mssql/server:2022-latest"
+        assert [step.get("run") for step in server["steps"][-2:]] == [
+            "uv run haute app build",
+            "uv run haute app test",
+        ]
+        assert server["steps"][-1]["env"] == {
+            "HAUTE_APP_TEST_URL": "mssql+mssqlpython://localhost:1433/master?TrustServerCertificate=yes",
+            "HAUTE_APP_TEST_USER": "sa",
+            "HAUTE_APP_TEST_PASSWORD": "Haute-app-test-1!",
+        }
         # The test quotes' report is kept whether the build passes or fails.
         assert steps[-1] == {
             "name": "Upload test quotes report",
@@ -1769,7 +1785,15 @@ class TestWorkbenchCiFiles:
     def test_gitlab_publishes_and_stages_on_main_and_promotes_by_hand(self) -> None:
         pipeline = self._parsed("gitlab")[".gitlab-ci.yml"]
         assert pipeline["stages"] == ["validate", "publish", "production"]
-        assert pipeline["lint"]["script"][-1] == "uv run haute app build"
+        assert pipeline["lint"]["script"][-2:] == [
+            "uv run haute app build",
+            "uv run haute app test",
+        ]
+        server = pipeline["app-test-sqlserver"]
+        assert server["stage"] == "validate"
+        assert server["services"][0]["alias"] == "store"
+        assert server["variables"]["HAUTE_APP_TEST_URL"].startswith("mssql+mssqlpython://store:")
+        assert server["script"][-2:] == ["uv run haute app build", "uv run haute app test"]
         assert pipeline["lint"]["artifacts"] == {
             "when": "always",
             "paths": ["test_quotes_report.md"],
@@ -1799,8 +1823,16 @@ class TestWorkbenchCiFiles:
         assert pipeline["lockBehavior"] == "sequential"
         stages = {stage["stage"]: stage for stage in pipeline["stages"]}
         assert list(stages) == ["Validate", "Publish", "DeployProduction"]
-        validate = stages["Validate"]["jobs"][-1]["steps"]
-        assert validate[-2]["script"] == "uv run haute app build"
+        jobs = {job["job"]: job for job in stages["Validate"]["jobs"]}
+        validate = jobs["pipeline_validate"]["steps"]
+        assert [step["script"] for step in validate[-3:-1]] == [
+            "uv run haute app build",
+            "uv run haute app test",
+        ]
+        server = jobs["app_test_sqlserver"]
+        assert server["services"] == {"store": "store"}
+        assert pipeline["resources"]["containers"][0]["image"].startswith("mcr.microsoft.com/mssql")
+        assert server["steps"][-1]["script"] == "uv run haute app test"
         assert validate[-1] == {
             "publish": "test_quotes_report.md",
             "artifact": "test-quotes-report",
@@ -1870,7 +1902,7 @@ class TestWorkbenchCiFiles:
 
     @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
     def test_no_step_deploys_an_endpoint(self, ci: str) -> None:
-        text = "".join(workbench_ci_files("azure-container-apps", ci).values())
+        text = "".join(workbench_ci_files("azure-container-apps", ci, store="sqlserver").values())
         for endpoint in ("haute deploy", "haute smoke", "haute impact", "--endpoint-suffix"):
             assert endpoint not in text
 
@@ -1921,7 +1953,9 @@ class TestCiFiles:
 
         for files in (
             ci_files("databricks", ci, python_version="3.13"),
-            workbench_ci_files("azure-container-apps", ci, python_version="3.13"),
+            workbench_ci_files(
+                "azure-container-apps", ci, store="sqlserver", python_version="3.13"
+            ),
         ):
             assert files and set(files) <= set(GENERATED_CI_FILES)
             for content in files.values():
@@ -1931,13 +1965,13 @@ class TestCiFiles:
 
     def test_none_has_no_files_and_an_unknown_provider_is_refused(self) -> None:
         assert ci_files("databricks", "none") == {}
-        assert workbench_ci_files("azure-container-apps", "none") == {}
+        assert workbench_ci_files("azure-container-apps", "none", store="sqlserver") == {}
         with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
             ci_files("databricks", "jenkins")
         with pytest.raises(ValueError, match="Unknown CI provider: jenkins"):
-            workbench_ci_files("azure-container-apps", "jenkins")
+            workbench_ci_files("azure-container-apps", "jenkins", store="sqlserver")
         with pytest.raises(ValueError, match="Unknown app host: databricks"):
-            workbench_ci_files("databricks", "github")
+            workbench_ci_files("databricks", "github", store="sqlserver")
 
     @pytest.mark.parametrize("ci", ["github", "gitlab", "azure-devops"])
     def test_the_staging_steps_pass_the_projects_staging_suffix(self, ci: str) -> None:
@@ -2046,7 +2080,7 @@ def _automated_github_files(target: str = "databricks") -> dict[str, str]:
 
 
 def _workbench_github_files() -> dict[str, str]:
-    return workbench_ci_files("azure-container-apps", "github")
+    return workbench_ci_files("azure-container-apps", "github", store="sqlserver")
 
 
 def _every_github_set() -> list[dict[str, str]]:
@@ -2121,7 +2155,7 @@ class TestGithubWorkflowsSayEachThingOnce:
             *(
                 (
                     lambda target=target: _automated_github_files(target),
-                    "uv run haute deploy --dry-run",
+                    ["uv run haute deploy --dry-run"],
                     ".github/workflows/deploy-staging.yml",
                     "deploy-staging",
                 )
@@ -2129,22 +2163,27 @@ class TestGithubWorkflowsSayEachThingOnce:
             ),
             (
                 _workbench_github_files,
-                "uv run haute app build",
+                ["uv run haute app build", "uv run haute app test"],
                 ".github/workflows/release.yml",
                 "publish",
             ),
         ],
     )
     def test_publishing_needs_every_check(
-        self, files: Any, check: str, caller: str, publisher: str
+        self, files: Any, check: list[str], caller: str, publisher: str
     ) -> None:
         generated = files()
         ci = yaml.safe_load(generated[CI_WORKFLOW])
         # PyYAML reads the bare key "on" as True.
         assert set(ci[True]) == {"pull_request", "workflow_call"}
         assert ci["permissions"] == {"contents": "read"}
+        checked = {"lint", "typecheck", "test", "pipeline-validate"}
         runs = [
-            step["run"] for job in ci["jobs"].values() for step in job["steps"] if "run" in step
+            step["run"]
+            for name, job in ci["jobs"].items()
+            if name in checked
+            for step in job["steps"]
+            if "run" in step
         ]
         assert runs == [
             "uv run ruff check .",
@@ -2152,7 +2191,7 @@ class TestGithubWorkflowsSayEachThingOnce:
             "uv run mypy .",
             "uv run pytest -v",
             "uv run haute lint",
-            check,
+            *check,
         ]
 
         jobs = yaml.safe_load(generated[caller])["jobs"]
@@ -2204,3 +2243,23 @@ class TestGithubWorkflowsSayEachThingOnce:
                 assert job.get("env") == (expected if name in names else None), (path, name)
                 assert not any("env" in step for step in job.get("steps", [])), (path, name)
         assert "secrets." not in files[CI_WORKFLOW]
+
+
+def test_the_packaged_app_is_tested_on_productions_server_engine_or_on_sqlite_alone() -> None:
+    from haute._scaffold import ci_server_engine, workbench_ci_files
+    from haute._workbench_config import StoreEnvironment
+
+    assert (
+        ci_server_engine(
+            [StoreEnvironment("staging", "postgresql"), StoreEnvironment("prod", "sqlserver")]
+        )
+        == "sqlserver"
+    )
+    assert ci_server_engine([StoreEnvironment("staging", "postgresql")]) == "postgresql"
+    assert ci_server_engine([StoreEnvironment("dev", "sqlserver")]) is None
+    assert ci_server_engine([StoreEnvironment("prod", "sqlite")]) is None
+
+    for ci in ("github", "gitlab", "azure-devops"):
+        text = "".join(workbench_ci_files("azure-container-apps", ci, store=None).values())
+        assert "uv run haute app test" in text, ci
+        assert "HAUTE_APP_TEST_URL" not in text, ci

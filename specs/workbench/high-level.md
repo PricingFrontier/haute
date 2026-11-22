@@ -167,7 +167,14 @@ Out of scope:
   type-checks and tests the project, lints the pipeline and runs `haute app build`, which
   resolves, validates and bundles the pipeline as a deploy does, with the form, its test
   quotes priced and compared (Test quotes, below) and their report kept as the job's
-  artifact whether it passes or fails. On that push, and on a manual run of the default branch alone, the publish job,
+  artifact whether it passes or fails, then `haute app test`, which tests the packaged app
+  on SQLite (Testing the packaged app, below); and a second job builds the release again
+  and tests it on the server engine production's store runs, else staging's (none when
+  both are files), in a throwaway service container of that engine, given its login in
+  `HAUTE_APP_TEST_URL`, `HAUTE_APP_TEST_USER` and `HAUTE_APP_TEST_PASSWORD`, the system
+  libraries SQL Server's driver loads installed first. No step changes a hosted database's
+  tables or a saved quote, and no migration is rehearsed: its SQL is the analysts' to
+  write and run. On that push, and on a manual run of the default branch alone, the publish job,
   given the host's credentials, logs in to the
   registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
   and runs `haute app build --push`, which builds the release's image once, pushes it and
@@ -184,8 +191,25 @@ Out of scope:
   the publish job, forty-five minutes for production), and the jobs that roll one environment out never
   run at once (GitHub's concurrency group, GitLab's resource group, Azure DevOps' one
   pipeline run at a time on the environment's exclusive lock, which IT sets on it).
-  The packaged app's tests are still to come
+  An export template's change starting the release waits on templates
   ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
+- **Testing the packaged app.** `haute app test [RELEASE]` (`.haute/app/release` unless
+  another is named) serves the release `haute app build` wrote, through the app it ships
+  as its `app.py` serves it, on loopback, signed in as the run, on a quote store made for
+  the run alone: the tables of the release's form made by the SQL Haute writes for that
+  engine, on a SQLite file in a folder of the run's own, or, with `--server-url`
+  (`HAUTE_APP_TEST_URL`), on a database the run makes on that server (its `master` or
+  `postgres` database, signed in with `HAUTE_APP_TEST_USER` and `HAUTE_APP_TEST_PASSWORD`,
+  a login that may make and drop databases) and drops after. Its store must open as a
+  hosted app's does (the store's check). Then, through the app's own routes, each of the
+  project's test quotes (`[test_quotes] dir`) is put on the sheets as opening it in
+  Preview puts it there, made a quote, priced under the identity the app gave it, saved
+  priced, opened again and checked to hold what was saved, then marked final and
+  exported by each Export to an Excel workbook of cells the form holds, the answer a
+  workbook. Each step is printed; one that fails, a quote that cannot be put on the sheets
+  among them, fails the command after them all, and a quote that cannot be marked final
+  is said and left unexported. A project with no test quotes opens its store and saves
+  nothing. Nothing of a hosted environment is reached.
 - **Rolling the hosted app out.** `haute app rollout ENVIRONMENT` rolls the Container App
   that `[workbench.app.<ENVIRONMENT>]` names to one image and checks the release there, for
   the workbench's CI. It creates nothing and changes no database's tables. Before it changes

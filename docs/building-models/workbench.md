@@ -859,6 +859,14 @@ builder on screen. With a quote store it is where they manage their quotes too.
   container_app = "motor"
   ```
 
+  Before any app is rolled out, every pull request and every merge tests the packaged app
+  (`haute app test`): it serves the release on a store made for the run alone, a SQLite
+  file and then a throwaway database of your production store's engine, and takes each of
+  your test quotes through it, making a quote, pricing, saving and reopening it, marking it
+  final and exporting it by each Export to Excel laid out as **Cells**. A step that fails
+  fails the check. You can run it yourself after `haute app build`; it changes no
+  environment's database.
+
   A rollout stops the release the app runs before it starts the new one, so two releases
   never take quotes at once, then checks the app: it answers, it signs no one in but through
   Azure, and its quotes are open. A release that fails is replaced by the one before it. A
