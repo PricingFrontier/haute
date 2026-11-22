@@ -12,7 +12,10 @@ import pytest
 
 from haute._git import (
     commit_save,
+    working_branches,
+    working_name,
 )
+from haute.schemas import GitBranchSeen
 
 WORKING = "pricing-dev"
 
@@ -32,6 +35,13 @@ def _parents(repo: Path, ref: str) -> list[str]:
 
 def _tree(repo: Path, ref: str) -> str:
     return _git(repo, "rev-parse", f"{ref}^{{tree}}")
+
+
+def seen_now(repo: Path, branch: str) -> GitBranchSeen:
+    """*branch* as the branch manager lists it now: what a delete's confirmation names."""
+    name = working_name(branch) or branch
+    listed = next(b for b in working_branches(repo, cwd=repo).branches if b.name == name)
+    return GitBranchSeen(tip=listed.tip, ledger_tip=listed.ledger_tip, is_current=listed.is_current)
 
 
 def _write_and_save(

@@ -66,7 +66,7 @@ describe("useGitStore", () => {
       peekBranch: "pricing/nick/spur", branchesExpandNonce: 3, historyNonce: 4, commitNonce: 5,
       comparison: { sha: "a", label: "A" }, restoreTarget: { sha: "c", label: "C" },
       branches: [{
-        name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+        name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null,
         has_uncommitted_changes: false,
       }],
     })
@@ -76,7 +76,7 @@ describe("useGitStore", () => {
     // In-place corruption of the published array must not survive a reset:
     // the baseline hands out a fresh array per reset, never a shared one.
     useGitStore.getState().branches.push({
-      name: "corrupt", is_current: false, is_archived: false, has_unmerged_saves: false,
+      name: "corrupt", is_current: false, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null,
       has_uncommitted_changes: false,
     })
     useGitStore.getState().resetForTests()
@@ -208,7 +208,7 @@ describe("useGitStore", () => {
 
   it("de-duplicates concurrent branch loads and publishes the shared listing", async () => {
     const branches: GitManagedBranch[] = [{
-      name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+      name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null,
       has_uncommitted_changes: false,
     }]
     let resolve!: (value: { current: string; branches: GitManagedBranch[]; deleted: [] }) => void
@@ -223,11 +223,11 @@ describe("useGitStore", () => {
 
   it("a branch request settling after a single-flight reset neither publishes state nor clobbers the newer request", async () => {
     const staleBranches: GitManagedBranch[] = [{
-      name: "stale", is_current: false, is_archived: false, has_unmerged_saves: false,
+      name: "stale", is_current: false, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null,
       has_uncommitted_changes: false,
     }]
     const freshBranches: GitManagedBranch[] = [{
-      name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+      name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false, tip: "a".repeat(40), ledger_tip: null,
       has_uncommitted_changes: false,
     }]
     let resolveStale!: (value: { current: string; branches: GitManagedBranch[]; deleted: [] }) => void

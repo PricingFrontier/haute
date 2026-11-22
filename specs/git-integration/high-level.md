@@ -249,6 +249,10 @@ it again and deleting it again keeps both.
   transaction too.
 - **Restoring:** the branch manager lists the 20 most recent deletions and restores any of
   them exactly, under another name when its own is taken.
+- **What was confirmed:** a delete names the branch as its confirmation showed it, both tips
+  and whether it was the current one, and is refused when the branch has since moved or
+  become or stopped being the current one, so a confirmation shown before another page
+  switched onto the branch never deletes the branch the project is on.
 - **The cap:** when it rolls over, the oldest entry's pins go with its tombstone, since
   nothing could reach them any more.
 - **A pair broken before that:** delete and archive once moved the two refs one at a time,

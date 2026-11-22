@@ -39,8 +39,16 @@ const branch = (over: Partial<Record<string, unknown>> = {}) => ({
   is_archived: false,
   has_unmerged_saves: false,
   has_uncommitted_changes: false,
+  tip: "a".repeat(40),
+  ledger_tip: "b".repeat(40),
   ...over,
 })
+
+// What a delete's confirmation names back: the branch as the listing showed it.
+const seenAs = (over: Partial<Record<string, unknown>> = {}) => {
+  const b = branch(over)
+  return { tip: b.tip, ledger_tip: b.ledger_tip, is_current: b.is_current }
+}
 
 const listing = {
   current: "demo",
@@ -369,7 +377,7 @@ describe("BranchManager", () => {
     )
     expect(dialog).not.toHaveTextContent(/permanently|lost/i)
     fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
-    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", true))
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", seenAs(), true))
   })
 
   it.each([
@@ -449,6 +457,21 @@ describe("BranchManager", () => {
 
     await waitFor(() => expect(screen.getByTestId("branch-manager-restore-as-input")).toHaveValue("gone-restored"))
     expect(screen.getByTestId("branch-manager-error")).toHaveTextContent("Restore it under another name")
+  })
+
+  it("a delete refused because the branch moved closes its confirmation and lists the branch again", async () => {
+    const moved = "'experiment' changed since you chose to delete it: the project is on it now. Look again, then retry."
+    mockDelete.mockRejectedValue(new Error(moved))
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getAllByTestId("branch-manager-delete").length).toBeGreaterThan(1))
+    fireEvent.click(screen.getAllByTestId("branch-manager-delete")[1])
+    const listedBefore = mockGetWorkingBranches.mock.calls.length
+    fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
+
+    await waitFor(() => expect(screen.getByTestId("branch-manager-error")).toHaveTextContent(moved))
+    expect(screen.queryByTestId("branch-manager-confirm")).not.toBeInTheDocument()
+    await waitFor(() => expect(mockGetWorkingBranches.mock.calls.length).toBeGreaterThan(listedBefore))
+    expect(useGraphStore.getState().undoStack).toHaveLength(0)
   })
 
   it("records the delete's trash entry for undo", async () => {
@@ -670,7 +693,7 @@ describe("BranchManager", () => {
       await waitFor(() => expect(screen.getByTestId("branch-manager-confirm")).toBeInTheDocument())
       expect(mockDelete).not.toHaveBeenCalled()
       fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
-      await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", true))
+      await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", seenAs(), true))
       await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
       expect(useGraphStore.getState().undoStack[0]).toMatchObject({
         kind: "vc",
@@ -764,7 +787,7 @@ describe("BranchManager reload-on-state-change navigation", () => {
       expect(screen.getByTestId("branch-manager-confirm")).toHaveTextContent("branch chooser"),
     )
     fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
-    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("demo", true))
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("demo", seenAs({ is_current: true }), true))
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled())
   })
 
@@ -779,7 +802,7 @@ describe("BranchManager reload-on-state-change navigation", () => {
     expect(mockDelete).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTestId("git-navigation-discard"))
-    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("demo", true))
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("demo", seenAs({ is_current: true }), true))
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled())
   })
 

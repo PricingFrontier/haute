@@ -34,6 +34,7 @@ from haute._git_read_models import _broken_pair, _has_unmerged_saves, _normalize
 from haute._logging import get_logger
 from haute.schemas import (
     GitArchiveResponse,
+    GitBranchSeen,
     GitDeleteBranchResponse,
     GitRepairPairResponse,
     GitRestoreResponse,
@@ -148,6 +149,20 @@ def _moved_pair(
     return updates
 
 
+def _change_since_seen(
+    seen: GitBranchSeen, tip: str, ledger_tip: str | None, is_current: bool
+) -> str | None:
+    """How a branch differs from what its delete's confirmation showed, in words; None
+    when it is as shown."""
+    if is_current != seen.is_current:
+        return "the project is on it now" if is_current else "the project is no longer on it"
+    if tip != seen.tip:
+        return "its milestones changed"
+    if ledger_tip != seen.ledger_tip:
+        return "its saves changed"
+    return None
+
+
 def _new_trash_id(working: str, project_root: Path, cwd: Path | None) -> str:
     """A trash entry id for deleting *working* now: ``<branch>@<UTC stamp>``, with a
     counter when the same name is deleted twice within a second."""
@@ -166,6 +181,8 @@ def _new_trash_id(working: str, project_root: Path, cwd: Path | None) -> str:
 def delete_working_pair(
     branch: str,
     project_root: Path,
+    *,
+    seen: GitBranchSeen,
     confirm: bool = False,
     cwd: Path | None = None,
 ) -> GitDeleteBranchResponse:
@@ -179,7 +196,11 @@ def delete_working_pair(
     lands in ``.haute/trash.json``, so ``undelete_working_pair`` can rebuild the
     pair exactly and a name deleted twice keeps both. The oldest entries beyond
     the cap then go, pins with them. All of it is one recorded operation, whose
-    commit point is the transaction, or the checkout that discarded changes."""
+    commit point is the transaction, or the checkout that discarded changes.
+
+    *seen* is the branch as the delete's confirmation described it: a branch whose tips
+    have moved, or that has become or stopped being the current one, since then is
+    refused, so a confirmation never deletes a branch other than the one it showed."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     working = _normalize_to_working(branch)
@@ -191,6 +212,15 @@ def delete_working_pair(
 
     ledger = ledger_name(working)
     ledger_tip = _rev_parse(ledger, cwd=cwd)
+    from haute._git_state import read_working_branch
+
+    change = _change_since_seen(
+        seen, working_tip, ledger_tip, read_working_branch(project_root) == working
+    )
+    if change is not None:
+        raise GitDomainError(
+            f"'{working}' changed since you chose to delete it: {change}. Look again, then retry."
+        )
 
     if not confirm and _has_unmerged_saves(working_tip, ledger_tip, cwd=cwd):
         raise GitGuardrailError(

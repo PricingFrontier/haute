@@ -248,14 +248,25 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
     else archive()
   }
 
-  const doDelete = (b: GitManagedBranch) =>
-    run(b.name, "delete", gitDeleteBranch(b.name, true), (res, here) => { // dialog already confirmed the loss
+  // The delete names the branch as its confirmation showed it (*b*, taken when the
+  // dialog opened): one another page has switched onto or saved to since is refused,
+  // and the manager then lists it as it now is.
+  const doDelete = (b: GitManagedBranch) => {
+    const seen = { tip: b.tip, ledger_tip: b.ledger_tip, is_current: b.is_current }
+    return run(b.name, "delete", gitDeleteBranch(b.name, seen, true), (res, here) => { // dialog already confirmed the loss
       here.apply(() => setConfirmDelete(null))
       addToast("success", `Deleted ${b.name}`)
       // Deletes are trash-preserving server-side, so undo (undelete) is an
       // instant ref restore. Current-branch deletes keep the reload flow.
-      if (!b.is_current) recordDelete(b.name, res.trash_id)
-    }, { reloadWhen: () => b.is_current })
+      if (!b.is_current) recordDelete(b.name, res.trash_id, seen)
+    }, {
+      reloadWhen: () => b.is_current,
+      refused: (_, here) => {
+        here.apply(() => setConfirmDelete(null))
+        useGitStore.getState().notifyHistoryChanged()
+      },
+    })
+  }
 
   const restore = (b: GitManagedBranch) =>
     run(b.name, "restore", restoreBranch(b.name), (res) => {

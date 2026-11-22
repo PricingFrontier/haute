@@ -2448,15 +2448,24 @@ export function gitArchiveBranch(
   return post<unknown>("/api/git/archive", { branch }, options).then(async (data) => expectGeneratedContract("GitArchiveResponse", (await gitValidators()).validateGitArchiveResponse, data))
 }
 
+/** A branch as a delete's confirmation showed it: the server refuses the delete when the
+ *  branch has moved, or become or stopped being the current one, since. */
+export interface GitBranchSeen {
+  tip: string
+  ledger_tip: string | null
+  is_current: boolean
+}
+
 export function gitDeleteBranch(
   branch: string,
+  seen: GitBranchSeen,
   confirm = false,
   options?: { signal?: AbortSignal },
 ): Promise<GitDeleteBranchResponse> {
   return request<unknown>("/api/git/branches", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ branch, confirm }),
+    body: JSON.stringify({ branch, confirm, seen }),
     ...options,
   }).then(async (data) => expectGeneratedContract("GitDeleteBranchResponse", (await gitValidators()).validateGitDeleteBranchResponse, data))
 }

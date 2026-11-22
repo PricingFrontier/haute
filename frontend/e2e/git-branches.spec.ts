@@ -4,8 +4,10 @@ import {
   branchExists,
   branchRow,
   canvasNode,
+  checkedOutBranch,
   createBranchInManager,
   expectOnBranch,
+  ledgerOf,
   openGitPanel,
   pipelineOnDisk,
   pipelineSavedOn,
@@ -224,6 +226,36 @@ test.describe("deleting and restoring branches", () => {
     await expect(toast(page, "Restored reused-old")).toBeVisible()
     await expect(branchRow(page, "reused-old")).toBeVisible()
     await expect(branchRow(page, "reused")).toBeVisible()
+  })
+
+  test("a delete confirmed before another page switched onto the branch is refused", async ({
+    context,
+  }) => {
+    // Page one asks to delete scratch, a branch it shows as not the current one; page two
+    // then switches the project onto it. Page one's Delete must not take the branch the
+    // project is now on.
+    const one = await context.newPage()
+    const two = await context.newPage()
+    await one.goto("/")
+    await openGitPanel(one)
+    await createBranchInManager(one, "scratch")
+    await branchRow(one, "scratch").getByTestId("branch-manager-delete").click()
+    await expect(one.getByTestId("branch-manager-confirm")).toContainText(
+      "Delete scratch? It goes to Deleted and can be restored from there.",
+    )
+
+    await two.goto("/")
+    await openGitPanel(two)
+    await switchInManager(two, "scratch")
+    await expectOnBranch(two, "scratch")
+
+    await one.getByTestId("branch-manager-confirm-delete").click()
+    await expect(one.getByTestId("branch-manager-error")).toContainText(
+      "'scratch' changed since you chose to delete it: the project is on it now. Look again, then retry.",
+    )
+    await expect(one.getByTestId("branch-manager-confirm")).toHaveCount(0)
+    expect(branchExists("scratch")).toBe(true)
+    expect(checkedOutBranch()).toBe(ledgerOf("scratch"))
   })
 
   test("toolbar Undo brings a deleted branch back", async ({ page }) => {

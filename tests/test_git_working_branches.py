@@ -44,6 +44,7 @@ from haute._git import (
     working_branches,
     working_milestones,
 )
+from haute.schemas import GitBranchSeen
 from tests import _git_engine_helpers
 from tests._git_engine_helpers import (
     LEDGER,
@@ -52,6 +53,7 @@ from tests._git_engine_helpers import (
     _parents,
     _tree,
     _write_and_save,
+    seen_now,
 )
 from tests._git_helpers import install_hook
 
@@ -960,11 +962,13 @@ class TestBranchManager:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})  # unmerged save
         with pytest.raises(GitGuardrailError, match="loses them"):
-            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+            delete_working_pair(
+                WORKING, repo, seen=seen_now(repo, WORKING), confirm=False, cwd=repo
+            )
         # branch still there after the refusal
         assert self._branch_exists(repo, WORKING)
         working_tip = _git(repo, "rev-parse", WORKING)
-        delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+        delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=True, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
         assert self._current_head(repo) == "HEAD"
@@ -974,13 +978,59 @@ class TestBranchManager:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         commit_milestone("m", repo, cwd=repo)  # nothing unmerged now
-        delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+        delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=False, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
 
+    @pytest.mark.parametrize(
+        ("moved", "change"),
+        [
+            ("switched", "the project is on it now"),
+            ("saved", "its saves changed"),
+            ("committed", "its milestones changed"),
+        ],
+    )
+    def test_delete_refuses_a_branch_that_moved_since_its_confirmation(
+        self, repo: Path, moved: str, change: str
+    ) -> None:
+        """Another page switched the project onto the branch, or saved to it, while this
+        page's confirmation showed it as it was: the delete names the change, and the
+        branch, HEAD and the recorded working branch stay as they are."""
+        from haute._git_state import read_working_branch
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        create_working_branch("scratch", repo, cwd=repo)
+        seen = seen_now(repo, "scratch")
+        set_working_branch("scratch", repo, cwd=repo)
+        if moved != "switched":
+            _write_and_save(repo, "scratch", {"rating.py": "# on scratch\n"})
+            if moved == "committed":
+                commit_milestone("scratch work", repo, cwd=repo)
+            set_working_branch(WORKING, repo, cwd=repo)
+        tips = {ref: _git(repo, "rev-parse", ref) for ref in ("scratch", "scratch-save", "HEAD")}
+        recorded = read_working_branch(repo)
+
+        with pytest.raises(GitDomainError) as refused:
+            delete_working_pair("scratch", repo, seen=seen, confirm=True, cwd=repo)
+
+        assert str(refused.value) == (
+            f"'scratch' changed since you chose to delete it: {change}. Look again, then retry."
+        )
+        assert {ref: _git(repo, "rev-parse", ref) for ref in tips} == tips
+        assert read_working_branch(repo) == recorded
+
+    def test_the_branch_manager_lists_what_a_delete_names(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        listed = next(b for b in working_branches(repo, cwd=repo).branches if b.name == WORKING)
+        assert listed.tip == _git(repo, "rev-parse", WORKING)
+        assert listed.ledger_tip == _git(repo, "rev-parse", LEDGER)
+
     def test_delete_refuses_protected(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
-            delete_working_pair("main", repo, cwd=repo)
+            delete_working_pair(
+                "main", repo, seen=GitBranchSeen(tip="0" * 40, is_current=False), cwd=repo
+            )
 
     def test_unconfirmed_delete_of_the_current_branch_keeps_a_dirty_tree(self, repo: Path) -> None:
         """Only a confirmed delete may discard edits: confirm guarded the unmerged saves
@@ -991,7 +1041,9 @@ class TestBranchManager:
         (repo / "rating.py").write_text("# uncommitted edit\n")
 
         with pytest.raises(GitDomainError) as refused:
-            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+            delete_working_pair(
+                WORKING, repo, seen=seen_now(repo, WORKING), confirm=False, cwd=repo
+            )
 
         assert str(refused.value) == (
             "You have unsaved changes on this branch. Save or discard them before deleting it."
@@ -1010,7 +1062,7 @@ class TestBranchManager:
         commit_milestone("m", repo, cwd=repo)
         milestone = _git(repo, "rev-parse", WORKING)
         (repo / "rating.py").write_text("# uncommitted edit\n")  # dirty tree
-        delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+        delete_working_pair(WORKING, repo, seen=seen_now(repo, WORKING), confirm=True, cwd=repo)
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
         # HEAD detached at the last milestone with the edit discarded; state
@@ -1105,7 +1157,9 @@ class TestBranchManager:
         """The branch manager opens its name box when the refusal says "another name"."""
         set_working_branch(WORKING, repo, cwd=repo)
         create_working_branch("grp/x", repo, cwd=repo)
-        entry = delete_working_pair("grp/x", repo, confirm=True, cwd=repo).trash_id
+        entry = delete_working_pair(
+            "grp/x", repo, seen=seen_now(repo, "grp/x"), confirm=True, cwd=repo
+        ).trash_id
         _git(repo, "branch", "grp", "main")
         with pytest.raises(GitDomainError, match="the branch 'grp' exists.*another name"):
             undelete_working_pair(entry, repo, as_name=as_name, cwd=repo)

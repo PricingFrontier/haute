@@ -403,7 +403,9 @@ def git_delete_branch(
     """Delete a working branch and its ledger together; refuses on unmerged
     ledger saves unless ``confirm`` (§8, pair-aware)."""
     with _rewriting_tree(background):  # M4: deleting the active pair switches away
-        response = delete_working_pair(body.branch, current_project().root, confirm=body.confirm)
+        response = delete_working_pair(
+            body.branch, current_project().root, seen=body.seen, confirm=body.confirm
+        )
     return response
 
 

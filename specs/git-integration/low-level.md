@@ -279,9 +279,9 @@ validation envelope. The `/api/git/storage/*` endpoints hosted in this router an
 | `GET /api/git/milestones/{sha}/saves` | Commit SHA path | `GitLedgerSavesResponse {saves:[GitLedgerSave...]}` |
 | `GET /api/git/pending-saves` | Query `branch=null` | `GitLedgerSavesResponse` |
 | `POST /api/git/archive` | `GitArchiveRequest {branch}` | `GitArchiveResponse {archived_as}` |
-| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false}` | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
+| `DELETE /api/git/branches` | `GitDeleteBranchRequest {branch,confirm=false,seen}`: *seen* is `GitBranchSeen {tip,ledger_tip,is_current}`, the branch as the confirmation showed it | `GitDeleteBranchResponse {status="deleted",branch,trash_id}` |
 | `POST /api/git/undelete` | `GitUndeleteRequest {id,as_name=null}`: a trash entry, rebuilt under its branch name or *as_name* | `GitUndeleteResponse {status="restored",branch}`, the name it was rebuilt under |
-| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
+| `GET /api/git/working-branches` | None | `GitWorkingBranchesResponse {current?,branches:[GitManagedBranch {name,is_current,is_archived,has_unmerged_saves,has_uncommitted_changes,tip,ledger_tip}...],deleted:[GitDeletedBranch {id,branch,deleted_at,was_archived}...]}`, `deleted` newest first |
 | `POST /api/git/restore` | `GitRestoreRequest {branch}` | `GitRestoreResponse {restored_as}` |
 | `POST /api/git/repair-pair` | `GitRepairPairRequest {ledger}`: a ledger readiness lists in `broken_pairs` | `GitRepairPairResponse {working,ledger}`, the whole pair's names; a ledger that is no longer part of a broken pair is 400, nothing changed |
 | `POST /api/git/working-branches` | `GitCreateWorkingBranchRequest {name,at=null,move=false,switch=false}` | `GitCreateWorkingBranchResponse {working_branch,moved,switched,last_save_sha?}`; `move` and `switch` together are 400 |
@@ -925,7 +925,14 @@ The `archive` operation's steps are that detach when the pair is active, the rec
 branch cleared when it is this pair, and the transaction. Un-archive (`restore_working_pair`)
 is the same transaction the other way, the `unarchive` operation's one step.
 
-**Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete refuses on
+**Delete / trash (`delete_working_pair` / `undelete_working_pair`).** Delete takes *seen*,
+the branch as its confirmation showed it (`GitBranchSeen`: the branch's and its ledger's
+tips as the listing gave them, and whether it was the recorded working branch), and refuses,
+under the repository lock and before anything else it checks, a branch that is no longer so
+(`_change_since_seen`): "'<branch>' changed since you chose to delete it: <the project is on
+it now | the project is no longer on it | its milestones changed | its saves changed>. Look
+again, then retry." *seen* is required, so no caller deletes a branch it has not described.
+Delete refuses on
 unmerged ledger saves, and on the active pair's tracked changes, unless `confirm=True`. It
 takes a fresh entry id, then the `delete` operation:
 1. detaches HEAD at the working tip when the pair is active, forced when confirmed, and
@@ -1157,7 +1164,9 @@ process failures, and precise ref-movement races deterministic.
   again and deleted again keeping both entries, undelete under another name, the cap
   dropping the oldest entry's pins, a legacy bare-name tombstone restored, the active pair
   detached at its last milestone, an unconfirmed delete of it keeping a dirty tree),
-  request-path no-fetch
+  a delete refused when the branch was switched onto, saved to or committed since its
+  confirmation, with the branch, HEAD and the recorded working branch unchanged, the
+  listing giving the tips a delete names, request-path no-fetch
   guarantees,
   the tree fence (`TestTreeFence`: a switch whose checkout exits 0 with a file left stale
   put back and refused by name, a file held too tightly to read leaving the clone

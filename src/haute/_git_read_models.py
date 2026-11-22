@@ -330,6 +330,8 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                     tips.get(b.name), tips.get(ledger_name(b.name)), cwd=cwd
                 ),
                 has_uncommitted_changes=is_current and tree_dirty,
+                tip=tips[b.name],
+                ledger_tip=tips.get(ledger_name(b.name)),
             )
         )
     from haute._git_state import read_trash, trash_entry_branch

@@ -48,6 +48,7 @@ from haute._project_storage import (
 )
 from haute.hosted import DATABRICKS_APP_ENV_VARS
 from haute.schemas import GitPushRejection, GitRemoteLeg
+from tests._git_engine_helpers import seen_now
 
 WORKING = "pricing-dev"
 ALT = "pricing-alt"
@@ -2210,7 +2211,9 @@ class TestUcContainerDeathSurvival:
         assert binding is not None
         assert binding.branch == ALT
 
-        _git.delete_working_pair(ALT, project, confirm=True, cwd=project)
+        _git.delete_working_pair(
+            ALT, project, seen=seen_now(project, ALT), confirm=True, cwd=project
+        )
         from haute._git_state import read_working_branch
 
         assert read_working_branch(project) is None

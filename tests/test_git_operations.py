@@ -50,11 +50,13 @@ from haute._git_state import (
     record_trash,
     write_working_branch,
 )
-from tests._git_engine_helpers import LEDGER, WORKING, _git, _write_and_save
+from tests._git_engine_helpers import LEDGER, WORKING, _git, _write_and_save, seen_now
 from tests._git_helpers import install_hook
 from tests._source_files import source_files
 
 ROOT = "<root>"
+# A delete's confirmation: the branch (the call's first argument) as listed just before it.
+SEEN = "<seen>"
 SRC = Path(__file__).resolve().parents[1] / "src" / "haute"
 
 
@@ -81,6 +83,8 @@ class _Call:
 
     def run(self, root: Path) -> object:
         def at(value: object) -> object:
+            if value == SEEN:
+                return seen_now(root, str(self.args[0]))
             return root if value == ROOT else value
 
         action = getattr(haute_git, self.fn)
@@ -281,14 +285,16 @@ def _arrange_delete(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
     _milestone(root)
-    return root, _Call("delete_working_pair", (WORKING, ROOT), {"cwd": ROOT})
+    return root, _Call("delete_working_pair", (WORKING, ROOT), {"seen": SEEN, "cwd": ROOT})
 
 
 def _arrange_delete_confirmed_dirty(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
     _write(root, "keep.txt", "edited, not saved\n")
-    return root, _Call("delete_working_pair", (WORKING, ROOT), {"confirm": True, "cwd": ROOT})
+    return root, _Call(
+        "delete_working_pair", (WORKING, ROOT), {"seen": SEEN, "confirm": True, "cwd": ROOT}
+    )
 
 
 def _arrange_delete_at_the_cap(base: Path) -> tuple[Path, _Call]:
@@ -314,14 +320,14 @@ def _arrange_delete_at_the_cap(base: Path) -> tuple[Path, _Call]:
                 "deleted_at": "2026-01-01T00:00:00+00:00",
             },
         )
-    return root, _Call("delete_working_pair", (WORKING, ROOT), {"cwd": ROOT})
+    return root, _Call("delete_working_pair", (WORKING, ROOT), {"seen": SEEN, "cwd": ROOT})
 
 
 def _arrange_undelete(base: Path) -> tuple[Path, _Call]:
     root = _new_repo(base)
     _pair(root)
     _milestone(root)
-    entry_id = delete_working_pair(WORKING, root, cwd=root).trash_id
+    entry_id = delete_working_pair(WORKING, root, seen=seen_now(root, WORKING), cwd=root).trash_id
     return root, _Call("undelete_working_pair", (entry_id, ROOT), {"cwd": ROOT})
 
 
@@ -640,6 +646,13 @@ def perform(step, files, project_root, cwd):
 
 git_operation._perform = perform
 def at(value):
+    if value == "<seen>":
+        from haute.schemas import GitBranchSeen
+
+        branch = spec["args"][0]
+        listed = haute_git.working_branches(root, cwd=root).branches
+        row = next(b for b in listed if b.name == branch)
+        return GitBranchSeen(tip=row.tip, ledger_tip=row.ledger_tip, is_current=row.is_current)
     return root if value == "<root>" else value
 
 kwargs = {key: at(value) for key, value in spec["kwargs"].items()}

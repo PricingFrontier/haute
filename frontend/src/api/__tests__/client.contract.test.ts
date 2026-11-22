@@ -1174,7 +1174,7 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({
       current: "demo",
       deleted: [],
-      branches: [{ name: 123, is_current: true, is_archived: false, has_unmerged_saves: false, has_uncommitted_changes: false }],
+      branches: [{ name: 123, is_current: true, is_archived: false, has_unmerged_saves: false, has_uncommitted_changes: false, tip: "a".repeat(40), ledger_tip: null }],
     }))
     await expect(getWorkingBranches()).rejects.toThrow("GitWorkingBranchesResponse: invalid contract at /branches/0/name: type")
   })
@@ -1428,7 +1428,7 @@ describe("next-wave client runtime contracts", () => {
     {
       name: "gitDeleteBranch",
       response: { ...loadUiContractFixture<Record<string, unknown>>("git_delete_branch_response"), branch: 42 },
-      call: () => gitDeleteBranch("feat/pricing-improvements"),
+      call: () => gitDeleteBranch("feat/pricing-improvements", { tip: "a".repeat(40), ledger_tip: null, is_current: false }),
       error: "GitDeleteBranchResponse: invalid contract at /branch: type",
     },
   ]

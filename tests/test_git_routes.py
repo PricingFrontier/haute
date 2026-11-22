@@ -51,20 +51,38 @@ class TestGitArchive:
 # ---------------------------------------------------------------------------
 
 
+# A branch as no listing showed it, for a delete refused before the branch is read.
+_UNSEEN = {"tip": "0" * 40, "ledger_tip": None, "is_current": False}
+
+
+def _seen(client: TestClient, branch: str) -> dict[str, object]:
+    """*branch* as the branch manager lists it now: what a delete's confirmation names."""
+    listed = client.get("/api/git/working-branches").json()["branches"]
+    row = next(b for b in listed if b["name"] == branch)
+    return {"tip": row["tip"], "ledger_tip": row["ledger_tip"], "is_current": row["is_current"]}
+
+
 class TestGitDeleteBranch:
     def test_deletes(self, client: TestClient, tmp_path: Path) -> None:
         _git(tmp_path, "checkout", "-b", "pricing/test-user/old")
         _git(tmp_path, "checkout", "main")
 
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": "pricing/test-user/old"}
+            "DELETE",
+            "/api/git/branches",
+            json={
+                "branch": "pricing/test-user/old",
+                "seen": _seen(client, "pricing/test-user/old"),
+            },
         )
         assert res.status_code == 200
         branches = _git(tmp_path, "branch")
         assert "old" not in branches
 
     def test_blocked_on_protected(self, client: TestClient) -> None:
-        res = client.request("DELETE", "/api/git/branches", json={"branch": "main"})
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "main", "seen": _UNSEEN}
+        )
         assert res.status_code == 403
 
 
@@ -113,10 +131,16 @@ class TestGitUndelete:
         branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         ledger_tip = _git(tmp_path, "rev-parse", ledger)
 
-        refused = client.request("DELETE", "/api/git/branches", json={"branch": self._FORK})
+        refused = client.request(
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "seen": _seen(client, self._FORK)},
+        )
         assert refused.status_code == 403  # the pending save still gates deletion
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         )
         assert res.status_code == 200
         entry_id = res.json()["trash_id"]
@@ -158,7 +182,9 @@ class TestGitUndelete:
         self._seed_fork_with_history(tmp_path)
         branch_tip = _git(tmp_path, "rev-parse", self._FORK)
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         )
         entry_id = res.json()["trash_id"]
         _git(tmp_path, "branch", self._FORK)  # a NEW branch reclaims the name
@@ -190,11 +216,15 @@ class TestGitUndelete:
         self._seed_fork_with_history(tmp_path)
         first_tip = _git(tmp_path, "rev-parse", self._FORK)
         first = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         ).json()["trash_id"]
         _git(tmp_path, "branch", self._FORK, "main")  # made again, elsewhere
         second = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         ).json()["trash_id"]
 
         assert first != second
@@ -243,7 +273,9 @@ class TestGitUndelete:
         ledger_tip = _git(tmp_path, "rev-parse", f"{archived}-save")
 
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": archived, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": archived, "confirm": True, "seen": _seen(client, archived)},
         )
         assert res.status_code == 200
         entry_id = res.json()["trash_id"]
@@ -281,7 +313,9 @@ class TestGitUndelete:
         _git(tmp_path, "branch", self._FORK)
 
         res = client.request(
-            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": self._FORK, "confirm": True, "seen": _seen(client, self._FORK)},
         )
 
         assert res.status_code == 200
@@ -408,7 +442,7 @@ class TestGeneralExceptionHandling:
     # Map of (endpoint_function_to_patch, request_method, path, body)
     _ENDPOINTS: list[tuple[str, str, str, dict | None]] = [
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
-        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x", "seen": _UNSEEN}),
         ("push_with_ci_secrets", "POST", "/api/git/push", {"remote": "origin"}),
         ("set_missing_ci_secrets", "POST", "/api/git/ci-secrets", {"remote": "origin"}),
         ("list_remotes", "GET", "/api/git/remotes", None),
@@ -868,7 +902,7 @@ class TestGitErrorEndpointResponses:
 
     _ENDPOINTS_FOR_GIT_ERROR: list[tuple[str, str, str, dict | None]] = [
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
-        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x", "seen": _UNSEEN}),
     ]
 
     @pytest.mark.parametrize(
@@ -1238,10 +1272,16 @@ class TestBranchManagerRoutes:
     ) -> None:
         self._set_branch(client)
         self._save(tmp_path)  # unmerged ledger save
-        refused = client.request("DELETE", "/api/git/branches", json={"branch": "pricing-dev"})
+        refused = client.request(
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": "pricing-dev", "seen": _seen(client, "pricing-dev")},
+        )
         assert refused.status_code == 403  # guardrail refusal
         confirmed = client.request(
-            "DELETE", "/api/git/branches", json={"branch": "pricing-dev", "confirm": True}
+            "DELETE",
+            "/api/git/branches",
+            json={"branch": "pricing-dev", "confirm": True, "seen": _seen(client, "pricing-dev")},
         )
         assert confirmed.status_code == 200
         assert "pricing-dev" not in _git(tmp_path, "branch")
@@ -1288,7 +1328,7 @@ class TestRefMoversPauseWatcher:
             ),
             ("post", "/api/git/working-branches", {"name": "pricing/test-user/y"}),
             ("post", "/api/git/archive", {"branch": "pricing/test-user/z"}),
-            ("delete", "/api/git/branches", {"branch": "pricing/test-user/z"}),
+            ("delete", "/api/git/branches", {"branch": "pricing/test-user/z", "seen": _UNSEEN}),
         ],
     )
     def test_ref_mover_pauses_watcher(
@@ -1429,7 +1469,7 @@ class TestTreeChangesAreAnnounced:
             (
                 "delete",
                 "/api/git/branches",
-                {"branch": "b"},
+                {"branch": "b", "seen": _UNSEEN},
                 "delete_working_pair",
                 {"status": "deleted", "branch": "b", "trash_id": "b@20261027T000000Z"},
             ),

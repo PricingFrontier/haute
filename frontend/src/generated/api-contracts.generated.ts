@@ -1780,7 +1780,9 @@ export interface GitManagedBranch {
   has_unmerged_saves: boolean;
   is_archived: boolean;
   is_current: boolean;
+  ledger_tip: string | null;
   name: string;
+  tip: string;
 }
 export interface GitDeletedBranch {
   branch: string;

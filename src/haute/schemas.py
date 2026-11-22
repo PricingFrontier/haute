@@ -6237,6 +6237,10 @@ class GitManagedBranch(BaseModel):
     # True only for the current branch when the working tree has tracked,
     # uncommitted changes — archive/delete would have to switch away and can't.
     has_uncommitted_changes: bool = False
+    # The branch's and its ledger's tips as listed (the ledger's None before it
+    # spawns), which a delete names back so it acts on the branch it described.
+    tip: str
+    ledger_tip: str | None = None
 
 
 class GitDeletedBranch(BaseModel):
@@ -6300,10 +6304,21 @@ class GitArchiveResponse(BaseModel):
     archived_as: str
 
 
+class GitBranchSeen(BaseModel):
+    """A branch as the delete's confirmation described it: its two tips, as the branch
+    manager listed them, and whether it was the branch the project is on."""
+
+    tip: BoundedName
+    ledger_tip: BoundedName | None = None
+    is_current: bool
+
+
 class GitDeleteBranchRequest(BaseModel):
     branch: BoundedName
     # Override the unmerged-ledger-saves refusal (S32: loss is real on delete).
     confirm: bool = False
+    # What the confirmation showed; the delete is refused when the branch has moved since.
+    seen: GitBranchSeen
 
 
 class GitDeleteBranchResponse(BaseModel):

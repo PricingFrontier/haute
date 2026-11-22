@@ -11420,8 +11420,24 @@
           "title": "Is Current",
           "type": "boolean"
         },
+        "ledger_tip": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ledger Tip"
+        },
         "name": {
           "title": "Name",
+          "type": "string"
+        },
+        "tip": {
+          "title": "Tip",
           "type": "string"
         }
       },
@@ -11430,7 +11446,9 @@
         "is_current",
         "is_archived",
         "has_unmerged_saves",
-        "has_uncommitted_changes"
+        "has_uncommitted_changes",
+        "tip",
+        "ledger_tip"
       ],
       "title": "GitManagedBranch",
       "type": "object"

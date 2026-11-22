@@ -63,7 +63,7 @@ const WRITE_WRAPPERS: Record<string, () => Promise<unknown>> = {
   patchPipelineSettings: () => patchPipelineSettings({ chunk_rows: 1000 } as never),
   putMlflowSettings: () => putMlflowSettings({} as never),
   cancelInputCacheJob: () => cancelInputCacheJob("job-1"),
-  gitDeleteBranch: () => gitDeleteBranch("feature"),
+  gitDeleteBranch: () => gitDeleteBranch("feature", { tip: "a".repeat(40), ledger_tip: null, is_current: false }),
 }
 
 describe("every write is sent once", () => {
