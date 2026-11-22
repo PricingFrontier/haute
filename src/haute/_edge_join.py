@@ -254,7 +254,9 @@ def narrow_join_parent_demand(
         if column in right_schema and column not in left_schema:
             right_demand.add(column)
             mapped = True
-        if column in right_keys:
+        # A right key is read to join; it is a value's source only when nothing else
+        # supplies the column (a left column of its name is the one Polars keeps).
+        if column in right_keys and not (value_only and mapped):
             right_demand.add(column)
             mapped = True
         if not mapped:

@@ -3945,3 +3945,18 @@ def test_a_column_fill_null_fills_from_another_is_recomputed() -> None:
 
     assert result.supported, result.reason
     assert result.recomputed_columns >= {"n", "d"}
+
+
+def test_a_left_column_named_like_the_right_key_comes_from_the_left() -> None:
+    """With keys of different names, a left column named like the right key is the one
+    Polars keeps, so its value never comes from the right key."""
+    inputs = {"left": frozenset({"lookup_key", "id"}), "right": frozenset({"id", "x"})}
+    code = (
+        "df = left.join(right, left_on='lookup_key', right_on='id', how='left', "
+        "validate='m:1').select(pl.col('id').alias('result'))"
+    )
+
+    value = analyze_polars_lineage(code, inputs, {"result"}, value_dependencies=True)
+
+    assert value.supported, value.reason
+    assert dict(value.demands_by_input) == {"left": frozenset({"id"}), "right": frozenset()}
