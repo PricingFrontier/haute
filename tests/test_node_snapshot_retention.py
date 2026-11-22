@@ -459,6 +459,47 @@ def test_a_scanner_holding_past_the_wait_fails_the_build_saying_so_and_changes_n
         assert pl.read_parquet(generation.data_paths[0])["x"].to_list() == [2]
 
 
+@pytest.mark.parametrize("stop", ["cancelled", "deadline"])
+def test_a_build_stopped_while_its_rename_waits_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    from haute import _file_ops
+
+    store = NodeSnapshotStore(tmp_path)
+    source = _input_identity()
+    _build_input_snapshot(store, source, pl.DataFrame({"x": [1]}))
+    refused = _windows_holding_staging(monkeypatch, refusals=2)
+    cancelled = threading.Event()
+    context = SourceCacheBuildContext(
+        profile=ExecutionProfile.LAZY_SINK, build_class="bounded", cancellation=cancelled
+    )
+    real_rename = _file_ops.rename_directory
+
+    def stopped_while_waiting(staged: Path, target: Path) -> None:
+        if stop == "cancelled":
+            cancelled.set()
+        else:
+            context.deadline = time.monotonic() - 1
+        real_rename(staged, target)
+
+    monkeypatch.setattr(source_cache_module, "rename_directory", stopped_while_waiting)
+
+    with pytest.raises(source_cache_module.SourceCacheBuildError, match=stop[:6]):
+        store.build(
+            source,
+            _LazyBuilder(pl.DataFrame({"x": [2]}).lazy()),
+            context=context,
+            refresh=True,
+        )
+
+    assert len(refused) == 2
+    with store.lease(source) as generation:
+        assert pl.read_parquet(generation.data_paths[0])["x"].to_list() == [1]
+    generations = store.inputs_root / source.digest / "generations"
+    assert [path.name for path in generations.iterdir()] == [generation.generation_id]
+    assert not list(store.inputs_root.glob("*/.staging-*"))
+
+
 def test_retired_directories_are_swept_once_per_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

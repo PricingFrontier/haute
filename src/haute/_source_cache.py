@@ -1214,6 +1214,9 @@ class SourceCacheStore:
                         retired.extend(self._retire_unleased_locked(identity))
                     final_dir = generations_dir / generation_id
                     rename_directory(staging, final_dir)
+                    # The rename can wait out a scanner for seconds: a build cancelled or
+                    # past its deadline meanwhile still publishes nothing.
+                    context.checkpoint()
                     atomic_write_text(
                         self._pointer_path(identity),
                         canonical_json(

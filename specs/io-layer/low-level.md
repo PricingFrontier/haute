@@ -397,7 +397,9 @@ whose thread (`routes/input_cache.py::_run_build`) never builds a Data Input its
    generation through `_file_ops.rename_directory`, so a scanner or indexer holding one of
    its new files open is waited out, and atomically replaces `current.json`. A wait that
    runs out fails the build with `FolderInUseError`, the staging directory removed and the
-   earlier generation still current. The generation it returns is the
+   earlier generation still current. Cancellation and the deadline are checked again once the
+   rename succeeds, so a build stopped while its rename waited publishes nothing either: the
+   renamed generation is removed unless a reader holds it. The generation it returns is the
    staged validation's, under the published directory.
 6. Old generations with live leases survive until the final lease release. Publication
    has no cache byte/count limit and never evicts another identity's current dataset.
