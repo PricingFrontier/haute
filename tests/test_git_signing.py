@@ -199,6 +199,7 @@ def test_an_ssh_key_s_words_are_a_signing_failure_only_from_a_commit() -> None:
     assert refused is not None and refused.cause == "signing"
 
 
+@pytest.mark.meta
 def test_every_commit_tree_goes_through_the_one_that_signs() -> None:
     """``commit-tree`` is named only in the git core: a commit made any other way would
     skip the signature a team set git to require."""
