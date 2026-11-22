@@ -30,6 +30,7 @@ import { answer, newest, under, type Asked, type Settled } from "../utils/answer
 import GitNavigationConfirm from "./GitNavigationConfirm"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 interface RemotePushControlProps {
   /** Out-of-version saves on the ledger — drives the pre-push integrity prompt
@@ -290,7 +291,7 @@ export default function RemotePushControl({
       if ("value" in settled) void treeMoved(said(settled.value))
       else notMoved("catch up", settled.error)
     }
-    await answer(chosenOverParts(), gitFastForward(target), {
+    await answer(chosenOverParts(), clearingTheWay((...settled) => gitFastForward(target, ...settled)), {
       ok: async (res, asked) => {
         // Only labels came: no file changed, so the edits on the canvas stay, and the
         // history shows the labels.
@@ -315,7 +316,7 @@ export default function RemotePushControl({
   const doBranchAway = useCallback(async (target: string) => {
     const said = (res: Awaited<ReturnType<typeof gitBranchAway>>) =>
       `Set your version aside as ${res.set_aside_as} - you're now on the shared copy`
-    await answer(chosenOverParts(), gitBranchAway(target), {
+    await answer(chosenOverParts(), clearingTheWay((...settled) => gitBranchAway(target, ...settled)), {
       ok: (res, asked) => dropChosenOver(asked, said(res)),
       failed: (err) => notMoved("spin off a copy", err),
       stale: (settled) => {

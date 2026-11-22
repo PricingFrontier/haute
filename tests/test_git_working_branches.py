@@ -1046,7 +1046,9 @@ class TestBranchManager:
             )
 
         assert str(refused.value) == (
-            "You have unsaved changes on this branch. Save or discard them before deleting it."
+            "rating.py has changed on disk outside Haute since the last save. Before deleting "
+            f"'{WORKING}', record it as a save on this branch, or put it back as version "
+            "history has it."
         )
         assert (repo / "rating.py").read_text() == "# uncommitted edit\n"
         assert self._branch_exists(repo, WORKING) and self._branch_exists(repo, LEDGER)
@@ -1078,7 +1080,7 @@ class TestBranchManager:
         # actionable message rather than a sanitized git error.
         set_working_branch(WORKING, repo, cwd=repo)
         (repo / "rating.py").write_text("# uncommitted edit\n")
-        with pytest.raises(GitDomainError, match="unsaved changes"):
+        with pytest.raises(GitDomainError, match="rating.py has changed on disk outside Haute"):
             archive_working_pair(WORKING, repo, cwd=repo)
 
     def test_archive_avoids_ledger_name_collision(self, repo: Path) -> None:
@@ -1369,7 +1371,7 @@ class TestCreateWorkingBranch:
     def test_switch_refuses_tracked_changes(self, repo: Path) -> None:
         ids = _fork_setup(repo)
         (repo / "rating.py").write_text("# not saved\n")
-        with pytest.raises(GitDomainError, match="unsaved changes"):
+        with pytest.raises(GitDomainError, match="rating.py has changed on disk outside Haute"):
             create_working_branch("idea", repo, at=ids["m1"], switch=True, cwd=repo)
         assert _git(repo, "branch", "--list", "idea") == ""
 

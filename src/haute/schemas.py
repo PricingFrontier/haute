@@ -6006,10 +6006,21 @@ class GitForkStorageResponse(BaseModel):
     message: str
 
 
+class GitSettleUnrecorded(BaseModel):
+    """What the analyst chose for the files an operation that replaces the project's files
+    was refused over (``GitUnrecordedFilesError``, 409 ``unrecorded_files``): record them as
+    one save on the working branch, or put them back as version history has them. The
+    operation asked again with it settles exactly these files first, under the same lock."""
+
+    choice: Literal["record", "put-back"]
+    files: list[BoundedPath] = Field(min_length=1, max_length=10_000)
+
+
 class GitSetWorkingBranchRequest(BaseModel):
     branch: BoundedName
     # Create the branch off current HEAD before adopting it.
     create: bool = False
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitSetWorkingBranchResponse(BaseModel):
@@ -6279,6 +6290,7 @@ class GitCreateWorkingBranchRequest(BaseModel):
     # Open the new branch at once, leaving the current branch's refs as they
     # were. Not with ``move``, which already opens it.
     switch: bool = False
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitCreateWorkingBranchResponse(BaseModel):
@@ -6298,6 +6310,7 @@ class GitPrefs(BaseModel):
 
 class GitArchiveRequest(BaseModel):
     branch: BoundedName
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitArchiveResponse(BaseModel):
@@ -6416,6 +6429,7 @@ class GitPushResponse(BaseModel):
 
 class GitBranchAwayRequest(BaseModel):
     remote: BoundedName
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitBranchAwayResponse(BaseModel):
@@ -6430,6 +6444,7 @@ class GitBranchAwayResponse(BaseModel):
 
 class GitFastForwardRequest(BaseModel):
     remote: BoundedName
+    settle: GitSettleUnrecorded | None = None
 
 
 class GitFastForwardResponse(BaseModel):

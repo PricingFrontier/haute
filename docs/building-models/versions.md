@@ -132,3 +132,19 @@ milestone meets them:
   message names, usually `.git/index.lock`.
 - **Signing.** Git is set to sign every commit, and the signature could not be made. Check
   that your signing key is available and signs without asking for a passphrase.
+
+## Files changed outside Haute
+
+A file you change in another program, such as a rate table saved in Excel, is on disk but not
+in version history. The editor's **Save** saves what is on the canvas and in the form, so it
+does not record that file. Before Haute switches branch, opens a new branch, catches up,
+spins off a copy, or archives or deletes the branch you are on, it asks about such files and
+names them. It also names a file you copied in where the other branch has one of that name.
+
+- **Record** saves them as one save on the branch you are on, then goes on. The change stays
+  with that branch.
+- **Put back** returns them to the version history has, then goes on. A file version history
+  does not have, such as one you copied in, is removed.
+
+Recording before **Catch up** makes a save the shared branch does not have, so Catch up then
+asks you to **Spin off a copy**, which keeps your save on a copy beside the shared line.

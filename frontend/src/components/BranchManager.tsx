@@ -27,6 +27,7 @@ import BrokenPairs from "./BrokenPairs"
 import Tooltip from "./Tooltip"
 import BackdropMenu, { MenuItem } from "./BackdropMenu"
 import GitNavigationConfirm from "./GitNavigationConfirm"
+import { clearingTheWay } from "../utils/clearingTheWay"
 
 interface BranchManagerProps {
   /** Branch whose history is currently shown in the panel (peek/current). */
@@ -173,7 +174,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
 
   // -- create -----------------------------------------------------------------
   const doCreate = (name: string, move: boolean) =>
-    run(name, move ? "create & move" : "create branch", createWorkingBranch(name, { move }), (_, here) => {
+    run(name, move ? "create & move" : "create branch", clearingTheWay((...settled) => createWorkingBranch(name, { move }, ...settled)), (_, here) => {
       addToast("success", move ? `Created ${name} and moved your work` : `Created ${name}`)
       here.apply(() => {
         setNewBranch("")
@@ -211,7 +212,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       // What is dropped is what was chosen over when the switch was asked: an edit made while
       // it ran keeps every unsaved edit.
       const chosenOver = ask(chosenOverParts())
-      void run(b.name, "switch", setWorkingBranch(b.name, false), (_, _here, asked) => {
+      void run(b.name, "switch", clearingTheWay((...settled) => setWorkingBranch(b.name, false, ...settled)), (_, _here, asked) => {
         const drop = chosenOver.current()
         if (drop) discardCanvasEdits()
         return asked.answer(drop ? discardFormEdits() : Promise.resolve(), {
@@ -239,7 +240,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       // Archiving the CURRENT branch moves you off it — that flow keeps the
       // full reload (and records no history entry, since a reload clears the
       // stacks anyway). Archiving any other branch is an in-app, undoable op.
-      void run(b.name, "archive", gitArchiveBranch(b.name), (res) => {
+      void run(b.name, "archive", clearingTheWay((...settled) => gitArchiveBranch(b.name, ...settled)), (res) => {
         addToast("success", `Archived ${b.name}`)
         if (!b.is_current) recordArchive(b.name, res.archived_as)
       }, { reloadWhen: () => b.is_current })

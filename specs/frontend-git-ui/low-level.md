@@ -28,6 +28,7 @@
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), the deploy's-secrets toasts and `CiSecretsMissing` line with its Set from .env button, catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. Catch up (`doCatchUp`) and Spin off a copy (`doBranchAway`), from the standalone button or the rejection dialog, pass its `useDirtyNavigation` guard (the panel's `onSave` for Save first) with a question naming the remote whose files replace the project's; on success they drop the edits chosen over (`discardCanvasEdits`, `discardFormEdits`) and read the readiness, branch list and history again. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
 | `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
+| `frontend/src/utils/clearingTheWay.ts` | `clearingTheWay(operation)`, the one answer to an operation that replaces the project's files refused over files changed outside Haute (409 `unrecorded_files`): it asks the page's question (`useQuestionStore`), titled "Files changed outside Haute", with the server's message and the files listed, Record or Put back, and asks for the operation again with `{settle: {choice, files}}`; Cancel leaves the refusal standing for the caller, and any other failure passes through unasked. Every call of `setWorkingBranch`, `createWorkingBranch`, `gitArchiveBranch`, `gitFastForward` and `gitBranchAway` outside the API client goes through it, the first ask with the caller's own arguments. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. A switch's legs (`switchLeg`) ask `leaveUnsavedEdits` first and drop the edits chosen over once the checkout succeeds, unless an edit was made while it ran (`chosenOverParts`); a document replaced while the question was open puts the entry back, as Cancel does. A leg is the history's, run after the panel that pushed it may be gone: what it did is said either way. |
 
 ## Key types and data structures
@@ -557,6 +558,11 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/e2e/git-branches.spec.ts`** also drives two pages on one project: a delete
   confirmed on one before the other switched the project onto the branch is refused naming
   the change, and the branch and the checkout stay as they are.
+- **`frontend/src/utils/__tests__/clearingTheWay.test.ts`** — a refusal over files changed
+  outside Haute asking with the message and the files and, answered Record or Put back,
+  asking for the operation again with that choice; Cancel leaving the refusal standing; any
+  other failure passing through with no question; and every call of the five operations
+  outside the API client going through it (a call that goes round it fails).
 - **`frontend/src/components/__tests__/BranchManager.test.tsx`** — the `reloadOnDone` matrix:
   which mutations reload the page and which don't, keyed on `switched`/`is_current`, plus
   the dirty-canvas guard on current-branch archive and delete before those reload paths.

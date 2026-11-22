@@ -48,6 +48,7 @@ from haute._git import (
     set_identity,
     set_prefs,
     set_working_branch,
+    settle_unrecorded,
     undelete_working_pair,
     working_branch_status,
     working_branches,
@@ -109,6 +110,7 @@ from haute.schemas import (
     GitRestoreVersionResponse,
     GitSetIdentityRequest,
     GitSetIdentityResponse,
+    GitSettleUnrecorded,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
     GitStorageBind,
@@ -209,13 +211,24 @@ def git_retry_interrupted(background: BackgroundTasks) -> GitWorkingBranchRespon
 
 
 @contextmanager
-def _rewriting_tree(background: BackgroundTasks) -> Iterator[None]:
+def _rewriting_tree(
+    background: BackgroundTasks, settle: GitSettleUnrecorded | None = None
+) -> Iterator[None]:
     """Run a git action that may rewrite the files, with the watcher paused through
     it; once the response is sent, the server broadcasts what is on disk
     (``_broadcast_tree_change``). The pipelines on disk before the action go with
     the announcement, so one it took away is named even when no cache still holds
     it (a save invalidates them). A refused action raises out of the block and
-    announces nothing."""
+    announces nothing.
+
+    *settle* is what the analyst chose for the files the action was refused over
+    (409 ``unrecorded_files``): they are recorded or put back first, under the
+    repository lock the action then takes, so nothing lands between the two."""
+    root = current_project().root
+    if settle is not None:
+        for path in settle.files:
+            if ordinary_path_problem(root, path)[1] is not None:
+                raise InvalidRequestError(f"{path} is not a file in the project.")
     try:
         before = [str(path.resolve()) for path in discover_pipelines()]
     except (OSError, ConfigError) as exc:
@@ -224,7 +237,9 @@ def _rewriting_tree(background: BackgroundTasks) -> Iterator[None]:
         # what it takes away.
         logger.warning("git_pipeline_inventory_failed", error=str(exc))
         before = []
-    with pause_watcher():
+    with pause_watcher(), repository_mutation(root):
+        if settle is not None:
+            settle_unrecorded(settle.choice, list(dict.fromkeys(settle.files)), root)
         yield
     background.add_task(default_bus.publish, "git.tree.changed", {"pipelines_before": before})
 
@@ -235,7 +250,7 @@ def git_set_working_branch(
 ) -> GitSetWorkingBranchResponse:
     """Adopt a working branch for this clone, spawning its ledger and recording
     the association. Confirms both the startup modal and the save-gate."""
-    with _rewriting_tree(background):  # M4: adopting a branch checks out its ledger
+    with _rewriting_tree(background, body.settle):  # M4: adopting a branch checks out its ledger
         response = set_working_branch(body.branch, current_project().root, create=body.create)
     return response
 
@@ -386,7 +401,7 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
 @router.post("/archive", response_model=GitArchiveResponse)
 def git_archive(body: GitArchiveRequest, background: BackgroundTasks) -> GitArchiveResponse:
     """Archive a working branch and its ledger together (S32, pair-aware)."""
-    with _rewriting_tree(background):  # M4: archiving the active pair switches away
+    with _rewriting_tree(background, body.settle):  # M4: archiving the active pair switches away
         response = archive_working_pair(body.branch, current_project().root)
     return response
 
@@ -464,7 +479,7 @@ def git_create_working_branch(
     """Fork a new working branch off the current one. ``at`` selects the fork
     point, ``move`` whether in-progress work is relocated onto it, and ``switch``
     whether the new branch is opened (S38)."""
-    with _rewriting_tree(background):  # M4: move and switch forks check out the new ledger
+    with _rewriting_tree(background, body.settle):  # M4: move and switch check out the new ledger
         response = create_working_branch(
             body.name, current_project().root, at=body.at, move=body.move, switch=body.switch
         )
@@ -773,7 +788,7 @@ def git_fast_forward(
     a pure ref advance, never a merge. Refuses anything that isn't a clean
     fast-forward (the user spins off a copy instead). The watcher is paused for
     the wholesale tree replacement (S30/M4)."""
-    with _rewriting_tree(background):
+    with _rewriting_tree(background, body.settle):
         response = fast_forward_pair(body.remote, current_project().root)
     return response
 
@@ -791,6 +806,6 @@ def git_branch_away(
     repointing the canonical name to the remote's tips (M3) — both lineages kept,
     nothing rewritten, never a merge. The watcher is paused for the tree
     replacement (S30/M4)."""
-    with _rewriting_tree(background):
+    with _rewriting_tree(background, body.settle):
         response = branch_away(body.remote, current_project().root)
     return response

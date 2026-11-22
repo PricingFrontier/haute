@@ -1523,3 +1523,55 @@ class TestTreeChangesAreAnnounced:
 
         assert res.status_code == 200, res.text
         assert [set(payload) for payload in announced] == [{"pipelines_before"}]
+
+
+# ---------------------------------------------------------------------------
+# A file edited by hand in the way of a switch: 409 naming it, then asked again
+# ---------------------------------------------------------------------------
+
+
+class TestFilesChangedOutsideHaute:
+    _DEV = "pricing/test-user/dev"
+    _OTHER = "pricing/test-user/other"
+
+    def _hand_edited(self, tmp_path: Path) -> None:
+        from haute._git import commit_save, create_working_branch, set_working_branch
+
+        set_working_branch(self._DEV, tmp_path, create=True, cwd=tmp_path)
+        (tmp_path / "rates.csv").write_text("rate\n1\n")
+        commit_save(["rates.csv"], self._DEV, cwd=tmp_path)
+        create_working_branch(self._OTHER, tmp_path, cwd=tmp_path)
+        (tmp_path / "rates.csv").write_text("rate\n9\n")  # saved in Excel
+
+    def test_a_switch_names_the_file_and_switches_once_it_is_recorded(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._hand_edited(tmp_path)
+
+        refused = client.post("/api/git/working-branch", json={"branch": self._OTHER})
+        assert refused.status_code == 409
+        detail = refused.json()["detail"]
+        assert detail["error_code"] == "unrecorded_files"
+        assert detail["files"] == ["rates.csv"]
+        assert detail["message"].startswith("rates.csv has changed on disk outside Haute")
+
+        settle = {"choice": "record", "files": detail["files"]}
+        done = client.post(
+            "/api/git/working-branch", json={"branch": self._OTHER, "settle": settle}
+        )
+        assert done.status_code == 200, done.text
+        assert _git(tmp_path, "show", f"{self._DEV}-save:rates.csv") == "rate\n9"
+        assert _git(tmp_path, "symbolic-ref", "--short", "HEAD") == f"{self._OTHER}-save"
+
+    def test_a_settled_path_outside_the_project_is_refused_before_anything_changes(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._hand_edited(tmp_path)
+        settle = {"choice": "put-back", "files": ["../elsewhere.csv"]}
+
+        refused = client.post(
+            "/api/git/working-branch", json={"branch": self._OTHER, "settle": settle}
+        )
+
+        assert refused.status_code == 400
+        assert (tmp_path / "rates.csv").read_text() == "rate\n9\n"

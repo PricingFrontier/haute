@@ -128,7 +128,10 @@ deleting, and restoring do, each behind role-appropriate confirmation (switch ha
 persistable "don't ask again", and a preference that cannot be saved is reported in an
 error toast while the switch goes ahead; archiving the current branch with tracked project
 changes not yet saved redirects to "commit a milestone first" instead of proceeding).
-Delete always confirms. A delete keeps the branch in the trash, so the dialog says it goes
+A switch, opening a new branch, Catch up, Spin off a copy or an archive refused over files
+changed outside Haute (a CSV saved in Excel, or a file copied in where the destination has
+one) asks, naming the files, whether to record them as a save or put them back as version
+history has them, and then goes on; Cancel leaves the refusal shown. Delete always confirms. A delete keeps the branch in the trash, so the dialog says it goes
 to Deleted and can be restored from there, with its saves not yet in a milestone when it
 has some, and names the one thing it loses: on the current branch, the project's changes
 since the last save, which the delete discards. The delete names the branch as the dialog

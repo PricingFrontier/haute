@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from haute._file_ops import is_staging_name
 from haute._git_core import (
@@ -16,6 +17,7 @@ from haute._git_core import (
     _assert_git_repo,
     _assert_new_branch_name,
     _assert_no_git_op_in_progress,
+    _assert_way_clear,
     _canonical_remote,
     _commit_parents,
     _generate_commit_message,
@@ -72,6 +74,7 @@ __all__ = [
     "commit_milestone",
     "restore_version",
     "retry_interrupted",
+    "settle_unrecorded",
 ]
 
 # How many of the files in a restore's way its refusal names.
@@ -592,19 +595,20 @@ def create_working_branch(
         )
 
     if switch:
-        # Opening the new branch replaces the files: what is on disk must be saved.
         _assert_no_git_op_in_progress(cwd)
-        ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-        if ok_status and status.strip():
-            raise GitDomainError(
-                "You have unsaved changes. Save or discard them before opening the new branch."
-            )
+        if is_milestone:
+            # Opening the new branch replaces the files: none may be off version history.
+            _assert_way_clear(f"opening '{name}'", point, cwd, leaving=True)
 
     if is_milestone:
         base = point
     else:
         anchor = working_tip if is_pending else _folding_anchor(working_tip, point, cwd=cwd)
         base = _crystallize_milestone(anchor, point, name, cwd=cwd)
+        if switch:
+            # The anchoring milestone holds the save's tree: the files it replaces are the
+            # same as the save's, so it is checked once it exists.
+            _assert_way_clear(f"opening '{name}'", base, cwd, leaving=True)
 
     if not move:
         # Two fresh refs at the base; with *switch* the new ledger is then checked
@@ -969,3 +973,56 @@ def retry_interrupted(project_root: Path, cwd: Path | None = None) -> None:
         return
     _assert_no_git_op_in_progress(cwd)
     recover(project_root, cwd)
+
+
+@_serialized_mutation
+def settle_unrecorded(
+    choice: Literal["record", "put-back"],
+    files: list[str],
+    project_root: Path,
+    cwd: Path | None = None,
+) -> None:
+    """Settle the files an operation that replaces the project's files was refused over
+    (:class:`GitUnrecordedFilesError`), as the analyst chose: record them as one save on the
+    working branch, with the sweep's message, or put them back as HEAD has them, which
+    removes one HEAD does not have (a file copied in where the destination has one).
+
+    Only *files* are touched: the operation asked again checks the way once more and names
+    any file changed since. The route holds the repository lock across this and the
+    operation, so nothing lands between them."""
+    root = cwd or project_root
+    if choice == "record":
+        from haute._git_state import read_working_branch
+
+        working = read_working_branch(project_root)
+        if working is None:
+            raise GitDomainError("No working branch is chosen to record them on.")
+        name, email = get_identity(cwd)
+        if name is None or email is None:
+            raise GitDomainError(
+                "Recording them needs a git identity. Set your name and email first."
+            )
+        _refuse_too_large_for_history(files, root, "try again")
+        commit_save(files, working, cwd=cwd, message="Updated project files")
+        return
+    literal = [_literal(path) for path in files]
+    held = _run_git("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", *literal, cwd=cwd)
+    in_head = set(filter(None, held.split("\0")))
+    tracked = [path for path in files if path in in_head]
+    if tracked:
+        _run_git(
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            *map(_literal, tracked),
+            cwd=cwd,
+        )
+    for path in (path for path in files if path not in in_head):
+        # Version history has no such file: a staged addition is unstaged, and the file goes.
+        _run_git("rm", "--cached", "-q", "--ignore-unmatch", "--", _literal(path), cwd=cwd)
+        target = root / path
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+    logger.info("unrecorded_files_put_back", files=len(files))

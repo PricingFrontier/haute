@@ -1624,8 +1624,8 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
         env=_git_env(),
     )
     if result.returncode != 0:
-        logger.warning("git_command_failed", cmd=["git", "status"], stderr=result.stderr.strip())
-        raise GitError(result.stderr.strip() or "git status failed")
+        args = ("status", "--porcelain", "-z", "--untracked-files=no")
+        raise _refused(["git", *args], result.stderr.strip(), args, cwd)
     tokens = result.stdout.split("\0")
     paths: set[str] = set()
     i = 0
@@ -1638,6 +1638,63 @@ def _tracked_changes(cwd: Path | None = None) -> set[str]:
         if entry[0] in "RC" or entry[1] in "RC":
             i += 1  # a rename's or copy's source path follows
     return paths
+
+
+#: How many of the files in an operation's way its refusal names in its message; the
+#: refusal carries every one of them.
+_UNRECORDED_NAMED = 5
+
+
+class GitUnrecordedFilesError(GitDomainError):
+    """An operation that would replace the project's files refused because some are on disk
+    as version history does not have them: tracked files changed outside Haute (a CSV saved
+    in Excel), and files git does not track where the destination has one. It carries
+    *files*, every one of them, so the editor can offer to record them as a save or put them
+    back (``settle_unrecorded``) and then ask for the operation again; HTTP 409."""
+
+    def __init__(self, words: str, files: list[str]) -> None:
+        self.files = files
+        named = ", ".join(files[:_UNRECORDED_NAMED])
+        if len(files) > _UNRECORDED_NAMED:
+            named += f" and {len(files) - _UNRECORDED_NAMED} more"
+        one = len(files) == 1
+        them, have = ("it", "has") if one else ("them", "have")
+        super().__init__(
+            f"{named} {have} changed on disk outside Haute since the last save. Before "
+            f"{words}, record {them} as a save on this branch, or put {them} back as version "
+            f"history has {them}."
+        )
+
+
+def _assert_way_clear(
+    words: str, destination: str, cwd: Path | None = None, *, leaving: bool
+) -> None:
+    """Refuse, naming them, the files an operation about to check out *destination* would
+    carry off or replace: every tracked file that differs from HEAD, and every file on disk
+    that git does not track where *destination* has one and HEAD has none, which git's own
+    checkout refuses as "would be overwritten".
+
+    The one rule for a switch, opening a new branch, Catch up, Spin off a copy, and archiving
+    or deleting the branch the project is on (*words* says which: "switching to 'other'").
+    An operation *leaving* the branch the files were changed on (a switch, opening a new
+    branch, an archive or delete of the current one) is always checked, since the files
+    would go with the analyst to another line or to none; one that stays on it is checked
+    only when its checkout changes HEAD's commit, the case where files are replaced."""
+    head = _rev_parse("HEAD", cwd=cwd)
+    if head is None or (head == destination and not leaving):
+        return
+    root = cwd or current_project().root
+    added = _run_git(
+        "diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", head, destination, cwd=cwd
+    )
+    in_the_way = [
+        path
+        for path in added.split("\0")
+        if path and ((root / path).exists() or (root / path).is_symlink())
+    ]
+    files = sorted(_tracked_changes(cwd) | set(in_the_way))
+    if files:
+        raise GitUnrecordedFilesError(words, files)
 
 
 def _held_files(stderr: str) -> list[str]:

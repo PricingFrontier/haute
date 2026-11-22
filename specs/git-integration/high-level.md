@@ -298,6 +298,18 @@ and refuses: "<files> are open in another program, so Haute could not replace th
 them and try again." A file held so tightly git cannot even read it, as Excel holds an open
 CSV, cannot be checked until it is closed, so the clone reads as interrupted until Retry.
 
+**Files changed outside Haute.** A file edited by hand, a rate changed in Excel, is on disk
+as version history does not have it, and the editor's Save, which writes only what the canvas
+and the form hold, never records it. So every operation that replaces the project's files (a
+switch, opening a new branch, Catch up, Spin off a copy, archiving or deleting the branch the
+project is on) is refused first while such a file is there, naming it, as is a file git does
+not track where the destination has one. The editor offers the two things an analyst can
+want, to record the files as one save on the branch or to put them back as version history
+has them, and then asks for the operation again, which settles exactly those files first and
+goes on. Recording before Catch up makes a save the remote lacks, so the catch-up then offers
+Spin off a copy, which keeps it. Create & Move carries edits to the new branch as it always
+has, and a confirmed delete discards them.
+
 **Operations recorded before they start.** Every action that moves a branch, HEAD, a version
 label or a deleted branch's pin is an operation of known steps: catching up, restoring a
 version, choosing a branch, creating one in any of its ways, spinning off a copy, archiving,
@@ -463,6 +475,9 @@ subclass of the project-wide `HauteError`):
   settings is never "not a git repository" or a missing identity: readiness answers
   `blocked`, with the cause, and no answer mentions `git init`. Any other git failure stays
   "Git refused this" under an incident.
+- **`GitUnrecordedFilesError`** — a `GitDomainError` subtype for an operation that replaces the
+  project's files refused over files off version history; it carries every file, and the
+  HTTP layer answers 409 with them so the editor can offer to record them or put them back.
 - **`GitTransactionError`** — a `GitDomainError` subtype used when an operation failed and
   its refs are where no step of its record leaves them, so it can be neither put back nor
   finished, or when the project's commit hooks left HEAD off the ledger. The record stays and

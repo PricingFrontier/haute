@@ -16,6 +16,7 @@ from haute._git_core import (
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _assert_way_clear,
     _branch_in_the_way,
     _clash_words,
     _free_pair_name,
@@ -79,17 +80,14 @@ def _leave_if_active(
     recorded = read_working_branch(project_root)
     if not (recorded == working or _get_current_branch(cwd) in (working, ledger)):
         return False
-    # TRACKED modifications would make the checkout abort with a raw, sanitized
-    # error. Untracked files (e.g. .haute/state.json) don't block a checkout.
-    ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-    dirty = ok and bool(status.strip())
-    if dirty and not discard:
-        raise GitDomainError(
-            f"You have unsaved changes on this branch. Save or discard them before {action} it."
-        )
     milestone = _rev_parse(working, cwd=cwd) or _rev_parse(ledger, cwd=cwd)
     if milestone is None:
         raise GitDomainError("No safe commit is available to leave the active branch.")
+    ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    dirty = ok and bool(status.strip())
+    if not discard:
+        # Files off version history would be carried off or replaced by the checkout.
+        _assert_way_clear(f"{action} '{working}'", milestone, cwd, leaving=True)
     steps_before = operation.step_count
     operation.checkout_detached(milestone, force=discard)
     discarded = discard and dirty and operation.step_count > steps_before

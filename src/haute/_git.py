@@ -21,6 +21,7 @@ from haute._git_core import (
     GitPushRejectedError,
     GitRemoteUnavailableError,
     GitTransactionError,
+    GitUnrecordedFilesError,
     _canonical_remote,
     _clear_content_caches,
     _commit_parents,
@@ -111,6 +112,7 @@ from haute._git_transactions import (
     merge_to_working,
     restore_version,
     retry_interrupted,
+    settle_unrecorded,
 )
 from haute.schemas import GitPrefs
 
@@ -129,6 +131,7 @@ __all__ = [
     "GitRemoteUnavailableError",
     "GitInterruptedError",
     "GitTransactionError",
+    "GitUnrecordedFilesError",
     "_canonical_remote",
     "_clear_content_caches",
     "_commit_parents",
@@ -204,6 +207,7 @@ __all__ = [
     "resolve_ledger",
     "restore_version",
     "retry_interrupted",
+    "settle_unrecorded",
     "repair_working_pair",
     "restore_working_pair",
     "set_identity",

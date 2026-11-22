@@ -13,6 +13,7 @@ from haute._git_core import (
     _assert_eligible_working,
     _assert_git_repo,
     _assert_new_branch_name,
+    _assert_way_clear,
     _clear_content_caches,
     _get_current_branch,
     _is_ancestor,
@@ -347,6 +348,12 @@ def set_working_branch(
     else:
         if not exists:
             raise GitDomainError(f"Branch '{branch}' does not exist.")
+        # The checkout of the branch's ledger (its working tip before it spawns) replaces
+        # the files; adopting the branch the project is already on replaces none.
+        destination = _rev_parse(ledger_name(branch), cwd=cwd) or _rev_parse(branch, cwd=cwd)
+        if destination is not None:
+            on = _get_current_branch(cwd) in (branch, ledger_name(branch))
+            _assert_way_clear(f"switching to '{branch}'", destination, cwd, leaving=not on)
         # One operation: the ledger spawned if there is none, its checkout and the
         # recorded working branch, put back whole on any failure.
         selection = Operation("select-branch", project_root, cwd)

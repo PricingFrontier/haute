@@ -1005,24 +1005,28 @@ def test_a_record_that_cannot_be_read_is_an_interruption_retry_will_not_guess(
 def test_the_analysts_own_edits_are_never_in_a_record_nor_touched_by_a_put_back(
     tmp_path: Path,
 ) -> None:
-    """The analyst has edited the one file the switch would write, and keeps an untracked
-    file beside it. Neither is the operation's: the record names neither, git refuses
-    the checkout over the edit, and the put-back leaves both as they are."""
-    root, call = _arrange_select(tmp_path)
+    """Create & Move carries the analyst's edit to the new branch by design, beside an
+    untracked file. Neither is the operation's: the record names neither, and the put-back
+    leaves both as they are. A switch, which would carry the edit off its branch, refuses
+    it by name before any record is written."""
+    from haute._git import GitUnrecordedFilesError
+
+    root, call = _arrange_fork(move=True)(tmp_path / "move")
     _write(root, "rating.py", "# the analyst's own edit\n")
     _write(root, "notes.md", "untracked\n")
-    record = _stop(root, call, "select-branch", 0)
+    record = _stop(root, call, "create-branch", 0)
     assert record.files == []
     retry_interrupted(root, cwd=root)
     assert (root / "rating.py").read_text() == "# the analyst's own edit\n"
-
-    with pytest.raises(GitError):
-        call.run(root)
-
-    assert (root / "rating.py").read_text() == "# the analyst's own edit\n"
     assert (root / "notes.md").read_text() == "untracked\n"
-    assert _git(root, "symbolic-ref", "--short", "HEAD") == LEDGER
-    assert read_operation(root) is None
+
+    switching, select = _arrange_select(tmp_path / "switch")
+    _write(switching, "rating.py", "# the analyst's own edit\n")
+    with pytest.raises(GitUnrecordedFilesError):
+        select.run(switching)
+    assert (switching / "rating.py").read_text() == "# the analyst's own edit\n"
+    assert _git(switching, "symbolic-ref", "--short", "HEAD") == LEDGER
+    assert read_operation(switching) is None
 
 
 # ---------------------------------------------------------------------------

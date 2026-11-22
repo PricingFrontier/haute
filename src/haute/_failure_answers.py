@@ -598,6 +598,12 @@ def answer_from_payload(payload: Mapping[str, Any]) -> FailureAnswer:
 
 
 def _domain_answer(exc: BaseException) -> FailureAnswer | None:
+    if isinstance(exc, _loaded("haute._git_core", "GitUnrecordedFilesError")):
+        # The editor offers to record the files or put them back, then asks again.
+        message = str(exc)
+        files = list(getattr(exc, "files", []))
+        detail = _structured("unrecorded_files", message, files=files)
+        return FailureAnswer(409, "unrecorded_files", message, "contract_error", detail)
     if isinstance(exc, _loaded("haute._git_core", "GitGuardrailError")):
         return _plain(403, "git_guardrail", str(exc))
     if isinstance(exc, _loaded("haute._git_core", "GitDomainError")):

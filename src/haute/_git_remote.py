@@ -21,6 +21,7 @@ from haute._git_core import (
     GitRemoteUnavailableError,
     _assert_git_repo,
     _assert_no_git_op_in_progress,
+    _assert_way_clear,
     _fetch_exec_lock,
     _fetch_refs,
     _free_pair_name,
@@ -1042,12 +1043,6 @@ def fast_forward_pair_from_tracking(
     if _get_current_branch(cwd) != ledger:
         raise GitDomainError("Return to your branch before catching up — you're viewing history.")
 
-    # A ff updates the working tree; unsaved tracked edits would be clobbered (and
-    # would otherwise surface as a raw git error). Refuse with guidance instead.
-    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-    if ok_status and status.strip():
-        raise GitDomainError("You have unsaved changes. Save or discard them before catching up.")
-
     for branch, kind in ((working, "working branch"), (ledger, "save ledger")):
         tracking = f"refs/remotes/{remote}/{branch}"
         if _rev_parse(tracking, cwd=cwd) is None:
@@ -1081,6 +1076,11 @@ def fast_forward_pair_from_tracking(
     ]
     if not behind and not labels:
         raise GitDomainError(f"Already up to date with '{label}'.")
+    remote_ledger = _rev_parse(f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+    if ledger in behind and remote_ledger is not None:
+        # The fast-forward of the checked-out ledger replaces the files; a catch-up of the
+        # working ref or of labels alone writes none.
+        _assert_way_clear("catching up", remote_ledger, cwd, leaving=False)
 
     # One recorded operation: the ledger first (it's HEAD; merge --ff-only advances
     # it and the working tree), then the working ref (not checked out) by CAS, then the
@@ -1140,12 +1140,6 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
         raise GitDomainError(
             "Return to your branch before spinning off a copy — you're viewing history."
         )
-    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-    if ok_status and status.strip():
-        raise GitDomainError(
-            "You have unsaved changes. Save or discard them before spinning off a copy."
-        )
-
     # Fresh tips so we adopt the current shared line (deliberate action).
     with _fetch_exec_lock:
         refreshed = _fetch_refs(remote, cwd=cwd)
@@ -1162,6 +1156,9 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
         raise GitDomainError(f"Save ledger '{ledger}' does not exist.")
     if old_w == remote_w and (remote_l is None or old_l == remote_l):
         raise GitDomainError(f"Already in sync with '{remote}' — nothing to set aside.")
+    # The adopted ledger's checkout replaces the files.
+    adopted = remote_l if remote_l is not None else remote_w
+    _assert_way_clear("spinning off a copy", adopted, cwd, leaving=False)
 
     aside = _free_pair_name(f"{working}-local", bare_first=False, cwd=cwd)
 
