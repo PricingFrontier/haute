@@ -624,6 +624,9 @@ source. The step 4 Haute changes are not in the demo; steps 1–2 (t-boost) are.
       - pruning job: 41.6 → 32.8 s;
       - workflow (ev15): 199.9 → 190.0 s, with the same final model and metrics.
     - **Remaining limit:** memory bandwidth. Concurrent backfits each run 1.6–2.2× slower.
+  - [x] **Evaluation duplication (Haute `f2810709c`).** Snapshots share diagnostics rather than deep-copying them, and stage jobs reuse the bundle's plan. In-process pruning job: 37.8 → 30.9 s.
+  - [x] **`table_export` (t-boost, approved by Codex after two rounds).** The rating tables as Python data, parsed once; Haute's table report uses it. 433 → 229 ms per export, about 4.8 s per workflow.
+    - **Rejected first:** a native `pythonize` conversion, which widens float32 values and so differs from the JSON document.
   - **Next candidates:**
     1. ~~Point-result serialization~~ (done above).
     2. `apply_keepset_budgeted` (t-boost native).

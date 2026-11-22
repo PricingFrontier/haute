@@ -258,7 +258,7 @@ class TBoostModel(NativeModel):
         (over t-boost's dense-cell budget) has no table and is listed alone.
         """
         with _float32_features_accepted():
-            export = json.loads(self.estimator.tables(self.prepared(frame)))
+            export = self.estimator.table_export(self.prepared(frame))
         tables = sorted(
             (_report_table(table, self.link) for table in export["tables"]),
             key=lambda table: -table["importance"],

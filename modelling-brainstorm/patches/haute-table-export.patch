@@ -1,0 +1,38 @@
+diff --git a/src/haute/modelling/_tboost.py b/src/haute/modelling/_tboost.py
+index a62aa4784..e8172fd1e 100644
+--- a/src/haute/modelling/_tboost.py
++++ b/src/haute/modelling/_tboost.py
+@@ -258,7 +258,7 @@ class TBoostModel(NativeModel):
+         (over t-boost's dense-cell budget) has no table and is listed alone.
+         """
+         with _float32_features_accepted():
+-            export = json.loads(self.estimator.tables(self.prepared(frame)))
++            export = self.estimator.table_export(self.prepared(frame))
+         tables = sorted(
+             (_report_table(table, self.link) for table in export["tables"]),
+             key=lambda table: -table["importance"],
+diff --git a/tests/test_tboost_family.py b/tests/test_tboost_family.py
+index 21fdcfcbf..25eec19f1 100644
+--- a/tests/test_tboost_family.py
++++ b/tests/test_tboost_family.py
+@@ -639,15 +639,15 @@ def _cell(axis: dict[str, Any], value: Any) -> int:
+ def test_a_relativity_that_overflows_costs_only_the_table_report(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ) -> None:
+-    native_tables = TBoostRegressor.tables
++    native_export = TBoostRegressor.table_export
+ 
+-    def tables_with_an_extreme_age_score(self: TBoostRegressor, frame: Any) -> str:
+-        export = json.loads(native_tables(self, frame))
++    def export_with_an_extreme_age_score(self: TBoostRegressor, frame: Any) -> dict[str, Any]:
++        export = native_export(self, frame)
+         table = next(t for t in export["tables"] if t["feature_names"] == ["age"])
+         table["values"] = [710.0] * len(table["values"])
+-        return json.dumps(export)
++        return export
+ 
+-    monkeypatch.setattr(TBoostRegressor, "tables", tables_with_an_extreme_age_score)
++    monkeypatch.setattr(TBoostRegressor, "table_export", export_with_an_extreme_age_score)
+     _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
+ 
+     assert result.tboost_tables is None

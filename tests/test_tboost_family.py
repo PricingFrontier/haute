@@ -639,15 +639,15 @@ def _cell(axis: dict[str, Any], value: Any) -> int:
 def test_a_relativity_that_overflows_costs_only_the_table_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    native_tables = TBoostRegressor.tables
+    native_export = TBoostRegressor.table_export
 
-    def tables_with_an_extreme_age_score(self: TBoostRegressor, frame: Any) -> str:
-        export = json.loads(native_tables(self, frame))
+    def export_with_an_extreme_age_score(self: TBoostRegressor, frame: Any) -> dict[str, Any]:
+        export = native_export(self, frame)
         table = next(t for t in export["tables"] if t["feature_names"] == ["age"])
         table["values"] = [710.0] * len(table["values"])
-        return json.dumps(export)
+        return export
 
-    monkeypatch.setattr(TBoostRegressor, "tables", tables_with_an_extreme_age_score)
+    monkeypatch.setattr(TBoostRegressor, "table_export", export_with_an_extreme_age_score)
     _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
 
     assert result.tboost_tables is None

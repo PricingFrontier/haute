@@ -1,0 +1,462 @@
+diff --git a/docs/_snippets/methods/table_export.md b/docs/_snippets/methods/table_export.md
+new file mode 100644
+index 0000000..ed74e3d
+--- /dev/null
++++ b/docs/_snippets/methods/table_export.md
+@@ -0,0 +1,43 @@
++# table_export
++
++Export the exact rating tables of the model as Python data.
++
++`table_export` returns what [`tables`](tables.md) returns, already parsed: for the same
++arguments, `model.table_export(X) == json.loads(model.tables(X))`, with the same values and
++key order. The document is parsed once, and not written out again, so use this method when
++your code works with the tables rather than storing or sending the JSON text.
++
++--8<-- "_snippets/feature-matching-note.md"
++
++## Method call format {#call-format}
++
++```python
++table_export(X,
++             ref_measure=None,
++             laplace=1.0,
++             basis_json=None,
++             measure_floor=None,
++             overflow=None,
++             sample_weight=None,
++             exposure=None)
++```
++
++## Parameters {#parameters}
++
++The same as [`tables`](tables.md#parameters).
++
++## Return value {#output-format}
++
++A `dict`. For a regression or binary classification model, the document with the intercept
++(`f0`), the dense tables (`tables`) and the factored effects (`factored`). For a
++multiclassification model, a dict keyed by class label, with one such document per class. See
++[Rating tables](../../model-analysis/rating-tables.md) for the format.
++
++## Usage examples {#usage-examples}
++
++```python
++tables = model.table_export(train_data)
++print(tables["f0"])  # the intercept
++for table in tables["tables"]:
++    print(table["feature_names"], table["shape"])
++```
+diff --git a/docs/_snippets/methods/tables.md b/docs/_snippets/methods/tables.md
+index 5672fb3..697b56a 100644
+--- a/docs/_snippets/methods/tables.md
++++ b/docs/_snippets/methods/tables.md
+@@ -7,6 +7,9 @@ in exactly reproduce the raw score, with no approximation and no surrogate model
+ [Rating tables](../../model-analysis/rating-tables.md) for the format of the document and how an
+ object finds its cell.
+ 
++To work with the tables in Python rather than with the JSON text, use
++[`table_export`](table_export.md), which returns the same export already parsed.
++
+ --8<-- "_snippets/feature-matching-note.md"
+ 
+ ## Method call format {#call-format}
+diff --git a/docs/model-analysis/rating-tables.md b/docs/model-analysis/rating-tables.md
+index 1b040c5..d3d1dc8 100644
+--- a/docs/model-analysis/rating-tables.md
++++ b/docs/model-analysis/rating-tables.md
+@@ -19,17 +19,18 @@ stored as its rating tables, so what you review is exactly what gets deployed.
+ 
+ ## Export the tables {#export}
+ 
+-The `tables` method returns the tables as a JSON document:
++The `table_export` method returns the tables as Python data, and `tables` returns the same
++export as a JSON document (`model.table_export(X) == json.loads(model.tables(X))`):
+ 
+ ```python
+-import json
+-
+-tables = json.loads(model.tables(train_data))
++tables = model.table_export(train_data)
+ print(tables["f0"])                       # the intercept
+ for table in tables["tables"]:
+     print(table["feature_names"], table["shape"])
+ ```
+ 
++Use `tables` when you want the JSON text itself, for example to store or send it.
++
+ The main keys of the document:
+ 
+ `f0`
+diff --git a/docs/python-reference/tboostclassifier/index.md b/docs/python-reference/tboostclassifier/index.md
+index f5771f9..5086edf 100644
+--- a/docs/python-reference/tboostclassifier/index.md
++++ b/docs/python-reference/tboostclassifier/index.md
+@@ -102,6 +102,10 @@ Calculate the contribution of each rating table to the prediction for every obje
+ 
+ Export the exact rating tables of the model as a JSON document.
+ 
++### [table_export](table_export.md)
++
++Export the exact rating tables of the model as Python data, parsed once.
++
+ ### [cell_indices](cell_indices.md)
+ 
+ Return the rating-table cell every object falls in (binary classification).
+diff --git a/docs/python-reference/tboostclassifier/table_export.md b/docs/python-reference/tboostclassifier/table_export.md
+new file mode 100644
+index 0000000..059894f
+--- /dev/null
++++ b/docs/python-reference/tboostclassifier/table_export.md
+@@ -0,0 +1 @@
++--8<-- "_snippets/methods/table_export.md"
+diff --git a/docs/python-reference/tboostregressor/index.md b/docs/python-reference/tboostregressor/index.md
+index b9f3501..6adfbd1 100644
+--- a/docs/python-reference/tboostregressor/index.md
++++ b/docs/python-reference/tboostregressor/index.md
+@@ -92,6 +92,10 @@ Calculate the contribution of each rating table to the prediction for every obje
+ 
+ Export the exact rating tables of the model as a JSON document.
+ 
++### [table_export](table_export.md)
++
++Export the exact rating tables of the model as Python data, parsed once.
++
+ ### [cell_indices](cell_indices.md)
+ 
+ Return the rating-table cell every object falls in.
+diff --git a/docs/python-reference/tboostregressor/table_export.md b/docs/python-reference/tboostregressor/table_export.md
+new file mode 100644
+index 0000000..059894f
+--- /dev/null
++++ b/docs/python-reference/tboostregressor/table_export.md
+@@ -0,0 +1 @@
++--8<-- "_snippets/methods/table_export.md"
+diff --git a/mkdocs.yml b/mkdocs.yml
+index 3ead932..e0c2c12 100644
+--- a/mkdocs.yml
++++ b/mkdocs.yml
+@@ -131,6 +131,7 @@ nav:
+           - pricing_report: python-reference/tboostregressor/pricing_report.md
+           - score: python-reference/tboostregressor/score.md
+           - set_params: python-reference/tboostregressor/set_params.md
++          - table_export: python-reference/tboostregressor/table_export.md
+           - tables: python-reference/tboostregressor/tables.md
+           - to_bytes: python-reference/tboostregressor/to_bytes.md
+           - to_json: python-reference/tboostregressor/to_json.md
+@@ -153,6 +154,7 @@ nav:
+           - pricing_report: python-reference/tboostclassifier/pricing_report.md
+           - score: python-reference/tboostclassifier/score.md
+           - set_params: python-reference/tboostclassifier/set_params.md
++          - table_export: python-reference/tboostclassifier/table_export.md
+           - tables: python-reference/tboostclassifier/tables.md
+           - to_bytes: python-reference/tboostclassifier/to_bytes.md
+           - to_json: python-reference/tboostclassifier/to_json.md
+diff --git a/python/t_boost/_pricing.py b/python/t_boost/_pricing.py
+index 14a0054..7f0185c 100644
+--- a/python/t_boost/_pricing.py
++++ b/python/t_boost/_pricing.py
+@@ -13,12 +13,23 @@ def annotate_joint_export(payload: str, measure: str | None) -> str:
+     if measure != "joint":
+         return payload
+     export = json.loads(payload)
++    annotate_joint_data(export, measure)
++    return json.dumps(export, allow_nan=False)
++
++
++def annotate_joint_data(export: Any, measure: str | None) -> None:
++    """`annotate_joint_export` on a parsed export, in place."""
++    if measure != "joint":
++        return
+     # Multiclass exports contain one bank per class. Visit banks without assuming
+     # that the surrounding container has the single-output layout.
+     def visit(value: Any) -> None:
+         if isinstance(value, list):
++            # Only containers can hold a bank or an axis: scalars (every cell's values and
++            # supports) are skipped without a call each.
+             for item in value:
+-                visit(item)
++                if isinstance(item, (dict, list)):
++                    visit(item)
+         elif isinstance(value, dict):
+             if "tables" in value and "f0" in value:
+                 residuals = []
+@@ -46,9 +57,9 @@ def annotate_joint_export(payload: str, measure: str | None) -> str:
+                 }
+             else:
+                 for item in value.values():
+-                    visit(item)
++                    if isinstance(item, (dict, list)):
++                        visit(item)
+     visit(export)
+-    return json.dumps(export, allow_nan=False)
+ 
+ 
+ def annotate_unseen_cells(payload: str, policy: str) -> str:
+@@ -58,11 +69,20 @@ def annotate_unseen_cells(payload: str, policy: str) -> str:
+     if not re.search(r'"levels":\s*\[', payload):  # no categorical axis: skip the parse
+         return payload
+     export = json.loads(payload)
++    annotate_unseen_data(export, policy)
++    return json.dumps(export, allow_nan=False)
++
++
++def annotate_unseen_data(export: Any, policy: str) -> None:
++    """`annotate_unseen_cells` on a parsed export, in place."""
+ 
+     def visit(value: Any) -> None:
+         if isinstance(value, list):
++            # Only containers can hold a bank or an axis: scalars (every cell's values and
++            # supports) are skipped without a call each.
+             for item in value:
+-                visit(item)
++                if isinstance(item, (dict, list)):
++                    visit(item)
+         elif isinstance(value, dict):
+             if isinstance(value.get("axes"), list):
+                 for axis in value["axes"]:
+@@ -78,7 +98,7 @@ def annotate_unseen_cells(payload: str, policy: str) -> str:
+                     else:
+                         axis["unseen_cell"] = axis.get("default_cell")
+             for item in value.values():
+-                visit(item)
++                if isinstance(item, (dict, list)):
++                    visit(item)
+ 
+     visit(export)
+-    return json.dumps(export, allow_nan=False)
+diff --git a/python/t_boost/sklearn.py b/python/t_boost/sklearn.py
+index 0c8c562..f0c0374 100644
+--- a/python/t_boost/sklearn.py
++++ b/python/t_boost/sklearn.py
+@@ -24,7 +24,12 @@ if TYPE_CHECKING:
+ 
+ import numpy as np
+ 
+-from ._pricing import annotate_joint_export, annotate_unseen_cells
++from ._pricing import (
++    annotate_joint_data,
++    annotate_joint_export,
++    annotate_unseen_cells,
++    annotate_unseen_data,
++)
+ 
+ from ._compat import (
+     BaseEstimator,
+@@ -3187,6 +3192,38 @@ class _BaseTBoost(BaseEstimator):  # type: ignore[misc]  # sklearn is untyped (n
+         exposure = resolve_vector(frame, exposure, "exposure")
+         return X, sample_weight, exposure
+ 
++    def table_export(
++        self,
++        X: Any,
++        ref_measure: str | None = None,
++        laplace: float = 1.0,
++        basis_json: str | None = None,
++        measure_floor: float | None = None,
++        overflow: str | None = None,
++        sample_weight: Any | None = None,
++        exposure: Any | None = None,
++    ) -> dict[str, Any]:
++        """:meth:`tables` as Python data: the same export, with the same arguments.
++
++        ``est.table_export(X, ...) == json.loads(est.tables(X, ...))``, with its values read
++        from the same JSON numbers. The native document is parsed once and annotated in
++        place, without being written out again, so prefer this when the caller wants the
++        tables rather than a document.
++        """
++        target, x32, kwargs = self._tables_request(X, ref_measure, laplace, basis_json,
++                                                   measure_floor, overflow, sample_weight, exposure)
++        export = json.loads(target.tables(x32, **kwargs))
++        annotate_joint_data(export, ref_measure)
++        annotate_unseen_data(export, getattr(self, "unknown_category", "rare"))
++        return export
++
++    def _tables_request(
++        self, X: Any, ref_measure: str | None, laplace: float, basis_json: str | None,
++        measure_floor: float | None, overflow: str | None, sample_weight: Any | None,
++        exposure: Any | None,
++    ) -> tuple[Any, Any, dict[str, Any]]:
++        raise NotImplementedError
++
+     def _serve_kwargs(self, X: Any, model: Any) -> tuple[np.ndarray, dict[str, Any]]:
+         """The design and categorical keyword for a native predict on ``model``. Table models
+         take categoricals as codes into distinct labels (``cat_codes``), the cheap form; tree
+@@ -6985,23 +7022,28 @@ class TBoostRegressor(RegressorMixin, _BaseTBoost):  # type: ignore[misc]
+         - On a banded table an axis's borders are the band edges, which is why two tables on
+           the same feature may list different borders.
+         """
++        target, x32, kwargs = self._tables_request(X, ref_measure, laplace, basis_json,
++                                                   measure_floor, overflow, sample_weight, exposure)
++        return annotate_unseen_cells(
++            annotate_joint_export(target.tables(x32, **kwargs), ref_measure),
++            getattr(self, "unknown_category", "rare"),
++        )
++
++    def _tables_request(
++        self, X: Any, ref_measure: str | None, laplace: float, basis_json: str | None,
++        measure_floor: float | None, overflow: str | None, sample_weight: Any | None,
++        exposure: Any | None,
++    ) -> tuple[Any, Any, dict[str, Any]]:
++        """The native model and arguments `tables` and `table_export` call."""
+         check_is_fitted(self, "_model")
+         X, sample_weight, exposure = self._resolve_explain_inputs(X, sample_weight, exposure)
+         # A table model takes categoricals as codes (the `predict` path, no per-value Python).
+         x32, cat_kw = self._serve_kwargs(X, self._model)
+         weight32, exposure32 = self._explain_mass(sample_weight, exposure, self._model, joint=ref_measure == "joint")
+-        payload = self._model.tables(
+-            x32,
++        return self._model, x32, dict(
+             **self._export_measure_kwargs(ref_measure, laplace, measure_floor),
+-            basis_json=basis_json,
+-            **cat_kw,
+-            overflow=overflow,
+-            weight=weight32,
+-            exposure=exposure32,
+-        )
+-        return annotate_unseen_cells(
+-            annotate_joint_export(payload, ref_measure),
+-            getattr(self, "unknown_category", "rare"),
++            basis_json=basis_json, **cat_kw, overflow=overflow,
++            weight=weight32, exposure=exposure32,
+         )
+ 
+ 
+@@ -8899,6 +8941,19 @@ class TBoostClassifier(ClassifierMixin, _BaseTBoost):  # type: ignore[misc]
+         against the exported float32 ``borders``; categorical levels (pooled members under
+         ``"<rare>"``) map to cells through ``levels``, unseen levels to ``unseen_cell``.
+         """
++        target, x32, kwargs = self._tables_request(X, ref_measure, laplace, basis_json,
++                                                   measure_floor, overflow, sample_weight, exposure)
++        return annotate_unseen_cells(
++            annotate_joint_export(target.tables(x32, **kwargs), ref_measure),
++            getattr(self, "unknown_category", "rare"),
++        )
++
++    def _tables_request(
++        self, X: Any, ref_measure: str | None, laplace: float, basis_json: str | None,
++        measure_floor: float | None, overflow: str | None, sample_weight: Any | None,
++        exposure: Any | None,
++    ) -> tuple[Any, Any, dict[str, Any]]:
++        """The native model and arguments `tables` and `table_export` call."""
+         check_is_fitted(self)
+         X, sample_weight, exposure = self._resolve_explain_inputs(X, sample_weight, exposure)
+         mm = self._multi_model
+@@ -8909,18 +8964,10 @@ class TBoostClassifier(ClassifierMixin, _BaseTBoost):  # type: ignore[misc]
+         x32, cat_kw = (self._serve_kwargs(X, target) if isinstance(target, _TableModel)
+                        else (lambda d: (d[0], {"cat_x": d[1]}))(self._serve_design(X)))
+         weight32, exposure32 = self._explain_mass(sample_weight, exposure, target, joint=ref_measure == "joint")
+-        payload = target.tables(
+-            x32,
++        return target, x32, dict(
+             **self._export_measure_kwargs(ref_measure, laplace, measure_floor),
+-            basis_json=basis_json,
+-            **cat_kw,
+-            overflow=overflow,
+-            weight=weight32,
+-            exposure=exposure32,
+-        )
+-        return annotate_unseen_cells(
+-            annotate_joint_export(payload, ref_measure),
+-            getattr(self, "unknown_category", "rare"),
++            basis_json=basis_json, **cat_kw, overflow=overflow,
++            weight=weight32, exposure=exposure32,
+         )
+ 
+     def _attach_classifier_model(self, model: _Model | _TableModel) -> None:
+diff --git a/python/tests/test_table_export.py b/python/tests/test_table_export.py
+new file mode 100644
+index 0000000..a9a09e9
+--- /dev/null
++++ b/python/tests/test_table_export.py
+@@ -0,0 +1,90 @@
++"""`table_export` is `tables` as Python data: the same export, parsed once."""
++from __future__ import annotations
++
++import json
++
++import numpy as np
++import polars as pl
++import pytest
++from t_boost import TBoostClassifier, TBoostRegressor
++
++
++def _frame(rows: int = 400, seed: int = 3) -> tuple[pl.DataFrame, np.ndarray]:
++    rng = np.random.default_rng(seed)
++    x = rng.normal(size=(rows, 3)).astype(np.float32)
++    region = np.where(x[:, 2] > 0.3, "north", np.where(x[:, 2] < -0.3, "south", "west"))
++    frame = pl.DataFrame({"a": x[:, 0], "b": x[:, 1], "region": region})
++    signal = 0.4 * x[:, 0] - 0.3 * x[:, 1] + 0.5 * (region == "north")
++    return frame, signal
++
++
++def _regressor(categorical: bool, **params):
++    frame, signal = _frame()
++    y = np.random.default_rng(1).poisson(np.exp(signal - 1)).astype(np.float32)
++    X = frame if categorical else frame.drop("region")
++    estimator = TBoostRegressor(objective="poisson", n_trees=12, n_bags=2, n_jobs=1, seed=5,
++                                **params)
++    return estimator.fit(X, y), X
++
++
++def _classifier(classes: int, **params):
++    frame, signal = _frame()
++    y = np.digitize(signal, np.quantile(signal, np.linspace(0, 1, classes + 1)[1:-1]))
++    return TBoostClassifier(n_trees=12, n_bags=2, n_jobs=1, seed=5, **params).fit(frame, y), frame
++
++
++CASES = {
++    "regressor-numeric": lambda: _regressor(False),
++    "regressor-categorical": lambda: _regressor(True),
++    "binary-categorical": lambda: _classifier(2),
++    "multiclass-categorical": lambda: _classifier(3),
++    # The joint ledger needs unbanded tables; these cover it for every estimator kind.
++    "regressor-unbanded": lambda: _regressor(True, band_tolerance=None),
++    "binary-unbanded": lambda: _classifier(2, band_tolerance=None),
++    "multiclass-unbanded": lambda: _classifier(3, band_tolerance=None),
++}
++# These fits produce banded tables, which the joint ledger refuses.
++BANDED = {"regressor-categorical", "multiclass-categorical"}
++
++
++SUPPORTED = [
++    (case, measure)
++    for case in CASES
++    for measure in (None, "uniform", "joint")
++    if not (measure == "joint" and case in BANDED)
++]
++
++
++@pytest.mark.parametrize(("case", "ref_measure"), SUPPORTED)
++def test_table_export_equals_the_parsed_tables_document(case, ref_measure):
++    estimator, X = CASES[case]()
++    kwargs = {"ref_measure": ref_measure}
++    document = json.loads(estimator.tables(X, **kwargs))
++    export = estimator.table_export(X, **kwargs)
++    assert export == document
++    assert json.dumps(export) == json.dumps(document)  # the same key order too
++
++
++def test_table_export_takes_call_time_mass_like_tables():
++    estimator, X = _regressor(True)
++    weight = np.linspace(0.5, 2.0, len(X)).astype(np.float32)
++    assert estimator.table_export(X, sample_weight=weight) == json.loads(
++        estimator.tables(X, sample_weight=weight)
++    )
++
++
++def test_unseen_cells_are_annotated_on_the_exported_axes():
++    estimator, X = _regressor(True)
++    export = estimator.table_export(X)
++    axes = [axis for table in export["tables"] for axis in table["axes"] if axis.get("levels")]
++    assert axes and all({"rare_pooled", "unseen_cell"} <= set(axis) for axis in axes)
++
++
++@pytest.mark.parametrize("case", sorted(BANDED))
++def test_an_unsupported_joint_export_is_refused_alike(case):
++    estimator, X = CASES[case]()
++    message = "joint-measure ledger does not yet support banded tables"
++    with pytest.raises(ValueError, match=message):
++        estimator.tables(X, ref_measure="joint")
++    with pytest.raises(ValueError, match=message):
++        estimator.table_export(X, ref_measure="joint")
