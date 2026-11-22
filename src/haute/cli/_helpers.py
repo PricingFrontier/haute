@@ -385,25 +385,23 @@ def resolve_transport(config: DeployConfig) -> TransportInfo:
     Returns a :class:`TransportInfo` with ``kind`` set to one of:
 
     - ``"databricks"`` — Databricks Model Serving
-    - ``"http"`` — container-based HTTP endpoint
-    - ``"unsupported"`` — target has no transport implementation yet
+    - ``"http"`` — container-based HTTP endpoint, every other target a deploy can go to
 
     For ``"http"`` targets the ``staging_url`` (and ``prod_url`` when
     available) are populated from ``config.ci``.  Raises
-    :class:`click.ClickException` if the staging URL is required but missing.
+    :class:`click.ClickException` if the staging URL is required but missing, and
+    :class:`~haute.errors.DeployError` for a target no deploy can go to
+    (``check_deploy_target``), which a configuration read from ``haute.toml`` never holds.
     """
-    from haute.deploy._config import _CONTAINER_BASED_TARGETS
+    from haute.deploy._config import check_deploy_target
 
+    check_deploy_target(config.target)
     if config.target == "databricks":
         return TransportInfo(kind="databricks")
-
-    if config.target in _CONTAINER_BASED_TARGETS:
-        staging_url = config.ci.staging_endpoint_url
-        if not staging_url:
-            raise click.ClickException(
-                "No staging endpoint URL configured. Set [ci.staging] endpoint_url in haute.toml."
-            )
-        prod_url = config.ci.production_endpoint_url
-        return TransportInfo(kind="http", staging_url=staging_url, prod_url=prod_url)
-
-    return TransportInfo(kind="unsupported")
+    staging_url = config.ci.staging_endpoint_url
+    if not staging_url:
+        raise click.ClickException(
+            "No staging endpoint URL configured. Set [ci.staging] endpoint_url in haute.toml."
+        )
+    prod_url = config.ci.production_endpoint_url
+    return TransportInfo(kind="http", staging_url=staging_url, prod_url=prod_url)

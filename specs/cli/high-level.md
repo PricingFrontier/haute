@@ -60,7 +60,9 @@ Out of scope, owned elsewhere:
   test-quote fixtures, CI/CD workflow files for the chosen provider (each GitHub action
   pinned to a commit), a git pre-commit hook that fixes and formats only what is staged and
   stops a commit (a milestone, or a person's own `git commit`; never a save) on a problem
-  ruff cannot fix safely,
+  ruff cannot fix safely, recorded executable in git's index inside a repository on every
+  system (Windows has no executable bit for git to read), so a clone on Linux or macOS can
+  run it,
   `.gitignore` guard entries, and `.gitattributes` entries that pin LF line endings for the
   `*.py`, `*.json`, `*.toml`, `*.yml` and `*.md` files and the extensionless
   `.githooks/pre-commit` in every checkout, whatever `core.autocrlf` says, and mark `uv.lock`
@@ -94,10 +96,14 @@ Out of scope, owned elsewhere:
   question. The re-run writes `haute.toml` afresh from the answers, keeping
   `[project] name`; the previous file is left to git, and the summary says to copy back
   from it what was set by hand, the `[mlflow]` settings saved from the app among them. It
-  writes the workflows (pruning every generated file the new set does not hold),
-  `.env.example` and the pre-commit hook again, reporting each as written, updated or
-  unchanged and each workflow it removed, records each file it wrote or generates that Git
-  does not track yet in version history as a save, as `haute ci update` does,
+  writes the workflows (removing each CI file Haute wrote, which its first line records, that
+  the new set does not hold; a team's own file at one of Haute's paths is left),
+  `.env.example` and the pre-commit hook again. Its summary and what it records are one
+  list: every file the re-run writes or regenerates (`pyproject.toml`, `.python-version`,
+  `haute.toml`, the form folder and `connections.toml` when written, `.env.example`, the
+  hook, the workflows, `.gitignore` and `.gitattributes`) is named as written, updated or
+  unchanged, each workflow it removed as removed, and each of them Git does not track yet
+  is recorded in version history as a save, as `haute ci update` does,
   and writes nothing in `rating/` or `tests/`, which are the project's, beyond the
   workbench's form folder when it has none. The kind of project may change: an automated
   project set up as a workbench gets the blank form folder and `connections.toml` where
@@ -136,7 +142,14 @@ Out of scope, owned elsewhere:
   no node is materialised but the target, whose output alone is collected, all of it or its
   first N rows. It prints each node walked with the columns its plan carries and the
   target's output. A pipeline with no output node and no `--node` is refused, naming both
-  remedies.
+  remedies. `--node` takes the names an analyst sees, through the same record the editor's
+  requests resolve their addresses by ([server API](../server-api/low-level.md), "Node
+  addresses"): a pipeline node's, a submodel's (run to its first output, as the editor
+  previews it), and a node inside a submodel by its own name when one submodel holds it, or
+  as `<submodel>/<node>`, the name the run prints for it; so grouping nodes into a submodel
+  keeps each of them findable. A name several submodels' nodes have is refused naming each,
+  a submodel without outputs naming its nodes, and a name that fits nothing naming the names
+  there are.
 - `haute lint [pipeline_file]` checks a pipeline as the editor's save does, without
   executing anything, so the generated CI's lint step refuses what the editor would refuse
   to save. It strictly parses the pipeline and exits non-zero on syntax, configuration,
@@ -147,7 +160,9 @@ Out of scope, owned elsewhere:
   another letter case than its file, and the rest, each with the save's own message), and
   structural problems of the flattened
   graph (edges pointing at missing nodes and orphan nodes). The save's warnings are printed
-  without failing.
+  without failing. A pipeline with no nodes, the one `haute init` writes, passes, its summary
+  saying it has none yet: the editor loads it ready and saves it, so a new project passes its
+  CI's lint step.
 - `haute train <training_script>` runs a training script that must define a module-level `job`
   object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
   live progress bar and printing the returned result's model path, feature counts, and metrics.
@@ -174,7 +189,8 @@ Out of scope, owned elsewhere:
   and reports any a later Push finds missing so the push panel can offer to set them
   ([frontend git UI](../frontend-git-ui/high-level.md)); the editor sets only secrets the
   repository lacks, and the command is how a changed value reaches CI.
-- `haute ci update` rewrites the CI files `haute init` generated, and `.env.example`, with
+- `haute ci update` rewrites the CI files `haute init` generated, and no others (it removes
+  only a CI file Haute wrote, as the re-run does), and `.env.example`, with
   the variables `connections.toml` names when the project has one, for the
   installed Haute and the project's `[ci]` table, so a project takes up fixed workflows, a
   changed `[ci.staging] endpoint_suffix`, or a `[ci.production] environment` whose reviewers
@@ -185,12 +201,19 @@ Out of scope, owned elsewhere:
   uncommitted, is recorded in version history as a save on the working branch, so the next
   Commit takes it: Commit takes a new
   file only in the pipeline folder ([git integration](../git-integration/high-level.md)).
+  It names each file it wrote, updated, found unchanged or removed, a GitHub project's
+  `.python-version` among them, from the one list it records from, and says the CI files
+  are up to date only when it changed none.
   Without a chosen working branch or a git identity it names such files as not yet in
   version history, for `git status`, which lists them where `git diff` does not. What it
   changes in tracked files is left for review and the next Commit.
 - `haute ci registry-host` prints the host of the registry a container target, or a
   workbench project's app image, pushes to, for the login step its generated jobs run
-  before `haute deploy` or `haute app build --push`.
+  before `haute deploy` or `haute app build --push`. Where that push needs a registry, a
+  workbench project's app image and a build-and-push-only target's scoring image, an empty
+  `[deploy.container] registry` is refused in the push's own words, so the job stops at its
+  login step; a `container` target's image without one stays local, and it prints an empty
+  line.
 - `haute smoke [--endpoint-suffix]` sends each test quote in `tests/quotes/` to a live
   serving endpoint as a request of its own, as a pipeline reading one quote per request takes it, and
   holds each quote with an `expected` output to it as the deploy check does, walked into a
@@ -292,15 +315,20 @@ Invariants that hold across every command:
 - `run`, `lint`, and `deploy` delegate CLI/default pipeline discovery to
   `haute._project.resolve_pipeline_file`; a TOML-configured deploy pipeline is passed through
   that same resolver before `DeployConfig` and `resolve_config` consume it.
+- A command piped into a reader that stops reading ends quietly (Failure model, below).
 - A command piped or redirected to a file writes every mark it prints (`✓`, `✗`), whatever
   the locale: a stream that is not UTF-8 is written in UTF-8, or, when `PYTHONIOENCODING`
   chose its encoding or it is a terminal of another encoding, keeps that encoding and shows
   a mark it cannot hold as `?`. None of it raises.
 - Command handlers use exit code 1 for their handled operational failures; Click uses exit
-  code 2 for argument/choice/range parsing errors. Two informational outcomes intentionally
-  succeed: ordinary `status` reports a missing registered model and exits 0, and `impact`
-  warns and exits 0 for a target whose transport is not implemented. `status --version-only`
-  makes the same missing-model case an exit-1 `ClickException` for scripts.
+  code 2 for argument/choice/range parsing errors. One informational outcome intentionally
+  succeeds: ordinary `status` reports a missing registered model and exits 0.
+  `status --version-only` makes the same missing-model case an exit-1 `ClickException` for
+  scripts.
+- Every command that reads the project's deploy settings refuses a `[deploy] target` no
+  deploy can go to (one Haute does not know, a typo say, or one planned and not yet
+  implemented) in the same words, naming the key as it is written (`HAUTE_TARGET` when the
+  environment set it) and the targets there are, as `haute deploy --dry-run` does.
 
 ## Design rationale
 
@@ -320,7 +348,9 @@ Invariants that hold across every command:
   command is a local editor surface, not an application-hosting surface.
 - **The development UI has one deterministic address.** Vite binds
   `127.0.0.1:5173` with strict-port mode. `serve` refuses to start if either the API port or
-  Vite port is occupied, waits for both listeners before opening the browser, and never follows
+  Vite port is occupied by a listener (a stopped server's connection that a browser tab still
+  holds is not one, so a restart straight after a stop starts), waits for both listeners
+  before opening the browser, and never follows
   Vite's automatic port rollover to a different, unreported origin.
 - **Command-scoped failure rules.** Missing Node/npm and a missing production frontend build
   fail rather than guessing; malformed TOML fails. What each command needs of the
@@ -390,8 +420,8 @@ exit 1, as below.
 A missing `haute.toml` where the command requires one (`smoke`/`impact`), an unresolvable
 required model name, a missing frontend build, a missing training `job` variable, a failed
 validation, or a deploy exception is terminal. Ordinary
-`status`-not-found and unsupported-target `impact` are the two deliberate informational success
-paths described above, not deploy or scoring successes.
+`status`-not-found is the one deliberate informational success path described above, not a
+deploy or scoring success.
 
 Exceptions are handled with narrow, explicit catches rather than blanket `except Exception` used as
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,
@@ -414,8 +444,14 @@ type and a read-only file each end in their sentence; and anything else, a `Type
 as "Haute hit a failure it does not recognise (incident <id>) …" and where its traceback was
 written, `.haute/incidents/<id>.txt` in the project, or `haute-incidents/` in the system's
 temporary folder outside one. A record that cannot be written is said with its reason, and
-the traceback follows. Click's own usage errors (a port out of range among them) exit 2, an
-abort and a reader that stopped reading (`| head`) end as Click ends them.
+the traceback follows. Click's own usage errors (a port out of range among them) exit 2, and
+an abort ends as Click ends it. A reader that stopped reading the command's output (a pipe into
+`head` that took its lines, a pager quit early) ends the command quietly, exit 1, whatever was
+writing (the command's own line or a log line): nothing is said, neither a parse error nor
+the interpreter's notice. The process's own standard output and error, when not a terminal,
+raise `OutputClosed` for it, which is no `OSError`, so no command's handler of its own
+failures takes it for one; any other failure of a stream, or a broken pipe to a program a
+command runs, is answered as a failure.
 
 The Databricks smoke readiness loop retries only the SDK's explicit not-found response while an
 endpoint is being created. Authentication, permission, transport, and other SDK failures stop

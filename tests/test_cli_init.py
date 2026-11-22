@@ -1165,6 +1165,34 @@ class TestInitAgain:
         assert ".python-version" in saved.splitlines()
         assert pin.read_text(encoding="utf-8") == kept
 
+    @pytest.mark.parametrize("gone", [".gitattributes", ".gitignore", ".python-version"])
+    def test_a_re_run_lists_and_records_every_file_it_writes(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gone: str
+    ):
+        """CLI-09: the summary and what is recorded are one list, so a file the re-run writes
+        again (one deleted, or a project made before Haute wrote it) is named and recorded."""
+        from haute._git_setup import set_working_branch
+
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False).exit_code == 0
+        git_run(tmp_path, "init", "-b", "main")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "rm", "-q", "--cached", gone)
+        (tmp_path / gone).unlink()
+        git_run(tmp_path, "commit", "-m", "The project")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        result = runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert f"  written    {gone}\n" in result.output
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert gone in saved.splitlines()
+        assert git_run(tmp_path, "status", "--porcelain", "--", gone) == ""
+        assert f"Recorded in version history: {gone}" in result.output
+
     def test_a_re_run_prunes_stale_gitlab_and_azure_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1870,6 +1898,220 @@ class TestInitCiRunsTheProjectsPython:
                 continue
             assert pins, relative
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
+
+
+class TestTheHookReachesEveryCloneExecutable:
+    """CLI-07: git takes a new file's mode from the file system, which has no executable bit
+    on Windows, so every way Haute puts the hook in the index records it 100755. Each test
+    sets ``core.fileMode=false``, as Git for Windows does, so the file's own bit is never
+    read, on Linux CI too."""
+
+    HOOK = ".githooks/pre-commit"
+
+    def _repository(self, tmp_path: Path) -> None:
+        git_run(tmp_path, "init", "-q", "-b", "main")
+        git_run(tmp_path, "config", "core.fileMode", "false")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+
+    def _mode(self, tmp_path: Path, tree: str | None = None) -> str:
+        listed = (
+            git_run(tmp_path, "ls-files", "-s", "--", self.HOOK)
+            if tree is None
+            else git_run(tmp_path, "ls-tree", tree, "--", self.HOOK)
+        )
+        return listed.split()[0]
+
+    def test_a_first_init_records_it_executable_for_the_first_commit(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        self._repository(tmp_path)
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._mode(tmp_path) == "100755"
+        # A person's own first commit keeps the mode the index holds.
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project")
+        assert self._mode(tmp_path, "HEAD") == "100755"
+
+    def test_the_editors_first_commit_records_it_executable(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # The seed empties the index and stages the project's files again.
+        from haute._git_setup import set_working_branch
+
+        self._repository(tmp_path)
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        assert self._mode(tmp_path, "main") == "100755"
+
+    def test_a_re_run_records_an_untracked_hook_executable_in_its_save(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from haute._git_setup import set_working_branch
+
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        self._repository(tmp_path)
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "rm", "-q", "--cached", self.HOOK)
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project without its hook")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._mode(tmp_path, "pricing-dev-save") == "100755"
+
+    def test_a_re_run_records_a_hook_tracked_without_its_bit_executable(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # A project made on Windows before Haute recorded the mode: only the mode changes,
+        # so what the re-run changed in the hook is still left for review.
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        self._repository(tmp_path)
+        # An older Haute's hook, committed without its bit; the re-run writes today's.
+        (tmp_path / self.HOOK).write_text("# Haute pre-commit hook, older\n", encoding="utf-8")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "update-index", "--chmod=-x", "--", self.HOOK)
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project")
+        assert self._mode(tmp_path, "HEAD") == "100644"
+        staged = git_run(tmp_path, "ls-files", "-s", "--", self.HOOK).split()[1]
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._mode(tmp_path) == "100755"
+        assert "older" not in (tmp_path / self.HOOK).read_text(encoding="utf-8")
+        # The newer hook is left for review: only the mode is staged.
+        assert git_run(tmp_path, "ls-files", "-s", "--", self.HOOK).split()[1] == staged
+        assert git_run(tmp_path, "diff", "--name-only", "--", self.HOOK) == self.HOOK
+
+
+class TestAProjectBelowTheRepositorysRoot:
+    """A project in a folder of a larger repository: git names index entries from the
+    repository's root, so the hook's repair and a save's commit name them so too."""
+
+    def _repository_with_a_project(self, runner: CliRunner, repository: Path) -> Path:
+        git_run(repository, "init", "-q", "-b", "main")
+        git_run(repository, "config", "core.fileMode", "false")
+        git_run(repository, "config", "user.name", "Test Actuary")
+        git_run(repository, "config", "user.email", "test@example.com")
+        # The repository's own hook, at the path the project's has from the project.
+        (repository / ".githooks").mkdir()
+        (repository / ".githooks" / "pre-commit").write_text("# the team's\n", encoding="utf-8")
+        project = repository / "pricing"
+        project.mkdir()
+        use_project(project)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        return project
+
+    def _entry(self, repository: Path, path: str, tree: str | None = None) -> list[str]:
+        listed = (
+            git_run(repository, "ls-files", "-s", "--", path)
+            if tree is None
+            else git_run(repository, "ls-tree", tree, "--", path)
+        )
+        return listed.split()[:2]
+
+    def test_a_project_in_a_folder_the_repository_ignores_stages_nothing(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # A scratch project inside a checkout that ignores it (the browser tests' own): git
+        # would never take its hook, so it is not forced in and the init goes ahead.
+        git_run(tmp_path, "init", "-q", "-b", "main")
+        (tmp_path / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+        project = tmp_path / "scratch"
+        project.mkdir()
+        use_project(project)
+
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert (project / ".githooks" / "pre-commit").is_file()
+        assert git_run(tmp_path, "ls-files", "--", "scratch") == ""
+
+    def test_the_hooks_repair_changes_the_projects_entry_alone(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        project = self._repository_with_a_project(runner, tmp_path)
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "update-index", "--chmod=-x", "--", "pricing/.githooks/pre-commit")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
+        teams = self._entry(tmp_path, ".githooks/pre-commit")
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._entry(tmp_path, "pricing/.githooks/pre-commit")[0] == "100755"
+        assert self._entry(tmp_path, ".githooks/pre-commit") == teams
+        assert (project / ".githooks" / "pre-commit").is_file()
+
+    @pytest.mark.parametrize("diff_relative", [False, True], ids=["default", "diff.relative"])
+    def test_a_save_commits_the_projects_files_and_nothing_else_staged(
+        self, runner: CliRunner, tmp_path: Path, diff_relative: bool
+    ) -> None:
+        from haute._git_setup import set_working_branch
+
+        project = self._repository_with_a_project(runner, tmp_path)
+        if diff_relative:
+            # A diff then names paths from the folder git runs in, unless told otherwise.
+            git_run(tmp_path, "config", "diff.relative", "true")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "rm", "-q", "--cached", "pricing/.githooks/pre-commit")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
+        set_working_branch("pricing-dev", project, create=True, cwd=project)
+        # Someone's work staged elsewhere in the repository stays out of the save.
+        (tmp_path / "notes.txt").write_text("staged by hand\n", encoding="utf-8")
+        git_run(tmp_path, "add", "--", "notes.txt")
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert saved.splitlines() == ["pricing/.githooks/pre-commit"]
+        assert self._entry(tmp_path, "pricing/.githooks/pre-commit", "pricing-dev-save")[0] == (
+            "100755"
+        )
+        assert git_run(tmp_path, "diff", "--cached", "--name-only", "--no-relative") == (
+            "notes.txt"
+        )
+
+    @pytest.mark.parametrize("diff_relative", [False, True], ids=["default", "diff.relative"])
+    def test_a_save_records_an_addition_and_a_deletion_of_the_projects(
+        self, runner: CliRunner, tmp_path: Path, diff_relative: bool
+    ) -> None:
+        from haute._git_setup import set_working_branch
+        from haute._git_transactions import commit_save
+
+        project = self._repository_with_a_project(runner, tmp_path)
+        # The repository's own file at the path the project's deleted one has from the project.
+        (tmp_path / "rating").mkdir()
+        (tmp_path / "rating" / "main.py").write_text("# the team's\n", encoding="utf-8")
+        if diff_relative:
+            git_run(tmp_path, "config", "diff.relative", "true")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
+        set_working_branch("pricing-dev", project, create=True, cwd=project)
+        (tmp_path / "notes.txt").write_text("staged by hand\n", encoding="utf-8")
+        git_run(tmp_path, "add", "--", "notes.txt")
+        (tmp_path / "pricing" / "rating" / "main.py").unlink()
+        (tmp_path / "pricing" / "rating" / "pricing.py").write_text("x = 1\n", encoding="utf-8")
+
+        assert commit_save(["rating/main.py", "rating/pricing.py"], "pricing-dev", cwd=project)
+
+        changed = git_run(
+            tmp_path, "show", "--name-status", "--no-relative", "--format=", "pricing-dev-save"
+        )
+        assert sorted(changed.splitlines()) == [
+            "A\tpricing/rating/pricing.py",
+            "D\tpricing/rating/main.py",
+        ]
+        assert git_run(tmp_path, "ls-tree", "pricing-dev-save", "--", "rating/main.py")
+        assert git_run(tmp_path, "diff", "--cached", "--name-only", "--no-relative") == (
+            "notes.txt"
+        )
 
 
 class TestANewProjectPassesItsOwnLintJob:

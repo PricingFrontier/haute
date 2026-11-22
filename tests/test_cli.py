@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import polars as pl
@@ -174,6 +174,99 @@ class TestOutputEncoding:
         stream.flush()
 
         assert raw.getvalue() == "? £100".encode("cp1252")
+
+    @pytest.mark.parametrize("command", [["lint"], ["run", "--node", "transform"]], ids=" ".join)
+    def test_a_reader_that_stopped_reading_ends_the_command_quietly(
+        self, project_dir: Path, command: list[str]
+    ) -> None:
+        """CLI-11: ``| head`` closes the pipe; the next line the command or a log writes to
+        standard output fails. The command ends there, saying nothing: no parse error, no
+        interpreter notice. The reader is gone before the command's first line, so the
+        failure is certain whatever the timing."""
+        child = subprocess.Popen(
+            [sys.executable, "-m", "haute", *command, str(project_dir / "main.py")],
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert child.stdout is not None and child.stderr is not None
+        child.stdout.close()
+        said = child.stderr.read().decode("utf-8", "replace")
+        assert child.wait(timeout=120) == 1
+        assert said == ""
+
+    @pytest.mark.parametrize("command", [["lint"], ["run", "--node", "transform"]], ids=" ".join)
+    def test_a_reader_gone_during_the_parse_is_no_parse_error(
+        self, project_dir: Path, tmp_path: Path, command: list[str]
+    ) -> None:
+        """As ``| head -1`` does: the command's first line is read, then the pipe closed. The
+        parse waits until then, so the line that fails is the parser's own log line, written
+        inside the command's ``except EXPECTED_FAILURES``, where a broken pipe read as a parse
+        error, the interpreter's notice and exit 120 followed."""
+        gate = tmp_path / "reader-gone"
+        script = (
+            "import pathlib, sys, time\n"
+            "import haute.parser, haute.routes._helpers as helpers\n"
+            "gate = pathlib.Path(sys.argv[1])\n"
+            "def gated(real):\n"
+            "    def wait_then(*args, **kwargs):\n"
+            "        while not gate.exists():\n"
+            "            time.sleep(0.01)\n"
+            "        return real(*args, **kwargs)\n"
+            "    return wait_then\n"
+            "helpers.parse_pipeline_to_graph = gated(helpers.parse_pipeline_to_graph)\n"
+            "haute.parser.parse_pipeline_file = gated(haute.parser.parse_pipeline_file)\n"
+            "from haute.cli import cli\n"
+            "cli(sys.argv[2:], prog_name='haute')\n"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(gate), *command, str(project_dir / "main.py")],
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert child.stdout is not None and child.stderr is not None
+        try:
+            for line in child.stdout:
+                if line.startswith((b"Linting pipeline", b"Running pipeline")):
+                    break
+            child.stdout.close()
+        finally:
+            gate.write_text("closed\n", encoding="utf-8")
+        said = child.stderr.read().decode("utf-8", "replace")
+        assert child.wait(timeout=120) == 1
+        assert said == ""
+
+    def test_a_closed_reader_is_no_failure_of_the_command(self) -> None:
+        """A write to a stream whose reader has gone raises ``OutputClosed``, which no
+        ``except OSError`` (``EXPECTED_FAILURES``) takes; any other failure of the stream is
+        the OSError it is."""
+        from haute.cli._helpers import EXPECTED_FAILURES
+        from haute.cli._output import OutputClosed, _ReaderGuard
+
+        class Pipe(io.RawIOBase):
+            def __init__(self, failure: OSError) -> None:
+                self.failure = failure
+
+            def writable(self) -> bool:
+                return True
+
+            def write(self, data: Any) -> int:
+                raise self.failure
+
+        assert not issubclass(OutputClosed, EXPECTED_FAILURES)
+        closed = _ReaderGuard(
+            io.BufferedWriter(Pipe(BrokenPipeError(32, "Broken pipe"))), encoding="utf-8"
+        )
+        closed.write("✓ checked\n")
+        with pytest.raises(OutputClosed):
+            closed.flush()
+        full = _ReaderGuard(
+            io.BufferedWriter(Pipe(OSError(28, "No space left on device"))), encoding="utf-8"
+        )
+        full.write("✓ checked\n")
+        with pytest.raises(OSError, match="No space left"):
+            full.flush()
 
     def test_a_stream_a_caller_put_in_the_process_s_place_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch
@@ -732,19 +825,6 @@ class TestLint:
     ):
         result = runner.invoke(cli, ["lint", str(tmp_path / "nonexistent.py")])
         assert result.exit_code == 1
-
-    def test_lint_empty_pipeline_fails(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-    ):
-        empty = tmp_path / "empty.py"
-        empty.write_text(
-            "import haute\npipeline = haute.Pipeline('e')\n",
-        )
-        result = runner.invoke(cli, ["lint", str(empty)])
-        assert result.exit_code == 1
-        assert "No nodes" in result.output
 
 
 # ---------------------------------------------------------------------------

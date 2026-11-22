@@ -42,6 +42,7 @@ from haute._git_core import (
     _validate_ref_name,
     divergence_state,
     ledger_name,
+    stage_paths,
 )
 from haute._git_operation import Operation, recover
 from haute._git_setup import (
@@ -109,25 +110,61 @@ def commit_save(
     # letter case on Windows or macOS no longer matches.
     spelled = _git_spelling(paths, cwd)
     sha: str | None = None
-    staged = _stage_save(spelled, cwd)
-    if staged is not None:
-        pathspecs, changed = staged
+    changed = _stage_save(spelled, cwd)
+    if changed is not None:
         msg = message if message is not None else _generate_commit_message(changed)
-        # `git commit -- <paths>` commits the working-tree state of exactly those
-        # paths, bypassing unrelated index content the user may have pre-staged. It is
-        # the one ref move outside a recorded operation: one commit, all or nothing.
+        # The one ref move outside a recorded operation: one commit, all or nothing.
         with _save_commit():
-            _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
+            _commit_staged_paths(changed, msg, cwd)
         sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
         logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
     _refuse_unrecorded(spelled, cwd)
     return sha
 
 
-def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str]] | None:
-    """Stage a save of *paths*, as git spells them: the pathspecs its commit takes and the
-    paths that changed, which name the files in its default message; None when nothing in
-    *paths* changed."""
+def _commit_staged_paths(names: list[str], message: str, cwd: Path | None) -> None:
+    """Commit what the index holds for *names*, the changed paths as git spells them from
+    the repository's root (as ``git diff --name-only`` lists them, the project perhaps below
+    it), and nothing else it holds.
+
+    The commit is made from an index of its own, HEAD's tree with each changed path's entry
+    copied from the index (a path the index no longer holds removed), so unrelated content
+    the user staged stays out of it. Each entry keeps the mode the index holds:
+    ``git commit -- <paths>``, which builds the same index, stats a file HEAD lacks again and,
+    where git reads no executable bit (``core.fileMode=false``, as on Windows), records it
+    100644, the pre-commit hook :func:`stage_paths` staged executable among them (CLI-07).
+    """
+    # Every path from the repository's root, as `--index-info` takes it: `:(top)` and
+    # `--full-name`, since git otherwise reads and prints paths from the folder it runs in.
+    entries = _run_git(
+        "ls-files",
+        "-s",
+        "-z",
+        "--full-name",
+        "--",
+        *(f":(top,literal){name}" for name in names),
+        cwd=cwd,
+    )
+    records = [entry for entry in entries.split("\0") if entry]
+    held = {record.partition("\t")[2] for record in records}
+    # Mode 0 removes a path the index no longer holds: a deletion.
+    records += [f"0 {'0' * 40}\t{name}" for name in names if name not in held]
+    index_info = "".join(f"{record}\0" for record in records)
+    index = (cwd or current_project().root) / _run_git(
+        "rev-parse", "--git-path", "haute-save.index", cwd=cwd
+    )
+    env = {"GIT_INDEX_FILE": str(index)}
+    try:
+        _run_git("read-tree", "HEAD", cwd=cwd, env=env)
+        _run_git("update-index", "-z", "--index-info", cwd=cwd, env=env, input_text=index_info)
+        _run_git(*NO_HOOKS, "commit", "-m", message, cwd=cwd, env=env)
+    finally:
+        index.unlink(missing_ok=True)
+
+
+def _stage_save(paths: list[str], cwd: Path | None) -> list[str] | None:
+    """Stage a save of *paths*, as git spells them: the paths that changed, which its commit
+    takes and its default message names; None when nothing in *paths* changed."""
     # :(literal) so a filename holding glob characters names only itself.
     literal = [_literal(path) for path in paths]
     # `git add` takes a path in the index or in the working tree (`--others`, untracked). One
@@ -138,9 +175,20 @@ def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str
         _run_git("ls-files", "-z", "--cached", "--others", "--", *literal, cwd=cwd).split("\0")
     )
     addable = [path for path in paths if path in present]
+    # `--relative`: from *cwd*, as *paths* are; a diff names paths from the repository's
+    # root, which the project may sit below.
     staged_since_head = set(
         _run_git(
-            "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *literal, cwd=cwd
+            "diff",
+            "--cached",
+            "--name-only",
+            "--relative",
+            "--no-renames",
+            "-z",
+            "HEAD",
+            "--",
+            *literal,
+            cwd=cwd,
         ).split("\0")
     )
     paths = [path for path in paths if path in addable or path in staged_since_head]
@@ -155,17 +203,29 @@ def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str
     # name already staged (`git rm`, `git mv`, an editor's git panel) is in neither the folder
     # nor the index, so it is not added: the path-scoped commit records it as staged.
     if addable:
-        _run_git("add", "--", *map(_literal, addable), cwd=cwd)
+        stage_paths(addable, cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
     # working-tree content already matches HEAD. The add above reconciles that
     # entry; if no net path change remains, there is nothing to commit. The
     # staged name list (not porcelain status, whose fixed-width prefix can
     # begin with a space) is also what names the files in the message.
+    # `-z`: each name as git spells it, never quoted, for the commit and its message;
+    # `--no-relative`: from the repository's root, as the commit's index takes them, whatever
+    # `diff.relative` says.
     staged = _run_git(
-        "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *pathspecs, cwd=cwd
+        "diff",
+        "--cached",
+        "--name-only",
+        "--no-relative",
+        "--no-renames",
+        "-z",
+        "HEAD",
+        "--",
+        *pathspecs,
+        cwd=cwd,
     )
-    changed = staged.splitlines()
-    return (pathspecs, changed) if changed else None
+    changed = [name for name in staged.split("\0") if name]
+    return changed or None
 
 
 def _literal(path: str) -> str:

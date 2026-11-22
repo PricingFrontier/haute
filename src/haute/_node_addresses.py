@@ -128,6 +128,90 @@ def _occurrence(flat: PipelineGraph, occurrence_id: str) -> ExpandedOccurrence:
     return occurrence
 
 
+@dataclass(frozen=True)
+class SpelledTarget:
+    """What a name typed on the command line runs to: the runtime key, the port read (a
+    submodel occurrence's output's handle), and the name its output is shown by."""
+
+    key: str
+    port_label: str | None
+    shown: str
+
+
+def spelled_name(flat: PipelineGraph, key: str) -> str:
+    """How the command line names the node *flat* runs under *key*: a pipeline node by its
+    id, a submodel occurrence's node as ``<occurrence>/<node>``, its address, never by its
+    runtime key. :func:`resolve_spelled` takes every such name back."""
+    origin = expansion_of(flat).origins.get(key)
+    return key if origin is None else f"{origin[0]}/{origin[1]}"
+
+
+def resolve_spelled(flat: PipelineGraph, spelled: str) -> SpelledTarget:
+    """What *spelled*, a node's name as the command line takes it (``haute run --node``),
+    runs to in *flat*, through the expansion's record as a request's address resolves.
+
+    ``<occurrence>/<node>`` is that occurrence's node. A bare name is, in turn: a pipeline
+    node by its id; a submodel occurrence by its name, as its first declared output, the
+    frame the editor previews; or the node of that id in the one occurrence holding one.
+    Raises :class:`NotFoundError` for a name several occurrences' nodes have, naming each
+    spelling, an occurrence without outputs, naming its nodes, and a name that fits nothing,
+    naming the names there are.
+    """
+    expansion = expansion_of(flat)
+    occurrence_id, slash, local_id = spelled.rpartition("/")
+    if slash:
+        occurrence = expansion.occurrences.get(occurrence_id)
+        if occurrence is None:
+            raise NotFoundError(
+                f"The pipeline has no submodel {occurrence_id!r}.{_names_there_are(flat)}"
+            )
+        key = occurrence.children.get(local_id)
+        if key is None:
+            raise NotFoundError(
+                f"Submodel {occurrence_id!r} has no node {local_id!r}. "
+                f"Its nodes: {_occurrence_nodes(occurrence)}."
+            )
+        return SpelledTarget(key, None, spelled)
+    if spelled in flat.node_map and spelled not in expansion.origins:
+        return SpelledTarget(spelled, None, spelled)
+    occurrence = expansion.occurrences.get(spelled)
+    if occurrence is not None:
+        port, endpoint = next(iter(occurrence.output_ports.items()), (None, None))
+        if endpoint is None:
+            said = "has no outputs" if port is None else f"names no node for its output {port!r}"
+            raise NotFoundError(
+                f"Submodel {spelled!r} {said} to run to. "
+                f"Name one of its nodes: {_occurrence_nodes(occurrence)}."
+            )
+        return SpelledTarget(endpoint.node_id, endpoint.handle_id, f"{spelled}[{port}]")
+    holders = [held for held in expansion.occurrences.values() if spelled in held.children]
+    if len(holders) == 1:
+        return SpelledTarget(
+            holders[0].children[spelled], None, f"{holders[0].instance_id}/{spelled}"
+        )
+    if holders:
+        each = ", ".join(f"{held.instance_id}/{spelled}" for held in holders)
+        raise NotFoundError(
+            f"{spelled!r} is a node of {len(holders)} submodels: {each}. "
+            "Name one as <submodel>/<node>."
+        )
+    raise NotFoundError(f"The pipeline has no node {spelled!r}.{_names_there_are(flat)}")
+
+
+def _occurrence_nodes(occurrence: ExpandedOccurrence) -> str:
+    return ", ".join(f"{occurrence.instance_id}/{local}" for local in occurrence.children)
+
+
+def _names_there_are(flat: PipelineGraph) -> str:
+    """The names a command line can run to in *flat*, as a sentence or two to append."""
+    expansion = expansion_of(flat)
+    nodes = [spelled_name(flat, node.id) for node in flat.nodes]
+    said = f" Its nodes: {', '.join(nodes)}." if nodes else ""
+    if expansion.occurrences:
+        said += f" Its submodels: {', '.join(expansion.occurrences)}."
+    return said
+
+
 def address_entry(flat: PipelineGraph, key: str) -> NodeAddressEntry:
     """The address and authored label of the node *flat* runs under *key*: a child of an
     occurrence, a collapsed occurrence's own key, or a pipeline node. A key *flat* does

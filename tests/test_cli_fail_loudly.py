@@ -546,6 +546,37 @@ class TestServePortConflictDetection:
         assert result.exit_code == 0, result.output
         mock_uvicorn_run.assert_called_once()
 
+    @pytest.mark.parametrize("reuse_address", [0, 1], ids=["plain", "as-uvicorn-binds"])
+    def test_a_listening_server_is_refused_however_it_bound(self, reuse_address: int) -> None:
+        from haute.cli._serve import _port_is_available
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, reuse_address)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            assert not _port_is_available("127.0.0.1", listener.getsockname()[1])
+
+    def test_a_port_is_free_while_a_stopped_servers_connection_lingers(self) -> None:
+        """CLI-10: a server stopped while a browser tab holds its kept-alive connection
+        leaves that connection waiting (FIN-WAIT-2 on Linux) for up to a minute. Nothing
+        listens, and uvicorn would bind, so the probe says the port is free."""
+        from haute.cli._serve import _port_is_available
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        tab = socket.create_connection(("127.0.0.1", port))
+        try:
+            served, _ = listener.accept()
+            # The server closes first, as a stopped one does; the tab keeps its end open.
+            served.close()
+            listener.close()
+            assert _port_is_available("127.0.0.1", port)
+        finally:
+            tab.close()
+
 
 # ---------------------------------------------------------------------------
 # #49 — ``haute impact`` must not silently swallow exceptions from prod

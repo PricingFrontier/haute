@@ -117,7 +117,7 @@ def handle_impact(config: ImpactConfig) -> None:
                 records,
                 batch_size,
             )
-        elif transport.kind == "http":
+        else:
             staging_preds, prod_preds, first_deploy = _impact_http(
                 transport.staging_url,
                 transport.prod_url,
@@ -125,13 +125,6 @@ def handle_impact(config: ImpactConfig) -> None:
                 batch_size,
                 project_root,
             )
-        else:
-            click.echo(
-                f"  \u26a0 Impact analysis not yet implemented for target "
-                f"'{deploy_config.target}'.",
-                err=True,
-            )
-            return
         if first_deploy is not None:
             report = ImpactReport(
                 pipeline_name=deploy_config.model_name,

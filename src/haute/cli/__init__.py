@@ -6,7 +6,7 @@ import haute.cli._polars_startup  # noqa: F401
 
 # isort: split
 
-import errno
+import sys
 
 import click
 
@@ -19,7 +19,7 @@ from haute.cli._helpers import answer_command_failure
 from haute.cli._impact import impact
 from haute.cli._init_cmd import init
 from haute.cli._lint import lint
-from haute.cli._output import utf8_output
+from haute.cli._output import OutputClosed, guard_closed_readers, utf8_output
 from haute.cli._run import run
 from haute.cli._serve import serve
 from haute.cli._smoke import smoke
@@ -32,19 +32,25 @@ class HauteGroup(click.Group):
 
     Whatever a command raises that Click does not answer itself (its usage errors, an
     abort, an exit) ends the command here in one line and exit 1, through
-    :func:`haute.cli._helpers.answer_command_failure`; no command ends in a traceback.
+    :func:`haute.cli._helpers.answer_command_failure`; no command ends in a traceback. A
+    reader that stopped reading its output (``OutputClosed``, raised by the stream itself,
+    ``haute.cli._output``) ends it here too, saying nothing, exit 1.
     """
 
     def invoke(self, ctx: click.Context) -> object:
         try:
-            return super().invoke(ctx)
+            try:
+                return super().invoke(ctx)
+            finally:
+                # The last lines reach the reader here, inside the edge, rather than at the
+                # interpreter's exit, where a reader that has gone would be a notice.
+                for stream in (sys.stdout, sys.stderr):
+                    if stream is not None:
+                        stream.flush()
+        except OutputClosed:
+            raise SystemExit(1) from None
         except (click.ClickException, click.exceptions.Abort, click.exceptions.Exit):
             raise
-        except OSError as exc:
-            if exc.errno == errno.EPIPE:
-                # A reader that stopped reading (``| head``): Click ends that quietly.
-                raise
-            answer_command_failure(exc, command=ctx.invoked_subcommand or "haute")
         except Exception as exc:
             answer_command_failure(exc, command=ctx.invoked_subcommand or "haute")
 
@@ -55,6 +61,7 @@ class HauteGroup(click.Group):
 def cli(ctx: click.Context) -> None:
     """Haute - Open-source pricing engine for insurance teams"""
     utf8_output()
+    guard_closed_readers()
     configure_process_high_qos()
     # Each command finds its project from the shell's folder, by what it needs
     # (``haute.cli._helpers.HauteCommand``).

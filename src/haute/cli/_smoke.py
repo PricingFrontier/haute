@@ -83,14 +83,8 @@ def handle_smoke(config: SmokeConfig) -> None:
             )
             raise SystemExit(1)
         all_ok = _smoke_databricks(endpoint_name, json_files)
-    elif transport.kind == "http":
-        all_ok = _smoke_http(transport.staging_url, json_files)
     else:
-        click.echo(
-            f"Error: Smoke is not supported for target '{deploy_config.target}'.",
-            err=True,
-        )
-        raise SystemExit(1)
+        all_ok = _smoke_http(transport.staging_url, json_files)
 
     if not all_ok:
         click.echo("\n  \u2717 Smoke test failed.", err=True)

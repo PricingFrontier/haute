@@ -591,8 +591,8 @@ class TestSmokeHttpRequests:
         )
 
 
-class TestSmokeUnsupportedTarget:
-    def test_unsupported_target_exits_non_zero(
+class TestSmokePlannedTarget:
+    def test_a_planned_target_is_refused_naming_its_key(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -610,10 +610,10 @@ class TestSmokeUnsupportedTarget:
 
         result = runner.invoke(cli, ["smoke"])
         assert result.exit_code == 1
-        assert "error" in result.output.lower()
-        assert "smoke" in result.output.lower()
-        assert "sagemaker" in result.output.lower()
-        assert "not supported" in result.output.lower()
+        assert (
+            "Error: [deploy] target 'sagemaker' is planned but not yet implemented."
+            in result.output
+        )
 
 
 class TestSmokeReachesTheEndpointWithTheServingPair:

@@ -407,12 +407,12 @@ def deploy_to_platform_container(
     so a missing ``container.registry`` fails before the build; after the push the
     deploy succeeds and reports which image to point the service at.
     """
+    from haute.deploy._config import push_registry_problem
+
     target = resolved.config.target
-    if not resolved.config.container.registry:
-        raise DeployError(
-            f"Target '{target}' pushes the scoring image for a manual service update, "
-            "so it needs a registry: set [deploy.container] registry in haute.toml."
-        )
+    problem = push_registry_problem(resolved.config, workbench=False)
+    if problem is not None:
+        raise DeployError(problem)
     result = build_and_push_image(resolved, progress, keep_build=keep_build)
     if progress:
         progress(

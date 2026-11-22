@@ -854,8 +854,10 @@ first (BUG-24): after `uv sync --frozen`, a **Log in to the registry** step (Git
 Azure DevOps) or script entry (GitLab), given the deploy step's secrets, runs
 `_registry_login_script`. `uv run haute ci registry-host` prints the host of
 `[deploy.container] registry` as its last line, which the step reads since a log line
-may come first, and an empty line when the registry is empty (a `container` image then
-stays local, and a platform target's deploy refuses it). With `set -eo pipefail` (no
+may come first, and an empty line when the registry is empty and the push needs none (a
+`container` image then stays local); where it needs one, a platform target's scoring image
+or a workbench project's app image, the command exits 1 in the push's own words
+(`push_registry_problem`), which ends the step before any login. With `set -eo pipefail` (no
 `-u`: on GitLab the lines share the job's shell), a failed command fails the step, and the
 target's `registry_login` command pipes its credential to `docker login "$registry"
 --password-stdin`: for `container` the `DOCKER_USERNAME`/`DOCKER_PASSWORD` pair; for
@@ -963,8 +965,12 @@ chosen `ci` value, path to content (`"none"` has none, an unknown provider raise
 update` and a re-run of `handle_init` first calling `_prune_stale_ci_files(project_dir,
 keep=...)` (defined in `src/haute/cli/_init_cmd.py`) with the set about to be written (a new
 project's `handle_init` prunes nothing: its folder's workflows are the team's own),
-which deletes every other generated path (from that module's `GENERATED_CI_FILES`)
-and removes the folders that leaves empty under `.github/`, and `.github/` itself, before writing the new provider's files.
+which deletes every other generated path (from that module's `GENERATED_CI_FILES`) whose file
+Haute wrote, `haute._scaffold.is_haute_ci_file`: it holds `CI_FILE_MARK`, the line
+`ci_files` and `workbench_ci_files` head every file with (`_marked`), so a file at a listed
+path without it is the team's and is left; it then removes the folders that leaves empty under
+`.github/`, and `.github/` itself, before writing the new provider's files. Each file removed
+is named as removed in the command's report.
 Every generator result must parse as one complete YAML document for every
 `TARGETS` entry. Structural tests locate the actual validate, staging, smoke,
 impact, and production jobs/stages, assert their branch/manual conditions, and

@@ -5,17 +5,17 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`, a `HauteGroup`, the command line's one edge for failures: whatever a command raises past Click's own errors, its aborts and a broken pipe ends in `answer_command_failure`'s one line and exit 1), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`, a `HauteGroup`, the command line's one edge for failures: whatever a command raises past Click's own errors and its aborts ends in `answer_command_failure`'s one line and exit 1; `OutputClosed` ends it saying nothing, exit 1, and the command's last lines are flushed inside the edge, so the interpreter's own flush at exit has nothing left to fail on), registers all thirteen commands and command groups, exposes `--version`; the group's callback sets the process's output streams through `utf8_output` and then `guard_closed_readers` before any command prints. Its first import is the Polars startup module below, before anything imports Polars. |
 | `src/haute/cli/_polars_startup.py` | Applies Haute's Polars settings (spilling off, its folder in the working directory's `.haute_cache/polars-spill`, unknown extension columns as storage; [execution engine](../execution-engine/low-level.md)) and reaps ended processes' spill folders; `SPILL_ROOT` and `POLARS_SETTINGS`, which `haute serve` logs. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `HauteCommand` (every command, built with its `need`, a `ProjectNeed`; `invoke` installs what `project_for` finds from the shell's folder and parses its settings once), `HauteCommandGroup` (the `ci` and `app` groups), `pipeline_file_project`, `command_settings` and `require_command_settings` (the command's project's settings, read now), `resolve_model_name` (from the parsed settings), `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, the shared `ENDPOINT_SUFFIX_HELP` string, `EXPECTED_FAILURES`, the failures a command reports in their own words (Haute's own errors, value errors and OS errors), and `answer_command_failure`, which ends a command on a failure in one line and exit 1: a failure `haute._failure_answers.classify_failure` names in its words, an expected one in its own, anything else as an incident whose traceback `_write_incident` writes to `.haute/incidents/<id>.txt` (`INCIDENTS_FOLDER`), or `haute-incidents/` in the system's temporary folder outside a project, saying where, and printing it instead when the record cannot be written. |
-| `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. |
-| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
+| `src/haute/cli/_output.py` | `utf8_output`: the process's own stdout and stderr, when not UTF-8, written in UTF-8, or, when PYTHONIOENCODING chose the encoding or the stream is a terminal, kept with a mark it cannot hold replaced; a stream a caller put in the process's place left alone. `guard_closed_readers`: each of the process's own streams that is not a terminal replaced by a `_ReaderGuard` over the same buffer (its encoding, errors and buffering kept, `\n` written `\r\n` on Windows alone, as Python opens them), whose `write` and `flush` raise `OutputClosed`, a base exception as a keyboard interrupt is, when the reader has gone (a broken pipe, or on Windows the invalid-argument error a closed pipe gives) after pointing the descriptor at the null device, and re-raise any other OS error. |
+| `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding, or an existing project set up again (a workbench project given no starter test quote, an automated one its example in tests/quotes, each starter file written only where none is there and none on a re-run): `InitConfig`, the questions (`_answers`, which takes each answer its flags give and, through `_pick`, asks a numbered list for the rest while `InitConfig.interactive` says the command runs at a terminal, `_at_terminal`, each question's default from `_Defaults`, a new project's `NEW_PROJECT_DEFAULTS` or the project's current answers, `_current_answers`; without one a question with a default takes it and one without, the workbench's database and sign-in on a new project, is a usage error naming its flag, as is a flag of the other kind of project; the sign-in asked only when `connections.toml` is to be written, `_writes_connections`; the answers as `_Answers`), `handle_init`, TOML-aware `pyproject.toml` dependency injection (and the extras a workbench needs added to a `haute` requirement already listed), CI-provider file generation (`haute._scaffold.ci_files` for an automated project, `haute._scaffold.workbench_ci_files` for a workbench one, written by `write_generated_files`, which `haute ci update` shares) and `FileReport`, the one record of what a re-run or `haute ci update` wrote, checked, removed or installed, which both print and capture from (`file_state` reading written, updated or unchanged), and pruning (`_prune_stale_ci_files`, every file Haute generates, `GENERATED_CI_FILES`, that the set written does not hold), a workbench project's `haute.toml` (`haute._scaffold.workbench_haute_toml`), form (written only when absent) and `connections.toml` (written when absent or when the `dev`, `staging` or `prod` connection in it is on another database than the one answered, SQLite included, since the quote store refuses a connection of another provider than its environment's, and only to an ordinary file's path, `_root_file_problem`; a `connections.toml` already there read first, `ConnectionsError` refused before anything is written) ([workbench](../workbench/low-level.md)) and `.env.example` (`haute._scaffold.app_env_example`), and next steps that name the CI secrets the first deploy or publication needs (`ci_secret_names`, of the target or of the app's host), with `haute ci secrets` on GitHub. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig` (`pipeline_file`, `node`, `source`, `rows`), `handle_run`: parses a pipeline, walks it lazily to its output node or `--node` (`execution.execute_lazy_graph`, under the lazy-sink profile), prints each walked node's plan width and collects only the target's output; a pipeline with a Workbench node is given its tables from the form folder of the project the file is in (`haute._workbench_nodes.with_form_tables`), a form that cannot be read reported as "Error reading the workbench's form: ...". |
 | `src/haute/cli/_lint.py` | `haute lint` — `LintConfig`, `handle_lint`: the editor document's diagnostics, the editor's save-time validation (`SavePipelineService.validate_graph`) and structural checks of the flattened graph, without execution. |
 | `src/haute/cli/_train.py` | `haute train` — `TrainConfig`, `handle_train`, loads a training script as a module, runs its `job`, prints a live progress bar. |
 | `src/haute/cli/_serve.py` | `haute serve` — `ServeConfig`, `handle_serve`, host-safety checks, working-directory/editable-checkout frontend selection, dev/prod mode dispatch, Vite and uvicorn launch/cleanup. |
 | `src/haute/cli/_deploy.py` | `haute deploy` — `DeployCliConfig`, `handle_deploy`, the workbench refusal, CI-gate check, resolve → validate-and-score-once → render quote results → deploy pipeline. |
-| `src/haute/cli/_ci.py` | `haute ci` — the `ci` group. `secrets`: `CiSecretsConfig` and `handle_ci_secrets`, which sets every one of the project's `ci_secret_names`, those of its CI credentials (`haute._scaffold.ci_credentials`: a workbench project's `[workbench.app] host`, else the deploy target), on GitHub from `.env`, else the environment, through `haute._ci_secrets` (each value refused unset or still `.env.example`'s placeholder, each Databricks pair checked unless `--no-verify`), printing where each came from; `--check` compares the repository's list; another provider is given the names and its guide. Each of that module's failures is a Click error with its message. `update`: `handle_ci_update`, which rewrites, for `[ci] provider`, a workbench project's `workbench_ci_files` for its `[workbench.app] host` and `app_env_example`, or an automated project's `ci_files` for its `[deploy] target` and `env_example`, with the project's Python, `.env.example` naming the variables the project's `connections.toml` names (`connection_variables`, a file that cannot be read refused), through `write_generated_files`, pruning every other generated file. `registry-host`: `handle_ci_registry_host`, which prints the host `docker login` takes for `[deploy.container] registry`, for the login step of a container target's generated deploy jobs and of a workbench project's publish job. |
+| `src/haute/cli/_ci.py` | `haute ci` — the `ci` group. `secrets`: `CiSecretsConfig` and `handle_ci_secrets`, which sets every one of the project's `ci_secret_names`, those of its CI credentials (`haute._scaffold.ci_credentials`: a workbench project's `[workbench.app] host`, else the deploy target), on GitHub from `.env`, else the environment, through `haute._ci_secrets` (each value refused unset or still `.env.example`'s placeholder, each Databricks pair checked unless `--no-verify`), printing where each came from; `--check` compares the repository's list; another provider is given the names and its guide. Each of that module's failures is a Click error with its message. `update`: `handle_ci_update`, which rewrites, for `[ci] provider`, a workbench project's `workbench_ci_files` for its `[workbench.app] host` and `app_env_example`, or an automated project's `ci_files` for its `[deploy] target` and `env_example`, with the project's Python, `.env.example` naming the variables the project's `connections.toml` names (`connection_variables`, a file that cannot be read refused), through a `FileReport` (`_init_cmd.py`), removing every other CI file Haute wrote. `registry-host`: `handle_ci_registry_host`, which prints the host `docker login` takes for `[deploy.container] registry`, for the login step of a container target's generated deploy jobs and of a workbench project's publish job. |
 | `src/haute/_ci_secrets.py` | The deploy's CI secrets on GitHub, for `haute ci secrets` and the editor's Push. `CiSecretsError` (a step that could not be taken; its message says why and never holds a value) and its `DatabricksRefusedError`. The GitHub CLI's subprocess chokepoint: `resolve_gh` (`gh` on the search path) and `run_gh` (prompts disabled, `GH_TIMEOUT_SECONDS`, UTF-8 pinned, a failure raised with `gh`'s own message, known values redacted), under `github_secret_names` (`gh secret list`) and `set_github_secret` (`gh secret set NAME`, the value on standard input), each on the repository `--repo` names, else the one `gh` resolves from the project's remotes. `secret_values` (`.env`, else the environment, and where each came from), `usable_secret_values` (unset and placeholder values refused, `env_example_placeholders`) and `verify_databricks` (each pair through `haute.deploy._databricks_serving.workspace_user`). `github_repository`, the `OWNER/REPO` a `github.com` remote URL names. The Push's step: `RemoteSecrets` and `remote_secrets` (the secrets of the project's CI credentials, `ci_credentials`, on one remote's repository, or none where they do not apply), `push_with_ci_secrets` (`POST /api/git/push`) and `set_missing_ci_secrets` (`POST /api/git/ci-secrets`), whose outcome is a `GitCiSecrets`. |
 | `src/haute/cli/_app.py` | `haute app` — the `app` group and its `build`, `rollout`, `impact` and `serve` commands: `AppImpactConfig` (`sample`) and `handle_app_impact` (the staging and production apps compared through `src/haute/_workbench_impact.py::impact`, its steps said as they are taken, the report written as `src/haute/_workbench_impact.py::render_report` renders it, to impact_report.md, on every run past the refusals before a host is reached, a run that stopped or a quote staging failed on a Click error after it, as is any refusal); `AppRolloutConfig` (`environment`, `image`, `source`, one of the last two) and `handle_app_rollout` (the environment's Container App rolled to the image and checked through `src/haute/_workbench_rollout.py::rollout`, its steps said as they are taken, the release id printed last, a closed store or any refusal a Click error); `AppBuildConfig` and `handle_app_build` (the working directory's release through `build_release` into the directory given, `RELEASE_DIR` by default, a line printed for each test quote that did not stay unchanged and `src/haute/_workbench_test_quotes.py::render_test_quotes_report` written to test_quotes_report.md in the working directory once the test quotes were checked, the build passing or failing, and with `--image` its image through `build_image`, or with `--push` its image built and pushed through `push_image` as `image_reference` names it, the reference by digest printed last), `AppServeConfig` (with `reader`, `--reader`) and `handle_app_serve` (the git identity from `get_identity`, refused without one; the store of `SERVE_ENVIRONMENT`, `dev`, resolved before anything is built through `src/haute/_quote_store/_environment.py::connected_store` from the project's `[workbench.store]` and `connections.toml` with `src/haute/_connections.py::project_environ`, a project that does not place it refused naming what to set; the release built into `RELEASE_DIR`; then `create_app` with that identity as its local principal and that store, its quotes closed by the app's gate while dev's tables do not fit the release's form, a reader with `--reader`, served by `uvicorn` on `SERVE_HOST` alone, naming where its quotes are kept by the store's named_by); any fault Haute or SQLAlchemy names (a release, a project or a store that is not as the command needs it) said as a Click error through `_said`, never a traceback, and a note when `[workbench.app] host` is unset. |
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, waits for a Databricks endpoint through the serving pair's client (`haute.deploy._databricks_serving`), then sends each test quote to a live endpoint (Databricks or HTTP) as a request of its own through `_smoke_files`, which reports each file from `price_test_quotes_live`. |
@@ -50,7 +50,7 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 
 Other notable types:
 - `TransportInfo` (`src/haute/cli/_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
-  `kind` (`"databricks" | "http" | "unsupported"`), `staging_url`, `prod_url`. `smoke` and `impact`
+  `kind` (`"databricks" | "http"`), `staging_url`, `prod_url`. `smoke` and `impact`
   both switch on `.kind` to pick a backend. A container-based target without
   `[ci.staging] endpoint_url` raises `click.ClickException` naming the setting (exit 1).
 - `_Closable` (`_serve.py`) — a `typing.Protocol` describing the socket-like object the TCP
@@ -75,8 +75,9 @@ invocation form the user selected.
 Every subcommand also exposes Click's eager `--help` option, which prints usage and exits 0
 without validating required positional arguments.
 
-`haute run` reports the executable nodes it walks by id (a parsed node's id is its
-function's name; a submodel occurrence's qualifies it with the occurrence), each with the
+`haute run` reports the executable nodes it walks by the names `--node` takes
+(`spelled_name`: a parsed node's id, its function's name; a submodel occurrence's node as
+`<occurrence>/<node>`), never by runtime key, each with the
 width of its lazy plan (`N cols`, or `N cols carried` for an ancestor, which projection
 pushdown leaves only the columns the target needs), a failed node with its error and, when
 the executor located it, `(line N)` of its code, and then the target's collected output.
@@ -87,16 +88,16 @@ reported. The CLI does not print schema warnings.
 |---|---|---|
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
 | `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default). The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; on a new project a workbench project's database and sign-in have none, so an answer must be picked. In a project with a `haute.toml` each default is the project's current answer instead, and a question it holds no answer to has none, save the host's. | Success 0. An existing `haute.toml` that does not read as TOML exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a question without a default and without its flag (a new workbench project's `--store` or `--sign-in`, or on a re-run any the project holds no answer to) exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
-| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, an admission refusal, or an expected failure (`EXPECTED_FAILURES` or a Polars error), whether the walk attributes it to a node (printed `✗ <node> (line N): <error>` first) or it arises collecting the output, exits 1; a failure the walk attributes to a node exits 1 after its `✗` line whatever it is, and memory and any other exception end at the `haute` group in one line (the process cap that refused the run named with the setting that raises it, anything unnamed an incident). Success exits 0 after printing the output. |
-| `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, or empty graph exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
+| `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a name to run to instead of the output node, `resolve_spelled`: a pipeline node's id, an occurrence's name for its first declared output, shown as `<occurrence>[<port>]`, `<occurrence>/<node>`, or a child's id held by one occurrence); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` that names nothing (the names there are listed), a child of several occurrences (each spelling listed) or an occurrence without outputs (its nodes listed), an admission refusal, or an expected failure (`EXPECTED_FAILURES` or a Polars error), whether the walk attributes it to a node (printed `✗ <node> (line N): <error>` first) or it arises collecting the output, exits 1; a failure the walk attributes to a node exits 1 after its `✗` line whatever it is, and memory and any other exception end at the `haute` group in one line (the process cap that refused the run named with the setting that raises it, anything unnamed an incident). Success exits 0 after printing the output. |
+| `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), or parse failure exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--keep-build` (passed to `deploy_resolved(keep_build=True)`, the kept directory printed); `--endpoint-suffix TEXT`. | In a project whose `haute.toml` enables its workbench it exits 1 before anything else, a dry run included, naming `haute app build`; an unreadable `[workbench]` table exits 1 naming what is wrong. Non-dry-run outside recognised CI exits 1. A non-dry-run deploy whose target's credentials are not all set (`haute.deploy.check_credentials`) exits 1 before parsing, naming each. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
 | `haute ci secrets` | `--check` (report, set nothing); `--no-verify` (skip the Databricks check). | GitHub only, through `gh`: another provider exits 1 naming the secrets to add and its guide; no `gh` on `PATH` exits 1 saying where to get it. A secret unset in `.env` and the environment, or still `.env.example`'s placeholder, exits 1 before anything is set, as does a Databricks pair the workspace refuses (its token redacted from the message). A `gh` failure, or a `gh` call still running after `GH_TIMEOUT_SECONDS`, exits 1 with its message. `--check` exits 1 naming each missing secret, 0 when all are set. Values are never printed. |
-| `haute ci update` | None. | Exits 1 without `haute.toml`, for an unreadable Python declaration or `[workbench]` table, a workbench project whose `[workbench.app]` names no `host`, an unknown `[ci] provider`, a `[ci.staging] endpoint_suffix` that cannot name a staging endpoint (empty, not a string, or holding anything but ASCII letters, digits, `-` and `_`), or a `[ci.production] environment` that cannot name an environment, writing nothing. Otherwise rewrites the generated CI files, whose staging deploy steps pass that suffix, as a Databricks project's smoke and impact steps do (a container-based target's smoke and impact steps pass none and call the `[ci.staging]` and `[ci.production]` `endpoint_url` addresses), and whose production job runs under that environment when one is named, and `.env.example`, writes `.python-version` with the project's Python on a GitHub project that has none, since its generated jobs run the Python uv reads there, reports each updated or unchanged, records those Git does not track yet, a GitHub project's existing `.python-version` among them, as a save on the working branch's ledger (`capture_new_files`) or names them as not yet in version history, and exits 0: a capture it cannot make is never a failure. A workbench project's are the workbench's set, which reads neither the suffix nor the environment, so neither is checked. |
-| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, a missing serving pair (named before any request), an endpoint update Databricks reports failed or cancelled (with its state message and build and server log tails), an endpoint that does not exist (at once), missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
+| `haute ci update` | None. | Exits 1 without `haute.toml`, for an unreadable Python declaration or `[workbench]` table, a workbench project whose `[workbench.app]` names no `host`, an unknown `[ci] provider`, a `[ci.staging] endpoint_suffix` that cannot name a staging endpoint (empty, not a string, or holding anything but ASCII letters, digits, `-` and `_`), or a `[ci.production] environment` that cannot name an environment, writing nothing. Otherwise rewrites the generated CI files, whose staging deploy steps pass that suffix, as a Databricks project's smoke and impact steps do (a container-based target's smoke and impact steps pass none and call the `[ci.staging]` and `[ci.production]` `endpoint_url` addresses), and whose production job runs under that environment when one is named, and `.env.example`, writes `.python-version` with the project's Python on a GitHub project that has none, since its generated jobs run the Python uv reads there, reports each file written, updated, unchanged or removed through a `FileReport`, a GitHub project's existing `.python-version` among them, says the files are up to date only when none changed, records those Git does not track yet from the same report as a save on the working branch's ledger (`capture_new_files`) or names them as not yet in version history, and exits 0: a capture it cannot make is never a failure. A workbench project's are the workbench's set, which reads neither the suffix nor the environment, so neither is checked. |
+| `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, a missing serving pair (named before any request), an endpoint update Databricks reports failed or cancelled (with its state message and build and server log tails), an endpoint that does not exist (at once), missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, a target no deploy can go to (refused as the settings are read), readiness timeout, health-request failure, any scoring request failure, an unreadable test-quote file, or an expected output the answer does not match exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A quote without an `expected` output passes on any answer. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
-| `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix, a named `impact_dataset` outside the project root (`contained_path`, refused before it is read) or that does not exist, no test quotes to compare without one, a missing serving pair or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
+| `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix, a named `impact_dataset` outside the project root (`contained_path`, refused before it is read) or that does not exist, no test quotes to compare without one, a missing serving pair or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. A target no deploy can go to is refused as the settings are read, so every target reaches a transport; success writes `impact_report.md` and exits 0. |
 | `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
 
 ## Control flow
@@ -158,8 +159,9 @@ writes `.env.example` (`env_example` for the target, `app_env_example` for the a
 each naming the variables `connections.toml` names), writes the starter tests on a new project, writes `.python-version` with the project's Python when it has none
 (`haute._project_python.project_python_version`), writes CI workflow files for the chosen
 provider on that Python, `ci_files` for the target or `workbench_ci_files` for the host
-(on a re-run pruning first each file Haute generates that the new set does not hold:
-another provider's, or the other kind of project's; a new project prunes none, since its
+(on a re-run removing first each CI file Haute wrote, its first line `CI_FILE_MARK`, that the
+new set does not hold: another provider's, or the other kind of project's, a team's own file at
+one of those paths left; a new project prunes none, since its
 folder's workflows are the team's own), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, unless a `pre-commit` there is not
 Haute's (`_is_haute_hook`: it does not hold the Haute hook's header comment), which is kept
@@ -168,15 +170,21 @@ and reported, and appends `.gitignore` guard entries via
 (`rating/__init__.py`, `rating/main.py`, `rating/utility/__init__.py` and `features.py`,
 `tests/test_pipeline.py`, an automated project's example quote in tests/quotes) is written only
 where none is there, the summary naming each one kept; a re-run writes none of them and
-creates nothing in `rating/` or `tests/` but the form folder. A re-run's summary reports
-`haute.toml` written afresh and says to copy back from the previous one (in git) what was set
-by hand, the `[mlflow]` settings saved from the app among them; reports each other generated
-file, `.env.example`, the hook and the workflows, as written, updated or unchanged, and each
-workflow `_prune_stale_ci_files` removed (it returns them); says `rating/` and
+creates nothing in `rating/` or `tests/` but the form folder. A re-run's summary prints its
+`FileReport`, the one record of the run's files that it captures from too: each file as it
+was written or checked, `pyproject.toml`, `.python-version`, `haute.toml` (written afresh),
+the form folder and `connections.toml` when written, `.env.example`, the hook and the
+workflows (`FileReport.write_generated`), each workflow `_prune_stale_ci_files` removed (it
+returns them), the installed `.git/hooks/pre-commit`, `.gitignore` and `.gitattributes`
+(`ensure_gitignore_guards` and `ensure_gitattributes` return the entries they added), each
+`written`, `updated`, `unchanged`, `removed` or `installed`; `FileReport.capture` hands
+every one but a removed or installed entry to `capture_new_files`. It says to copy back from
+the previous `haute.toml` (in git) what was set by hand, the `[mlflow]` settings saved from
+the app among them; says `rating/` and
 `tests/` were left as they are; and, when the kind of project changed, names the input and
 output nodes the pipeline still has, to replace. A root `main.py` is deleted and reported only when `_is_uv_init_placeholder` holds: its text, CRLF line endings read as LF, is the one `uv init` writes (`def main()` printing `Hello from <name>!`, run under `__main__`) for any project name. Any other is kept and the summary says it is not the placeholder. The generated pipeline declares only
-`haute.Pipeline(name)` and therefore parses with zero nodes; its starter test checks that parse and
-name contract without requiring execution data. The Python files init writes pass the generated
+`haute.Pipeline(name)` and therefore parses with zero nodes, which `haute lint` passes; its
+starter test checks that parse and name contract without requiring execution data. The Python files init writes pass the generated
 lint job's `ruff check .` and `ruff format --check .` under ruff's defaults, since the project
 declares no `[tool.ruff]` and the pre-commit hook formats only what a milestone records, so a
 starter file left as written reaches the first pull request unformatted. Init creates neither
@@ -184,7 +192,9 @@ starter file left as written reaches the first pull request unformatted. Init cr
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
 `parse_pipeline_file(..., flatten=True)` (a Workbench node given its form's tables), takes the
-target, `--node` or `deploy._pruner.find_output_node`'s one output node, and admits a
+target, `--node` resolved by `haute._node_addresses.resolve_spelled` against the flat
+graph's expansion record (a key and, for an occurrence's output, the port read) or
+`deploy._pruner.find_output_node`'s one output node, and admits a
 `LAZY_SINK` execution context (`operation="cli_run"`). It compiles the preamble and walks the
 target's ancestors once with `execute_lazy_graph(graph, _build_node_fn,
 target_node_id=..., source=...)`, a sink walk that collects nothing, then prints one line per
@@ -203,8 +213,9 @@ raises it, and exit 1. The admission is released on every path.
 **`lint`**: resolves the pipeline file and parses it as the editor loads it
 (`routes._helpers.parse_pipeline_to_graph`, strict, under the root of the project holding the
 file, or the file's folder in no project). Any syntax,
-configuration, topology, or other parse failure is reported and exits 1, as does a graph of no
-nodes. It then collects, before reporting, every problem a save would meet: the editor
+configuration, topology, or other parse failure is reported and exits 1. A graph of no nodes is
+not one: the editor loads it ready and saves it, so it passes, its summary line
+`✓ Pipeline '<name>': no nodes yet`. It then collects, before reporting, every problem a save would meet: the editor
 document's error diagnostics (`load_pipeline_editor_document`), each as
 `<file>:<line>: <message> <remediation>` (a module statement or comment a save would drop, a
 damaged sidecar), plus one for a document that is not ready without one; the first refusal of
@@ -228,8 +239,11 @@ write (documented as load-bearing — `click.echo(nl=False)` alone can leave the
 **`serve`**: `handle_serve` runs, in order: `_require_loopback_host` (rejects every non-loopback
 value before any startup side effect), `_configure_trusted_hosts` (clears any stale
 `TRUSTED_HOSTS_ENV` remote-bind policy), `_detect_dev_frontend_dir` to choose dev vs. prod mode,
-then `_abort_if_port_in_use` (pre-flight socket bind/close probe — `SO_EXCLUSIVEADDRUSE` on Windows
-to avoid a false-negative from `SO_REUSEADDR`; dev mode also runs `_abort_if_vite_port_in_use` to
+then `_abort_if_port_in_use` (pre-flight socket bind/close probe, `_port_is_available`, which
+binds as the listener will: `SO_EXCLUSIVEADDRUSE` on Windows to avoid a false-negative from
+`SO_REUSEADDR`, and `SO_REUSEADDR` on POSIX, as uvicorn and Vite bind, so a port that a stopped
+server's connection still lingers on, a browser tab's in FIN-WAIT-2, is free while a second
+listener is still refused; dev mode also runs `_abort_if_vite_port_in_use` to
 pre-flight the fixed Vite listener at `127.0.0.1:5173`). Frontend detection first considers the
 nearest `frontend/package.json` in the working directory's ancestor chain. If that candidate has
 no installed `node_modules`, or no such candidate exists, it considers the `frontend/` beside the
@@ -321,6 +335,15 @@ catalog/schema from `haute.toml` if the finder found one (`DeployConfig.from_set
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no
 version is registered.
 
+**Reading the deploy settings.** `DeployConfig.from_settings` checks the target it read,
+after the `HAUTE_` environment overrides, with `check_deploy_target`, the check resolution
+(`check_deploy_settings`) also runs: a planned target and one Haute does not know are a
+`DeployError` naming `[deploy] target`, or `HAUTE_TARGET` when the environment set it, and
+the targets there are. Every command that reads the project's deploy (`ci`'s three,
+`deploy`, `smoke`, `impact`, `status`) therefore ends on such a target in those words,
+at the `haute` group, before anything else. `resolve_transport` runs the same check, so it has
+no kind for a target without a transport.
+
 **`ci secrets`**: `handle_ci_secrets` reads the project's `haute.toml`; the `ci_secret_names`
 of its CI credentials (`ci_credentials`) are the secrets its generated steps read: an
 automated project's deploy target's, which its deploy, registry login, smoke, impact and tag
@@ -400,7 +423,14 @@ reached or used) or a quote staging failed on, having printed each step.
 the project's `haute.toml` and prints the host a `docker login` before the push takes: the
 registry's first `/` segment when Docker reads it as a host (it holds a `.` or a `:`, or is
 `localhost`), `docker.io` when the registry is a Docker Hub namespace such as `myteam`, and
-an empty line when the registry is empty. The host is the last line it prints: a log line
+an empty line when the registry is empty and the push needs none, a `container` target's,
+whose image then stays local. Whether the push needs one is
+`haute.deploy._config.push_registry_problem` (the project's `[workbench] enabled` and its
+target), which `haute app build --push` (`image_reference`) and a build-and-push-only
+target's deploy (`deploy_to_platform_container`) refuse by too: an empty registry for a
+workbench project's app image or such a target's scoring image exits 1 with the push's own
+message, before any host is printed, and the generated login step, `set -eo pipefail` and the
+command substitution, ends there with it in the job's log. The host is the last line it prints: a log line
 may come first (on Windows, the CPU QoS line), so a container-based target's generated
 deploy jobs read the last line in their login step
 ([pipeline-config](../pipeline-config/low-level.md)).
@@ -413,8 +443,9 @@ with its Python,
 `[ci.staging] endpoint_suffix` and `[ci.production] environment`, plus `.env.example`, and
 `.python-version` on a GitHub project that has none, so a
 project takes up a newer haute's workflows, a changed staging suffix or an environment that
-gates production; every other generated file is pruned (another provider's, or the other kind
-of project's), and nothing else is touched. The files it wrote go to `capture_new_files`
+gates production; every other CI file Haute wrote is removed (another provider's, or the other
+kind of project's: one holding `CI_FILE_MARK`, `_prune_stale_ci_files`), each named as
+removed, and nothing else is touched, a team's own workflow at one of Haute's paths included. The files it wrote go to `capture_new_files`
 (`_init_cmd.py`, which a `haute init` re-run calls the same way), which records those Git does
 not track yet as one ledger save through `capture_save_in_ledger`
 ([git integration](../git-integration/low-level.md)) and reports the capture, or prints its
@@ -451,10 +482,17 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Edge cases and invariants
 
-- **Windows `chmod` no-op.** `_init_cmd.handle_init` skips `Path.chmod(0o755)` on the pre-commit hook
-  entirely on `win32` (NTFS ignores POSIX bits and git-on-Windows ignores the executable bit too),
-  documenting the manual `git update-index --chmod=+x` workaround in a comment instead of calling a
-  chmod that would silently do nothing.
+- **The hook is executable in every clone.** `_init_cmd.handle_init` skips `Path.chmod(0o755)`
+  on the pre-commit hook on `win32`, where NTFS holds no POSIX bits and git reads none
+  (`core.fileMode=false`), and on every system records it executable in git's index inside a
+  repository (`_record_executable_files` → `haute._git_core.record_executable_files`: a
+  tracked hook's mode alone, `git update-index --cacheinfo 100755,<its staged blob>,<its path from the repository's root>` (`--chmod=+x` would stage the file's content too, and git names index entries from the root, which the project may sit below), its staged content kept; an
+  untracked one staged through `stage_paths`, `git add --chmod=+x`, unless an ignore rule covers it, as
+  in a scratch project inside a checkout that ignores its folder, which git would never take). Git keeps an index
+  entry's mode through every later `git add` where it reads no bit, so a person's own first
+  commit, the editor's first-commit seed and a re-run's capture (both through `stage_paths`
+  and an index-built save commit) all record 100755; `haute._scaffold_files.EXECUTABLE_FILES`
+  lists the files. A folder git does not trust is said, and nothing is recorded.
 - **A style-preserving `pyproject.toml` edit.** `_init_cmd._ensure_haute_dependency` edits an
   existing file through `tomlkit`, so the `[project]` table is found as TOML finds it (a quoted
   header, root dotted `project.*` keys, an inline table) and nothing outside the one entry it adds
@@ -497,8 +535,7 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 - Explicitly handled operational failures use `SystemExit(1)` (normally after
   `click.echo(..., err=True)`); Click argument parsing uses exit 2. This is not universal:
-  normal `status` treats a missing registry model as an informational exit 0, and `impact`
-  warns then returns 0 when the configured target has no transport implementation.
+  normal `status` treats a missing registry model as an informational exit 0.
   `status --version-only` deliberately converts its not-found/no-version case to
   `click.ClickException` (exit 1) so scripts cannot mistake absence for version `0`.
   The formatting catches take only `EXPECTED_FAILURES` (`HauteError`, `ValueError`,
@@ -541,12 +578,15 @@ pytest's `tmp_path`, and tests that need a specific cwd use `monkeypatch.chdir`.
 
 Key files and what they cover:
 - `test_submodel_instances.py` — real `haute run` reports, run to each occurrence's
-  scoring node: only executable nodes appear, with the columns each carries.
+  scoring node: only executable nodes appear, by `<occurrence>/<node>`, with the columns each
+  carries; nodes grouped into a submodel found by their names with the rows they gave before,
+  an occurrence run to its first output, and the refusals of a shared name, a submodel without
+  outputs and a name that fits nothing.
 - `test_cli_architecture.py::TestHandleRunCallable` — the real executor on a small pipeline:
   only the target is collected, the output node is the default target, `--rows`, `--source`
   reaching the walk, and the refusal without an output node.
 - `test_cli.py` — end-to-end `CliRunner` coverage per command (`--version`, `init`, `run`, `lint`,
-  `smoke`, `serve`; `run` naming a failed node with its line), plus real-subprocess parity coverage for `python -m haute`, and a command
+  `smoke`, `serve`; `run` naming a failed node with its line), plus real-subprocess parity coverage for `python -m haute`, `lint` and `run` in a subprocess whose output pipe's reader has gone ending with exit 1 and nothing on standard error, `OutputClosed` outside `EXPECTED_FAILURES` while a full disk stays an `OSError`, and a command
   piped under a locale that is not UTF-8 writing its marks in UTF-8, an encoding
   `PYTHONIOENCODING` chose kept with a mark it lacks shown as `?`, and a stream a caller put
   in the process's place left alone; uses a shared `project_dir` fixture that builds a real
@@ -561,8 +601,7 @@ Key files and what they cover:
   budget) versus the `handle_*` function doing the real work.
 - `test_cli_helpers.py` — `_open_browser` (including the `webbrowser.open` failure path) and
   `_find_frontend_dir` walking-up-parents behaviour.
-- `test_cli_impact.py` / `test_cli_impact.py` — `impact` end-to-end and edge cases: unsupported
-  target, Databricks SDK not installed, "not found" vs. genuine-error classification for the
+- `test_cli_impact.py` — `impact` end-to-end and edge cases: Databricks SDK not installed, "not found" vs. genuine-error classification for the
   first-deploy check, and, with no portfolio sample, the test quotes compared (their requests,
   segmented by their text fields) or, with none, a refusal.
 - `test_cli_status.py` — `status` output formatting and that catalog/schema from `haute.toml` are
@@ -572,7 +611,7 @@ Key files and what they cover:
 - `test_cli_smoke.py` — Databricks polling loop (including the "not ready" retry path), the client
   built from the serving pair alone (BUG-22) and refused before any request without it, a failed
   update or a missing endpoint failing at once, HTTP smoke
-  path, the unsupported-target error, each test quote sent as a request of its own on both
+  path, a planned target refused naming its key, each test quote sent as a request of its own on both
   transports, an expected output checked within tolerance into a Workbench Output's tables
   (and refused for two rows or a non-object answer), a failed request reported by its row
   while the rest are priced, and an unreadable file.
@@ -581,6 +620,10 @@ Key files and what they cover:
   a pair Databricks refuses (its token redacted) and a `gh` failure each setting nothing or
   failing, `--no-verify`, `--check` either way, no `gh`, and another provider given the names;
   `ci update` rewriting edited and missing generated files and following a change of provider;
+  `ci registry-host` printing each host, an empty line for a local container image, and
+  refusing an empty registry for a workbench project or a build-and-push-only target in the
+  push's words, the generated login step stopping on it; a mistyped `[deploy] target` refused
+  in one sentence naming it by every command that reads it;
   `init` naming the secrets the first deploy needs.
 - `test_ci_secrets.py` — the deploy's secrets on Push, through `POST /api/git/push` and
   `POST /api/git/ci-secrets` against a local bare remote that `remote_secrets` is told is a
@@ -600,7 +643,11 @@ Key files and what they cover:
   redacts a value from `gh`'s message and turns a timeout into `CiSecretsError`.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `train` progress-bar flushing, `status --version-only` exit codes,
-  Windows pre-commit chmod skip.
+  Windows pre-commit chmod skip. `test_cli_init.py::TestTheHookReachesEveryCloneExecutable`
+  holds the hook 100755 under `core.fileMode=false` after a first init, the editor's seed and
+  a re-run (untracked, or tracked without its bit), and
+  `test_git_core_commands.py` fails on a `git add` outside `stage_paths` or a save commit
+  by pathspec anywhere in `src/haute`.
 - `test_cli_cleanup.py` — `_node_env` failing loudly without Node, single-call browser opening,
   `_find_frontend_dir` raising when absent, that `smoke`'s error style matches project convention,
   single-source-of-truth staging suffix resolution for `impact`.
@@ -620,11 +667,12 @@ Key files and what they cover:
   imports of its own `utility` and `modules`), the extras added to a listed `haute`
   requirement, a new project keeping the starter files already there, a `pre-commit` hook
   that is not Haute's kept, and
-  the re-run: `rating/` and `tests/` left byte for byte, `haute.toml` written afresh keeping
+  the re-run: `rating/` and `tests/` left byte for byte, every file the re-run writes named and recorded from one list (`.gitattributes`, `.gitignore` and `.python-version` deleted and written again among them), `haute.toml` written afresh keeping
   `[project] name`, each question defaulting to the project's current answer (with and
   without a terminal) and one it holds no answer to refused without its flag, a malformed
   `haute.toml` refused before any question, stale CI-file pruning (another provider's and the
-  other kind of project's), the kind of project switched both ways naming the nodes to
+  other kind of project's, a team's own file at one of Haute's paths left, `test_cli_ci.py`
+  holding the same for `ci update`), the kind of project switched both ways naming the nodes to
   replace, and a changed database writing `connections.toml` afresh while an unchanged one
   keeps it unasked; and a workbench project: its `haute.toml`, connections and workflows for
   each database and sign-in, the questions asked at a terminal and their defaults, and the
@@ -633,7 +681,8 @@ Key files and what they cover:
   shadowed by a same-named module.
 - `test_cli_serve.py` / `test_cli_train.py` — additional `serve`/`train` scenarios beyond what
   `test_cli.py` covers.
-- `test_cli_lint.py` — lint edge cases beyond the happy path already covered in `test_cli.py`.
+- `test_cli_lint.py` — lint edge cases beyond the happy path already covered in `test_cli.py`,
+  and the pipeline `haute init` writes, an automated and a workbench project's, passing.
 - `test_docs_accuracy.py` — extracts every `haute <command>` shown in the
   deployment guides/README and compares it with the command names emitted by
   root `haute --help`; a phantom-command fixture must fail the same helper.

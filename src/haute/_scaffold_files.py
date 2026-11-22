@@ -13,7 +13,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["GITATTRIBUTES_ENTRIES", "ensure_gitattributes", "lf_bytes", "write_lf"]
+__all__ = [
+    "EXECUTABLE_FILES",
+    "GITATTRIBUTES_ENTRIES",
+    "PRE_COMMIT_HOOK",
+    "ensure_gitattributes",
+    "lf_bytes",
+    "write_lf",
+]
+
+#: The project's pre-commit hook, from its root; a clone copies it into ``.git/hooks``.
+PRE_COMMIT_HOOK = ".githooks/pre-commit"
+#: The project's files git must record as executable, whatever the file system holds: git
+#: takes a new file's mode from it, and Windows has no executable bit, so a hook made there
+#: would reach a Linux or macOS clone as a file git does not run (CLI-07).
+EXECUTABLE_FILES: frozenset[str] = frozenset({PRE_COMMIT_HOOK})
 
 GITATTRIBUTES_ENTRIES: tuple[str, ...] = (
     "*.py text eol=lf",

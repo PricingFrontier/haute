@@ -117,6 +117,47 @@ class TestGitSubprocessEncoding:
             f"names and stderr round-trip consistently across platforms. Offenders: {offenders}"
         )
 
+    def test_every_staging_and_save_commit_keeps_the_index_mode(self) -> None:
+        """CLI-07: git takes a new file's mode from the file system, which has no executable
+        bit on Windows. Haute stages files only through ``stage_paths``, which records the
+        pre-commit hook executable, and commits a save from the index, never by pathspec
+        (``git commit -- <paths>`` stats a new file's mode again). A new ``git add`` or
+        pathspec commit anywhere in Haute fails this."""
+        import ast
+
+        runners = {"_run_git", "_run_git_ok", "_run_git_rc", "_run_git_process"}
+        offenders: list[str] = []
+        for path in sorted(Path("src/haute").rglob("*.py")):
+            tree = ast.parse(path.read_bytes().decode("utf-8"))
+            for function in ast.walk(tree):
+                if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for node in ast.walk(function):
+                    if not (
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id in runners
+                    ):
+                        continue
+                    words = [
+                        arg.value
+                        for arg in node.args
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    ]
+                    subcommand = next(
+                        (word for word in words if not word.startswith("-") and "=" not in word),
+                        None,
+                    )
+                    adds = subcommand == "add" and function.name != "stage_paths"
+                    by_pathspec = subcommand == "commit" and "--" in words
+                    if adds or by_pathspec:
+                        offenders.append(f"{path.as_posix()}:{node.lineno} ({function.name})")
+
+        assert offenders == [], (
+            "Stage files with haute._git_core.stage_paths and commit a save from the index, "
+            f"so the pre-commit hook keeps its executable mode: {offenders}"
+        )
+
     def test_byte_stdin_path_replacement_decodes_git_output(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

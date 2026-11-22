@@ -9,6 +9,7 @@ haute kept that haute's workflows; ``haute ci update`` rewrites them.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -252,9 +253,9 @@ def test_update_rewrites_the_generated_files(runner, project: Path) -> None:
     expected = ci_files("databricks", "github", python_version="3.11")
     assert staging.read_text(encoding="utf-8") == expected[".github/workflows/deploy-staging.yml"]
     assert (project / ".env.example").read_text(encoding="utf-8") == env_example("databricks")
-    assert "updated   .github/workflows/deploy-staging.yml" in result.output
-    assert "updated   .env.example" in result.output
-    assert "unchanged .github/workflows/ci.yml" in result.output
+    assert "updated    .github/workflows/deploy-staging.yml" in result.output
+    assert "written    .env.example" in result.output
+    assert "unchanged  .github/workflows/ci.yml" in result.output
 
 
 def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
@@ -270,7 +271,7 @@ def test_update_names_the_sign_ins_connections_toml_reads_in_env_example(
     written = (project / ".env.example").read_text(encoding="utf-8")
     assert written == env_example("databricks", connection_variables(project))
     assert "HAUTE_DEV_USERNAME=\n" in written and "HAUTE_PROD_PASSWORD=\n" in written
-    assert "updated   .env.example" in result.output
+    assert "updated    .env.example" in result.output
 
     # A connections.toml that cannot be read is said, and nothing is rewritten.
     (project / "connections.toml").write_text("[dev\n", encoding="utf-8")
@@ -288,7 +289,7 @@ def test_update_gives_a_github_project_the_python_its_jobs_read(runner, project:
 
     assert result.exit_code == 0, result.output
     assert (project / ".python-version").read_text(encoding="utf-8") == "3.11\n"
-    assert "updated   .python-version" in result.output
+    assert "written    .python-version" in result.output
 
 
 def test_update_leaves_a_python_version_the_project_has(runner, project: Path) -> None:
@@ -298,7 +299,8 @@ def test_update_leaves_a_python_version_the_project_has(runner, project: Path) -
 
     assert result.exit_code == 0, result.output
     assert (project / ".python-version").read_text(encoding="utf-8") == "3.12.8\n"
-    assert ".python-version" not in result.output
+    # Named, since the pin is recorded in version history when Git does not track it.
+    assert "  unchanged  .python-version\n" in result.output
 
 
 def test_update_writes_no_python_version_for_another_provider(runner, project: Path) -> None:
@@ -324,6 +326,58 @@ def test_update_follows_a_change_of_provider(runner, project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert (project / ".gitlab-ci.yml").is_file()
     assert not (project / ".github").exists()
+
+
+@pytest.mark.parametrize("command", [["ci", "update"], ["init"]], ids=" ".join)
+def test_a_workflow_of_the_teams_own_under_one_of_haute_s_names_is_left(
+    runner, tmp_path: Path, command: list[str]
+) -> None:
+    """CLI-06: a container project on GitHub never had a ``release.yml`` from Haute (a
+    workbench project's workflow has that name). The team's own is left in place, and a run
+    that removed nothing says the files are up to date."""
+    use_project(tmp_path)
+    assert runner.invoke(cli, ["init", "--target", "container", "--ci", "github"]).exit_code == 0
+    _in_a_repository(tmp_path, working_branch=None)
+    own = tmp_path / ".github" / "workflows" / "release.yml"
+    own.write_text("name: Release\non: push\njobs: {}\n", encoding="utf-8", newline="\n")
+    git_run(tmp_path, "add", "--", ".github/workflows/release.yml")
+    git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The team's release")
+
+    result = runner.invoke(cli, command)
+
+    assert result.exit_code == 0, result.output
+    assert own.read_text(encoding="utf-8") == "name: Release\non: push\njobs: {}\n"
+    assert git_run(tmp_path, "status", "--porcelain", "--", ".github") == ""
+    assert "removed" not in result.output
+    if command == ["ci", "update"]:
+        assert "The CI files are up to date." in result.output
+
+
+@pytest.mark.parametrize("command", [["ci", "update"], ["init"]], ids=" ".join)
+def test_a_change_of_provider_removes_and_names_what_haute_wrote(
+    runner, project: Path, command: list[str]
+) -> None:
+    written = sorted(ci_files("databricks", "github", python_version="3.11"))
+    _to_provider(project, "gitlab")
+
+    result = runner.invoke(cli, command)
+
+    assert result.exit_code == 0, result.output
+    for rel in written:
+        assert not (project / rel).exists(), rel
+        assert f"  removed    {rel}\n" in result.output
+    assert "up to date" not in result.output
+
+
+def test_every_generated_ci_file_carries_the_record_that_it_is_haute_s() -> None:
+    from haute._scaffold import CI_FILE_MARK
+
+    for files in (
+        *(ci_files("databricks", ci, python_version="3.13") for ci in ("github", "gitlab")),
+        workbench_ci_files("azure-container-apps", "azure-devops", python_version="3.13"),
+    ):
+        for path, text in files.items():
+            assert text.startswith(f"{CI_FILE_MARK}\n"), path
 
 
 def _to_provider(project: Path, provider: str) -> None:
@@ -428,7 +482,7 @@ def test_update_records_a_workflow_an_earlier_run_left_uncommitted(runner, proje
     result = runner.invoke(cli, ["ci", "update"])
 
     assert result.exit_code == 0, result.output
-    assert "unchanged .gitlab-ci.yml" in result.output
+    assert "unchanged  .gitlab-ci.yml" in result.output
     saved = git_run(project, "show", "--name-only", "--format=", "pricing-dev-save").splitlines()
     assert ".gitlab-ci.yml" in saved
     assert "Recorded in version history: .gitlab-ci.yml" in result.output
@@ -511,8 +565,10 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
     workflows = workbench_project / ".github" / "workflows"
     release = workflows / "release.yml"
     release.write_text("name: edited\n", encoding="utf-8")
-    # An endpoint's workflow left from before: a workbench project deploys none.
-    (workflows / "deploy-staging.yml").write_text("name: stale\n", encoding="utf-8")
+    # An endpoint's workflow Haute wrote before: a workbench project deploys none.
+    (workflows / "deploy-staging.yml").write_text(
+        ci_files("databricks", "github")[".github/workflows/deploy-staging.yml"], encoding="utf-8"
+    )
     # The endpoint's staging suffix reaches none of its workflows, so it is never checked.
     toml = workbench_project / "haute.toml"
     toml.write_text(
@@ -533,8 +589,8 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
     assert (workbench_project / ".env.example").read_text(encoding="utf-8") == app_env_example(
         "azure-container-apps", connection_variables(workbench_project)
     )
-    assert "updated   .github/workflows/release.yml" in result.output
-    assert "unchanged .github/workflows/ci.yml" in result.output
+    assert "updated    .github/workflows/release.yml" in result.output
+    assert "unchanged  .github/workflows/ci.yml" in result.output
 
 
 def test_update_refuses_a_workbench_project_naming_no_host(runner, workbench_project: Path) -> None:
@@ -709,6 +765,132 @@ def test_registry_host_prints_an_empty_line_without_a_registry(
 
     assert result.exit_code == 0, result.output
     assert result.stdout.endswith("\n\n") or result.stdout == "\n"
+
+
+#: What ``haute app build --push`` says of a workbench project naming no registry.
+_APP_REGISTRY_EMPTY = (
+    "[deploy.container] registry is empty: name the registry the app's image is pushed to "
+    "in haute.toml."
+)
+
+
+def test_registry_host_refuses_a_workbench_project_naming_no_registry(
+    runner, workbench_project: Path
+) -> None:
+    """CLI-03: the release job logs in to the host this prints before it pushes the app's
+    image, so an empty registry is refused in the words the push refuses it in."""
+    from haute._workbench_app import WorkbenchAppError, image_reference
+
+    assert 'registry = ""' in (workbench_project / "haute.toml").read_text(encoding="utf-8")
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    assert result.exit_code == 1
+    assert f"Error: {_APP_REGISTRY_EMPTY}" in result.stderr
+    with pytest.raises(WorkbenchAppError) as pushed:
+        image_reference(workbench_project)
+    assert str(pushed.value) == _APP_REGISTRY_EMPTY
+
+
+@pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
+def test_registry_host_refuses_a_platform_target_naming_no_registry(
+    runner, tmp_path: Path, target: str
+) -> None:
+    # A build-and-push-only target's deploy refuses an empty registry; so does the login
+    # step before it, in the deploy's words.
+    use_project(tmp_path)
+    assert runner.invoke(cli, ["init", "--target", target, "--ci", "github"]).exit_code == 0
+
+    result = runner.invoke(cli, ["ci", "registry-host"])
+
+    assert result.exit_code == 1
+    assert (
+        f"Error: Target '{target}' pushes the scoring image for a manual service update, so "
+        "it needs a registry: set [deploy.container] registry in haute.toml."
+    ) in result.stderr
+
+
+def test_the_generated_login_step_stops_on_the_refusal(
+    runner, workbench_project: Path, tmp_path: Path
+) -> None:
+    """The release job's login lines end the step on the refusal, its message in the log,
+    instead of logging in to an empty host."""
+    import shutil
+    import sys
+
+    from haute._scaffold import _registry_login_script
+
+    # The generated step is a bash script; every runner, and Git for Windows, has bash.
+    bash = shutil.which("bash")
+    assert bash is not None
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # `uv run haute ...` as the job runs it, on this interpreter; `docker` records a login.
+    (bin_dir / "uv").write_text(
+        f'#!/usr/bin/env bash\nshift\n"{Path(sys.executable).as_posix()}" -m "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (bin_dir / "docker").write_text(
+        '#!/usr/bin/env bash\necho "docker $*" >> logins.txt\n', encoding="utf-8", newline="\n"
+    )
+    for name in ("uv", "docker"):
+        (bin_dir / name).chmod(0o755)
+    git_run(workbench_project, "init", "-q")
+    step = _registry_login_script("azure-container-apps", "")
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    ran = subprocess.run(
+        [bash, "-c", step], cwd=workbench_project, env=env, capture_output=True, text=True
+    )
+
+    assert ran.returncode != 0
+    assert _APP_REGISTRY_EMPTY in ran.stderr
+    assert not (workbench_project / "logins.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["ci", "update"],
+        ["ci", "secrets", "--check"],
+        ["ci", "registry-host"],
+        ["smoke"],
+        ["impact"],
+        ["deploy", "--dry-run"],
+    ],
+    ids=" ".join,
+)
+def test_a_mistyped_target_is_named_where_it_is_written(
+    runner, project: Path, command: list[str]
+) -> None:
+    """CLI-03: every command that reads ``[deploy] target`` refuses one it does not know in
+    the same words, naming the key it is written under."""
+    toml = project / "haute.toml"
+    text = toml.read_text(encoding="utf-8")
+    assert text.count('target = "databricks"') == 1
+    toml.write_text(text.replace('target = "databricks"', 'target = "databrick"'), "utf-8")
+
+    result = runner.invoke(cli, command)
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "[deploy] target 'databrick' is not a deploy target. Targets: aws-ecs, "
+        "azure-container-apps, container, databricks, gcp-run."
+    ) in result.output
+    assert "[ci] provider" not in result.output
+
+
+def test_a_mistyped_target_from_the_environment_is_named_as_it_was_set(
+    runner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_TARGET", "databrick")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 1, result.output
+    assert "HAUTE_TARGET 'databrick' is not a deploy target." in result.output
+    assert "[deploy] target" not in result.output
 
 
 def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:

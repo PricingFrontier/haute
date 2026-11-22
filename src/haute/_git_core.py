@@ -339,6 +339,7 @@ _MOVES_NO_REF = frozenset(
         "rm",
         "show",
         "status",
+        "update-index",
         "var",
         "write-tree",
     }
@@ -960,6 +961,66 @@ def git_binary_available() -> bool:
     first.
     """
     return shutil.which("git") is not None
+
+
+def stage_paths(paths: Sequence[str], cwd: Path | None = None) -> None:
+    """``git add`` *paths*, as git spells them from *cwd*: the one way Haute stages files.
+
+    Each of the project's executable files among them (``EXECUTABLE_FILES``, the pre-commit
+    hook) is staged ``--chmod=+x``: git takes a new file's mode from the file system, which
+    has no executable bit on Windows, so the hook would be recorded 100644 and a clone on
+    Linux or macOS could not run it (CLI-07).
+    """
+    from haute._scaffold_files import EXECUTABLE_FILES
+
+    plain = [path for path in paths if path not in EXECUTABLE_FILES]
+    executable = [path for path in paths if path in EXECUTABLE_FILES]
+    if plain:
+        _run_git("add", "--", *(f":(literal){path}" for path in plain), cwd=cwd)
+    if executable:
+        _run_git("add", "--chmod=+x", "--", *(f":(literal){path}" for path in executable), cwd=cwd)
+
+
+def record_executable_files(cwd: Path) -> list[str]:
+    """Record each of the project's executable files at *cwd*, its root, as executable in
+    git's index, and return those it recorded: a tracked one's mode alone (its staged content
+    kept, so what changed in it is still left for review), an untracked one staged by
+    :func:`stage_paths` unless an ignore rule covers it, which git would never take. Git then
+    keeps the mode through every later ``git add`` of it, a person's own included, where the
+    file system has no executable bit."""
+    from haute._scaffold_files import EXECUTABLE_FILES
+
+    present = sorted(path for path in EXECUTABLE_FILES if (cwd / path).is_file())
+    untracked: list[str] = []
+    for path in present:
+        # mode SP blob SP stage TAB path, the path from the repository's root, which
+        # `--cacheinfo` takes whatever folder git runs in: the project may sit below it.
+        listed = _run_git("ls-files", "-s", "-z", "--full-name", "--", f":(literal){path}", cwd=cwd)
+        entry = next((entry for entry in listed.split("\0") if entry), None)
+        if entry is None:
+            untracked.append(path)
+            continue
+        meta, _, full_name = entry.partition("\t")
+        mode, blob, _stage = meta.split()
+        if mode != "100755":
+            # The index's own blob with the mode changed: `update-index --chmod=+x <path>`
+            # would stage the file's content from disk too.
+            _run_git("update-index", "--cacheinfo", f"100755,{blob},{full_name}", cwd=cwd)
+    addable: list[str] = []
+    if untracked:
+        # Only what git would take: a path an ignore rule covers (the project's folder
+        # ignored by the repository around it) is never forced in, as the seed's are not.
+        addable = _run_git(
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--",
+            *(f":(literal){path}" for path in untracked),
+            cwd=cwd,
+        ).split("\0")
+        stage_paths([path for path in untracked if path in addable], cwd)
+    return [path for path in present if path not in untracked or path in addable]
 
 
 def _is_git_repo(cwd: Path | None = None) -> bool:

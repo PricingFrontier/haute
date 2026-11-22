@@ -151,7 +151,8 @@ def _socket_family_for_host(host: str) -> socket.AddressFamily:
 
 
 def _port_is_available(host: str, port: int) -> bool:
-    """Return ``True`` iff a TCP socket can bind to ``(host, port)``.
+    """Return ``True`` iff a TCP socket can bind to ``(host, port)`` as the server's own
+    listener binds there.
 
     Opens and immediately closes a socket so the port is released before
     uvicorn tries to take it.
@@ -159,8 +160,10 @@ def _port_is_available(host: str, port: int) -> bool:
     On Windows we set ``SO_EXCLUSIVEADDRUSE`` so that the OS reports a
     conflict even when the peer socket was bound with ``SO_REUSEADDR``;
     without this, two sockets can silently share the same port, defeating
-    the pre-flight check. On POSIX, the default behaviour is already
-    strict enough.
+    the pre-flight check. On POSIX the probe sets ``SO_REUSEADDR``, as uvicorn
+    and Vite (libuv) do: a plain bind is refused while a stopped server's
+    connection lingers (a browser tab's, in FIN-WAIT-2 or TIME-WAIT) though the
+    server would bind, and the option still lets no second socket listen there.
     """
     family = _socket_family_for_host(host)
     with socket.socket(family, socket.SOCK_STREAM) as probe:
@@ -168,8 +171,11 @@ def _port_is_available(host: str, port: int) -> bool:
         # first socket used SO_REUSEADDR. SO_EXCLUSIVEADDRUSE asks the OS to
         # reject any overlapping bind, matching what uvicorn will observe a
         # few milliseconds later.
-        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        if sys.platform == "win32":
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
         except OSError:

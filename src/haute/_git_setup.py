@@ -31,6 +31,7 @@ from haute._git_core import (
     branch_category,
     is_eligible_working_branch,
     ledger_name,
+    stage_paths,
 )
 from haute._git_operation import Operation
 from haute._gitignore_guard import ensure_gitignore_guards
@@ -323,7 +324,7 @@ def set_working_branch(
             if seed_files:
                 # :(literal) so a filename containing glob characters cannot
                 # re-expand into a broader pathspec at add time.
-                _run_git("add", "--", *[f":(literal){f}" for f in seed_files], cwd=cwd)
+                stage_paths(seed_files, cwd)
             # The staged index is the root commit's tree, the empty one when nothing
             # was staged, so the model is consistent either way. Haute's own commit, as
             # a save is: the project's hooks run at a milestone.

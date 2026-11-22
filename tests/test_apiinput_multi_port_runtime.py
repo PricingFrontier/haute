@@ -1466,14 +1466,14 @@ def test_haute_run_executes_a_node_instance_after_a_multi_frame_source(
     )
     pipeline_path = isolated_root / "main.py"
 
-    original = "submodel_runtime/original/original_node"
+    original = "original/original_node"
     handle_run(RunConfig(pipeline_file=pipeline_path, node=original))
 
     out = capsys.readouterr().out
     assert f"{original}: 1 cols" in out
     assert f"Output - {original} (2 rows):" in out
 
-    copy = "submodel_runtime/copy/original_node"
+    copy = "copy/original_node"
     handle_run(RunConfig(pipeline_file=pipeline_path, node=copy))
 
     out = capsys.readouterr().out
