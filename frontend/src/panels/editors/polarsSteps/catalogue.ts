@@ -585,6 +585,9 @@ function literalProblem(operand: Record<string, unknown>, where: string): string
   // The renderer accepts a null literal with no value field at all.
   if (type === "null" && operand.value === undefined) return null
   if (!isShape(operand.value, LITERAL_VALUE_SHAPE[type as LiteralType])) return `${where} has a malformed value.`
+  if (operand.text !== undefined && (type !== "number" || typeof operand.text !== "string")) {
+    return `${where} has a malformed spelling.`
+  }
   return null
 }
 

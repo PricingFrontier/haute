@@ -322,10 +322,11 @@ class BrowserDocument:
                     editor["saved_steps"] = saved["saved_steps"]
             settings = {k: v for k, v in config.items() if k not in STEPS_KEYS}
             held_settings = {k: v for k, v in held["config"].items() if k not in STEPS_KEYS}
-            if isinstance(saved.get("saved_settings"), str) and _canonical(settings) == _canonical(
-                held_settings
-            ):
-                editor["saved_settings"] = saved["saved_settings"]
+            if isinstance(saved.get("saved_settings"), str):
+                if _canonical(settings) == _canonical(held_settings):
+                    editor["saved_settings"] = saved["saved_settings"]
+                else:
+                    editor["settings_edited_from"] = saved["saved_settings"]
         return sent
 
     def save_request(self, graph: dict[str, Any] | None = None) -> dict[str, Any]:

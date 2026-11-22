@@ -53,6 +53,7 @@ from haute._polars_steps import (
     STEPPED_NODE_TYPES,
     WINDOW_AGGREGATIONS,
     PolarsStepError,
+    js_held,
     referenced_step_inputs,
     render_node_steps,
     render_polars_steps,
@@ -1092,6 +1093,218 @@ def test_every_lifted_list_renders_its_source_against_its_input_names(
     assert render_polars_steps(lifted, inputs, start="input").code == code
 
 
+def _as_a_browser_holds_it(value: Any) -> Any:
+    """*value* after ``JSON.stringify`` and ``JSON.parse`` in a browser and back to Python:
+    every number one double, which JavaScript writes as its shortest digits."""
+    if isinstance(value, bool) or not isinstance(value, int | float | list | dict):
+        return value
+    if isinstance(value, list):
+        return [_as_a_browser_holds_it(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _as_a_browser_holds_it(item) for key, item in value.items()}
+    return js_held(value)
+
+
+#: Numbers a browser would write otherwise: whole-number decimals, exponent forms, negative
+#: zero and integers of 16 to 19 digits, beside ones it keeps.
+_SPELLED_NUMBERS = (
+    "1.0",
+    "-1.0",
+    "0.0",
+    "-0.0",
+    "2.50",
+    "1e20",
+    "1e21",
+    "1.5e-07",
+    "1000000000000000.0",
+    "9007199254740993",
+    "-9007199254740993",
+    "1234567890123456789",
+    "365",
+    "0.1",
+)
+_SPELLING_STATEMENTS = (
+    'df = df.with_columns(pl.lit({n}).alias("x"))',
+    'df = df.filter(pl.col("id") == {n})',
+    'df = df.with_columns((pl.col("v") * {n}).alias("v"))',
+    'df = df.with_columns(pl.col("v").fill_null({n}))',
+)
+
+
+@pytest.mark.parametrize("spelled", _SPELLED_NUMBERS)
+@pytest.mark.parametrize("statement", _SPELLING_STATEMENTS)
+def test_a_number_renders_as_it_was_written_after_a_browser_held_its_step(
+    statement: str, spelled: str
+) -> None:
+    """CGEN-09: ``pl.lit(1.0)`` came back ``pl.lit(1)``, a 32-bit integer column, and an
+    integer past 2**53 named another row."""
+    code = f"df = quotes\n{statement.format(n=spelled)}"
+    lifted = lift_steps(NodeType.POLARS, code, inputs=["quotes"])
+    assert len(lifted) == 2 and lifted[1]["kind"] != "free_code", lifted
+    held = _as_a_browser_holds_it(lifted)
+    assert render_polars_steps(held, ["quotes"], start="input").code == code
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'df = df.filter(pl.col("x").is_in([9007199254740993, 1]))',
+        'df = df.filter(pl.col("x").is_in([1.0, 2.50, -0.0]))',
+        "df = df.filter(\n"
+        '    pl.col("x").is_in(pl.Series(["1.50", "2"]).str.to_decimal(scale=2).implode())\n'
+        ")",
+    ],
+)
+def test_membership_numbers_render_as_they_were_written_after_a_browser(statement: str) -> None:
+    """CGEN-09: a whole number past 2**53 kept its digits, and a decimal list its scale."""
+    code = f"df = quotes\n{statement}"
+    lifted = lift_steps(NodeType.POLARS, code, inputs=["quotes"])
+    assert lifted[1]["kind"] == "filter"
+    held = _as_a_browser_holds_it(lifted)
+    assert render_polars_steps(held, ["quotes"], start="input").code == code
+
+
+def test_a_spelling_is_kept_only_where_a_browser_would_write_the_number_otherwise() -> None:
+    lifted = lift_steps(
+        NodeType.POLARS,
+        "df = quotes\n"
+        'df = df.with_columns(pl.lit(1.0).alias("a"))\n'
+        'df = df.with_columns(pl.lit(0.5).alias("b"))',
+        inputs=["quotes"],
+    )
+    spelled = {"kind": "literal", "type": "number", "value": 1.0, "text": "1.0"}
+    assert lifted[1]["expr"]["operand"] == spelled
+    assert lifted[2]["expr"]["operand"] == {"kind": "literal", "type": "number", "value": 0.5}
+    variable = {"kind": "variable", "name": "rate", "value": literal("number", 1.0)}
+    assert (
+        canonical_steps(NodeType.POLARS, numbered([SOURCE, variable]), inputs=INPUTS)[1]["value"]
+        == spelled
+    )
+
+
+@pytest.mark.parametrize(
+    ("operand", "fragment"),
+    [
+        pytest.param({"value": 2, "text": "1.0"}, "does not spell its value", id="stale"),
+        pytest.param({"value": 1, "text": "one"}, "not a number as Python writes", id="words"),
+        pytest.param({"value": 1, "text": "1_0"}, "not a number as Python writes", id="underscore"),
+        pytest.param({"value": 1, "text": "1e400"}, "not a number as Python writes", id="infinite"),
+    ],
+)
+def test_a_text_that_does_not_spell_its_number_is_refused(
+    operand: dict[str, Any], fragment: str
+) -> None:
+    """The renderer writes a text into the code only once it is a number literal that spells
+    the value the step holds: never a stale or a foreign one."""
+    steps = [
+        SOURCE,
+        {
+            "kind": "with_column",
+            "name": "x",
+            "expr": {
+                "type": "operand",
+                "operand": {"kind": "literal", "type": "number", **operand},
+            },
+        },
+    ]
+    with pytest.raises(PolarsStepError, match=fragment):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+
+
+@pytest.mark.parametrize(
+    ("number_type", "member", "fragment"),
+    [
+        pytest.param("integer", {"value": 1, "text": "1.0"}, "is not a whole number", id="integer"),
+        pytest.param("float", {"value": 1, "text": "1"}, "a whole number, not a float", id="float"),
+        pytest.param("decimal", {"value": 1e5, "text": "1e5"}, "has an exponent", id="decimal"),
+    ],
+)
+def test_a_members_text_must_be_its_lists_kind(
+    number_type: str, member: dict[str, Any], fragment: str
+) -> None:
+    condition = {
+        "column": "x",
+        "operator": "is_in",
+        "number_type": number_type,
+        "values": [{"kind": "literal", "type": "number", **member}],
+    }
+    steps = [SOURCE, {"kind": "filter", "match": "all", "conditions": [condition]}]
+    with pytest.raises(PolarsStepError, match=fragment):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+
+
+@pytest.mark.parametrize("text", ["2.0", "2e0", "2.", "0.2e1"])
+def test_a_whole_number_argument_takes_only_a_whole_spelling(text: str) -> None:
+    """Codex r1: Round's decimal places hold the whole number 2; a spelling that is not
+    whole would write ``.round(2.0)``, which Polars refuses."""
+    steps = [
+        SOURCE,
+        {
+            "kind": "with_column",
+            "name": "x",
+            "expr": {
+                "type": "function",
+                "fn": "round",
+                "operand": {"kind": "column", "name": "premium"},
+                "args": [{"kind": "literal", "type": "number", "value": 2, "text": text}],
+            },
+        },
+    ]
+    with pytest.raises(PolarsStepError, match="is not a whole number"):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+    whole = dict(steps[1])
+    whole["expr"] = {
+        **steps[1]["expr"],
+        "args": [{"kind": "literal", "type": "number", "value": 2}],
+    }
+    rendered = render_polars_steps(numbered([SOURCE, whole]), ["quotes"], start="input")
+    assert ".round(2)" in rendered.code
+
+
+def test_a_text_on_a_value_that_is_no_number_is_refused() -> None:
+    steps = [
+        SOURCE,
+        {
+            "kind": "with_column",
+            "name": "x",
+            "expr": {
+                "type": "operand",
+                "operand": {"kind": "literal", "type": "text", "value": "a", "text": "1.0"},
+            },
+        },
+    ]
+    with pytest.raises(PolarsStepError, match="has no text"):
+        render_polars_steps(numbered(steps), ["quotes"], start="input")
+
+
+@pytest.mark.parametrize(
+    "case", _STEP_SHAPES_CASES, ids=[case["id"] for case in _STEP_SHAPES_CASES]
+)
+def test_every_step_shape_renders_its_code_after_a_browser_held_it(case: dict[str, Any]) -> None:
+    """CGEN-09: each lifted list, through a browser, renders the code it was lifted from."""
+    inputs = referenced_step_inputs(case["steps"])
+    code = render_polars_steps(case["steps"], inputs, start="input").code
+    lifted = lift_steps(NodeType.POLARS, code, inputs=inputs)
+    held = _as_a_browser_holds_it(lifted)
+    assert render_polars_steps(held, inputs, start="input").code == code
+
+
+def test_the_editors_case_file_of_number_renderings_is_the_servers() -> None:
+    """CGEN-09: the editor decides when a typed number keeps its ``text`` by the server's
+    own writing of the number it sends, held to this file by ``numberSpelling.test.ts``."""
+    import importlib.util
+
+    path = REPO_ROOT / "scripts" / "regen_number_renderings_fixture.py"
+    spec = importlib.util.spec_from_file_location("regen_number_renderings_fixture", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    on_disk = script.FIXTURE.read_text(encoding="utf-8")
+    assert on_disk == script.render(script.build_fixture()), (
+        "Run uv run python scripts/regen_number_renderings_fixture.py."
+    )
+
+
 @pytest.mark.parametrize("text", ["abc", "1e5", ""])
 def test_a_decimal_membership_of_text_that_is_not_a_number_stays_code(text: str) -> None:
     """CGEN-02: the statement is kept as code, never a failure of the whole read."""
@@ -1105,7 +1318,15 @@ def test_a_decimal_membership_of_text_that_is_not_a_number_stays_code(text: str)
 
 
 #: What no step's reader expects where a number, a name or a setting stands.
-_MALFORMED_LITERALS: tuple[object, ...] = ("abc", "", "1e5", 10**30, -0.0, True, None)
+_MALFORMED_LITERALS: tuple[str | int | float | bool | None, ...] = (
+    "abc",
+    "",
+    "1e5",
+    10**30,
+    -0.0,
+    True,
+    None,
+)
 
 
 @pytest.mark.parametrize(

@@ -47,7 +47,12 @@ from haute._polars_dtypes import (
     parse_rendered_dtype,
 )
 from haute._polars_steps_layout import layout_statement
-from haute._source_layout import float_literal, lines_inside_literals, python_lines
+from haute._source_layout import (
+    float_literal,
+    lines_inside_literals,
+    number_spelling,
+    python_lines,
+)
 from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
@@ -677,6 +682,66 @@ def _decimal_text(number: int | float) -> str:
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
+# ---------------------------------------------------------------------------
+# A number's spelling (CGEN-09)
+# ---------------------------------------------------------------------------
+
+
+def is_whole_spelling(spelling: str) -> bool:
+    """Whether *spelling* writes a whole number literal, an ``int`` to Python."""
+    return not any(mark in spelling for mark in ".e")
+
+
+def js_held(value: int | float) -> int | float:
+    """*value* as a browser gives it back: one double, which JavaScript writes as its shortest
+    digits, and Python then reads as JSON, a whole number below 10**21 as an integer of those
+    digits padded with zeros (so 9007199254740993 comes back 9007199254740992, ``1.0`` and
+    ``-0.0`` as ``1`` and ``0``), any other as a float."""
+    held = float(value)
+    if held.is_integer() and abs(held) < 1e21:
+        return int(Decimal(repr(held)))
+    return held
+
+
+def without_number_text(value: Any) -> Any:
+    """*value*, steps or a part of one, with no number literal carrying its ``text``: steps
+    written on the server, whose numbers are held exactly, need no spelling, and a spelling
+    copied beside a changed number would not spell it."""
+    if isinstance(value, list):
+        return [without_number_text(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    held = {key: without_number_text(item) for key, item in value.items()}
+    if held.get("kind") == "literal" and held.get("type") == "number":
+        held.pop("text", None)
+    return held
+
+
+def number_rendering(value: int | float, number_type: str | None = None) -> str:
+    """How the renderer writes *value* given no spelling: as a bare literal (*number_type*
+    ``None``), as Python writes its ``int`` or ``float``; as a member of a list of
+    *number_type* numbers, as that list writes its members."""
+    if number_type is None:
+        return float_literal(value) if isinstance(value, float) else repr(value)
+    if number_type == "integer":
+        return str(int(value))
+    if number_type == "float":
+        return float_literal(float(value))
+    return _decimal_text(value)
+
+
+def spelled_number(
+    value: int | float, spelling: str | None, number_type: str | None = None
+) -> dict[str, Any]:
+    """The number literal of *value* written as *spelling*: with ``text`` exactly when the
+    value as a browser gives it back (:func:`js_held`) would be written otherwise, so a
+    step list that has been through a browser renders the numbers as they were written."""
+    literal: dict[str, Any] = {"kind": "literal", "type": "number", "value": value}
+    if spelling is not None and number_rendering(js_held(value), number_type) != spelling:
+        literal["text"] = spelling
+    return literal
+
+
 def cast_family(dtype: pl.DataType) -> ColumnKind | None:
     """The cast table's name for a column type, its kind, or None for a type it does not
     cover (a list, a struct, an object)."""
@@ -1175,16 +1240,45 @@ class _Renderer:
 
     # -- literals and operands -------------------------------------------
 
-    def _literal(self, operand: Mapping[str, Any], label: str) -> tuple[str, str]:
-        """Return ``(literal_type, bare_render)`` for a literal operand."""
-        self._keys(operand, ("kind", "type", "value"), label)
+    def _spelling(
+        self, operand: Mapping[str, Any], label: str, number_type: str | None = None
+    ) -> str:
+        """How a number literal that carries its ``text`` is written: that text, which must be
+        a number literal that spells the literal's value, a whole number for a list of whole
+        numbers and a decimal one for a list of floats or decimals (CGEN-09)."""
+        text, value = operand.get("text"), operand.get("value")
+        spelling = number_spelling(text)
+        if spelling is None:
+            raise self.fail(f"{label}'s text {text!r} is not a number as Python writes one.")
+        assert isinstance(value, int | float)
+        if float(spelling) != float(value):
+            raise self.fail(f"{label}'s text {spelling!r} does not spell its value {value!r}.")
+        whole = is_whole_spelling(spelling)
+        if number_type == "integer" and not whole:
+            raise self.fail(f"{label}'s text {spelling!r} is not a whole number.")
+        if number_type == "float" and whole:
+            raise self.fail(f"{label}'s text {spelling!r} is a whole number, not a float.")
+        if number_type == "decimal" and "e" in spelling:
+            raise self.fail(f"{label}'s text {spelling!r} has an exponent, which no decimal has.")
+        return spelling
+
+    def _literal(
+        self, operand: Mapping[str, Any], label: str, number_type: str | None = None
+    ) -> tuple[str, str]:
+        """Return ``(literal_type, bare_render)`` for a literal operand; a number's ``text``
+        is checked against *number_type*, the kind of number the slot takes (``_spelling``)."""
+        self._keys(operand, ("kind", "type", "value", "text"), label)
         literal_type = self._choice(operand.get("type"), LITERAL_TYPES, f"{label} type")
         value = operand.get("value")
+        if "text" in operand and literal_type != "number":
+            raise self.fail(f"{label} is no number, so it has no text.")
         if literal_type == "number":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise self.fail(f"{label} must be a number.")
             if isinstance(value, float) and not math.isfinite(value):
                 raise self.fail(f"{label} must be a finite number.")
+            if "text" in operand:
+                return literal_type, self._spelling(operand, label, number_type)
             return literal_type, float_literal(value) if isinstance(value, float) else repr(value)
         if literal_type == "text":
             if not isinstance(value, str):
@@ -1342,6 +1436,7 @@ class _Renderer:
         rendered: list[str] = []
         types: set[str] = set()
         raw: list[object] = []
+        operands: list[Mapping[str, Any]] = []
         for item in value:
             operand = self._object(item, label)
             if operand.get("kind") != "literal":
@@ -1352,6 +1447,7 @@ class _Renderer:
             types.add(literal_type)
             rendered.append(text)
             raw.append(operand["value"])
+            operands.append(operand)
         if len(types) != 1:
             raise self.fail(f"{label} must all be the same type.")
         if types != {"number"}:
@@ -1362,13 +1458,17 @@ class _Renderer:
             return f"[{', '.join(rendered)}]"
         kind = self._choice(number_type, NUMBER_TYPES, f"{label} number type")
         numbers = [_finite_number(v) for v in raw]
-        if kind == "integer":
-            if any(not float(n).is_integer() for n in numbers):
-                raise self.fail(f"{label} must be whole numbers to match a whole-number column.")
-            return f"[{', '.join(str(int(n)) for n in numbers)}]"
-        if kind == "float":
-            return f"[{', '.join(repr(float(n)) for n in numbers)}]"
-        texts = [_decimal_text(n) for n in numbers]
+        if kind == "integer" and any(not float(n).is_integer() for n in numbers):
+            raise self.fail(f"{label} must be whole numbers to match a whole-number column.")
+        # Each as its text spells it, else as the list writes the number (CGEN-09).
+        texts = [
+            self._spelling(operand, label, kind)
+            if "text" in operand
+            else number_rendering(number, kind)
+            for operand, number in zip(operands, numbers, strict=True)
+        ]
+        if kind in ("integer", "float"):
+            return f"[{', '.join(texts)}]"
         scale = max(len(t.partition(".")[2]) for t in texts)
         return f"pl.Series({texts!r}).str.to_decimal(scale={scale}).implode()"
 
@@ -1633,7 +1733,8 @@ class _Renderer:
             return self._constant(operand, label, types, non_negative=expected == "integer")
         if operand.get("kind") != "literal":
             raise self.fail(f"{label} must be a plain value or a constant.")
-        literal_type, rendered = self._literal(operand, label)
+        whole = "integer" if expected in ("integer", "int") else None
+        literal_type, rendered = self._literal(operand, label, whole)
         if expected == "integer":
             raw = operand.get("value")
             if literal_type != "number" or not isinstance(raw, int) or raw < 0:

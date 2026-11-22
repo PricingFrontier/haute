@@ -925,6 +925,9 @@ export interface ScopedNodeSaveRequest {
   savedSteps: string | null
   /** The node's settings as saved, when they were not edited: the node is written from them. */
   savedSettings: string | null
+  /** The node's settings as saved, when they were edited: each number the edit left as it was
+   * keeps the spelling they give it. */
+  settingsEditedFrom: string | null
 }
 
 /** Save one `scoped_editable` node in isolation while the document stays fenced. */
@@ -941,6 +944,7 @@ export function saveNodeScoped(
     saved_code: args.savedCode,
     saved_steps: args.savedSteps,
     saved_settings: args.savedSettings,
+    settings_edited_from: args.settingsEditedFrom,
   }, options, parsePipelineEditorDocument, "saveNodeScoped")
 }
 

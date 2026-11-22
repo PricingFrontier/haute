@@ -898,6 +898,17 @@ class TestEditSteps:
             {"id": "logic", "kind": "free_code", "code": "df = df.head(1)"},
         ]
 
+    def test_a_number_the_model_changes_beside_its_old_spelling_is_written_as_changed(self):
+        """CGEN-09: a step's ``text`` spells its number for a browser; the assistant's numbers
+        are held exactly, so a spelling it copies beside a changed number is not read."""
+        spelled = {"kind": "literal", "type": "number", "value": 2.0, "text": "1.0"}
+        step = {"kind": "with_column", "name": "r", "expr": {"type": "operand", "operand": spelled}}
+        out = _apply(_stepped_graph(), _edit_steps("stepped", {"replace": "logic", "step": step}))
+
+        written = _get(out, "stepped").data.config
+        assert 'pl.lit(2.0).alias("r")' in written["code"]
+        assert "text" not in written["steps"][-1]["expr"]["operand"]
+
     def test_an_insert_at_the_start_of_a_frame_surface(self):
         out = _apply(
             _stepped_graph(),

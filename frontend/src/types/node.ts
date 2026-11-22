@@ -68,6 +68,7 @@ export interface NodeEditorState {
   saved_code?: string
   saved_steps?: string
   saved_settings?: string
+  settings_edited_from?: string
 }
 
 export interface HauteNodeData extends Record<string, unknown> {

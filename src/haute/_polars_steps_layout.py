@@ -44,7 +44,7 @@ from haute._source_layout import (
     Group,
     Indent,
     bracketed,
-    float_literal,
+    number_spelling,
     print_doc,
     python_lines,
     quote_string,
@@ -353,7 +353,9 @@ def restyle_statement(statement: str) -> str:
     Brackets the operator precedence does not need are dropped (``ast.unparse``
     keeps exactly the ones it needs, so ``df.filter((pl.col('a') == 0))``
     becomes ``df.filter(pl.col('a') == 0)``) and every string takes double
-    quotes unless single ones need fewer escapes. The rewrite is checked to
+    quotes unless single ones need fewer escapes. Each number keeps the text the
+    statement writes it as (``1.0``, ``2.50``, ``1e20``), since the renderer
+    writes a number as it was written (CGEN-09). The rewrite is checked to
     leave the program unchanged: it must parse to the same syntax tree, or it
     is refused loudly.
     """
@@ -363,6 +365,12 @@ def restyle_statement(statement: str) -> str:
         raise ValueError(
             f"Cannot restyle the rendered statement {statement!r}: {exc.msg}."
         ) from None
+    # As ``ruff format`` writes each: a lowercase exponent with no plus sign.
+    written = [
+        number_spelling(token.string) or token.string
+        for token in tokenize.generate_tokens(io.StringIO(statement).readline)
+        if token.type == tokenize.NUMBER
+    ]
     unparsed = ast.unparse(tree)
     line_starts = [0]
     for line in python_lines(unparsed, keepends=True):
@@ -372,16 +380,18 @@ def restyle_statement(statement: str) -> str:
         for token in tokenize.generate_tokens(io.StringIO(unparsed).readline)
         if token.type in (tokenize.STRING, tokenize.NUMBER)
     ]
+    numbers = [token for token in literals if token.type == tokenize.NUMBER]
+    # ``ast.unparse`` writes each number of the tree once, in its order.
+    spelled = {id(token): text for token, text in zip(numbers, written, strict=True)}
     restyled = unparsed
     for token in reversed(literals):
         start = line_starts[token.start[0] - 1] + token.start[1]
         end = line_starts[token.end[0] - 1] + token.end[1]
-        value = ast.literal_eval(token.string)
         if token.type == tokenize.NUMBER:
-            # ``ast.unparse`` writes a float's ``repr``; ruff drops its exponent's ``+``.
-            if isinstance(value, float):
-                restyled = f"{restyled[:start]}{float_literal(value)}{restyled[end:]}"
+            # ``ast.unparse`` writes a float's ``repr``: the statement's own text goes back.
+            restyled = f"{restyled[:start]}{spelled[id(token)]}{restyled[end:]}"
             continue
+        value = ast.literal_eval(token.string)
         if not isinstance(value, str):
             raise ValueError(f"Cannot restyle the rendered statement {statement!r}: bytes literal.")
         restyled = f"{restyled[:start]}{quote_string(value)}{restyled[end:]}"

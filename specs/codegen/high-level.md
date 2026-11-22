@@ -492,7 +492,9 @@ a part sent without one is read from the request.
   it, by source and handles, and in a definition the input ports that reach it, since its
   steps render against them. Its settings are unedited when they equal the baseline's. Each
   unedited part is sent with its saved form, the steps' in `editor.saved_code` (and as the
-  node's `code`) or `editor.saved_steps`, the settings' in `editor.saved_settings`.
+  node's `code`) or `editor.saved_steps`, the settings' in `editor.saved_settings`. Edited
+  settings whose node the baseline holds with saved settings are sent with those as the
+  settings the edit began from, in `editor.settings_edited_from`.
   A node the baseline does not hold, or holds without a saved form for that part, is sent
   with every such part read. A transform of the graph whose answer the editor adopts as an
   unsaved edit (create submodel, create instance, dissolve) is built with no baseline, so
@@ -504,10 +506,14 @@ a part sent without one is read from the request.
   building a node renders its steps into its code (`NodeData`); a node sent with saved steps
   is built from that list, so a run refuses it as unfinished, naming the step, as the file
   does; a node sent with saved settings is built from them, the settings it carries not
-  read. A saved code of `""` (steps that did not render when saved) leaves the steps read,
+  read; a node sent with the settings its edit began from is built from the settings it
+  carries, each number in them taken from that form where a browser holds it as it holds
+  the number at the same place there (`haute._edited_parts.spelled_as`, below). A saved code
+  of `""` (steps that did not render when saved) leaves the steps read,
   being then their only copy. A saved form of the steps on a node that holds no step list,
-  a saved code and saved steps together, saved steps that are not a list, and saved
-  settings that are not a JSON object or that hold `steps` or `code`, are a 422. Every request model that carries the document
+  a saved code and saved steps together, saved steps that are not a list, saved settings
+  and the settings an edit began from together, and either that is not a JSON object or
+  that holds `steps` or `code`, are a 422. Every request model that carries the document
   derives from it, the save included, and records which parts it read from the request
   (`steps_read`, `settings_read`). A built node never carries a saved form: `NodeData`
   refuses one, so a request model that went round the base model fails loudly. `POST
@@ -522,9 +528,22 @@ a part sent without one is read from the request.
   for a write alike; settings read are run as sent and written to the node's settings
   file. A part not read keeps the file's spelling and meaning: an untouched node's code is
   written byte for byte and its settings file is left as it was, and a run computes the
-  column types and values the file computes. Within a part read, a number the browser held
-  is still written as the browser held it: carrying it as its kind and its digits is
-  `CGEN-09`'s.
+  column types and values the file computes. Within a part read, a number keeps its
+  spelling too (CGEN-09). A step's number literal carries it as its `text` ("A number's
+  `text`" in [the structured syntax boundary](structured-syntax-boundary.md)). In edited
+  settings each number the edit left as it was takes it from the settings the edit began
+  from, so renaming a Rating Step's output column keeps its `default_value: 1.0`. Only a
+  number the edit changed is written as the browser sent it, a whole number as an integer.
+- **The same place.** `spelled_as` walks the settings sent and the settings the edit began
+  from together: an object's value by its key, and a list's elements in order, aligned by
+  their content (an element a browser holds as it holds an element of the saved list is
+  that element, so a row added, removed or moved does not shift the others; a changed
+  element is walked against the saved element it replaced). A number takes the saved
+  number's spelling when a browser holds the saved number as the number sent, both whole
+  or both not: one double, read back as Python reads JSON (`_polars_steps.js_held`), so
+  `1.0` matches `1` and `9007199254740993` matches `9007199254740992`, and `true` never
+  matches `1`. Any other value is read as sent. The rule changes no value, only how a value
+  the browser cannot hold is spelt.
 
 A node saved with unfinished steps has the raising placeholder for a body and its list in
 `.haute.json`. Unless its steps are read from the request, a save writes it from that

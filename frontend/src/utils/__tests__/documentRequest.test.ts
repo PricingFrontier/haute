@@ -81,7 +81,9 @@ describe("document request", () => {
     }
 
     expect(savedFormsFor(baseline, document, null, document.nodes[0])).toEqual({ saved_settings: '{"rate":1.0}' })
-    expect(savedFormsFor(baseline, document, null, document.nodes[1])).toEqual({})
+    // Edited settings go with the saved ones they began from, which keep the spelling of every
+    // number the edit left (CGEN-09).
+    expect(savedFormsFor(baseline, document, null, document.nodes[1])).toEqual({ settings_edited_from: "{}" })
     expect(savedFormsFor(baseline, document, null, document.nodes[2])).toEqual({})
     expect(savedFormsFor(baseline, document, "sub", document.submodels.sub.graph.nodes[0])).toEqual({ saved_settings: "{}" })
     expect(document.nodes.map((node) => savedFormsFor(null, document, null, node))).toEqual([{}, {}, {}])
@@ -109,7 +111,7 @@ describe("document request", () => {
 
     const sent = documentRequestGraph({ nodes: [stale], edges: [] }, baseline)
 
-    expect(editor(sent.nodes[0])).toEqual({ ...live, saved_code: savedCode })
+    expect(editor(sent.nodes[0])).toEqual({ ...live, saved_code: savedCode, settings_edited_from: '{"rate":1.0}' })
     expect(editor(documentRequestGraph({ nodes: [stale], edges: [] }, null).nodes[0])).toEqual(live)
   })
 

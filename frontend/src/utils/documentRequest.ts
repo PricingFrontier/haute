@@ -9,7 +9,9 @@
  * it is sent with the saved form the server gave for it, which the browser keeps exactly: the
  * code saved for the steps (`editor.saved_code`, and as the node's code), or for a node saved
  * with unfinished steps the list itself (`editor.saved_steps`), and the settings' JSON text
- * (`editor.saved_settings`). Steps render against their node's inputs, so a node whose steps
+ * (`editor.saved_settings`). Edited settings go with the saved ones they began from
+ * (`editor.settings_edited_from`), from which the server keeps the spelling of every number the
+ * edit left as it was (CGEN-09). Steps render against their node's inputs, so a node whose steps
  * name its inputs keeps its steps' saved form only while those inputs are as saved too. The
  * saved forms live in the baseline only: the live nodes never carry one, so no copy goes
  * stale, and only this module puts them on a request.
@@ -35,6 +37,7 @@ export interface SavedForms {
   saved_code?: string
   saved_steps?: string
   saved_settings?: string
+  settings_edited_from?: string
 }
 
 interface Document {
@@ -43,7 +46,7 @@ interface Document {
   submodels?: Record<string, unknown>
 }
 
-const SAVED_FORM_KEYS = ["saved_code", "saved_steps", "saved_settings"] as const
+const SAVED_FORM_KEYS = ["saved_code", "saved_steps", "saved_settings", "settings_edited_from"] as const
 
 function nodeConfig(node: Node): Record<string, unknown> {
   const config = (node.data as { config?: unknown } | undefined)?.config
@@ -124,8 +127,9 @@ export function savedFormsFor(
     if (typeof saved.saved_code === "string") forms.saved_code = saved.saved_code
     else if (typeof saved.saved_steps === "string") forms.saved_steps = saved.saved_steps
   }
-  if (typeof saved.saved_settings === "string" && canonicalJson(settingsOf(config)) === canonicalJson(settingsOf(heldConfig))) {
-    forms.saved_settings = saved.saved_settings
+  if (typeof saved.saved_settings === "string") {
+    if (canonicalJson(settingsOf(config)) === canonicalJson(settingsOf(heldConfig))) forms.saved_settings = saved.saved_settings
+    else forms.settings_edited_from = saved.saved_settings
   }
   return forms
 }

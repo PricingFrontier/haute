@@ -969,11 +969,14 @@ export interface RecoveryPipelineNode {
  * CGEN-13): an editor document gives them for each of its nodes, and a request that
  * carries the document sends them back for each part its editor did not edit. The
  * request reads them before the node is built, so a built node never carries one.
+ * Edited settings are sent with ``settings_edited_from``, the saved settings the edit began
+ * from, which keeps the spelling of each number the edit left as it was (CGEN-09).
  */
 export interface NodeEditorState {
   saved_code?: string;
   saved_settings?: string;
   saved_steps?: string;
+  settings_edited_from?: string;
   steps_discarded: string | null;
   steps_error: string | null;
 }

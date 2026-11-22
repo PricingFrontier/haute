@@ -849,6 +849,7 @@ def _scoped_config_to_write(
             saved_code=request.saved_code,
             saved_settings=request.saved_settings,
             saved_steps=request.saved_steps,
+            settings_edited_from=request.settings_edited_from,
             node=repr(target.authored_id),
         )
     except ValueError as exc:

@@ -27,6 +27,7 @@ from haute.routes._helpers import parse_pipeline_to_graph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import DocumentRequest, SavePipelineRequest
 from tests._unedited_parts import (
+    RATED,
     REPO,
     SPELLED,
     BrowserDocument,
@@ -62,6 +63,163 @@ def test_a_save_of_the_untouched_document_leaves_every_file_as_it_was(
     _browser_save(BrowserDocument(root, pipeline_file(root)))
 
     assert files(root) == before
+
+
+@pytest.mark.parametrize("source", [None, *examples()])
+def test_settings_read_from_a_browser_keep_every_number_the_edit_left(
+    tmp_path: Path, source: Path | None
+) -> None:
+    """CGEN-09: every node's settings read from the request after a browser held them, each
+    sent with the saved settings its edit began from, are written as each file holds them."""
+    root = make_project(tmp_path, source)
+    before = files(root)
+    document = BrowserDocument(root, pipeline_file(root))
+    sent = document.request_graph()
+    read = 0
+    for _ref, node in scoped(sent):
+        editor = node["data"]["editor"]
+        if "saved_settings" in editor:
+            editor["settings_edited_from"] = editor.pop("saved_settings")
+            read += 1
+    assert read
+
+    _browser_save(document, sent)
+
+    assert files(root) == before
+
+
+def _rated_file(root: Path) -> str:
+    return (root / "config" / "rating_step" / "rated.json").read_text(encoding="utf-8")
+
+
+def test_a_rating_step_whose_output_column_is_renamed_keeps_its_other_numbers(
+    tmp_path: Path,
+) -> None:
+    """CGEN-09: the rename is the edit; the default, the base value and the rows a browser
+    holds as whole numbers keep the spelling their file gave them."""
+    root = make_project(tmp_path)
+    assert '"default_value": 1.0' in _rated_file(root)
+    document = BrowserDocument(root, root / "main.py")
+    rated = node_at(document.live, (None, "rated"))["data"]["config"]
+    rated["combined_outputs"][0]["output_column"] = "rated_premium"
+    sent = document.request_graph()
+    editor = node_at(sent, (None, "rated"))["data"]["editor"]
+    assert "saved_settings" not in editor and "settings_edited_from" in editor
+
+    _browser_save(document, sent)
+
+    written = json.loads(_rated_file(root))
+    assert written["combined_outputs"][0] == {
+        **RATED["combined_outputs"][0],
+        "output_column": "rated_premium",
+    }
+    assert '"default_value": 1.0' in _rated_file(root)
+    assert '"base_value": 100.0' in _rated_file(root)
+    assert written["tables"] == RATED["tables"]
+    assert [type(value) for _, value in written["tables"][0]["rows"]] == [float, float]
+
+
+def test_without_the_settings_an_edit_began_from_the_browsers_numbers_are_written(
+    tmp_path: Path,
+) -> None:
+    """The control: the same edit read from the browser alone writes its whole numbers."""
+    root = make_project(tmp_path)
+    document = BrowserDocument(root, root / "main.py")
+    rated = node_at(document.live, (None, "rated"))["data"]["config"]
+    rated["combined_outputs"][0]["output_column"] = "rated_premium"
+    sent = document.request_graph()
+    del node_at(sent, (None, "rated"))["data"]["editor"]["settings_edited_from"]
+
+    _browser_save(document, sent)
+
+    assert type(json.loads(_rated_file(root))["tables"][0]["default_value"]) is int
+
+
+@pytest.mark.parametrize(
+    ("sent", "saved", "read"),
+    [
+        pytest.param(1, 1.0, 1.0, id="a-whole-decimal"),
+        pytest.param(9007199254740992, 9007199254740993, 9007199254740993, id="a-long-integer"),
+        pytest.param(0, -0.0, -0.0, id="negative-zero"),
+        pytest.param(1e20, 1e20, 1e20, id="an-exponent"),
+        pytest.param(2, 1.0, 2, id="a-changed-number"),
+        pytest.param(1.5, 1.5, 1.5, id="a-fraction"),
+        pytest.param(1, True, 1, id="a-number-is-no-boolean"),
+        pytest.param(True, 1, True, id="a-boolean-is-no-number"),
+        pytest.param("1.0", 1.0, "1.0", id="text-is-no-number"),
+        pytest.param(
+            {"a": 1, "b": 2, "new": 3},
+            {"a": 1.0, "b": 2.5, "old": 4.0},
+            {"a": 1.0, "b": 2, "new": 3},
+            id="an-object-by-key",
+        ),
+        pytest.param(
+            [["new", 1], ["young", 1.2], ["experienced", 1]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["new", 1], ["young", 1.2], ["experienced", 1.0]],
+            id="a-row-added-above",
+        ),
+        pytest.param(
+            [["experienced", 1]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["experienced", 1.0]],
+            id="a-row-removed",
+        ),
+        pytest.param(
+            [["young", 3], ["experienced", 1]],
+            [["young", 1.2], ["experienced", 1.0]],
+            [["young", 3], ["experienced", 1.0]],
+            id="a-row-changed",
+        ),
+        pytest.param(
+            [{"output_column": "renamed", "base_value": 100}],
+            [{"output_column": "rated_result", "base_value": 100.0}],
+            [{"output_column": "renamed", "base_value": 100.0}],
+            id="a-changed-element-walked-against-the-one-it-replaced",
+        ),
+    ],
+)
+def test_a_number_the_edit_left_is_spelt_as_the_settings_it_began_from(
+    sent: Any, saved: Any, read: Any
+) -> None:
+    from haute._edited_parts import spelled_as
+
+    got = spelled_as(sent, saved)
+    assert json.dumps(got) == json.dumps(read)
+    assert type(got) is type(read)
+
+
+def test_an_edit_carries_one_form_of_its_settings() -> None:
+    """Saved settings say the settings were not edited; the settings an edit began from say
+    they were. Both, or either not an object of settings, is refused."""
+    from haute._edited_parts import config_as_read
+
+    with pytest.raises(ValueError, match="both saved settings and the settings an edit"):
+        config_as_read(
+            "polars",
+            {"code": "x"},
+            saved_code=None,
+            saved_settings="{}",
+            settings_edited_from="{}",
+            node="'n'",
+        )
+    with pytest.raises(ValueError, match="settings its edit began from of node 'n' are not"):
+        config_as_read(
+            "polars",
+            {"code": "x"},
+            saved_code=None,
+            saved_settings=None,
+            settings_edited_from="[]",
+            node="'n'",
+        )
+    assert config_as_read(
+        "ratingStep",
+        {"default": 1, "name": "x"},
+        saved_code=None,
+        saved_settings=None,
+        settings_edited_from='{"default": 1.0, "name": "y"}',
+        node="'n'",
+    ) == {"default": 1.0, "name": "x"}
 
 
 def test_the_hand_written_file_holds_values_the_browser_changes(tmp_path: Path) -> None:
@@ -149,8 +307,8 @@ def test_an_edited_node_is_written_from_its_steps_and_no_other_node_is(tmp_path:
 
     saved = (root / "main.py").read_text(encoding="utf-8")
     assert "df = df.head(5)" in saved
-    # The edited node is rendered, and with it its whole-number decimal: that is CGEN-09's.
-    assert 'pl.lit(1).alias("relativity")' in saved
+    # The edited steps are rendered, each number as it was written (CGEN-09).
+    assert 'pl.lit(1.0).alias("relativity")' in saved
     for untouched in SPELLED[1:]:
         assert untouched in saved
     assert "    one_id = 365\n" in saved

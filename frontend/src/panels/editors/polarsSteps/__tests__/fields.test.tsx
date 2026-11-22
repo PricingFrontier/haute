@@ -5,7 +5,7 @@ import { useState } from "react"
 import { commitOpenDrafts, isDraftOpen } from "../../../../components/form"
 import { literal } from "../catalogue"
 import { completionMatches } from "../completion"
-import { ArgumentField, ColumnListField, ColumnPicker, ConditionRow, NumberField, OperandField } from "../fields"
+import { ArgumentField, ColumnListField, ColumnPicker, ConditionRow, LiteralValueInput, NumberField, OperandField } from "../fields"
 import useGraphStore from "../../../../stores/useGraphStore"
 import type { GlobalConstantDraft } from "../../../../utils/globalConstants"
 import { StepSchemaContext, schemaFor } from "../stepSchema"
@@ -160,10 +160,28 @@ describe("number fields", () => {
     reject("0")
     fireEvent.change(input, { target: { value: "1e3" } })
     fireEvent.blur(input)
-    expect(onCommit).toHaveBeenCalledWith(1000)
+    expect(onCommit).toHaveBeenCalledWith(1000, "1e3")
     rerender(<NumberField value={1000} integer min={1} onCommit={onCommit} ariaLabel="Count" />)
     expect(input).not.toHaveAttribute("aria-invalid")
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("writes a whole number typed with a decimal point in a whole-number slot as that number", () => {
+    const onChange = vi.fn()
+    render(<LiteralValueInput value={literal("number", 0)} integer min={0} onChange={onChange} ariaLabel="Digits" />)
+    const input = screen.getByRole("textbox", { name: "Digits" })
+    fireEvent.change(input, { target: { value: "2.0" } })
+    fireEvent.blur(input)
+    expect(onChange).toHaveBeenCalledWith({ kind: "literal", type: "number", value: 2 })
+  })
+
+  it("keeps the spelling of a number typed in a slot of any number", () => {
+    const onChange = vi.fn()
+    render(<LiteralValueInput value={literal("number", 0)} onChange={onChange} ariaLabel="Rate" />)
+    const input = screen.getByRole("textbox", { name: "Rate" })
+    fireEvent.change(input, { target: { value: "2.0" } })
+    fireEvent.blur(input)
+    expect(onChange).toHaveBeenCalledWith({ kind: "literal", type: "number", value: 2, text: "2.0" })
   })
 
   it("accepts decimals when the field is not an integer", () => {
@@ -172,7 +190,7 @@ describe("number fields", () => {
     const input = screen.getByRole("textbox", { name: "Rate" })
     fireEvent.change(input, { target: { value: "1.5" } })
     fireEvent.blur(input)
-    expect(onCommit).toHaveBeenCalledWith(1.5)
+    expect(onCommit).toHaveBeenCalledWith(1.5, "1.5")
   })
 
   it("writes nothing while typing and once on commit", () => {
@@ -185,7 +203,7 @@ describe("number fields", () => {
     fireEvent.blur(input)
     fireEvent.blur(input)
     expect(onCommit).toHaveBeenCalledTimes(1)
-    expect(onCommit).toHaveBeenCalledWith(45)
+    expect(onCommit).toHaveBeenCalledWith(45, "45")
   })
 
   it("shows the stored number when it moves under an open draft", () => {
@@ -227,7 +245,7 @@ describe("number fields", () => {
     act(() => commitOpenDrafts())
     act(() => commitOpenDrafts())
     expect(onCommit).toHaveBeenCalledTimes(1)
-    expect(onCommit).toHaveBeenCalledWith(6)
+    expect(onCommit).toHaveBeenCalledWith(6, "6")
     fireEvent.change(input, { target: { value: "0" } })
     act(() => commitOpenDrafts())
     expect(onCommit).toHaveBeenCalledTimes(1)

@@ -228,6 +228,39 @@ another comment line.
   every edit of the step. The assistant neither writes nor reads it, and `step_fields()`
   does not list it, as it does not list `id`.
 
+### A number's `text` (CGEN-09)
+
+A browser has one kind of number: a step list it held carries `1.0` as `1`, `1e20` as a
+whole number of 21 digits, `-0.0` as `0` and an integer past 2^53 as its nearest double, and
+the renderer would write each back as another literal, a 32-bit integer column for a
+decimal one or a filter on another id. So a number literal, `{"kind": "literal", "type":
+"number", "value": ...}`, a membership list's members too, may carry `text`: its spelling as
+Python writes it.
+
+- **When it is carried.** Exactly when the renderer, given the number as a browser sends it
+  back (`_polars_steps.js_held`: one double, written as JavaScript writes its shortest
+  digits, read back as Python reads JSON), would write it otherwise
+  (`_polars_steps.number_rendering`, as a bare literal or as a member of a list of whole
+  numbers, floats or decimals): `spelled_number` decides. The lift gives it from the
+  statement's own text; `canonical_steps` from the text a literal carries, or else the
+  number's rendering, by the same rule; the editor gives a typed number one by the same rule
+  (`polarsSteps/numberSpelling.ts`, held to the server's by the case file
+  `numberRenderings.json`, which `scripts/regen_number_renderings_fixture.py` writes). So
+  `0.5` carries none and `1.0` carries `"1.0"`.
+- **Rendering.** A literal with `text` is written as that text, in `ruff format`'s form
+  (`_source_layout.number_spelling`: a lowercase exponent without a plus sign, a digit on
+  each side of a decimal point, a whole number without leading zeros), once the text is a
+  number literal that spells the literal's value as a double: one that is not, or that
+  spells another number, is refused with the step's index, never written. In a list the text
+  must be the list's kind: whole for whole numbers, with a point or an exponent for floats,
+  without an exponent for decimals, whose scale it then sets; in an argument that takes a
+  whole number (Round's decimal places, a text slice's start and length) it must be whole,
+  since Polars refuses `.round(2.0)`. A text on a value that is not a number is refused. The layout's restyling keeps each number as the statement writes it.
+- **The editor.** A number field shows the text, and a typed number keeps its spelling as
+  typed, without its group separators, currency sign or plus sign, except that a field of
+  whole numbers keeps only a whole spelling (`slotSpelling`: `2.0` there is written `2`); a
+  number moved into a list keeps its spelling where that list can write it.
+
 ### Chains of one operator (READ-22)
 
 The roadmap's `READ-22` planned a chain of one operator as one step with a list of terms.

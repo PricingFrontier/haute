@@ -1921,6 +1921,14 @@ class PipelineNodeSaveRequest(BaseModel):
             "``config`` are not read (CGEN-13)."
         ),
     )
+    settings_edited_from: BoundedText | None = Field(
+        default=None,
+        description=(
+            "The node's settings as saved (JSON text), sent in place of ``saved_settings`` "
+            "when they were edited: the settings in ``config`` are written, each number the "
+            "edit left as it was spelt as this form spells it (CGEN-09)."
+        ),
+    )
 
 
 class PipelineRepairChange(BaseModel):

@@ -7,6 +7,7 @@
  * groups, direction and quantile controls live here too so every form lays
  * out its repeated rows the same way.
  */
+import { asMember, numberShown, slotSpelling, spelledNumber } from "./numberSpelling"
 import {
   AlertTriangle,
   Ban,
@@ -268,9 +269,11 @@ export function NumberField({
   max,
   id,
   onRefused,
+  text,
 }: {
   value: number
-  onCommit: (next: number) => void
+  /** Given the number committed and the text it was typed as. */
+  onCommit: (next: number, typed: string) => void
   ariaLabel: string
   integer?: boolean
   min?: number
@@ -278,6 +281,8 @@ export function NumberField({
   id?: string
   /** Told why a commit was refused, or null once one is taken. */
   onRefused?: (reason: string | null) => void
+  /** How the number is written, when it is written otherwise than `String(value)`. */
+  text?: string
 }) {
   // Read by the one grammar for a typed number (specs/frontend-shared, "Typed numbers").
   const read = (text: string): number | { refusal: string } => {
@@ -286,8 +291,8 @@ export function NumberField({
   }
   // Why the open draft's last commit, from leaving the box or from a save, was refused.
   const [refusal, setRefusal] = useState<string | null>(null)
-  const draft = useCommittedDraft(String(value), (text) => {
-    const number = read(text)
+  const draft = useCommittedDraft(text ?? String(value), (typed) => {
+    const number = read(typed)
     if (typeof number !== "number") {
       setRefusal(number.refusal)
       onRefused?.(number.refusal)
@@ -295,7 +300,7 @@ export function NumberField({
     }
     setRefusal(null)
     onRefused?.(null)
-    onCommit(number)
+    onCommit(number, typed)
   })
   // The reason belongs to the draft it refused: shown while that draft is open, so an Undo
   // under it takes both away, and dropped when a new draft starts.
@@ -843,9 +848,10 @@ export function LiteralValueInput({
       return (
         <NumberField
           value={typeof value.value === "number" ? value.value : 0}
+          text={value.text}
           integer={integer}
           min={min}
-          onCommit={(n) => onChange(literal("number", n))}
+          onCommit={(n, typed) => onChange(spelledNumber(n, slotSpelling(typed, integer)))}
           ariaLabel={ariaLabel}
           onRefused={onRefused}
         />
@@ -1149,7 +1155,8 @@ function LiteralListField({
       return
     }
     setRefusal(null)
-    onChange([...values, current], kind)
+    // A number goes in as the list writes its members, its spelling kept where it can be.
+    onChange([...values, asMember(current, kind ?? null)], kind)
     setDraft(defaultLiteral(type))
   }
   return (
@@ -1171,7 +1178,7 @@ function LiteralListField({
           <SelectField
             value={kind ?? "float"}
             options={NUMBER_TYPES}
-            onChange={(next) => onChange(values, next)}
+            onChange={(next) => onChange(values.map((item) => asMember(item, next)), next)}
             ariaLabel={`${ariaLabel} number type`}
           />
         </Field>
@@ -1180,8 +1187,8 @@ function LiteralListField({
         {values.map((item, index) => (
           <Chip
             key={`${index}-${String(item.value)}`}
-            label={String(item.value)}
-            removeLabel={`Remove ${String(item.value)}`}
+            label={item.type === "number" ? numberShown(item) : String(item.value)}
+            removeLabel={`Remove ${item.type === "number" ? numberShown(item) : String(item.value)}`}
             onRemove={() => onChange(values.filter((_, i) => i !== index), kind)}
           />
         ))}

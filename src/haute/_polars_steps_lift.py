@@ -49,7 +49,10 @@ from haute._polars_steps import (
     RenderedSteps,
     _code_bound_names,
     _decimal_text,
+    number_rendering,
+    number_spelling,
     render_polars_steps,
+    spelled_number,
     step_input_names,
     stepped_surface_for,
 )
@@ -189,6 +192,7 @@ def _units(code: str) -> tuple[list[_Unit], list[str]]:
     except SyntaxError as exc:
         message = f"The code is not valid Python: {exc.msg} (line {exc.lineno})."
         raise StepLiftError(message) from None
+    _keep_number_spellings(tree, code)
     lines = code.split("\n") if code else []
     spans: list[tuple[int, int, list[ast.stmt]]] = []
     for statement in tree.body:
@@ -207,6 +211,29 @@ def _units(code: str) -> tuple[list[_Unit], list[str]]:
         units.append(_Unit(start, tuple(above), tuple(lines[start - 1 : end]), tuple(nodes)))
         cursor = end + 1
     return units, _trivia(lines[cursor - 1 :])
+
+
+#: The attribute a number's syntax node keeps its source text in (:func:`_spelling`).
+_SPELLING = "_haute_spelling"
+
+
+def _keep_number_spellings(tree: ast.Module, code: str) -> None:
+    """Give each number literal in *tree*, a negated one too, the text *code* writes it as,
+    which its step keeps when a browser would write it otherwise (CGEN-09)."""
+    for node in ast.walk(tree):
+        number = node.operand if isinstance(node, ast.UnaryOp) else node
+        if (
+            isinstance(number, ast.Constant)
+            and type(number.value) in (int, float)
+            and (node is number or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub))
+        ):
+            setattr(node, _SPELLING, ast.get_source_segment(code, node))
+
+
+def _spelling(node: ast.AST) -> str | None:
+    """The source text of the number literal *node*, as :func:`_keep_number_spellings` kept it."""
+    text = getattr(node, _SPELLING, None)
+    return text if isinstance(text, str) else None
 
 
 def _trivia(lines: Sequence[str]) -> list[str]:
@@ -382,7 +409,7 @@ def _bare_literal(node: ast.AST) -> Step:
     if isinstance(value, bool):
         return _literal("boolean", value)
     if isinstance(value, int | float):
-        return _literal("number", value)
+        return spelled_number(value, _spelling(node))
     if isinstance(value, str):
         return _literal("text", value)
     raise _NoMatchError
@@ -444,8 +471,9 @@ def _decimal_value(text: str) -> int | float:
     """The number a decimal membership value's text renders from.
 
     A whole number reads as an integer, unless only a float renders its text
-    (``-0``); any other text reads as a float. Text that is not a number is no
-    step's (CGEN-02).
+    (``-0``); any other text reads as a float. Text no number's exact decimal is
+    (``1.50``) reads as its number, and its step keeps the text (CGEN-09). Text
+    that is not a number is no step's (CGEN-02).
     """
     try:
         choices: list[int | float] = [float(text)] if "." in text else [int(text), float(text)]
@@ -454,7 +482,7 @@ def _decimal_value(text: str) -> int | float:
     for choice in choices:
         if _decimal_text(choice) == text:
             return choice
-    raise _NoMatchError
+    return choices[0]
 
 
 def _unify(pattern: ast.AST, node: ast.AST, bound: dict[str, ast.AST | str]) -> bool:
@@ -935,14 +963,19 @@ class _Reader:
             (kind,) = kinds
             if kind in ("integer", "float"):
                 condition["number_type"] = kind
-                kind = "number"
+                condition["values"] = [
+                    spelled_number(_number(item), _spelling(item), kind) for item in members.elts
+                ]
+                return condition
             condition["values"] = [_literal(kind, value) for value in values]
             return condition
         series = _only(_method(members, "implode")).receiver
         if _is_method(series, "to_decimal"):
             parse = _only(_namespace(series, "to_decimal", "str"), 0, ("scale",))
             texts = _texts(_only(_pl(parse.receiver, "Series"), 1).args[0])
-            condition["values"] = [_literal("number", _decimal_value(text)) for text in texts]
+            condition["values"] = [
+                spelled_number(_decimal_value(text), text, "decimal") for text in texts
+            ]
             condition["number_type"] = "decimal"
             return condition
         parse = _only(_namespace(series, "to_date", "str"))
@@ -1288,6 +1321,8 @@ def _normal_step(step: Mapping[str, Any]) -> Step:
     elif kind in ("select", "drop"):
         if not step.get("dtypes"):
             normal.pop("dtypes", None)
+    elif kind == "variable":
+        normal["value"] = _normal_literal(step["value"])
     elif kind == "fill_null" and step["fill"]["kind"] == "value":
         normal["fill"] = {"kind": "value", "value": _normal_operand(step["fill"]["value"], "value")}
     elif kind == "pivot":
@@ -1301,8 +1336,22 @@ def _normal_step(step: Mapping[str, Any]) -> Step:
 
 
 def _normal_literal(literal: Mapping[str, Any]) -> Step:
+    if literal["type"] == "number":
+        return _normal_number(literal["value"], literal, None)
     value = None if literal["type"] == "null" else literal["value"]
     return _literal(literal["type"], value)
+
+
+def _normal_number(value: int | float, literal: Mapping[str, Any], number_type: str | None) -> Step:
+    """A number literal of *value* in canonical form: written as its ``text`` spells it, or
+    else as the renderer writes *value*, and keeping that text exactly when a browser would
+    write the number otherwise (CGEN-09)."""
+    spelling = (
+        number_spelling(literal["text"])
+        if "text" in literal
+        else number_rendering(value, number_type)
+    )
+    return spelled_number(value, spelling, number_type)
 
 
 def _normal_group(group: Mapping[str, Any]) -> Step:
@@ -1324,7 +1373,7 @@ def _normal_condition(condition: Mapping[str, Any]) -> Step:
         normal["values"] = [
             _normal_literal(item)
             if number_type is None
-            else _literal("number", _member_number(item["value"], number_type))
+            else _normal_number(_member_number(item["value"], number_type), item, number_type)
             for item in condition["values"]
         ]
     return normal
