@@ -221,7 +221,8 @@ def test_cardinality_analysis_leaves_bare_expression_calls_to_syntax_validation(
     ("code", "reason"),
     [
         ("df = left.join(right, how='cross', on='id')", "unsupported_join_semantics"),
-        ("df = left.join(right, on='id', unknown=True)", "unsupported_join_option"),
+        ("df = left.join(right, on='id', unknown=True)", "unsupported_join_option=unknown"),
+        ("df = left.join(right, on='id', **options)", "unsupported_join_option=**"),
     ],
 )
 def test_cardinality_analysis_rejects_closed_model_join_forms(code: str, reason: str) -> None:
@@ -229,6 +230,42 @@ def test_cardinality_analysis_rejects_closed_model_join_forms(code: str, reason:
 
     assert not result.supported
     assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "coalesce=True",
+        "coalesce=False",
+        "nulls_equal=True",
+        "build_side='prefer_right'",
+        "allow_parallel=False",
+        "force_parallel=True",
+    ],
+)
+@pytest.mark.parametrize(("how", "bound"), [("left", 2), ("full", 5), ("inner", 2)])
+def test_a_join_option_that_cannot_change_the_rows_keeps_the_join_bound(
+    option: str, how: str, bound: int
+) -> None:
+    """EXE-04: the row bound of a join with a unique right key ignores the options that
+    cannot change how many rows it returns."""
+    code = f"df = left.join(right, on='id', how='{how}', validate='m:1', {option})"
+    result = analyze_polars_cardinality(code, {"left": 2, "right": 3})
+
+    assert result.supported, result.reason
+    assert result.output_upper_bound == bound
+
+
+@pytest.mark.parametrize("option", ["coalesce=True", "nulls_equal=True"])
+def test_column_lineage_keeps_reading_a_join_strictly(option: str) -> None:
+    """``coalesce`` changes a join's key columns, so column lineage does not ignore it."""
+    result = analyze_polars_lineage(
+        f"df = left.join(right, on='id', how='left', {option})",
+        {"left": frozenset({"id", "a"}), "right": frozenset({"id", "b"})},
+    )
+
+    assert not result.supported
+    assert result.reason == f"unsupported_join_option={option.split('=')[0]}"
 
 
 @pytest.mark.parametrize(
@@ -3855,3 +3892,71 @@ def test_carried_proof_reports_the_input_an_input_mapping_alias_stands_for() -> 
     assert proof.join_keys == {"scores": frozenset({"id"})}
     assert implicit is not None
     assert implicit.root_input == "Edge_Join_3"
+
+
+@pytest.mark.parametrize(
+    ("code", "column", "reads"),
+    [
+        ("df = src.select('d', (pl.col('n') + 1).alias('n'))", "n", {"n"}),
+        ("df = src.filter(pl.col('d') == 'x').with_columns(m=pl.col('n') * 2)", "m", {"n"}),
+        ("df = src.sort('d').rename({'n': 'k'})", "k", {"n"}),
+        ("df = src.group_by('d').agg(pl.col('n').sum().alias('total'))", "total", {"n"}),
+        ("df = src.with_columns(pl.col('d').alias('n'))", "n", {"d"}),
+        ("df = src.fill_null(pl.col('d')).select(pl.col('n').alias('r'))", "r", {"n", "d"}),
+        ("df = src.fill_null(0).select(pl.col('n').alias('r'))", "r", {"n"}),
+    ],
+)
+def test_value_dependencies_name_only_what_a_column_is_computed_from(
+    code: str, column: str, reads: set[str]
+) -> None:
+    """EXE-08: a column's value dependencies leave out what execution reads to evaluate
+    other expressions or choose rows; what it reads to run is still the default."""
+    inputs = {"src": frozenset({"n", "d"})}
+    value = analyze_polars_lineage(code, inputs, {column}, value_dependencies=True)
+    executed = analyze_polars_lineage(code, inputs, {column})
+
+    assert value.supported, value.reason
+    assert value.demands_by_input["src"] == frozenset(reads)
+    assert value.demands_by_input["src"] <= executed.demands_by_input["src"]
+
+
+def test_a_join_s_value_dependencies_leave_out_its_keys() -> None:
+    """EXE-08: a computed column after a join comes from its own side's columns; the join
+    keys are what executing the join reads, not what the column holds."""
+    inputs = {"left": frozenset({"n", "d"}), "right": frozenset({"d", "x"})}
+    code = (
+        "df = left.join(right, on='d', how='left', validate='m:1')"
+        ".select((pl.col('n') + 1).alias('n'), pl.col('x'))"
+    )
+
+    value = analyze_polars_lineage(code, inputs, {"n"}, value_dependencies=True)
+    executed = analyze_polars_lineage(code, inputs, {"n"})
+
+    assert value.supported, value.reason
+    assert dict(value.demands_by_input) == {"left": frozenset({"n"}), "right": frozenset()}
+    assert executed.demands_by_input["left"] >= {"n", "d"}
+
+
+def test_a_column_fill_null_fills_from_another_is_recomputed() -> None:
+    """A ``fill_null`` from a column can give every column that column's values."""
+    result = analyze_polars_lineage(
+        "df = src.fill_null(pl.col('d'))", {"src": frozenset({"n", "d"})}
+    )
+
+    assert result.supported, result.reason
+    assert result.recomputed_columns >= {"n", "d"}
+
+
+def test_a_left_column_named_like_the_right_key_comes_from_the_left() -> None:
+    """With keys of different names, a left column named like the right key is the one
+    Polars keeps, so its value never comes from the right key."""
+    inputs = {"left": frozenset({"lookup_key", "id"}), "right": frozenset({"id", "x"})}
+    code = (
+        "df = left.join(right, left_on='lookup_key', right_on='id', how='left', "
+        "validate='m:1').select(pl.col('id').alias('result'))"
+    )
+
+    value = analyze_polars_lineage(code, inputs, {"result"}, value_dependencies=True)
+
+    assert value.supported, value.reason
+    assert dict(value.demands_by_input) == {"left": frozenset({"id"}), "right": frozenset()}

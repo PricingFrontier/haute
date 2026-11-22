@@ -204,8 +204,13 @@ def narrow_join_parent_demand(
     right_schema: set[str],
     how: str,
     suffix: str,
+    value_only: bool = False,
 ) -> tuple[set[str], set[str]] | None:
     """Route a join's demanded OUTPUT columns to ``(left_demand, right_demand)``.
+
+    With *value_only* each output is routed only to the column its values come from: the
+    join keys, and the left copy a suffixed right-hand output needs to exist, are what
+    executing the join reads, not what an output holds.
 
     The single source of truth shared by the static projection rule
     (:class:`haute.projection.EdgeJoinFanInRule`, which passes the parents'
@@ -230,10 +235,12 @@ def narrow_join_parent_demand(
         return None
     if suffix == "":
         return None
-    left_demand: set[str] = set(left_keys)
-    right_demand: set[str] = set(right_keys)
+    left_demand: set[str] = set() if value_only else set(left_keys)
+    right_demand: set[str] = set() if value_only else set(right_keys)
     for column in demanded:
         if column in left_keys:
+            if value_only:
+                left_demand.add(column)
             continue
         mapped = False
         if column.endswith(suffix):
@@ -242,7 +249,8 @@ def narrow_join_parent_demand(
                 if column in left_schema or column in right_schema:
                     # The suffixed name is itself a real column — ambiguous.
                     return None
-                left_demand.add(original)
+                if not value_only:
+                    left_demand.add(original)
                 right_demand.add(original)
                 mapped = True
         if mapped:
@@ -253,7 +261,9 @@ def narrow_join_parent_demand(
         if column in right_schema and column not in left_schema:
             right_demand.add(column)
             mapped = True
-        if column in right_keys:
+        # A right key is read to join; it is a value's source only when nothing else
+        # supplies the column (a left column of its name is the one Polars keeps).
+        if column in right_keys and not (value_only and mapped):
             right_demand.add(column)
             mapped = True
         if not mapped:

@@ -100,6 +100,30 @@ def find_utility_spec(pipeline_dir: str | Path | None) -> ModuleSpec | None:
     return PathFinder.find_spec(UTILITY_PACKAGE, dirs)
 
 
+def is_bound_utility_file(filename: str) -> bool:
+    """Whether *filename* is a file of the ``utility`` an import loads now.
+
+    The finder's bound project directories are searched, or the import path when no
+    project is bound, as the import itself would. A file is the utility's when it is
+    the module file or lies under the package's folder: its path, not its name, so a
+    project folder called ``utility-pricing`` does not make its libraries utility code.
+    """
+    spec = PathFinder.find_spec(UTILITY_PACKAGE, list(_FINDER.search_dirs) or sys.path)
+    if spec is None:
+        return False
+    if spec.submodule_search_locations is not None:
+        locations = [Path(location).resolve() for location in spec.submodule_search_locations]
+    elif spec.origin is not None:
+        locations = [Path(spec.origin).resolve()]
+    else:
+        return False
+    try:
+        path = Path(filename).resolve()
+    except (OSError, ValueError):
+        return False
+    return any(path == location or location in path.parents for location in locations)
+
+
 class _SourceOnlyLoader(SourceFileLoader):
     """Loads a ``utility`` module from its source every time, never from bytecode."""
 

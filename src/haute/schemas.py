@@ -4883,6 +4883,7 @@ class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
 
 class OptimiserSolveRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
+    source: BoundedName = "live"
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -4931,6 +4932,7 @@ class OptimiserEstimateResponse(BaseModel):
 
 class OptimiserFrontierAutoRangeRequest(NodeTargetRequest, DocumentRequest):
     graph: Graph
+    source: BoundedName = "live"
 
 
 class OptimiserFrontierRange(BaseModel):

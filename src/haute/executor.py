@@ -61,12 +61,14 @@ from haute._project_context import current_project, graph_pipeline_dir, installe
 from haute._project_imports import (
     bind_project_utility,
     evict_utility_modules,
+    is_bound_utility_file,
     project_utility_bound,
     unbind_project_utility,
     utility_bound_to,
 )
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
+    PREAMBLE_FILENAME,
     compile_project_code,
     is_contained,
     project_code_module,
@@ -87,7 +89,13 @@ from haute._source_cache import SourceCacheGenerationMissingError
 from haute._submodel_instances import runtime_instance_id
 from haute._types import GraphNode, NodeData, SubmodelEndpoint
 from haute._validation_error import HauteValidationError
-from haute.errors import ExecutionError, HauteError, PreambleError, mark_failing_node
+from haute.errors import (
+    BatchSourceAmbiguousError,
+    ExecutionError,
+    HauteError,
+    PreambleError,
+    mark_failing_node,
+)
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
@@ -257,10 +265,11 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
     base_keys = set(ns.keys())
     try:
         with project_code_module(ns):
-            exec(compile_project_code(preamble), ns)  # noqa: S102  — single dict = shared globals
+            # Single dict = shared globals.
+            exec(compile_project_code(preamble, filename=PREAMBLE_FILENAME), ns)  # noqa: S102
     except Exception as exc:
-        # Extract the most useful line number and source file from
-        # the traceback or exception attributes.
+        # Report the innermost line of the project's own code: a utility module's,
+        # else the preamble's. A library frame is neither, wherever it lives.
         import traceback as _tb
         from pathlib import Path as _Path
 
@@ -272,19 +281,19 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
             source_file = exc.filename
             source_line = exc.lineno
 
-        # For runtime errors, walk the traceback to find the utility frame
         if source_file is None and exc.__traceback__:
             for frame in reversed(_tb.extract_tb(exc.__traceback__)):
-                if "utility" in frame.filename:
+                if frame.filename == PREAMBLE_FILENAME:
+                    source_file = frame.filename
+                    source_line = frame.lineno
+                    break
+                if is_bound_utility_file(frame.filename):
                     source_line = frame.lineno
                     source_file = frame.filename
                     break
-                if frame.filename == "<string>":
-                    source_line = frame.lineno
-                    break
 
         msg = f"Import/preamble error: {exc}"
-        if source_file and source_file != "<string>":
+        if source_file and source_file != PREAMBLE_FILENAME:
             try:
                 rel: str | Path = _Path(source_file).relative_to(current_project().root)
             except ValueError:
@@ -1844,30 +1853,27 @@ def _refusing_code_without_preamble(
     return build
 
 
-def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no mutate
-    """Find the non-live scenario from the graph's live_switch ISM values.
+def batch_source(graph: PipelineGraph, source: str) -> str:
+    """The source a batch run routes on: a Data Output write and the optimiser.
 
-    Returns ``None`` if no live_switch nodes exist or all mapped scenarios
-    are ``"live"``.
-
-    Raises ``ValueError`` if multiple live_switch nodes define different
-    non-live scenario names (ambiguous routing).
+    Neither runs on ``live`` (model scoring takes the disk-batched path), so
+    they take the request's *source* when it is not ``live``. Under ``live``
+    they take the one non-live source the graph's Source Switches map, or
+    ``"batch"`` when they map none; with several there is no such source, and
+    the run is refused naming them (``BatchSourceAmbiguousError``).
     """
-    batch_scenario: str | None = None  # pragma: no mutate
-    for node in graph.nodes:
-        if not node_spec(node.data.nodeType).scenario_router:
-            continue
-        ism: dict[str, str] = node.data.config.get("input_scenario_map", {})
-        for scn in ism.values():
-            if scn != "live":
-                if batch_scenario is not None and scn != batch_scenario:
-                    raise ValueError(
-                        f"Conflicting batch scenarios across live_switch nodes: "
-                        f"'{batch_scenario}' vs '{scn}'. "
-                        f"All live_switch nodes must use the same non-live scenario name."
-                    )
-                batch_scenario = scn
-    return batch_scenario
+    if source != "live":
+        return source
+    mapped = {
+        mapped_source
+        for node in graph.nodes
+        if node_spec(node.data.nodeType).scenario_router
+        for mapped_source in (node.data.config.get("input_scenario_map") or {}).values()
+        if mapped_source != "live"
+    }
+    if len(mapped) > 1:
+        raise BatchSourceAmbiguousError(sources=sorted(mapped))
+    return next(iter(mapped), "batch")
 
 
 def _contain_output_path(
@@ -2161,17 +2167,6 @@ def _data_output_required_columns(
     return {output_node_id: frozenset(selected_seed)}
 
 
-def _data_output_scenario(graph: PipelineGraph, source: str) -> str:
-    # Sinks are never used in live serving — model scoring must use the
-    # disk-batched path (any scenario != "live").  But the scenario name
-    # must match a value in the source-switch ISM so edge pruning routes
-    # to the correct branch.  Resolve the first non-live ISM value from
-    # the graph; fall back to "batch" if there are no live_switch nodes.
-    if source == "live":
-        return _resolve_batch_scenario(graph) or "batch"
-    return source
-
-
 def data_output_seed_plan_request(
     graph: PipelineGraph,
     output_node_id: str,
@@ -2190,7 +2185,7 @@ def data_output_seed_plan_request(
     return SeedPlanRequest(
         graph=graph,
         target_node_id=output_node_id,
-        source=_data_output_scenario(graph, source),
+        source=batch_source(graph, source),
         profile=profile,
         consumed_node_ids=(output_node_id,),
         required_columns_by_node=_data_output_required_columns(config, output_node_id),
@@ -2274,7 +2269,7 @@ def prepare_data_output(
     if staging_path is not None and staging_out is None:
         raise ValueError("Only atomic file outputs accept a staging path")
 
-    output_scenario = _data_output_scenario(graph, source)
+    output_scenario = batch_source(graph, source)
 
     from haute._polars_utils import _malloc_trim, streaming_collect
 

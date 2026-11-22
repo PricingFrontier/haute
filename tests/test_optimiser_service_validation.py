@@ -399,7 +399,6 @@ def test_execute_pipeline_adapts_public_contract_errors() -> None:
         ),
         patch("haute.executor._compile_preamble", return_value={}),
         patch("haute.routes._optimiser_service.graph_pipeline_dir", return_value=None),
-        patch("haute.executor._resolve_batch_scenario", return_value="batch"),
     ):
         with pytest.raises(RequestRefusedError) as exc_info:
             service._execute_pipeline(body, job_id, resources)

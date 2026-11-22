@@ -153,7 +153,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "caching",
     "cli",
     "engineering-quality",
-    "execution-engine",
     "explore-eda",
     "frontend-graph-canvas",
     "frontend-modelling-optimiser-ui",

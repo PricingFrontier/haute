@@ -32,7 +32,7 @@
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids` (the one ancestor walk, over any parents mapping, in depth-first preorder from the node's parents; `ancestors`, the trace waterfall's lineage check, the recovery route's ancestor closure and the optimiser's upstream node-type search all use it), `_sanitize_func_name`, `edge_input_name` (the single edge->input-name derivation: apiInput-frame edge -> its frame label verbatim, submodel-output edge -> its sanitised public output port name from an owner and, from an instance, the instance's sanitised name (one output) or `<instance>_<port>` (several), else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `resolve_orig_source_names`, and edge-id construction (`_edge_id`, the injective four-field encoding the browser's `edgeId` mints identically; frontend-graph-canvas, Failure model). |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; it raises the `_worker_failures.py` family for every terminal state. |
-| `src/haute/_worker_failures.py` | The one worker-failure family every worker mechanism raises — the one-shot isolated worker, the warm interactive pool, the dedicated worker and the version-1 job transport: `WorkerError` (its `terminal_reason` the job's end state) and `WorkerStartError`, `WorkerHostError`, `WorkerRemoteError` (type, module, message, traceback, the child's curated public payload, whether it was a memory error), `WorkerCrashedError`, `WorkerTimeoutError`, `WorkerStoppedError`, `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerTerminationError`, `WorkerProtocolError`, `WorkerBusyError` and `WorkerPreemptedError`; `remote_failure_terminal_reason()` and `exitcode_looks_memory_limited()`, the two rules every parent classifies a child's end by; and the shared supervisor helpers `worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit). |
+| `src/haute/_worker_failures.py` | The one worker-failure family every worker mechanism raises — the one-shot isolated worker, the warm interactive pool, the dedicated worker and the version-1 job transport: `WorkerError` (its `terminal_reason` the job's end state) and `WorkerStartError`, `WorkerHostError`, `WorkerRemoteError` (type, module, message, traceback, the child's curated public payload, whether it was a memory error), `WorkerCrashedError`, `WorkerRestartedError` (the warm pool's worker had stopped while idle and was started again before the request reached it), `WorkerTimeoutError`, `WorkerStoppedError`, `WorkerMemoryLimitError`, `WorkerMemoryLimitUnsupportedError`, `WorkerTerminationError`, `WorkerProtocolError`, `WorkerBusyError` and `WorkerPreemptedError`; `remote_failure_terminal_reason()` and `exitcode_looks_memory_limited()`, the two rules every parent classifies a child's end by; and the shared supervisor helpers `worker_failure_is_memory()` (RSS breach, unsupported cap, memory-looking crash exit code, or a remote exception the child found to be a memory error or whose native cap was unavailable) and `worker_memory_detail()` (the closed memory-limit payload whose reason is one of worker_rss_limit_exceeded, native_memory_cap_unavailable, worker_may_have_exceeded_memory_limit, or worker_memory_limit). |
 | `src/haute/_native_memory_limit.py` | Required/best-effort native memory enforcement for isolated workers: aggregate Linux cgroup and Windows Job Object leases, single-process RLIMIT compatibility, fork-safe ownership, and the context-local active-backend proof used to prevent unaccounted descendant parallelism. |
 | `src/haute/routes/_isolated_worker_async.py` | Async route bridge for cancellable isolated-worker transactions: runs the blocking supervisor off-loop, propagates route cancellation/timeout without thread-compute fallback, drains the supervisor to termination, preserves the primary failure when cleanup also fails, and provides the shared linearizable cancellation/publication gate. |
 | `src/haute/chunking.py` | The chunk-local classifiers only: the receiver-aware AST row-local user-code classifier (`classify_chunk_local_polars_code()` returning a `ChunkLocalDecision`; `is_chunk_local_polars_code()` is its boolean view) with its frame-method, expression-method, namespace-method, and Polars-function allowlists, admitting only chunk-proven operations; lazy execution's input-sliced write recipe (`_execute_lazy.py`) and trace edge alignment (`_trace_correlation.py`) use it. `classify_row_local_expression()` runs the same walk and argument guards over one expression in a row-semantics mode, admitting every operation the operation registry classes as row-local (and a `when` chained on a conditional) rather than only the chunk-proven ones; trace formula evaluation (`_expression_parser.py`) uses it. There is no chunk planner or runner. |
@@ -200,11 +200,21 @@
   width and measured, from the column's uncompressed Parquet size and a bounded head probe
   of the rows, never assumed to be one 8-byte value. A node's columns are its own output's:
   a Polars node with code resolves them from its column lineage over its inputs' resolved
-  columns (`_resolve_code_node_columns`), a column it outputs under an input column's name
-  sized as that column and any other (a join's suffixed column, a computed one) as the
-  widest input column the lineage says it alone reads, and neither less than one 8-byte
-  value, since the lineage cannot tell a carried column from one the code recomputed
-  wider (a one-byte column cast to eight bytes); when the lineage cannot follow the code,
+  columns (`_resolve_code_node_columns`). A column it carries unchanged under an input
+  column's name is sized as that column. A column the code computes
+  (`ColumnLineageAnalysis.recomputed_columns`: a `select`/`with_columns` output that is not
+  the unchanged input column, an aggregate, a rename's target, a produced column, or every
+  column after a `fill_null` from a column), under
+  a new name or an input column's, and any other output (a join's suffixed column) is sized
+  as the widest input column its value is computed from (`analyze_polars_lineage(...,
+  value_dependencies=True)`, which leaves out what a `select`'s other expressions, a filter,
+  a sort or a join's keys read to run, keeps what a `fill_null` fills from, and takes the
+  execution demand for an operation it does not model), so
+  `pl.col("description").alias("risk_text")` is as wide as `description`, never as the
+  `risk_text` it replaced. None is less than one 8-byte value, since a computed column can
+  be wider than what it reads (a one-byte column cast to eight bytes). Only computed
+  columns ask the lineage again, so a wide frame is not analysed once per column. When
+  the lineage cannot follow the code,
   a node with several inputs is sized as all of them. A node that is neither (nor an Edge Join, nor
   a selection) takes its input's columns, walking up to a sized source.
 - **`RowCardinalityAnalysis`** (`_column_lineage.py`, frozen dataclass) — the
@@ -567,7 +577,7 @@ sentence stays as it is. The `node_failed` log event keeps the whole
 text, and the exception itself is unchanged (`_execute_lazy.node_failure_message`, which a job
 or a write uses for the pipeline's own errors too: server-api, "Error handling").
 
-A recorded failure's error line (`WalkResult.error_lines`, which the preview response carries as `error_line`) is what `_extract_error_line` finds: a `SyntaxError`'s line, the `<string>` frame line `_exec_user_code` stashes on an exception raised while the code runs, or a `line N` in the message. A stepped Polars transform's plan error (a missing column, a type mismatch) carries none of these, because its lazy plan fails only when the walker resolves the node's schema, after the code ran. For that case the walker keeps a stepped transform's input frames until it has collected: when the node fails while it is built and shaped, where a display walk resolves every node's schema, and on its `_NodeFrame` (`inputs`) through its collect, where a step Polars 2 refuses only on rows fails. When the recorded failure has no line and is a Polars error, `_located_step` asks the node's function for the step. Only `_builders._build_transform` gives a function that locator (`failed_step`, which returns a `StepFailure`: the step's first line and, when Haute knows it, what to change): an input-mode `polars` transform whose steps contain no `free_code` step, since free code can replace the frame and replaying it would run authored code a second time. The frame-mode surfaces (Data Input, External File, Rating Step, Model Score, Scenario Expander, Explore) have none: their steps start from a frame the node builds itself, which replaying would rebuild. `_builders._failed_step` first resolves the schema of the node's full plan, executing the rendering through the same `_exec_user_code` call the transform made, on the same input frames. When it does not resolve, it renders each prefix of the steps with `render_polars_steps`, executes it the same way and resolves its schema, which reads no rows; the first prefix that fails names its last step, and the error line is the first line of that step's range in the node's code. When it resolves, the failure came once rows arrived: each step is checked against the schema before it (`_polars_steps.step_refusal`), and the first that does something Polars 2 refuses only on rows (a cast in `CAST_REFUSALS`, a parse of a column that is not text, std or var of a duration) is named with what to change; otherwise the failure was the data's (a strict cast meeting a bad value) and no line is added. The exception is unchanged: the walker records what to change on the first line of the node's error and Polars' own message after it, so the card's badge shows what to change. A successful run renders and executes nothing more.
+A recorded failure's error line (`WalkResult.error_lines`, which the preview response carries as `error_line`) is what `_extract_error_line` finds: a `SyntaxError`'s line, the innermost `NODE_CODE_FILENAME` frame line `_exec_user_code` stashes on an exception raised while the code runs, or a `line N` in the message. A stepped Polars transform's plan error (a missing column, a type mismatch) carries none of these, because its lazy plan fails only when the walker resolves the node's schema, after the code ran. For that case the walker keeps a stepped transform's input frames until it has collected: when the node fails while it is built and shaped, where a display walk resolves every node's schema, and on its `_NodeFrame` (`inputs`) through its collect, where a step Polars 2 refuses only on rows fails. When the recorded failure has no line and is a Polars error, `_located_step` asks the node's function for the step. Only `_builders._build_transform` gives a function that locator (`failed_step`, which returns a `StepFailure`: the step's first line and, when Haute knows it, what to change): an input-mode `polars` transform whose steps contain no `free_code` step, since free code can replace the frame and replaying it would run authored code a second time. The frame-mode surfaces (Data Input, External File, Rating Step, Model Score, Scenario Expander, Explore) have none: their steps start from a frame the node builds itself, which replaying would rebuild. `_builders._failed_step` first resolves the schema of the node's full plan, executing the rendering through the same `_exec_user_code` call the transform made, on the same input frames. When it does not resolve, it renders each prefix of the steps with `render_polars_steps`, executes it the same way and resolves its schema, which reads no rows; the first prefix that fails names its last step, and the error line is the first line of that step's range in the node's code. When it resolves, the failure came once rows arrived: each step is checked against the schema before it (`_polars_steps.step_refusal`), and the first that does something Polars 2 refuses only on rows (a cast in `CAST_REFUSALS`, a parse of a column that is not text, std or var of a duration) is named with what to change; otherwise the failure was the data's (a strict cast meeting a bad value) and no line is added. The exception is unchanged: the walker records what to change on the first line of the node's error and Polars' own message after it, so the card's badge shows what to change. A successful run renders and executes nothing more.
 
 `selected_columns` has exactly one interpreter: this shared post-call filter, applied to
 every node's output in every execution profile. Source builders never push it into the
@@ -970,7 +980,7 @@ identity digest of its slot, so traversal syntax, platform-reserved names, overl
 and case-distinct ids all get their own opaque generation directory.
 
 A Data Output run executes under a seed plan (`executor.data_output_seed_plan_request`: the
-batch scenario, the Data Output node consumed — a pass-through, so its producer is seeded or
+batch source, the Data Output node consumed — a pass-through, so its producer is seeded or
 captured with the node's `selected_columns` — `LAZY_SINK`). `POST /api/pipeline/write-output`'s
 parent prepares inputs and opens the plan under its admitted context, bounded by the sink
 timeout (`open_seed_plan(..., deadline=)`), and hands it to the sink worker, which adopts it
@@ -1348,7 +1358,20 @@ worker answered it and was acknowledged and released, so it stays warm for the n
 request. A replacement that fails to start leaves the closed slot in place and its error
 as a note on the error the request ends with; the next request on the index starts the
 slot again under its lock (`_current_slot`), so one failed start costs one request, not
-the slot for the server's life. `_start_slot` creates its queues and progress cell inside
+the slot for the server's life. A worker that stopped while idle (ended outside Haute, or
+by the system when memory ran short) is found by `_current_slot` before any request is
+sent to it: the slot is closed and replaced under its lock, and the request that found it
+raises `WorkerRestartedError` (503 `worker_restarted`: the background process had
+stopped while idle and was started again, try again), so the next request runs on the
+new worker; when the replacement fails to start, the request ends with that start's own
+failure (503 `worker_unavailable`, noting the idle death) and the next request starts the
+slot again; `run_preemptible` refuses such a slot as not running and leaves it to the
+next interactive request. Closing a slot whose worker is dead never waits on the request
+queue's feeder: a request the worker never read is still in that thread, blocked writing
+into a pipe whose only reader left is the parent's own end, so `_close_slot` cancels the
+join (`cancel_join_thread`) and abandons what was not sent. A request, a replacement and
+the pool's own close therefore end within their bounds after any worker death, however
+large the request. `_start_slot` creates its queues and progress cell inside
 the guard that closes what it opened on any failure, an `WorkerHostError`
 included. The optimiser estimate route answers a worker that could not start, or a host
 that cannot start one, 503 with the reason, and a protocol failure an internal 500.
@@ -1398,10 +1421,29 @@ The graph walker's build step (`src/haute/_graph_walker.py`) and the chain build
 mapping that adds the run's global-constants table, resolved for the run's routing source and
 never for a per-node builder override. Previews, Explore, training, the optimiser, Data Output
 writes, the assistant's checks and deployed scoring all build node functions through these two,
-so each reads the constants of the source it routes on: the request's source, the batch scenario
-(`_resolve_batch_scenario`, or `"batch"`) for the optimiser and a Data Output write started
-under `live`, and `live` for deployed scoring. `_exec_user_code` then binds each code's own view.
+so each reads the constants of the source it routes on: the request's source, the batch source
+(`executor.batch_source`, below) for the optimiser and a Data Output write, and `live` for
+deployed scoring. `_exec_user_code` then binds each code's own view.
 [Pipeline-config](../pipeline-config/low-level.md) owns the table, its views and their errors.
+
+### Batch source
+
+A Data Output write and every optimiser execution (solve, auto-range, estimate) never run on
+`live`, because model scoring then takes the disk-batched path. `executor.batch_source(graph,
+source)` is the one place that chooses what they run on, and their requests all carry the
+toolbar's active `source` as preview and trace do. A source that is not `live` is taken as it
+is. Under `live` the run takes the one non-live source the graph's Source Switch maps name, in
+one switch or across several, or `"batch"` when they name none. When they name more than one,
+there is no such source: `BatchSourceAmbiguousError` (a `ConfigError`, public code
+`batch_source_ambiguous`, field `sources`, HTTP 422) is raised before any node runs, naming
+the sources and saying to choose one in the toolbar. The settings check accepts any source
+names; no rule asks switches to agree. A solve records the source it ran on as its
+`input_provenance.data_source`, and the estimate's `total_rows` reads the same source as its
+counts. An auto-range resolves its source when it starts and records it as the job's
+`data_source`: a start reuses a running auto-range on the node only for the same source, and
+one for another source is the node's setup conflict (409). The editor's auto-range run
+carries the source it started on and is retired when the toolbar's source changes, so ranges
+found on one source are never written while another is active.
 
 ### Pipeline settings
 
@@ -2616,14 +2658,32 @@ present a structural or schema result as execution evidence.
   cardinality or width cannot be resolved keeps the whole estimate unavailable, as
   for any other boundary: a join sized from one readable port and one unreadable
   one would be an under-estimate, which is the one failure mode admission must
-  never have. A cross join (`how='cross'`) is a boundary like any other
-  join, but nobody has measured what it costs, so its estimate is unavailable
-  with reason `cross_join_unmeasured`: under an active native worker cap it plans
-  `full-width-conservative` with status `warned`, and without one it is the typed
-  `materialisation_estimate_unavailable` rejection. Its row product still
-  propagates to every downstream boundary, so a later `group_by` is estimated on
-  that product and, when it does not fit, takes the same unavailable-estimate
-  path as an undeclared many-to-many join.
+  never have. A cross join (`how='cross'`) with a frame whose row bound is at most
+  one (a Constant, which the estimate sizes from the one-row frame it yields) cannot
+  grow: it is the chain's rows with that row's columns added, bounded by the chain
+  like a join on a unique key, so it is neither a cross join nor a many-to-many join
+  to the planner and is estimated and admitted on every surface. Any other cross
+  join is a boundary like any other join, but nobody has measured what it costs, so
+  its estimate is unavailable with reason `cross_join_unmeasured`: under an active
+  native worker cap it plans `full-width-conservative` with status `warned`, and
+  without one it is the typed `materialisation_estimate_unavailable` rejection. Its
+  row product still propagates to every downstream boundary, so a later `group_by`
+  is estimated on that product and, when it does not fit, takes the same
+  unavailable-estimate path as an undeclared many-to-many join.
+- **A join's row bound reads only what can change its rows.** The cardinality
+  reading of a Polars `join` (`_column_lineage._parse_join(..., cardinality_only=True)`)
+  takes `how`, `validate`, the keys and `maintain_order`, and ignores the options
+  that cannot change how many rows it returns: `coalesce`, `nulls_equal` (a
+  `validate=` contract counts a null key as a key when nulls match, and Polars
+  refuses a duplicated one on the unique side, so the contract's bound holds),
+  `build_side`, `allow_parallel` and `force_parallel`. Column lineage reads the last
+  three only: `coalesce` changes the key columns and `nulls_equal` the rows it
+  proves. Any other argument is the reason `unsupported_join_option=<argument>`.
+- **A deployed Data Input is sized from the files it is served from.** The deploy
+  scorer serves a Data Input from its bundled snapshot parts (or its bundled
+  Parquet file), not the project's source cache, and hands the planner each such
+  node as `RuntimeSourceFiles` in `runtime_source_frames_by_node`, so the estimate
+  reads those files' Parquet metadata, as the bundle-time dry run read the cache.
 
 - **Estimate calibration only tightens admission.** A bounded process-local registry
   stores one basis-point multiplier per `ExecutionProfile`. On terminal metrics with
@@ -2722,11 +2782,18 @@ present a structural or schema result as execution evidence.
   worker memory cap, so Haute cannot run the plan conservatively here." In both
   outcomes the estimator's own reason (its `<node>:<reason>` detail, such as
   `source_row_count_unavailable`, `target_schema_unavailable`,
-  `cross_join_unmeasured`, or the planner's own
-  `join_cardinality_many_to_many`) is retained, and a
-  `join_cardinality_many_to_many` detail additionally ends the remediation with
-  the advice to declare `validate='m:1'`, `'1:m'`, or `'1:1'` where a key side is
-  unique. The
+  `cross_join_unmeasured`, `unsupported_join_option=<argument>`, or the planner's
+  own `join_cardinality_many_to_many`) is retained. A gap that readable source
+  metadata cannot close has its own remedy, chosen in one place
+  (`execution._estimate_gap_remedy`, by the detail's final reason): it ends the
+  remediation in place of the "Provide readable source/schema metadata" sentence. A
+  `join_cardinality_many_to_many` detail advises declaring `validate='m:1'`, `'1:m'`,
+  or `'1:1'` where a key side is unique; `cross_join_unmeasured` says a cross join's
+  memory cannot be estimated when both sides may hold more than one row, and to cross
+  with a one-row input such as a Constant, use an Edge Join set to Cross, or run on a
+  surface with a hard memory cap; `unsupported_join_option=<argument>` names the
+  argument, and says to drop it or run on a surface with a hard memory cap. The
+  deploy's refusals name the boundary's operator and node, never a group-by. The
   estimator already knows which node it could not measure and why; discarding that
   left an analyst with "provide readable metadata" and no way to tell an unreadable
   file from an unsummarisable source shape.
@@ -2871,7 +2938,12 @@ present a structural or schema result as execution evidence.
   reaches the parent of an interactive worker or a spawned evaluation case intact.
 - `PreambleError` (`haute.errors`, extends `ExecutionError`) — preamble compile/exec
   failure with stable public code `preamble_failed` and optional public
-  `source_line`. Interactive preview catches it inside `_eager_execute` and fails
+  `source_line`. Its line is the innermost frame of the project's own code: a frame of the
+  `utility` package the project bound (`_project_imports.is_bound_utility_file`, by the
+  package's location, never a path substring) is reported as "Error in <file> line N",
+  else the innermost `PREAMBLE_FILENAME` frame as "Preamble line N". A library frame is
+  neither, wherever the project folder is, and code a library generates (a dataclass's
+  `__init__`, compiled as `<string>`) is never taken for the preamble. Interactive preview catches it inside `_eager_execute` and fails
   only the nodes that run code with it, never running them, rather than aborting the
   whole preview; a Source Switch runs no code and is unaffected. Every non-preview
   profile propagates it through the shared HTTP/job contract-error adapter.
@@ -3011,6 +3083,44 @@ present a structural or schema result as execution evidence.
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- **A worker that died idle** — `tests/test_interactive_worker_pool.py::test_a_worker_that_died_idle_is_replaced_whatever_the_next_request_s_size`
+  kills the idle worker of a real pool and sends a 4 kB and a 200 kB request: each is
+  answered `WorkerRestartedError` (503 `worker_restarted`) within its time limit, the next
+  request runs on the new worker and the pool closes;
+  `test_a_dead_worker_s_unsent_request_does_not_hold_its_replacement` puts a 200 kB
+  request to a dead worker and replaces its slot within a bound.
+
+- **Replaced column width** — `tests/test_ram_estimate.py::TestWidthsFollowTheLineage::test_a_column_replaced_under_its_own_name_is_sized_as_what_it_reads`:
+  a column selected from a 4,097-byte `description` under the name of a three-byte
+  `risk_text`, and under a new name, both give a distinct step at least 4,097 bytes a row.
+
+- **Join options and one-row cross joins** — `tests/test_column_lineage.py` holds the
+  row bound of a join carrying each option that cannot change its rows, column lineage
+  still refusing `coalesce` and `nulls_equal`, and an unknown argument named in its
+  reason. `tests/test_run_parity.py::test_a_join_option_polars_accepts_answers_every_way`
+  holds a Transform joining a lookup with each such option to one answer from the
+  editor's preview, a trace, `haute run`, plain Python, the dry run and the deployed
+  service (a full join at the node); `test_a_transform_crossing_a_constant_answers_every_way`
+  the Constant page's example the same way; and
+  `test_an_unmeasured_boundary_is_refused_without_a_cap` a cross join of two many-row
+  inputs refused every uncapped way in one message naming the node, the join and the
+  remedies. `tests/test_polars_backend_strategy_contract.py::test_a_gap_metadata_cannot_close_is_refused_with_what_works_instead`
+  holds each gap's remedy in place of the metadata sentence.
+
+- **Preamble failure lines** — `tests/test_executor.py::TestCompilePreamble`: in a project
+  folder named `utility-pricing`, a preamble line failing inside a library is reported as
+  that preamble line and a failure inside the real `utility` module at the module's line;
+  a dataclass's generated `__init__` failing is reported at the preamble line that called
+  it; and node code calling a failing preamble helper records the node code's own line.
+
+- **Batch source** — `tests/test_executor.py::TestBatchSource` holds `batch_source`: a named
+  source is taken whatever the switches map; under `live` the one non-live source, or
+  `"batch"`, is taken; several are refused by `BatchSourceAmbiguousError` naming them.
+  `TestExecuteSink::test_a_write_takes_the_chosen_source_among_several` writes the backtest
+  rows under `backtest` and refuses a write under `live` before anything is written, and
+  `tests/test_optimiser_routes_real_library.py::TestSolveResultContract::test_a_solve_runs_on_the_chosen_source_among_several`
+  holds the same through `POST /api/optimiser/solve`, with the solve's recorded `data_source`.
 
 - `tests/test_executable_names.py::test_execution_preserves_swapped_logical_input_bindings`
   checks the rows read through two swapped logical input names after ordinary

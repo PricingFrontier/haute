@@ -408,6 +408,7 @@ def _worker_answer(exc: BaseException) -> FailureAnswer | None:
         WorkerHostError,
         WorkerPreemptedError,
         WorkerRemoteError,
+        WorkerRestartedError,
         WorkerStartError,
         WorkerStoppedError,
         WorkerTimeoutError,
@@ -440,6 +441,9 @@ def _worker_answer(exc: BaseException) -> FailureAnswer | None:
         # No worker could run it: the host, not the request, is at fault, and the next
         # request starts a worker again.
         return _plain(503, "worker_unavailable", message)
+    if isinstance(exc, WorkerRestartedError):
+        # The worker stopped before the request reached it, and a new one is running.
+        return _plain(503, "worker_restarted", message)
     # A crash with no memory evidence, a broken protocol or a worker that would not stop:
     # nothing the request did, so an incident.
     return None

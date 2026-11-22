@@ -76,7 +76,7 @@ Global constants belong to the pipeline rather than to a node: every node can re
 
 **Add constant** adds an empty **Decimal** constant named `constant_1`, `constant_2` and so on. A name that is invalid or already used, or a value that is invalid or left empty (empty text is allowed), is outlined and listed under the table, and the pipeline cannot be saved until it is fixed. A split constant with no value for a source is marked as missing but can be saved; a node that reads it under that source fails, naming the constant and the source. Renaming or deleting a constant that nodes read asks first, naming those nodes.
 
-A run reads each constant's value for the source it runs under: the toolbar's source for previews and traces, and `live` for the deployed pipeline. To use one in a node:
+A run reads each constant's value for the source it runs under: the toolbar's source for previews and traces, the source a Data Output write or a solve runs on (see [Source Switch](source-switch.md)), and `live` for the deployed pipeline. To use one in a node:
 
 - **In a step**, choose **Constant** as the kind of a value (offered where a constant of the right type exists), then pick the constant. In a formula, type the constant's name, or `global_constants.<name>` when a column has the same name.
 - **In code**, such as a **Free code** step, write `global_constants.<name>`, for example `pl.col("base_premium") * global_constants.expense_loading`.

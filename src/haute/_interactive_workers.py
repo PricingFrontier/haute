@@ -43,6 +43,7 @@ from haute._worker_failures import (
     WorkerPreemptedError,
     WorkerProtocolError,
     WorkerRemoteError,
+    WorkerRestartedError,
     WorkerStartError,
     WorkerStoppedError,
     WorkerTerminalReason,
@@ -556,7 +557,9 @@ class InteractiveWorkerPool:
             if not lock.acquire(blocking=False):
                 raise WorkerBusyError("the worker is running another request")
             slot = self._slots[index]
-            if slot.closed:
+            # A worker that stopped while idle is replaced by the next interactive
+            # request, which owns the answer for it.
+            if slot.closed or not slot.process.is_alive():
                 lock.release()
                 raise WorkerBusyError("the worker is not running")
             job = _PreemptibleJob()
@@ -575,8 +578,26 @@ class InteractiveWorkerPool:
             if not self._slots:
                 raise RuntimeError("interactive worker pool did not start")
             slot = self._slots[index]
-            if not slot.closed:
+            if not slot.closed and slot.process.is_alive():
                 return slot
+        if not slot.closed:
+            # The worker stopped while idle (ended outside Haute, or by the system when
+            # memory ran short). Nothing has been sent to it, so its queues close at
+            # once; the request is answered as such, and the next runs on the new worker.
+            exitcode = slot.process.exitcode
+            logger.warning("interactive_worker_died_idle", worker_index=index, exitcode=exitcode)
+            self._close_slot(slot, graceful=False)
+            try:
+                replacement = self._start_slot(index=index, generation=slot.generation + 1)
+            except (WorkerStartError, WorkerHostError) as start_error:
+                # No worker is running: the start's own failure is the answer, and the
+                # closed slot is started again by the next request.
+                start_error.add_note(
+                    f"The worker it replaces had stopped while idle (exit code {exitcode})."
+                )
+                raise
+            self._install(slot, replacement)
+            raise WorkerRestartedError(exitcode)
         replacement = self._start_slot(index=index, generation=slot.generation + 1)
         self._install(slot, replacement)
         return replacement
@@ -1072,6 +1093,12 @@ class InteractiveWorkerPool:
             ("result", slot.result_queue),
         ):
             try:
+                if not slot.process.is_alive():
+                    # A request the dead worker never read is still in this queue's
+                    # feeder thread, blocked writing to a pipe whose only reader left is
+                    # this process's own end: joining it would wait forever. Abandon
+                    # what was not sent; the blocked thread is a daemon.
+                    work_queue.cancel_join_thread()
                 work_queue.close()
                 work_queue.join_thread()
             except BaseException as exc:

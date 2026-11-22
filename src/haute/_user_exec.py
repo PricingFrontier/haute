@@ -16,6 +16,7 @@ import polars as pl
 from haute._executable_names import RESERVED_NAMES, reserved_input_problem
 from haute._global_constants import bind_code_view
 from haute._sandbox import (
+    NODE_CODE_FILENAME,
     UnsafeCodeError,
     compile_project_code,
     project_code_module,
@@ -106,13 +107,15 @@ def _exec_user_code(
 
     try:
         with project_code_module(execution_ns):
-            exec(compile_project_code(code), execution_ns, execution_ns)
+            exec(
+                compile_project_code(code, filename=NODE_CODE_FILENAME), execution_ns, execution_ns
+            )
     except Exception as exc:
         if exc.__traceback__:
             import traceback as _tb
 
             for frame in reversed(_tb.extract_tb(exc.__traceback__)):
-                if frame.filename == "<string>" and frame.lineno is not None:
+                if frame.filename == NODE_CODE_FILENAME and frame.lineno is not None:
                     exc._user_code_line = frame.lineno  # type: ignore[attr-defined]
                     break
         raise

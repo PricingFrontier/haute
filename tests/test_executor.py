@@ -13,13 +13,13 @@ import pytest
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._project_context import context_thread
-from haute._user_exec import _exec_user_code
-from haute.errors import ExecutionError, LiveSwitchScenarioError
+from haute._user_exec import _exec_user_code, user_code_line
+from haute.errors import BatchSourceAmbiguousError, ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
     PreambleError,
     _build_node_fn,
     _compile_preamble,
-    _resolve_batch_scenario,
+    batch_source,
     execute_graph,
     write_data_output,
 )
@@ -365,6 +365,59 @@ class TestCompilePreamble:
             _compile_preamble("from utility.helpers import *\n")
         assert "utility" in str(exc_info.value)
         assert "helpers" in str(exc_info.value)
+
+    def test_a_library_failure_is_the_preamble_line_under_a_utility_named_folder(
+        self, tmp_path, monkeypatch
+    ):
+        """EXE-03: a project folder named ``utility-pricing`` puts its libraries under a
+        path that contains ``utility``; a preamble line failing inside one is still
+        reported as that line, and a failure inside the real utility module at its own."""
+        root = tmp_path / "utility-pricing"
+        library_dir = root / ".venv" / "site-packages"
+        library_dir.mkdir(parents=True)
+        (library_dir / "exe03_pricing_lib.py").write_text(
+            "def explode():\n    raise ValueError('library failed')\n"
+        )
+        monkeypatch.syspath_prepend(str(library_dir))
+        (root / "utility").mkdir()
+        (root / "utility" / "__init__.py").write_text("")
+        (root / "utility" / "rates.py").write_text("x = 1\nraise ValueError('rates failed')\n")
+        use_project(root)
+
+        with pytest.raises(PreambleError) as from_library:
+            _compile_preamble("import exe03_pricing_lib\nexe03_pricing_lib.explode()\n")
+        assert str(from_library.value).startswith("Preamble line 2: library failed")
+        assert from_library.value.source_line == 2
+
+        with pytest.raises(PreambleError) as from_utility:
+            _compile_preamble("y = 1\nfrom utility.rates import *\n")
+        assert str(from_utility.value).startswith(
+            f"Error in {Path('utility', 'rates.py')} line 2: rates failed"
+        )
+
+    def test_a_failure_in_code_a_library_generated_is_the_preamble_line(self):
+        """EXE-03: a dataclass's generated ``__init__`` runs as ``<string>`` code; its
+        failure is reported at the preamble line that called it."""
+        preamble = (
+            "from dataclasses import dataclass, field\n"
+            "\n"
+            "@dataclass\n"
+            "class Rates:\n"
+            "    table: int = field(default_factory=int.from_bytes)\n"
+            "\n"
+            "RATES = Rates()\n"
+        )
+        with pytest.raises(PreambleError) as exc_info:
+            _compile_preamble(preamble)
+        assert str(exc_info.value).startswith("Preamble line 7:")
+
+    def test_node_code_calling_a_failing_preamble_helper_reports_its_own_line(self):
+        """EXE-03: the preamble and node code are compiled under their own names, so a
+        helper's failing line is never taken for the node code's."""
+        preamble_ns = _compile_preamble("def bad():\n    x = 1\n    return x / 0\n")
+        with pytest.raises(ZeroDivisionError) as exc_info:
+            _exec_user_code("y = 1\ndf = bad()\n", ["source"], (), extra_ns=preamble_ns)
+        assert user_code_line(exc_info.value) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1869,6 +1922,54 @@ class TestExecuteSink:
         # Should resolve to "nb_batch" from the ISM, not generic "batch"
         assert captured_sources == ["nb_batch"]
 
+    def test_a_write_takes_the_chosen_source_among_several(self, tmp_path):
+        """EXE-01: with a switch mapping live, batch and backtest, a write under
+        backtest writes the backtest rows, and one under live is refused naming the
+        two sources before anything is written."""
+        nodes = []
+        for name, value in (("live_src", 1), ("batch_src", 2), ("backtest_src", 3)):
+            path = tmp_path / f"{name}.parquet"
+            pl.DataFrame({"x": [value]}).write_parquet(path)
+            nodes.append(_ready_source_node(name, str(path)))
+        out_path = tmp_path / "out.parquet"
+        switch_map = {"live_src": "live", "batch_src": "batch", "backtest_src": "backtest"}
+        graph = _g(
+            {
+                "nodes": [
+                    *nodes,
+                    _n(
+                        {
+                            "id": "sw",
+                            "data": {
+                                "label": "sw",
+                                "nodeType": "liveSwitch",
+                                "config": {"input_scenario_map": switch_map},
+                            },
+                        }
+                    ),
+                    _n(
+                        {
+                            "id": "sink",
+                            "data": {
+                                "label": "sink",
+                                "nodeType": "dataOutput",
+                                "config": _file_output_config(str(out_path), "parquet"),
+                            },
+                        }
+                    ),
+                ],
+                "edges": [*(_edge(name, "sw") for name in switch_map), _edge("sw", "sink")],
+            }
+        )
+
+        with pytest.raises(BatchSourceAmbiguousError) as refused:
+            write_data_output(graph, output_node_id="sink", source="live")
+        assert refused.value.sources == ("backtest", "batch")
+        assert not out_path.exists()
+
+        write_data_output(graph, output_node_id="sink", source="backtest")
+        assert pl.read_parquet(out_path)["x"].to_list() == [3]
+
 
 # ---------------------------------------------------------------------------
 # Instance node alias injection
@@ -2459,110 +2560,77 @@ class TestExecuteGraphErrorPaths:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_batch_scenario
+# batch_source
 # ---------------------------------------------------------------------------
 
 
-class TestResolveBatchScenario:
-    """Edge-case tests for _resolve_batch_scenario."""
-
-    def test_no_live_switch_returns_none(self):
-        """Graph with no live_switch nodes returns None."""
-        graph = _g(
+def _switch_graph(*maps: dict[str, str]):
+    """A source feeding one Source Switch per mapping in *maps*."""
+    switches = [
+        _n(
             {
-                "nodes": [
-                    _source_node("src", "data.parquet"),
-                    _transform_node("t"),
-                ],
-                "edges": [_edge("src", "t")],
+                "id": f"sw{index}",
+                "data": {
+                    "label": f"sw{index}",
+                    "nodeType": "liveSwitch",
+                    "config": {"input_scenario_map": mapping},
+                },
             }
         )
-        assert _resolve_batch_scenario(graph) is None
+        for index, mapping in enumerate(maps)
+    ]
+    return _g(
+        {
+            "nodes": [_source_node("src", "data.parquet"), *switches],
+            "edges": [_edge("src", f"sw{index}") for index in range(len(maps))],
+        }
+    )
 
-    def test_all_live_returns_none(self):
-        """live_switch with ISM where all values are 'live' returns None."""
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", "data.parquet"),
-                    _n(
-                        {
-                            "id": "sw",
-                            "data": {
-                                "label": "sw",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"a": "live", "b": "live"},
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src", "sw")],
-            }
-        )
-        assert _resolve_batch_scenario(graph) is None
 
-    def test_returns_first_non_live(self):
-        """live_switch with ISM containing a non-live value returns it."""
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", "data.parquet"),
-                    _n(
-                        {
-                            "id": "sw",
-                            "data": {
-                                "label": "sw",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"a": "live", "b": "nb_batch"},
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src", "sw")],
-            }
-        )
-        assert _resolve_batch_scenario(graph) == "nb_batch"
+class TestBatchSource:
+    """The source a Data Output write and the optimiser route on (EXE-01)."""
 
-    def test_conflicting_non_live_raises(self):
-        """Two live_switch nodes with different non-live scenarios raise ValueError."""
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", "data.parquet"),
-                    _n(
-                        {
-                            "id": "sw1",
-                            "data": {
-                                "label": "sw1",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"a": "live", "b": "batch_A"},
-                                },
-                            },
-                        }
-                    ),
-                    _n(
-                        {
-                            "id": "sw2",
-                            "data": {
-                                "label": "sw2",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"c": "live", "d": "batch_B"},
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src", "sw1"), _edge("src", "sw2")],
-            }
-        )
-        with pytest.raises(ValueError, match="Conflicting batch scenarios"):
-            _resolve_batch_scenario(graph)
+    @pytest.mark.parametrize(
+        ("maps", "expected"),
+        [
+            ((), "batch"),
+            (({"a": "live", "b": "live"},), "batch"),
+            (({"a": "live", "b": "nb_batch"},), "nb_batch"),
+            (({"a": "live", "b": "nb_batch", "c": "nb_batch"},), "nb_batch"),
+            (({"a": "live", "b": "nb_batch"}, {"c": "live", "d": "nb_batch"}), "nb_batch"),
+        ],
+    )
+    def test_live_takes_the_one_non_live_source(self, maps, expected):
+        assert batch_source(_switch_graph(*maps), "live") == expected
+
+    @pytest.mark.parametrize(
+        "maps",
+        [
+            ({"a": "live", "b": "batch", "c": "backtest"},),
+            ({"a": "live", "b": "batch"}, {"c": "live", "d": "backtest"}),
+        ],
+    )
+    def test_a_named_source_is_taken_whatever_the_switches_map(self, maps):
+        graph = _switch_graph(*maps)
+        assert batch_source(graph, "backtest") == "backtest"
+        assert batch_source(graph, "batch") == "batch"
+
+    @pytest.mark.parametrize(
+        "maps",
+        [
+            ({"a": "live", "b": "batch", "c": "backtest"},),
+            ({"a": "live", "b": "batch"}, {"c": "live", "d": "backtest"}),
+        ],
+    )
+    def test_live_with_several_non_live_sources_is_refused_naming_them(self, maps):
+        with pytest.raises(BatchSourceAmbiguousError) as refused:
+            batch_source(_switch_graph(*maps), "live")
+        assert refused.value.sources == ("backtest", "batch")
+        assert refused.value.to_payload()["error_code"] == "batch_source_ambiguous"
+        message = str(refused.value)
+        assert "'backtest', 'batch'" in message
+        assert "toolbar" in message
+        assert "live_switch" not in message
 
 
 # ===========================================================================
@@ -4333,137 +4401,6 @@ class TestEmptyDataFrameFullPipeline:
         df = pl.read_parquet(p_out)
         assert len(df) == 0
         assert "x" in df.columns
-
-
-# ---------------------------------------------------------------------------
-# GAP 7: Conflicting batch scenarios
-# Production failure: Two live_switch nodes define different batch
-# scenario names (e.g. "nb_batch" and "monthly_batch").  write_data_output
-# silently picks one, routing half the pipeline to the wrong data source.
-# ---------------------------------------------------------------------------
-
-
-class TestConflictingBatchScenarios:
-    """Verify _resolve_batch_scenario raises on conflicting non-live names."""
-
-    def test_same_non_live_across_switches_ok(self):
-        """Multiple live_switch nodes with the SAME non-live scenario
-        should return that scenario (no conflict).
-
-        Real failure: false positive conflict detection when multiple
-        switches agree on the same batch scenario name.
-        """
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src1", "d1.parquet"),
-                    _source_node("src2", "d2.parquet"),
-                    _n(
-                        {
-                            "id": "sw1",
-                            "data": {
-                                "label": "sw1",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"a": "live", "b": "nb_batch"},
-                                },
-                            },
-                        }
-                    ),
-                    _n(
-                        {
-                            "id": "sw2",
-                            "data": {
-                                "label": "sw2",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"c": "live", "d": "nb_batch"},
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src1", "sw1"), _edge("src2", "sw2")],
-            }
-        )
-        assert _resolve_batch_scenario(graph) == "nb_batch"
-
-    def test_conflicting_scenarios_error_message_informative(self):
-        """The error message should name both conflicting scenario values.
-
-        Real failure: generic error message makes it impossible for the
-        user to identify which live_switch nodes are misconfigured.
-        """
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", "data.parquet"),
-                    _n(
-                        {
-                            "id": "sw1",
-                            "data": {
-                                "label": "sw1",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"a": "live", "b": "alpha_batch"},
-                                },
-                            },
-                        }
-                    ),
-                    _n(
-                        {
-                            "id": "sw2",
-                            "data": {
-                                "label": "sw2",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {"c": "live", "d": "beta_batch"},
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src", "sw1"), _edge("src", "sw2")],
-            }
-        )
-        with pytest.raises(ValueError, match="Conflicting batch scenarios") as exc_info:
-            _resolve_batch_scenario(graph)
-        msg = str(exc_info.value)
-        assert "alpha_batch" in msg
-        assert "beta_batch" in msg
-
-    def test_single_switch_multiple_non_live_same_value_ok(self):
-        """A single live_switch with multiple inputs mapping to the same
-        non-live scenario should not raise.
-
-        Real failure: the duplicate-detection logic incorrectly flags
-        the same value appearing twice within a single ISM.
-        """
-        graph = _g(
-            {
-                "nodes": [
-                    _source_node("src", "data.parquet"),
-                    _n(
-                        {
-                            "id": "sw",
-                            "data": {
-                                "label": "sw",
-                                "nodeType": "liveSwitch",
-                                "config": {
-                                    "input_scenario_map": {
-                                        "a": "live",
-                                        "b": "nb_batch",
-                                        "c": "nb_batch",
-                                    },
-                                },
-                            },
-                        }
-                    ),
-                ],
-                "edges": [_edge("src", "sw")],
-            }
-        )
-        assert _resolve_batch_scenario(graph) == "nb_batch"
 
 
 # ---------------------------------------------------------------------------

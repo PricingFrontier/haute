@@ -84,6 +84,16 @@ memory than the same join without the contract in Haute's measurements, and the
 estimate counts both inputs. A deployment does not need the contract for a lookup, because
 it checks the lookup's keys itself when the bundle is built.
 
+A join's other options, such as `coalesce`, `nulls_equal` or `allow_parallel`, do not
+change how many rows it returns, so they do not affect its estimate.
+
+A cross join with a one-row input, such as a [Constant](nodes/constant.md), adds that
+row's columns to every row, and is estimated like any other join. A cross join of two
+inputs that can each hold more than one row has no estimate, because nobody has measured
+what one costs. It runs under a hard memory cap and is refused without one. To give every
+row the same values, cross with a Constant, or use an [Edge Join](nodes/edge-join.md) set
+to **Cross**.
+
 ## Spilling to disk
 
 Polars can spill an operation's working data to disk when memory runs short. Haute

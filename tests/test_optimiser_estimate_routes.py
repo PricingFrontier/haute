@@ -1341,6 +1341,32 @@ class TestEstimateRoute:
         assert first_job["status"] == "running"
         assert len(store.list_jobs()) == 1
 
+    def test_a_running_auto_range_is_not_reused_for_another_source(self, scored_data):
+        """EXE-01: an auto-range running on one source is not another source's: a start
+        for a different source conflicts instead of receiving the running job's ranges."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        body = optimiser_request(
+            OptimiserFrontierAutoRangeRequest, _make_optimiser_graph(scored_data)
+        )
+        on_batch = body.model_copy(update={"source": "batch"})
+        on_backtest = body.model_copy(update={"source": "backtest"})
+
+        with patch.object(service, "_launch_frontier_auto_range_background", return_value=None):
+            first = service.start_frontier_auto_range(on_batch)
+            again = service.start_frontier_auto_range(on_batch)
+            with pytest.raises(RequestRefusedError) as exc_info:
+                service.start_frontier_auto_range(on_backtest)
+
+        assert again.job_id == first.job_id
+        assert exc_info.value.status_code == 409
+        assert store.require_job(first.job_id)["data_source"] == "batch"
+        assert len(store.list_jobs()) == 1
+
     def test_frontier_auto_range_retry_after_cancel_conflicts_until_worker_releases(
         self,
         scored_data,

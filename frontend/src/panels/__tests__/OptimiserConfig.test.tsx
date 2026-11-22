@@ -2734,6 +2734,7 @@ describe("OptimiserConfig", () => {
             edges: [expect.objectContaining({ source: "input_1", target: "opt_1" })],
           }),
           target: { occurrence: null, node_id: "opt_1" },
+          source: "live",
           signal: expect.any(AbortSignal),
         })
         expect(mockGetOptimiserFrontierAutoRangeStatus).toHaveBeenCalledWith(

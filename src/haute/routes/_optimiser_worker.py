@@ -241,6 +241,7 @@ def _private_solve_job(store: JobStore, request: SolveInputWorkerRequest) -> str
 
 
 def _private_auto_range_job(store: JobStore, request: FrontierAutoRangeWorkerRequest) -> str:
+    from haute.executor import batch_source
     from haute.routes._optimiser_service import _FrontierAutoRangeRunningJob
 
     job: _FrontierAutoRangeRunningJob = {
@@ -249,6 +250,7 @@ def _private_auto_range_job(store: JobStore, request: FrontierAutoRangeWorkerReq
         "progress": 0.0,
         "config": {},
         "node_label": request.body.node_id,
+        "data_source": batch_source(request.body.graph, request.body.source),
     }
     job_id = store.create_job(job)
     store.atomic_update(job_id, {"start_time": time.monotonic()})

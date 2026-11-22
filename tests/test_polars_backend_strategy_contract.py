@@ -64,6 +64,44 @@ _STATUS_BY_STRATEGY = {
 }
 
 
+@pytest.mark.parametrize(
+    ("detail", "remedy"),
+    [
+        (
+            "row_cardinality_unavailable:join-node:unsupported_join_option=mystery",
+            "The planner cannot bound a join carrying 'mystery': drop that option, or run on "
+            "a surface with a hard memory cap",
+        ),
+        (
+            "cross_join_unmeasured",
+            "A cross join's memory cannot be estimated when both sides may hold more than one "
+            "row: cross with a one-row input such as a Constant, use an Edge Join set to "
+            "Cross, or run on a surface with a hard memory cap",
+        ),
+    ],
+)
+def test_a_gap_metadata_cannot_close_is_refused_with_what_works_instead(
+    detail: str, remedy: str
+) -> None:
+    """EXE-04/EXE-05: a join the planner cannot read, or a cross join nobody has measured,
+    is refused with its own remedy, never "Provide readable source/schema metadata"."""
+    from haute.execution import _materialisation_rejection
+
+    rejection = _materialisation_rejection(
+        node_id="join-node",
+        operator="join",
+        profile=ExecutionProfile.LAZY_SINK,
+        reason_code="materialisation_estimate_unavailable",
+        estimated_peak_bytes=None,
+        headroom_bytes=10,
+        node_name=str,
+        estimate_detail=detail,
+    )
+    assert remedy in rejection.remediation
+    assert "metadata" not in rejection.remediation
+    assert rejection.context["node_id"] == "join-node"
+
+
 def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
     """An unbounded join is reported as unproven, and says how to bound it."""
     from haute.execution import MANY_TO_MANY_JOIN_DETAIL, _materialisation_rejection
