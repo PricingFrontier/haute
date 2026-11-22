@@ -126,10 +126,14 @@ class StoreGate:
                 raise self._refusal
             return self._check()
 
-    def recheck(self) -> QuoteStoreClosedError | None:
-        """Check at once, after a statement the database refused: the book closed and opened
-        again, None while the tables still fit, else the refusal that now closes them."""
+    def recheck(self, seen: QuoteBook | None = None) -> QuoteStoreClosedError | None:
+        """Check at once, after a statement the database refused or tables seen to have changed
+        under the open book *seen*: the book closed and opened again, None while the tables
+        still fit, else the refusal that now closes them. A book opened since *seen* is kept,
+        as another request's check opened it on the tables as they are."""
         with self._lock:
+            if seen is not None and self._book is not None and self._book is not seen:
+                return None
             self._shut()
             try:
                 self._check()

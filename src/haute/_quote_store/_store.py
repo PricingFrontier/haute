@@ -167,6 +167,15 @@ class QuoteStoreUnreachableError(QuoteStoreEnvironmentError):
     error_code = "quote_store_unreachable"
 
 
+class QuoteStoreChangedError(QuoteStoreError):
+    """The database's tables are no longer as the store found them when it opened: a column of
+    an input table added, renamed or dropped since, which the store must know of before it
+    reads a quote's rows or writes them again. Raised before anything is written, for the
+    store to be opened again and the work done once more."""
+
+    error_code = "quote_store_changed"
+
+
 class QuoteStoreMismatchError(QuoteStoreError):
     """The database does not hold the form's tables as the store needs them: *differences*
     names each, and the message what resolves them."""

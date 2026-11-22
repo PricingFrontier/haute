@@ -223,6 +223,9 @@ class StoreSchema:
     #: Each input table's columns the store holds that the form does not, by table name, each
     #: by its name and kind: what a quote's rows carry back to the save (READ-05).
     kept: Mapping[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
+    #: The columns the database held in each table whose rows carry kept values, by table
+    #: name, as the store opened: what a quote's read and save check its tables still hold.
+    held: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     @property
     def details(self) -> StoredTable:
@@ -304,8 +307,9 @@ _KEPT_TYPES: dict[str, Callable[[], TypeEngine[Any]]] = {
 def with_kept_columns(
     schema: StoreSchema, extras: Mapping[str, list[tuple[str, str]]]
 ) -> StoreSchema:
-    """*schema* with each input table's store-only columns, *extras* by table name as the
-    database's catalogue holds them (name and kind), read and written with its rows (READ-05).
+    """*schema* with each input table's store-only columns, *extras* by table name every column
+    the database's catalogue holds (name and kind), read and written with its rows (READ-05),
+    and the names it held, which each read and save of a quote checks it still holds.
 
     A column leaves the form but the SQL Haute writes keeps it, so a saved quote's values stay
     in it. A save deletes a quote's rows and writes them again, so its rows carry those values
@@ -314,9 +318,11 @@ def with_kept_columns(
     any; nor does a column of a kind Haute never writes.
     """
     kept: dict[str, tuple[tuple[str, str], ...]] = {}
+    held: dict[str, frozenset[str]] = {}
     for stored in schema.tables:
-        if not stored.form.has_inputs or stored.form.name == QUOTE_DETAILS_NAME:
+        if not carries_kept(stored):
             continue
+        held[stored.form.name] = frozenset(name for name, _ in extras.get(stored.table.name, []))
         carried = tuple(
             (name, kind)
             for name, kind in extras.get(stored.table.name, [])
@@ -326,7 +332,14 @@ def with_kept_columns(
             stored.table.append_column(Column(name, _KEPT_TYPES[kind](), nullable=True))
         if carried:
             kept[stored.form.name] = carried
-    return dataclasses.replace(schema, kept=kept)
+    return dataclasses.replace(schema, kept=kept, held=held)
+
+
+def carries_kept(stored: StoredTable) -> bool:
+    """Whether *stored*'s rows carry the values of the store's columns the form does not hold
+    (:func:`with_kept_columns`): an input table's but ``quote_details``', which is updated in
+    place."""
+    return stored.form.has_inputs and stored.form.name != QUOTE_DETAILS_NAME
 
 
 def _stored(metadata: MetaData, table: SchemaTable) -> StoredTable:

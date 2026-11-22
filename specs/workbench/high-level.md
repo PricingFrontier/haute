@@ -2928,7 +2928,11 @@ Out of scope:
   not hold, as JSON text no sheet shows and no pricing reads; the row keeps it through
   inserts, deletes, edits made while a save is pending and the answer to a save replayed, and
   a save writes it back, refusing it, by name, for a column the form holds, one the store
-  does not hold, or a value its column's kind does not hold. A new row has none; a deleted row
+  does not hold, or a value its column's kind does not hold. Such a column added, renamed or
+  dropped while an app runs is seen before the app next reads a quote's rows or writes them:
+  the store opens again on the tables as they are, as after a statement the database refused,
+  and the read or save is made once more, nothing written before, so an app opened before a
+  column was added keeps the values another release wrote there. A new row has none; a deleted row
   takes its values with it, and only deleting it does: a row whose cells are all emptied
   keeps its `$kept` values and is saved as a row with empty cells. An index of values moves
   each row, with its `$kept` field, to its value's place.

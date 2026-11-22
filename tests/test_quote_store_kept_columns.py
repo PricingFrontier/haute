@@ -15,7 +15,13 @@ from typing import Any
 
 import pytest
 
-from haute._quote_store import PricedOutputs, QuoteBook, QuoteValuesError, open_book
+from haute._quote_store import (
+    PricedOutputs,
+    QuoteBook,
+    QuoteStoreChangedError,
+    QuoteValuesError,
+    open_book,
+)
 from haute._quote_store._rows import KEPT_KEY
 from haute._workbench_form import FormSpec, OptionsSource
 from tests._store_servers import Target, backends, database
@@ -282,3 +288,42 @@ def test_an_output_column_the_form_dropped_is_cleared_by_the_next_save(
     held = store.read("SELECT referred FROM premium")
     assert held == ([(None,)] if priced else [])
     assert _mileages(store) == [("REG1", 100), ("REG2", 200), ("REG3", 300)]
+
+
+def test_a_column_added_under_an_open_store_is_kept_by_its_next_read_and_save(
+    store: Target,
+) -> None:
+    """WB-63: a store opened before its owners added a column learns of it before it reads or
+    writes a quote's rows, so a save from the release before keeps the values the release
+    after wrote there."""
+    old = _without(FORM, {"vehicles": {"mileage"}})
+    store.make(old)
+    stale = _open(store, old)
+    try:
+        quote = stale.create(
+            operation=op(),
+            actor=ANA,
+            at=stale.now(),
+            reference="K-3",
+            values=values(vehicles=_vehicles(None, None)),
+        ).quote
+        identity = (quote.reference, quote.option)
+        store.make(FORM, base=old)
+        with _open(store, FORM) as newer:
+            _save(newer, identity, values(vehicles=_vehicles("100", "200")), priced=False)
+
+        # Neither a read nor a save goes on as if the tables were as the store opened them.
+        with pytest.raises(QuoteStoreChangedError):
+            stale.read(*identity)
+        with pytest.raises(QuoteStoreChangedError):
+            _save(stale, identity, values(vehicles=_vehicles(None, None)), priced=False)
+        assert _mileages(store) == [("REG1", 100), ("REG2", 200)]
+    finally:
+        stale.close()
+
+    # The store opened again, as the app's gate opens it, keeps them through a save.
+    with _open(store, old) as reopened:
+        rows = reopened.read(*identity).values
+        rows["vehicles"][0]["value"] = "900"
+        _save(reopened, identity, rows, priced=False)
+    assert _mileages(store) == [("REG1", 100), ("REG2", 200)]

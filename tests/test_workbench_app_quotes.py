@@ -52,6 +52,7 @@ from tests._project import use_project
 from tests._store_servers import Target
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
+from tests.test_workbench_routes import column as schema_column
 
 #: The hosted environment the tests' releases declare, whose store a hosted app opens.
 TEST = "test"
@@ -957,6 +958,52 @@ def test_mark_final_needs_a_price_of_the_release_running(
         in (refused.json()["detail"]["message"])
     )
     assert page.change(priced, "final").json()["quote"]["stage"] == "final"
+
+
+def test_an_app_opened_before_a_column_was_added_keeps_that_columns_values_on_a_save(
+    page: Page, url: str, path: Path, tmp_path: Path
+) -> None:
+    """WB-63: the app's store opened before its owners added a column; the next release
+    writes it; this app's open and save of the quote, once the store has opened again on the
+    tables as they are now, keep what the next release wrote there."""
+    quote = page.create().json()["quote"]
+    newer = json.loads(json.dumps(FORM))
+    policy = next(t for t in newer["schema"]["tables"] if t["name"] == "policy_details")
+    policy["inputs"].append(schema_column("sum_insured", "float"))
+    Target("sqlite", url).make(FormSpec.model_validate(newer), base=FormSpec.model_validate(FORM))
+    with TestClient(
+        create_app(_write_release(tmp_path / "newer", newer), store=StoreLocation(TEST, url))
+    ) as client:
+        later = Page(client)
+        later.operations = iter(range(10**6, 2 * 10**6))
+        policy_row = {**VALUES["policy_details"][0], "sum_insured": "5000000"}
+        insured = {**VALUES, "policy_details": [policy_row]}
+        answered = later.save(quote, values=insured, shown=None)
+        assert answered.status_code == 200, answered.text
+
+    opened = page.client.get(address(quote), headers=ANA)
+    assert opened.status_code == 200, opened.text
+    values = opened.json()["values"]
+    assert json.loads(values["policy_details"][0]["$kept"]) == {"sum_insured": 5000000.0}
+    values["policy_details"][0]["exposure"] = "2000"
+    saved = page.save(opened.json()["quote"], values=values, shown=None)
+
+    assert saved.status_code == 200, saved.text
+    assert sql(path, "SELECT exposure, sum_insured FROM policy_details") == [(2000.0, 5000000.0)]
+
+
+def test_a_table_changed_under_the_app_to_no_longer_fit_closes_the_quotes(
+    page: Page, path: Path
+) -> None:
+    quote = page.create().json()["quote"]
+    sql(path, "ALTER TABLE policy_details RENAME COLUMN exposure TO exposure_old")
+
+    opened = page.client.get(address(quote), headers=ANA)
+
+    assert opened.status_code == 503
+    detail = opened.json()["detail"]
+    assert detail["error_code"] == "quote_store_mismatch"
+    assert "policy_details.exposure is missing" in detail["differences"]
 
 
 # ── The app's guards and pages ────────────────────────────────────────────

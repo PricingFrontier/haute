@@ -46,6 +46,7 @@ from haute._quote_store import (
     QuoteLockedError,
     QuoteNotFoundError,
     QuoteNotReadyError,
+    QuoteStoreChangedError,
     QuoteStoreError,
     QuoteValuesError,
     ReferenceTakenError,
@@ -184,18 +185,32 @@ async def _book(app: QuoteApp) -> QuoteBook:
         raise RequestRefusedError(refusal.detail, status_code=503) from None
 
 
-async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] | None = None) -> T:
-    """*work* on a worker thread, the store's refusals answered as the app's; a quote moved on
-    with the quote *identity* names as it is now."""
+async def _call(
+    app: QuoteApp, work: Callable[[QuoteBook], T], identity: tuple[str, int] | None = None
+) -> T:
+    """*work* on the open book, on a worker thread, the store's refusals answered as the app's;
+    a quote moved on with the quote *identity* names as it is now. A store whose tables changed
+    under the running app is checked again at once and, while they fit, *work* done once more
+    on the store as it opens now, as nothing was written."""
     try:
-        return await run_in_threadpool(work)
+        book = await _book(app)
+        try:
+            return await run_in_threadpool(work, book)
+        except QuoteStoreChangedError:
+            refusal = await run_in_threadpool(app.gate.recheck, book)
+            if refusal is not None:
+                raise RequestRefusedError(refusal.detail, status_code=503) from None
+            return await run_in_threadpool(work, await _book(app))
+    except QuoteStoreChangedError as exc:
+        # Changed again between the check and the work: nothing was written.
+        raise _refusal(503, exc) from None
     except QuoteNotFoundError as exc:
         raise _refusal(404, exc) from None
     except StaleQuoteError as exc:
         current = None
         if identity is not None:
-            book = await _book(app)
-            current = quote_model(await run_in_threadpool(book.get, *identity)).model_dump()
+            now = await _book(app)
+            current = quote_model(await run_in_threadpool(now.get, *identity)).model_dump()
         raise _refusal(409, exc, quote=current) from None
     except QuoteNotReadyError as exc:
         raise _refusal(409, exc, missing=exc.missing) from None
@@ -348,10 +363,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
         limit: int = Query(default=PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     ) -> WorkbenchAppQuotesResponse:
         actor: str = http.state.principal
-        book = await _book(app)
         page = await _call(
             app,
-            lambda: book.page(
+            lambda book: book.page(
                 actor=actor,
                 view=view,
                 stage=stage,
@@ -372,10 +386,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteCreateRequest)
-        book = await _book(app)
         # A creation repeated with its key answers the quote it made, whichever release the
         # page was drawn for.
-        replay = await _call(app, lambda: book.replayed(body.operation, actor, "created"))
+        replay = await _call(app, lambda book: book.replayed(body.operation, actor, "created"))
         if replay is not None:
             return answer(replay)
         _drawn_for(app, body)
@@ -386,7 +399,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         )
         made = await _call(
             app,
-            lambda: book.create(
+            lambda book: book.create(
                 operation=body.operation,
                 actor=actor,
                 values=body.values,
@@ -399,8 +412,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/quotes/{reference}/{option}", response_model=WorkbenchAppQuoteResponse)
     async def open_quote(reference: str, option: int) -> WorkbenchAppQuoteResponse:
-        book = await _book(app)
-        return answer(await _call(app, lambda: book.read(reference, option)))
+        return answer(await _call(app, lambda book: book.read(reference, option)))
 
     @router.post("/quotes/{reference}/{option}/save", response_model=WorkbenchAppQuoteResponse)
     async def save_quote(reference: str, option: int, http: Request) -> WorkbenchAppQuoteResponse:
@@ -411,12 +423,14 @@ def quote_router(app: QuoteApp) -> APIRouter:
         # A save repeated with its key after its answer was lost is answered with what that key
         # wrote, nothing priced or written again, whichever release the page was drawn for.
         replay = await _call(
-            app, lambda: book.replayed(body.operation, actor, "saved", reference, option), identity
+            app,
+            lambda book: book.replayed(body.operation, actor, "saved", reference, option),
+            identity,
         )
         if replay is not None:
             return answer(replay, body.shown)
         _drawn_for(app, body)
-        current = await _call(app, lambda: book.get(reference, option))
+        current = await _call(app, lambda book: book.get(reference, option))
         # One instant stamps the save: the request priced and the rows written.
         at = book.now()
         values = as_written(body.values, book.managed(current, at=at, actor=actor))
@@ -426,12 +440,12 @@ def quote_router(app: QuoteApp) -> APIRouter:
         priced = None
         if body.shown is not None:
             # A value not of its column's type refuses the save before it is priced, naming each.
-            await _call(app, lambda: input_rows(app.form, values, identity))
+            await _call(app, lambda _book: input_rows(app.form, values, identity))
             pricing = await app.price(values)
             priced = PricedOutputs(app.release_id, pricing.document)
         saved = await _call(
             app,
-            lambda: book.save(
+            lambda book: book.save(
                 reference,
                 option,
                 operation=body.operation,
@@ -455,9 +469,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
         ) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
             body = await _body(http, model)
-            book = await _book(app)
             quote = await _call(
-                app, lambda: apply(book, reference, option, body, actor), (reference, option)
+                app, lambda book: apply(book, reference, option, body, actor), (reference, option)
             )
             return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
@@ -503,9 +516,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def note(reference: str, option: int, http: Request) -> WorkbenchAppQuoteChangeResponse:
         actor = _editor(http)
         body = await _body(http, WorkbenchAppQuoteNote)
-        book = await _book(app)
         quote = await _call(
-            app, lambda: book.set_note(reference, option, actor=actor, note=body.note)
+            app, lambda book: book.set_note(reference, option, actor=actor, note=body.note)
         )
         return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
@@ -513,8 +525,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         "/quotes/{reference}/{option}/activity", response_model=WorkbenchAppQuoteActivityResponse
     )
     async def activity(reference: str, option: int) -> WorkbenchAppQuoteActivityResponse:
-        book = await _book(app)
-        done = await _call(app, lambda: book.activity(reference, option))
+        done = await _call(app, lambda book: book.activity(reference, option))
         return WorkbenchAppQuoteActivityResponse(
             entries=[
                 WorkbenchAppQuoteActivityEntry(
@@ -535,7 +546,6 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/people", response_model=WorkbenchAppPeopleResponse)
     async def people() -> WorkbenchAppPeopleResponse:
-        book = await _book(app)
-        return WorkbenchAppPeopleResponse(people=await _call(app, book.people))
+        return WorkbenchAppPeopleResponse(people=await _call(app, lambda book: book.people()))
 
     return router

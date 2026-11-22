@@ -30,11 +30,13 @@ from sqlalchemy import (
     Connection,
     Engine,
     Row,
+    Select,
     and_,
     delete,
     false,
     func,
     insert,
+    literal_column,
     or_,
     select,
     true,
@@ -59,11 +61,13 @@ from haute._quote_store._schema import (
     PRINCIPAL_LENGTH,
     REFERENCE_LENGTH,
     StoreSchema,
+    carries_kept,
 )
 from haute._quote_store._store import (
     QuoteLockedError,
     QuoteNotFoundError,
     QuoteNotReadyError,
+    QuoteStoreChangedError,
     QuoteStoreError,
     ReferenceTakenError,
     StaleQuoteError,
@@ -445,13 +449,36 @@ class QuoteBook:
             f"{identity_label(reference, option)} kept changing while it was read: open it again."
         )
 
-    def _open(self, connection: Connection, reference: str, option: int) -> OpenQuote:
-        """The quote with what it holds, as *connection* reads it."""
+    def _open(
+        self, connection: Connection, reference: str, option: int, *, checked: bool = False
+    ) -> OpenQuote:
+        """The quote with what it holds, as *connection* reads it, its tables checked first
+        (:meth:`_check_tables`) unless the transaction has *checked* them already."""
+        if not checked:
+            self._check_tables(connection)
         quote = self._get(connection, reference, option)
         rows = self._rows(connection, reference, option)
         values, dropped = cells(self._form, rows, self._schema.kept)
         outputs = rendered_outputs(self._form, rows) if quote.priced else None
         return OpenQuote(quote=quote, values=values, outputs=outputs, dropped=dropped)
+
+    def _check_tables(self, connection: Connection) -> None:
+        """Refuse (:class:`QuoteStoreChangedError`) when a table whose rows carry kept values
+        no longer holds the columns it held as the store opened: a quote's rows would be read
+        without a column added since and written again without its values. Run before a quote's
+        rows are read or replaced, in the same transaction."""
+        for stored in self._schema.tables:
+            if not carries_kept(stored):
+                continue
+            probe: Select[Any] = (
+                select(literal_column("*")).select_from(stored.table).where(false())
+            )
+            found = frozenset(connection.execute(probe).keys())
+            if found != self._schema.held[stored.form.name]:
+                raise QuoteStoreChangedError(
+                    f"The quote store's table {stored.table.name} changed since the app opened "
+                    "it: open the quote again."
+                )
 
     def _is(self, reference: str, option: int) -> list[ColumnElement[bool]]:
         return [
@@ -877,6 +904,7 @@ class QuoteBook:
         """The new quote written on *connection*: under *keyed* and option 1, refused when
         another quote holds it, or, keyed none, under its source's reference and the next
         option."""
+        self._check_tables(connection)
         if source is not None:
             self._get(connection, source.reference, source.option)
         if keyed is None:
@@ -910,7 +938,7 @@ class QuoteBook:
         )
         self._write_rows(connection, rows)
         self._record(connection, operation, reference, option, 1, at, actor, "created")
-        return self._open(connection, reference, option)
+        return self._open(connection, reference, option, checked=True)
 
     def save(
         self,
@@ -936,17 +964,19 @@ class QuoteBook:
         managed = self.managed(current, at=at, actor=actor)
         written = as_written(values, managed)
         document = None if priced is None else priced.document
-        rows = with_outputs(
-            self._form,
-            {
-                **input_rows(self._form, written, (reference, option), self._schema.kept),
-                **output_rows(self._form, document, (reference, option)),
-            },
-            document,
-        )
-        details = rows.pop(QUOTE_DETAILS_NAME)[0]
         try:
             with writing(self._engine) as connection:
+                # The rows are made for the tables as they are now, which a kept value names.
+                self._check_tables(connection)
+                rows = with_outputs(
+                    self._form,
+                    {
+                        **input_rows(self._form, written, (reference, option), self._schema.kept),
+                        **output_rows(self._form, document, (reference, option)),
+                    },
+                    document,
+                )
+                details = rows.pop(QUOTE_DETAILS_NAME)[0]
                 moved = connection.execute(
                     update(self._details)
                     .where(
@@ -982,7 +1012,7 @@ class QuoteBook:
                     "saved",
                     priced_release=None if priced is None else priced.release,
                 )
-                return self._open(connection, reference, option)
+                return self._open(connection, reference, option, checked=True)
         except IntegrityError:
             # The key's first write came first, as one save sent twice at once does.
             done = self.replayed(operation, actor, "saved", reference, option)
