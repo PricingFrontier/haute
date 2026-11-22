@@ -3088,9 +3088,6 @@ Out of scope:
   form is saved only when there is something to save, unsaved edits, so a save from the
   pipeline editor costs the form no request and no toast while it is as saved; a form
   file left uncaptured is captured as it is, never written again.
-- **The blank form is a form.** A project whose workbench was enabled by hand has no file
-  yet, and the view is where its first form is made, so an absent file reads as the blank
-  form with no revision rather than as an error, and the first save creates it.
 - **Commit on blur.** The schema editor's fields commit as Haute's editors commit, once
   per edit, so an undo step is an edit rather than a keystroke and no timer decides where
   one edit ends and the next begins.

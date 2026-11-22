@@ -19,8 +19,7 @@ that fill the sheets from databases and APIs.
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
 `WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
-in the Workbench view's Allowed field. `WB-41` comes from the 31 October 2026 codebase
-review, which found its defects by source inspection.
+in the Workbench view's Allowed field.
 
 `WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
 it was confirmed by running the code or read from the source; none was run against a
@@ -60,7 +59,6 @@ session ran each again on 16 November 2026.
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
 | WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-41 | Planned | P2 | `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
 | WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
 | WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
@@ -487,40 +485,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-41 — Preview a submodel `WORKBENCH_OUTPUT` by address in `priceSample`, and remove stale blank-form rationale
-**Why:** Two defects affect live sample pricing in the Workbench view and the workbench
-high-level specification. (A third, the quote list's `loadingMore` left set or cleared
-across list switches, went with the late-answer helper: a further page belongs to the
-list loaded, and loading another ends it at once.)
-1. In `priceSample` (`frontend/src/workbench/priceSample.ts`), the module docstring
-   states that every `Workbench Input` and `Workbench Output` at the top level or
-   inside a submodel is supported, and `WORKBENCH_INPUT` is collected from both
-   `graph.nodes` and `graph.submodels`, but `const output = graph.nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)`
-   searches only top-level `graph.nodes`, failing with
-   `"The pipeline has no Workbench Output..."` when `Workbench Output` lives inside a
-   submodel.
-2. `specs/workbench/high-level.md` retains a stale rationale bullet (`The blank form
-   is a form. A project whose workbench was enabled by hand has no file yet...`) that
-   directly contradicts the earlier rationale bullet (`A missing folder is a loss,
-   not a new form`) and the folder-backed form loader.
-
-**Plan:** Search both `graph.nodes` and `graph.submodels` for
-`NODE_TYPES.WORKBENCH_OUTPUT` in `priceSample` and send a submodel child output as the
-preview's target by its address (`childAddress(occurrence, node)`) when calling
-`previewNode`; and remove the stale `The blank form is a form` bullet from
-`specs/workbench/high-level.md`.
-
-**Acceptance:** `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
-submodel by sending the child's address to `/api/pipeline/preview` and returning its
-priced tables; and `specs/workbench/high-level.md` states one consistent
-missing-folder rule.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample`;
-`frontend/src/utils/nodeAddress.ts::childAddress`;
-`specs/workbench/high-level.md`.
 
 ### WB-46 — The quote store's connections and the gate have deadlines
 **Why:** Read from the source. The server-database engine is created with a
