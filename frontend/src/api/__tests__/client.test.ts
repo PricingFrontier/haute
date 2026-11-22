@@ -850,6 +850,7 @@ describe("endpoint contracts", () => {
       preserved_blocks: [],
       connection_id: "tab-1",
       operation: "save-test-operation",
+      working_branch: "dev",
     }
     await sentHeld((ticket) => savePipeline(payload, ticket))
     const [url, opts] = mockFetch.mock.calls[0]
@@ -861,6 +862,7 @@ describe("endpoint contracts", () => {
     expect(body.base_revision).toBe("rev-1")
     expect(body.connection_id).toBe("tab-1")
     expect(body.operation).toBe("save-test-operation")
+    expect(body.working_branch).toBe("dev")
   })
 
   it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
@@ -869,6 +871,7 @@ describe("endpoint contracts", () => {
       source_file: "pipe.py", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
       connection_id: null,
       operation: "save-test-operation",
+      working_branch: null,
     }, ticket))
     await createSubmodel({
       name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",

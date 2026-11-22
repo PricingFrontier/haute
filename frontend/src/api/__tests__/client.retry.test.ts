@@ -636,6 +636,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           preserved_blocks: [],
           connection_id: null,
           operation: "save-test-operation",
+          working_branch: null,
         }, ticket)),
       ).rejects.toBeInstanceOf(TypeError)
 
