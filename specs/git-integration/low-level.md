@@ -325,10 +325,19 @@ or a new file the spelling of its nearest tracked folder, when both spellings na
 on disk (`os.path.samefile`; for a deleted file, its folders), which on a disk that keeps case
 apart they never do, so two names differing only in case stay two files → *paths* kept to those on disk or in the index (`git ls-files -z -- <paths>`), which `git add` takes, and those staged against HEAD (`git diff --cached --name-only -z HEAD -- <paths>`), a deletion or a rename's old name already staged (`git rm`, `git mv`, an editor's git panel, or an earlier `git add` before the process stopped), which the path-scoped commit records as staged: one in none of them has nothing to record, as a file a save's record names that a stopped save never created, and is left out → `git status --porcelain -- <paths>` to check anything in *paths* actually
 changed (idempotent no-op returns `None`; a status git cannot answer raises `GitError`,
-never reads as no change) → `git add -- <the paths git add takes>` → `git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `git commit -m <msg> --
-<paths>` (pathspec-scoped, so it commits only those paths' working-tree state regardless of
-what else the user may have pre-staged), the one ref move outside a recorded operation,
-inside `_save_commit()` → `_refuse_unrecorded`, a net under any other way a path can miss
+never reads as no change) → `stage_paths` (`git add -- <the paths git add takes>`, the
+project's executable files among them, the pre-commit hook, `git add --chmod=+x`:
+`haute._git_core.stage_paths` is the one way Haute stages a file, the editor's first-commit
+seed included, so the hook is recorded 100755 where the file system has no executable bit) →
+`git diff --cached --name-only --no-renames HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full, are what the default message names) → `_commit_staged_paths`: a commit
+of exactly the changed paths as the index now holds them, regardless of what else the user
+may have pre-staged, made from an index of its own (`GIT_INDEX_FILE` at the git dir's
+`haute-save.index`, removed after): `read-tree HEAD`, each changed path's entry copied
+from the index with its mode (`ls-files -s -z` into `update-index -z --index-info`) and one
+the index no longer holds removed, then `git commit -m <msg>`. `git commit -- <paths>`
+builds the same index but stats a file HEAD lacks again, and with `core.fileMode=false`, as
+on Windows, would commit the hook 100644. The commit is the one ref move outside a recorded
+operation, inside `_save_commit()` → `_refuse_unrecorded`, a net under any other way a path can miss
 git's: each path's file on disk (`hash-object`, with its filters) is compared with the
 ledger's copy (`ls-tree HEAD`), and any that differ raise `GitDomainError` ("Version history
 did not take the change to <files>; the next save tries again.", at most five named), which
@@ -756,8 +765,9 @@ the project or add it to .gitignore, then try again." A file left larger than
 (`_git_core`), the check the sweep before a milestone or restore applies to the pipeline
 folder (`_refuse_unversionable`): "<path> (<size>) is too large for version history, which
 takes files up to 100 MiB. Move it to the project's data/ folder, which stays on this machine,
-and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added with
-`:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec.
+and try again." A larger file the pathspecs leave out is never a candidate. The matched files are added through
+`stage_paths`, with `:(literal)` prefixes so a filename containing glob characters can't re-expand the pathspec, the
+pre-commit hook `--chmod=+x` so the root commit holds it executable on Windows too.
 The staged index becomes the root commit's tree (`write-tree`), possibly the empty one, and
 `commit-tree <tree> -m "Initial commit"` makes the root commit, which runs none of the
 project's hooks, as a save does not. A `commit-tree` failure whose stderr mentions missing

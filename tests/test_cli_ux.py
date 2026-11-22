@@ -14,9 +14,8 @@ Covers codebase-review items:
   Scripts cannot distinguish "no version yet" from "version 0", so change
   the contract to exit non-zero with a stderr message.
 - **#114** Pre-commit chmod on Windows — ``Path.chmod(0o755)`` is a silent
-  no-op on NTFS (and the underlying Git shim needs ``git update-index
-  --chmod=+x`` instead). Skip the ``chmod`` call on ``sys.platform ==
-  "win32"`` and document the manual workaround inline.
+  no-op on NTFS, so the call is skipped on ``sys.platform == "win32"``; git is
+  told the hook is executable instead (CLI-07, tests/test_cli_init.py).
 
 Each test pins one observable behaviour. Tests are expected to fail until
 the dev implementation lands; import-time collection errors also count as
@@ -470,11 +469,9 @@ class TestVersionOnlyExitCode:
 class TestPreCommitChmodWindowsSkip:
     """Pin that ``haute init`` does not attempt ``chmod`` on Windows.
 
-    ``Path.chmod(0o755)`` is a no-op on NTFS and the git shim needs
-    ``git update-index --chmod=+x`` to mark the hook executable.  The
-    dev fix is (a) skip ``chmod`` when ``sys.platform == "win32"`` and
-    (b) document the manual workaround as a comment next to the skip
-    so future maintainers know why.
+    ``Path.chmod(0o755)`` is a no-op on NTFS, where git reads no mode from the file
+    system; ``haute init`` records the hook executable in git's index instead
+    (``TestTheHookReachesEveryCloneExecutable`` in tests/test_cli_init.py).
     """
 
     def test_no_chmod_on_win32(
@@ -540,23 +537,4 @@ class TestPreCommitChmodWindowsSkip:
         ]
         assert any(mode == 0o755 for mode in called_modes), (
             f"Expected at least one chmod(0o755) call; got modes: {called_modes!r}"
-        )
-
-    def test_source_documents_manual_workaround(self) -> None:
-        """The source file that holds the skip must document the manual
-        ``git update-index --chmod=+x`` workaround.
-
-        Rationale: the ``chmod`` skip is only half the fix — users on
-        Windows still need the hook to be executable under git.  A
-        comment or docstring that names the workaround is the minimum
-        cost to save a future maintainer from rediscovering this.
-        """
-        source_path = (
-            Path(__file__).resolve().parent.parent / "src" / "haute" / "cli" / "_init_cmd.py"
-        )
-        text = source_path.read_text(encoding="utf-8")
-        assert re.search(r"git\s+update-index\s+--chmod=\+x", text), (
-            f"{source_path} must document the manual "
-            "`git update-index --chmod=+x` workaround near the Windows "
-            "chmod skip so maintainers understand why the skip is safe."
         )

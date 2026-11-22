@@ -26,7 +26,7 @@ from haute._gitignore_guard import ensure_gitignore_guards
 from haute._io import read_user_text
 from haute._project_context import current_project
 from haute._project_settings import ProjectSettingsError, read_project_settings, write_settings_text
-from haute._scaffold_files import ensure_gitattributes, lf_bytes, write_lf
+from haute._scaffold_files import PRE_COMMIT_HOOK, ensure_gitattributes, lf_bytes, write_lf
 from haute.cli._helpers import HauteCommand
 
 if TYPE_CHECKING:
@@ -387,6 +387,29 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
 def _not_in_version_history(paths: Sequence[str]) -> None:
     click.echo(f"Not yet in version history: {', '.join(paths)}")
     click.echo("  git status lists them (git diff does not): add them before you commit.")
+
+
+def _record_executable_files(project_dir: Path) -> None:
+    """Record the project's executable files, the pre-commit hook, as executable in git's
+    index (:func:`haute._git_core.record_executable_files`) inside a repository, on every
+    system: on Windows the file system has no executable bit for git to read, so a clone on
+    Linux or macOS would get a hook git does not run. A folder git does not trust is said, as
+    :func:`capture_new_files` says it; outside a repository there is nothing to record."""
+    from haute._git_core import (
+        GitBlockedError,
+        _is_git_repo,
+        git_binary_available,
+        record_executable_files,
+    )
+
+    if not git_binary_available():
+        return
+    try:
+        if _is_git_repo(project_dir):
+            record_executable_files(project_dir)
+    except GitBlockedError as blocked:
+        click.echo(f"\n{blocked}")
+        click.echo(f"Not recorded as executable in version history: {PRE_COMMIT_HOOK}")
 
 
 def _form_folder_problem(project_dir: Path, relative: str, files: Mapping[str, str]) -> str | None:
@@ -1073,12 +1096,11 @@ def handle_init(config: InitConfig) -> None:
     report.write_generated(project_dir, generated)
     for rel in removed:
         report.add(rel, "removed")
-    # Path.chmod is a silent no-op on NTFS, and git on Windows ignores the
-    # POSIX executable bit anyway. Skip the call on Windows and document the
-    # manual workaround so maintainers know the escape hatch.
-    # On Windows, run: git update-index --chmod=+x .githooks/pre-commit
+    # Path.chmod is a silent no-op on NTFS, where git takes no mode from the file system: git
+    # is told instead, so every clone gets the hook executable.
     if sys.platform != "win32":
-        (project_dir / ".githooks" / "pre-commit").chmod(0o755)
+        (project_dir / PRE_COMMIT_HOOK).chmod(0o755)
+    _record_executable_files(project_dir)
 
     # Install into .git/hooks if inside a git repo, unless the team has a hook of its own there.
     git_hooks_dir = project_dir / ".git" / "hooks"
@@ -1087,8 +1109,7 @@ def handle_init(config: InitConfig) -> None:
     hook_installed = git_hooks_dir.is_dir() and not own_hook
     if hook_installed:
         write_lf(installed, pre_commit_hook())
-        # Same Windows caveat as above — see the comment near the .githooks
-        # chmod. On Windows, run: git update-index --chmod=+x .git/hooks/pre-commit
+        # git on Windows runs a hook whatever its mode bits say; the copy is never tracked.
         if sys.platform != "win32":
             installed.chmod(0o755)
         report.add(".git/hooks/pre-commit", "installed")

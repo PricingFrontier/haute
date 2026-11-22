@@ -339,6 +339,7 @@ _MOVES_NO_REF = frozenset(
         "rm",
         "show",
         "status",
+        "update-index",
         "var",
         "write-tree",
     }
@@ -960,6 +961,44 @@ def git_binary_available() -> bool:
     first.
     """
     return shutil.which("git") is not None
+
+
+def stage_paths(paths: Sequence[str], cwd: Path | None = None) -> None:
+    """``git add`` *paths*, as git spells them from *cwd*: the one way Haute stages files.
+
+    Each of the project's executable files among them (``EXECUTABLE_FILES``, the pre-commit
+    hook) is staged ``--chmod=+x``: git takes a new file's mode from the file system, which
+    has no executable bit on Windows, so the hook would be recorded 100644 and a clone on
+    Linux or macOS could not run it (CLI-07).
+    """
+    from haute._scaffold_files import EXECUTABLE_FILES
+
+    plain = [path for path in paths if path not in EXECUTABLE_FILES]
+    executable = [path for path in paths if path in EXECUTABLE_FILES]
+    if plain:
+        _run_git("add", "--", *(f":(literal){path}" for path in plain), cwd=cwd)
+    if executable:
+        _run_git("add", "--chmod=+x", "--", *(f":(literal){path}" for path in executable), cwd=cwd)
+
+
+def record_executable_files(cwd: Path) -> list[str]:
+    """Record each of the project's executable files at *cwd*, its root, as executable in
+    git's index, and return those it recorded: a tracked one's mode alone (its staged content
+    kept, so what changed in it is still left for review), an untracked one staged by
+    :func:`stage_paths`. Git then keeps the mode through every later ``git add`` of it,
+    a person's own included, where the file system has no executable bit."""
+    from haute._scaffold_files import EXECUTABLE_FILES
+
+    present = sorted(path for path in EXECUTABLE_FILES if (cwd / path).is_file())
+    if not present:
+        return []
+    literal = [f":(literal){path}" for path in present]
+    listed = _run_git("ls-files", "-z", "--cached", "--", *literal, cwd=cwd)
+    tracked = [path for path in present if path in listed.split("\0")]
+    if tracked:
+        _run_git("update-index", "--chmod=+x", "--", *tracked, cwd=cwd)
+    stage_paths([path for path in present if path not in tracked], cwd)
+    return present
 
 
 def _is_git_repo(cwd: Path | None = None) -> bool:

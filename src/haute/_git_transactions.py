@@ -42,6 +42,7 @@ from haute._git_core import (
     _validate_ref_name,
     divergence_state,
     ledger_name,
+    stage_paths,
 )
 from haute._git_operation import Operation, recover
 from haute._git_setup import (
@@ -113,15 +114,45 @@ def commit_save(
     if staged is not None:
         pathspecs, changed = staged
         msg = message if message is not None else _generate_commit_message(changed)
-        # `git commit -- <paths>` commits the working-tree state of exactly those
-        # paths, bypassing unrelated index content the user may have pre-staged. It is
-        # the one ref move outside a recorded operation: one commit, all or nothing.
+        # The one ref move outside a recorded operation: one commit, all or nothing.
         with _save_commit():
-            _run_git(*NO_HOOKS, "commit", "-m", msg, "--", *pathspecs, cwd=cwd)
+            _commit_staged_paths(pathspecs, msg, cwd)
         sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
         logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
     _refuse_unrecorded(spelled, cwd)
     return sha
+
+
+def _commit_staged_paths(pathspecs: list[str], message: str, cwd: Path | None) -> None:
+    """Commit what the index holds for the paths *pathspecs* name, and nothing else it holds.
+
+    The commit is made from an index of its own, HEAD's tree with each changed path's entry
+    copied from the index (a path the index no longer holds removed), so unrelated content
+    the user staged stays out of it. Each entry keeps the mode the index holds:
+    ``git commit -- <paths>``, which builds the same index, stats a file HEAD lacks again and,
+    where git reads no executable bit (``core.fileMode=false``, as on Windows), records it
+    100644, the pre-commit hook :func:`stage_paths` staged executable among them (CLI-07).
+    """
+    listed = _run_git(
+        "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *pathspecs, cwd=cwd
+    )
+    names = [name for name in listed.split("\0") if name]
+    entries = _run_git("ls-files", "-s", "-z", "--", *map(_literal, names), cwd=cwd)
+    held = {entry.partition("\t")[2] for entry in entries.split("\0") if entry}
+    index = (cwd or current_project().root) / _run_git(
+        "rev-parse", "--git-path", "haute-save.index", cwd=cwd
+    )
+    env = {"GIT_INDEX_FILE": str(index)}
+    try:
+        _run_git("read-tree", "HEAD", cwd=cwd, env=env)
+        if held:
+            _run_git("update-index", "-z", "--index-info", cwd=cwd, env=env, input_text=entries)
+        gone = [name for name in names if name not in held]
+        if gone:
+            _run_git("update-index", "--force-remove", "--", *gone, cwd=cwd, env=env)
+        _run_git(*NO_HOOKS, "commit", "-m", message, cwd=cwd, env=env)
+    finally:
+        index.unlink(missing_ok=True)
 
 
 def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str]] | None:
@@ -155,7 +186,7 @@ def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str
     # name already staged (`git rm`, `git mv`, an editor's git panel) is in neither the folder
     # nor the index, so it is not added: the path-scoped commit records it as staged.
     if addable:
-        _run_git("add", "--", *map(_literal, addable), cwd=cwd)
+        stage_paths(addable, cwd)
     # A stale index entry can make porcelain report ``MM`` even when the
     # working-tree content already matches HEAD. The add above reconciles that
     # entry; if no net path change remains, there is nothing to commit. The

@@ -60,7 +60,9 @@ Out of scope, owned elsewhere:
   test-quote fixtures, CI/CD workflow files for the chosen provider (each GitHub action
   pinned to a commit), a git pre-commit hook that fixes and formats only what is staged and
   stops a commit (a milestone, or a person's own `git commit`; never a save) on a problem
-  ruff cannot fix safely,
+  ruff cannot fix safely, recorded executable in git's index inside a repository on every
+  system (Windows has no executable bit for git to read), so a clone on Linux or macOS can
+  run it,
   `.gitignore` guard entries, and `.gitattributes` entries that pin LF line endings for the
   `*.py`, `*.json`, `*.toml`, `*.yml` and `*.md` files and the extensionless
   `.githooks/pre-commit` in every checkout, whatever `core.autocrlf` says, and mark `uv.lock`

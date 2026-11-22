@@ -477,10 +477,16 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Edge cases and invariants
 
-- **Windows `chmod` no-op.** `_init_cmd.handle_init` skips `Path.chmod(0o755)` on the pre-commit hook
-  entirely on `win32` (NTFS ignores POSIX bits and git-on-Windows ignores the executable bit too),
-  documenting the manual `git update-index --chmod=+x` workaround in a comment instead of calling a
-  chmod that would silently do nothing.
+- **The hook is executable in every clone.** `_init_cmd.handle_init` skips `Path.chmod(0o755)`
+  on the pre-commit hook on `win32`, where NTFS holds no POSIX bits and git reads none
+  (`core.fileMode=false`), and on every system records it executable in git's index inside a
+  repository (`_record_executable_files` → `haute._git_core.record_executable_files`: a
+  tracked hook's mode alone, `git update-index --chmod=+x`, its staged content kept; an
+  untracked one staged through `stage_paths`, `git add --chmod=+x`). Git keeps an index
+  entry's mode through every later `git add` where it reads no bit, so a person's own first
+  commit, the editor's first-commit seed and a re-run's capture (both through `stage_paths`
+  and an index-built save commit) all record 100755; `haute._scaffold_files.EXECUTABLE_FILES`
+  lists the files. A folder git does not trust is said, and nothing is recorded.
 - **A style-preserving `pyproject.toml` edit.** `_init_cmd._ensure_haute_dependency` edits an
   existing file through `tomlkit`, so the `[project]` table is found as TOML finds it (a quoted
   header, root dotted `project.*` keys, an inline table) and nothing outside the one entry it adds
@@ -628,7 +634,11 @@ Key files and what they cover:
   redacts a value from `gh`'s message and turns a timeout into `CiSecretsError`.
 - `test_cli_ux.py` — cross-cutting UX contracts: shared `ENDPOINT_SUFFIX_HELP` string reused across
   commands, `train` progress-bar flushing, `status --version-only` exit codes,
-  Windows pre-commit chmod skip.
+  Windows pre-commit chmod skip. `test_cli_init.py::TestTheHookReachesEveryCloneExecutable`
+  holds the hook 100755 under `core.fileMode=false` after a first init, the editor's seed and
+  a re-run (untracked, or tracked without its bit), and
+  `test_git_core_commands.py` fails on a `git add` outside `stage_paths` or a save commit
+  by pathspec anywhere in `src/haute`.
 - `test_cli_cleanup.py` — `_node_env` failing loudly without Node, single-call browser opening,
   `_find_frontend_dir` raising when absent, that `smoke`'s error style matches project convention,
   single-source-of-truth staging suffix resolution for `impact`.

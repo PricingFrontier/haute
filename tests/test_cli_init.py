@@ -1900,6 +1900,93 @@ class TestInitCiRunsTheProjectsPython:
             assert {next(v for v in pin if v) for pin in pins} == {expected}, relative
 
 
+class TestTheHookReachesEveryCloneExecutable:
+    """CLI-07: git takes a new file's mode from the file system, which has no executable bit
+    on Windows, so every way Haute puts the hook in the index records it 100755. Each test
+    sets ``core.fileMode=false``, as Git for Windows does, so the file's own bit is never
+    read, on Linux CI too."""
+
+    HOOK = ".githooks/pre-commit"
+
+    def _repository(self, tmp_path: Path) -> None:
+        git_run(tmp_path, "init", "-q", "-b", "main")
+        git_run(tmp_path, "config", "core.fileMode", "false")
+        git_run(tmp_path, "config", "user.name", "Test Actuary")
+        git_run(tmp_path, "config", "user.email", "test@example.com")
+
+    def _mode(self, tmp_path: Path, tree: str | None = None) -> str:
+        listed = (
+            git_run(tmp_path, "ls-files", "-s", "--", self.HOOK)
+            if tree is None
+            else git_run(tmp_path, "ls-tree", tree, "--", self.HOOK)
+        )
+        return listed.split()[0]
+
+    def test_a_first_init_records_it_executable_for_the_first_commit(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        self._repository(tmp_path)
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._mode(tmp_path) == "100755"
+        # A person's own first commit keeps the mode the index holds.
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project")
+        assert self._mode(tmp_path, "HEAD") == "100755"
+
+    def test_the_editors_first_commit_records_it_executable(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # The seed empties the index and stages the project's files again.
+        from haute._git_setup import set_working_branch
+
+        self._repository(tmp_path)
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        assert self._mode(tmp_path, "main") == "100755"
+
+    def test_a_re_run_records_an_untracked_hook_executable_in_its_save(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from haute._git_setup import set_working_branch
+
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        self._repository(tmp_path)
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "rm", "-q", "--cached", self.HOOK)
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project without its hook")
+        set_working_branch("pricing-dev", tmp_path, create=True, cwd=tmp_path)
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._mode(tmp_path, "pricing-dev-save") == "100755"
+
+    def test_a_re_run_records_a_hook_tracked_without_its_bit_executable(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # A project made on Windows before Haute recorded the mode: only the mode changes,
+        # so what the re-run changed in the hook is still left for review.
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        self._repository(tmp_path)
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "update-index", "--chmod=-x", "--", self.HOOK)
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project")
+        assert self._mode(tmp_path, "HEAD") == "100644"
+        (tmp_path / self.HOOK).write_text("# Haute pre-commit hook, edited\n", encoding="utf-8")
+        staged = git_run(tmp_path, "ls-files", "-s", "--", self.HOOK).split()[1]
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._mode(tmp_path) == "100755"
+        assert git_run(tmp_path, "ls-files", "-s", "--", self.HOOK).split()[1] == staged
+
+
 class TestANewProjectPassesItsOwnLintJob:
     """The files ``haute init`` writes pass the ``ruff check .`` and ``ruff format --check .``
     its generated CI runs on the first pull request, under the project's own ruff settings

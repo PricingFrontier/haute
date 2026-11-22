@@ -31,7 +31,6 @@ signals and pipes. The main session ran each case again on 15 November
 |---|---|---:|---|
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
-| CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
@@ -106,33 +105,6 @@ are up to date.
 **Evidence:** `src/haute/cli/_init_cmd.py::_prune_stale_ci_files`;
 `src/haute/cli/_ci.py::handle_ci_update`;
 `src/haute/cli/_init_cmd.py::handle_init`; `specs/cli/high-level.md`.
-
-### CLI-07 — `haute init` on Windows records its pre-commit hook as executable
-**Why:** Reproduced on 13 November 2026 with the real executable. After
-`haute init` on Windows in a git repository, git records
-`.githooks/pre-commit` with mode 100644. The plan's sweep ran the same
-command on Linux, where it is 100755; every other file `haute init` writes
-is the same byte for byte on the two systems. A project made on Windows and
-cloned on Linux or macOS therefore carries a hook file that git will not
-run, and a colleague who installs it as the file's own comment says, by
-copying it into `.git/hooks`, gets no check of the staged Python.
-
-The command skips setting the mode on Windows, where the file system has no
-such bit, and keeps the remedy as a comment in its own source:
-`git update-index --chmod=+x .githooks/pre-commit`. Nothing tells the
-analyst.
-
-**Plan:** Have `haute init` record the hook as executable in git's index
-when it captures the files it wrote, on every system.
-
-**Acceptance:** After `haute init` on Windows, `git ls-files -s` shows
-`.githooks/pre-commit` as 100755, and a clone of the project on Linux has
-an executable hook.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_init_cmd.py::handle_init`;
-`src/haute/_scaffold.py::pre_commit_hook`.
 
 ### CLI-11 — A command piped into `head` ends quietly
 **Why:** Reproduced on 15 November 2026 on Linux with a valid two-node
