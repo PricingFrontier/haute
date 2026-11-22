@@ -2336,6 +2336,7 @@ def test_a_min_or_max_of_a_nanosecond_value_keeps_its_nine_digits(
             "moment": pl.Series([_NINE_AM + 100, _NINE_AM + 200]).cast(pl.Datetime("ns")),
             "clock": pl.Series([100, 1_000_000_200]).cast(pl.Time),
             "wait": pl.Series([100, -86_400_000_000_100]).cast(pl.Duration("ns")),
+            "day": [date(2024, 3, 1), date(2024, 2, 29)],
         }
     ).write_parquet(path)
     graph = _graph(path)
@@ -2348,7 +2349,7 @@ def test_a_min_or_max_of_a_nanosecond_value_keeps_its_nine_digits(
             "reference": f"{field}_{aggregation}",
             "display_name": f"{aggregation} {field}",
         }
-        for field in ("moment", "clock", "wait")
+        for field in ("moment", "clock", "wait", "day")
         for aggregation in ("min", "max")
     ]
     formula = {
@@ -2373,30 +2374,43 @@ def test_a_min_or_max_of_a_nanosecond_value_keeps_its_nine_digits(
         "max_clock": "00:00:01.000000200",
         "min_wait": "-2 days, 23:59:59.999999900",
         "max_wait": "0:00:00.000000100",
+        "min_day": "2024-02-29",
+        "max_day": "2024-03-01",
         "latest": "2024-03-01T09:00:00.000000200",
     }
 
 
-def test_a_filter_member_finer_than_its_columns_unit_is_refused(
+@pytest.mark.parametrize(
+    ("field", "member", "reason"),
+    [
+        ("moment", {"kind": "datetime", "value": "2024-03-01T09:00:00.000000100"}, "finer than"),
+        ("clock", {"kind": "time", "value": "09:00:00+01:00"}, "has a time zone"),
+    ],
+    ids=["finer-than-its-unit", "time-with-an-offset"],
+)
+def test_a_filter_member_no_value_of_its_column_could_equal_is_refused(
     client: TestClient,
     tmp_path: Path,
+    field: str,
+    member: dict[str, Any],
+    reason: str,
 ) -> None:
     path = tmp_path / "microseconds.parquet"
     pl.DataFrame(
         {
             "moment": pl.Series([datetime(2024, 3, 1, 9)]).dt.cast_time_unit("us"),
+            "clock": [datetime_time(9)],
             "claims": [1.0],
         }
     ).write_parquet(path)
     graph = _graph(path)
     _materialise(client, graph)
-    member = {"kind": "datetime", "value": "2024-03-01T09:00:00.000000100"}
 
     final, _ = _run_pivot(
         client,
         graph,
         _pivot(
-            filters=[{"id": "filter_moment", "field": "moment", "members": [member]}],
+            filters=[{"id": f"filter_{field}", "field": field, "members": [member]}],
             rows=[],
             columns=[],
         ),
@@ -2404,7 +2418,7 @@ def test_a_filter_member_finer_than_its_columns_unit_is_refused(
 
     assert final["status"] == "contract_error", final
     assert final["failure"]["reason_code"] == "invalid_pivot_filter_member"
-    assert "finer than" in final["failure"]["message"]
+    assert reason in final["failure"]["message"]
 
 
 def test_a_member_of_a_time_zone_aware_datetime_filters_its_rows(

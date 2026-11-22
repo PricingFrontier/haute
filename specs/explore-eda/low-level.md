@@ -678,8 +678,9 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   `Europe/London` datetime member filters its row while a naive member against that column is
   refused. Nanosecond datetimes and times that differ below a microsecond are separate rows,
   members and filters whose rows sum to the Total, a Max of each and of a nanosecond duration
-  keeps its nine digits, a member search matches the label's text, and a member finer than
-  its column's unit is refused. `tests/test_temporal_text.py` checks `temporal_text` against
+  keeps its nine digits, as a date's Min and Max keep theirs, a member search matches the
+  label's text, and a member finer than its column's unit, or a time member with an offset, is
+  refused. `tests/test_temporal_text.py` checks `temporal_text` against
   Python's own `isoformat()` and `str(timedelta)` wherever Python holds the value, across
   units and zones, and pins the nine-digit forms and an offset with seconds. An invalid card answers HTTP 400 naming its field; each formula failure kind answers
   its exact message; a memory limit during a formula pivot ends `memory_limited`; and a copied

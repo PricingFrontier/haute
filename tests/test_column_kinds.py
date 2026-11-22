@@ -261,20 +261,40 @@ def test_the_pivot_groups_by_a_column_of_every_kind_or_refuses_it(
 def test_the_pivot_sums_and_counts_a_column_as_its_kind_or_refuses_it(
     dtype: pl.DataType, context: Any
 ) -> None:
-    from haute.routes._pivot_service import PivotContractError
+    from haute.routes._pivot_service import PivotContractError, _integer_sum_dtype
 
     frame = pl.DataFrame([sample_column(dtype), pl.Series("g", ["all"] * 6)])
     valid = _valid(_python_values(dtype))
-    if column_kind(dtype) not in NUMBER_KINDS:
+    kind = column_kind(dtype)
+    # An integer no wider type holds (128 bits) has no exact Sum, so it is refused (XPL-01).
+    if kind not in NUMBER_KINDS or (kind == "integer" and _integer_sum_dtype(dtype) is None):
         with pytest.raises(PivotContractError) as refused:
             _run_pivot(context, frame, _pivot(["g"], [("x", "sum")]))
         assert refused.value.failure.dimensions["field"] == "x"
+        if kind in NUMBER_KINDS:
+            assert str(dtype) in refused.value.failure.message
         return
     result = _run_pivot(context, frame, _pivot(["g"], [("x", "sum"), ("x", "count")]))
     total = sum(valid, Decimal(0) if column_kind(dtype) == "decimal" else 0)
     assert float(_cell_values(result, "value_0")[0]) == pytest.approx(float(total))
     # A float's NaN is left out of the count, as a null is.
     assert _cell_values(result, "value_1")[0] == len(valid)
+
+
+@pytest.mark.parametrize("dtype", SAMPLES, ids=str)
+def test_temporal_text_writes_a_datetime_time_or_duration_or_refuses_it(
+    dtype: pl.DataType,
+) -> None:
+    from haute._temporal_text import TEMPORAL_TEXT_KINDS, temporal_text
+
+    column = sample_column(dtype)
+    if column_kind(dtype) not in TEMPORAL_TEXT_KINDS:
+        with pytest.raises(SchemaMismatchError, match="is not a datetime, time or duration"):
+            temporal_text(pl.col("x"), dtype)
+        return
+    written = pl.DataFrame([column]).select(temporal_text(pl.col("x"), dtype)).to_series()
+    assert written.dtype == pl.String
+    assert written.is_null().to_list() == column.is_null().to_list()
 
 
 @pytest.mark.parametrize("dtype", SAMPLES, ids=str)
@@ -641,6 +661,9 @@ _DRIVEN: dict[str, tuple[str, ...]] = {
         "test_the_pivot_sums_and_counts_a_column_as_its_kind_or_refuses_it",
     ),
     "src/haute/_frame_profile.py": ("test_the_profile_reads_a_column_of_every_kind_as_its_kind",),
+    "src/haute/_temporal_text.py": (
+        "test_temporal_text_writes_a_datetime_time_or_duration_or_refuses_it",
+    ),
     "src/haute/routes/_banding_stats.py": (
         "test_the_banding_statistics_measure_a_number_or_date_or_refuse_it",
     ),
