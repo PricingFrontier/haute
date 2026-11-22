@@ -609,6 +609,13 @@ source. The step 4 Haute changes are not in the demo; steps 1–2 (t-boost) are.
     - **Path-job workers (ev13 → ev14):** 50.6 / 41.1 / 16.9 → 41.6 / 35.5 / 13.4 s, 18.1 s in total.
     - **Workflow:** 215.7 → 199.9 s.
     - **Codex caveat (minor):** the equivalence relies on string keys and list score rows; the comment says so.
+  - **Native pruning profile (22 Nov; demo session, 10 budgets 10…142 tables; TBOOST_PROFILE spans, t-boost `fa45a80`).**
+    - **Per call:** 0.6 s at 10 tables up to 4.3 s at 142; 17.6 s in total.
+    - **The rebalance is about 80% of that,** and nearly all of the rebalance is `cell_refit::fit_cell_correction`. Its Gauss–Seidel ridge backfit makes a flat pass (up to 30 sweeps) and then an adaptive pass (up to 100). At 142 tables that is 54 supports, 11.4k cells and 462k fit rows in 3.3 s, about 1.7 ns per row per support per sweep, which is already memory-bound and sequential.
+    - **Purify and score:** under 40 ms. The bank build is about 80 ms per call.
+    - **Wasted work:** from 30 tables up, the held-out slice rejects the rebalance (deviance after > before). Those 1–3 s per call are computed and then discarded, by design of the guard.
+    - **The 10 budget calls are independent** (`_paths.py:257`), but run one after another.
+    - **Proposal:** a native pruning family call, like `band_family`, that runs the budgets in parallel under rayon, with concurrency bounded by memory. Each candidate stays bit-identical. Expected ~17.6 s → ~4–5 s per pruning job, and the categorical conversion done once rather than 10 times.
   - **Next candidates:**
     1. ~~Point-result serialization~~ (done above).
     2. `apply_keepset_budgeted` (t-boost native).
