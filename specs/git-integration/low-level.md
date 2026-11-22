@@ -604,7 +604,7 @@ the capture of files left uncaptured (`POST /api/git/capture`), the workbench fo
 ([server-api](../server-api/low-level.md), `POST /api/pipeline/save`). The working branch the
 clone records is compared without git, so another one recorded refuses even in a repository
 git refuses to work in; there the checkout alone is not checked, and the save lands on disk
-with its capture's warning. The editor reads the branch once, when Save is pressed, and names
+with its capture's warning. The editor reads the branch once, when Save is pressed (before a Save queued behind another waits its turn), and names
 it in all three writes; a capture refused as `branch_changed` ends the Save before the form
 or the pipeline is written.
 

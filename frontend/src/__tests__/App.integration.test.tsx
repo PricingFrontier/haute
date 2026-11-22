@@ -1586,6 +1586,37 @@ describe("App integration - save pipeline", () => {
     expect(useGitStore.getState().uncaptured).toEqual(["rating/files/data/rates.csv"])
   })
 
+  it("a Save pressed while another runs names the branch shown when it was pressed", async () => {
+    vi.mocked(api.captureFiles).mockClear()
+    vi.mocked(api.savePipeline).mockClear()
+    const moved = { error_code: "branch_changed", message: "This tab shows the branch 'dev', but the project is on 'other' now." }
+    const refusal = () => new api.ApiError("HTTP 409", 409, JSON.stringify(moved), { detail: moved }, moved)
+    let refuseFirst!: () => void
+    vi.mocked(api.captureFiles)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { refuseFirst = () => reject(refusal()) }))
+      .mockRejectedValueOnce(refusal())
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => expect(useGitStore.getState().status?.working_branch).toBe("dev"))
+    useGitStore.setState({ uncaptured: ["rating/files/data/rates.csv"] })
+    // The project moves to 'other' while the first Save waits on its capture.
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
+      working_branch: "other", state: "ready", errors: [], current_branch: "other-save", identity_set: true,
+    }))
+
+    const save = screen.getByRole("button", { name: /^save$/i })
+    fireEvent.click(save)
+    fireEvent.click(save)
+    await waitFor(() => expect(vi.mocked(api.captureFiles)).toHaveBeenCalledTimes(1))
+    refuseFirst()
+    await waitFor(() => expect(useGitStore.getState().status?.working_branch).toBe("other"))
+    await waitFor(() => expect(vi.mocked(api.captureFiles)).toHaveBeenCalledTimes(2))
+
+    expect(vi.mocked(api.captureFiles).mock.calls.map((call) => call[1])).toEqual(["dev", "dev"])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+  })
+
   it("shows a success toast when savePipeline resolves", async () => {
     vi.mocked(api.savePipeline).mockResolvedValueOnce(makeSavePipelineResponse({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test", document_fingerprint: "fingerprint-saved" }))
     render(<App />)

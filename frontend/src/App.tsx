@@ -1441,7 +1441,7 @@ function FlowEditor() {
   // read is not saved, rather than saved with connections the form may not hold.
   // The form store is a lazy chunk, imported here only while the workbench is
   // enabled and never on start.
-  const saveProjectNow = useCallback(async (): Promise<boolean> => {
+  const saveProjectNow = useCallback(async (branch: string | null): Promise<boolean> => {
     // The fence that disables Save in both toolbars, and the pipeline save's own
     // checks: the save is asked under them, so the assistant's turn starting or the
     // document changing while it waits refuses it, saying why, before the next step. A
@@ -1481,9 +1481,6 @@ function FlowEditor() {
     }
     const said = (error: string) => addToast("error", error)
     const workbench = useWorkbenchStore.getState()
-    // The branch the tab showed when Save was pressed: each of the save's writes names it, so
-    // a branch learned while the save runs never takes the rest of it.
-    const branch = shownBranch()
     let saved = false
     // The values still being typed in the panels and the workbench's form are committed
     // first, so the form saved is the one on screen.
@@ -1557,7 +1554,12 @@ function FlowEditor() {
   // Project saves take turns, as the form store's saves do: a Save pressed while
   // one runs waits for it and then saves the project as it stands by then.
   const [projectSaveTurn] = useState(serial)
-  const saveProject = useCallback((): Promise<boolean> => projectSaveTurn(() => saveProjectNowRef.current()), [projectSaveTurn])
+  // The branch the tab shows when Save is pressed, read before the save waits its turn: each
+  // of its writes names that branch, so one learned while it waits or runs takes none of it.
+  const saveProject = useCallback((): Promise<boolean> => {
+    const branch = shownBranch()
+    return projectSaveTurn(() => saveProjectNowRef.current(branch))
+  }, [projectSaveTurn])
 
   // Flush the editor through the graph-commit fence before opening the
   // milestone modal, so Commit can never capture an older ledger snapshot.
