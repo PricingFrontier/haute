@@ -993,24 +993,22 @@ def _is_docstring(statement: ast.stmt) -> bool:
     )
 
 
-#: The names the imports a save writes bind, by module: ``import haute`` and
-#: ``import polars as pl``.
-_STANDARD_IMPORTS: dict[str, str] = {"haute": "haute", "polars": "pl"}
-
-
 def _is_standard_import(statement: ast.stmt, constructor_name: str) -> bool:
     """An import codegen's ``import haute`` / ``import polars as pl`` stands in for.
 
-    Only an import that binds what those bind does: ``import polars`` or ``import
-    polars as plr`` binds a name a save would not, so it is kept as preamble below the
-    standard imports and reported above them, as any other import is (CGEN-06).
-    ``from haute import <constructor>`` qualifies, because codegen spells the
-    constructor ``haute.<constructor>``; any other ``from haute import`` binds a
-    name the regenerated imports do not, so it is kept only as preamble.
+    ``import haute``, under any name, qualifies: the module boundaries read the
+    constructor through its alias, and codegen spells it ``haute.<constructor>``.
+    Polars qualifies only as ``import polars as pl``: node code reads Polars by its
+    name, so ``import polars`` or ``import polars as plr`` binds a name a save would
+    not write, and is kept as preamble below the standard imports and reported above
+    them, as any other import is (CGEN-06). ``from haute import <constructor>``
+    qualifies, because codegen spells the constructor ``haute.<constructor>``; any
+    other ``from haute import`` binds a name the regenerated imports do not, so it is
+    kept only as preamble.
     """
     if isinstance(statement, ast.Import):
         return all(
-            _STANDARD_IMPORTS.get(alias.name) == (alias.asname or alias.name)
+            alias.name == "haute" or (alias.name == "polars" and alias.asname == "pl")
             for alias in statement.names
         )
     if isinstance(statement, ast.ImportFrom) and statement.module == "haute":

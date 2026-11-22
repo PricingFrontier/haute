@@ -22,6 +22,7 @@ from haute._code_extraction import (
 from haute._config_io import has_config_folder, load_node_config
 from haute._config_validation import (
     reject_removed_config_keys,
+    reject_unrecognized_config_keys,
     validate_node_config,
 )
 from haute._contracts import Contract, declared_contract_json, get_node_contract
@@ -125,9 +126,9 @@ def _build_node_config(
 
     Every keyword reaches the config, so the node type's model refuses one it does not
     declare by name, as it refuses any undeclared setting, rather than the parse
-    dropping it and the next save deleting it (CGEN-05). A keyword a save writes as
-    none, an empty value or an Edge Join's default suffix (``decorator_value_written``),
-    is read as none.
+    dropping it and the next save deleting it (CGEN-05), empty or not. A declared keyword
+    a save writes as none, an empty value or an Edge Join's default suffix
+    (``decorator_value_written``), is read as none.
     """
     reject_removed_config_keys(node_type, decorator_kwargs)
     read = _DECORATOR_CONFIG.get(NodeType(node_type))
@@ -143,6 +144,7 @@ def _build_node_config(
             node_type=str(node_type),
             keywords=held,
         )
+    reject_unrecognized_config_keys(NodeType(node_type), decorator_kwargs, node_label=func_name)
     written = {
         key: value for key, value in decorator_kwargs.items() if decorator_value_written(key, value)
     }

@@ -101,22 +101,33 @@ class TestItem18ConfigPathFailsLoudly:
                 explicit_node_type=NodeType.DATA_INPUT,
             )
 
-    @pytest.mark.parametrize("decorator", sorted(DECORATOR_TO_NODE_TYPE))
-    @pytest.mark.parametrize("with_settings_file", [True, False])
+    @pytest.mark.parametrize(
+        ("decorator", "with_settings_file", "value"),
+        [
+            pytest.param(decorator, with_settings_file, value, id=f"{decorator}-{wid}-{vid}")
+            for decorator, node_type in sorted(DECORATOR_TO_NODE_TYPE.items())
+            # A node type without a settings file has its keywords alone.
+            for with_settings_file, wid in (
+                ((True, "file"), (False, "no-file"))
+                if has_config_folder(node_type)
+                else ((False, "no-file"),)
+            )
+            # An empty value too: a save writes none, so the parse must not read it as none.
+            for value, vid in (("red", "text"), ([], "empty-list"), (None, "none"), ("", "empty"))
+        ],
+    )
     def test_every_node_type_refuses_an_unknown_decorator_keyword_by_name(
-        self, tmp_path: Path, decorator: str, with_settings_file: bool
+        self, tmp_path: Path, decorator: str, with_settings_file: bool, value: object
     ) -> None:
         """CGEN-05: a keyword a node type does not take is never dropped by the parse and
-        then deleted by the next save; the refusal names it."""
+        then deleted by the next save, whatever its value; the refusal names it, beside a
+        settings file or in the refusal that asks for one."""
         node_type = DECORATOR_TO_NODE_TYPE[decorator]
-        kwargs: dict[str, object] = {"colour": "red"}
+        kwargs: dict[str, object] = {"colour": value}
         if node_type is NodeType.EDGE_JOIN:
             kwargs["maintain_order"] = "left"
-        if has_config_folder(node_type):
-            if with_settings_file:
-                kwargs["config"] = f"config/{NODE_TYPE_TO_FOLDER[node_type]}/n.json"
-        elif not with_settings_file:
-            pytest.skip("a node type without a settings file has its keywords alone")
+        if with_settings_file:
+            kwargs["config"] = f"config/{NODE_TYPE_TO_FOLDER[node_type]}/n.json"
         body = "    return upstream\n" if node_type is NodeType.POLARS else "..."
         with pytest.raises(ConfigError, match="'colour'"):
             _resolve_node_config(

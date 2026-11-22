@@ -391,14 +391,14 @@ class TestUnkeptModuleStatements:
 
     @pytest.mark.parametrize(
         "statement",
-        ["import polars", "import polars as plr", "from polars import col", "import haute as hte"],
+        ["import polars", "import polars as plr", "from polars import col"],
     )
     @pytest.mark.parametrize("above", [True, False], ids=["above-import-haute", "below"])
     def test_an_import_the_generated_header_does_not_bind_is_kept_or_reported(
         self, statement: str, above: bool
     ):
-        """CGEN-06: the header a save writes binds ``haute`` and ``pl`` alone, so any other
-        import is kept as preamble below the standard imports, and reported above them."""
+        """CGEN-06: the header a save writes reads Polars as ``pl`` alone, so any other
+        import of it is kept as preamble below the standard imports, and reported above."""
         standard = "import haute\nimport polars as pl\n"
         head = f"{statement}\n{standard}" if above else f"{standard}{statement}\n"
         source = f'{head}\npipeline = haute.Pipeline("p")\n'

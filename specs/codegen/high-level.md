@@ -237,13 +237,14 @@ Out of scope (owned by neighbouring components):
   the file runs on its own (see [pipeline-config](../pipeline-config/high-level.md)).
   A node that keeps its settings on its decorator, an Edge Join or a transform, reads every
   keyword into its config, so its type's config model refuses one it does not declare by
-  name ("Node 't' has polars config keys the node type does not declare: 'selected_colums'")
-  rather than the parse dropping it and the next save deleting it; a node with a settings
+  name ("Node 't' has polars config keys the node type does not declare: 'selected_colums'"),
+  whatever its value, empty too, rather than the parse dropping it and the next save deleting
+  it; a node with a settings
   file refuses any keyword beside `config=`, and one without it names its keywords in the
   refusal that asks for the file. What the function holds (`code`, `steps`, the keyword
   parameters) is never a keyword. One rule, `_edge_join.decorator_value_written`, decides
-  which keyword values a save writes: an empty value (`None`, `""`, `[]`) and an Edge Join's
-  default suffix are the setting's absence, written as no keyword and read as no setting, so
+  which values of a declared keyword a save writes: an empty value (`None`, `""`, `[]`) and
+  an Edge Join's default suffix are the setting's absence, written as no keyword and read as no setting, so
   parse, save and parse read the same (CGEN-05).
   Codegen therefore emits no loader, scoring, join, switch or assembly call:
   - A configured node without user code is a **declaration**,
@@ -378,17 +379,18 @@ Out of scope (owned by neighbouring components):
   project's first save leaves it as it is.
 
   Regeneration keeps only the docstring, the imports it writes itself, `import haute` and
-  `import polars as pl` as exactly those (and `from haute import
+  `import polars as pl` (Polars under exactly that name; and `from haute import
   <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
   and from the constructor on the constructor, the `global_constants` binding, node functions,
   `pipeline.submodel(...)` registrations and `connect` chains. Any other module statement (an
   import above `import haute`, a constant, helper or trailing code after the constructor) would
   be dropped, and so would any other `from haute import ...` outside the preamble, since
-  the regenerated `import haute` does not bind its names. An import of either module under
-  another name (`import polars`, `import polars as plr`, `import haute as ht`) binds a name
-  the regenerated imports do not, so it is no standard import: below them it is preamble,
-  which a save keeps and every run executes, and above them it is reported like any other
-  statement a save would drop (CGEN-06). `_ast_helpers.unkept_module_statements` finds each one, and the editor document
+  the regenerated `import haute` does not bind its names. An import of Polars under another
+  name (`import polars`, `import polars as plr`) binds a name the regenerated imports do not,
+  so it is no standard import: below them it is preamble, which a save keeps and every run
+  executes, and above them it is reported like any other statement a save would drop
+  (CGEN-06). `import haute` under another name stays standard, its alias read for the
+  constructor. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
   reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
   it between the imports and the constructor, or wrap it in preserve markers), which degrades
   the document, so the file is never regenerated without it. A save regenerates each
