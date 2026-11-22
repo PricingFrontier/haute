@@ -100,6 +100,9 @@ describe("useDataInputColumns", () => {
       expect.objectContaining({ target: { kind: "occurrence_output", occurrence: "pricing", port: "premium" } }),
     )
     expect(Object.keys(useNodeResultsStore.getState().columnCache)).toEqual(["pricing#out__premium:live"])
+    // Clearing the node forgets the columns of each of its outputs too.
+    useNodeResultsStore.getState().clearNode("pricing")
+    expect(useNodeResultsStore.getState().columnCache).toEqual({})
   })
 
   it("never shows the previous input's columns for the next one", () => {
