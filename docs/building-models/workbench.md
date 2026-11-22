@@ -426,7 +426,9 @@ a sheet per table.
 
 - An Import from a **CSV** has a **Delimiter** (Auto finds it from the file); from
   **Excel**, the **Sheet** to read (blank for the first) and the **Header row** that names
-  its columns; from **SQL**, the **Connection** (a name your environment supplies the
+  its columns, its rows those under it down to the first row empty across the columns the
+  header names (at most 1,024; a workbook over 64 MiB once unzipped is refused); from
+  **SQL**, the **Connection** (a name your environment supplies the
   credentials for, never the credentials themselves), the **Query**, and a row under
   **Parameters** for each `:name` in the query, where you choose the one-row input column
   whose value it takes. The query is one read: it starts `SELECT` or `WITH` and holds no

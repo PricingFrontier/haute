@@ -1895,8 +1895,10 @@ Out of scope:
     the server whole (at most the request body limit), read there: a CSV in UTF-8 (a byte
     order mark dropped), split by its delimiter, found from its first line while Auto (the
     one of comma, semicolon and tab it holds most of), its first row its columns' names; a
-    workbook's sheet named, else its first, its columns named by its header row and its
-    rows those under it, an empty row ending them.
+    workbook's sheet named, else its first, its columns named by its header row, the table
+    as wide as the header names (at most 1,024 columns), and its rows those under it, a row
+    empty across the header's columns ending them; a workbook holding more than 64 MiB once
+    unzipped is refused before it is read, as its text is read whole.
   - **A database.** Its query run on the named connection (below), on Databricks SQL, SQL
     Server, PostgreSQL or a SQLite file: one statement, starting `SELECT` or `WITH`, with no
     `;`, no comment and none of the words that change a database (`INSERT`, `UPDATE`,
@@ -1905,7 +1907,8 @@ Out of scope:
     refused naming why before anything is sent. SQL Server runs a batch of statements with
     no `;` between them, so there the query is first compiled as the body of a derived
     table (`SELECT TOP (0) * FROM (...) AS haute_import_check`, its list of named queries,
-    `WITH ... AS (...)`, kept before it and `OFFSET 0 ROWS` after an `ORDER BY` ending it),
+    `WITH ... AS (...)`, kept before it and `OFFSET 0 ROWS` after an `ORDER BY` ending it
+    unless the query has `TOP`),
     which SQL Server compiles only around one query, and a batch that does not compile runs
     none of it: the query runs only once that has compiled. It is run
     read-only where the engine allows (a PostgreSQL transaction `READ ONLY`, a SQLite file
@@ -1929,8 +1932,7 @@ Out of scope:
   a column the source does not hold is left as it is, and one the table does not have is
   never read, and a source holding none of the columns the Import reads is refused, since
   it would fill nothing and a Replace would empty the table; only the columns read are
-  read, so a workbook saying it is as wide as Excel allows costs no more than its columns
-  read. Each value becomes the cell text the sheets hold it as: a file's text as written,
+  kept. Each value becomes the cell text the sheets hold it as: a file's text as written,
   trimmed; a database's or an API's value as a saved quote's comes back (`1000.00` for one
   of a column's allowed values, else a number as its shortest text, a date as ISO text,
   true a tick), a date and time going into a Date column its day (as a workbook's date

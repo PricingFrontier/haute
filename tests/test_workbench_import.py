@@ -632,9 +632,12 @@ def test_on_sql_server_a_batch_of_statements_runs_none_of_them(sql_server: Targe
         "SELECT layer FROM held ORDER BY layer",
     }
 
+    bounded = {**SQL, "query": "SELECT TOP (1) layer FROM rates ORDER BY layer DESC"}
+
     with pytest.raises(ImportSourceError, match="did not answer the Import's query"):
         run_import(_form(batch), "w_in", VALUES, source=lambda _n: reached)
     imported = run_import(_form(ordered), "w_in", VALUES, source=lambda _n: reached)
+    top = run_import(_form(bounded), "w_in", VALUES, source=lambda _n: reached)
 
     engine = make_engine(sql_server.url, sign_in=sql_server.sign_in)
     try:
@@ -649,6 +652,7 @@ def test_on_sql_server_a_batch_of_statements_runs_none_of_them(sql_server: Targe
         engine.dispose()
     assert denied == 0
     assert imported.rows == [{"layer": "1"}, {"layer": "2"}]
+    assert top.rows == [{"layer": "2"}]
 
 
 DETAILS = {
@@ -716,27 +720,65 @@ def test_a_source_holding_none_of_the_columns_read_is_refused() -> None:
         )
 
 
-def test_a_workbook_is_read_only_as_wide_as_the_columns_read() -> None:
+def _workbook(*rows: dict[str, Any]) -> bytes:
     from openpyxl import Workbook
 
     workbook = Workbook()
-    sheet = workbook.active
-    sheet["A1"], sheet["XFD1"] = "layer", "far"
-    sheet["A2"], sheet["XFD2"] = 3, "x"
+    for row in rows:
+        for address, value in row.items():
+            workbook.active[address] = value
     saved = io.BytesIO()
     workbook.save(saved)
+    return saved.getvalue()
+
+
+EXCEL = ExcelImport(format="excel", sheet="", header_row=1)
+
+
+def test_a_workbook_is_read_as_wide_as_its_header_to_its_first_row_empty_across_it() -> None:
+    # B is named and not read; a value under no name, at XFD, is no part of the table.
+    data = _workbook(
+        {"A1": "layer", "B1": "note"},
+        {"A2": 1, "XFD2": "x"},
+        {"B3": "a note"},
+        {"A4": 3},
+        {"XFD5": "past the table"},
+        {"A6": 9},
+    )
     seen: list[int] = []
 
     def keep(names: Any) -> list[int]:
         seen.append(len(names))
         return [0]
 
-    names, rows = imports._excel_rows(
-        ExcelImport(format="excel", sheet="", header_row=1), saved.getvalue(), keep
-    )
+    names, rows = imports._excel_rows(EXCEL, data, keep)
 
-    assert (names, rows) == (["layer"], [[3]])
-    assert seen == [16384]
+    assert (names, rows, seen) == (["layer"], [[1], [None], [3]], [2])
+
+
+def test_a_workbook_too_large_unzipped_or_headed_too_wide_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wide = _workbook({"A1": "layer", "XFD1": "far"})
+    with pytest.raises(ImportRefusedError, match="names columns past the 1,024th"):
+        imports._excel_rows(EXCEL, wide, lambda _names: [0])
+
+    monkeypatch.setattr(imports, "WORKBOOK_EXPANDED_LIMIT", 100)
+    with pytest.raises(ImportRefusedError, match="more than 0 MiB once unzipped"):
+        imports._excel_rows(EXCEL, _workbook({"A1": "layer"}), lambda _names: [0])
+    with pytest.raises(ImportRefusedError, match="not an Excel workbook"):
+        imports._excel_rows(EXCEL, b"not a zip", lambda _names: [0])
+
+
+def test_a_colon_in_a_string_is_no_parameter_where_the_query_runs(tmp_path: Path) -> None:
+    rates = tmp_path / "rates.sqlite"
+    _rates(rates)
+    reached = Source("rates", "sqlite", f"sqlite:///{rates}", "rates")
+    query = {**SQL, "query": "SELECT layer, ':lit' AS XS FROM rates WHERE ref = :ref"}
+
+    imported = run_import(_form(query), "w_in", VALUES, source=lambda _n: reached)
+
+    assert imported.rows == [{"layer": "1", "excess": ":lit"}, {"layer": "2", "excess": ":lit"}]
 
 
 def test_a_hosted_warehouse_without_a_token_takes_credentials_of_its_own_workspace(

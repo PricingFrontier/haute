@@ -45,6 +45,10 @@ from haute._workbench_tables import quote_request, sheet_cell
 
 #: The most rows an Import fills a table with.
 IMPORT_ROW_LIMIT = 10_000
+#: The most a workbook's files may hold once unzipped, in bytes, before openpyxl reads any.
+WORKBOOK_EXPANDED_LIMIT = 64 * 1024 * 1024
+#: The most columns a workbook's header row may name.
+WORKBOOK_COLUMN_LIMIT = 1_024
 #: How long an API is given to answer, in seconds.
 HTTP_TIMEOUT_SECONDS = 30
 #: The most of an API's answer read, in bytes.
@@ -339,15 +343,29 @@ def query_parameters(query: str) -> list[str]:
     return list(dict.fromkeys(_QUERY_PARAMETER.findall("".join(masked))))
 
 
+def bindable(query: str) -> str:
+    """*query* as SQLAlchemy's ``text`` binds it, each ``:name`` of :func:`query_parameters`
+    a parameter and none other: a colon in a string or a quoted name escaped, as ``text``
+    reads one wherever it is."""
+    parts: list[str] = []
+    at = 0
+    for found in _TOKEN.finditer(query):
+        if found.lastgroup in ("string", "name"):
+            parts += [query[at : found.start()], found.group().replace(":", "\\:")]
+            at = found.end()
+    return "".join([*parts, query[at:]])
+
+
 def one_query_check(query: str) -> str:
     """The statement SQL Server compiles to prove *query* one query before it runs: the
     query as the body of a derived table, ``SELECT TOP (0) * FROM (...) AS
     haute_import_check``, after its list of named queries (``WITH name AS (...), ...``),
     which a derived table cannot hold, and with ``OFFSET 0 ROWS`` after an ``ORDER BY``
-    ending it, which a derived table holds only so. SQL Server runs a batch of statements
-    with no ``;`` between them, and compiles a derived table only around one query; a batch
-    that does not compile runs none of it, and the query's parentheses balance
-    (:func:`_tokens`), so nothing in it closes the derived table early. Refused for a
+    ending it but for a query with ``TOP``, as a derived table holds one only with either.
+    SQL Server runs a batch of statements with no ``;`` between them, and compiles a
+    derived table only around one query; a batch that does not compile runs none of it, and
+    the query's parentheses balance (:func:`_tokens`), so nothing in it closes the derived
+    table early. Refused for a
     ``WITH`` that is not such a list."""
     tokens = _tokens(query)
     split = 0
@@ -386,9 +404,12 @@ def one_query_check(query: str) -> str:
         ),
         None,
     )
+    # TOP or OFFSET already lets a derived table hold its ORDER BY, and the two never meet.
     tail = (
         " OFFSET 0 ROWS"
-        if ordered is not None and not {"OFFSET", "FOR"} & set(words[ordered:])
+        if ordered is not None
+        and "TOP" not in words
+        and not {"OFFSET", "FOR"} & set(words[ordered:])
         else ""
     )
     return (
@@ -534,9 +555,27 @@ def _csv_rows(read: CsvImport, data: bytes, keep: Keep) -> tuple[list[str], Rows
     return names, _limited(rows)
 
 
+def _expanded_size(data: bytes) -> int:
+    """How much *data*, a workbook, holds once unzipped, by its files' stated sizes, which
+    unzipping holds each file to; refused when it is no zip."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            return sum(member.file_size for member in archive.infolist())
+    except (zipfile.BadZipFile, ValueError):
+        raise ImportRefusedError("The file is not an Excel workbook (.xlsx).") from None
+
+
 def _excel_rows(read: ExcelImport, data: bytes, keep: Keep) -> tuple[list[str], Rows]:
     from openpyxl import load_workbook
 
+    # openpyxl reads a workbook's shared text whole as it opens it.
+    if _expanded_size(data) > WORKBOOK_EXPANDED_LIMIT:
+        raise ImportRefusedError(
+            f"The workbook holds more than {WORKBOOK_EXPANDED_LIMIT // (1024 * 1024)} MiB once "
+            "unzipped: import a workbook of the rows alone."
+        )
     try:
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception:  # noqa: BLE001 - any file openpyxl cannot read is no workbook
@@ -554,20 +593,25 @@ def _excel_rows(read: ExcelImport, data: bytes, keep: Keep) -> tuple[list[str], 
         )
         if header is None:
             raise ImportRefusedError(f"The sheet has no row {read.header_row} to name its columns.")
-        places, names = _kept(["" if name is None else str(name).strip() for name in header], keep)
+        headed = ["" if name is None else str(name).strip() for name in header]
+        # The table is as wide as its header names: a sheet can say it is as wide as Excel allows.
+        width = max((place + 1 for place, name in enumerate(headed) if name), default=0)
+        if width > WORKBOOK_COLUMN_LIMIT:
+            raise ImportRefusedError(
+                f"The sheet's header names columns past the {WORKBOOK_COLUMN_LIMIT:,}th: an "
+                "Import reads a table at most that wide."
+            )
+        places, names = _kept(headed[:width], keep)
         if not places:
             return names, []
-        # Only as wide as the columns read: a sheet can say it is as wide as Excel allows.
-        rows = sheet.iter_rows(
-            min_row=read.header_row + 1, max_col=places[-1] + 1, values_only=True
-        )
+        rows = sheet.iter_rows(min_row=read.header_row + 1, max_col=width, values_only=True)
 
         def body() -> Iterator[list[Any]]:
             for row in rows:
-                taken = _taken(row, places)
-                if all(value is None or str(value).strip() == "" for value in taken):
+                # A row empty across the header's columns ends the table.
+                if all(value is None or str(value).strip() == "" for value in row):
                     return
-                yield taken
+                yield _taken(row, places)
 
         return names, _limited(body())
     finally:
@@ -591,8 +635,9 @@ def _sql_rows(
             if source.provider == "postgresql":
                 connection.exec_driver_sql("SET TRANSACTION READ ONLY")
             elif source.provider == "sqlserver":
-                connection.execute(text(one_query_check(query)), dict(parameters)).fetchall()
-            result = connection.execute(text(query), dict(parameters))
+                check = text(bindable(one_query_check(query)))
+                connection.execute(check, dict(parameters)).fetchall()
+            result = connection.execute(text(bindable(query)), dict(parameters))
             places, names = _kept([str(name) for name in result.keys()], keep)
             rows = _limited(_taken(row, places) for row in result)
             connection.rollback()
