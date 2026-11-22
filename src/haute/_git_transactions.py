@@ -209,9 +209,20 @@ def _stage_save(paths: list[str], cwd: Path | None) -> list[str] | None:
     # entry; if no net path change remains, there is nothing to commit. The
     # staged name list (not porcelain status, whose fixed-width prefix can
     # begin with a space) is also what names the files in the message.
-    # `-z`: each name as git spells it, never quoted, for the commit and its message.
+    # `-z`: each name as git spells it, never quoted, for the commit and its message;
+    # `--no-relative`: from the repository's root, as the commit's index takes them, whatever
+    # `diff.relative` says.
     staged = _run_git(
-        "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *pathspecs, cwd=cwd
+        "diff",
+        "--cached",
+        "--name-only",
+        "--no-relative",
+        "--no-renames",
+        "-z",
+        "HEAD",
+        "--",
+        *pathspecs,
+        cwd=cwd,
     )
     changed = [name for name in staged.split("\0") if name]
     return changed or None

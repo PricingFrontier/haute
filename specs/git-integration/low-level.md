@@ -329,7 +329,7 @@ never reads as no change) → `stage_paths` (`git add -- <the paths git add take
 project's executable files among them, the pre-commit hook, `git add --chmod=+x`:
 `haute._git_core.stage_paths` is the one way Haute stages a file, the editor's first-commit
 seed included, so the hook is recorded 100755 where the file system has no executable bit) →
-`git diff --cached --name-only --no-renames -z HEAD -- <paths>` re-check (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full and as git spells them, are what the commit takes and the default message names) → `_commit_staged_paths`: a commit
+`git diff --cached --name-only --no-relative --no-renames -z HEAD -- <paths>` re-check (`--no-relative`: names from the repository's root whatever `diff.relative` says) (returns `None` when no path is listed, reconciling a stale index entry that reported a spurious modification; the listed paths, in full and as git spells them, are what the commit takes and the default message names) → `_commit_staged_paths`: a commit
 of exactly those changed paths as the index now holds them, regardless of what else the user
 may have pre-staged, made from an index of its own (`GIT_INDEX_FILE` at the git dir's
 `haute-save.index`, removed after): `read-tree HEAD`, each changed path's entry copied

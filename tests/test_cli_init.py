@@ -2032,12 +2032,16 @@ class TestAProjectBelowTheRepositorysRoot:
         assert self._entry(tmp_path, ".githooks/pre-commit") == teams
         assert (project / ".githooks" / "pre-commit").is_file()
 
+    @pytest.mark.parametrize("diff_relative", [False, True], ids=["default", "diff.relative"])
     def test_a_save_commits_the_projects_files_and_nothing_else_staged(
-        self, runner: CliRunner, tmp_path: Path
+        self, runner: CliRunner, tmp_path: Path, diff_relative: bool
     ) -> None:
         from haute._git_setup import set_working_branch
 
         project = self._repository_with_a_project(runner, tmp_path)
+        if diff_relative:
+            # A diff then names paths from the folder git runs in, unless told otherwise.
+            git_run(tmp_path, "config", "diff.relative", "true")
         git_run(tmp_path, "add", "-A")
         git_run(tmp_path, "rm", "-q", "--cached", "pricing/.githooks/pre-commit")
         git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
@@ -2053,7 +2057,44 @@ class TestAProjectBelowTheRepositorysRoot:
         assert self._entry(tmp_path, "pricing/.githooks/pre-commit", "pricing-dev-save")[0] == (
             "100755"
         )
-        assert git_run(tmp_path, "diff", "--cached", "--name-only") == "notes.txt"
+        assert git_run(tmp_path, "diff", "--cached", "--name-only", "--no-relative") == (
+            "notes.txt"
+        )
+
+    @pytest.mark.parametrize("diff_relative", [False, True], ids=["default", "diff.relative"])
+    def test_a_save_records_an_addition_and_a_deletion_of_the_projects(
+        self, runner: CliRunner, tmp_path: Path, diff_relative: bool
+    ) -> None:
+        from haute._git_setup import set_working_branch
+        from haute._git_transactions import commit_save
+
+        project = self._repository_with_a_project(runner, tmp_path)
+        # The repository's own file at the path the project's deleted one has from the project.
+        (tmp_path / "rating").mkdir()
+        (tmp_path / "rating" / "main.py").write_text("# the team's\n", encoding="utf-8")
+        if diff_relative:
+            git_run(tmp_path, "config", "diff.relative", "true")
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
+        set_working_branch("pricing-dev", project, create=True, cwd=project)
+        (tmp_path / "notes.txt").write_text("staged by hand\n", encoding="utf-8")
+        git_run(tmp_path, "add", "--", "notes.txt")
+        (tmp_path / "pricing" / "rating" / "main.py").unlink()
+        (tmp_path / "pricing" / "rating" / "pricing.py").write_text("x = 1\n", encoding="utf-8")
+
+        assert commit_save(["rating/main.py", "rating/pricing.py"], "pricing-dev", cwd=project)
+
+        changed = git_run(
+            tmp_path, "show", "--name-status", "--no-relative", "--format=", "pricing-dev-save"
+        )
+        assert sorted(changed.splitlines()) == [
+            "A\tpricing/rating/pricing.py",
+            "D\tpricing/rating/main.py",
+        ]
+        assert git_run(tmp_path, "ls-tree", "pricing-dev-save", "--", "rating/main.py")
+        assert git_run(tmp_path, "diff", "--cached", "--name-only", "--no-relative") == (
+            "notes.txt"
+        )
 
 
 class TestANewProjectPassesItsOwnLintJob:
