@@ -48,6 +48,42 @@ class TestLintEdgeCases:
         assert result.exit_code == 1
         assert "disconnected" in result.output.lower()
 
+    def test_a_disconnected_node_in_a_submodel_is_named_as_run_names_it(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        # Named <submodel>/<node>, as `haute run --node` takes it, never by runtime key.
+        from haute.codegen import graph_to_code_multi
+        from haute.routes._submodel_ops import create_submodel_graph
+
+        def node(node_id: str, code: str) -> GraphNode:
+            return GraphNode(
+                id=node_id,
+                data=NodeData(label=node_id, nodeType="polars", config={"code": code}),
+            )
+
+        graph = PipelineGraph(
+            nodes=[
+                node("source", "df = pl.LazyFrame({'x': [1]})"),
+                node("priced", "df = source"),
+                node("lonely", "df = pl.LazyFrame({'y': [2]})"),
+                node("alone", "df = pl.LazyFrame({'z': [3]})"),
+            ],
+            edges=[GraphEdge(id="e", source="source", target="priced")],
+        )
+        grouped = create_submodel_graph(graph, ["lonely", "alone"], "box").graph
+        for relative, text in graph_to_code_multi(
+            grouped, pipeline_name="p", source_file="main.py"
+        ).items():
+            (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / relative).write_text(text, encoding="utf-8", newline="\n")
+
+        result = runner.invoke(cli, ["lint", str(tmp_path / "main.py")])
+
+        assert result.exit_code == 1, result.output
+        assert "Node 'box/lonely' is disconnected (no edges)" in result.output
+        assert "Node 'box/alone' is disconnected (no edges)" in result.output
+        assert "submodel_runtime" not in result.output
+
     def test_edges_referencing_missing_nodes(self, runner: CliRunner, tmp_path: Path) -> None:
         """Edges pointing to non-existent nodes should be flagged."""
         graph = PipelineGraph(

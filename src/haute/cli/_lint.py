@@ -64,7 +64,10 @@ def _document_problems(filepath: Path, root: Path) -> tuple[list[str], list[str]
 
 def _structural_problems(flattened: PipelineGraph) -> list[str]:
     """Edges naming a node the graph lacks, and, in a graph of several nodes, nodes no edge
-    touches."""
+    touches; each node named as ``haute run --node`` takes it (``spelled_name``: a submodel
+    occurrence's node as ``<occurrence>/<node>``), never by its runtime key."""
+    from haute._node_addresses import spelled_name
+
     node_ids = {node.id for node in flattened.nodes}
     problems: list[str] = []
     for edge in flattened.edges:
@@ -74,9 +77,8 @@ def _structural_problems(flattened: PipelineGraph) -> list[str]:
             problems.append(f"Edge references missing target node: {edge.target}")
     if len(flattened.nodes) > 1:
         connected = {end for edge in flattened.edges for end in (edge.source, edge.target)}
-        problems.extend(
-            f"Node '{orphan}' is disconnected (no edges)" for orphan in sorted(node_ids - connected)
-        )
+        orphans = sorted(spelled_name(flattened, key) for key in node_ids - connected)
+        problems.extend(f"Node '{orphan}' is disconnected (no edges)" for orphan in orphans)
     return problems
 
 

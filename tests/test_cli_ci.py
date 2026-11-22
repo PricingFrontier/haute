@@ -820,9 +820,9 @@ def test_the_generated_login_step_stops_on_the_refusal(
 
     from haute._scaffold import _registry_login_script
 
+    # The generated step is a bash script; every runner, and Git for Windows, has bash.
     bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("no bash to run the generated step")
+    assert bash is not None
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     # `uv run haute ...` as the job runs it, on this interpreter; `docker` records a login.
@@ -879,6 +879,18 @@ def test_a_mistyped_target_is_named_where_it_is_written(
         "azure-container-apps, container, databricks, gcp-run."
     ) in result.output
     assert "[ci] provider" not in result.output
+
+
+def test_a_mistyped_target_from_the_environment_is_named_as_it_was_set(
+    runner, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_TARGET", "databrick")
+
+    result = runner.invoke(cli, ["ci", "update"])
+
+    assert result.exit_code == 1, result.output
+    assert "HAUTE_TARGET 'databrick' is not a deploy target." in result.output
+    assert "[deploy] target" not in result.output
 
 
 def test_registry_host_outside_a_project_fails(runner, tmp_path: Path, monkeypatch) -> None:

@@ -457,6 +457,21 @@ class TestHauteRunFindsANodeByTheNameTheAnalystSees:
             "loading/capped. Its submodels: loading."
         ) in unknown.output
 
+    def test_an_occurrences_output_reads_the_frame_its_port_names(self) -> None:
+        # As the preview reads its target: a bundle of several frames by the port's label,
+        # a bundle of one by its one frame.
+        from haute.cli._run import _frames
+
+        policies, drivers = pl.LazyFrame({"a": [1]}), pl.LazyFrame({"b": [2]})
+        assert _frames("o[premium]", {"policies": policies, "drivers": drivers}, "drivers") == [
+            ("o[premium]", drivers)
+        ]
+        assert _frames("o[premium]", {"policies": policies}, "scored") == [("o[premium]", policies)]
+        assert _frames("n", {"policies": policies, "drivers": drivers}) == [
+            ("n[policies]", policies),
+            ("n[drivers]", drivers),
+        ]
+
     def test_an_occurrence_runs_to_its_first_output_and_a_shared_name_is_refused(
         self, tmp_path: Path, runner: Any
     ) -> None:

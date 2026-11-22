@@ -993,11 +993,18 @@ def record_executable_files(cwd: Path) -> list[str]:
     if not present:
         return []
     literal = [f":(literal){path}" for path in present]
-    listed = _run_git("ls-files", "-z", "--cached", "--", *literal, cwd=cwd)
-    tracked = [path for path in present if path in listed.split("\0")]
-    if tracked:
-        _run_git("update-index", "--chmod=+x", "--", *tracked, cwd=cwd)
-    stage_paths([path for path in present if path not in tracked], cwd)
+    listed = _run_git("ls-files", "-s", "-z", "--", *literal, cwd=cwd)
+    # mode SP blob SP stage TAB path, for each tracked one.
+    entries = {
+        name: meta.split()
+        for meta, _, name in (entry.partition("\t") for entry in listed.split("\0") if entry)
+    }
+    for path, (mode, blob, _stage) in entries.items():
+        if mode != "100755":
+            # The index's own blob with the mode changed: `update-index --chmod=+x <path>`
+            # would stage the file's content from disk too.
+            _run_git("update-index", "--cacheinfo", f"100755,{blob},{path}", cwd=cwd)
+    stage_paths([path for path in present if path not in entries], cwd)
     return present
 
 

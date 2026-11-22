@@ -110,21 +110,21 @@ def commit_save(
     # letter case on Windows or macOS no longer matches.
     spelled = _git_spelling(paths, cwd)
     sha: str | None = None
-    staged = _stage_save(spelled, cwd)
-    if staged is not None:
-        pathspecs, changed = staged
+    changed = _stage_save(spelled, cwd)
+    if changed is not None:
         msg = message if message is not None else _generate_commit_message(changed)
         # The one ref move outside a recorded operation: one commit, all or nothing.
         with _save_commit():
-            _commit_staged_paths(pathspecs, msg, cwd)
+            _commit_staged_paths(changed, msg, cwd)
         sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
         logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
     _refuse_unrecorded(spelled, cwd)
     return sha
 
 
-def _commit_staged_paths(pathspecs: list[str], message: str, cwd: Path | None) -> None:
-    """Commit what the index holds for the paths *pathspecs* name, and nothing else it holds.
+def _commit_staged_paths(names: list[str], message: str, cwd: Path | None) -> None:
+    """Commit what the index holds for *names*, the changed paths as git spells them, and
+    nothing else it holds.
 
     The commit is made from an index of its own, HEAD's tree with each changed path's entry
     copied from the index (a path the index no longer holds removed), so unrelated content
@@ -133,10 +133,6 @@ def _commit_staged_paths(pathspecs: list[str], message: str, cwd: Path | None) -
     where git reads no executable bit (``core.fileMode=false``, as on Windows), records it
     100644, the pre-commit hook :func:`stage_paths` staged executable among them (CLI-07).
     """
-    listed = _run_git(
-        "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *pathspecs, cwd=cwd
-    )
-    names = [name for name in listed.split("\0") if name]
     entries = _run_git("ls-files", "-s", "-z", "--", *map(_literal, names), cwd=cwd)
     held = {entry.partition("\t")[2] for entry in entries.split("\0") if entry}
     index = (cwd or current_project().root) / _run_git(
@@ -155,10 +151,9 @@ def _commit_staged_paths(pathspecs: list[str], message: str, cwd: Path | None) -
         index.unlink(missing_ok=True)
 
 
-def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str]] | None:
-    """Stage a save of *paths*, as git spells them: the pathspecs its commit takes and the
-    paths that changed, which name the files in its default message; None when nothing in
-    *paths* changed."""
+def _stage_save(paths: list[str], cwd: Path | None) -> list[str] | None:
+    """Stage a save of *paths*, as git spells them: the paths that changed, which its commit
+    takes and its default message names; None when nothing in *paths* changed."""
     # :(literal) so a filename holding glob characters names only itself.
     literal = [_literal(path) for path in paths]
     # `git add` takes a path in the index or in the working tree (`--others`, untracked). One
@@ -192,11 +187,12 @@ def _stage_save(paths: list[str], cwd: Path | None) -> tuple[list[str], list[str
     # entry; if no net path change remains, there is nothing to commit. The
     # staged name list (not porcelain status, whose fixed-width prefix can
     # begin with a space) is also what names the files in the message.
+    # `-z`: each name as git spells it, never quoted, for the commit and its message.
     staged = _run_git(
-        "diff", "--cached", "--name-only", "--no-renames", "HEAD", "--", *pathspecs, cwd=cwd
+        "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--", *pathspecs, cwd=cwd
     )
-    changed = staged.splitlines()
-    return (pathspecs, changed) if changed else None
+    changed = [name for name in staged.split("\0") if name]
+    return changed or None
 
 
 def _literal(path: str) -> str:

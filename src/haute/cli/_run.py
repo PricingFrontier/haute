@@ -43,10 +43,11 @@ def _frames(
     name: str, output: Any, port: str | None = None
 ) -> list[tuple[str, pl.LazyFrame | pl.DataFrame]]:
     """A node's frames by display name: one, each frame of a multi-frame result, or the one
-    *port* reads of it (a submodel occurrence's output)."""
+    *port* reads of it (a submodel occurrence's output), as the preview reads its target's:
+    a bundle of one frame by that frame, one of several by its port's label."""
     if isinstance(output, dict):
         if port is not None:
-            return [(name, output[port])]
+            return [(name, next(iter(output.values())) if len(output) == 1 else output[port])]
         return [(f"{name}[{label}]", frame) for label, frame in output.items()]
     return [(name, output)]
 

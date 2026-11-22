@@ -1974,17 +1974,21 @@ class TestTheHookReachesEveryCloneExecutable:
         use_project(tmp_path)
         assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
         self._repository(tmp_path)
+        # An older Haute's hook, committed without its bit; the re-run writes today's.
+        (tmp_path / self.HOOK).write_text("# Haute pre-commit hook, older\n", encoding="utf-8")
         git_run(tmp_path, "add", "-A")
         git_run(tmp_path, "update-index", "--chmod=-x", "--", self.HOOK)
         git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The project")
         assert self._mode(tmp_path, "HEAD") == "100644"
-        (tmp_path / self.HOOK).write_text("# Haute pre-commit hook, edited\n", encoding="utf-8")
         staged = git_run(tmp_path, "ls-files", "-s", "--", self.HOOK).split()[1]
 
         assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
 
         assert self._mode(tmp_path) == "100755"
+        assert "older" not in (tmp_path / self.HOOK).read_text(encoding="utf-8")
+        # The newer hook is left for review: only the mode is staged.
         assert git_run(tmp_path, "ls-files", "-s", "--", self.HOOK).split()[1] == staged
+        assert git_run(tmp_path, "diff", "--name-only", "--", self.HOOK) == self.HOOK
 
 
 class TestANewProjectPassesItsOwnLintJob:

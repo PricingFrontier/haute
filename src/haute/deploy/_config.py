@@ -394,11 +394,12 @@ class DeployConfig:
             ci=ci_config,
         )
 
+        written = config.target
         config = _apply_env_overrides(config)
         # Every command that reads the project's deploy refuses a target no deploy could use,
         # in the words resolution refuses it in, naming where it was set.
-        setting = "HAUTE_TARGET" if os.environ.get("HAUTE_TARGET") is not None else None
-        check_deploy_target(config.target, setting=setting or "[deploy] target")
+        setting = "[deploy] target" if config.target == written else "HAUTE_TARGET"
+        check_deploy_target(config.target, setting=setting)
         return config
 
     @classmethod
