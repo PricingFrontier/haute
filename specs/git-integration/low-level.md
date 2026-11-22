@@ -601,8 +601,12 @@ the branch the saving tab shows, and `routes._save_pipeline.refuse_another_branc
 it, under the repository lock and before anything is written, when the project has moved:
 the capture of files left uncaptured (`POST /api/git/capture`), the workbench form's save
 ([workbench](../workbench/low-level.md)) and the pipeline save
-([server-api](../server-api/low-level.md), `POST /api/pipeline/save`). A repository git refuses
-to work in is not checked there, so the save still lands on disk and its capture warns.
+([server-api](../server-api/low-level.md), `POST /api/pipeline/save`). The working branch the
+clone records is compared without git, so another one recorded refuses even in a repository
+git refuses to work in; there the checkout alone is not checked, and the save lands on disk
+with its capture's warning. The editor reads the branch once, when Save is pressed, and names
+it in all three writes; a capture refused as `branch_changed` ends the Save before the form
+or the pipeline is written.
 
 **Files changed outside Haute (`_assert_way_clear`, `GitUnrecordedFilesError`,
 `settle_unrecorded`).** Every operation that replaces the project's files runs one check

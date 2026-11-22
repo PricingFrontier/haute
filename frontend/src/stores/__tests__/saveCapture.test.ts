@@ -131,7 +131,7 @@ describe("reportSaveCapture", () => {
       const moved = { error_code: "branch_changed", message: "This tab shows the branch 'dev', but the project is on 'other' now." }
       vi.mocked(captureFiles).mockRejectedValueOnce(new ApiError("HTTP 409", 409, JSON.stringify(moved), { detail: moved }, moved))
 
-      await captureUncaptured()
+      await expect(captureUncaptured()).resolves.toBe(false)
 
       expect(captureFiles).toHaveBeenCalledWith(["rating/files/data/a.csv"], "dev")
       expect(useGitStore.getState().uncaptured).toEqual(["rating/files/data/a.csv"])

@@ -74,7 +74,7 @@ import useGraphCommitController from "./hooks/useGraphCommitController"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore, { canvasGraph } from "./stores/useGraphStore"
-import useGitStore from "./stores/useGitStore"
+import useGitStore, { shownBranch } from "./stores/useGitStore"
 import { captureUncaptured } from "./stores/saveCapture"
 import useToastStore from "./stores/useToastStore"
 import useWorkbenchStore from "./stores/useWorkbenchStore"
@@ -1481,6 +1481,9 @@ function FlowEditor() {
     }
     const said = (error: string) => addToast("error", error)
     const workbench = useWorkbenchStore.getState()
+    // The branch the tab showed when Save was pressed: each of the save's writes names it, so
+    // a branch learned while the save runs never takes the rest of it.
+    const branch = shownBranch()
     let saved = false
     // The values still being typed in the panels and the workbench's form are committed
     // first, so the form saved is the one on screen.
@@ -1488,9 +1491,11 @@ function FlowEditor() {
       ok: async (settled, asked) => {
         if (!settled.ok) return said(settled.error)
         // What earlier writes left off the ledger is captured first; a capture that fails
-        // says so, and the project is saved all the same.
-        await asked.answer(captureUncaptured(), {
-          ok: async () => {
+        // says so, and the project is saved all the same, unless the project has moved to
+        // another branch: then nothing more is written.
+        await asked.answer(captureUncaptured(branch), {
+          ok: async (goOn) => {
+            if (!goOn) return
             await asked.answer(saveForm(asked), {
               ok: async (formSaved) => {
                 if (!formSaved) return
@@ -1504,7 +1509,7 @@ function FlowEditor() {
                     // The connections held to the tables just fetched at once, rather than on
                     // a render: one an undo put back while the save waited goes too.
                     if (workbench.enabled && !holdConnections()) return said(WORKBENCH_TABLES_UNREAD)
-                    saved = await handleSave()
+                    saved = await handleSave(branch)
                   },
                   stale: refuse,
                 })
@@ -1529,7 +1534,7 @@ function FlowEditor() {
       if (!workbench.enabled) return true
       const { default: formStore } = await import("./stores/useWorkbenchFormStore")
       let read = false
-      await asked.answer(formStore.getState().flush(), {
+      await asked.answer(formStore.getState().flush(branch), {
         ok: async (flushed) => {
           if (!flushed) return
           workbench.refreshTables()

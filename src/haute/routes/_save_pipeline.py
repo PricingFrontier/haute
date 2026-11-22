@@ -385,21 +385,15 @@ def refuse_another_branch(root: Path, shown: str) -> None:
     it under the repository lock: the uncaptured files' capture, the workbench form and the
     pipeline.
 
-    A repository git refuses to work in (``GitBlockedError``) is not checked: the save still
-    lands on disk, and its capture warns with the cause."""
+    The working branch Haute records is read without git, so another one recorded refuses
+    the save even where git refuses to work in the repository (``GitBlockedError``); the
+    checkout, which only git can tell, is then not checked, and the save lands on disk with
+    its capture's warning giving the cause."""
     from haute._git_core import GitBlockedError, _get_current_branch, _is_git_repo, ledger_name
     from haute._git_state import read_working_branch
 
-    recorded = read_working_branch(root)
-    try:
-        if recorded is None and not _is_git_repo(root):
-            return
-        current = _get_current_branch(root)
-    except GitBlockedError:
-        return
-    if recorded != shown:
-        now = "has no working branch" if recorded is None else f"is on '{recorded}'"
-        raise ConflictError(
+    def moved(now: str) -> ConflictError:
+        return ConflictError(
             {
                 "error_code": "branch_changed",
                 "message": (
@@ -408,6 +402,18 @@ def refuse_another_branch(root: Path, shown: str) -> None:
                 ),
             }
         )
+
+    recorded = read_working_branch(root)
+    if recorded is not None and recorded != shown:
+        raise moved(f"is on '{recorded}'")
+    try:
+        if recorded is None:
+            if _is_git_repo(root):
+                raise moved("has no working branch")
+            return
+        current = _get_current_branch(root)
+    except GitBlockedError:
+        return
     if current not in (recorded, ledger_name(recorded)):
         where = "an earlier version (a detached HEAD)" if current == "HEAD" else f"'{current}'"
         raise ConflictError(
@@ -855,10 +861,14 @@ class SavePipelineService:
         *commit_message* is the ledger commit's message; without one the
         commit names the changed files.
 
-        Under the lock, the save first settles its pipeline's record left by a save
-        before it (:func:`_settle_record`). A request naming an operation that has a
-        receipt is then answered with it, writing nothing (``replayed``), before the
-        file is read: a repeat of a committed save returns what that save did.
+        Under the lock, a request naming an operation that has a receipt is first
+        answered with it, writing nothing (``replayed``): a repeat of a committed save
+        returns what that save did, wherever the project has moved since. A save naming
+        the branch its tab shows is then refused when the project has moved
+        (:func:`refuse_another_branch`), before anything changes a file. Only then is the
+        pipeline's record left by a save before it settled (:func:`_settle_record`), which
+        removes and captures files, and the receipt looked for again, since the settle may
+        have finished this very save.
         """
         self.committed = None
         self.replayed = False
@@ -866,22 +876,27 @@ class SavePipelineService:
         with repository_mutation(self._root):
             py_path = self._resolve_source_file(body.source_file)
             source_file = py_path.relative_to(self._root).as_posix()
+            # The digest serializes the whole request: made only for one a repeat can name.
+            digest = None if body.operation is None else save_request_digest(body)
+
+            def receipt() -> SavePipelineResponse | None:
+                if body.operation is None or digest is None:
+                    return None
+                return replay_receipt(self._root, body.operation, digest)
+
+            if (replayed := receipt()) is not None:
+                self.replayed = True
+                return replayed
+            if body.working_branch is not None:
+                refuse_another_branch(self._root, body.working_branch)
             left = read_record(self._root, source_file)
             settled = _settle_record(self._root, left)
             if left is not None and settled.finished is not None and left.answer is not None:
                 self.recovered = self._recovered_document(py_path, left, settled.finished)
             carried = settled.remaining
-            # The digest serializes the whole request: made only for one a repeat can name.
-            digest = None if body.operation is None else save_request_digest(body)
-            if body.operation is not None and digest is not None:
-                replayed = replay_receipt(self._root, body.operation, digest)
-                if replayed is not None:
-                    self.replayed = True
-                    return replayed
-            # After the receipt: a repeat of a save that committed is answered with what it
-            # did, wherever the project has moved since; a new write is refused first.
-            if body.working_branch is not None:
-                refuse_another_branch(self._root, body.working_branch)
+            if (replayed := receipt()) is not None:
+                self.replayed = True
+                return replayed
             with saving(self._root, source_file):
                 return self._save(
                     body,

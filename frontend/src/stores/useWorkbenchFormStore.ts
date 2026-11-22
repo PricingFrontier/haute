@@ -107,10 +107,11 @@ interface WorkbenchFormState {
    * Resolves whether it saved; a failure says why in one error toast, and a form that
    * changed on disk since it was read is never overwritten.
    */
-  save: () => Promise<boolean>
+  /** Save the form naming `workingBranch`, the project Save's, else the branch the tab shows. */
+  save: (workingBranch?: string | null) => Promise<boolean>
   /** The project save's form step: `save` when the form holds unsaved edits, else true
    *  without a request. */
-  flush: () => Promise<boolean>
+  flush: (workingBranch?: string | null) => Promise<boolean>
 }
 
 /** The form as compared for unsaved edits: the server writes its keys in its own order. */
@@ -292,7 +293,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         dirty: serialise(next) !== savedForm,
       })
     },
-    save: () =>
+    save: (workingBranch = shownBranch()) =>
       takeTurn(async () => {
         const { form, revision, status } = get()
         const { addToast } = useToastStore.getState()
@@ -343,7 +344,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
           reportSaveCapture(settled.value)
           done = true
         }
-        await answer([under(formReads)], () => saveWorkbenchForm(form, revision, shownBranch()), {
+        await answer([under(formReads)], () => saveWorkbenchForm(form, revision, workingBranch), {
           ok: landed,
           failed: async (error, asked) => {
             const sent = unanswered
@@ -360,7 +361,7 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
                   return
                 }
                 set({ revision: file.revision, savedForm: sent })
-                await asked.answer(saveWorkbenchForm(form, file.revision, shownBranch()), { ok: landed, failed: refused, stale: settle })
+                await asked.answer(saveWorkbenchForm(form, file.revision, workingBranch), { ok: landed, failed: refused, stale: settle })
               },
               failed: refused,
             })
@@ -369,7 +370,8 @@ const useWorkbenchFormStore = create<WorkbenchFormState>()((set, get) => {
         }, { inFlight: (saving) => set({ saving }) })
         return done
       }),
-    flush: () => (get().status === "ready" && unsaved() ? get().save() : Promise.resolve(true)),
+    flush: (workingBranch = shownBranch()) =>
+      get().status === "ready" && unsaved() ? get().save(workingBranch) : Promise.resolve(true),
   }
 })
 

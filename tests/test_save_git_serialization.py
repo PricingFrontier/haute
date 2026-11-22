@@ -603,3 +603,57 @@ def test_a_save_where_git_refuses_the_repository_lands_on_disk_with_the_cause(
     assert "Bands" in (project / "main.py").read_text(encoding="utf-8")
     assert saved.git_sha is None
     assert any("Git can't read its settings" in warning for warning in saved.warnings)
+
+
+def test_a_save_from_a_tab_the_project_moved_away_from_finishes_no_earlier_save(
+    project: Path,
+) -> None:
+    """A save before it committed and left a stale file still to remove; the project then
+    moved to another branch. A stale tab's save is refused before that leftover work runs:
+    the file stays, and the record waits for a save that may make it."""
+    from haute._git import create_working_branch
+    from haute._save_records import Removal, SaveRecord, read_record, write_record
+    from haute.routes._save_pipeline import _artifact_digest
+
+    stale = project / "config" / "stale.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    create_working_branch("other", project, cwd=project)
+    set_working_branch("other", project, cwd=project)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("{}\n", encoding="utf-8")
+    record = SaveRecord(
+        source_file="main.py",
+        committed=True,
+        removes=(Removal("config/stale.json", _artifact_digest(stale)),),
+    )
+    write_record(project, record)
+
+    with pytest.raises(save_pipeline.ConflictError):
+        SavePipelineService(project_root=project).save(request)
+
+    assert stale.read_text(encoding="utf-8") == "{}\n"
+    assert read_record(project, "main.py") is not None
+
+
+def test_a_save_refused_though_git_refuses_the_repository_when_another_branch_is_recorded(
+    project: Path,
+) -> None:
+    """The working branch Haute records needs no git: another one recorded refuses the
+    save even while git cannot be asked where the checkout is."""
+    from haute._git import create_working_branch
+
+    request = _save_request(project, banding=True).model_copy(update={"working_branch": WORKING})
+    create_working_branch("other", project, cwd=project)
+    set_working_branch("other", project, cwd=project)
+    on_disk = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+    with (project / ".git" / "config").open("a", encoding="utf-8") as config:
+        config.write("[core\n")
+
+    with pytest.raises(save_pipeline.ConflictError) as refused:
+        SavePipelineService(project_root=project).save(request)
+
+    assert _refusal(refused)["error_code"] == "branch_changed"
+    after = (project / "main.py").read_bytes() if (project / "main.py").exists() else None
+    assert after == on_disk
