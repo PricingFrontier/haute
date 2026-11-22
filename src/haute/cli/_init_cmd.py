@@ -350,6 +350,9 @@ def capture_new_files(project_dir: Path, written: Sequence[str]) -> None:
         "diff",
         "--cached",
         "--name-only",
+        # From the project's folder, as ls-files names the untracked ones: git names a diff's
+        # paths from the repository's root, which the project may sit below.
+        "--relative",
         "--diff-filter=A",
         "-z",
         "HEAD",

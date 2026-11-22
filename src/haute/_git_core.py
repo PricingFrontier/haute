@@ -990,21 +990,22 @@ def record_executable_files(cwd: Path) -> list[str]:
     from haute._scaffold_files import EXECUTABLE_FILES
 
     present = sorted(path for path in EXECUTABLE_FILES if (cwd / path).is_file())
-    if not present:
-        return []
-    literal = [f":(literal){path}" for path in present]
-    listed = _run_git("ls-files", "-s", "-z", "--", *literal, cwd=cwd)
-    # mode SP blob SP stage TAB path, for each tracked one.
-    entries = {
-        name: meta.split()
-        for meta, _, name in (entry.partition("\t") for entry in listed.split("\0") if entry)
-    }
-    for path, (mode, blob, _stage) in entries.items():
+    untracked: list[str] = []
+    for path in present:
+        # mode SP blob SP stage TAB path, the path from the repository's root, which
+        # `--cacheinfo` takes whatever folder git runs in: the project may sit below it.
+        listed = _run_git("ls-files", "-s", "-z", "--full-name", "--", f":(literal){path}", cwd=cwd)
+        entry = next((entry for entry in listed.split("\0") if entry), None)
+        if entry is None:
+            untracked.append(path)
+            continue
+        meta, _, full_name = entry.partition("\t")
+        mode, blob, _stage = meta.split()
         if mode != "100755":
             # The index's own blob with the mode changed: `update-index --chmod=+x <path>`
             # would stage the file's content from disk too.
-            _run_git("update-index", "--cacheinfo", f"100755,{blob},{path}", cwd=cwd)
-    stage_paths([path for path in present if path not in entries], cwd)
+            _run_git("update-index", "--cacheinfo", f"100755,{blob},{full_name}", cwd=cwd)
+    stage_paths(untracked, cwd)
     return present
 
 

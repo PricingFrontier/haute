@@ -199,6 +199,48 @@ class TestOutputEncoding:
         assert child.wait(timeout=120) == 1
         assert said == ""
 
+    @pytest.mark.parametrize("command", [["lint"], ["run", "--node", "transform"]], ids=" ".join)
+    def test_a_reader_gone_during_the_parse_is_no_parse_error(
+        self, project_dir: Path, tmp_path: Path, command: list[str]
+    ) -> None:
+        """As ``| head -1`` does: the command's first line is read, then the pipe closed. The
+        parse waits until then, so the line that fails is the parser's own log line, written
+        inside the command's ``except EXPECTED_FAILURES``, where a broken pipe read as a parse
+        error, the interpreter's notice and exit 120 followed."""
+        gate = tmp_path / "reader-gone"
+        script = (
+            "import pathlib, sys, time\n"
+            "import haute.parser, haute.routes._helpers as helpers\n"
+            "gate = pathlib.Path(sys.argv[1])\n"
+            "def gated(real):\n"
+            "    def wait_then(*args, **kwargs):\n"
+            "        while not gate.exists():\n"
+            "            time.sleep(0.01)\n"
+            "        return real(*args, **kwargs)\n"
+            "    return wait_then\n"
+            "helpers.parse_pipeline_to_graph = gated(helpers.parse_pipeline_to_graph)\n"
+            "haute.parser.parse_pipeline_file = gated(haute.parser.parse_pipeline_file)\n"
+            "from haute.cli import cli\n"
+            "cli(sys.argv[2:], prog_name='haute')\n"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", script, str(gate), *command, str(project_dir / "main.py")],
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert child.stdout is not None and child.stderr is not None
+        try:
+            for line in child.stdout:
+                if line.startswith((b"Linting pipeline", b"Running pipeline")):
+                    break
+            child.stdout.close()
+        finally:
+            gate.write_text("closed\n", encoding="utf-8")
+        said = child.stderr.read().decode("utf-8", "replace")
+        assert child.wait(timeout=120) == 1
+        assert said == ""
+
     def test_a_closed_reader_is_no_failure_of_the_command(self) -> None:
         """A write to a stream whose reader has gone raises ``OutputClosed``, which no
         ``except OSError`` (``EXPECTED_FAILURES``) takes; any other failure of the stream is

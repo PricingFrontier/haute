@@ -333,7 +333,7 @@ seed included, so the hook is recorded 100755 where the file system has no execu
 of exactly those changed paths as the index now holds them, regardless of what else the user
 may have pre-staged, made from an index of its own (`GIT_INDEX_FILE` at the git dir's
 `haute-save.index`, removed after): `read-tree HEAD`, each changed path's entry copied
-from the index with its mode (`ls-files -s -z` into `update-index -z --index-info`) and one
+from the index with its mode (`ls-files -s -z --full-name -- :(top,literal)<name>` into `update-index -z --index-info`, every path named from the repository's root as `git diff --name-only` lists it, the project perhaps below it; a mode-0 record removes) and one
 the index no longer holds removed, then `git commit -m <msg>`. `git commit -- <paths>`
 builds the same index but stats a file HEAD lacks again, and with `core.fileMode=false`, as
 on Windows, would commit the hook 100644. The commit is the one ref move outside a recorded

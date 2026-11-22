@@ -1991,6 +1991,71 @@ class TestTheHookReachesEveryCloneExecutable:
         assert git_run(tmp_path, "diff", "--name-only", "--", self.HOOK) == self.HOOK
 
 
+class TestAProjectBelowTheRepositorysRoot:
+    """A project in a folder of a larger repository: git names index entries from the
+    repository's root, so the hook's repair and a save's commit name them so too."""
+
+    def _repository_with_a_project(self, runner: CliRunner, repository: Path) -> Path:
+        git_run(repository, "init", "-q", "-b", "main")
+        git_run(repository, "config", "core.fileMode", "false")
+        git_run(repository, "config", "user.name", "Test Actuary")
+        git_run(repository, "config", "user.email", "test@example.com")
+        # The repository's own hook, at the path the project's has from the project.
+        (repository / ".githooks").mkdir()
+        (repository / ".githooks" / "pre-commit").write_text("# the team's\n", encoding="utf-8")
+        project = repository / "pricing"
+        project.mkdir()
+        use_project(project)
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+        return project
+
+    def _entry(self, repository: Path, path: str, tree: str | None = None) -> list[str]:
+        listed = (
+            git_run(repository, "ls-files", "-s", "--", path)
+            if tree is None
+            else git_run(repository, "ls-tree", tree, "--", path)
+        )
+        return listed.split()[:2]
+
+    def test_the_hooks_repair_changes_the_projects_entry_alone(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        project = self._repository_with_a_project(runner, tmp_path)
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "update-index", "--chmod=-x", "--", "pricing/.githooks/pre-commit")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
+        teams = self._entry(tmp_path, ".githooks/pre-commit")
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        assert self._entry(tmp_path, "pricing/.githooks/pre-commit")[0] == "100755"
+        assert self._entry(tmp_path, ".githooks/pre-commit") == teams
+        assert (project / ".githooks" / "pre-commit").is_file()
+
+    def test_a_save_commits_the_projects_files_and_nothing_else_staged(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from haute._git_setup import set_working_branch
+
+        project = self._repository_with_a_project(runner, tmp_path)
+        git_run(tmp_path, "add", "-A")
+        git_run(tmp_path, "rm", "-q", "--cached", "pricing/.githooks/pre-commit")
+        git_run(tmp_path, "commit", "-q", "--no-verify", "-m", "The repository")
+        set_working_branch("pricing-dev", project, create=True, cwd=project)
+        # Someone's work staged elsewhere in the repository stays out of the save.
+        (tmp_path / "notes.txt").write_text("staged by hand\n", encoding="utf-8")
+        git_run(tmp_path, "add", "--", "notes.txt")
+
+        assert runner.invoke(cli, ["init"], catch_exceptions=False).exit_code == 0
+
+        saved = git_run(tmp_path, "show", "--name-only", "--format=", "pricing-dev-save")
+        assert saved.splitlines() == ["pricing/.githooks/pre-commit"]
+        assert self._entry(tmp_path, "pricing/.githooks/pre-commit", "pricing-dev-save")[0] == (
+            "100755"
+        )
+        assert git_run(tmp_path, "diff", "--cached", "--name-only") == "notes.txt"
+
+
 class TestANewProjectPassesItsOwnLintJob:
     """The files ``haute init`` writes pass the ``ruff check .`` and ``ruff format --check .``
     its generated CI runs on the first pull request, under the project's own ruff settings
