@@ -145,7 +145,9 @@ Out of scope, owned elsewhere:
   what the editor's save-time validation refuses (names, global constants, joins, selectors
   and the rest, each with the save's own message), and structural problems of the flattened
   graph (edges pointing at missing nodes and orphan nodes). The save's warnings are printed
-  without failing.
+  without failing. A pipeline with no nodes, the one `haute init` writes, passes, its summary
+  saying it has none yet: the editor loads it ready and saves it, so a new project passes its
+  CI's lint step.
 - `haute train <training_script>` runs a training script that must define a module-level `job`
   object with a callable `run(progress=...)` method (normally a `TrainingJob`), streaming a
   live progress bar and printing the returned result's model path, feature counts, and metrics.

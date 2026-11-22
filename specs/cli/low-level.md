@@ -88,7 +88,7 @@ reported. The CLI does not print schema warnings.
 | `haute` | `--version`; `--help`. | Both print and exit 0. Unknown commands/options are Click usage errors (exit 2). |
 | `haute init` | `--automated`/`--workbench` (how the project prices; asked at a terminal, else automated); `--ci` choice: `github` (the default), `gitlab`, `azure-devops`, `none`; `--target` choice, an automated project's: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs`, `gcp-run`; `--host` choice, a workbench project's: `azure-container-apps` (the default, the only host); `--store` choice, a workbench project's: `sqlserver`, `postgresql` (no default); `--sign-in` choice, a workbench project's: `password`, `entra`, `service-principal` (no default). The `--target` help labels `azure-container-apps`, `aws-ecs` and `gcp-run` build and push only; the planned `sagemaker` and `azure-ml` targets are not offered. At a terminal each answer a flag does not give is asked as a numbered list, its default the answer Enter takes; on a new project a workbench project's database and sign-in have none, so an answer must be picked. In a project with a `haute.toml` each default is the project's current answer instead, and a question it holds no answer to has none, save the host's. | Success 0. An existing `haute.toml` that does not read as TOML exits 1, before any question. Invalid choices exit 2 before the handler. Without a terminal, a question without a default and without its flag (a new workbench project's `--store` or `--sign-in`, or on a re-run any the project holds no answer to) exits 2 naming the flag, as does `--target` with `--workbench` or `--host`, `--store` or `--sign-in` with an automated project. File/TOML/scaffold write errors are not converted into a fallback. |
 | `haute run [PIPELINE_FILE]` | Optional path; absent input uses `resolve_pipeline_file` project/discovery rules. `--node TEXT` (a node id to run to instead of the output node); `--source TEXT` (default `live`); `--rows INTEGER` (minimum `1`; collect only the output's first rows). | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, empty graph, no output node without `--node` (or several), a `--node` the graph lacks, an admission refusal, or an expected failure (`EXPECTED_FAILURES` or a Polars error), whether the walk attributes it to a node (printed `✗ <node> (line N): <error>` first) or it arises collecting the output, exits 1; a failure the walk attributes to a node exits 1 after its `✗` line whatever it is, and memory and any other exception end at the `haute` group in one line (the process cap that refused the run named with the setting that raises it, anything unnamed an incident). Success exits 0 after printing the output. |
-| `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), parse failure, or empty graph exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
+| `haute lint [PIPELINE_FILE]` | Optional path resolved exactly as `run`. | Missing/ambiguous file, a `haute.toml` that is malformed or whose `[project].pipeline` leaves the project (`ConfigError`), or parse failure exits 1; so does any collected problem: an error diagnostic of the editor document, a save-time validation refusal, or a structural issue. Save warnings are printed. A clean graph exits 0. |
 | `haute train TRAINING_SCRIPT` | Required positional path. | Omission is a Click exit-2 usage error. Missing/unsafe/unloadable script, missing `job`, script exception, or `job.run` failure exits 1; successful training exits 0. |
 | `haute serve` | `--host TEXT` (CLI → `[server].host` → `localhost`); `--port INTEGER` (effective default `8000`, not shown by current help); `--no-browser`. Port range is not Click-validated: negative/out-of-range integers reach socket setup and may raise rawly. | Port conflict or missing production static build exits 1; malformed `haute.toml` propagates `ConfigError`. A browser-launch failure prints the manual URL but leaves the running server path intact. |
 | `haute deploy [PIPELINE_FILE]` | Optional path; `--model-name TEXT`; `--dry-run`; `--keep-build` (passed to `deploy_resolved(keep_build=True)`, the kept directory printed); `--endpoint-suffix TEXT`. | In a project whose `haute.toml` enables its workbench it exits 1 before anything else, a dry run included, naming `haute app build`; an unreadable `[workbench]` table exits 1 naming what is wrong. Non-dry-run outside recognised CI exits 1. A non-dry-run deploy whose target's credentials are not all set (`haute.deploy.check_credentials`) exits 1 before parsing, naming each. Resolution, validation, either validation's quote pass or the separately printed quote pass, missing backend dependency, unimplemented target, and backend failure all exit 1. Dry-run success exits 0 before backend dispatch. |
@@ -175,8 +175,8 @@ file, `.env.example`, the hook and the workflows, as written, updated or unchang
 workflow `_prune_stale_ci_files` removed (it returns them); says `rating/` and
 `tests/` were left as they are; and, when the kind of project changed, names the input and
 output nodes the pipeline still has, to replace. A root `main.py` is deleted and reported only when `_is_uv_init_placeholder` holds: its text, CRLF line endings read as LF, is the one `uv init` writes (`def main()` printing `Hello from <name>!`, run under `__main__`) for any project name. Any other is kept and the summary says it is not the placeholder. The generated pipeline declares only
-`haute.Pipeline(name)` and therefore parses with zero nodes; its starter test checks that parse and
-name contract without requiring execution data. The Python files init writes pass the generated
+`haute.Pipeline(name)` and therefore parses with zero nodes, which `haute lint` passes; its
+starter test checks that parse and name contract without requiring execution data. The Python files init writes pass the generated
 lint job's `ruff check .` and `ruff format --check .` under ruff's defaults, since the project
 declares no `[tool.ruff]` and the pre-commit hook formats only what a milestone records, so a
 starter file left as written reaches the first pull request unformatted. Init creates neither
@@ -203,8 +203,9 @@ raises it, and exit 1. The admission is released on every path.
 **`lint`**: resolves the pipeline file and parses it as the editor loads it
 (`routes._helpers.parse_pipeline_to_graph`, strict, under the root of the project holding the
 file, or the file's folder in no project). Any syntax,
-configuration, topology, or other parse failure is reported and exits 1, as does a graph of no
-nodes. It then collects, before reporting, every problem a save would meet: the editor
+configuration, topology, or other parse failure is reported and exits 1. A graph of no nodes is
+not one: the editor loads it ready and saves it, so it passes, its summary line
+`✓ Pipeline '<name>': no nodes yet`. It then collects, before reporting, every problem a save would meet: the editor
 document's error diagnostics (`load_pipeline_editor_document`), each as
 `<file>:<line>: <message> <remediation>` (a module statement or comment a save would drop, a
 damaged sidecar), plus one for a document that is not ready without one; the first refusal of
@@ -654,7 +655,8 @@ Key files and what they cover:
   shadowed by a same-named module.
 - `test_cli_serve.py` / `test_cli_train.py` — additional `serve`/`train` scenarios beyond what
   `test_cli.py` covers.
-- `test_cli_lint.py` — lint edge cases beyond the happy path already covered in `test_cli.py`.
+- `test_cli_lint.py` — lint edge cases beyond the happy path already covered in `test_cli.py`,
+  and the pipeline `haute init` writes, an automated and a workbench project's, passing.
 - `test_docs_accuracy.py` — extracts every `haute <command>` shown in the
   deployment guides/README and compares it with the command names emitted by
   root `haute --help`; a phantom-command fixture must fail the same helper.

@@ -737,19 +737,6 @@ class TestLint:
         result = runner.invoke(cli, ["lint", str(tmp_path / "nonexistent.py")])
         assert result.exit_code == 1
 
-    def test_lint_empty_pipeline_fails(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-    ):
-        empty = tmp_path / "empty.py"
-        empty.write_text(
-            "import haute\npipeline = haute.Pipeline('e')\n",
-        )
-        result = runner.invoke(cli, ["lint", str(empty)])
-        assert result.exit_code == 1
-        assert "No nodes" in result.output
-
 
 # ---------------------------------------------------------------------------
 # haute smoke (offline error paths only - live endpoint tests require network)

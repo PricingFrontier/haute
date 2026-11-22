@@ -96,7 +96,8 @@ def _handle_lint_in_project(config: LintConfig) -> None:
     (``SavePipelineService.validate_graph``: node configs, names, global constants, joins
     and the rest, each refused with the editor's message), and the flattened graph is
     checked for dangling edges and disconnected nodes. Every problem found is reported,
-    and any exits with ``SystemExit(1)``.
+    and any exits with ``SystemExit(1)``. A pipeline with no nodes, which ``haute init``
+    writes and the editor loads ready and saves, passes, said to have none yet.
     """
     from haute.graph_utils import flatten_graph
     from haute.routes._helpers import parse_pipeline_to_graph
@@ -110,10 +111,6 @@ def _handle_lint_in_project(config: LintConfig) -> None:
         graph = parse_pipeline_to_graph(filepath, project_root=root)
     except EXPECTED_FAILURES as e:
         click.echo(f"  ✗ Parse error: {e}", err=True)
-        raise SystemExit(1)
-
-    if not graph.nodes:
-        click.echo("  ✗ No nodes found in pipeline.", err=True)
         raise SystemExit(1)
 
     errors, warnings = _document_problems(filepath, root)
@@ -136,7 +133,11 @@ def _handle_lint_in_project(config: LintConfig) -> None:
         raise SystemExit(1)
 
     name = graph.pipeline_name or filepath.stem
-    click.echo(f"  ✓ Pipeline '{name}': {len(flattened.nodes)} nodes, {len(flattened.edges)} edges")
+    if not flattened.nodes:
+        click.echo(f"  ✓ Pipeline '{name}': no nodes yet")
+    else:
+        nodes, edges = len(flattened.nodes), len(flattened.edges)
+        click.echo(f"  ✓ Pipeline '{name}': {nodes} nodes, {edges} edges")
     click.echo("  ✓ No issues found.")
 
 

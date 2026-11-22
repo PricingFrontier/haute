@@ -29,7 +29,6 @@ signals and pipes. The main session ran each case again on 15 November
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CLI-04 | Planned | P3 | The project `haute init` makes passes the lint step of the CI it generates. |
 | CLI-05 | Planned | P3 | `haute run --node` still finds a node by its name after it is grouped into a submodel. |
 | CLI-06 | Planned | P2 | `haute ci update` and a second `haute init` remove only the CI files Haute wrote; a team's own workflow with one of Haute's file names is left, and whatever is removed is named. |
 | CLI-07 | Planned | P3 | `haute init` on Windows records its pre-commit hook as executable, so a clone on Linux or macOS can run it. |
@@ -37,31 +36,6 @@ signals and pipes. The main session ran each case again on 15 November
 | CLI-11 | Planned | P3 | `haute lint` and `haute run` piped into `head` end quietly, not with "Parse error: Broken pipe". |
 
 ## Planned improvements
-
-### CLI-04 — A new project passes the lint its own CI runs
-**Why:** Reproduced on 11 November 2026. `haute init` writes a pipeline file
-with no nodes and a CI workflow whose first check is `haute lint`. On that
-project `haute lint` exits 1: "✗ No nodes found in pipeline." So the first
-push of every new project fails its CI, with no remedy named. The
-workflow's next check, the dry run, fails on the same project too
-("Resolution failed: No nodes found in" the file); its four other checks
-pass. The editor
-loads the same file as ready and saves it (run through the save route). The
-specification says lint "checks a pipeline as the editor's save does ... so
-the generated CI's lint step refuses what the editor would refuse to save".
-
-**Plan:** Let `haute lint` pass a pipeline with no nodes, with a line saying
-that it has none; or, if an empty pipeline is to fail, say what to do next
-and have the save refuse it too.
-
-**Acceptance:** `haute lint` on the project `haute init` makes exits 0, or
-exits non-zero with a message that names the remedy and the editor's save
-refuses the same file. Either way lint and the save agree.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/cli/_lint.py`; `src/haute/_scaffold.py`;
-`specs/cli/high-level.md`.
 
 ### CLI-05 — `haute run --node` finds a node that was grouped into a submodel
 **Why:** Reproduced on 11 November 2026. In a pipeline of four nodes,

@@ -147,6 +147,31 @@ class TestLintAppliesTheEditorsSave:
         assert result.exit_code == 0, result.output
         assert "No issues found." in result.output
 
+    @pytest.mark.parametrize(
+        "init",
+        [
+            ["--target", "container", "--ci", "github"],
+            ["--workbench", "--store", "sqlserver", "--sign-in", "password", "--ci", "github"],
+        ],
+        ids=["automated", "workbench"],
+    )
+    def test_the_pipeline_haute_init_writes_passes(
+        self, runner: CliRunner, tmp_path: Path, init: list[str]
+    ) -> None:
+        """CLI-04: a new project's pipeline has no nodes, and the editor loads it ready and
+        saves it, so its CI's first check, ``haute lint``, passes it too."""
+        import subprocess
+
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        use_project(tmp_path)
+        assert runner.invoke(cli, ["init", *init]).exit_code == 0
+
+        result = runner.invoke(cli, ["lint"])
+
+        assert result.exit_code == 0, result.output
+        assert f"  ✓ Pipeline '{tmp_path.name.lower()}': no nodes yet" in result.output
+        assert "No issues found." in result.output
+
     def test_what_the_save_refuses_fails_with_the_saves_message(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
