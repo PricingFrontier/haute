@@ -227,8 +227,12 @@ export default function useNodeDataCache({
   const [problem, setProblem] = useState<({ askedFor: string } & NodeDataProblem) | null>(null)
   // Raised by the node's Refresh to ask for the point again.
   const [readAttempt, setReadAttempt] = useState(0)
-  // The identity whose next answer decides what a Refresh pressed for it does.
-  const refreshAwaitsAnswer = useRef<string | null>(null)
+  // A Refresh waiting for the point it decides from: the identity and document it
+  // was pressed for. A Stop, another identity or another document ends the wait.
+  const refreshAwaitsAnswer = useRef<{ askedFor: string; fence: DocumentExecutionFence } | null>(null)
+  useEffect(() => () => {
+    refreshAwaitsAnswer.current = null
+  }, [askedFor])
   // A build's state until the server answers it is kept under the node key the
   // build was started for: the consumer can stay mounted while its node moves
   // to another occurrence, whose Stop and Refresh must not reach that build.
@@ -617,14 +621,17 @@ export default function useNodeDataCache({
    * Refresh pressed to re-read a node's generated fields does not recompute a
    * dataset that has not changed. `missing` has nothing to replace, so it
    * builds; `stale`, `partial` and `corrupt` hold something unusable as it
-   * stands, so they rebuild.
+   * stands, so they rebuild. A build the page has nothing to watch — an input
+   * snapshot the preview's own preparation is building, which reports no job —
+   * is joined as a plain build, so its end is read like any build's.
    */
   const decideRefresh = useCallback((fresh: NodeDataPointResponse) => {
     const { busy, run, refresh } = latest.current
     if (fresh.reads_directly || busy) return
     const slot = useNodeDataStore.getState().slots[fresh.slot_key]
-    const answered = deriveAvailability(fresh, Boolean(slot?.job) || Boolean(slot?.delegatedBuild))
-    if (answered === "missing") void run()
+    const watched = Boolean(slot?.job) || Boolean(slot?.delegatedBuild)
+    const answered = deriveAvailability(fresh, watched)
+    if (answered === "missing" || (answered === "building" && !watched)) void run()
     else if (answered === "stale" || answered === "partial" || answered === "corrupt") void refresh()
   }, [])
 
@@ -640,13 +647,15 @@ export default function useNodeDataCache({
       ok: (fresh) => {
         if (!fresh) return
         publishIfAsked(fresh.point, configHash, fence, fresh.consumerKey)
-        if (refreshAwaitsAnswer.current === askedFor && askedOf(fresh.consumerKey, configHash) === askedFor) {
-          refreshAwaitsAnswer.current = null
+        const pending = refreshAwaitsAnswer.current
+        if (pending?.askedFor !== askedFor) return
+        refreshAwaitsAnswer.current = null
+        if (isDocumentExecutionFenceCurrent(pending.fence) && askedOf(fresh.consumerKey, configHash) === askedFor) {
           decideRefresh(fresh.point)
         }
       },
       failed: (err) => {
-        if (refreshAwaitsAnswer.current === askedFor) refreshAwaitsAnswer.current = null
+        if (refreshAwaitsAnswer.current?.askedFor === askedFor) refreshAwaitsAnswer.current = null
         // A 400 is the backend refusing to name a point for this graph.
         const refused = (err as { status?: unknown } | null)?.status === 400
         setProblem({
@@ -671,7 +680,7 @@ export default function useNodeDataCache({
     const { askedFor, busy, enabled } = latest.current
     // A build under way reads the point again when it ends.
     if (!enabled || !askedFor || busy) return
-    refreshAwaitsAnswer.current = askedFor
+    refreshAwaitsAnswer.current = { askedFor, fence: captureDocumentExecutionFence() }
     setReadAttempt((attempt) => attempt + 1)
   }, [])
 
@@ -681,6 +690,8 @@ export default function useNodeDataCache({
   }, [bringUpToDate, nodeKey])
 
   const cancel = useCallback(async () => {
+    // A Refresh still waiting for its point decides nothing once stopped.
+    refreshAwaitsAnswer.current = null
     const fence = captureDocumentExecutionFence()
     if (delegatedBuild && !job) {
       // A delegated build has no node-data job; its canceller aborts the

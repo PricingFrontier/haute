@@ -558,6 +558,51 @@ describe("useNodeDataCache", () => {
     expect(mockRun.mock.calls[0][0]).toMatchObject({ target: { occurrence: null, node_id: "explore" }, refresh: true })
   })
 
+  // A Refresh waits for the point before deciding, so what ends it must end
+  // that wait too: a Stop, the consumer moving to another identity, or another
+  // document. An answer that arrives afterwards starts no build.
+  it.each(["a Stop", "a round trip to another node", "another document"] as const)(
+    "starts no build for a Refresh whose point answers after %s",
+    async (interruption) => {
+      const stale = point({ state: "stale", generation: { ...point().generation!, fresh: false } })
+      mockGetPoint.mockImplementation(async (args) =>
+        args.target.node_id === "banding" ? point({ consumer_node_id: "banding", demand: ["premium"] }) : point(),
+      )
+      mockRun.mockResolvedValue({
+        status: "started", job_id: "job-late", cached: false, message: "Caching started", point: point({ state: "building" }),
+      })
+      const { result, rerender } = renderHook(
+        ({ nodeId }: { nodeId: string }) => useNodeDataCache({ node: nodeById(nodeId), allNodes: nodes, edges, preamble: "" }),
+        { initialProps: { nodeId: "explore" } },
+      )
+      await waitFor(() => expect(result.current.availability).toBe("current"))
+      let answerRefresh!: (answer: NodeDataPointResponse) => void
+      mockGetPoint.mockImplementationOnce(() => new Promise((resolve) => { answerRefresh = resolve }))
+
+      act(() => refreshNodeDataCache("explore"))
+      await waitFor(() => expect(answerRefresh).toBeDefined())
+      if (interruption === "a Stop") {
+        await act(async () => stopNodeWork("explore"))
+        await act(async () => answerRefresh(stale))
+      } else if (interruption === "a round trip to another node") {
+        rerender({ nodeId: "banding" })
+        await waitFor(() => expect(result.current.point?.consumer_node_id).toBe("banding"))
+        mockGetPoint.mockResolvedValue(stale)
+        rerender({ nodeId: "explore" })
+        await waitFor(() => expect(result.current.availability).toBe("stale"))
+      } else {
+        act(() => useDocumentStatusStore.setState({ executionGeneration: 2 }))
+        await act(async () => answerRefresh(stale))
+        mockGetPoint.mockResolvedValue(stale)
+        act(() => useNodeDataStore.getState().bumpEpoch())
+        await waitFor(() => expect(result.current.availability).toBe("stale"))
+      }
+
+      await act(async () => {})
+      expect(mockRun).not.toHaveBeenCalled()
+    },
+  )
+
   it("ignores a refresh request aimed at a different node", async () => {
     mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
     const { result } = renderCache("explore")

@@ -1195,7 +1195,8 @@ same Vitest config.
   the node's Refresh asking for the point again after either, including a failed recheck of
   data it still shows as current, and asking for it again when it believes the data current,
   then showing the version the server holds now or caching again data that has gone out of
-  date, on that one Refresh, a failed build kept with the stale
+  date, on that one Refresh, and no build from a Refresh whose answer arrives after a Stop, a
+  round trip to another node or another document, a failed build kept with the stale
   point it could not refresh, a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress
@@ -1218,6 +1219,8 @@ same Vitest config.
 - **Delegated data-point builds** (`frontend/src/hooks/__tests__/useNodeDataCache.delegation.test.tsx`):
   two consumers of one delegated point drive the real `ensureInputSnapshots` helper against the
   API seam — a stale snapshot is rebuilt with `refresh` instead of being served as it is, a
+  Refresh that finds a snapshot building with no job to watch joins that build without forcing
+  another and shows the version it publishes, a
   forced Quote Input table rebuild goes through the input-cache build rather than a delete, a
   cancellation from the second consumer cancels the input-snapshot job on the server and only
   ends the delegated build once that job is terminal (both consumers then showing the point as it

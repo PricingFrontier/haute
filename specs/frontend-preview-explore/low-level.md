@@ -146,9 +146,15 @@
    profile and whole-data answer of the point (the Overview, Pivots, Charts and Relationships
    panes, and the Banding and Rating Step editors), and it decides the Refresh: `missing` sends a
    plain build; `stale`, `partial` and `corrupt` send a refresh, which is also the recovery path
-   from an unreadable snapshot; and `current` and `building` do nothing more, so a Refresh
+   from an unreadable snapshot; a build the page already watches (a job, or a delegated build of
+   this tab) is left to end; a build it has nothing to watch, such as an input snapshot the
+   preview's own preparation is building (the point reports no job for it), is joined as a plain
+   build, so its end is read like any build's; and `current` does nothing more, so a Refresh
    pressed to re-read a node's generated fields never recomputes a dataset that has not
    changed. A failed or refused answer is held as the consumer's problem, as any inspection's is.
+   The wait for that answer belongs to the identity and the document Refresh was pressed for: a
+   Stop, the consumer moving to another identity (even one it later returns to) or another
+   document ends it, and an answer arriving afterwards decides nothing.
    While the data is built or profiled, a progress bar runs under the frame's header. The subtitle names the source and, while the profile runs or after it fails,
    the profile's progress or failure.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
