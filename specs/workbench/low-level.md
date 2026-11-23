@@ -1271,8 +1271,8 @@ no longer has; and `InputSource` in
     "Edit in Workbench") sets `activeView`. `App` reads it as `pipelineActive`: the pipeline
     region (`data-testid="pipeline-view"`) gets `invisible` and `inert`,
     `useKeyboardShortcuts` is given `enabled: false` and registers nothing, the Ctrl/Cmd+Enter
-    effect returns early, React Flow's `deleteKeyCode` and `panActivationKeyCode` become
-    null, a store subscription closes the context and connection-drop menus on leaving,
+    effect returns early, React Flow's `panActivationKeyCode` becomes null (its
+    `deleteKeyCode` is null in every view: the app's handler is the one delete), a store subscription closes the context and connection-drop menus on leaving,
     `WorkbenchToolbar` replaces `Toolbar` and `WorkbenchView` renders over the region, both
     lazily. The view calls `useWorkbenchFormStore.load()`, which fetches the form unless
     `status` has left `idle`, and registers `useWorkbenchShortcuts` with the host's

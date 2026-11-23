@@ -16,6 +16,7 @@ const {
   const flowProps: {
     onNodesChange?: (changes: NodeChange[]) => void
     onNodeClick?: (event: React.MouseEvent, node: Node) => void
+    deleteKeyCode?: string | string[] | null
   } = {}
 
   function wrapComponent<P extends object>(
@@ -63,13 +64,16 @@ vi.mock("@xyflow/react", async (importOriginal) => {
       children,
       onNodesChange,
       onNodeClick,
+      deleteKeyCode,
     }: {
       children: ReactNode
       onNodesChange?: (changes: NodeChange[]) => void
       onNodeClick?: (event: React.MouseEvent, node: Node) => void
+      deleteKeyCode?: string | string[] | null
     }) => {
       capturedFlowProps.onNodesChange = onNodesChange
       capturedFlowProps.onNodeClick = onNodeClick
+      capturedFlowProps.deleteKeyCode = deleteKeyCode
       return <div data-testid="react-flow">{children}</div>
     },
     ReactFlowProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -335,6 +339,38 @@ describe("App — chrome drag-frame isolation (FGC-R03)", () => {
     expect(renderCounts.toolbar).toBeLessThanOrEqual(1)
     expect(renderCounts.nodePanel).toBeLessThanOrEqual(1)
     expect(renderCounts.dataPreview).toBeLessThanOrEqual(1)
+  })
+
+  it.each(["Backspace", "Delete"])("deletes a connected node with %s as one undo step: one Undo brings back its edges", (key) => {
+    render(<App />)
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: [...initialNodes, { ...initialNodes[1], id: "n3", data: { ...initialNodes[1].data, label: "Transform 3" } }],
+        edges: [
+          { id: "e1", source: "n1", target: "n2" },
+          { id: "e2", source: "n2", target: "n3" },
+        ],
+        preamble: "",
+        submodels: {},
+      })
+      useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) => node.id === "n2" ? { ...node, selected: true } : node))
+    })
+    // React Flow's own delete would report the edges and the node as two changes, two steps.
+    expect(capturedFlowProps.deleteKeyCode).toBeNull()
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }))
+    })
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n3"])
+    expect(useGraphStore.getState().edges).toEqual([])
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+
+    act(() => useGraphStore.getState().undo())
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n2", "n3"])
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual(["e1", "e2"])
+    act(() => useGraphStore.getState().redo())
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["n1", "n3"])
+    expect(useGraphStore.getState().edges).toEqual([])
   })
 
   it("keeps a drag inside a submodel of 200 children to the dragged child until it ends, as one step", () => {

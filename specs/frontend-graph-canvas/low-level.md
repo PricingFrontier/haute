@@ -54,7 +54,6 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine over the graph store's `focus`: a synchronous drill that opens the occurrence in the store (`enterSubmodelView`), with no server request (refused while the document cannot manage submodels, and superseding a pending create or dissolve), and breadcrumbs and source file that follow the store's focus whatever moves it (an Undo or Redo of a step made in another view), with authored child positions kept and only the boundary cards placed, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
 | `frontend/src/utils/submodelViewGraph.ts` | Pure projection from one definition plus its occurrence bindings into collision-safe composite Input/Output nodes and definition-port boundary edges, every node and edge named: `submodelPortIdentity` gives each card the identity the server's resolver gives a `submodelPort` node (held to `tests/fixtures/ui_contracts/submodel_port_identities.json`), and `buildSubmodelViewGraph` names every edge from its source. The cards carry only what they show: each port's name, the external nodes the card stands for and the Input card's columns; no parent edge, edge order, binding scope or output state (submodels low-level, "Boundary commands"). |
 | `frontend/src/utils/submodelDocument.ts` | An open submodel as a view of the one document. `liftSubmodelCanvas` says what a canvas write inside the open occurrence does to its definition: nothing (a selection, a preview's columns), the definition as the write leaves it (children in their authored form, internal edges without the rendering the projection gives them (`definitionEdgeForm`), and input targets and output sources re-read from the boundary edges, so a handle changed where a boundary edge meets a child moves the port), or a refusal, whole, of a write that adds or removes a card, a card's port or a boundary edge, leaves a port without its child, or changes a read-only copy's definition. `projectSubmodelFocus` draws an occurrence from the document with the annotations its view last held and the cards where they were, and throws when the occurrence or definition is gone; `childAnnotations` and `isSubmodelCard` serve both. |
-| `frontend/src/utils/submodelDeletionPolicy.ts` | `withNativeDeletePolicy` applies the owner-aware React Flow deletion gate while preserving unchanged node identity. |
 | `frontend/src/utils/submodelRuntimeTarget.ts` | `submodelOutputPreview` resolves an occurrence's selected public output to its authoritative display name, its output-port frame target and its cache key (`frameKey`), using `canonicalSubmodelBoundary` and `resolveSubmodelBoundaryNodes`; `DrilledOccurrenceIdentity` is the open occurrence's identity. The browser builds no runtime id. |
 | `frontend/src/utils/canonicalSubmodelBoundaryEditing.ts` | The boundary commands (submodels low-level, "Boundary commands"): each reads the gesture's card, port, child or edge from the canvas and the open definition and the pipeline's own graph from the document, edits the definition's ports, children and edges and the parent edges directly, refuses a retirement any occurrence binds, and draws the view from the result with the canvas's own children and the cards where they were. It maps the collapsed generic input gesture to an existing or newly minted named port. Nothing reads a document fact back from a card. |
 | `frontend/src/utils/submodelBoundaryEditing.ts` | The boundary commands' entry points: the state a command reads (the canvas, the open occurrence and the document behind it) and the result it leaves, over `canonicalSubmodelBoundaryEditing.ts`. |
@@ -149,14 +148,11 @@ node is protected when its canonical config is malformed or has no
 `instance_of` (the definition owner). Every delete surface consults it —
 `handleDeleteNode`, the window keyboard Delete/Backspace handler (which
 partitions a mixed selection, toasts once for spared owners, and deletes the
-remainder), the context menu (which shows Delete only when `isSubmodelCopy`),
-and React Flow's native delete through
-`frontend/src/utils/submodelDeletionPolicy.ts`: `withNativeDeletePolicy`
-stamps `deletable` on every canvas node (owners and malformed occurrences
-false, copies true, other nodes untouched), and that flag is the sole
-native gate — React Flow excludes non-deletable nodes from a deletion set
-before acting and preserves the edges of nodes it does not delete, so a
-mixed native selection deletes everything except owners. Explicitly
+remainder), and the context menu (which shows Delete only when `isSubmodelCopy`).
+React Flow's own delete is off (`deleteKeyCode={null}` in `App.tsx`): it
+reported a node's edges and the node as two changes, which recorded two
+undo steps, and forgot none of the removed nodes' results, so the keyboard
+handler is the only delete for both keys (FEG-02). Explicitly
 selected boundary edges stay deletable everywhere (removing a binding is a
 legitimate edit, not occurrence removal). User-facing feedback for a
 blocked owner comes from the window keyboard handler's toast, which fires

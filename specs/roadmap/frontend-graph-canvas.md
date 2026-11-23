@@ -6,9 +6,7 @@ The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
 edit costs, what the undo history holds, which connections the canvas
 takes, and what a tab with unsaved work does when the file changes under
-it. `FEG-02` comes from the
-review plan's sweep of the frontend's logic on 10 November 2026 and was
-confirmed in a real browser. `FEG-03` comes from the plan's browser sweep
+it. `FEG-03` comes from the plan's browser sweep
 of the editors' fields on 11 November and was re-run by the main session
 in a browser and through the save route. `FEG-05`
 comes from the plan's browser sweep of what happens around an open editor,
@@ -25,11 +23,10 @@ November 2026.
 
 ## Priorities
 
-**Start with:** `FEG-02`
+**Start with:** `FEG-03`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FEG-02 | Planned | P2 | Deleting a node with Backspace is one undo step, as with Delete: one Undo brings back the node and its edges. |
 | FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
 | FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
 | FEG-06 | Planned | P3 | Nodes pasted together stay connected in their code: a pasted Transform reads the pasted input, not the original under a name it no longer has. |
@@ -37,40 +34,6 @@ November 2026.
 | FEG-09 | Planned | P2 | Comparing an earlier milestone of a submodel that gained an output shows the comparison; an output with no identity yet never replaces the screen with an error. |
 
 ## Planned improvements
-
-### FEG-02 — Backspace deletes a node and its edges as one undo step
-**Why:** Reproduced on 10 November 2026 in the editor, after the sweep of
-the frontend's logic found it under Node. With a connected node selected
-(three edges), Backspace removes the node and its edges. One Undo brings the
-node back without the edges; a second Undo restores them. The same deletion
-made with the Delete key is undone whole by one Undo. An analyst who undoes
-an accidental Backspace sees the node return and can carry on, or save, with
-its inputs and outputs disconnected.
-
-Both keys are bound to the app's own delete, which removes the selection as
-one change. React Flow's built-in delete is also left on for the pipeline
-view, on its default key, Backspace. It reports the edges' removal and the
-node's removal as two changes, and the canvas's change handlers record an
-undo step for each. The graph store's comments name partial undo as a class
-of fault to keep out ("the undo-atomicity bug class"), and the keyboard
-handler's tests hold one gesture to one step; the path through React Flow
-passes neither. In the sweep, 230 of 230 such deletions of a node with an
-edge took two undo steps.
-
-**Plan:** Turn React Flow's own delete key off for the pipeline view, as it
-already is for a hidden canvas, so that both keys reach the app's handler;
-or record the two removals of one deletion as one history step.
-
-**Acceptance:** In a browser test, Backspace on a selected node with edges,
-then one Undo, restores the node and every edge; the same for Delete; and
-one Redo removes them again.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/App.tsx`, where the canvas is given its delete
-key; `frontend/src/hooks/useGraphCanvasState.ts`;
-`frontend/src/hooks/useKeyboardShortcuts.ts`;
-`frontend/src/stores/useGraphStore.ts`.
 
 ### FEG-03 — A connection that closes a loop is refused at the canvas
 **Why:** Reproduced on 11 November 2026 in a browser by the plan's sweep of

@@ -377,18 +377,19 @@ toast.
   copies presentation defaults, and starts with no boundary bindings as one undo
   step. Deleting a submodel occurrence is owner-aware: an instance copy (valid
   `instance_of`) deletes exactly like an ordinary node — together with its
-  incident edges, as one undo step — from the context menu, the delete handler,
-  the window keyboard shortcut, and React Flow's native delete. The definition
+  incident edges, as one undo step — from the context menu, the delete handler
+  and the window keyboard shortcut. The definition
   owner (or an occurrence with malformed identity) is refused on every one of
   those surfaces with a visible explanation, because it anchors the shared
   definition; "Dissolve Submodel" is its only removal path. A mixed keyboard
   selection of nodes and edges removes the eligible selected nodes, their
   incident edges, and any separately selected edges in one undoable graph
   transaction while preserving unrelated unselected edges, and spares owners
-  with an explanatory toast while the rest of the selection still deletes; canvas-native deletion never includes an owner
-  because owners are stamped non-deletable, and React Flow preserves the
-  edges of nodes it does not delete. An explicitly selected boundary edge
-  remains deletable — removing a binding is an ordinary edit.
+  with an explanatory toast while the rest of the selection still deletes. An
+  explicitly selected boundary edge remains deletable — removing a binding is
+  an ordinary edit. Delete and Backspace both reach that one keyboard handler:
+  React Flow's own delete key is off, so a deletion made with either key is
+  one undo step, and one Undo brings back the nodes with every edge.
   Auto-layout runs ELK asynchronously, guards against
   overlapping runs from repeated clicks, and re-fits the view once positions
   land. It arranges the graph left-to-right with crossing reduction and straight
