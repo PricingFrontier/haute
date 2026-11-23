@@ -374,7 +374,9 @@ def test_every_generated_ci_file_carries_the_record_that_it_is_haute_s() -> None
 
     for files in (
         *(ci_files("databricks", ci, python_version="3.13") for ci in ("github", "gitlab")),
-        workbench_ci_files("azure-container-apps", "azure-devops", python_version="3.13"),
+        workbench_ci_files(
+            "azure-container-apps", "azure-devops", store="sqlserver", python_version="3.13"
+        ),
     ):
         for path, text in files.items():
             assert text.startswith(f"{CI_FILE_MARK}\n"), path
@@ -579,7 +581,9 @@ def test_update_rewrites_a_workbench_projects_own_set(runner, workbench_project:
     result = runner.invoke(cli, ["ci", "update"])
 
     assert result.exit_code == 0, result.output
-    expected = workbench_ci_files("azure-container-apps", "github", python_version="3.11")
+    expected = workbench_ci_files(
+        "azure-container-apps", "github", store="sqlserver", python_version="3.11"
+    )
     assert release.read_text(encoding="utf-8") == expected[".github/workflows/release.yml"]
     assert sorted(path.name for path in workflows.iterdir()) == [
         "ci.yml",

@@ -610,7 +610,24 @@ class SqlImport(_Strict):
     parameters: list[QueryParameter]
 
 
-ImportSource = Annotated[CsvImport | ExcelImport | SqlImport, Field(discriminator="format")]
+class HttpImport(_Strict):
+    """A request to a named connection's API (``provider = "http"``), whose base URL is the
+    one host it reaches: its ``method``, its ``path`` after the base URL, each ``{name}`` in
+    it a parameter's value, its ``parameters`` as a query's, and ``rows``, where the
+    answer's rows are, a dotted path of keys, empty for the answer itself."""
+
+    format: Literal["http"]
+    #: The connection by name; empty while none is chosen.
+    connection: str
+    method: Literal["GET", "POST"]
+    path: str
+    parameters: list[QueryParameter]
+    rows: str
+
+
+ImportSource = Annotated[
+    CsvImport | ExcelImport | SqlImport | HttpImport, Field(discriminator="format")
+]
 
 
 class ColumnName(_Strict):
@@ -637,13 +654,16 @@ class ImportWidget(_Placed):
     #: The columns of its table read from a column named otherwise, in no set order; a column
     #: without one is read from the column of its own name or label, whatever its case.
     column_names: list[ColumnName]
+    #: A one-row table's column beside whose cell it is also offered, a lookup, one of its
+    #: parameters' columns; None for none.
+    lookup: FieldRef | None = None
 
     @model_validator(mode="after")
     def _names_each_once(self) -> ImportWidget:
         if self.column_names and self.table is None:
             raise ValueError(f"widget {self.id} names columns but fills no table")
         _check_once(self.id, "column names", [named.column for named in self.column_names])
-        if isinstance(self.source, SqlImport):
+        if isinstance(self.source, SqlImport | HttpImport):
             _check_once(self.id, "parameters", [given.name for given in self.source.parameters])
         return self
 
@@ -716,35 +736,14 @@ class ExcelCellsExport(_Strict):
     blocks: list[ExportBlock]
 
 
-class TableName(_Strict):
-    """A table an Export writes to a database, by name, and the name of the table it is
-    written to there."""
-
-    table: str
-    name: Annotated[str, Field(min_length=1, pattern=r"\S")]
-
-
-class SqlExport(_Strict):
-    """The tables an Export writes to a database on a named connection, each to the table
-    of its own name or the name given it, the quote's rows there written again."""
-
-    format: Literal["sql"]
-    #: The connection by name; empty while none is chosen.
-    connection: str
-    #: The tables written to a table named otherwise, in no set order.
-    table_names: list[TableName]
-
-
-ExportTarget = Annotated[
-    CsvExport | ExcelExport | ExcelCellsExport | SqlExport, Field(discriminator="format")
-]
+ExportTarget = Annotated[CsvExport | ExcelExport | ExcelCellsExport, Field(discriminator="format")]
 
 
 class ExportWidget(_Placed):
-    """An Export: a button an underwriter presses to take the quote's tables out to a file
-    or a database. It shows no schema columns and takes nothing typed. Only an Excel
-    workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
-    are used."""
+    """An Export: a button an underwriter presses to take the quote's tables out to a file;
+    a saved quote is in the store's database already. It shows no schema columns and takes
+    nothing typed. Only an Excel workbook of cells runs yet, in Preview and on a final quote
+    in the underwriter app; every other is drawn disabled where the sheets are used."""
 
     type: Literal["export"]
     #: The text on the button.
@@ -759,12 +758,6 @@ class ExportWidget(_Placed):
         _check_once(self.id, "tables", self.tables)
         if isinstance(self.target, ExcelCellsExport) and self.tables:
             raise ValueError(f"widget {self.id} writes cells, so it exports no tables")
-        if isinstance(self.target, SqlExport):
-            named = [entry.table for entry in self.target.table_names]
-            _check_once(self.id, "table names", named)
-            for table in named:
-                if table not in self.tables:
-                    raise ValueError(f"widget {self.id} names a table {table!r} it does not export")
         return self
 
 

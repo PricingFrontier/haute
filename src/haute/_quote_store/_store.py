@@ -28,6 +28,7 @@ from typing import Any, TypeVar
 from sqlalchemy import Connection, Dialect, Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from haute._logging import get_logger
 from haute._quote_store._catalogue import (
@@ -167,6 +168,22 @@ class QuoteStoreUnreachableError(QuoteStoreEnvironmentError):
     error_code = "quote_store_unreachable"
 
 
+class QuoteStoreChangedError(QuoteStoreError):
+    """The database's tables are no longer as the store found them when it opened: a column of
+    an input table added, renamed or dropped since, which the store must know of before it
+    reads a quote's rows or writes them again. Raised before anything is written, for the
+    store to be opened again and the work done once more."""
+
+    error_code = "quote_store_changed"
+
+
+class QuoteStoreReadOnlyError(QuoteStoreError):
+    """A SQLite store the app cannot write to: its file, or the folder its rollback journal is
+    made in, read-only. The message names the file."""
+
+    error_code = "quote_store_read_only"
+
+
 class QuoteStoreMismatchError(QuoteStoreError):
     """The database does not hold the form's tables as the store needs them: *differences*
     names each, and the message what resolves them."""
@@ -246,8 +263,26 @@ def unreached(exc: BaseException) -> bool:
     """Whether *exc* is a server database's refusal of a connection, or one that never came:
     an error the driver raised before any statement, whose text names where the database is
     and who signs in to it, or Entra ID refusing the sign-in's token as the connection is
-    made."""
-    return (isinstance(exc, DBAPIError) and exc.statement is None) or _entra_refused(exc)
+    made; or a database that stopped answering: a statement ended at its deadline
+    (:func:`past_deadline`), or every connection taken past the pool's."""
+    return (
+        (isinstance(exc, DBAPIError) and exc.statement is None)
+        or _entra_refused(exc)
+        or past_deadline(exc)
+        or isinstance(exc, PoolTimeoutError)
+    )
+
+
+def past_deadline(exc: BaseException) -> bool:
+    """Whether *exc* is a statement the database or its driver ended at its deadline
+    (:data:`._providers.STATEMENT_TIMEOUT_SECONDS`): PostgreSQL's cancelled statement,
+    SQLSTATE 57014, or SQL Server's driver's query timeout, which mssql-python names alone."""
+    if not isinstance(exc, DBAPIError) or exc.statement is None:
+        return False
+    original = exc.orig
+    return getattr(original, "sqlstate", None) == "57014" or (
+        getattr(original, "driver_error", None) == "Timeout expired"
+    )
 
 
 def rerun_asked(exc: BaseException) -> bool:
@@ -341,6 +376,30 @@ def _catalogue_differences(
     return differences
 
 
+def _refuse_unwritable(engine: Engine) -> None:
+    """Refuse (:class:`QuoteStoreReadOnlyError`) a SQLite store the app could read and not
+    write to: the database's header written as it stands and rolled back, which needs the
+    file and, for the rollback journal a save writes beside it, its folder, as a save's first
+    write does. A server's sign-in is checked by its privileges instead."""
+    from haute._failure_answers import classify_failure
+
+    with engine.connect() as connection:
+        version: int = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+        try:
+            connection.exec_driver_sql(f"PRAGMA user_version = {int(version)}")
+        except DBAPIError as exc:
+            answer = classify_failure(exc)
+            if answer is None or answer.code != "quote_store_read_only":
+                raise
+            name = Path(str(engine.url.database)).name
+            raise QuoteStoreReadOnlyError(
+                f"The quote store's file {name} cannot be written to: it, or the folder it is "
+                "in, is read-only. Make both writable; the quotes open once they are."
+            ) from None
+        finally:
+            connection.rollback()
+
+
 def open_engine(
     url: str,
     form: FormSpec,
@@ -383,6 +442,8 @@ def open_engine(
     try:
         with reaching(url, environment, named_by):
             catalogue = read_store(engine, checked)
+        if engine.dialect.name == "sqlite":
+            _refuse_unwritable(engine)
     except Exception:
         engine.dispose()
         raise

@@ -48,7 +48,7 @@ the [underwriter app](../../building-models/workbench.md#the-underwriter-app). I
 
 | File | When it runs | What it does |
 |---|---|---|
-| `ci.yml` | On every pull request | Lints, type-checks and runs tests, then builds the app's release, which checks your pipeline and schema and scores your test quotes |
+| `ci.yml` | On every pull request | Lints, type-checks and runs tests, then builds the app's release, which checks your pipeline and schema and scores your test quotes, and tests the packaged app (`haute app test`) on SQLite and, in a job of its own, on your production store's database engine in a throwaway container |
 | `release.yml` | On a push to main or manual dispatch | Runs the same checks, then, on main only, builds the app's image once, pushes it to the registry `[deploy.container]` names, rolls the staging app out to it, and compares staging with production on saved quotes, keeping `impact_report.md` as the `impact-report` artifact |
 | `release-production.yml` | When you click "Run workflow" manually | Rolls the production app out to the release staging runs, for the commit you give (main's head when blank) |
 

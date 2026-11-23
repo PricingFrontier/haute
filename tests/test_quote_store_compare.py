@@ -377,6 +377,32 @@ def test_a_single_precision_decimal_is_named_and_the_sql_widens_it(target: Targe
     assert target.read("SELECT value FROM policy") == [(16777217.0,)]
 
 
+#: A Decimal column its owners made an Integer that takes no null, on each server.
+_MADE_WHOLE_REQUIRED = {
+    "postgresql": (
+        "ALTER TABLE policy ALTER COLUMN value TYPE BIGINT",
+        "ALTER TABLE policy ALTER COLUMN value SET NOT NULL",
+    ),
+    "sqlserver": ("ALTER TABLE policy ALTER COLUMN value BIGINT NOT NULL",),
+}
+
+
+def test_a_retyped_column_that_takes_no_null_keeps_taking_none(server: Target) -> None:
+    """WB-64: the SQL changes the column's type and nothing else, as its note says."""
+    made_from_sql(server, RELEASED)
+    server.run(*_MADE_WHOLE_REQUIRED[server.backend])
+    comparison = compared(server, RELEASED)
+    written = sql(server, RELEASED, comparison)
+    assert "Not changed here: policy.value takes no null" in written
+
+    server.script(written)
+
+    held = catalogue(server).table("policy")
+    assert held is not None
+    value = held.column("value")
+    assert value is not None and value.kind == "float" and value.nullable is False
+
+
 def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target) -> None:
     made_from_sql(target, RELEASED)
     quote(target, RELEASED, "A-1", region="north")

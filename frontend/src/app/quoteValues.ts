@@ -7,24 +7,19 @@
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
 import { apiErrorCode, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
-import type { FormSpec, SchemaColumn, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppQuoteStore, WorkbenchAppRelatedQuote } from "../api/types"
+import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppQuoteStore, WorkbenchAppRelatedQuote } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
 import { operationKey } from "../utils/operationKey"
-import { hasInputs } from "../utils/quoteIdentity"
-import { formattedNumber, withPresetRows } from "../utils/sheetValues"
+import { hasInputs, tableIndex } from "../utils/quoteIdentity"
+import { formattedNumber, indexKey, KEPT_KEY, withPresetRows } from "../utils/sheetValues"
 import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
-/**
- * The field of a row holding its values in store columns the form no longer holds, as the
- * quote store opened them (specs/workbench). No sheet shows it: it stays on its row, through
- * inserts, deletes and edits, and the save writes it back.
- */
-export const KEPT_KEY = "$kept"
+export { KEPT_KEY }
 
 /** `values` without what is not a value: blank cells, rows left empty at the end, tables with none. */
 export function normalisedValues(values: Readonly<Record<string, readonly SampleRow[]>>): Values {
@@ -105,9 +100,11 @@ export const withoutAppDetails = (values: Values): Values => withAppDetails(valu
  * written taken from `sent`: the store keeps nothing of a hidden cell, so what was typed into
  * one stays on the sheets while the quote is open (specs/workbench). What hid is decided as
  * the server decided it, on `sent` with the details the app set on the save, as who saved
- * it, since those decide what shows as any value does. A many-row table's rows line up as
- * the server numbers them, as `withPresetRows` reads them. `quote_details` is stored whole,
- * so it is the answer's.
+ * it, since those decide what shows as any value does. A hidden cell goes back on the row it
+ * was typed on (`sentRows`); one on a row the answer does not hold stays on its own row in a
+ * table whose rows are in their places, blank rows before it, and after the rows answered in
+ * one keyed by an index typed or of values.
+ * `quote_details` is stored whole, so it is the answer's.
  */
 export function withHiddenCells(form: FormSpec, saved: Values, sent: Values): Values {
   const { hidden } = sheetVisibility(form, withAppDetails(sent, saved))
@@ -118,15 +115,57 @@ export function withHiddenCells(form: FormSpec, saved: Values, sent: Values): Va
     if (!hasInputs(table) || table.name === QUOTE_DETAILS_NAME) continue
     const kept = new Set(table.inputs.filter((column) => hidden.has(columnKey(table.name, column.name))).map((column) => column.name))
     if (kept.size === 0) continue
-    const answered = saved[table.name] ?? []
+    const hiddenOf = (row: SampleRow | undefined): SampleRow => Object.fromEntries(Object.entries(row ?? {}).filter(([id]) => kept.has(id)))
     const typed = (placed[table.name] ?? []).slice(0, table.rows === "one" ? 1 : undefined)
-    const rows = Array.from({ length: Math.max(answered.length, typed.length) }, (_, place): SampleRow => ({
-      ...Object.fromEntries(Object.entries(answered[place] ?? {}).filter(([id]) => !kept.has(id))),
-      ...Object.fromEntries(Object.entries(typed[place] ?? {}).filter(([id]) => kept.has(id))),
+    const answered = saved[table.name] ?? []
+    const from = sentRows(table, answered, typed)
+    const rows = answered.map((row, place): SampleRow => ({
+      ...Object.fromEntries(Object.entries(row).filter(([id]) => !kept.has(id))),
+      ...hiddenOf(from[place]),
     }))
+    if (keyedRows(table)) {
+      const placedRows = new Set(from)
+      for (const row of typed) {
+        if (!placedRows.has(row) && Object.keys(hiddenOf(row)).length > 0) rows.push(hiddenOf(row))
+      }
+    } else {
+      // Rows in their places: one past those answered stays on its row, blank rows before it.
+      typed.forEach((row, place) => {
+        const cells = hiddenOf(row)
+        if (place < rows.length || Object.keys(cells).length === 0) return
+        while (rows.length < place) rows.push({})
+        rows.push(cells)
+      })
+    }
     if (rows.length > 0) merged[table.name] = rows
   }
   return merged
+}
+
+/**
+ * For each of `answered`, a table's rows as a save answered them, the row of `typed`, its
+ * rows as they were sent, that it is: in a table keyed by an index typed or of values, the
+ * row whose index names the same row (`indexKey`), since the server answers such rows in its
+ * index's order, not as typed; else the row in its place, as the server numbers rows.
+ */
+/** Whether `table`'s rows are keyed by an index typed or of values, not in their places. */
+const keyedRows = (table: SchemaTable): boolean => {
+  const index = table.rows === "many" ? tableIndex(table) : null
+  return index !== null && index.index !== "numbered"
+}
+
+function sentRows(table: SchemaTable, answered: readonly SampleRow[], typed: readonly SampleRow[]): (SampleRow | undefined)[] {
+  const index = table.rows === "many" ? tableIndex(table) : null
+  if (index === null || index.index === "numbered") return answered.map((_, place) => typed[place])
+  const byKey = new Map<string, SampleRow>()
+  for (const row of typed) {
+    const key = indexKey(index, row[index.name])
+    if (key !== null && !byKey.has(key)) byKey.set(key, row)
+  }
+  return answered.map((row) => {
+    const key = indexKey(index, row[index.name])
+    return key === null ? undefined : byKey.get(key)
+  })
 }
 
 /**
@@ -505,5 +544,7 @@ export function activityText(entry: WorkbenchAppQuoteActivityEntry, source: Work
       return "marked it final"
     case "amended":
       return entry.reason ? `amended it: ${entry.reason}` : "amended it"
+    case "exported":
+      return "exported it"
   }
 }

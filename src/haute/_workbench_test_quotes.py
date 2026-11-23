@@ -32,11 +32,13 @@ from haute._workbench_config import WorkbenchError
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec, SchemaColumn, SchemaTable
 from haute._workbench_input import IDENTITY_SHAPE, with_stand_in
 from haute._workbench_tables import (
+    allowed_values,
     finite_document,
     input_tables,
     preset_rows,
     priced_tables,
     quote_request,
+    sheet_cell,
 )
 
 if TYPE_CHECKING:
@@ -437,24 +439,11 @@ def check_folder(release: ResolvedRelease, directory: Path | None) -> tuple[Chec
 # ---------------------------------------------------------------------------
 
 
-def _cell(value: Any) -> str | bool | None:
-    """A request's value as the cell text it reads as, as the quote store puts a stored value
-    back: true a tick, false and null no cell, a whole number its digits, a decimal the
-    shortest text that reads back as it, anything else as its text."""
-    if value is None or value is False:
-        return None
-    if value is True:
-        return True
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        return repr(value).removesuffix(".0")
-    return str(value)
-
-
 def _fits(column: SchemaColumn, value: Any) -> bool:
     """Whether *column* takes *value* as it stands: a tick in a True/false column and nothing
-    else there, a number in a number column, one of its allowed values when it has them."""
+    else there, a number in a number column, one of its allowed values when it has them,
+    each compared as the column's type reads it (:func:`allowed_values`), as the store and
+    the request's reader compare them, never as text."""
     if column.type == "bool":
         return isinstance(value, bool)
     if isinstance(value, bool):
@@ -463,17 +452,24 @@ def _fits(column: SchemaColumn, value: Any) -> bool:
         return False
     if column.type == "int" and isinstance(value, float) and not value.is_integer():
         return False
-    return not column.options or _cell(value) in column.options
+    return not column.options or value in allowed_values(column)
 
 
 def _row_values(
     table: SchemaTable, row: Any, where: str, not_opened: list[str]
-) -> dict[str, str | bool]:
+) -> dict[str, str | bool] | None:
+    """*row* as the sheets hold its values, each it cannot place named in *not_opened*, none
+    when it is no row; None, the row named whole, when its index of values' value is no
+    longer allowed, since its other values would land on another value's row."""
     columns = {column.name: column for column in table.inputs}
     cells: dict[str, str | bool] = {}
     if not isinstance(row, Mapping):
         not_opened.append(where)
         return cells
+    index = table.index
+    if index is not None and index.index == "values" and not _fits(index, row.get(index.name)):
+        not_opened.append(where)
+        return None
     for name, value in row.items():
         column = columns.get(name)
         if table.name == QUOTE_DETAILS_NAME and name in _IDENTITY:
@@ -487,7 +483,7 @@ def _row_values(
         if value is not None and not _fits(column, value):
             not_opened.append(f"{where}.{name}")
             continue
-        cell = _cell(value)
+        cell = sheet_cell(column, value)
         if cell is not None:
             cells[column.name] = cell
     return cells
@@ -513,10 +509,11 @@ def opened_values(
         else:
             not_opened.append(name)
             continue
-        cells = [
+        read = (
             _row_values(table, row, name if table.rows == "one" else f"{name}[{place}]", not_opened)
             for place, row in enumerate(rows, 1)
-        ]
+        )
+        cells = [row for row in read if row is not None]
         values[table.name] = [dict(row) for row in preset_rows(table, cells)]
     return values, not_opened
 

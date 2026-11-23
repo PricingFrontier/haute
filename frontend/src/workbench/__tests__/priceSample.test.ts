@@ -112,6 +112,24 @@ describe("priceSample", () => {
     expect(document).toEqual(before)
   })
 
+  it("previews a Workbench Output inside a submodel by its address in the occurrence", async () => {
+    preview.mockResolvedValue(ok({ pricing_output: [{ premium: 2000 }] }))
+    const nested = graph()
+    nested.nodes = [...nested.nodes.filter((n) => n.id !== "response"), node("rating_1", "submodel", { definition_id: "rating" })]
+    nested.submodels = { rating: definition("rating", [node("inner", "polars"), node("answer", "workbenchOutput")]) }
+
+    await expect(priceSample(nested, form, workbench([pricing]), "live")).resolves.toEqual({
+      tables: { pricing: [{ premium: 2000 }] },
+    })
+    expect(preview.mock.calls[0][0].target).toEqual({
+      kind: "node",
+      occurrence: "rating_1",
+      node_id: "answer",
+      port_label: null,
+      port_labels: ["pricing_output"],
+    })
+  })
+
   it("refuses a pipeline without a Workbench Output", async () => {
     const document = graph()
     document.nodes = document.nodes.filter((n) => n.id !== "response")

@@ -41,13 +41,12 @@ from haute._workbench_form import (
     ExcelImport,
     ExportWidget,
     HeadingWidget,
+    HttpImport,
     ImportWidget,
     Match,
     SchemaColumn,
-    SqlExport,
     SqlImport,
     TableInputWidget,
-    TableName,
     Theme,
     TotalKind,
     _condition_kind,
@@ -254,10 +253,9 @@ if TYPE_CHECKING:
     ChartComponentFile = Any
     HeadingComponentFile = Any
     SqlImportFile = Any
+    HttpImportFile = Any
     ColumnNameFile = Any
     ImportComponentFile = Any
-    TableNameFile = Any
-    SqlExportFile = Any
     ExcelCellsExportFile = Any
     ExportComponentFile = Any
     ComponentFile = Any
@@ -319,6 +317,9 @@ else:
     SqlImportFile = _derived(
         "SqlImportFile", SqlImport, replace={"parameters": (list[QueryParameterFile], ...)}
     )
+    HttpImportFile = _derived(
+        "HttpImportFile", HttpImport, replace={"parameters": (list[QueryParameterFile], ...)}
+    )
     ColumnNameFile = _derived("ColumnNameFile", ColumnName, replace={"column": (Name, ...)})
     ImportComponentFile = _derived(
         "ImportComponentFile",
@@ -327,16 +328,16 @@ else:
         replace={
             "show_when": _SHOW_WHEN,
             "source": (
-                Annotated[CsvImport | ExcelImport | SqlImportFile, Field(discriminator="format")],
+                Annotated[
+                    CsvImport | ExcelImport | SqlImportFile | HttpImportFile,
+                    Field(discriminator="format"),
+                ],
                 ...,
             ),
             "table": (Name | None, ...),
             "column_names": (list[ColumnNameFile], ...),
+            "lookup": (Dotted | None, None),
         },
-    )
-    TableNameFile = _derived("TableNameFile", TableName, replace={"table": (Name, ...)})
-    SqlExportFile = _derived(
-        "SqlExportFile", SqlExport, replace={"table_names": (list[TableNameFile], ...)}
     )
     ExcelCellsExportFile = _derived(
         "ExcelCellsExportFile", ExcelCellsExport, replace={"cells": (list[ExportCellFile], ...)}
@@ -349,7 +350,7 @@ else:
             "show_when": _SHOW_WHEN,
             "target": (
                 Annotated[
-                    CsvExport | ExcelExport | ExcelCellsExportFile | SqlExportFile,
+                    CsvExport | ExcelExport | ExcelCellsExportFile,
                     Field(discriminator="format"),
                 ],
                 ...,

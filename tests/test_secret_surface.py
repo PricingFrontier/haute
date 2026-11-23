@@ -180,6 +180,14 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     ("_scaffold.py", "DOCKER_PASSWORD"),
     ("_scaffold.py", "AWS_SECRET_ACCESS_KEY"),
     ("_scaffold.py", "AZURE_CLIENT_SECRET"),
+    # The generated CI's server-engine job: the password of its own throwaway database
+    # container, which nothing outside the job reaches, written into the workflow as the
+    # container's and haute app test's sign-in (haute._scaffold._SERVER_ENGINES).
+    ("_scaffold.py", "MSSQL_SA_PASSWORD"),
+    ("_scaffold.py", "POSTGRES_PASSWORD"),
+    # haute app test's server login: read only into the SignIn the run's store connects with;
+    # its refusal names the variables, never a value.
+    ("cli/_app.py", "HAUTE_APP_TEST_PASSWORD"),
 }
 
 

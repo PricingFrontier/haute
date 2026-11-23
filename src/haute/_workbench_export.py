@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from urllib.parse import quote as url_quoted
 
 from haute._json_safe import MAX_SAFE_INTEGER, to_json_safe
 from haute._json_values import JsonValueError, json_value
@@ -32,8 +33,10 @@ from haute._workbench_form import (
     with_quote_details,
 )
 from haute._workbench_input import with_stand_in
-from haute._workbench_tables import COLUMN_DTYPES, input_tables, sample_quote
+from haute._workbench_tables import COLUMN_DTYPES, input_tables, quote_request, sample_quote
 
+#: The custom property of a workbook the app exports naming the release that priced it.
+RELEASE_PROPERTY = "Haute release"
 #: What a workbook is answered as.
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -63,6 +66,14 @@ class ExportRefusedError(WorkbenchError):
 
 class StaleExportError(WorkbenchError):
     """An export of a sample other than the one the form gives now: the route answers 409."""
+
+
+def attachment(file_name: str) -> str:
+    """A ``Content-Disposition`` naming *file_name*: whole in ``filename*``, and in
+    ``filename`` with each character outside printable ASCII written ``_``, for a client
+    that reads only that."""
+    plain = "".join(char if " " <= char <= "~" else "_" for char in file_name)
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{url_quoted(file_name, safe='')}"
 
 
 def cell_address(address: str) -> tuple[int, int] | None:
@@ -406,17 +417,23 @@ def cells_workbook(
     target: ExcelCellsExport,
     value_of: Callable[[ExportCell], Any],
     rows_of: Callable[[ExportBlock], list[list[Any]]],
+    *,
+    release: str | None = None,
 ) -> bytes:
     """The workbook of *target*'s cells, each holding ``value_of`` it and its label cell its
     column's label, and its blocks, each its header, but for ``none``, along its top-left
     cell's row and under it ``rows_of`` it, a value for each of its columns, its sheets in
     the order their names are first given; *target* has no :func:`cells_problems`. A block
-    whose rows run past the sheet's last row is refused, naming it."""
+    whose rows run past the sheet's last row is refused, naming it. *release*, the release
+    that priced the quote, is the workbook's :data:`RELEASE_PROPERTY`."""
     # Imported here: only an export loads openpyxl.
     from openpyxl import Workbook
+    from openpyxl.packaging.custom import StringProperty
 
     workbook = Workbook()
     workbook.properties.creator = "Haute"
+    if release is not None:
+        workbook.custom_doc_props.append(StringProperty(name=RELEASE_PROPERTY, value=release))
     sheets: dict[str, Any] = {}
 
     def sheet_of(name: str) -> Any:
@@ -490,7 +507,7 @@ def _export_of(spec: FormSpec, component: str) -> tuple[ExportWidget, ExcelCells
     if not isinstance(widget, ExportWidget) or not isinstance(widget.target, ExcelCellsExport):
         raise ExportRefusedError(
             f"{widget.name} is not an Export to an Excel workbook of cells, the only export "
-            "Preview runs."
+            "that runs."
         )
     return widget, widget.target
 
@@ -560,13 +577,6 @@ def preview_export(
     workbook never holds one sample's outputs beside another's inputs.
     """
     spec = with_quote_details(form)
-    widget, target = _export_of(spec, component)
-    problems = cells_problems(spec, target)
-    if problems:
-        name = widget.label.strip() or widget.name
-        raise ExportRefusedError(
-            f'Export "{name}" cannot be written: it ' + "; it ".join(problems) + "."
-        )
     typed = sample_quote(spec)
     if to_json_safe(typed) != to_json_safe(dict(sample)):
         raise StaleExportError(
@@ -574,7 +584,43 @@ def preview_export(
         )
     # The server's own typing of the sample priced, a whole number past what JSON holds
     # exactly kept whole, rather than the text the wire carries it as.
-    quote = with_stand_in(input_tables(spec), typed)
+    return _exported(spec, component, with_stand_in(input_tables(spec), typed), tables, None)
+
+
+def quote_export(
+    form: FormSpec,
+    component: str,
+    values: Mapping[str, Any],
+    tables: Mapping[str, list[Any]],
+    release: str,
+) -> tuple[str, bytes]:
+    """The file name and the bytes of the Export of id *component* of *form*, run in the
+    underwriter app on a saved quote: *values*, the quote's values as the sheets hold them,
+    typed as its pricing typed them (:func:`haute._workbench_tables.quote_request`), its
+    identity among them, *tables* its priced rows as the store keeps them, and *release*
+    the release that priced them, which the workbook names. Refused as
+    :func:`preview_export` refuses an Export."""
+    spec = with_quote_details(form)
+    return _exported(spec, component, quote_request(spec, values), tables, release)
+
+
+def _exported(
+    spec: FormSpec,
+    component: str,
+    quote: Mapping[str, Any],
+    tables: Mapping[str, list[Any]],
+    release: str | None,
+) -> tuple[str, bytes]:
+    """The file name and bytes of the Export of id *component* of *spec* (its quote_details
+    given) on *quote*, typed as a request, and *tables*, its priced rows by table: the one
+    path Preview's export and the app's take."""
+    widget, target = _export_of(spec, component)
+    problems = cells_problems(spec, target)
+    if problems:
+        name = widget.label.strip() or widget.name
+        raise ExportRefusedError(
+            f'Export "{name}" cannot be written: it ' + "; it ".join(problems) + "."
+        )
 
     def value_of(cell: ExportCell) -> Any:
         found = _own_column(spec, cell)
@@ -592,6 +638,6 @@ def preview_export(
             for inputs, outputs in _table_rows(table, quote, tables)
         ]
 
-    data = cells_workbook(spec, target, value_of, rows_of)
+    data = cells_workbook(spec, target, value_of, rows_of, release=release)
     details = quote.get(QUOTE_DETAILS_NAME)
     return export_file_name(target.file_name, details if isinstance(details, dict) else {}), data

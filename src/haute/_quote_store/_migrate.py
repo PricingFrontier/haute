@@ -579,7 +579,8 @@ def _retype_in_place(
     each value the column holds, PostgreSQL through a USING cast, after a note that a value
     which does not convert stops the script; on SQLite, which cannot change a column's type,
     the note alone says what to do. The type before is the one the database names where it
-    was read from one, else the store's for the earlier form's type."""
+    was read from one, else the store's for the earlier form's type; its nullability, which
+    the change keeps, likewise."""
     dialect = operations.impl.dialect
     fresh = _column(schema, step)
     before = _structure_column(plan.before, step)
@@ -611,12 +612,14 @@ def _retype_in_place(
     using: dict[str, Any] = {}
     if dialect.name == "postgresql":
         using["postgresql_using"] = f"{dialect.identifier_preparer.quote(str(step.column))}::{new}"
+    # SQL Server restates a column's nullability with its new type: the one it has, read from
+    # the database, else every column Haute writes takes a null.
     operations.alter_column(
         step.table,
         str(step.column),
         type_=fresh.type,
         existing_type=was,
-        existing_nullable=True,
+        existing_nullable=bool(before.get("nullable", True)),
         schema=schema.metadata.schema,
         **using,
     )

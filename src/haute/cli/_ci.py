@@ -153,6 +153,7 @@ def handle_ci_update() -> None:
         app_env_example,
         ci_credentials,
         ci_files,
+        ci_server_engine,
         connection_variables,
         env_example,
         production_environment_problem,
@@ -190,7 +191,12 @@ def handle_ci_update() -> None:
         raise click.ClickException(str(exc)) from exc
     try:
         generated = (
-            workbench_ci_files(credentials, provider, python_version=python_version)
+            workbench_ci_files(
+                credentials,
+                provider,
+                store=ci_server_engine(read_workbench_config(project_dir).store),
+                python_version=python_version,
+            )
             if workbench
             else ci_files(
                 credentials,

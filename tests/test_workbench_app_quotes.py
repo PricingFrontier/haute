@@ -52,6 +52,7 @@ from tests._project import use_project
 from tests._store_servers import Target
 from tests.test_workbench_app import _graph
 from tests.test_workbench_routes import POLICY, PRICING, form
+from tests.test_workbench_routes import column as schema_column
 
 #: The hosted environment the tests' releases declare, whose store a hosted app opens.
 TEST = "test"
@@ -533,6 +534,27 @@ def test_a_hidden_cell_opens_at_its_default_only_where_that_changes_nothing_show
     assert values["policy_details"] == [{"state": "NY", "cover_limit": "5000"}]
 
 
+def test_a_saved_value_one_of_its_allowed_values_reopens_as_its_choice_writes_it(
+    tmp_path: Path,
+) -> None:
+    """A Decimal chosen as ``1000.00`` is stored as 1000 and reopens as ``1000.00``, so the
+    sheet shows it chosen rather than as no allowed value."""
+    spec = json.loads(json.dumps(FORM))
+    policy = next(t for t in spec["schema"]["tables"] if t["name"] == "policy_details")
+    exposure = next(c for c in policy["inputs"] if c["name"] == "exposure")
+    exposure.update(
+        options=["1000.00", "2000.00"], options_source={"file": "bands.csv", "column": "band"}
+    )
+    release = _write_release(tmp_path / "banded", spec)
+    url = _prepared(tmp_path / "banded.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        made = Page(client).create()
+        assert made.status_code == 200, made.text
+        opened = client.get(address(made.json()["quote"]), headers=ANA).json()
+
+    assert opened["values"]["policy_details"] == [{"state": "NY", "exposure": "1000.00"}]
+
+
 def test_a_detail_the_app_sets_sent_unreadable_is_overruled_not_read(page: Page) -> None:
     # An option no number, sent by a page, is the app's to set, never read.
     sent = {**VALUES, "quote_details": [{**DETAILS, "quote_option": "invalid"}]}
@@ -957,6 +979,177 @@ def test_mark_final_needs_a_price_of_the_release_running(
         in (refused.json()["detail"]["message"])
     )
     assert page.change(priced, "final").json()["quote"]["stage"] == "final"
+
+
+def test_an_app_opened_before_a_column_was_added_keeps_that_columns_values_on_a_save(
+    page: Page, url: str, path: Path, tmp_path: Path
+) -> None:
+    """WB-63: the app's store opened before its owners added a column; the next release
+    writes it; this app's open and save of the quote, once the store has opened again on the
+    tables as they are now, keep what the next release wrote there."""
+    quote = page.create().json()["quote"]
+    newer = json.loads(json.dumps(FORM))
+    policy = next(t for t in newer["schema"]["tables"] if t["name"] == "policy_details")
+    policy["inputs"].append(schema_column("sum_insured", "float"))
+    Target("sqlite", url).make(FormSpec.model_validate(newer), base=FormSpec.model_validate(FORM))
+    with TestClient(
+        create_app(_write_release(tmp_path / "newer", newer), store=StoreLocation(TEST, url))
+    ) as client:
+        later = Page(client)
+        later.operations = iter(range(10**6, 2 * 10**6))
+        policy_row = {**VALUES["policy_details"][0], "sum_insured": "5000000"}
+        insured = {**VALUES, "policy_details": [policy_row]}
+        answered = later.save(quote, values=insured, shown=None)
+        assert answered.status_code == 200, answered.text
+
+    opened = page.client.get(address(quote), headers=ANA)
+    assert opened.status_code == 200, opened.text
+    values = opened.json()["values"]
+    assert json.loads(values["policy_details"][0]["$kept"]) == {"sum_insured": 5000000.0}
+    values["policy_details"][0]["exposure"] = "2000"
+    saved = page.save(opened.json()["quote"], values=values, shown=None)
+
+    assert saved.status_code == 200, saved.text
+    assert sql(path, "SELECT exposure, sum_insured FROM policy_details") == [(2000.0, 5000000.0)]
+
+
+def test_a_table_changed_under_the_app_to_no_longer_fit_closes_the_quotes(
+    page: Page, path: Path
+) -> None:
+    quote = page.create().json()["quote"]
+    sql(path, "ALTER TABLE policy_details RENAME COLUMN exposure TO exposure_old")
+
+    opened = page.client.get(address(quote), headers=ANA)
+
+    assert opened.status_code == 503
+    detail = opened.json()["detail"]
+    assert detail["error_code"] == "quote_store_mismatch"
+    assert "policy_details.exposure is missing" in detail["differences"]
+
+
+@pytest.mark.parametrize("read_only", ["file", "folder"])
+def test_a_store_the_app_cannot_write_to_is_reported_closed_naming_why(
+    release_dir: Path, tmp_path: Path, read_only: str
+) -> None:
+    """WB-54: the quotes are not offered while a save could not land."""
+    held = tmp_path / "held"
+    held.mkdir()
+    store = held / "quotes.sqlite"
+    url = _prepared(store, release_dir)
+    made = store if read_only == "file" else held
+    mode = made.stat().st_mode
+    made.chmod(0o444 if read_only == "file" else 0o555)
+    try:
+        with TestClient(create_app(release_dir, store=StoreLocation(TEST, url))) as client:
+            quotes = client.get("/api/app/release", headers=ANA).json()["quotes"]
+    finally:
+        made.chmod(mode)
+
+    assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_read_only")
+    assert quotes["message"] == (
+        "The quote store's file quotes.sqlite cannot be written to: it, or the folder it is "
+        "in, is read-only. Make both writable; the quotes open once they are."
+    )
+
+
+def _slip_id(client: TestClient) -> str:
+    """The Export's id as the app's form holds it, which the page names it by."""
+    form = client.get("/api/app/form", headers=ANA).json()["form"]
+    (widget,) = [w for page in form["pages"] for s in page["sections"] for w in s["widgets"]]
+    return str(widget["id"])
+
+
+def _slip_form() -> dict[str, Any]:
+    """FORM with an Export to an Excel workbook of cells: the insured, the state, the premium
+    and the quote's reference, under a file name made of the quote's details."""
+    spec = json.loads(json.dumps(FORM))
+
+    def cell(table: str, column: str, address: str) -> dict[str, str]:
+        return {
+            "table": table,
+            "column": column,
+            "sheet": "Slip",
+            "cell": address,
+            "label_cell": "",
+        }
+
+    spec["pages"][0]["sections"][0]["widgets"] = [
+        {
+            "id": "w_slip",
+            "name": "slip",
+            "type": "export",
+            "x": 0,
+            "y": 0,
+            "w": 160,
+            "h": 40,
+            "label": "Slip",
+            "tables": [],
+            "target": {
+                "format": "excel_cells",
+                "file_name": "{insured} {quote_reference}",
+                "cells": [
+                    cell("quote_details", "insured", "B1"),
+                    cell("quote_details", "quote_reference", "B2"),
+                    cell("policy_details", "state", "B3"),
+                    cell("pricing_output", "premium", "B4"),
+                ],
+                "blocks": [],
+            },
+        }
+    ]
+    return spec
+
+
+def test_a_final_quote_exports_its_values_and_prices_naming_the_release(tmp_path: Path) -> None:
+    """WB-11: the app runs the Export the form holds on the quote the store keeps, names the
+    release that priced it, and records the export in the quote's activity."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    release = _write_release(tmp_path / "slip", _slip_form())
+    url = _prepared(tmp_path / "slip.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        page = Page(client)
+        quote = page.change(page.priced(), "final").json()["quote"]
+
+        exported = client.post(
+            f"{address(quote)}/export",
+            json={"component": _slip_id(client), "version": quote["version"]},
+            headers=JO,
+        )
+        assert exported.status_code == 200, exported.text
+        entries = page.activity(quote)["entries"]
+
+    assert 'filename="Acme Q-000001.xlsx"' in exported.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(exported.content))
+    slip = workbook["Slip"]
+    assert [slip[f"B{row}"].value for row in range(1, 5)] == ["Acme", "Q-000001", "NY", 500]
+    properties = {held.name: held.value for held in workbook.custom_doc_props.props}
+    assert properties == {"Haute release": page.release}
+    assert (entries[-1]["action"], entries[-1]["actor"]) == ("exported", "jo@example.com")
+    assert entries[-1]["priced_release"] == page.release
+
+
+def test_a_draft_is_not_exported_and_nothing_is_recorded(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "slip", _slip_form())
+    url = _prepared(tmp_path / "slip.sqlite", release)
+    with TestClient(create_app(release, store=StoreLocation(TEST, url))) as client:
+        page = Page(client)
+        quote = page.priced()
+        refused = client.post(
+            f"{address(quote)}/export",
+            json={"component": _slip_id(client), "version": quote["version"]},
+            headers=ANA,
+        )
+        actions = [entry["action"] for entry in page.activity(quote)["entries"]]
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == {
+        "message": "Mark Q-000001/1 final before exporting it.",
+        "error_code": "quote_not_ready",
+    }
+    assert "exported" not in actions
 
 
 # ── The app's guards and pages ────────────────────────────────────────────

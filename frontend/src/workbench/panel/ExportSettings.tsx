@@ -24,13 +24,13 @@ import {
   setExcelLayout,
   setExportCellColumn,
   setExportFormat,
-  setTableName,
   toggleExportTable,
   updateExportBlock,
   updateExportCell,
   updateExportTarget,
   type ExcelLayout,
   type ExportHeader,
+  EXPORT_FORMATS,
 } from "../../utils/workbenchForm"
 import { ButtonPanes, FormatToggle } from "./ButtonPanes"
 import { Section } from "./Section"
@@ -67,11 +67,10 @@ const REMOVE_CLASS = "icon-danger-btn focus-ring shrink-0 rounded p-0.5"
 const columnLabel = (column: SchemaColumn): string => column.label || readableName(column.name)
 
 /**
- * An Export's panel in its panes (`ButtonPanes`), Config holding its Format; to Excel, its
- * Layout; a file's name, a CSV's delimiter and, but for a workbook of cells, its headers and
- * values, or a database's connection; then a workbook of cells' Cells and Tables, its
- * blocks, or the Tables it exports, each, to a database, beside the name of the table it is
- * written to.
+ * An Export's panel in its panes (`ButtonPanes`), Config holding its Format, CSV or Excel;
+ * to Excel, its Layout; a file's name, a CSV's delimiter and, but for a workbook of cells,
+ * its headers and values; then a workbook of cells' Cells and Tables, its blocks, or the
+ * Tables it exports.
  */
 export function ExportSettings({ form, widget }: { form: FormSpec; widget: ExportWidget }) {
   const change = useWorkbenchFormStore((s) => s.change)
@@ -80,20 +79,8 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
   const strays = widget.tables.filter((id) => !form.schema.tables.some((table) => table.name === id))
   return (
     <ButtonPanes form={form} widget={widget}>
-      <FormatToggle widget={widget} format={exportFormatShown(target.format)} onChange={(format) => change((spec) => setExportFormat(spec, widget.id, format))} />
-      {target.format === "sql" ? (
-        <Section title="Connection">
-          <CommittedTextField
-            aria-label="Connection"
-            value={target.connection}
-            placeholder="None"
-            onCommit={(connection) => set({ connection })}
-            className={`${FIELD_CLASS} w-full font-mono`}
-            style={INPUT_STYLE}
-          />
-        </Section>
-      ) : (
-        <Section title="File">
+      <FormatToggle widget={widget} formats={EXPORT_FORMATS} format={exportFormatShown(target.format)} onChange={(format) => change((spec) => setExportFormat(spec, widget.id, format))} />
+      <Section title="File">
           {(target.format === "excel" || target.format === "excel_cells") && (
             <SelectRow label="Layout" value={excelLayout(target)} choices={EXCEL_LAYOUTS} onChange={(layout) => change((spec) => setExcelLayout(spec, widget.id, layout))} />
           )}
@@ -113,8 +100,7 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
               <SelectRow label="Values" value={target.values} choices={VALUES} onChange={(values) => set({ values })} />
             </>
           )}
-        </Section>
-      )}
+      </Section>
       {target.format === "excel_cells" ? (
         <>
           <ExportCells form={form} widget={widget} target={target} />
@@ -129,16 +115,6 @@ export function ExportSettings({ form, widget }: { form: FormSpec; widget: Expor
                 <div className="min-w-0 flex-1 font-mono">
                   <ConfigCheckbox label={table.name} checked={exported} onChange={() => change((spec) => toggleExportTable(spec, widget.id, table.name))} />
                 </div>
-                {target.format === "sql" && exported && (
-                  <CommittedTextField
-                    aria-label={`${table.name} is written to`}
-                    value={target.table_names.find((named) => named.table === table.name)?.name ?? ""}
-                    placeholder={table.name}
-                    onCommit={(name) => change((spec) => setTableName(spec, widget.id, table.name, name))}
-                    className={`${FIELD_CLASS} w-32 font-mono`}
-                    style={INPUT_STYLE}
-                  />
-                )}
               </div>
             )
           })}

@@ -643,7 +643,8 @@ predicate, then the projection.
   required input columns, retaining one carrier column for an empty projection; reads the input
   in `chunk_size // fanout` batches so an expanded batch stays within the caller's chunk size
   (stage `fanout_python_scan`); and yields each expanded batch capped at the remaining limit,
-  then the predicate, then the projection, closing once the limit is met. The eager preview
+  then the predicate, the projection applied by `_register_python_scan`, closing once the
+  limit is met. The eager preview
   builds `scenarioExpander` with it (`_node_apply.expand_scenarios_bounded`); a run without an
   interactive row limit expands through the expression.
 - `limited_python_scan(produce, *, schema)` runs a `produce(n)` callable whose first `n`
@@ -653,7 +654,10 @@ predicate, then the projection.
   pushed limit `n` reads only the key column to pick the first `n` keys and applies to those
   keys' rows (sum-constraint online optimiser apply).
 - `_register_python_scan` runs every source in the caller's copied context variables on
-  engine threads and hands it the pushed predicate unchanged. The `polars>=2.0` floor
+  engine threads and hands it the pushed predicate unchanged. It alone applies the pushed
+  projection to what a source yields (`_projected`): asked for no columns, as a cross join
+  or a count reading a scan's rows alone asks, a batch keeps its height with no columns,
+  since a frame selected down to none has no rows. The `polars>=2.0` floor
   guarantees that predicate is evaluable: releases before 1.44.2 also pushed a sort-limit's
   engine-only `dynamic_pred` bound into IO sources, which panicked when evaluated.
 - An exception raised while producing a batch propagates as itself. Polars hands a source's

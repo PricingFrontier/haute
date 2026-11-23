@@ -34,6 +34,16 @@ if TYPE_CHECKING:
 
 #: The connection attribute an Entra ID access token is handed to SQL Server's driver in.
 SQL_COPT_SS_ACCESS_TOKEN = 1256
+#: The connection attribute that bounds how long SQL Server's driver waits to sign in.
+SQL_ATTR_LOGIN_TIMEOUT = 103
+#: How long a connection to a server database may take to be made and signed in, in seconds.
+CONNECT_TIMEOUT_SECONDS = 10
+#: How long one statement may run, in seconds, before it is cancelled: a quote's reads and
+#: writes take a fraction of it, so one that does not end is a database not answering.
+STATEMENT_TIMEOUT_SECONDS = 30
+#: How long a request waits for one of the engine's connections, in seconds, while every
+#: one is taken.
+POOL_TIMEOUT_SECONDS = 10
 #: The sign-ins that go through Microsoft Entra ID: a hosted app's managed identity, a
 #: service principal, and the analyst's own sign-in, ``entra``, made in the browser.
 ENTRA_SIGN_INS = frozenset({"managed-identity", "service-principal", "entra"})
@@ -239,7 +249,10 @@ def connect_hook(
         if provider.name == "sqlserver":
             odbc = _without(str(cargs[0]), "Trusted_Connection", "UID", "PWD", "Authentication")
             if sign_in.entra:
-                cparams["attrs_before"] = {SQL_COPT_SS_ACCESS_TOKEN: _access_token(secret())}
+                cparams["attrs_before"] = {
+                    **cparams.get("attrs_before", {}),
+                    SQL_COPT_SS_ACCESS_TOKEN: _access_token(secret()),
+                }
             else:
                 odbc += f";UID={_odbc_value(str(sign_in.username))};PWD={_odbc_value(secret())}"
             cargs[0] = odbc
@@ -250,13 +263,51 @@ def connect_hook(
     return connect
 
 
+def deadline_hook(
+    provider: Provider,
+) -> Callable[[Any, Any, list[Any], dict[str, Any]], None]:
+    """SQLAlchemy's ``do_connect`` hook giving each new connection to *provider*'s database its
+    deadlines (:data:`CONNECT_TIMEOUT_SECONDS`, :data:`STATEMENT_TIMEOUT_SECONDS`), so a
+    database that stops answering is refused in seconds, not when the operating system gives
+    up: on PostgreSQL libpq's connect timeout, the server's statement timeout and a TCP user
+    timeout for data a host never acknowledges; on SQL Server the driver's sign-in timeout,
+    its query timeout set on the connection once made (:func:`_statement_deadline`)."""
+
+    def connect(_dialect: Any, _record: Any, _cargs: list[Any], cparams: dict[str, Any]) -> None:
+        if provider.name == "sqlserver":
+            cparams["attrs_before"] = {
+                **cparams.get("attrs_before", {}),
+                SQL_ATTR_LOGIN_TIMEOUT: CONNECT_TIMEOUT_SECONDS,
+            }
+            return
+        cparams["connect_timeout"] = CONNECT_TIMEOUT_SECONDS
+        cparams["tcp_user_timeout"] = CONNECT_TIMEOUT_SECONDS * 1000
+        options = str(cparams.get("options") or "")
+        cparams["options"] = (
+            f"{options} -c statement_timeout={STATEMENT_TIMEOUT_SECONDS * 1000}".strip()
+        )
+
+    return connect
+
+
+def _statement_deadline(dbapi_connection: Any, _record: Any) -> None:
+    """SQL Server's query timeout on a connection just made: the driver's, client-side, so a
+    server that never answers is bounded too."""
+    dbapi_connection.timeout = STATEMENT_TIMEOUT_SECONDS
+
+
 def make_server_engine(
     url: str, sign_in: SignIn | None, *, credential: TokenCredential | None = None
 ) -> Engine:
-    """An engine on the server database at *url*, each connection signed in as *sign_in* says
-    and checked before it is handed out, since a hosted database closes idle ones."""
+    """An engine on the server database at *url*, each connection signed in as *sign_in* says,
+    made, signed in and running each statement within its deadlines (:func:`deadline_hook`),
+    and checked before it is handed out, since a hosted database closes idle ones; a request
+    waits :data:`POOL_TIMEOUT_SECONDS` at most for a connection while every one is taken."""
     provider = provider_of(url)
-    engine = create_engine(url, pool_pre_ping=True)
+    engine = create_engine(url, pool_pre_ping=True, pool_timeout=POOL_TIMEOUT_SECONDS)
+    event.listen(engine, "do_connect", deadline_hook(provider))
+    if provider.name == "sqlserver":
+        event.listen(engine, "connect", _statement_deadline)
     if sign_in is not None:
         event.listen(engine, "do_connect", connect_hook(provider, sign_in, credential))
     return engine

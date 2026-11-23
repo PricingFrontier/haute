@@ -72,6 +72,7 @@ MODULE_FUNCTIONS = frozenset(
     {
         "answer_failure",
         "answer_pipeline_failure",
+        "answer_app_pricing_failure",
         "failure_refusal",
         "unexpected_failure",
         "record_incident",

@@ -525,7 +525,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     app = project_app()
 
     # The graph as the editor holds it, which the route gives the tables the project's form
-    # defines: each table leads with the quote's identity, null in the node's own tables.
+    # defines: each table leads with the quote's identity, the sample's stand-in.
     saved = parse_pipeline_file(_write(_three_tables(), project, "main"))
     summary = form_table("summary", outputs=[("state", "str"), ("premium", "float")])
     workbench_project(project, [*FORM_TABLES, summary], FORM_SAMPLE)
@@ -542,7 +542,7 @@ def test_the_preview_route_answers_every_table_asked_for_from_one_request(
     previews = answer.json()["port_previews"]
     assert list(previews) == ["pricing_output", "summary_output"]
     assert previews["summary_output"]["preview"] == [
-        {"quote_reference": None, "quote_option": None, "state": "NY", "premium": 100.0}
+        {"quote_reference": "PREVIEW", "quote_option": 1, "state": "NY", "premium": 100.0}
     ]
     assert previews["summary_output"]["row_count"] == 1
     assert previews["summary_output"]["preview_truncated"] is False
@@ -907,11 +907,12 @@ def test_the_response_gives_every_row_the_quotes_reference_and_option(project: P
             "item_prices": [{**identity, "item_id": "A"}, {**identity, "item_id": "B"}],
         }
     ]
-    # The Workbench Output's own tables hold them blank, as the editor shows them.
+    # The Workbench Output's own tables, as the editor shows them, hold the sample's: the
+    # stand-in, whatever the items' frame held.
     tables = _tables(graph)
     assert (
         tables["item_prices_output"].select("quote_reference", "quote_option").to_dicts()
-        == [{"quote_reference": None, "quote_option": None}] * 2
+        == [{"quote_reference": "PREVIEW", "quote_option": 1}] * 2
     )
 
 
@@ -1233,6 +1234,34 @@ def test_the_quotes_identity_and_a_tables_one_row_read_the_same_on_either_engine
         refused = filled(pl.LazyFrame({"premium": premiums}, schema={"premium": pl.Float64}))
         with pytest.raises(WorkbenchOutputError, match=f"connected to it has {held}"):
             execution_collect(refused["pricing_output"], engine=engine)
+
+
+def test_the_identity_is_read_from_its_one_row_and_given_to_tables_leading_with_it() -> None:
+    from haute._workbench_output import _one_identity_row, with_quote_identity
+
+    one = pl.LazyFrame({"quote_reference": ["Q-1"], "quote_option": [2]})
+    assert _one_identity_row(one).to_dicts() == [{"quote_reference": "Q-1", "quote_option": 2}]
+    with pytest.raises(WorkbenchOutputError, match="quote_details has 0 rows"):
+        _one_identity_row(one.clear())
+    tables = assemble_workbench_output_from_config(
+        pl.LazyFrame({"premium": [1.0]}),
+        pl.LazyFrame({"total": [3.0]}),
+        config={
+            "tables": [
+                _table("pricing", *_IDENTITY, ("premium", "float")),
+                _table("summary", ("total", "float")),
+            ]
+        },
+        ports=["pricing_output", "summary_output"],
+    )
+
+    given = with_quote_identity(tables, {"quote_details_input": one})
+
+    assert given["pricing_output"].collect().to_dicts() == [
+        {"quote_reference": "Q-1", "quote_option": 2, "premium": 1.0}
+    ]
+    assert given["summary_output"].collect().to_dicts() == [{"total": 3.0}]
+    assert with_quote_identity(tables, {}) is tables
 
 
 # -- An input table's outputs on its rows --------------------------------------------------

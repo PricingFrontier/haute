@@ -2,17 +2,19 @@
 
 Split into:
 
-* :class:`AppBuildConfig`, :class:`AppRolloutConfig`, :class:`AppImpactConfig` and
-  :class:`AppServeConfig` — the typed bags of CLI inputs.
-* :func:`handle_app_build`, :func:`handle_app_rollout`, :func:`handle_app_impact` and
-  :func:`handle_app_serve` — the functions that do the work.
-* :func:`app` and its ``build``, ``rollout``, ``impact`` and ``serve`` — the thin ``@click``
-  entry points.
+* :class:`AppBuildConfig`, :class:`AppRolloutConfig`, :class:`AppImpactConfig`,
+  :class:`AppTestConfig` and :class:`AppServeConfig` — the typed bags of CLI inputs.
+* :func:`handle_app_build`, :func:`handle_app_rollout`, :func:`handle_app_impact`,
+  :func:`handle_app_test` and :func:`handle_app_serve` — the functions that do the work.
+* :func:`app` and its ``build``, ``rollout``, ``impact``, ``test`` and ``serve`` — the thin
+  ``@click`` entry points.
 
 ``build`` writes the project's release into a directory, ``.haute/app/release`` unless
 another is named: the pipeline bundled as ``haute deploy`` bundles it, after the same
 validation and test quotes, with the sheets, what the release is and its entry point.
-``serve`` builds the release there and serves it on the analyst's machine, on loopback
+``test`` serves a built release on a store made for the run alone and takes each test quote
+through the app, as CI does before any host sees it. ``serve`` builds the release there and
+serves it on the analyst's machine, on loopback
 alone, signed in as the analyst's git identity, so the sheets underwriters will see are
 checked before a merge; the quotes saved there are kept in the ``dev`` environment, at the
 database its connection in ``connections.toml`` names, checked as a hosted app checks its own.
@@ -73,6 +75,15 @@ class AppImpactConfig:
     quotes to price on both apps."""
 
     sample: int
+
+
+@dataclass
+class AppTestConfig:
+    """Parsed inputs for the ``haute app test`` command: the release tested, and the server
+    engine its store is made on, None for a SQLite file."""
+
+    release: Path
+    server_url: str | None = None
 
 
 @dataclass
@@ -251,6 +262,63 @@ def handle_app_impact(config: AppImpactConfig) -> None:
         )
 
 
+#: The variables ``haute app test --server-url`` signs in to the server with, a login that may
+#: make and drop databases, as a CI job's service container's.
+APP_TEST_USER_ENV = "HAUTE_APP_TEST_USER"
+APP_TEST_PASSWORD_ENV = "HAUTE_APP_TEST_PASSWORD"
+
+
+def handle_app_test(config: AppTestConfig) -> None:
+    """Serve the release on a store made for the run alone and take each of the project's
+    test quotes through the app (specs/workbench, Control flow 39), printing each step; a
+    step that failed is a Click error after them all."""
+    import os
+
+    from haute._quote_store import SignIn
+    from haute._workbench_app import RELEASE_FILE
+    from haute._workbench_app_test import run_app_test, server_store, sqlite_store
+    from haute._workbench_test_quotes import read_test_quotes
+    from haute.deploy._config import DeployConfig
+
+    project_dir = current_project().root
+    release_dir = config.release.resolve()
+    if not (release_dir / RELEASE_FILE).is_file():
+        raise click.ClickException(
+            f"{config.release} holds no release: build one with 'haute app build' first."
+        )
+    with _said():
+        folder = DeployConfig.from_project(project_dir).test_quotes_dir
+        quotes = [
+            (quote.name, quote.input)
+            for quote in read_test_quotes(folder)
+            if quote.problem is None and quote.input is not None
+        ]
+        if config.server_url is None:
+            store = sqlite_store(release_dir)
+            engine = "SQLite"
+        else:
+            user, password = (
+                os.environ.get(name, "") for name in (APP_TEST_USER_ENV, APP_TEST_PASSWORD_ENV)
+            )
+            if not user or not password:
+                raise click.ClickException(
+                    f"Set {APP_TEST_USER_ENV} and {APP_TEST_PASSWORD_ENV} to a login of the "
+                    "server that may make and drop databases."
+                )
+            store = server_store(
+                config.server_url, SignIn("password", username=user, secret=password), release_dir
+            )
+            engine = config.server_url.split("+", 1)[0].split(":", 1)[0]
+        with store as location:
+            click.echo(f"  ✓ A store of the release's tables made on {engine} for the run")
+            report = run_app_test(release_dir, location, quotes, say=click.echo)
+    if report.failed:
+        raise click.ClickException(
+            f"The packaged app failed {len(report.failed)} of its checks: "
+            + "; ".join(report.failed)
+        )
+
+
 def handle_app_serve(config: AppServeConfig) -> None:
     """Build the project's release under ``.haute/`` and serve it on loopback, signed in as the
     analyst's git identity."""
@@ -279,12 +347,16 @@ def handle_app_serve(config: AppServeConfig) -> None:
     release_dir = (project_dir / RELEASE_DIR).resolve()
     _built(project_dir, release_dir)
     with _said():
+        from haute._workbench_import import project_source
+
         application = create_app(
             release_dir,
             local_principal=principal,
             static_dir=config.static_dir,
             store=store,
             local_reader=config.reader,
+            # An Import reaches the project's connections, signed in from .env read afresh.
+            sources=lambda name: project_source(project_dir, name, project_environ(project_dir)),
         )
     reading = ", reading quotes only" if config.reader else ""
     click.echo(f"  ✓ Signed in as {principal} (your git identity){reading}")
@@ -347,6 +419,26 @@ def rollout_command(environment: str, image: str | None, source: str | None) -> 
 def impact_command(sample: int) -> None:
     """Compare staging's release with production's on production's saved quotes."""
     handle_app_impact(AppImpactConfig(sample=sample))
+
+
+@app.command(name="test", need="project")
+@click.argument(
+    "release",
+    # Checked once the project is found, so outside one the refusal is the project's.
+    type=click.Path(file_okay=False, path_type=Path),
+    default=RELEASE_DIR,
+)
+@click.option(
+    "--server-url",
+    envvar="HAUTE_APP_TEST_URL",
+    default=None,
+    help="Make the run's store on this server (its master or postgres database) in place of "
+    "a SQLite file.",
+)
+def test_command(release: Path, server_url: str | None) -> None:
+    """Serve the release built in RELEASE (default .haute/app/release) on a store made for the
+    run, and take each test quote through it: priced, saved, opened again and exported."""
+    handle_app_test(AppTestConfig(release=release, server_url=server_url))
 
 
 @app.command(need="project")

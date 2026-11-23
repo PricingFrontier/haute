@@ -73,6 +73,9 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
     readOnly: !editing,
     // The reference takes typing here, as it does nowhere else.
     locked: NOTHING_LOCKED,
+    // A quote not made yet is exported nowhere.
+    exportCells: null,
+    importRows: null,
   }
   // What stops Create while nothing is being typed: the first field that does not fit.
   const blocked = fields.flatMap(({ found }) => {

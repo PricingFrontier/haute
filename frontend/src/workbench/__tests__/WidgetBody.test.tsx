@@ -5,13 +5,17 @@
  * sample has moved on, a Table's output columns matched to its rows by key, the cells that
  * break their column's rules marked once anything is typed, while building a new quote's
  * cells, empty and inert, the underwriter app's quote typed apart from the sample, a
- * Heading drawn as its text, an Import or an Export as a disabled button, and an Export to
- * an Excel workbook of cells run in Preview.
+ * Heading drawn as its text, an Import or an Export as a disabled button, an Import run in
+ * Preview and the app, by its button or its lookup, and an Export to an Excel workbook of
+ * cells run in Preview.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { ReactNode } from "react"
-import type { ShowWhen } from "../../api/types"
+import type { ShowWhen, WorkbenchAppQuote } from "../../api/types"
+import { importAppRows } from "../../api/app"
+import { quoteExporter } from "../../app/useOpenQuoteStore"
+import useQuestionStore from "../../stores/useQuestionStore"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore from "../../stores/useWorkbenchPreviewStore"
@@ -1584,7 +1588,7 @@ describe("WidgetBody", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it("draws an Import or an Export as a disabled button, its format's mark beside its label, faded in Preview", () => {
+  it("draws an Import or an Export as a disabled button, its format's mark beside its label, faded in Preview while it cannot run", () => {
     const form = sheetForm()
     addTo(form, { ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form), id: "w_in", label: "Import schedule" })
     addTo(form, { ...createWidget("export", { x: 192, y: 380, w: 160, h: 40 }, form), id: "w_out", label: "" })
@@ -1599,16 +1603,155 @@ describe("WidgetBody", () => {
     expect(button.querySelector("svg.lucide-file-text")).not.toBeNull()
     expect(button).not.toHaveClass("opacity-60")
     act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
-    rerender(body("w_in"))
+    rerender(
+      <OnSheet values="sample">
+        <WidgetBody widget={widget("w_in")} drawn={everyField(currentForm().schema, widget("w_in"))} problem='Import "Import schedule" fills no table' />
+      </OnSheet>,
+    )
+    expect(screen.getByRole("button", { name: "Import schedule" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Import schedule" })).toHaveClass("opacity-60")
     act(() => useWorkbenchViewStore.setState({ mode: "build" }))
 
-    // With no label, its mark alone, named by its kind; a database's mark once it writes to one.
-    act(() => useWorkbenchFormStore.getState().change((spec) => setExportFormat(spec, "w_out", "sql")))
+    // With no label, its mark alone, named by its kind: a workbook's once it writes one.
+    act(() => useWorkbenchFormStore.getState().change((spec) => setExportFormat(spec, "w_out", "excel")))
     rerender(body("w_out"))
     const empty = screen.getByRole("button", { name: "Export" })
     expect(empty).toHaveTextContent("")
-    expect(empty.querySelector("svg.lucide-database")).not.toBeNull()
+    expect(empty.querySelector("svg.lucide-file-spreadsheet")).not.toBeNull()
+  })
+
+  describe("an Import run on the sheets", () => {
+    /** The sheet's form with an Import, Schedule, filling equipment from a CSV, and one, Find, filling the policy from a database by its state, offered beside it. */
+    function imports(): void {
+      const form = sheetForm()
+      addTo(form, {
+        ...createWidget("import", { x: 16, y: 380, w: 160, h: 40 }, form),
+        id: "w_in",
+        label: "Schedule",
+        table: "equipment",
+      })
+      addTo(form, {
+        ...createWidget("import", { x: 192, y: 380, w: 160, h: 40 }, form),
+        id: "w_find",
+        label: "Find",
+        table: "policy",
+        source: { format: "sql", connection: "crm", query: "select year from p where s = :s", parameters: [{ name: "s", table: "policy", column: "state" }] },
+        lookup: { table: "policy", column: "state" },
+      })
+      loadForm(form)
+      act(() => useWorkbenchViewStore.setState({ mode: "preview" }))
+    }
+    /** A fetch answering each Import with `rows` for `table`, landing as `mode` says. */
+    function answering(table: string, mode: string, rows: Record<string, string>[]) {
+      const fetch = vi.fn(async () => new Response(JSON.stringify({ table, mode, rows }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      vi.stubGlobal("fetch", fetch)
+      return fetch
+    }
+    const sent = (fetch: ReturnType<typeof answering>) => {
+      const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+      return { url, body: JSON.parse(init.body as string) as Record<string, unknown> }
+    }
+    const pick = async (id: string, text: string) => {
+      const file = new File([text], "schedule.csv", { type: "text/csv" })
+      await act(async () => {
+        fireEvent.change(screen.getByTestId(`import-file-${id}`), { target: { files: [file] } })
+      })
+    }
+
+    afterEach(() => {
+      act(() => useWorkbenchViewStore.setState({ mode: "build", underwriterApp: false }))
+      useWorkbenchPreviewStore.setState({ importer: null })
+      useToastStore.setState({ toasts: [] })
+      useQuestionStore.getState().answer(null)
+    })
+
+    it("in Preview, reads the file picked on the server and lands its rows in the sample as one undo step", async () => {
+      imports()
+      const fetch = answering("equipment", "replace", [{ item: "Crane", value: "1000" }])
+      renderBody("w_in")
+      const click = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {})
+
+      fireEvent.click(screen.getByRole("button", { name: "Schedule" }))
+      expect(click).toHaveBeenCalledTimes(1)
+      await pick("w_in", "item,value\nCrane,1000\n")
+
+      await vi.waitFor(() => expect(currentForm().sample.equipment).toEqual([{ item: "Crane", value: "1000" }]))
+      const { url, body } = sent(fetch)
+      expect(url).toBe("/api/workbench/import")
+      expect(body).toMatchObject({ component: "w_in", values: {}, file: btoa("item,value\nCrane,1000\n") })
+      expect(useWorkbenchFormStore.getState().undoStack).toHaveLength(1)
+    })
+
+    it("asks before replacing rows typed, and lands nothing when told no", async () => {
+      imports()
+      act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "equipment", 0, "item", "Truck")))
+      answering("equipment", "replace", [{ item: "Crane" }])
+      renderBody("w_in")
+      vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {})
+
+      await pick("w_in", "item\nCrane\n")
+      await vi.waitFor(() => expect(useQuestionStore.getState().question?.title).toBe("Replace the rows of equipment?"))
+      act(() => useQuestionStore.getState().answer(null))
+      await vi.waitFor(() => expect(screen.getByRole("button", { name: "Schedule" })).toBeEnabled())
+      expect(currentForm().sample.equipment).toEqual([{ item: "Truck" }])
+
+      await pick("w_in", "item\nCrane\n")
+      await vi.waitFor(() => expect(useQuestionStore.getState().question).not.toBeNull())
+      act(() => useQuestionStore.getState().answer({ choice: "confirm", reason: "" }))
+      await vi.waitFor(() => expect(currentForm().sample.equipment).toEqual([{ item: "Crane" }]))
+    })
+
+    it("offers a lookup beside its field, which runs it and fills the one-row table, keeping what it does not read", async () => {
+      imports()
+      act(() => useWorkbenchFormStore.getState().change((spec) => withSampleCell(spec, "policy", 0, "state", "NY")))
+      const fetch = answering("policy", "replace", [{ year: "2024" }])
+      const { rerender } = renderBody("w_boxes")
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Look up: Find" }))
+      })
+
+      await vi.waitFor(() => expect(currentForm().sample.policy).toEqual([{ state: "NY", year: "2024" }]))
+      expect(sent(fetch).body).toMatchObject({ component: "w_find", values: { policy: [{ state: "NY" }] }, file: null })
+      // While building nothing runs: no lookup is offered.
+      act(() => useWorkbenchViewStore.setState({ mode: "build" }))
+      rerender(body("w_boxes", "new"))
+      expect(screen.queryByRole("button", { name: "Look up: Find" })).not.toBeInTheDocument()
+    })
+
+    it("in the app, runs on the quote open through the app's route, and not while the quote is read only", async () => {
+      imports()
+      act(() => useWorkbenchViewStore.setState({ underwriterApp: true }))
+      act(() => useWorkbenchPreviewStore.getState().open({ policy: [{ state: "CA" }] }, null, false))
+      act(() => useWorkbenchPreviewStore.getState().setImporter((id, values, file) => importAppRows("rev-1", "rel-1", id, values, file)))
+      const fetch = answering("policy", "replace", [{ year: "1999" }])
+      const { rerender } = render(body("w_find", "quote"))
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Find" }))
+      })
+
+      await vi.waitFor(() => expect(useWorkbenchPreviewStore.getState().quote.policy).toEqual([{ state: "CA", year: "1999" }]))
+      const { url, body: request } = sent(fetch)
+      expect(url).toBe("/api/app/import")
+      expect(request).toEqual({ form_revision: "rev-1", release: "rel-1", component: "w_find", values: { policy: [{ state: "CA" }] }, file: null })
+      act(() => useWorkbenchPreviewStore.getState().setReadOnly(true))
+      rerender(body("w_find", "quote"))
+      expect(screen.getByRole("button", { name: "Find" })).toBeDisabled()
+    })
+
+    it("shows a refusal as an error toast and can run again", async () => {
+      imports()
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ detail: "Fill State first: Import \"Find\" reads it." }), { status: 422, headers: { "Content-Type": "application/json" } })))
+      renderBody("w_find")
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Find" }))
+      })
+
+      await vi.waitFor(() => expect(useToastStore.getState().toasts).toMatchObject([{ type: "error", text: 'Fill State first: Import "Find" reads it.' }]))
+      expect(screen.getByRole("button", { name: "Find" })).toBeEnabled()
+    })
   })
 
   describe("an Export to an Excel workbook of cells", () => {
@@ -1639,6 +1782,7 @@ describe("WidgetBody", () => {
 
     afterEach(() => {
       act(() => useWorkbenchViewStore.setState({ mode: "build", underwriterApp: false }))
+      useWorkbenchPreviewStore.setState({ exporter: null })
       useToastStore.setState({ toasts: [] })
     })
 
@@ -1676,6 +1820,30 @@ describe("WidgetBody", () => {
 
       await vi.waitFor(() => expect(useToastStore.getState().toasts).toMatchObject([{ type: "error", text: "The sample changed after it was priced: export once it is priced again." }]))
       expect(slip()).toBeEnabled()
+    })
+
+    it("in the app, runs on the quote open while it is final, downloading what the server writes of it", async () => {
+      cellsExport()
+      const clicked = downloads()
+      const fetch = vi.fn(async () => new Response("PK", { status: 200, headers: { "Content-Disposition": 'attachment; filename="Acme Q-1.xlsx"' } }))
+      vi.stubGlobal("fetch", fetch)
+      act(() => useWorkbenchViewStore.setState({ underwriterApp: true }))
+      const final = { reference: "Q 1", option: 2, stage: "final", version: 7 } as WorkbenchAppQuote
+      act(() => useWorkbenchPreviewStore.getState().setExporter(quoteExporter(final)))
+      const { rerender } = render(body("w_out", "quote"))
+
+      await act(async () => {
+        fireEvent.click(slip())
+      })
+
+      await vi.waitFor(() => expect(clicked).toEqual(["Acme Q-1.xlsx"]))
+      const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe("/api/app/quotes/Q%201/2/export")
+      expect(JSON.parse(init.body as string)).toEqual({ component: "w_out", version: 7 })
+      // A draft is exported nowhere.
+      act(() => useWorkbenchPreviewStore.getState().setExporter(quoteExporter({ ...final, stage: "draft" })))
+      rerender(body("w_out", "quote"))
+      expect(slip()).toBeDisabled()
     })
 
     it("is disabled while the price is not the sample's as it stands, it has a problem, the view is building or it is the app", () => {

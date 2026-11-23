@@ -130,6 +130,71 @@ def test_a_value_refused_is_never_said(tmp_path: Path, text: str) -> None:
     assert "123456789" not in str(refused.value)
 
 
+def test_an_imports_sources_are_a_databricks_warehouse_and_an_api(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        '[warehouse]\nprovider = "databricks"\nhttp_path = "/sql/1.0/warehouses/abc"\n\n'
+        '[crm]\nprovider = "http"\nbase_url = "https://crm.example.com/api"\n'
+        'headers = { Authorization = "HAUTE_CRM_AUTHORIZATION" }\n',
+    )
+
+    read = read_connections(tmp_path)
+
+    assert read["warehouse"] == Connection(
+        name="warehouse", provider="databricks", database="", http_path="/sql/1.0/warehouses/abc"
+    )
+    assert read["crm"] == Connection(
+        name="crm",
+        provider="http",
+        database="",
+        base_url="https://crm.example.com/api",
+        headers={"Authorization": "HAUTE_CRM_AUTHORIZATION"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ('provider = "databricks"\nserver = "x"\n', "unknown key(s): server"),
+        ('provider = "databricks"\n', "http_path"),
+        ('provider = "http"\nbase_url = "ftp://crm"\n', "must be an https address"),
+        (
+            'provider = "http"\nbase_url = "https://u:hunter2@crm/api"\n',
+            "must hold no sign-in, query or fragment",
+        ),
+        (
+            'provider = "http"\nbase_url = "https://crm"\n'
+            'headers = { Authorization = "hunter2 x" }\n',
+            "headers.Authorization must name the environment variable",
+        ),
+        ('provider = "http"\nbase_url = "https://crm"\nheaders = "x"\n', "must be a table"),
+    ],
+)
+def test_a_source_connection_not_as_the_file_takes_it_is_refused_naming_why(
+    tmp_path: Path, text: str, said: str
+) -> None:
+    write(tmp_path, "[source]\n" + text)
+
+    with pytest.raises(ConnectionsError) as refused:
+        read_connections(tmp_path)
+
+    assert said in str(refused.value)
+    assert "hunter2" not in str(refused.value)
+
+
+def test_two_names_a_hosted_app_reads_from_the_same_variables_are_refused(tmp_path: Path) -> None:
+    source = 'provider = "sqlite"\ndatabase = "q.sqlite"\n'
+    write(tmp_path, f"[policy-db]\n{source}\n[policy_db]\n{source}")
+
+    with pytest.raises(ConnectionsError) as refused:
+        read_connections(tmp_path)
+
+    assert str(refused.value) == (
+        "connections.toml [policy-db] and [policy_db] are one connection to a hosted app, "
+        "which reads both from HAUTE_CONNECTION_POLICY_DB_*: rename one."
+    )
+
+
 def test_an_entra_sign_in_on_postgresql_names_the_role_it_takes(tmp_path: Path) -> None:
     entra = '[dev]\nprovider = "postgresql"\nserver = "db:5432"\ndatabase = "q"\nauth = "entra"\n'
     write(tmp_path, entra)

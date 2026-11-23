@@ -12,6 +12,7 @@ import { create } from "zustand"
 import {
   changeAppQuote,
   createAppQuote,
+  exportAppQuote,
   fetchAppQuoteActivity,
   openAppQuote,
   saveAppQuote,
@@ -21,6 +22,7 @@ import {
   type QuoteSource,
 } from "../api/app"
 import { keyedWriteSettled, sendHeld, type KeyedHold, type KeyedTicket } from "../api/keyedWrites"
+import type { CellsExporter } from "../api/workbench"
 import { apiErrorMessage, apiErrorRawDetail, isStaleRevision } from "../api/errors"
 import type { FormSpec, WorkbenchAppQuote, WorkbenchAppQuoteActivityResponse, WorkbenchAppQuoteResponse } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
@@ -700,6 +702,18 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       else set({ dropped: [] })
     },
   }
+})
+
+/**
+ * What runs an Export of `quote` on the sheets: a final quote's, at the version open, while
+ * it is final; null for any other, which an Export does not run on.
+ */
+export const quoteExporter = (quote: WorkbenchAppQuote | null): CellsExporter | null =>
+  quote === null || quote.stage !== "final" ? null : (componentId) => exportAppQuote(quote.reference, quote.option, componentId, quote.version)
+
+// The sheets' Export runs on the quote open while it is final, whatever opened or changed it.
+useOpenQuoteStore.subscribe((state, previous) => {
+  if (state.quote !== previous.quote) useWorkbenchPreviewStore.getState().setExporter(quoteExporter(state.quote))
 })
 
 export default useOpenQuoteStore

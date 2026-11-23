@@ -135,6 +135,16 @@ export interface ExportedFile {
   blob: Blob
 }
 
+/** What runs an Export to an Excel workbook of cells on what a sheet shows, by the Export's id. */
+export type CellsExporter = (componentId: string) => Promise<ExportedFile>
+
+/** The file an export's answer holds, named by its `Content-Disposition`. */
+export async function exportedFile(response: Response): Promise<ExportedFile> {
+  const fileName = attachmentName(response.headers.get("Content-Disposition"))
+  if (fileName === null) throw new Error("The export's answer names no file")
+  return { fileName, blob: await response.blob() }
+}
+
 /** What a pricing of the sample gave, which an Export in Preview writes: the sample as the server typed it, and the priced rows of each table. */
 export interface ExportedPrice {
   sample: Readonly<Record<string, unknown>>
@@ -156,10 +166,7 @@ export function attachmentName(disposition: string | null): string | null {
  * throws with the server's reason.
  */
 export async function exportWorkbenchFile(form: FormSpec, componentId: string, price: ExportedPrice): Promise<ExportedFile> {
-  const response = await postRawStream("/api/workbench/export", { form, component: componentId, sample: price.sample, tables: price.tables })
-  const fileName = attachmentName(response.headers.get("Content-Disposition"))
-  if (fileName === null) throw new Error("The export's answer names no file")
-  return { fileName, blob: await response.blob() }
+  return exportedFile(await postRawStream("/api/workbench/export", { form, component: componentId, sample: price.sample, tables: price.tables }))
 }
 
 export async function fetchWorkbenchForm(): Promise<WorkbenchFormResponse> {

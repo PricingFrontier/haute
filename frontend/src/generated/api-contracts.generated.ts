@@ -6050,10 +6050,11 @@ export interface ImportWidget {
   h: number;
   id: string;
   label: string;
+  lookup: FieldRef | null;
   mode: 'replace' | 'append' | 'update';
   name: string;
   show_when: ShowWhen;
-  source: CsvImport | ExcelImport | SqlImport;
+  source: CsvImport | ExcelImport | SqlImport | HttpImport;
   table: string | null;
   type: 'import';
   w: number;
@@ -6104,10 +6105,24 @@ export interface QueryParameter {
   table: string;
 }
 /**
- * An Export: a button an underwriter presses to take the quote's tables out to a file
- * or a database. It shows no schema columns and takes nothing typed. Only an Excel
- * workbook of cells runs yet, in Preview; every other is drawn disabled where the sheets
- * are used.
+ * A request to a named connection's API (``provider = "http"``), whose base URL is the
+ * one host it reaches: its ``method``, its ``path`` after the base URL, each ``{name}`` in
+ * it a parameter's value, its ``parameters`` as a query's, and ``rows``, where the
+ * answer's rows are, a dotted path of keys, empty for the answer itself.
+ */
+export interface HttpImport {
+  connection: string;
+  format: 'http';
+  method: 'GET' | 'POST';
+  parameters: QueryParameter[];
+  path: string;
+  rows: string;
+}
+/**
+ * An Export: a button an underwriter presses to take the quote's tables out to a file;
+ * a saved quote is in the store's database already. It shows no schema columns and takes
+ * nothing typed. Only an Excel workbook of cells runs yet, in Preview and on a final quote
+ * in the underwriter app; every other is drawn disabled where the sheets are used.
  */
 export interface ExportWidget {
   h: number;
@@ -6116,7 +6131,7 @@ export interface ExportWidget {
   name: string;
   show_when: ShowWhen;
   tables: string[];
-  target: CsvExport | ExcelExport | ExcelCellsExport | SqlExport;
+  target: CsvExport | ExcelExport | ExcelCellsExport;
   type: 'export';
   w: number;
   x: number;
@@ -6181,23 +6196,6 @@ export interface ExportCell {
   column: string;
   label_cell: string;
   sheet: string;
-  table: string;
-}
-/**
- * The tables an Export writes to a database on a named connection, each to the table
- * of its own name or the name given it, the quote's rows there written again.
- */
-export interface SqlExport {
-  connection: string;
-  format: 'sql';
-  table_names: TableName[];
-}
-/**
- * A table an Export writes to a database, by name, and the name of the table it is
- * written to there.
- */
-export interface TableName {
-  name: string;
   table: string;
 }
 /**
@@ -6654,10 +6652,10 @@ export interface WorkbenchAppRelatedQuote {
 }
 /**
  * One thing done to a quote: what, by whom and when, the version it left the quote at
- * (none for a note), and what it carried.
+ * (none for a note or an export), and what it carried.
  */
 export interface WorkbenchAppQuoteActivityEntry {
-  action: 'created' | 'saved' | 'assigned' | 'archived' | 'restored' | 'finalised' | 'amended' | 'noted';
+  action: 'created' | 'saved' | 'assigned' | 'archived' | 'restored' | 'finalised' | 'amended' | 'noted' | 'exported';
   actor: string;
   assignee: string | null;
   at: string;
@@ -6672,6 +6670,17 @@ export interface WorkbenchAppQuoteActivityEntry {
  */
 export interface WorkbenchAppPeopleResponse {
   people: string[];
+}
+/**
+ * What an Import gives its table: the table, how its rows land (``replace``, ``append`` or
+ * ``update``), and its rows, each the cells the sheets hold by column name.
+ */
+export interface WorkbenchImportResponse {
+  mode: 'replace' | 'append' | 'update';
+  rows: {
+    [k: string]: string | boolean;
+  }[];
+  table: string;
 }
 /**
  * A node by address: a pipeline node (``occurrence`` null; an occurrence is itself the
@@ -6820,6 +6829,24 @@ export interface OptimiserMlflowLogRequest {
   job_id: string;
   point_index?: number | null;
   stale?: boolean;
+}
+/**
+ * An Import run in the app on the quote typed: as :class:`WorkbenchImportRequest`, named
+ * by the form revision and the release the page was drawn from in place of a form.
+ */
+export interface WorkbenchAppImportRequest {
+  component: string;
+  file?: string | null;
+  form_revision: string;
+  release: string;
+  values: {
+    /**
+     * @maxItems 10000
+     */
+    [k: string]: {
+      [k: string]: string | boolean;
+    }[];
+  };
 }
 /**
  * A quote typed into the app's sheets, with the form revision and the release the page

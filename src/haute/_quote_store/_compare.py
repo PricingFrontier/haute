@@ -131,14 +131,15 @@ def _live_column(
 ) -> dict[str, Any]:
     """*column* as a plan's structure holds it, under *column_key*: its type the form's that
     its kind is held as, else its kind, or, where it *holds_less* than the store's type of its
-    kind, the database's name for it, so a plan retypes it; and the type the database names
-    it by."""
+    kind, the database's name for it, so a plan retypes it; the type the database names it
+    by; and whether it takes a null, which a change of its type keeps."""
     return {
         "key": column_key,
         "name": column.name,
         "type": column.type if holds_less else _FORM_TYPES.get(column.kind, column.kind),
         "index": False,
         "sql_type": column.type,
+        "nullable": column.nullable,
     }
 
 

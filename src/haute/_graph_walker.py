@@ -72,12 +72,12 @@ from haute._execution_context import (
     naming_nodes_from,
 )
 from haute._global_constants import node_code_globals
-from haute._graph_utils import edge_input_name, resolve_orig_source_names
+from haute._graph_utils import edge_input_name, resolve_orig_source_names, upstream_node_ids
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._mlflow_model import model_resolution_scope
 from haute._node_addresses import node_display_name
-from haute._node_apply import shape_node_output
+from haute._node_apply import resolve_workbench_input_from_config, shape_node_output
 from haute._node_specs import node_spec, node_type_table
 from haute._polars_dtypes import refuse_wide_integers
 from haute._polars_selectors import preamble_selector_aliases
@@ -85,6 +85,7 @@ from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, stre
 from haute._source_cache import SourceCacheError
 from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
+from haute._workbench_output import WorkbenchOutputTables, with_quote_identity
 from haute.errors import (
     ContractMismatchError,
     SchemaMismatchError,
@@ -1146,6 +1147,9 @@ class _Walk:
             inputs = [] if boundary.is_source else self._node_inputs(boundary)
             try:
                 frame = self._invoke(boundary, inputs)
+                if isinstance(frame, WorkbenchOutputTables):
+                    # Answered under the quote its Workbench Input read, as a run's response.
+                    frame = with_quote_identity(frame, self._workbench_quote(node_id))
                 # A display walk resolves the node's schema here, so a lazy
                 # plan's failure surfaces while the inputs are still in hand.
                 built = self._shape_output(boundary, frame)
@@ -1156,6 +1160,28 @@ class _Walk:
             if inputs and self.policy.record_failures and _locates_steps(self.funcs[node_id][0]):
                 built.inputs = inputs
             return built
+
+    def _workbench_quote(self, node_id: str) -> object:
+        """The quote of the Workbench Input *node_id* reads from, its frames by port, every
+        port: the request the walk was given for it, else the quote it reads from its config,
+        as its builder reads it (its sample, under the stand-in identity). Not the frames the
+        walk built, which hold only the ports its consumers read, and none above a seed. None
+        when it reads from no Workbench Input."""
+        source = next(
+            (
+                parent
+                for parent in upstream_node_ids(node_id, self.prepared.all_parents)
+                if node_spec(self.node_map[parent].data.nodeType).request_input
+                and node_spec(self.node_map[parent].data.nodeType).workbench
+            ),
+            None,
+        )
+        if source is None:
+            return None
+        given = (self.request.runtime_source_frames_by_node or {}).get(source)
+        if given is not None:
+            return given
+        return resolve_workbench_input_from_config(self.node_map[source].data.config)
 
     def _check_parents(self, boundary: NodeBoundary) -> None:
         failed = [parent for parent in boundary.parent_ids if parent in self.failed]

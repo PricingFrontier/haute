@@ -10149,7 +10149,7 @@
     },
     "ExportWidget": {
       "additionalProperties": false,
-      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file\nor a database. It shows no schema columns and takes nothing typed. Only an Excel\nworkbook of cells runs yet, in Preview; every other is drawn disabled where the sheets\nare used.",
+      "description": "An Export: a button an underwriter presses to take the quote's tables out to a file;\na saved quote is in the store's database already. It shows no schema columns and takes\nnothing typed. Only an Excel workbook of cells runs yet, in Preview and on a final quote\nin the underwriter app; every other is drawn disabled where the sheets are used.",
       "properties": {
         "h": {
           "exclusiveMinimum": 0,
@@ -10188,9 +10188,6 @@
             },
             {
               "$ref": "#/$defs/ExcelCellsExport"
-            },
-            {
-              "$ref": "#/$defs/SqlExport"
             }
           ],
           "title": "Target"
@@ -12700,6 +12697,54 @@
       "title": "HeadingWidget",
       "type": "object"
     },
+    "HttpImport": {
+      "additionalProperties": false,
+      "description": "A request to a named connection's API (``provider = \"http\"``), whose base URL is the\none host it reaches: its ``method``, its ``path`` after the base URL, each ``{name}`` in\nit a parameter's value, its ``parameters`` as a query's, and ``rows``, where the\nanswer's rows are, a dotted path of keys, empty for the answer itself.",
+      "properties": {
+        "connection": {
+          "title": "Connection",
+          "type": "string"
+        },
+        "format": {
+          "const": "http",
+          "title": "Format",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/QueryParameter"
+          },
+          "title": "Parameters",
+          "type": "array"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "rows": {
+          "title": "Rows",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "connection",
+        "method",
+        "path",
+        "parameters",
+        "rows"
+      ],
+      "title": "HttpImport",
+      "type": "object"
+    },
     "ImportWidget": {
       "additionalProperties": false,
       "description": "An Import: a button an underwriter presses to fill an input table from a file or a\ndatabase. It shows no schema columns and takes nothing typed; nothing runs it yet, so\nit is drawn disabled where the sheets are used.",
@@ -12723,6 +12768,17 @@
         "label": {
           "title": "Label",
           "type": "string"
+        },
+        "lookup": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "mode": {
           "enum": [
@@ -12750,6 +12806,9 @@
             },
             {
               "$ref": "#/$defs/SqlImport"
+            },
+            {
+              "$ref": "#/$defs/HttpImport"
             }
           ],
           "title": "Source"
@@ -12799,7 +12858,8 @@
         "source",
         "table",
         "mode",
-        "column_names"
+        "column_names",
+        "lookup"
       ],
       "title": "ImportWidget",
       "type": "object"
@@ -24294,35 +24354,6 @@
       "title": "ShowWhen",
       "type": "object"
     },
-    "SqlExport": {
-      "additionalProperties": false,
-      "description": "The tables an Export writes to a database on a named connection, each to the table\nof its own name or the name given it, the quote's rows there written again.",
-      "properties": {
-        "connection": {
-          "title": "Connection",
-          "type": "string"
-        },
-        "format": {
-          "const": "sql",
-          "title": "Format",
-          "type": "string"
-        },
-        "table_names": {
-          "items": {
-            "$ref": "#/$defs/TableName"
-          },
-          "title": "Table Names",
-          "type": "array"
-        }
-      },
-      "required": [
-        "format",
-        "connection",
-        "table_names"
-      ],
-      "title": "SqlExport",
-      "type": "object"
-    },
     "SqlImport": {
       "additionalProperties": false,
       "description": "A query run on a named connection, whose credentials the environment holds, never\nthe form, each of its parameters given the value of the column bound to it.",
@@ -25024,28 +25055,6 @@
         "tables"
       ],
       "title": "TableListResponse",
-      "type": "object"
-    },
-    "TableName": {
-      "additionalProperties": false,
-      "description": "A table an Export writes to a database, by name, and the name of the table it is\nwritten to there.",
-      "properties": {
-        "name": {
-          "minLength": 1,
-          "pattern": "\\S",
-          "title": "Name",
-          "type": "string"
-        },
-        "table": {
-          "title": "Table",
-          "type": "string"
-        }
-      },
-      "required": [
-        "table",
-        "name"
-      ],
-      "title": "TableName",
       "type": "object"
     },
     "TableV2": {
@@ -27808,6 +27817,77 @@
       "title": "WorkbenchAppFormResponse",
       "type": "object"
     },
+    "WorkbenchAppImportRequest": {
+      "description": "An Import run in the app on the quote typed: as :class:`WorkbenchImportRequest`, named\nby the form revision and the release the page was drawn from in place of a form.",
+      "properties": {
+        "component": {
+          "maxLength": 512,
+          "title": "Component",
+          "type": "string"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "maxLength": 14680064,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        },
+        "form_revision": {
+          "maxLength": 512,
+          "title": "Form Revision",
+          "type": "string"
+        },
+        "release": {
+          "maxLength": 512,
+          "title": "Release",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maxLength": 16777216,
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxProperties": 10000,
+              "propertyNames": {
+                "maxLength": 512
+              },
+              "type": "object"
+            },
+            "maxItems": 10000,
+            "type": "array"
+          },
+          "maxProperties": 10000,
+          "propertyNames": {
+            "maxLength": 512
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "form_revision",
+        "release",
+        "component",
+        "values"
+      ],
+      "title": "WorkbenchAppImportRequest",
+      "type": "object"
+    },
     "WorkbenchAppPeopleResponse": {
       "description": "Everyone a quote is with, or was made, saved or changed by: those a quote can be\nassigned to without typing a name.",
       "properties": {
@@ -28153,7 +28233,7 @@
       "type": "object"
     },
     "WorkbenchAppQuoteActivityEntry": {
-      "description": "One thing done to a quote: what, by whom and when, the version it left the quote at\n(none for a note), and what it carried.",
+      "description": "One thing done to a quote: what, by whom and when, the version it left the quote at\n(none for a note or an export), and what it carried.",
       "properties": {
         "action": {
           "enum": [
@@ -28164,7 +28244,8 @@
             "restored",
             "finalised",
             "amended",
-            "noted"
+            "noted",
+            "exported"
           ],
           "title": "Action",
           "type": "string"
@@ -29186,6 +29267,48 @@
         "revision"
       ],
       "title": "WorkbenchFormSaveResponse",
+      "type": "object"
+    },
+    "WorkbenchImportResponse": {
+      "description": "What an Import gives its table: the table, how its rows land (``replace``, ``append`` or\n``update``), and its rows, each the cells the sheets hold by column name.",
+      "properties": {
+        "mode": {
+          "enum": [
+            "replace",
+            "append",
+            "update"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "mode",
+        "rows"
+      ],
+      "title": "WorkbenchImportResponse",
       "type": "object"
     },
     "WorkbenchInputConfig": {
@@ -30842,6 +30965,9 @@
     "WorkbenchAppFormResponse": {
       "$ref": "#/$defs/WorkbenchAppFormResponse"
     },
+    "WorkbenchAppImportRequest": {
+      "$ref": "#/$defs/WorkbenchAppImportRequest"
+    },
     "WorkbenchAppPeopleResponse": {
       "$ref": "#/$defs/WorkbenchAppPeopleResponse"
     },
@@ -30889,6 +31015,9 @@
     },
     "WorkbenchFormSaveResponse": {
       "$ref": "#/$defs/WorkbenchFormSaveResponse"
+    },
+    "WorkbenchImportResponse": {
+      "$ref": "#/$defs/WorkbenchImportResponse"
     },
     "WorkbenchParamFileResponse": {
       "$ref": "#/$defs/WorkbenchParamFileResponse"
@@ -30957,6 +31086,7 @@
     "OptimiserApplyRequest",
     "OptimiserSaveRequest",
     "OptimiserMlflowLogRequest",
+    "WorkbenchAppImportRequest",
     "WorkbenchAppPriceRequest",
     "WorkbenchAppQuoteCreateRequest",
     "WorkbenchAppQuoteSaveRequest",
@@ -31081,6 +31211,7 @@
     "WorkbenchAppQuoteChangeResponse",
     "WorkbenchAppQuoteActivityResponse",
     "WorkbenchAppPeopleResponse",
+    "WorkbenchImportResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
     "ModelFileInspectionResponse",
@@ -31203,6 +31334,7 @@
       "OptimiserMlflowLogRequest"
     ],
     "workbench-app-requests": [
+      "WorkbenchAppImportRequest",
       "WorkbenchAppPriceRequest",
       "WorkbenchAppQuoteCreateRequest",
       "WorkbenchAppQuoteSaveRequest",
@@ -31403,6 +31535,9 @@
       "WorkbenchAppQuoteChangeResponse",
       "WorkbenchAppQuoteActivityResponse",
       "WorkbenchAppPeopleResponse"
+    ],
+    "workbench-import": [
+      "WorkbenchImportResponse"
     ]
   },
   "x-haute-shared-response-groups": [

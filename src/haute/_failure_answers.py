@@ -1043,6 +1043,32 @@ def answer_pipeline_failure(
     return answer_failure(exc, operation=operation, record=record)
 
 
+def answer_app_pricing_failure(exc: BaseException, *, operation: str) -> FailureAnswer:
+    """An underwriter app's pricing that failed, as the deployed pricing API answers one
+    (specs/workbench): a refusal worded for its request, memory and a public contract error
+    (a quote's values the Workbench Input does not take, a rating factor missing) as every
+    edge says them; anything else, the pipeline failing on the quote, in one fixed sentence
+    naming an incident, under which what failed and its text are logged for the analyst.
+    Never the text itself: a node's can hold paths, internal names and secrets, and an
+    underwriter is no one to read them."""
+    answer = classify_failure(exc)
+    if answer is not None and (
+        isinstance(exc, RequestRefusedError)
+        or answer.terminal_reason == "memory_limited"
+        or is_public_contract_error(exc)
+    ):
+        _log_answered(exc, answer, operation)
+        return answer
+    incident = _new_incident()
+    _log_incident(incident, exc, event="pricing_failed", operation=operation)
+    message = (
+        f"The pipeline failed on this quote (incident {incident}). Pass the incident to "
+        "whoever looks after this app: what failed is recorded under it."
+    )
+    detail = _structured("pricing_failed", message, incident=incident)
+    return FailureAnswer(500, "pricing_failed", message, "error", detail, incident=incident)
+
+
 def _log_answered(exc: BaseException, answer: FailureAnswer, operation: str | None) -> None:
     # A server fault is an error, once: an incident's record is already logged under it.
     server_fault = answer.status >= 500 and answer.status != 507 and answer.incident is None

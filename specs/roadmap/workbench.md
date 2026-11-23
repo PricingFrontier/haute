@@ -13,78 +13,55 @@ delivery of a workbench project through CI, from a merge to `main` to that app; 
 changes and environments that keep the quote store, the form's own tables in the user's
 database, in step with the form, and the server databases it runs on; how underwriters
 manage their quotes in the app;
-exports from the app; test quotes analysts keep and price again; and the actions
-that fill the sheets from databases and APIs.
+exports from the app; and test quotes analysts keep and price again.
 
 `WB-25` is the app's sign-in, which waits on the Azure work.
 
 `WB-38` comes from the 25 October 2026 codebase review (finding FWB-7): what it found
-in the Workbench view's Allowed field. `WB-41` comes from the 31 October 2026 codebase
-review, which found its defects by source inspection.
+in the Workbench view's Allowed field.
 
-`WB-46` to `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
+`WB-49` and `WB-50` come from the 9 November 2026 codebase review. Each entry says whether
 it was confirmed by running the code or read from the source; none was run against a
 hosted app or a server database.
 
-`WB-51` to `WB-53` were reproduced on 10 November 2026 through the editor's and the app's
-routes. All three come from leads the October reviews left unverified; `WB-53` is a decision.
+`WB-51` and `WB-52` were reproduced on 10 November 2026 through the editor's routes. Both
+come from leads the October reviews left unverified.
 
-`WB-54` and `WB-55` come from the review plan's third sweep of failed writes on 11 November
-2026. Both were reproduced on a SQLite quote store with a second process holding the file,
-as a database browser or a backup does; no server database was used.
+`WB-55` comes from the review plan's third sweep of failed writes on 11 November 2026. It
+was reproduced on a SQLite quote store with a second process holding the file, as a
+database browser or a backup does; no server database was used.
 
 `WB-56` to `WB-58` come from the review plan's phase 4, which ran the underwriter app on
 SQL Server 2022 and PostgreSQL 16 beside SQLite on 12 November 2026, in the containers CI
 uses. The main session ran each again on the three databases. `WB-59` comes from the same
 phase's carrying of projects made on Windows to Linux, and was run again on Windows.
 
-`WB-60` comes from the plan's phase 5, a reader from a second model family (Codex) over the
-code changed since the 31 October audit. A worker ran it in a browser, and the main session
-ran its journey again on 13 November 2026.
-
-`WB-63` to `WB-66` come from the review plan's phase 5, a reader from a second
-model family (Codex) over the code changed since the 31 October audit. A
-worker built each run and the main session ran each again on 14 November
-2026.
-
-`WB-70` to `WB-74` come from the review plan's phase 4, the quote store
-on PostgreSQL 16 and SQL Server 2022 under repeated requests, lost
-connections and hand-made schemas. A worker built each run and the main
-session ran each again on 16 November 2026.
+`WB-74` comes from the review plan's phase 4, the quote store on PostgreSQL 16 and SQL
+Server 2022 under repeated requests, lost connections and hand-made schemas. A worker
+built the run and the main session ran it again on 16 November 2026.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | WB-07 | Planned | P3 | The underwriter app runs on a Databricks App, on AWS or on an internal platform as it runs on Azure Container Apps, each signing underwriters in its own way. |
-| WB-08 | Planned | P2 | A workbench project's CI tests the packaged app before any host sees it, and an export template's change starts the release. |
-| WB-09 | Decision | P2 | An Import on a sheet, or a lookup beside a key cell, runs against a file, a database or an API and fills input cells with what comes back, through the server with no credential in the browser, while pricing stays as pure as it is. |
-| WB-11 | Decision | P2 | An underwriter exports a final quote from the app in the formats the project needs, naming the release that priced it. |
+| WB-08 | Planned | P3 | An export template's change starts a workbench project's release, and CI drives the packaged app's sheets in a browser. |
+| WB-11 | Planned | P3 | An Export fills the analyst's own workbook template, writes a cell for each row of a table, and names its cells as a template names them. |
 | WB-12 | Planned | P3 | An analyst saves the quote typed in Preview as a test quote in `tests/quotes`, prices every test quote again from Preview as the pipeline changes and accepts what moved, and CI reports the test quotes whose outputs moved. |
 | WB-13 | Planned | P3 | An underwriter records how a final quote ended, and archives or reassigns many quotes at once. |
-| WB-25 | Decision | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
+| WB-25 | Planned | P3 | The underwriter app refuses to trust sign-in headers it was not put behind. |
 | WB-38 | Decision | P3 | Allowed values typed into an older form are either refused by the form schema or canonical; the Allowed field stops calling a shape the server accepts "older". |
-| WB-41 | Planned | P2 | `priceSample` previews a `WORKBENCH_OUTPUT` inside a submodel by its address, and the workbench high-level specification removes the stale `The blank form is a form` bullet. |
-| WB-46 | Planned | P2 | A quote store that stops answering is refused within seconds, and a request waiting on it holds no lock others need. |
-| WB-47 | Decision | P2 | A release is not built while a Workbench Output declares a column no frame fills with a fitting type. |
 | WB-49 | Planned | P3 | The hosted check's two probes are retried like its health check, so one dropped request does not roll a good release back. |
 | WB-50 | Planned | P3 | A save the store is bound to refuse is refused before the quote is priced. |
 | WB-51 | Planned | P3 | A form request whose column name is not text is answered 422 naming it, never 500. |
 | WB-52 | Planned | P3 | The form's save refuses a column named with a Python keyword, as the tables route and the editor do. |
-| WB-53 | Decision | P2 | A pricing failure in the underwriter app gives the underwriter a fixed message and an id, and keeps the exception's text for the log. |
-| WB-54 | Planned | P2 | The release route does not report the quotes open while the app's store cannot be written to. |
 | WB-55 | Planned | P3 | A SQLite store held exclusively, damaged or deleted is said as such at start, naming its file. |
 | WB-56 | Planned | P3 | On SQL Server a quote address with a trailing space names no quote, as on the other databases; no row is stored under a padded reference. |
 | WB-57 | Planned | P3 | A search of the quote list finds the same quotes on SQLite, SQL Server and PostgreSQL, for accented letters in any case and for a word that holds `[`. |
 | WB-58 | Planned | P3 | The quote list sorted by reference or by insured is in one stated order on every database. |
 | WB-59 | Planned | P3 | A release built from one commit has one id, whether its checkout has LF or CRLF line endings. |
-| WB-60 | Planned | P1 | In the underwriter app, hidden values stay on their own rows through a save: rows typed out of index order no longer exchange them, and the premium with them. |
-| WB-63 | Planned | P1 | An underwriter app opened before a column was added keeps that column's values when it saves a quote. |
-| WB-64 | Planned | P2 | The migration SQL for SQL Server keeps a column's NOT NULL when it changes the column's type. |
-| WB-66 | Planned | P2 | A test quote's table rows are opened by their index values after a params list is reordered, and values equal as numbers are not listed as not opened. |
-| WB-70 | Planned | P2 | A creation sent twice under one operation key answers both with the quote it made, never "already holds the reference". |
 | WB-74 | Planned | P3 | A password corrected in `.env` is used by the running editor's next Refresh. |
-| WB-76 | Planned | P2 | A workbench's sample is priced under the stand-in identity by the preview and `haute run`, as `pipeline.run()` prices it. |
+| WB-77 | Planned | P3 | A PostgreSQL quote store whose server keeps the connection open but never answers is refused within the statement deadline, as one that stops acknowledging is. |
 
 ## Planned improvements
 
@@ -129,181 +106,56 @@ host) and `::build_release` (the release and the image's build context);
 `src/haute/deploy/_container.py::prepare_build_directory` (the image's Dockerfile).
 
 ### WB-08 — The workbench project's CI/CD
-**Why:** A workbench project hosts no scoring API: its workflows validate the project and the
-app's release on every pull request and on a push to `main` that changes a release input;
-on that push they publish the app's image once, by digest, and roll the staging app to it,
-and by hand, after approval, roll production to the image staging ran for that commit, each
-rollout checked on the host and recorded on its Container App, and before production is
-approved `haute app impact` prices a sample of the quotes production saved on both apps and
-compares the fields the two releases share inside their response tables
-([workbench](../workbench/high-level.md)). What the release flow promised and still lacks:
-Nothing tests the packaged app before a host sees it: `haute app build` validates the
-pipeline and scores the committed test quotes, but no step starts the app the image holds,
-saves a quote through it or reopens one, against SQLite or against the server engine IT's
-instance runs. The export templates of WB-11, once they exist, start no release
-either. Pricing analysts work on their own machines: Save writes the save branch, Commit
-makes a milestone, Push publishes it, a pull request to `main` is opened and merged on the
-provider, and the merge is the release. A milestone Commit sweeps tracked files only, so a
-file the workbench adds, such as the test quotes of WB-12, needs tracking from the start.
+**Why:** A workbench project's workflows validate the project and the app's release on every
+pull request and on a push to `main` that changes a release input, test the packaged app
+there (`haute app test`: the release served on a store made for the run alone, on SQLite and
+on the server engine production's store runs, each test quote made, priced, saved, opened
+again, marked final and exported through the app's routes), publish the app's image once and
+roll staging out to it, and roll production out by hand
+([workbench](../workbench/high-level.md)). What the release flow still lacks: the export
+templates of WB-11, once they exist, start no release; and no step drives the sheets
+themselves in a browser, so a page that does not load or draw is found by an underwriter.
 
-**Plan:** The behaviour lives in Haute's commands, as `haute app rollout` does, so the YAML
-stays thin and alike across providers. The release triggers gain each release input as it
-arrives, where its specification puts it: the export templates. On every pull request, and
-again on the merge's build before it is published, the packaged app is tested in the CI
-runner, against SQLite and once against the server engine IT's instance runs (a service
-container), each a throwaway store of the branch's form made for the tests alone, since
-SQLite proves nothing of that engine's types; CI rehearses no migration, whose SQL the
-analysts write in the schema pane ([workbench](../workbench/high-level.md)) and run
-themselves: the test quotes of WB-12 re-priced one request each against their accepted
-outputs, a quote saved, reopened and, once WB-11's formats exist, exported through the app,
-and the sheets driven in a browser.
+**Plan:** The release triggers gain the export templates where their specification puts
+them, as they arrive. The packaged app's test gains a browser run of the sheets: the
+release's page loaded against the app `haute app test` serves, a test quote typed into it
+and saved, as the editor's own browser tests drive it.
 
-**Acceptance:** A pull request whose packaged app cannot save and reopen a quote, against
-SQLite or the server engine, fails before any host sees it, each test store made for the
-tests alone and no migration rehearsed; a change confined to an export template starts the
-release; no step of the workflow changes a hosted database's tables or a saved quote.
+**Acceptance:** A change confined to an export template starts the release; a pull request
+whose packaged app's page cannot open a quote or save one fails before any host sees it.
 
-**Dependencies:** WB-11 (the export templates and the export the app's tests make, once
-their formats are decided) and WB-12 (the test quotes).
+**Dependencies:** WB-11 (the export templates).
 
-**Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (validate, publish, roll out and
-impact, no packaged-app test);
-`src/haute/_git_transactions.py::_residual_tracked_changes` (a milestone sweeps tracked
-files only).
+**Evidence:** `src/haute/_scaffold.py::workbench_ci_files` (the trigger paths and the
+validate jobs); `src/haute/_workbench_app_test.py` (the packaged app's test).
 
-### WB-09 — Actions that fill the sheets
-**Why:** Underwriters key in what other systems already hold: the broker and the assured
-from a CRM, last year's layers from a policy database, a schedule of items from a
-reference table. Today every cell on a sheet is typed. The ruling is that buttons populate
-the workbench: nothing calls a database or an API at scoring time, so the test quotes, the
-impact analysis and the dry-run deploy keep assuming pure scoring, a deployed pipeline
-needs no warehouse, and a filled cell is a typed cell as far as pricing can tell. What
-exists: one path for a sheet's values, the sample in Preview and the quote in the
-underwriter app, through which a result can land exactly as typing does, so the rule marks
-follow it and it is priced as typing is; a Databricks SQL reach on the server, which
-validates a statement as a single SELECT, builds connection settings from the workspace
-credentials and takes a service principal's, used today to snapshot tables; a
-credential policy for the editor's data access, environment variables named in the docs
-and never a value in a file; and the Import, a button on the sheets whose settings, kept
-in the form, name its format (a CSV the underwriter picks, an Excel workbook's sheet and
-header row, or a database's named connection, its query and the column giving each of
-its parameters), the input table it fills, how it fills a many-row table (replace,
-append or update by key) and the names its columns are read from, flagged on its frame
-as a component is, and drawn disabled in Preview and the app since nothing runs it.
-What does not exist: a driver for any database but Databricks, an outbound HTTP
-pattern, a route that runs an Import, the file read in the browser, and a credential
-model for a project whose sheets reach several systems.
+### WB-11 — Exports from templates
+**Why:** The underwriter app exports a final quote as the Excel workbook of cells the
+analyst lays out in the Export's settings, Haute making the workbook, the release that
+priced the quote named in it and the export recorded in the quote's activity; Preview runs
+the same Export on the sample ([workbench](../workbench/high-level.md)). An Export writes
+files alone: a saved quote is in the store's database already (decided 22 November 2026).
+What the decided first format left for slices of their own: a template, the analyst's own
+workbook filled in place of one Haute makes; a cell for each row of a table, with a row for
+each value; and cells named in a template in place of an address. The CSV and the workbook
+of a sheet per table are laid out and drawn disabled.
 
-**Plan:** Decision first, recorded here before the first slice. The auth model: how a
-source's credentials are named and supplied (a variable per source, a secret scope on
-Databricks, the CI provider's secrets for the generated workflows), and whose identity an
-action runs under, the app's service principal or the signed-in underwriter's, which
-decides whether a database's row-level permissions apply. The sources: Databricks SQL
-first, then databases that are not Databricks, each a driver behind an optional extra as
-the Databricks one is, with SELECT-only validation per dialect generalising the validator
-that exists, and HTTP APIs with allow-listed hosts, a timeout and a mapping from the
-response's JSON onto columns. Whether actions are declared alone (a statement or a
-request with named parameters) or Python actions are allowed too. Where the pieces live:
-the Import's settings beside the schema in the form file, as they are, since they name
-tables and columns by id and version with the sheets; the connection its name stands
-for in `connections.toml`, the file of named connections the editor and `haute app serve`
-already read ([workbench](../workbench/high-level.md)), with the names
-of its credential variables; the values in `.env`, never in a file the ledger pushes. Whether a press in Build writes the
-sample, which Save then writes to disk, or actions run in Preview alone. Then the
-slices: the connections of `connections.toml`, which an Import's connection names; a route
-under the workbench router that takes the sheet's values, resolves the Import's
-parameters, runs its query on the server with a row cap and returns rows in the
-sample's shape, typed by the columns they fill; a CSV or a workbook the underwriter
-picks read into the same shape; the Import enabled in Preview, its rows landing as
-typing does, replacing, adding to or updating the table's rows as its settings say,
-asking first before it replaces rows already typed; an HTTP request as another of its
-formats; a lookup beside a key cell as the same action from a column property; and the
-underwriter app running the same actions on its server.
+**Plan:** Each a slice. A template lives in the project beside the form and ships in the
+release, so a change to one starts the workflow of WB-08 and is tested there against the
+test quotes; an export of a template keeps the template the release ships, so a quote
+exported again later uses the current one. Then the cell for each row, and the named cells,
+both reading the template's own names.
 
-**Acceptance:** With a source declared in `haute.toml` and an Import in the form, pressing
-it in Preview fills the bound input cells with the query's values, typed by their
-columns and marked where a value breaks a rule, and priced as typed values are, the
-action itself never calling the pipeline; the same action runs against a database that is not
-Databricks, and an HTTP action fills cells from a response; no credential value appears
-in the form file, in `haute.toml`, in an API response or in a log; a statement that is
-not a single SELECT, a host not allowed, a result over the cap and a bound column no
-longer in the schema are each refused naming the cause; a project with no actions behaves
-exactly as now.
+**Acceptance:** An Export naming a template fills it from a final quote in the app and from
+the sample in Preview, its other sheets and formatting kept; a change to the template
+starts the release, and the template's output for the test quotes is checked in CI.
 
-**Dependencies:** The decisions above, recorded here before the first slice. For
-production, the underwriter app, which runs the actions on its server, and, on Databricks,
-[hosted-databricks-app](../hosted-databricks-app/high-level.md), whose secret handling
-the sources follow. The Host, Origin and session checks of
-[sandbox-security](../sandbox-security/high-level.md) apply to the new route as to any
-other.
+**Dependencies:** WB-08 for the release trigger and the check in CI.
 
-**Evidence:** `frontend/src/workbench/useSheetValues.ts::useSampleValues` and
-`::useQuoteValues` (the one path for a sheet's values);
-`frontend/src/stores/useWorkbenchPricingStore.ts::priceForm` (the sample priced as it is typed);
-`src/haute/_workbench_form.py::ImportWidget` (the Import's settings, read strictly);
-`frontend/src/workbench/panel/ImportSettings.tsx` (where they are chosen);
-`frontend/src/utils/workbenchForm.ts::importProblems` (what the view flags on it);
-`src/haute/routes/workbench.py` (the workbench router);
-`src/haute/_databricks_io.py::_validate_select_clause`, `::_resolve_connection` and
-`::_service_principal_credentials` (the Databricks SQL reach); `pyproject.toml` (the
-Databricks extra); `docs/deployment/targets/databricks.md` (credentials as CI secrets
-and the editor's data-access pair).
-
-### WB-11 — Exports from the app
-**Why:** Underwriters take what they need out of the app themselves: a quote's tables for a
-spreadsheet, a file another system imports, a document for a broker. Nothing in Haute
-exports a quote; the sheets show it and Preview's results stay in the browser. The
-Export, a button on the sheets, holds what an export would be, kept in the form: the
-tables, a CSV of one or a workbook of a sheet each under a file name made of the quote's
-details, headed by names or labels, its values raw or formatted, or a database's named
-connection and the tables each is written to; it is drawn disabled in the app, and in
-Preview but for an Excel workbook of cells (below).
-
-**Decided (12 November 2026):** the first format is an Excel workbook of cells: chosen
-fields of the one-row tables, each written into a cell of a sheet, `Slip!B3` say, of a
-workbook Haute makes, its values typed and formatted as their columns' formats show them,
-each cell naming another for its field's label if it wants one, `Slip!A3` say, the label
-the schema gives the field; and tables written as blocks, each a table's columns chosen
-and ordered, its rows under a header of their labels, their names or none from the
-block's top-left cell, `Slip!A12` say, nothing written under a block in its columns,
-whatever rows a quote gives it. A column or a table the schema loses stays in the
-export as a problem rather than dropping out of it.
-Its first run is Preview's: pressing the Export downloads the workbook of the sample as
-it was last priced. Still to come, each its own slice: the app's run of it (below); a
-template, the analyst's own workbook filled in place of one Haute makes; a cell for each
-row of a table with a row for each value; and cells named in a template in place of an
-address.
-
-**Plan:** Decision first, recorded here before the first slice: which formats the first
-release needs (the quote's tables as CSV or a spreadsheet, an import file for another
-system, a document from a template), whether the Export on the sheets is how the app
-exports or the quote's bar offers exports beside it, and whether a quote exported again
-later reproduces the template it was first exported with or uses the current one; the
-first format is decided above. Then exports of a final
-quote, which the store's stages gate them behind, never of a draft, so every export is of a quote
-that does not change while it is final and names the release that priced it; run on the
-app's server for the signed-in underwriter and recorded in the quote's activity log. The
-Export's database target is decided here too: once the store is the form's own tables in the
-user's database, writing a quote's tables to that database again adds nothing, so
-the lean is to take the target out unless a project names a destination of its own.
-Templates and mappings, where a format needs them, live in the
-project beside the form and ship in the release, so a change to one starts the workflow of
-WB-08 and is tested there against the test quotes of WB-12.
-
-**Acceptance:** An underwriter exports a final quote in each format decided, and the file
-holds the quote's values and prices and names the release that priced them; a draft is not
-exported; each export is recorded in the quote's activity log; a change to a template starts
-the workflow, and the template's output for the test quotes is checked in CI.
-
-**Dependencies:** The decision above.
-
-**Evidence:** `src/haute/_workbench_form.py::ExportWidget` (the Export's settings, read
-strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are chosen);
-`src/haute/_workbench_export.py` (an Excel workbook of cells written, and Preview's
-route to it, `POST /api/workbench/export`);
-`frontend/src/utils/sheetValues.ts::pricedRows` (the priced rows the sheets
-show); `frontend/src/workbench/useSheetValues.ts` (the one path for a sheet's values);
-`src/haute/_workbench_tables.py::quote_schema` (a quote's columns as typed).
+**Evidence:** `src/haute/_workbench_export.py` (`quote_export` and `preview_export`, an Excel
+workbook of cells written); `src/haute/_workbench_form.py::ExportWidget` (the Export's
+settings, read strictly); `frontend/src/workbench/panel/ExportSettings.tsx` (where they are
+chosen).
 
 ### WB-12 — Test quotes in Preview
 **Why:** Analysts need quotes they keep and price again as the pipeline changes, so a change
@@ -464,16 +316,25 @@ container reached without Easy Auth in front signs in whoever names themselves, 
 rights when no edit role is set. The owner takes it up with the Azure work in the next pull
 request.
 
-**Plan:** The decision first, recorded here before a slice: a startup check that the
-host's sign-in is in front, or an explicit trust setting the operator sets, refusing the
-misconfiguration either way.
+**Plan:** Decided with the owner on 22 November 2026: an explicit trust setting that
+`haute app rollout` sets. The app trusts the host's sign-in headers only while an
+environment variable on the Container App says the host's sign-in stands in front of it;
+`haute app rollout` sets it after reading the Container App's authentication and finding
+it enabled and requiring a sign-in for every request, and refuses the rollout otherwise.
+Without the variable every request but the health check is refused 401, naming it. `haute
+app serve`, which signs the analyst in itself, is unchanged.
 
-**Acceptance:** Set by the decision.
+**Acceptance:** A release started without the variable refuses a request carrying Easy
+Auth's headers (401, naming the variable); `haute app rollout` onto a Container App whose
+authentication is off, or lets a request through unsigned, stops before the image is
+rolled out, saying so, and onto one that requires sign-in sets the variable and the
+hosted check passes; `haute app serve` signs the analyst in as before.
 
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_workbench_app.py::create_app` (the principal read from the
-headers when the release names its host).
+headers when the release names its host); `src/haute/_workbench_rollout.py` (the Container
+App's authentication read as a rollout runs, `_client_id`).
 
 ### WB-38 — Allowed values typed into an older form
 **Why:** The Allowed field carries a branch for "values typed in, as an older form holds
@@ -493,107 +354,6 @@ specification and the field stop calling the shape older.
 
 **Evidence:** `frontend/src/workbench/schema/AllowedField.tsx::TYPED_IN`,
 `src/haute/_workbench_form.py::FormSpec`, `frontend/src/utils/workbenchForm.ts`.
-
-### WB-41 — Preview a submodel `WORKBENCH_OUTPUT` by address in `priceSample`, and remove stale blank-form rationale
-**Why:** Two defects affect live sample pricing in the Workbench view and the workbench
-high-level specification. (A third, the quote list's `loadingMore` left set or cleared
-across list switches, went with the late-answer helper: a further page belongs to the
-list loaded, and loading another ends it at once.)
-1. In `priceSample` (`frontend/src/workbench/priceSample.ts`), the module docstring
-   states that every `Workbench Input` and `Workbench Output` at the top level or
-   inside a submodel is supported, and `WORKBENCH_INPUT` is collected from both
-   `graph.nodes` and `graph.submodels`, but `const output = graph.nodes.find((node) => node.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT)`
-   searches only top-level `graph.nodes`, failing with
-   `"The pipeline has no Workbench Output..."` when `Workbench Output` lives inside a
-   submodel.
-2. `specs/workbench/high-level.md` retains a stale rationale bullet (`The blank form
-   is a form. A project whose workbench was enabled by hand has no file yet...`) that
-   directly contradicts the earlier rationale bullet (`A missing folder is a loss,
-   not a new form`) and the folder-backed form loader.
-
-**Plan:** Search both `graph.nodes` and `graph.submodels` for
-`NODE_TYPES.WORKBENCH_OUTPUT` in `priceSample` and send a submodel child output as the
-preview's target by its address (`childAddress(occurrence, node)`) when calling
-`previewNode`; and remove the stale `The blank form is a form` bullet from
-`specs/workbench/high-level.md`.
-
-**Acceptance:** `priceSample` prices a workbench pipeline whose `Workbench Output` is inside a
-submodel by sending the child's address to `/api/pipeline/preview` and returning its
-priced tables; and `specs/workbench/high-level.md` states one consistent
-missing-folder rule.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/workbench/priceSample.ts::priceSample`;
-`frontend/src/utils/nodeAddress.ts::childAddress`;
-`specs/workbench/high-level.md`.
-
-### WB-46 — The quote store's connections and the gate have deadlines
-**Why:** Read from the source. The server-database engine is created with a
-pre-ping only: no connect timeout, no statement timeout and the default pool,
-and the URL builder adds none. A sweep of the quote store, the workbench
-modules and the database IO for a connect, login, statement or pool timeout
-found none. The driver's default is to wait as long as the operating system
-does, which is minutes for a host that drops packets. The store's gate runs
-its opener (connect, catalogue read, privilege probe) while holding its lock,
-and every quote route, the price route and the release route take that lock
-on a worker thread. So when the database stops answering, each request parks
-a worker thread behind the gate, or on a statement with no deadline, instead
-of getting the 503 "cannot reach its quote store" the module promises; after
-the refusal's ten seconds the next request blocks them all again. An
-exhausted pool surfaces as SQLAlchemy's timeout, which the quote routes
-answer as a 500.
-
-**Plan:** Give each provider an explicit connect timeout and statement
-timeout, and the pool a bounded wait that is answered as the 503. Have the
-gate hand waiters the check already in flight instead of the lock, so one
-slow open delays one answer.
-
-**Acceptance:** With the database made to accept connections and never
-answer, a quote read is answered 503 within the configured deadline, twenty
-concurrent requests are all answered within it, and no worker thread is left
-waiting. A statement that outlives its deadline is cancelled and reported as
-the store being unreachable.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_providers.py::make_server_engine`;
-`src/haute/_quote_store/_providers.py::server_url`;
-`src/haute/_workbench_app_store.py::StoreGate`;
-`src/haute/_workbench_app_quotes.py::_call`.
-
-### WB-47 — A release with a Workbench Output column nothing fills
-**Why:** Read from the source. While an analyst edits, a declared output
-column the connected frame lacks, or holds with a type that does not fit, is
-filled with nulls, and a table nothing is connected to likewise; the
-specification says none of these stops a run and the panel flags each. No
-check looks on the way to a release: the deploy's form validation tests
-identity clashes, key collisions and unresolved references only, and the
-functions that judge whether a frame's column fits are used by trace alone.
-Building a release treats a test quote whose answer moved, a price that
-became null included, as a change to report, not a failure, and a project
-need not hold a test quote that covers the column. So a rename or a type
-change upstream ships an app that answers a blank price; only a column
-marked required stops such a quote, and only at Mark final.
-
-**Plan:** Decide whether a release may be built in that state. The
-recommended rule: refuse a release whose Workbench Output declares a column
-no connected frame fills with a fitting type, naming the table, the column
-and the node, unless the form marks the column as allowed to be empty. The
-deploy's dry run already holds the schemas the check needs.
-
-**Acceptance:** With an output column renamed upstream, building a release
-stops and names the table, the column and the Workbench Output; restoring
-the name, or marking the column as allowed to be empty, lets it build. The
-editor's behaviour while editing is unchanged.
-
-**Dependencies:** The decision above; it changes what a release accepts.
-
-**Evidence:** `src/haute/_workbench_output.py::_filled`;
-`src/haute/_workbench_output.py::_unconnected`;
-`src/haute/deploy/_validators.py::_workbench_form_errors`;
-`src/haute/_workbench_app.py::build_release`;
-`src/haute/_quote_store/_book.py::_missing`; `specs/workbench/high-level.md`.
 
 ### WB-49 — The hosted check retries its probes
 **Why:** Read from the source. After a rollout, the hosted check polls the
@@ -701,67 +461,6 @@ runs one list of names through the save, the tables route and the editor's
 `src/haute/_workbench_tables.py::check_tables`;
 `src/haute/_graph_utils.py::is_frame_label`;
 `frontend/src/utils/workbenchForm.ts::columnNameProblem`.
-
-### WB-53 — What a failed pricing tells the underwriter (a decision)
-**Why:** Reproduced. When the pipeline fails on a quote, the underwriter app
-answers HTTP 500 with the exception's own text after "The pipeline failed on
-this quote:". A node that raised "connection failed: password=hunter2
-token=sk-live-123 at C:/Users/analyst/secrets/db.ini" was answered with all of
-it; a missing file with its absolute path; a missing column with Polars' message
-and its resolved plan; a `KeyError` with the bare key. The workbench
-specification prescribes this answer and says it is how the deployed pricing API
-answers one. It no longer is: the deploy specification says a 500 "never carries
-the exception's text, which can hold file paths and internal names", and the
-deployed API answers a fixed message with a request id that the log carries. The
-app's own test asserts the exception's text. The app's readers are underwriters,
-a wider audience than the API's clients, and the app has no sign-in yet
-(`WB-25`). `haute app impact` reads the same answer to name why each quote
-failed, so the reason has one reader who needs it: the analyst. The 28 October
-audit recorded the lead without a payload.
-
-**Plan:** Decide what an underwriter is shown, and where the analyst then reads
-the reason. The review's proposal: answer as the deployed API does, with a fixed
-sentence that says the pipeline failed on this quote and asks the underwriter to
-pass on the id shown; put that id and the exception's text in the log; and give
-the impact command the reason by a way an underwriter's browser does not have.
-Keep the 422 answers as they are: they name what the underwriter can correct.
-Then make the two specifications say the same.
-
-**Acceptance:** Each of the five failures above is answered 500 with the fixed
-sentence and an id, and with none of the exception's text, path or key; the log
-holds the exception under that id. A quote a contract error refuses is still
-answered 422 with its message. `haute app impact` still names why a quote
-failed. The app's test and the impact command's test are changed to match.
-
-**Dependencies:** The decision. `WB-25` settles who can reach the app at all.
-
-**Evidence:** `src/haute/_workbench_app.py::create_app` builds the answer in its
-`price_values`; `tests/test_workbench_app.py::test_a_pipeline_failing_on_the_quote_answers_why`;
-`tests/test_workbench_impact.py::test_each_quote_outcome_is_named_and_a_staging_failure_fails_the_run`;
-`src/haute/deploy/_container.py` generates the deployed API's `_internal_error`,
-the answer to match;
-`specs/workbench/low-level.md`; `specs/deploy/high-level.md`.
-
-### WB-54 — The release route reports a store the app cannot write to
-**Why:** Reproduced on 11 November 2026 on a SQLite quote store, with
-nothing patched. With the store's file read-only when the app starts,
-`GET /api/app/release` reports the quotes open, so the page opens them, and
-every save, note and change is then refused: the app answers each in words
-(the store's file is read-only, the change not saved, the quote's values
-kept), but the page offered a write it could not make. The store's check
-reads the tables and never tries a write.
-
-**Plan:** Have the store's check find a store it cannot write to (for
-SQLite, a read-only file or folder) and have the release route report the
-quotes closed for that reason, naming it.
-
-**Acceptance:** With the SQLite store's file read-only when the app starts,
-`GET /api/app/release` does not report the quotes open, and says why.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_workbench_app_store.py`;
-`src/haute/_quote_store/_store.py`; `specs/workbench/high-level.md`.
 
 ### WB-55 — A SQLite store held exclusively, damaged or deleted is called what it is
 **Why:** Reproduced on 11 November 2026, with nothing patched. A store file
@@ -925,130 +624,6 @@ agree the same way.
 `src/haute/_hashing.py::content_hash`;
 `src/haute/_scaffold_files.py`.
 
-### WB-60 — Hidden values stay on their own rows through a save
-**Why:** Reproduced on 13 November 2026 in a browser, in the underwriter
-app. A form has a table `equipment` of many rows, indexed by a text the
-underwriter types, `item`, with a `units` column and a `limit` column that
-shows only while `show_limits` is ticked. In a new quote with the box
-ticked, the underwriter enters item B with a limit of 200 and then item A
-with a limit of 100. The premium shown is 2,100. The box is unticked, the
-quote is saved, and the box is ticked again. The sheet now shows A with
-200 and B with 100, the next pricing request sends those limits, and the
-premium shown is 1,200. Nothing says a value moved.
-
-The save answers the table's rows in the order of their index, A then B.
-The app puts the hidden cells it kept back onto the answered rows by
-position, so each row is given the hidden value of whichever row was typed
-in its place. The specification keeps hidden values so that "hiding a
-section and showing it again loses nothing: in the sample, and in the
-app's quote while it stays open, saved or not". Rows typed out of their
-index's order are ordinary typing.
-
-**Plan:** Put a kept hidden cell back on the answered row that has the
-same index values, not the same position.
-
-**Acceptance:** In the run above A shows 100 and B shows 200 after the box
-is ticked again, and the premium is 2,100. A test types rows out of order
-into a table with a typed index of each type, hides a column, saves and
-shows it again.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/app/quoteValues.ts`;
-`frontend/src/app/useOpenQuoteStore.ts`; `specs/workbench/high-level.md`.
-
-### WB-63 — An app opened before a column was added keeps that column's values
-**Why:** Reproduced on 14 November 2026 on SQLite, PostgreSQL 16 and SQL
-Server 2022. An app on the old release has the store open. The owner runs
-Haute's migration SQL, which adds a nullable column `sum_insured`. An app
-on the new release saves 5,000,000 there. The old app then opens that
-quote, changes another field and saves: the answer is 200 and
-`sum_insured` is null. An old app opened after the migration keeps the
-value. The specification has a database column the form does not know
-keep its values through a save. The store reads which columns to keep
-once, when it opens, and the gate reuses the open store.
-
-**Plan:** Read the columns to keep when a save is made, or when the
-database's tables are seen to have changed, not once at opening.
-
-**Acceptance:** In the run above the old app's save leaves 5,000,000 in
-place on all three databases.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_store.py`;
-`src/haute/_workbench_app_store.py`; `specs/workbench/high-level.md`.
-
-### WB-64 — The migration SQL for SQL Server leaves a column's NOT NULL as it says it does
-**Why:** Reproduced on 14 November 2026. A column of the store was made
-`BIGINT NOT NULL` by its owner, and the form declares it Decimal. The
-migration SQL Haute writes says "Not changed here: policy_details.exposure
-takes no null, unlike the store's." and then, on SQL Server, runs
-`ALTER COLUMN exposure FLOAT(53) NULL`. After it the column takes nulls.
-On PostgreSQL the statement changes the type only and the column still
-refuses them.
-
-**Plan:** Write the column's present nullability into the SQL Server
-statement that changes its type.
-
-**Acceptance:** After the SQL above the column on SQL Server is a float
-that takes no null.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_migrate.py`;
-`specs/workbench/high-level.md`.
-
-### WB-66 — A test quote's rows are opened by their values after a list of codes is reordered
-**Why:** Reproduced on 14 November 2026 through the designer's routes. A
-table's index takes its allowed values from a params file holding `01`
-and `02`. A test quote is saved with 100 against the first code and 200
-against the second. The file is reordered to `02`, `01` and the quote is
-opened: the sheet shows `02` with 100 and `01` with 200. Both codes are
-listed as not opened, yet their amounts are kept, paired by position. The
-specification has "preset rows placed by their values". With the
-file unchanged the codes are still listed as not opened, and so is a
-limit of 1000 whose allowed value is written `1000.00`: the saved number
-is compared as text with the file's spelling.
-
-**Plan:** Compare a saved value with an allowed value as the column's
-type, and place the saved rows by the index value. Leave a row out whole
-when its index value is no longer allowed.
-
-**Acceptance:** With the file unchanged nothing is listed as not opened.
-After the reorder `01` shows 100 and `02` shows 200.
-
-**Dependencies:** `WB-60` is the app's side of pairing by position.
-
-**Evidence:** `src/haute/_workbench_test_quotes.py`;
-`src/haute/_workbench_tables.py`; `specs/workbench/high-level.md`.
-
-### WB-70 — A creation repeated under its key is answered with the quote it made
-**Why:** Reproduced on 16 November 2026 with two instances of the
-underwriter app on one quote store. Both were sent the same creation, with
-the same operation key and reference, a few milliseconds apart, as a page
-or a proxy does when the first answer is slow. In 100 rounds the second
-was answered 409 "K-000004/1 already holds the reference K-000004: open
-it, or create an alternative of it" 37 times on SQL Server with read
-committed snapshot off and 5 times on PostgreSQL; never on SQLite, and
-not in this run on SQL Server with it on, where a worker saw 5% to 9%.
-One quote is stored each time. The specification says a request repeated
-under its key answers what the first did. The replay check runs before
-the insert; when the first copy commits in between, the insert finds the
-reference taken, and that refusal is not the one whose handler checks the
-key again. The underwriter is told their own new quote is someone else's.
-
-**Plan:** Check the operation key again before answering that a
-reference is taken, and answer with the quote the key made.
-
-**Acceptance:** 100 rounds of the pair above answer 200 twice with the
-one quote on PostgreSQL and on SQL Server with either setting.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_quote_store/_book.py`;
-`specs/workbench/high-level.md`.
-
 ### WB-74 — A password corrected in `.env` is used without restarting the editor
 **Why:** Reproduced on 16 November 2026 with the editor's real server
 and a PostgreSQL quote store whose password comes only from the project's
@@ -1072,29 +647,29 @@ with no restart. A variable set outside `.env` still wins.
 **Evidence:** `src/haute/server.py`; `src/haute/_connections.py`;
 `specs/workbench/low-level.md`.
 
-### WB-76 — The preview and `haute run` price the sample under the stand-in identity
-**Why:** Found on 18 November 2026 by `tests/test_run_parity.py`. A workbench
-project has a Workbench Input whose `policy` table a Transform prices into a
-Workbench Output's `pricing` table; nothing reads `quote_details`. Run as
-Python, `pipeline.run(source="live")` answers `pricing` with
-`quote_reference` `PREVIEW` and `quote_option` 1, the stand-in the
-specification gives the sample in "editor runs, previews and `run()`". The
-graph walker's preview of the Workbench Output and `haute run` answer the
-same table with both columns null. The standalone run puts the quote's
-identity on every row from the Workbench Input's quote (`as_response`); the
-walker takes it from the frames the Workbench Output is connected to.
+### WB-77 — A PostgreSQL server that keeps the connection and never answers
+**Why:** Read from the source and libpq's documentation on 22 November 2026. A
+PostgreSQL connection's deadlines are libpq's
+connect timeout (a server that never finishes the sign-in), the TCP user timeout
+(data the host never acknowledges) and the server's own statement timeout. None
+bounds a statement on an established connection whose peer acknowledges what is
+sent and never replies: a server process stuck where its statement timeout cannot
+fire, or a proxy that keeps the socket and stops relaying. psycopg has no
+client-side read deadline, so the worker thread waits until the operating system
+closes the socket. A pooler's own wait queue (PgBouncer's `query_wait_timeout`)
+bounds the common case of a pooled server too busy to take the statement. SQL
+Server's query timeout is the driver's, client-side, so it has no such gap.
 
-**Plan:** Give the Workbench Output its quote's identity in the walker from the
-quote the Workbench Input reads, as `as_response` gives it in a standalone run,
-whatever the Workbench Output is connected to.
+**Plan:** A client-side deadline on each PostgreSQL statement and on the pool's
+ping: past the statement timeout and a grace, the connection is cancelled, then its
+socket shut, so the statement fails as unreachable. One watchdog serving every
+connection, not a thread per statement.
 
-**Acceptance:** The pipeline above gives `PREVIEW` and 1 in the preview, from
-`haute run` and from `pipeline.run()`, and
-`tests/test_run_parity.py::test_a_workbench_sample_is_priced_under_one_identity_every_way`
-passes with its expected-failure mark removed.
+**Acceptance:** Through a proxy that relays the sign-in and then stops relaying, a
+quote read is answered 503 within the statement deadline and its grace, and the
+connection is not handed out again.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/_workbench_output.py::as_response`;
-`src/haute/_workbench_input.py::with_stand_in`; `src/haute/_builders.py`
-(`_build_workbench_output`); `specs/workbench/high-level.md`.
+**Evidence:** `src/haute/_quote_store/_providers.py::deadline_hook`;
+`src/haute/_quote_store/_providers.py::make_server_engine`.
