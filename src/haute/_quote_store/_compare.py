@@ -284,14 +284,16 @@ def _dialect(name: str) -> Dialect:
     return dialect
 
 
-def additions_plan(form: FormSpec, catalogue: Catalogue, compared: Plan) -> Plan:
+def additions_plan(form: FormSpec, catalogue: Catalogue, comparison: Comparison) -> Plan:
     """Missing schema names, independent of migration pairings or other compatibility
-    repairs, and each type change *compared*, the full comparison's plan, makes to a column
-    the database holds under the form's name. A column the analyst paired is added afresh at
-    its type, so its change is none of these (:func:`retype_superseded`); an index's or a
-    reshaped table's is a note there, never a type change. The structure before is every
-    table and column of the catalogue by name, those the comparison matched with its keys,
-    types and nullability, which a type change is written from."""
+    repairs; each type change the full *comparison*'s plan makes to a column the database
+    holds under the form's name; and each many-row table's key moved to its index
+    (:func:`_key_step`). A column the analyst paired is added afresh at its type, so its
+    change is none of these (:func:`retype_superseded`); an index's or a reshaped table's is
+    a note there, never a type change. The structure before is every table and column of the
+    catalogue by name, those the comparison matched with its keys, types and nullability,
+    which a type change and a key's are written from."""
+    compared = comparison.plan
     wanted = structure(form)
     retypes = [
         step
@@ -305,6 +307,10 @@ def additions_plan(form: FormSpec, catalogue: Catalogue, compared: Plan) -> Plan
             steps.append(Step("create table", table["name"], table["key"]))
             continue
         present = {column.name.casefold() for column in found.columns}
+        key = _key_step(table, found, comparison)
+        if key is not None:
+            steps.append(key)
+            present.add(str(key.column).casefold())
         steps.extend(
             Step("add column", table["name"], table["key"], column["name"], column["key"])
             for column in table["columns"]
@@ -335,6 +341,63 @@ def additions_plan(form: FormSpec, catalogue: Catalogue, compared: Plan) -> Plan
         before={"tables": before},
         activity=not any(table.name.casefold() == ACTIVITY_TABLE for table in catalogue.tables),
     )
+
+
+def answered_by(comparison: Comparison, additions: Plan) -> frozenset[str]:
+    """The refusals and notes of *comparison*'s plan that the export of *additions* answers:
+    where it moves a table's key to its index (``rekey table``), each refusal of that index's
+    rename (:attr:`Plan.index_refusals`) and each difference noted of the key column the
+    index was paired with, which stops being the key."""
+    rekeyed = {
+        (step.table_key, step.column_key) for step in additions.steps if step.kind == "rekey table"
+    }
+    tables = {table for table, _ in rekeyed}
+    return frozenset(
+        {
+            *(text for table, text in comparison.plan.index_refusals if table in tables),
+            *(
+                each.message
+                for each in comparison.differences
+                if (each.table, each.column) in rekeyed
+            ),
+        }
+    )
+
+
+def _key_step(table: dict[str, Any], found: CatalogueTable, comparison: Comparison) -> Step | None:
+    """The step moving *found*'s key to *table*'s index, which the comparison pairs with the
+    database's key column after the identity whatever either is named: none while they are
+    one column. Where the database also holds a column of the index's name, as a store keyed
+    by its row number did (``quote_row``), the table is keyed by that column (``rekey
+    table``); else, the key column of the index's type and comparison, it is renamed for the
+    index (``rename key``). A key column of another type with no column of the index's name
+    stays as it was, the index added beside it with its note. A column of the index's name
+    but for its case is left alone, as an addition would be."""
+    index = next((column for column in table["columns"] if column["index"]), None)
+    keyed = [name for name in found.primary_key if name not in IDENTITY]
+    if index is None or len(keyed) != 1 or keyed[0] == index["name"]:
+        return None
+    name, key = index["name"], keyed[0]
+    held = next(
+        (column for column in found.columns if column.name.casefold() == name.casefold()), None
+    )
+    step = Step(
+        "rekey table" if held is not None else "rename key",
+        table["name"],
+        table["key"],
+        name,
+        index["key"],
+        was=key,
+        quotes=found.quotes if found.quotes is not None and found.quotes >= 0 else None,
+    )
+    if held is not None:
+        return step if held.name == name else None
+    differs = {
+        each.kind
+        for each in comparison.differences
+        if each.table == table["key"] and each.column == index["key"]
+    }
+    return None if differs & {"type", "collation"} else step
 
 
 def compare(

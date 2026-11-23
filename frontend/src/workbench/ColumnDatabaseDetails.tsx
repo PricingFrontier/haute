@@ -23,7 +23,10 @@ function useColumnDatabase(table: string, column: string) {
   const invalidRename = answer !== null && pairing !== undefined && !accepted && !alreadyPresent
   const missing = differences.some((each) => each.kind === "missing")
   const manualRepair = differences.some((each) => each.kind !== "missing" && each.kind !== "renamed" && each.kind !== "type")
+  // A many-row table's key the export moves to its index answers what the index differs by.
+  const key = changes.find((each) => each.kind === "rename key" || each.kind === "rekey table")
   const label = answer === null ? comparisonStatus(state, form)
+    : key?.disposition === "sql" ? (key.kind === "rename key" ? "Rename" : "Key change")
     : invalidRename || manualRepair || changes.some((each) => each.disposition === "manual") ? "Needs attention"
       : differences.some((each) => each.kind === "renamed") ? "Rename"
         : missing ? "New column"
@@ -37,7 +40,7 @@ export function ColumnDatabaseStatus({ table, column, open, onOpen }: { table: s
   const { state, label, differences } = useColumnDatabase(table, column)
   if (state.environment === null) return null
   const color = label === "Check failed" ? "var(--danger-text)" : label === "Matches" ? "var(--success)" : label === "Rename" ? "var(--text-accent)"
-    : label === "New column" || label === "Type change" || label === "Needs attention" ? "var(--warning)" : "var(--text-muted)"
+    : label === "New column" || label === "Type change" || label === "Key change" || label === "Needs attention" ? "var(--warning)" : "var(--text-muted)"
   return <button type="button" aria-label={`Database status of ${column}`} aria-expanded={open} onClick={onOpen}
     data-testid={`database-mark-${table}-${column}`} className="focus-ring hover-bg inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1.5 self-center rounded-md px-1.5 py-0.5 text-left text-[11px]"
     style={{ color }} title={differences.map((each) => each.message).join("\n") || `${state.environment}: ${label}`}>

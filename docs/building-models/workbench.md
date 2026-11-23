@@ -1057,8 +1057,9 @@ builder on screen. With a quote store it is where they manage their quotes too.
   Field statuses open the corresponding database details. For a field the database lacks,
   **Renamed from** names the database column that held its values under an old name, so
   the comparison checks that column as the field's; it moves no data. **Database changes** lists
-  missing columns and type changes grouped by table, labels missing tables **New table** and
-  type changes **Type change**. Its heading counts them. **No additions** means all schema
+  missing columns, type changes and key changes grouped by table, labels missing tables
+  **New table**, type changes **Type change**, a key column renamed for its index **Rename**
+  and a table given a new key **Key change**. Its heading counts them. **No additions** means all schema
   names are present and no column needs converting; keys, the type of an index or of a
   quote_details column, or other details can still differ. The fetch time is in **Refresh**'s tooltip.
 - **Export SQL**, beside **Refresh**, opens the query for the selected database and your
@@ -1069,9 +1070,22 @@ builder on screen. With a quote store it is where they manage their quotes too.
   how to rebuild the column instead. The script runs as one transaction: if a value cannot
   convert (`n/a` in a column becoming Integer), it stops and nothing changes, additions
   included. A renamed field becomes a new, empty column of its type; the old column and its
-  values stay intact, even if you chose it in **Renamed from**. Keys, quote_details' types
-  and an index's type are unchanged. Data transfers, key and index changes and removal of
-  old names are manual work for the database owner.
+  values stay intact, even if you chose it in **Renamed from**.
+
+  A many-row table's index is its rows' key, and Haute knows it by its place in the
+  table's primary key, whatever it is called. If you rename the index, the script renames
+  the key column to match, keeping its values and the key. A table made by a Haute from
+  before 5 November 2026 is keyed by Haute's own row number, `quote_row`, with the index
+  in a column beside it. The script makes that column the key instead. A numbered index
+  takes `quote_row`'s number where it is empty. The index's type is converted, and the
+  primary key is dropped and made again on the index. `quote_row` stays, allowing blanks,
+  with its `DROP` left commented out. If an index value is missing or appears twice in a
+  quote, the script stops and nothing changes. SQLite cannot change a table's key, so there
+  the script says how to rebuild the table instead.
+
+  quote_details' types, the type of an index whose name is new, and other keys are
+  unchanged. Data transfers, those changes and removal of old names are manual work for the
+  database owner.
   The SQL adds missing columns even when existing keys or row structure differ. If a
   name cannot be added, its specific reason appears in the list and SQL comments;
   other valid additions can still be exported. Have the database owner review and run the script, then

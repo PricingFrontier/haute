@@ -72,7 +72,13 @@ blocking reason. An existing-column type issue with a `retype column` change in 
 additions plan says Export SQL converts (or, holding less, widens) the column, a value
 that cannot convert stopping it, or, the change manual (SQLite), that the column needs
 rebuilding by hand; without one (an index, quote_details, the identity) it explains the
-manual repair, saying Export SQL leaves the type unchanged. Nullability and collation
+manual repair, saying Export SQL leaves the type unchanged. A field with a `rename key` or
+`rekey table` change is one issue answering its renamed, type, collation and null
+differences: Export SQL renames the key column for it, or keys the table by it (a numbered
+one taking the old key's row number where empty, the old key staying, allowing blanks), or,
+the change manual (SQLite), the change's description; its status reads Rename or Key change
+while the change is the SQL's (`ColumnDatabaseDetails.tsx`), else Needs attention, and the
+Database changes list marks and counts it (`StorePlanReview.tsx`). Nullability and collation
 issues explain the manual repair and do not promise it in Export SQL. Unknown database kinds display their
 SQL type; a comparison referring to an absent matched column is an explicit error.
 Field tests cover the renamed Integer row key becoming Text, consolidated addition
@@ -85,8 +91,17 @@ offline routes. The shared renderer emits CREATE/ADD and type changes only in th
 column rename steps add a nullable destination and retain the source; table rename steps
 create the new table without copying rows. Existing names (case-insensitive) are never
 added twice, and column steps under a renamed table are covered by creating that table.
-Index renames leave the old primary key intact and explain the remaining population/key
-work. A `retype column` step is the engine's ALTER in place through `_retype_in_place`
+An offline plan's index renames leave the old primary key intact and explain the remaining
+population/key work. The live plan's `rename key` step is the engine's rename of the key
+column (sp_rename, RENAME COLUMN; SQLite too), keeping its values and the key; its `rekey
+table` step is `_rekey`: a numbered index's `UPDATE ... SET index = old WHERE index IS
+NULL`, the primary key dropped by the name the database gives it, looked up as the script
+runs (SQL Server's `sys.key_constraints` into `@haute_key_N` and `sp_executesql`,
+PostgreSQL's `pg_constraint` in a `DO` block), the index's ALTER to the store's type taking
+no null, the store's primary key made again under its name, the old key column taking a
+null (SQL Server restating its catalogue type) and its DROP commented out; on SQLite a note
+alone. `_raw` writes those statements uncompiled, so no character is escaped for a driver.
+A `retype column` step is the engine's ALTER in place through `_retype_in_place`
 (PostgreSQL's USING cast, SQL Server's ALTER COLUMN restating the nullability; SQLite a
 note), except one `_migrate.retype_superseded` names: its column renamed, or in a renamed
 table, is added under its new name at its new type, so nothing converts it. Reshapes and
@@ -100,13 +115,22 @@ rename/drop SQL appears for any provider, a retype is the engine's ALTER (a note
 SQLite), a renamed and retyped column is only added, and occupied or case-only
 destinations are left manual; on the store servers (`store_servers`) the live export
 converts a column keeping its values and a value that does not convert stops the script
-with nothing changed.
-Live `store-compare` uses `_compare.additions_plan(form, catalogue, comparison.plan)`
-for its `changes` and SQL. It returns a `Plan` of create-table/add-column steps from the
-form's structure and actual catalogue names, and the full comparison's `retype column`
-steps not superseded (a column the analyst pairs is added afresh, so it is never
-converted); existing column names are compared case-insensitively to avoid duplicate
-additions. Its `before` holds every catalogue table and column by name, those the
+with nothing changed, renames a key column for its index, keys a table made as a store
+keyed by its row number made it by its index (the comparison then matching, the app
+opening and a new quote's rows saved with no `quote_row`), and an index value missing stops
+it with nothing changed.
+Live `store-compare` uses `_compare.additions_plan(form, catalogue, comparison)` for its
+`changes` and SQL. It returns a `Plan` of create-table/add-column steps from the form's
+structure and actual catalogue names, each many-row table's key step (`_key_step`: the
+index paired with a key column of another name; `rekey table` where the database also
+holds a column of the index's name, exactly, else `rename key` unless the index's type or
+collation differs, which stays an addition with its note), the index then never added, and
+the full comparison's `retype column` steps not superseded (a column the analyst pairs is
+added afresh, so it is never converted); existing column names are compared
+case-insensitively to avoid duplicate additions. `Plan.index_refusals` keeps each refusal
+of an index's rename by its table, and `_compare.answered_by` names those of re-keyed
+tables and the notes of their index's differences, which the route leaves out of `blocked`
+and `manual`. Its `before` holds every catalogue table and column by name, those the
 comparison matched under their plan keys with the type, `sql_type` and `nullable` a
 retype is written from, others under `database:` keys, for the shared `addition_problem`
 checks; `recorded` holds the form for column definitions. Existing row/key differences

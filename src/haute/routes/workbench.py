@@ -500,7 +500,7 @@ def _store_compare(
 ) -> WorkbenchStoreCompareResponse:
     from haute._connections import project_environ
     from haute._quote_store import connected_store, render_sql
-    from haute._quote_store._compare import Rename, additions_plan, compare
+    from haute._quote_store._compare import Rename, additions_plan, answered_by, compare
     from haute._quote_store._migrate import PROVIDER_DIALECTS
     from haute._quote_store._providers import provider_of
     from haute._quote_store._review import (
@@ -527,7 +527,8 @@ def _store_compare(
         renames=renames,
     )
     unresolved = rename_problems(renames, comparison.renames, catalogue, spec)
-    additions = additions_plan(spec, catalogue, comparison.plan)
+    additions = additions_plan(spec, catalogue, comparison)
+    answered = answered_by(comparison, additions)
     return WorkbenchStoreCompareResponse(
         differences=[
             WorkbenchStoreDifference(
@@ -554,9 +555,9 @@ def _store_compare(
             WorkbenchStoreChange.model_validate(each, from_attributes=True)
             for each in review_plan(additions, spec, provider, additions_only=True)
         ],
-        manual=list(comparison.plan.notes),
+        manual=[each for each in comparison.plan.notes if each not in answered],
         blocked=[
-            *comparison.plan.refusals,
+            *(each for each in comparison.plan.refusals if each not in answered),
             *unresolved,
         ],
         sql=render_sql(

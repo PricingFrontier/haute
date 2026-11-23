@@ -45,6 +45,8 @@ StepKind = Literal[
     "keep column",
     "retype column",
     "reshape table",
+    "rename key",
+    "rekey table",
 ]
 #: A table's or a column's count, keyed by the table's id and the column's, None for the table.
 Key = tuple[str, str | None]
@@ -94,7 +96,9 @@ class Plan:
     """A plan's steps and refusals, the structure the tables have once it is carried out, the
     structure it was made from (None for a database holding no store), whether it makes
     ``haute_activity``, which a database holding no store lacks, and the notes its SQL heads
-    with: the ways the tables differ that no statement of it changes."""
+    with: the ways the tables differ that no statement of it changes. Each refusal of a
+    many-row table's index rename is also in ``index_refusals`` by the table's key, which an
+    export moving that table's key to its index answers (``rekey table``)."""
 
     steps: tuple[Step, ...]
     refusals: tuple[str, ...]
@@ -102,6 +106,7 @@ class Plan:
     before: dict[str, Any] | None = field(default=None, repr=False)
     activity: bool = False
     notes: tuple[str, ...] = ()
+    index_refusals: tuple[tuple[str, str], ...] = ()
 
 
 def _named(key: str) -> str:
@@ -186,6 +191,7 @@ def _plan(
         return Plan(created, (), after, activity=True)
     steps: list[Step] = []
     refusals: list[str] = []
+    index_refusals: list[tuple[str, str]] = []
     old = _by_key(recorded["tables"])
     new = _by_key(form["tables"])
     recorded_after: list[dict[str, Any]] = []
@@ -243,7 +249,7 @@ def _plan(
                     quotes=_count(counts, (table["key"], None)),
                 )
             )
-        columns_after = _plan_columns(table, before, counts, steps, refusals)
+        columns_after = _plan_columns(table, before, counts, steps, refusals, index_refusals)
         recorded_after.append({**table, "columns": columns_after})
 
     for table in recorded["tables"]:
@@ -256,6 +262,7 @@ def _plan(
         tuple(refusals),
         {**after, "tables": recorded_after},
         before=dict(recorded),
+        index_refusals=tuple(index_refusals),
     )
 
 
@@ -265,9 +272,11 @@ def _plan_columns(
     counts: Mapping[Key, int] | None,
     steps: list[Step],
     refusals: list[str],
+    index_refusals: list[tuple[str, str]],
 ) -> list[dict[str, Any]]:
     """The steps of one table both structures hold, column by column; the columns it holds
-    after them."""
+    after them. A refusal of the index's rename is also kept in *index_refusals* by the
+    table's key."""
     old = _by_key(before["columns"])
     new = _by_key(table["columns"])
     # A many-row table's index is paired by what it is, before any column is matched by its
@@ -282,11 +291,13 @@ def _plan_columns(
     if index is not None and earlier is not None and index["key"] != earlier["key"]:
         taken = old.get(index["key"])
         if taken is not None:
-            refusals.append(
+            refused = (
                 f"the index of {table['name']}, {earlier['name']}, renamed {index['name']}, takes "
                 f"the name of its column {taken['name']}: rename that column to a name of its "
                 "own first, or drop it; nothing else of the table changes until then"
             )
+            refusals.append(refused)
+            index_refusals.append((table["key"], refused))
             return list(before["columns"])
         paired = {**earlier, "key": index["key"]}
         old = {key: column for key, column in old.items() if column is not earlier}
@@ -335,11 +346,14 @@ def _plan_columns(
             after.append(column)
             continue
         if was["name"] != column["name"] and column["name"].casefold() in removed_names:
-            refusals.append(
+            refused = (
                 f"the column {name}.{was['name']}, renamed {column['name']}, takes the name of a "
                 "column the form removes, which the SQL keeps: rename one, or drop the removed "
                 "column first"
             )
+            refusals.append(refused)
+            if column is index:
+                index_refusals.append((table["key"], refused))
             after.append(was)
             continue
         if was["name"] != column["name"]:
@@ -436,7 +450,9 @@ def _emit(
     SQL schema; the notes and the DROPs it keeps commented out written where their steps
     fall. In additions-only exports, renames become creations, a type change is still the
     engine's change in place (none for a column a rename adds afresh, :func:`retype_superseded`),
-    and all other alterations become manual-work notes."""
+    a many-row table's key column is renamed for its index (``rename key``) or the table keyed
+    by its index's column (``rekey table``, :func:`_rekey`), and all other alterations become
+    manual-work notes."""
     steps = plan.steps
     owner = schema.metadata.schema
     renames = [
@@ -502,6 +518,13 @@ def _emit(
             _retype_in_place(operations, plan, schema, step)
         elif step.kind == "reshape table":
             _reshape_note(operations, plan, step)
+        elif step.kind == "rename key":
+            # The key column keeps its values and its place in the primary key.
+            operations.alter_column(
+                step.table, str(step.was), new_column_name=step.column, schema=owner
+            )
+        elif step.kind == "rekey table":
+            _rekey(operations, plan, schema, step, ordinal=steps.index(step))
         elif step.kind in ("keep table", "keep column"):
             _removed_note(operations, step, owner, additions_only=additions_only)
     if plan.activity:
@@ -628,6 +651,109 @@ def _retype_in_place(
         existing_nullable=bool(before.get("nullable", True)),
         schema=schema.metadata.schema,
         **using,
+    )
+
+
+def _raw(operations: Operations, sql: str) -> None:
+    """*sql*, a statement the script runs as written, where its step falls: never compiled, so
+    no character of it is escaped for a driver's parameters."""
+    impl = operations.impl
+    if not isinstance(impl, DefaultImpl):
+        raise TypeError("A script's statements are written by an offline migration context.")
+    impl.static_output(sql.strip() + impl.command_terminator)
+
+
+def _rekey(
+    operations: Operations, plan: Plan, schema: StoreSchema, step: Step, *, ordinal: int
+) -> None:
+    """*step*'s table keyed by the form's index, *step*'s column, in place of the column it is
+    keyed by, ``was``: the index's column filled, a numbered one from the old key's row
+    numbers where empty, typed as the store types the index and made to take no null, the
+    primary key dropped, whatever it is named, and made again as the store makes it, and the
+    old key column kept, taking a null, its DROP commented out. A value missing or held twice
+    stops the script, changing nothing. On SQLite, which cannot change a table's key, a note
+    says what to do. *ordinal* names the script's variables on SQL Server, one batch."""
+    dialect = operations.impl.dialect
+    owner = schema.metadata.schema
+    stored = schema.by_name(step.table_key)
+    index = str(step.column)
+    old = str(step.was)
+    where = f"{step.table}{held(step.quotes, 'rows')}"
+    if dialect.name == "sqlite":
+        _note(
+            operations,
+            f"{where} is keyed by {old}, not its index {index}, and SQLite cannot change a\n"
+            "table's key in place: make the table again keyed by the index and move its rows\n"
+            "into it.",
+        )
+        return
+    preparer = dialect.identifier_preparer
+    table = preparer.format_table(Table(step.table, MetaData(schema=owner)))
+    numbered = stored.form.index is not None and stored.form.index.index == "numbered"
+    _note(
+        operations,
+        f"{where} is keyed by {old}, not its index {index}:\n"
+        f"{index} becomes the key"
+        + (f", taking {old}'s row number where it is empty" if numbered else "")
+        + ".\nA value missing or held twice stops the script, changing nothing.\n"
+        f"{old} stays, taking a null.",
+    )
+    if numbered:
+        _raw(
+            operations,
+            f"UPDATE {table} SET {preparer.quote(index)} = {preparer.quote(old)} "
+            f"WHERE {preparer.quote(index)} IS NULL",
+        )
+    literal = table.replace("'", "''")
+    if dialect.name == "mssql":
+        key, drop = f"@haute_key_{ordinal}", f"@haute_drop_{ordinal}"
+        _raw(
+            operations,
+            f"DECLARE {key} sysname = (SELECT name FROM sys.key_constraints "
+            f"WHERE type = 'PK' AND parent_object_id = OBJECT_ID(N'{literal}'))",
+        )
+        _raw(
+            operations,
+            f"DECLARE {drop} nvarchar(max) = N'ALTER TABLE {literal} DROP CONSTRAINT ' "
+            f"+ QUOTENAME({key})",
+        )
+        _raw(operations, f"EXEC sp_executesql {drop}")
+    else:
+        _raw(
+            operations,
+            "DO $haute$\nDECLARE haute_key name;\nBEGIN\n"
+            f"    SELECT conname INTO haute_key FROM pg_constraint\n"
+            f"    WHERE conrelid = '{literal}'::regclass AND contype = 'p';\n"
+            f"    EXECUTE 'ALTER TABLE ' || '{literal}'::regclass::text\n"
+            "        || ' DROP CONSTRAINT ' || quote_ident(haute_key);\n"
+            "END\n$haute$",
+        )
+    fresh = stored.table.c[index].type
+    using: dict[str, Any] = {}
+    if dialect.name == "postgresql":
+        new = fresh.compile(dialect=dialect)
+        using["postgresql_using"] = f"{preparer.quote(index)}::{new}"
+    operations.alter_column(step.table, index, type_=fresh, nullable=False, schema=owner, **using)
+    key_constraint = stored.table.primary_key
+    operations.create_primary_key(
+        str(key_constraint.name),
+        step.table,
+        [column.name for column in key_constraint.columns],
+        schema=owner,
+    )
+    before = _structure_column(plan.before, step)
+    if dialect.name == "mssql":
+        # SQL Server restates a column's type to change whether it takes a null.
+        _raw(
+            operations,
+            f"ALTER TABLE {table} ALTER COLUMN {preparer.quote(old)} {before['sql_type']} NULL",
+        )
+    else:
+        operations.alter_column(step.table, old, nullable=True, schema=owner)
+    _note(
+        operations,
+        f"{old} is kept; drop it once nothing reads it:\n"
+        f"ALTER TABLE {table} DROP COLUMN {preparer.quote(old)};",
     )
 
 

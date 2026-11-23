@@ -102,6 +102,29 @@ def _describe(
                 "Change the row structure or index type: rebuild the table and migrate its rows. "
                 "This SQL does not perform it."
             )
+        case "rename key":
+            description = f"Rename {step.was} to {step.column}, keeping its values and the key."
+        case "rekey table":
+            if provider.dialect == "sqlite":
+                disposition = "manual"
+                description = (
+                    f"SQLite cannot change the table's key in place: make the table again keyed "
+                    f"by {step.column} and move its rows into it."
+                )
+            else:
+                index = next(
+                    table.index for table in form.data_schema.tables if table.name == step.table
+                )
+                filled = (
+                    f", taking {step.was}'s row number where empty"
+                    if index is not None and index.index == "numbered"
+                    else ""
+                )
+                description = (
+                    f"Key the table by {step.column} in place of {step.was}{filled}; "
+                    f"a value missing or held twice stops the script. {step.was} stays, "
+                    "taking a null."
+                )
         case "keep table":
             disposition = "retained"
             description = retention_description(form, None, plan)

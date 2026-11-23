@@ -40,8 +40,9 @@ test.describe("workbench", () => {
         { name: "territory", type: "str" }, { name: "flood_zone", type: "str" },
       ],
     } })
-    // An existing index collides with the desired name. The real comparison must
-    // list only missing columns/tables and export their SQL without migration commentary.
+    // policy as a store keyed by its row number made it: keyed by quote_row, the index limit
+    // a column beside it. The real comparison lists the missing columns and tables and the
+    // key's move to limit, and exports their SQL without migration commentary.
     execFileSync("uv", ["run", "python", "-c", [
       "import sqlite3, sys",
       "with sqlite3.connect(sys.argv[1]) as db:",
@@ -116,7 +117,9 @@ test.describe("workbench", () => {
     await expect(exportButton).toBeFocused()
     await pane.getByText(/^Database changes/).click()
     const additions = pane.getByTestId("store-plan-review")
-    await expect(additions.getByRole("region", { name: "Changes for policy" }).getByRole("listitem")).toHaveText(["territory", "flood_zone"])
+    // Keyed by quote_row beside its index's own column, policy's key moves to limit: on SQLite
+    // a manual change, its note saying so, then the missing columns.
+    await expect(additions.getByRole("region", { name: "Changes for policy" }).getByRole("listitem")).toHaveText([/^limitKey change/, "territory", "flood_zone"])
     await expect(additions.getByRole("region", { name: "Changes for quote_details" })).toContainText("New table")
     await expect(additions).not.toContainText(/Needs attention|rename|Saved revision|quotes with values/)
     await expect(additions.locator("details")).toHaveCount(0)
