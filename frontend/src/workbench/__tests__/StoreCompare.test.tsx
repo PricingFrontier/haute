@@ -413,7 +413,65 @@ describe("Compare", () => {
     expect(details.getByText("This field matches the database.")).toBeVisible()
   })
 
-  it("explains existing type and blank-value repairs without promising them in Export SQL", async () => {
+  /** equipment keyed by quote_row as a store keyed by its row number made it, its numbered
+   * index row_number a column beside it, and the comparison of it answering *changes*. */
+  const keyedByRowNumber = (changes: WorkbenchStoreCompareResponse["changes"]) => {
+    const form = sheetForm()
+    const key = form.schema.tables.find((each) => each.name === "equipment")!.inputs.find((each) => each.name === "row_number")!
+    key.index = "numbered"
+    useWorkbenchFormStore.getState().install(form, "rev-1")
+    vi.mocked(fetchStoreCatalogue).mockResolvedValue({ environment: "dev", target: "a".repeat(64), checked_at: 1700000000000, tables: [...TABLES, {
+      name: "equipment", primary_key: ["quote_reference", "quote_option", "quote_row"], unique: [], references: [QUOTE_LINK], quotes: 3,
+      columns: [{ name: "quote_row", kind: "integer", type: "BIGINT", nullable: false, capacity: BIGINT, numbered: false, collation: null, quotes: 3 },
+        { name: "row_number", kind: "integer", type: "BIGINT", nullable: true, capacity: BIGINT, numbered: false, collation: null, quotes: 0 }],
+    }] })
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, changes,
+      differences: [{ table: "equipment", column: "row_number", kind: "renamed", message: "the database names it quote_row" }],
+      blocked: [] })
+  }
+
+  it("marks a table the export keys by its index's own column and says what the SQL does", async () => {
+    const rekey = { kind: "rekey table" as const, table: "equipment", column: "row_number", disposition: "sql" as const,
+      description: "Key the table by row_number in place of quote_row, taking quote_row's row number where empty; a value missing or held twice stops the script. quote_row stays, taking a null." }
+    keyedByRowNumber([rekey])
+    open()
+    choose("dev")
+    await waitFor(() => expect(screen.getByTestId("database-mark-equipment-row_number")).toHaveTextContent("Key change"))
+    fireEvent.click(screen.getByText("Database changes · 1 key change"))
+    expect(screen.getByRole("region", { name: "Changes for equipment" })).toHaveTextContent("row_numberKey change")
+    fireEvent.click(within(screen.getByRole("region", { name: "Table equipment" })).getByRole("button", { name: "Database status of row_number" }))
+    const details = within(screen.getByRole("region", { name: "Database details for equipment.row_number" }))
+    expect(details.getByText("Different row key")).toBeVisible()
+    expect(details.getByText("The database keys these rows by quote_row; Haute keys them by row_number.")).toBeVisible()
+    expect(details.getByText(/Export SQL makes row_number the key in place of quote_row/))
+      .toHaveTextContent("taking quote_row's row number where row_number is empty")
+    expect(details.queryByText("Different column name")).not.toBeInTheDocument()
+    expect(details.queryByText(/update the primary key manually/)).not.toBeInTheDocument()
+
+    // On SQLite the change is manual: its description is the action, and the field needs attention.
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, blocked: [],
+      differences: [{ table: "equipment", column: "row_number", kind: "renamed", message: "the database names it quote_row" }],
+      changes: [{ ...rekey, disposition: "manual", description: "SQLite cannot change the table's key in place: make the table again keyed by row_number and move its rows into it." }] })
+    act(() => useWorkbenchFormStore.getState().change((current) => ({ ...current, name: "Changed" })))
+    // The action, and again under SQL details.
+    await waitFor(() => expect(details.getAllByText(/SQLite cannot change the table's key in place/)[0]).toBeVisible())
+    expect(screen.getByTestId("database-mark-equipment-row_number")).toHaveTextContent("Needs attention")
+  })
+
+  it("marks a key column the export renames for its index as a rename the SQL makes", async () => {
+    keyedByRowNumber([{ kind: "rename key", table: "equipment", column: "row_number", disposition: "sql",
+      description: "Rename quote_row to row_number, keeping its values and the key." }])
+    open()
+    choose("dev")
+    await waitFor(() => expect(screen.getByTestId("database-mark-equipment-row_number")).toHaveTextContent("Rename"))
+    fireEvent.click(within(screen.getByRole("region", { name: "Table equipment" })).getByRole("button", { name: "Database status of row_number" }))
+    const details = within(screen.getByRole("region", { name: "Database details for equipment.row_number" }))
+    expect(details.getByText("Different column name")).toBeVisible()
+    expect(details.getByText(/Export SQL renames quote_row to row_number/)).toHaveTextContent("keeping its values and the table's key")
+    expect(details.queryByText(/update the primary key manually/)).not.toBeInTheDocument()
+  })
+
+  it("explains type and blank-value repairs Export SQL leaves unchanged without promising them", async () => {
     const repair = "policy.year takes no null, so an empty year could not be saved"
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
       differences: [...COMPARED.differences, { table: "policy", column: "year", kind: "null", message: repair }],
@@ -428,7 +486,7 @@ describe("Compare", () => {
     const details = screen.getByRole("region", { name: "Database details for policy.year" })
     expect(within(details).getByText("Different data type")).toBeVisible()
     expect(within(details).getByText("Haute: year (Integer). Database: year (Text).")).toBeVisible()
-    expect(within(details).getByText(/Change the type in Haute to match/)).toHaveTextContent("Export SQL does not convert existing columns")
+    expect(within(details).getByText(/Change the type in Haute to match/)).toHaveTextContent("Export SQL leaves its type unchanged")
     expect(within(details).getByText("Different blank-value rules")).toBeVisible()
     expect(within(details).getByText(/Allow NULL in this column/)).toBeVisible()
     expect(within(details).getByText(repair)).not.toBeVisible()
@@ -444,6 +502,8 @@ describe("Compare", () => {
     })
     vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED,
       differences: [{ table: "policy", column: "year", kind: "type", message: narrow }],
+      changes: [{ kind: "retype column", table: "policy", column: "year", disposition: "sql",
+        description: "Change INTEGER to Integer. Review value conversion before running; a value that cannot convert stops the script." }],
     })
     open()
     choose("dev")
@@ -452,8 +512,31 @@ describe("Compare", () => {
     const details = screen.getByRole("region", { name: "Database details for policy.year" })
     expect(within(details).getByText("Database type too narrow")).toBeVisible()
     expect(within(details).getByText("Haute: year (Integer). Database: year (INTEGER), which holds less than Integer needs.")).toBeVisible()
-    expect(within(details).getByText(/Widen the database column/)).toHaveTextContent("Export SQL does not convert existing columns")
+    expect(within(details).getByText(/Export SQL widens this column/)).toHaveTextContent("a value that cannot convert stops it, changing nothing")
     expect(within(details).queryByText(/Change the type in Haute/)).not.toBeInTheDocument()
+  })
+
+  it("counts and lists a type change Export SQL converts, and says SQLite's is manual", async () => {
+    const retype = { kind: "retype column" as const, table: "policy", column: "year", disposition: "sql" as const,
+      description: "Change TEXT to Integer. Review value conversion before running; a value that cannot convert stops the script." }
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, changes: [retype] })
+    open()
+    choose("dev")
+    await waitFor(() => expect(screen.getByTestId("database-mark-policy-year")).toHaveTextContent("Type change"))
+    const summary = screen.getByText("Database changes · 1 type change")
+    fireEvent.click(summary)
+    expect(screen.getByRole("region", { name: "Changes for policy" })).toHaveTextContent("yearType change")
+    openField("year")
+    const details = screen.getByRole("region", { name: "Database details for policy.year" })
+    expect(within(details).getByText("Different data type")).toBeVisible()
+    expect(within(details).getByText(/Export SQL converts this column/)).toBeVisible()
+    expect(within(details).queryByText(/Change the type in Haute/)).not.toBeInTheDocument()
+
+    vi.mocked(fetchStoreCompare).mockResolvedValue({ ...COMPARED, changes: [{ ...retype, disposition: "manual",
+      description: "Change TEXT to Integer. SQLite needs a table/column rebuild and data migration; this SQL does not perform it." }] })
+    act(() => useWorkbenchFormStore.getState().change((current) => ({ ...current, name: "Changed" })))
+    await waitFor(() => expect(within(details).getByText(/SQLite cannot change a column's type in place/)).toBeVisible())
+    expect(screen.getByTestId("database-mark-policy-year")).toHaveTextContent("Needs attention")
   })
 
   it("keeps the retained source's NOT NULL repair beside a renamed addition", async () => {

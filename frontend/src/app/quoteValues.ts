@@ -6,8 +6,8 @@
  * quote, and the values kept in the browser until they are saved or discarded.
  */
 import type { QuoteSave, QuoteSource } from "../api/app"
-import { apiErrorCode, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
-import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppQuoteStore, WorkbenchAppRelatedQuote } from "../api/types"
+import { apiErrorCode, apiErrorMessage, apiErrorRawDetail, apiErrorStatus } from "../api/errors"
+import type { FormSpec, SchemaColumn, SchemaTable, WorkbenchAppQuote, WorkbenchAppQuoteActivityEntry, WorkbenchAppRelatedQuote } from "../api/types"
 import type { SamplePrice } from "../stores/useWorkbenchPricingStore"
 import { canonicalJson } from "../utils/canonicalJson"
 import { formatValue } from "../utils/formatValue"
@@ -15,7 +15,7 @@ import { operationKey } from "../utils/operationKey"
 import { hasInputs, tableIndex } from "../utils/quoteIdentity"
 import { formattedNumber, indexKey, KEPT_KEY, withPresetRows } from "../utils/sheetValues"
 import { basisOf, columnKey, sheetVisibility } from "../utils/sheetVisibility"
-import { QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
+import { fieldColumn, QUOTE_DETAILS, QUOTE_DETAILS_COLUMNS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, readableName, type QuoteDetailName, type SampleRow } from "../utils/workbenchForm"
 
 export type Values = Record<string, SampleRow[]>
 
@@ -198,25 +198,64 @@ export function savedPrice(
 
 // ── The quote store's refusals ───────────────────────────────────────────
 
-/** The codes the app's routes close its quotes with: tables that do not fit, a store not reached, no store. */
-export const QUOTE_STORE_CLOSED: ReadonlySet<string> = new Set([
-  "quote_store_mismatch",
-  "quote_store_unreachable",
-  "quote_store_environment",
-])
+/** One way the store's database does not fit, as a refusal names it: its table, its column when it is one, and what is wrong. */
+export interface StoreMisfit {
+  table: string
+  column: string | null
+  problem: string
+}
 
 /**
- * The refusal a 503 carries when the app's quotes are closed, its code one of the store's;
- * null for any other failure, a busy pricing's 503 among them.
+ * The misfits a 503 names when the tables a route uses do not fit the release's form, and
+ * the environment whose database it is; null for any other failure, a store that cannot be
+ * reached or a busy pricing among them.
  */
-export function quotesClosedBy(error: unknown): WorkbenchAppQuoteStore | null {
-  const code = apiErrorCode(error)
-  if (apiErrorStatus(error) !== 503 || code === null || !QUOTE_STORE_CLOSED.has(code)) return null
+export function storeMisfits(error: unknown): { misfits: StoreMisfit[]; environment: string | null } | null {
+  if (apiErrorStatus(error) !== 503 || apiErrorCode(error) !== "quote_store_mismatch") return null
   const detail = apiErrorRawDetail(error)
-  const message = typeof detail?.message === "string" ? detail.message : null
-  const listed = Array.isArray(detail?.differences) ? detail.differences : []
-  const differences = listed.filter((each): each is string => typeof each === "string")
-  return { open: false, error_code: code, message, differences }
+  const listed = Array.isArray(detail?.misfits) ? detail.misfits : []
+  const misfits = listed.flatMap((each): StoreMisfit[] => {
+    if (typeof each !== "object" || each === null) return []
+    const { table, column, problem } = each as Record<string, unknown>
+    if (typeof table !== "string" || typeof problem !== "string") return []
+    return [{ table, column: typeof column === "string" ? column : null, problem }]
+  })
+  if (misfits.length === 0) return null
+  return { misfits, environment: typeof detail?.environment === "string" ? detail.environment : null }
+}
+
+/** While the quote store refuses the Quotes page's list or a quote's opening, it is asked for again this often: the store's own bound. */
+export const QUOTES_RECHECK_MS = 10_000
+
+/** Whether `error` is the quote store refusing a route (503 with a code of the store's), which a check past its bound may lift. */
+export const storeRefused = (error: unknown): boolean =>
+  apiErrorStatus(error) === 503 && (apiErrorCode(error) ?? "").startsWith("quote_store_")
+
+/** A misfit as the page says it: a column by its label on `form`'s sheets and its name, a table's own as the table's. */
+function misfitSaid(misfit: StoreMisfit, form: FormSpec | null): string {
+  if (misfit.column === null) return `The table ${misfit.problem}`
+  const found = form === null ? null : fieldColumn(form, { table: misfit.table, column: misfit.column })
+  const label = found?.column.label || readableName(misfit.column)
+  return `${label} (${misfit.column}) ${misfit.problem}`
+}
+
+/**
+ * What the app says of a route's failure (specs/workbench): tables that do not fit named
+ * misfit by misfit under each table, each column by its label on `form`'s sheets and its
+ * name; any other failure as its message. On one line with `oneLine`, as a bar shows it.
+ */
+export function appErrorMessage(error: unknown, form: FormSpec | null, { oneLine = false }: { oneLine?: boolean } = {}): string {
+  const found = storeMisfits(error)
+  if (found === null) return apiErrorMessage(error)
+  const database = found.environment === null ? "The quote store's database" : `The ${found.environment} database`
+  const tables = new Map<string, string[]>()
+  for (const misfit of found.misfits) tables.set(misfit.table, [...(tables.get(misfit.table) ?? []), misfitSaid(misfit, form)])
+  if (oneLine) {
+    const listed = [...tables].map(([table, said]) => `${table}: ${said.join(", ")}`)
+    return `${database} doesn't match the form: ${listed.join("; ")}.`
+  }
+  const listed = [...tables].flatMap(([table, said]) => [`  ${table}`, ...said.map((each) => `    ${each}`)])
+  return [`${database} doesn't match the form:`, ...listed].join("\n")
 }
 
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
@@ -399,19 +438,23 @@ const CREATING_PREFIX = "haute-app-creating"
 export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
 
 /**
- * The operation key held under `key`, or a new one held there: a reload before the answer
- * came asks again with the same key, so the quote is made once. A tab that keeps nothing
- * asks with a new key each time.
+ * The operation key held under `key`, sent and not yet answered, or null: a reload before
+ * the answer came asks again with the same key, so the quote is made once.
  */
-export function heldOperation(key: string): string {
+export function heldOperation(key: string): string | null {
   try {
-    const held = window.sessionStorage.getItem(key)
-    if (held !== null) return held
-    const operation = operationKey()
-    window.sessionStorage.setItem(key, operation)
-    return operation
+    return window.sessionStorage.getItem(key)
   } catch {
-    return operationKey()
+    return null
+  }
+}
+
+/** Hold `operation` under `key` as it is sent; a tab that keeps nothing holds nothing. */
+export function holdOperation(key: string, operation: string): void {
+  try {
+    window.sessionStorage.setItem(key, operation)
+  } catch {
+    // Kept nowhere, it is asked with a new key next time.
   }
 }
 

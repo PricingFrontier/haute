@@ -29583,7 +29583,7 @@
       "type": "object"
     },
     "WorkbenchStoreChange": {
-      "description": "An addition from the exported SQL plan; compatibility details are separate.",
+      "description": "An addition, a type change or a many-row table's key moved to its index from the\nexported SQL plan; compatibility details are separate.",
       "properties": {
         "column": {
           "anyOf": [
@@ -29611,7 +29611,10 @@
         "kind": {
           "enum": [
             "create table",
-            "add column"
+            "add column",
+            "retype column",
+            "rename key",
+            "rekey table"
           ],
           "title": "Kind",
           "type": "string"

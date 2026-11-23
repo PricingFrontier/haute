@@ -469,9 +469,10 @@ class WorkbenchStoreExtra(BaseModel):
 
 
 class WorkbenchStoreChange(BaseModel):
-    """An addition from the exported SQL plan; compatibility details are separate."""
+    """An addition, a type change or a many-row table's key moved to its index from the
+    exported SQL plan; compatibility details are separate."""
 
-    kind: Literal["create table", "add column"]
+    kind: Literal["create table", "add column", "retype column", "rename key", "rekey table"]
     table: str
     column: str | None
     disposition: Literal["sql", "manual"]

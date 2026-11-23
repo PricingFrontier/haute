@@ -29,14 +29,13 @@ import {
 } from "lucide-react"
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react"
 import { changeAppQuote, type QuotesQuery } from "../api/app"
-import { apiErrorMessage } from "../api/errors"
 import type { WorkbenchAppQuote } from "../api/types"
 import { inModalDialog, isFormControl } from "../hooks/keyboardTargets"
 import { useRequestKind } from "../hooks/useRequestKind"
 import useToastStore from "../stores/useToastStore"
 import { answer, under } from "../utils/answers"
 import { relativeTime } from "../utils/relativeTime"
-import { fullTime, listColumns, listValue } from "./quoteValues"
+import { appErrorMessage, fullTime, listColumns, listValue, QUOTES_RECHECK_MS } from "./quoteValues"
 import { followLink, navigate, newQuotePath, quotePath, quotesPath, quotesQueryOf } from "./route"
 import { BUTTON, Collapsible, FILL_BUTTON, FILL_STYLE, ICON_BUTTON, Menu, StageChip, type MenuItem } from "./ui"
 import useAppStore from "./useAppStore"
@@ -96,6 +95,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const counts = useQuoteListStore((s) => s.counts)
   const status = useQuoteListStore((s) => s.status)
   const error = useQuoteListStore((s) => s.error)
+  const storeRefused = useQuoteListStore((s) => s.storeRefused)
+  const refusals = useQuoteListStore((s) => s.refusals)
   const next = useQuoteListStore((s) => s.next)
   const loadingMore = useQuoteListStore((s) => s.loadingMore)
   const load = useQuoteListStore((s) => s.load)
@@ -117,6 +118,15 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   useEffect(() => {
     void load(quotesQueryOf(address.slice(address.indexOf("?") + 1)), true)
   }, [load, address])
+
+  // A list the quote store refused is asked for again on the store's own bound, so tables
+  // put right in SQL list the quotes with no reload; each answer that refuses it again
+  // arms the next (`refusals`), the same refusal as the last among them.
+  useEffect(() => {
+    if (status !== "error" || !storeRefused) return
+    const timer = window.setTimeout(() => void useQuoteListStore.getState().reload(), QUOTES_RECHECK_MS)
+    return () => window.clearTimeout(timer)
+  }, [status, storeRefused, refusals])
 
   // A search reached from the address, by Back or a link, replaces what was typed.
   const [searched, setSearched] = useState(query.search)
@@ -166,12 +176,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
             // The list shown when Undo is pressed, which may be another than the one archived from.
             void answer([under(page)], changeAppQuote(archived.reference, archived.option, "restore", archived.version, {}), {
               ok: () => useQuoteListStore.getState().reload(),
-              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`),
+              failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
             })
           },
         })
       },
-      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${apiErrorMessage(reason)}`),
+      failed: (reason) => addToast("error", `Could not archive ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
     })
   }
 
@@ -181,7 +191,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
         void useQuoteListStore.getState().reload()
         addToast("success", `Restored ${quote.label}`)
       },
-      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${apiErrorMessage(reason)}`),
+      failed: (reason) => addToast("error", `Could not restore ${quote.label}: ${appErrorMessage(reason, form, { oneLine: true })}`),
     })
   }
 
@@ -330,7 +340,8 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
               {status === "error" && (
                 <tr>
                   <td colSpan={span} className="px-3 py-6 text-center">
-                    <span role="alert" style={{ color: "var(--danger-text)" }}>
+                    {/* A refusal naming what does not fit reads as it is written: a table to a line, its columns under it. */}
+                    <span role="alert" className="inline-block whitespace-pre-wrap text-left align-top" style={{ color: "var(--danger-text)" }} data-testid="quotes-error">
                       The quotes could not be read: {error}
                     </span>{" "}
                     <button type="button" className={BUTTON} onClick={() => void load(query, true)}>

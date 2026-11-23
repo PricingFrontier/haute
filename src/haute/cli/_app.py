@@ -111,16 +111,19 @@ def _said() -> Iterator[None]:
         raise click.ClickException(str(exc)) from exc
 
 
-def _built(project_dir: Path, release_dir: Path, *, report: bool = False) -> None:
+def _built(
+    project_dir: Path, release_dir: Path, *, report: bool = False, checks: bool = True
+) -> None:
     """Build the release, printing each test quote that did not stay unchanged; with
     *report*, write the test quotes' report in the working directory once they were checked,
-    whether the build passes or fails."""
+    whether the build passes or fails. With *checks* false nothing is priced
+    (:func:`haute._workbench_app.build_release`)."""
     from haute._workbench_app import TestQuotesFailedError, build_release
 
     try:
         with _said():
             try:
-                built = build_release(project_dir, release_dir)
+                built = build_release(project_dir, release_dir, checks=checks)
             except TestQuotesFailedError as exc:
                 _told(exc.results, report=report)
                 raise
@@ -345,7 +348,9 @@ def handle_app_serve(config: AppServeConfig) -> None:
             read_workbench_config(project_dir), SERVE_ENVIRONMENT, project_environ(project_dir)
         )
     release_dir = (project_dir / RELEASE_DIR).resolve()
-    _built(project_dir, release_dir)
+    # The checks a deploy runs (the dry run, the test quotes) are CI's: the app opens on the
+    # analyst's machine whatever they would find.
+    _built(project_dir, release_dir, checks=False)
     with _said():
         from haute._workbench_import import project_source
 

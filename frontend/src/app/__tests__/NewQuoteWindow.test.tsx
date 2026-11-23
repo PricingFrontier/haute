@@ -26,7 +26,7 @@ import { keptCreationKey, readKeptCreation } from "../quoteValues"
 import { navigate, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
 import useNewQuoteStore, { windowFields, windowProblems } from "../useNewQuoteStore"
-import { answer, release } from "./fixtures"
+import { answer, MISFIT, release, storeRefusal } from "./fixtures"
 
 const store = () => useNewQuoteStore.getState()
 const KEPT = keptCreationKey("motor", "ana@example.com")
@@ -266,6 +266,22 @@ describe("NewQuoteWindow", () => {
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
   })
 
+  it("refuses a creation the store's tables do not fit, naming each, and lets it go", async () => {
+    vi.mocked(createAppQuote).mockRejectedValue(storeRefusal(MISFIT))
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+    fireEvent.click(create())
+
+    const said = await screen.findByTestId("new-quote-refused")
+    expect(said).toHaveTextContent("The dev database doesn't match the form:")
+    expect(said).toHaveTextContent("State (state) is missing")
+    // Refused before anything was written: nothing may have been made, so nothing is kept.
+    expect(screen.queryByTestId("new-quote-unknown")).toBeNull()
+    expect(readKeptCreation(KEPT)).toBeNull()
+    expect(field("Quote reference")).toBeEnabled()
+  })
+
   it("says a page drawn for an earlier release must be reloaded", async () => {
     vi.mocked(createAppQuote).mockRejectedValue(new ApiError("HTTP 409", 409, "This page was drawn for another release of the app: reload it to save on this one."))
     shown()
@@ -312,6 +328,25 @@ describe("NewQuoteWindow", () => {
     expect(bodies[2]).toEqual(bodies[0])
     expect(bodies[0][0].values.quote_details).toEqual([{ insured: "Acme" }])
     expect(readKeptCreation(KEPT)).toBeNull()
+  })
+
+  it("keeps a creation sent again that the store refuses, as its first send may have made it", async () => {
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(storeRefusal(MISFIT))
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+    fireEvent.click(create())
+    expect(await screen.findByTestId("new-quote-unknown")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("new-quote-try-again"))
+
+    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalledTimes(2))
+    // The refusal says nothing of the send before it: ABC-1 may have been made, so it stays.
+    expect(await screen.findByTestId("new-quote-unknown")).toHaveTextContent("The dev database doesn't match the form")
+    expect(screen.queryByTestId("new-quote-refused")).toBeNull()
+    expect(readKeptCreation(KEPT)?.reference).toBe("ABC-1")
   })
 
   it("lets a kept creation go on Discard, and the next New quote starts afresh", async () => {

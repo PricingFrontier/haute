@@ -914,9 +914,12 @@ Out of scope:
     only its content scrolls, keeping Close and Download SQL visible on short screens.
     Secondary actions use the existing quiet icon actions and all controls use theme tokens.
 
-    The schema pane's collapsed Database changes section lists only missing columns,
-    grouped by table, and missing tables labelled New table. Its heading counts columns
-    and tables to add instead of saying Needs attention. With no additions it says No
+    The schema pane's collapsed Database changes section lists only missing columns, type
+    changes and key changes, grouped by table, missing tables labelled New table, type
+    changes Type change, a key column renamed for its index Rename and a table keyed by its
+    index Key change. Its heading counts columns and tables to add, type changes and key
+    changes instead of saying Needs attention; a field the export re-keys reads Rename or Key
+    change, not Needs attention, while the change is the SQL's. With none it says No
     additions, not that the database is compatible. It has no migration-review prose,
     retained-field lists, rename decisions, provider/revision metadata or Check environments
     action. The original snapshot time is available in Refresh's tooltip. It uses only the
@@ -924,15 +927,40 @@ Out of scope:
 
     Live SQL export and this list use the same name-based additions plan: each Haute schema
     column absent from its database table is added, and each missing table is created.
-    Existing columns are never changed, renamed or removed, regardless of type, key, row
-    structure or explicit rename choices. Renaming a field adds its new name empty if absent.
+    An existing column held under the field's name and of another type (or holding less, a
+    REAL for a Decimal) is changed to the field's type in place, each value converted as it
+    stands, on SQL Server and PostgreSQL; SQLite, which cannot, gets a note and the change is
+    manual (2026-11-23, reversing 2026-11-07's additions only for types). The script is one
+    transaction, so a value that does not convert stops it and nothing changes, additions
+    included. quote_details' and the identity's types and a table of other rows are never
+    changed. A many-row table's index, known by its place in the primary key whatever it is
+    named, moves the key with it (2026-11-23, reversing 2026-11-07's rule for keys too): a
+    key column of the index's type and comparison under another name, no column holding the
+    index's name, is renamed for the index, keeping its values and the key; a table keyed by
+    a column beside one holding the index's name, as a store keyed by its row number made it
+    before 2026-11-05 (`quote_row`, the index a column of its own, a numbered one left
+    empty), is keyed by that column, a numbered index's only while its column holds no values
+    (values there, as a swap of two names leaves them, would be taken for the rows' numbers):
+    a numbered index filled from the old key's row number where empty, the index typed as
+    the store types it and made to take no null, the primary
+    key dropped by whatever name it has and made again as the store makes it, the old key
+    column kept taking a null, its DROP commented out. An index value missing or held twice
+    in a quote stops the script, changing nothing. SQLite, which cannot change a key, gets a
+    note and the change is manual. An index under a new name whose type differs from the key
+    column's is added beside it with its note, as before: converted row numbers would match
+    no allowed value. The comparison's refusals of such an index's rename, and its notes of
+    the old key column, are not blockers while the export re-keys the table. Other columns
+    are never renamed or removed, regardless of key, row structure or explicit rename
+    choices, and a column the analyst pairs is not converted: renaming a field adds its new
+    name empty, at its type, if absent.
     Index/row conflicts cannot suppress unrelated additions within the same table. Matching
     ignores column-name case when deciding whether adding another would duplicate a name.
     New columns on existing tables are nullable; existing data and keys remain intact.
     SQL omits migration, retention and unresolved-rename commentary. Only a problem that
     prevents an addition, such as an invalid provider name, is shown beside that addition
     and in SQL comments. Valid additions remain exportable. The shared renderer still writes
-    the script, and the offline API keeps its additions-only policy.
+    the script, and the offline API keeps additions and type changes; its plan from an
+    earlier form has no catalogue, so an index's rename there is still added with its note.
     Full compatibility checks, saved fields, schema editing and field/table difference
     details remain separate from this additions list; no additions does not imply the
     current app can use the database. Operational guidance belongs in documentation.
@@ -2020,7 +2048,8 @@ Out of scope:
   panel beside the sheets listing them by name:
   - **Priced as saved.** Test quotes are priced on the project as saved, resolved as
     `haute app build` resolves it (the pipeline file, the form folder and the allowed
-    values its params files give), through the scorer the underwriter app prices with, one
+    values its params files give) but without deploy's dry run, so each quote prices or
+    fails on its own, through the scorer the underwriter app prices with, one
     quote a request and its answer whole: no row limit, and a quote too large for a
     request, or one that runs out of memory or time, fails, named so. While the project
     has unsaved changes, each of the panel's actions that prices saves it first, the
@@ -2130,7 +2159,7 @@ Out of scope:
   revision or another release is refused (409), so a page loaded from an earlier release
   reloads rather than price on a newer contract or model, a release that changed the
   model alone included: the page says it was drawn for an earlier release and offers
-  Reload. While the app's quotes are closed (below) it prices nothing. The request is built
+  Reload. While the store cannot take a quote (below) it prices nothing. The request is built
   as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
@@ -2157,7 +2186,10 @@ Out of scope:
   since who may change quotes cannot be told. `haute app serve` builds a release of the
   project as it is saved and serves it on the analyst's machine, the principal the
   analyst's git identity, able to change quotes unless `--reader` signs them in as a
-  reader, so the sheets underwriters will see are checked before a merge. Served so, the
+  reader, so the sheets underwriters will see are checked before a merge. It builds that
+  release without the checks a deploy runs: no test quote is priced and the pipeline is
+  not dry-run, so the app opens whatever those would find, and `haute app build`, which CI
+  runs, and deploy still run them. Served so, the
   app binds loopback and takes a request only for a loopback host (`localhost`,
   `127.0.0.1` or `::1`, on any port) and only without forwarded metadata (`Forwarded` or
   an `X-Forwarded-*` header), refusing any other (400) before it signs the request in:
@@ -2171,11 +2203,16 @@ Out of scope:
   at the database `connections.toml` names for `[dev]` and signed in from `.env` or Microsoft
   Entra ID. In every environment, the people who own that database make and change its tables
   in SQL, starting from the SQL the schema's pane writes.
-  The app starts whatever its store holds, and its quotes are open only while the store's
-  check (below) finds nothing wrong. Until then they are closed: every quote route and
-  `POST /api/app/price` answer 503 naming why, `quote_store_mismatch` with each way the
-  database's tables differ from the release's form and each privilege its sign-in lacks,
-  `quote_store_read_only` for a SQLite store whose file, or the folder it is in, the app
+  The app starts whatever its store holds, and its page opens whatever the store holds too:
+  the store is checked where it is used, for the tables that use reads and writes. The
+  Quotes page's list and the people quotes are with read `quote_details` alone; everything
+  done with one quote (making, opening, saving, assigning, noting, archiving, restoring,
+  marking final, amending and exporting it, and reading its activity) reads and writes every
+  table of the release's form and the store's activity table, and the pricing is held to
+  them too, since nothing is priced that could not be saved. Each use is answered 503 naming
+  why while what it uses cannot be used: `quote_store_mismatch` with each way the tables it
+  uses differ from the release's form and each privilege its sign-in lacks on them, so the
+  list is read while a table only a quote reads differs, `quote_store_read_only` for a SQLite store whose file, or the folder it is in, the app
   cannot write to, naming the file, since no save could land,
   `quote_store_unreachable` for a server database the app cannot reach or that refuses its
   sign-in, said naming the variables that place it and sign in to it, never what the driver
@@ -2187,14 +2224,22 @@ Out of scope:
   up; and
   `quote_store_environment` for an app started with no environment named, naming
   `HAUTE_ENVIRONMENT`, or one whose environment or database cannot be resolved, naming the
-  variable to set. `GET /api/app/release` says whether the quotes are open (`quotes`) and,
-  while they are closed, the refusal; the page then opens no quote, new or saved, saying the
-  quotes are unavailable, so nothing is keyed or priced that could not be saved, and a quote
-  open as they close stops pricing and saving, its values kept in the browser as unsaved
-  values are (below) and offered back once they open. A closed app checks again at most once
-  every 10 seconds, a request in between answered with the last check's refusal, and the
-  page asks `GET /api/app/release` again on the same bound, so tables put right in SQL open
-  the quotes with no restart, no new image and no reload. A statement the database refuses
+  variable to set; the last three refuse every use. A mismatch's refusal holds each misfit by
+  its table, its column when it is one, and what is wrong (`misfits`), beside the text of
+  each (`differences`, as `policy_details.is_renewal is missing`), and names the environment
+  whose database it is. `GET /api/app/release` says whether the whole store fits (`quotes`),
+  every table and privilege, as a rollout checks it; the page does not close on it. The page
+  shows a refusal where it was met, each misfit under its table, a column by its label on
+  the sheets and its name ("Renewal (is_renewal) is missing"), and nothing more, as whoever
+  reads it knows who looks after the database: the Quotes page says why where its list would
+  be, and asks for it again every 10
+  seconds until it is read; a quote that cannot be opened says why where it would open, and
+  asks for it again on the same bound, still saying why, until it opens; one that cannot be
+  made says why in the New quote window, nothing made or kept; and a quote open when its pricing or a save is refused stays open, saying why, its
+  values kept in the browser as unsaved values are (below). A store whose tables do not fit,
+  or that cannot be used, is checked again at most once every 10 seconds, a request in
+  between answered with the last check's refusal, so tables put right in SQL are used with no
+  restart, no new image and no reload. A statement the database refuses
   because a table or column is not as the check found it makes the app check again at once:
   the request is refused as above when the check finds a difference, and when it finds none
   is answered 422 `quote_store_refused`, saying the store refused the change and the quote's
@@ -2356,8 +2401,9 @@ Out of scope:
   holds the handover note, edited there, the quotes it came from or that were made from it,
   and what was done to the quote, by whom and when, newest first, with Amend's reasons.
   Ctrl+S saves.
-  While the quotes are closed the app opens on no quote and says they are unavailable,
-  asking again until they open. One who may only read quotes is offered nothing that changes them: no
+  While its store cannot be used the app still opens: the Quotes page says why its list
+  cannot be read, asking again until it can, and a quote says why it cannot be opened, made,
+  priced or saved, naming each table and column that does not fit. One who may only read quotes is offered nothing that changes them: no
   New quote, Duplicate, Archive or Restore on the Quotes page, and every quote read only,
   saying that changing it needs the app's edit role.
 - **Shown when.** A sheet, a section, a component, or a Table's column or a Collection's
@@ -2604,7 +2650,11 @@ Out of scope:
     per table under the stand-in identity, the rows a preview runs on before the workbench
     supplies values, its answer held to them as any request's is (Each output row on its
     input row, below). A node that cannot take a
-    null fails that dry run with its own error. Nothing deployed reads the sample, so the
+    null fails that dry run with its own error. The response's schema is the Workbench
+    Output's tables', each under its name as a quote holds it, so nothing is priced to
+    learn it, and the dry run is a check that the pipeline prices: deploy and `haute app
+    build` run it, `haute app serve` and the Preview's test quotes do not, and the release
+    is the same either way. Nothing deployed reads the sample, so the
     bundle leaves it out and carries the tables alone: the quote an analyst typed while
     building stays in the project. Deploy's test quotes are not held to the
     tables as a Quote Input's are to its columns: a quote may leave a table out, and the
@@ -3598,9 +3648,15 @@ Out of scope:
   configured environment's live catalogue, writes the migration SQL from the live tables as
   they are (with quote counts on affected columns and tables), and the app's gate checks the
   tables it finds, which is all the app needs: that each table and column it reads and writes
-  is there as it reads and writes it. A closed app stays up and opens no quote, rather than
-  refusing to start, so the tables put right open its quotes with no new image, and nothing
-  is keyed or priced that could not be saved.
+  is there as it reads and writes it. An app whose store does not fit stays up rather than
+  refusing to start, so the tables put right are used with no new image. At first such an
+  app closed its whole page, opening no quote and listing none; reversed on 23 November
+  2026, since an analyst running `haute app serve` on a database they could not reach yet,
+  or whose tables lagged the form, could not see the app at all: the page always opens, each
+  use of the store is checked for the tables it uses, so the list is read while a table only
+  a quote reads differs, and a refusal names each table and column that does not fit by its
+  label and name. Nothing is keyed or priced that could not be saved still: a quote the store
+  cannot take is neither made, opened nor priced.
 - **Required gates final, never a save.** An underwriter saves whenever they like, a draft
   with any field empty; only a value the store cannot hold as its column's type refuses a
   save, since writing it would lose it. Required is what a quote needs before it is offered,
@@ -3877,12 +3933,14 @@ Out of scope:
 - A quote that breaks a column's rule is priced all the same: its cells are marked once
   anything is typed, and nothing is refused. A pricing of the app's quote that fails shows
   "Pricing failed: …" in its bar and empties the output columns, as the sample's does, and
-  a save then keeps the quote unpriced; a pricing refused because the quotes are closed
-  closes them on the page instead, its values kept unsaved.
+  a save then keeps the quote unpriced; a pricing refused because the store cannot take the
+  quote says why in its bar, naming what does not fit, its values kept unsaved.
 - An app whose quote store does not fit its release's form, cannot be reached, signs in
   without a privilege the store needs or was started with no environment named starts all
-  the same, its quotes closed: no quote opens, none is priced or saved, and each quote route
-  and the pricing route answer 503 naming why, until a check finds the tables fit.
+  the same and its page opens: the Quotes page lists the quotes while `quote_details` fits
+  and may be read, else says why where the list would be; making, opening, pricing and
+  saving a quote, and each other change to one, answer 503 naming each table and column
+  that does not fit, or why the store cannot be used, until a check finds the tables fit.
 - An app served by `haute app serve` refuses a request for a host that is not loopback, or
   one carrying `Forwarded` or an `X-Forwarded-*` header, with 400 before it signs the
   request in, so such a request reads, prices and changes nothing as the analyst, the

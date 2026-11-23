@@ -6387,13 +6387,14 @@ export interface WorkbenchStoreCompareResponse {
   sql: string;
 }
 /**
- * An addition from the exported SQL plan; compatibility details are separate.
+ * An addition, a type change or a many-row table's key moved to its index from the
+ * exported SQL plan; compatibility details are separate.
  */
 export interface WorkbenchStoreChange {
   column: string | null;
   description: string;
   disposition: 'sql' | 'manual';
-  kind: 'create table' | 'add column';
+  kind: 'create table' | 'add column' | 'retype column' | 'rename key' | 'rekey table';
   table: string;
 }
 /**

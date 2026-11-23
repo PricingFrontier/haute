@@ -25,7 +25,7 @@ import PageTabs from "../workbench/PageTabs"
 import SheetCanvas from "../workbench/SheetCanvas"
 import AppHeader from "./AppHeader"
 import HistoryPanel from "./HistoryPanel"
-import { fullTime, valuesKey } from "./quoteValues"
+import { fullTime, QUOTES_RECHECK_MS, valuesKey } from "./quoteValues"
 import { followLink, navigate, quotePath, routePart, setLeaveGuard, type AppRoute } from "./route"
 import { BUTTON, Notice, ReleaseNotice, StageChip } from "./ui"
 import useAppStore from "./useAppStore"
@@ -63,6 +63,7 @@ async function makeAsked(from: QuoteSource): Promise<void> {
 export default function QuoteView({ route }: { route: QuoteRoute }) {
   const status = useOpenQuoteStore((s) => s.status)
   const loadError = useOpenQuoteStore((s) => s.loadError)
+  const refusedOpen = useOpenQuoteStore((s) => s.refusedOpen)
   const quote = useOpenQuoteStore((s) => s.quote)
   const baseline = useOpenQuoteStore((s) => s.baseline)
   const historyOpen = useOpenQuoteStore((s) => s.historyOpen)
@@ -85,6 +86,16 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
     // The route's key says all of it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey])
+
+  // A quote the quote store refused is asked for again on the store's own bound, saying why
+  // meanwhile, so tables put right in SQL open it with no reload; each answer that refuses
+  // it again arms the next.
+  useEffect(() => {
+    if (status !== "error" || refusedOpen === null) return
+    const { reference, option } = refusedOpen
+    const timer = window.setTimeout(() => void useOpenQuoteStore.getState().openQuote(reference, option), QUOTES_RECHECK_MS)
+    return () => window.clearTimeout(timer)
+  }, [status, refusedOpen])
 
   // Leaving with values not saved asks first; closing the tab warns.
   useEffect(() => {
@@ -162,7 +173,10 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
       )}
       {status === "error" && (
         <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-[13px]" style={{ color: "var(--danger-text)" }}>
-          The quote could not be opened: {loadError}
+          {/* A refusal naming what does not fit reads as it is written: a table to a line, its columns under it. */}
+          <span className="whitespace-pre-wrap text-left" data-testid="quote-load-error">
+            The quote could not be opened: {loadError}
+          </span>
           <a href="/" onClick={(event) => followLink(event, "/")} className={BUTTON}>
             <ArrowLeft size={12} /> Back to Quotes
           </a>
@@ -478,7 +492,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
       )}
       {error !== null && (
         <Notice tone="danger" testId="notice-error" onDismiss={() => dismiss("error")}>
-          {error}
+          <span className="whitespace-pre-wrap">{error}</span>
         </Notice>
       )}
       {unkept && (

@@ -306,8 +306,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // 306.6 KiB); 1,828 KiB (approved, 22 November 2026). The workbench roadmap's P1 and P2
 // packages (Imports run in Preview and the app with their answer's validator, WB-09; the app's
 // Export of a final quote, WB-11) bring it to 1,830.1 KiB (initial 306.7 KiB, the Import's
-// code kept out of the first chunk); 1,831 KiB (approved, 23 November 2026).
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1831
+// code kept out of the first chunk); 1,831 KiB (approved, 23 November 2026). The underwriter
+// app opening whatever its store holds (each misfit listed where a use was refused, the
+// Quotes list asked again after each refusal, a store's refusal settling only a keyed
+// write's first send) brings main's 1,830.6 KiB to 1,831.3 KiB (initial 307.9 KiB);
+// 1,833 KiB (approved, 23 November 2026) restores about 1.7 KiB headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1833
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

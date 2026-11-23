@@ -12,7 +12,14 @@ from typing import Literal
 
 from haute._quote_store._catalogue import Catalogue
 from haute._quote_store._compare import Rename
-from haute._quote_store._migrate import Plan, Step, StepKind, _structure_column, addition_problem
+from haute._quote_store._migrate import (
+    Plan,
+    Step,
+    StepKind,
+    _structure_column,
+    addition_problem,
+    retype_superseded,
+)
 from haute._quote_store._providers import Provider
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
@@ -78,13 +85,7 @@ def _describe(
             after = _structure_column(plan.recorded, step)
             old = before.get("sql_type", _TYPES.get(before["type"], before["type"]))
             description = f"Change {old} to {_TYPES[after['type']]}. "
-            if additions_only:
-                disposition = "manual"
-                description += (
-                    "Existing types and values are unchanged by this SQL. "
-                    "Review and convert the data manually before changing the column type."
-                )
-            elif provider.dialect == "sqlite":
+            if provider.dialect == "sqlite":
                 disposition = "manual"
                 description += (
                     "SQLite needs a table/column rebuild and data migration; "
@@ -101,6 +102,29 @@ def _describe(
                 "Change the row structure or index type: rebuild the table and migrate its rows. "
                 "This SQL does not perform it."
             )
+        case "rename key":
+            description = f"Rename {step.was} to {step.column}, keeping its values and the key."
+        case "rekey table":
+            if provider.dialect == "sqlite":
+                disposition = "manual"
+                description = (
+                    f"SQLite cannot change the table's key in place: make the table again keyed "
+                    f"by {step.column} and move its rows into it."
+                )
+            else:
+                index = next(
+                    table.index for table in form.data_schema.tables if table.name == step.table
+                )
+                filled = (
+                    f", taking {step.was}'s row number where empty"
+                    if index is not None and index.index == "numbered"
+                    else ""
+                )
+                description = (
+                    f"Key the table by {step.column} in place of {step.was}{filled}; "
+                    f"a value missing or held twice stops the script. {step.was} stays, "
+                    "taking a null."
+                )
         case "keep table":
             disposition = "retained"
             description = retention_description(form, None, plan)
@@ -132,7 +156,11 @@ def review_plan(
     plan: Plan, form: FormSpec, provider: Provider, *, additions_only: bool = False
 ) -> tuple[ReviewChange, ...]:
     changes = [
-        _describe(step, plan, form, provider, additions_only=additions_only) for step in plan.steps
+        _describe(step, plan, form, provider, additions_only=additions_only)
+        for step in plan.steps
+        if not (
+            additions_only and step.kind == "retype column" and retype_superseded(step, plan.steps)
+        )
     ]
     if plan.activity:
         changes.append(

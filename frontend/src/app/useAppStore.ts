@@ -1,14 +1,12 @@
 /**
  * The underwriter app's own state (specs/workbench): the release it serves and its sheets,
- * which every quote opens on and the quote list's columns are read from; whether its quotes
- * are open, which every failure of the app's routes may close; and the people quotes are
- * with. Its questions are the page's (`useQuestionStore`).
+ * which every quote opens on and the quote list's columns are read from; and the people
+ * quotes are with. Its questions are the page's (`useQuestionStore`).
  */
 import { create } from "zustand"
 import { fetchAppPeople } from "../api/app"
-import type { FormSpec, WorkbenchAppQuoteStore, WorkbenchAppReleaseResponse } from "../api/types"
+import type { FormSpec, WorkbenchAppReleaseResponse } from "../api/types"
 import { answer, newest, requestKind } from "../utils/answers"
-import { quotesClosedBy } from "./quoteValues"
 
 interface AppState {
   release: WorkbenchAppReleaseResponse | null
@@ -19,11 +17,6 @@ interface AppState {
   /** The page was drawn for another release than the one serving it now, as a price or a save found. */
   releaseChanged: boolean
   noteReleaseChanged: () => void
-  /** The release's quote store as it last answered: open, or closed naming why. */
-  quotes: WorkbenchAppQuoteStore | null
-  setQuotes: (quotes: WorkbenchAppQuoteStore) => void
-  /** Close the quotes when `error` is a route's refusal of a closed store; whether it was. */
-  noteQuotesClosed: (error: unknown) => boolean
   setRelease: (release: WorkbenchAppReleaseResponse, form: FormSpec, revision: string) => void
   loadPeople: () => Promise<void>
 }
@@ -38,14 +31,7 @@ const useAppStore = create<AppState>()((set) => ({
   people: [],
   releaseChanged: false,
   noteReleaseChanged: () => set({ releaseChanged: true }),
-  quotes: null,
-  setQuotes: (quotes) => set({ quotes }),
-  noteQuotesClosed: (error) => {
-    const closed = quotesClosedBy(error)
-    if (closed !== null) set({ quotes: closed })
-    return closed !== null
-  },
-  setRelease: (release, form, revision) => set({ release, form, revision, quotes: release.quotes }),
+  setRelease: (release, form, revision) => set({ release, form, revision }),
   loadPeople: async () => {
     await answer([newest(peopleAsked)], fetchAppPeople(), {
       ok: ({ people }) => set({ people }),

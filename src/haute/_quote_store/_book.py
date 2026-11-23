@@ -69,9 +69,12 @@ from haute._quote_store._store import (
     QuoteNotReadyError,
     QuoteStoreChangedError,
     QuoteStoreError,
+    QuoteStoreMismatchError,
     ReferenceTakenError,
     StaleQuoteError,
+    StoreMisfit,
     WriteSupersededError,
+    store_mismatch,
     writing,
 )
 from haute._workbench_form import (
@@ -89,6 +92,9 @@ Relation = Literal["duplicate", "renewal", "alternative"]
 View = Literal["mine", "team", "archived"]
 #: The orders a list is read in.
 Sort = Literal["saved", "reference", "insured"]
+#: What a request uses the store for: the Quotes page's list and the people quotes are with,
+#: which read ``quote_details`` alone, or one quote, which reads and writes every table.
+StoreUse = Literal["list", "quote"]
 #: What an activity row records.
 Action = Literal[
     "created",
@@ -375,7 +381,9 @@ def _blank(value: Any) -> bool:
 class QuoteBook:
     """The underwriter app's quotes on the store's database: *engine* holding *schema*, the
     tables of *form*, written by an app running Haute *haute_version*; *clock* gives the moment
-    each write is stamped with. Closing the book disposes of the engine."""
+    each write is stamped with. *misfits* are each way *environment*'s database does not fit
+    the store as it opened, which refuse the uses that need them (:meth:`unfit`). Closing the
+    book disposes of the engine."""
 
     def __init__(
         self,
@@ -385,6 +393,8 @@ class QuoteBook:
         *,
         haute_version: str | None,
         clock: Callable[[], datetime] | None = None,
+        misfits: tuple[StoreMisfit, ...] = (),
+        environment: str = "",
     ) -> None:
         self._engine = engine
         self._schema = schema
@@ -393,6 +403,24 @@ class QuoteBook:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._details = schema.details.table
         self._activity = schema.activity
+        self.misfits = misfits
+        self.environment = environment
+
+    def unfit(self, use: StoreUse) -> tuple[StoreMisfit, ...]:
+        """What of the database does not fit *use*: for the list, ``quote_details`` as it is
+        read (its columns and constraints, and SELECT on it); for one quote, every misfit."""
+        if use == "quote":
+            return self.misfits
+        return tuple(
+            misfit
+            for misfit in self.misfits
+            if misfit.table == self._details.name and misfit.privilege in (None, "SELECT")
+        )
+
+    def mismatch(self, use: StoreUse) -> QuoteStoreMismatchError | None:
+        """The refusal of *use* naming what of the database does not fit it; None when it fits."""
+        unfit = self.unfit(use)
+        return store_mismatch(unfit, self.environment) if unfit else None
 
     def now(self) -> datetime:
         """The moment a save is stamped with, read once before it is priced, so its request

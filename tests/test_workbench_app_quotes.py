@@ -1282,7 +1282,41 @@ def test_an_app_on_a_database_without_its_forms_tables_starts_with_its_quotes_cl
         assert "Change the dev database's tables in SQL" in quotes["message"]
 
 
-def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path: Path) -> None:
+def test_an_app_whose_quote_tables_lag_its_form_lists_its_quotes_and_refuses_a_quote(
+    release_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """quote_details fits and a table only a quote reads lacks a column: the list is read,
+    and every use of one quote is refused naming that column, until it is put back."""
+    monkeypatch.setattr(_workbench_app_store, "RECHECK_SECONDS", 0.0)
+    store = tmp_path / "lagging.sqlite"
+    url = _prepared(store, release_dir)
+    sql(store, "ALTER TABLE policy_details DROP COLUMN exposure")
+
+    with TestClient(create_app(release_dir, store=StoreLocation(DEV, url))) as app:
+        quotes = app.get("/api/app/release", headers=ANA).json()["quotes"]
+        assert (quotes["open"], quotes["error_code"]) == (False, "quote_store_mismatch")
+        assert app.get("/api/app/quotes", headers=ANA).status_code == 200
+        assert app.get("/api/app/people", headers=ANA).status_code == 200
+        page = Page(app)
+        for refused in (page.create(), page.price(VALUES)):
+            assert refused.status_code == 503, refused.text
+            detail = refused.json()["detail"]
+            assert detail["error_code"] == "quote_store_mismatch"
+            assert detail["differences"] == ["policy_details.exposure is missing"]
+            assert detail["misfits"] == [
+                {"table": "policy_details", "column": "exposure", "problem": "is missing"}
+            ]
+            assert detail["environment"] == DEV
+
+        # Put back in SQL, a quote is made and priced with no restart.
+        sql(store, "ALTER TABLE policy_details ADD COLUMN exposure FLOAT")
+        assert page.priced()["reference"]
+        assert app.get("/api/app/release", headers=ANA).json()["quotes"]["open"] is True
+
+
+def test_a_column_dropped_under_a_running_app_refuses_its_quotes_and_not_the_list(
+    page: Page, path: Path
+) -> None:
     saved = page.priced()
     with sqlite3.connect(path) as raw:
         raw.execute("PRAGMA foreign_keys=OFF")
@@ -1291,10 +1325,20 @@ def test_a_column_dropped_under_a_running_app_closes_its_quotes(page: Page, path
     refused = page.save(saved)
 
     assert refused.status_code == 503, refused.text
-    assert refused.json()["detail"]["error_code"] == "quote_store_mismatch"
-    assert "policy_details.exposure is missing" in refused.json()["detail"]["differences"]
-    # Closed until a check finds the tables fit, the next request answered as closed.
-    assert page.client.get("/api/app/quotes", headers=ANA).status_code == 503
+    detail = refused.json()["detail"]
+    assert detail["error_code"] == "quote_store_mismatch"
+    assert "policy_details.exposure is missing" in detail["differences"]
+    assert {"table": "policy_details", "column": "exposure", "problem": "is missing"} in detail[
+        "misfits"
+    ]
+    assert detail["environment"] == TEST
+    # Refused until a check finds the tables fit: the quote, and its pricing, as nothing is
+    # priced that could not be saved; the list reads quote_details alone and is read.
+    opened = page.client.get(address(saved), headers=ANA)
+    assert opened.status_code == 503
+    assert opened.json()["detail"]["differences"] == detail["differences"]
+    assert page.client.get("/api/app/quotes", headers=ANA).status_code == 200
+    assert page.client.get("/api/app/people", headers=ANA).status_code == 200
 
 
 def test_a_statement_refused_on_tables_as_checked_is_said_with_an_incident(

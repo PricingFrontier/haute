@@ -88,7 +88,7 @@ test.describe("the underwriter app's quotes", () => {
     }
   })
 
-  test("a quote saved in haute app serve is read from dev's database, marked final, amended and saved again, and a form change closes dev's quotes until the SQL the schema pane writes from dev's tables runs there", async ({ page }, testInfo) => {
+  test("a quote saved in haute app serve is read from dev's database, marked final, amended and saved again, and a form change refuses dev's quote, naming the column, until the SQL the schema pane writes from dev's tables runs there", async ({ page }, testInfo) => {
     // The app's page is built, and the app builds the project's release twice.
     test.setTimeout(5 * 60_000)
     const staticDir = testInfo.outputPath("app-page")
@@ -182,14 +182,23 @@ test.describe("the underwriter app's quotes", () => {
       ])
     })
 
-    const restarted = await test.step("a column added to the form closes dev's quotes as the app starts again, its table left as it was", async () => {
+    const restarted = await test.step("a column added to the form refuses dev's quote, naming it, as the app starts again, its list still read and its table left as it was", async () => {
       const policy = readFormFile("schema/policy.json")
       writeFormFiles({ "schema/policy.json": { ...policy, inputs: [...policy.inputs, { name: "excess", type: "int" }] } })
       await app.stop()
       const again = await serve(staticDir)
 
+      // The list reads quote_details alone, which still fits.
       await page.goto(again.url)
-      await expect(page.getByTestId("notice-quotes-closed")).toContainText("excess")
+      await expect(page.getByTestId("quotes-page")).toBeVisible()
+      await expect(page.getByTestId("quotes-error")).toHaveCount(0)
+      // The quote reads every table: opening it names the column policy lacks, under it.
+      await page.goto(`${again.url}/quotes/${REFERENCE}/1`)
+      const refused = page.getByTestId("quote-load-error")
+      await expect(refused).toContainText("The dev database doesn't match the form:")
+      await expect(refused).toContainText("policy")
+      await expect(refused).toContainText("Excess (excess) is missing")
+      await page.screenshot({ path: testInfo.outputPath("app-quote-refused.png") })
       const { columns } = readStore({ columns: { sql: "SELECT name FROM pragma_table_info('policy')" } })
       expect(columns.map((column) => column.name)).not.toContain("excess")
       return again
@@ -213,7 +222,7 @@ test.describe("the underwriter app's quotes", () => {
       await page.setViewportSize(viewport)
 
       await page.getByText(/^Database changes/).click()
-      await expect(page.getByRole("region", { name: "Additions for policy" })).toContainText("excess")
+      await expect(page.getByRole("region", { name: "Changes for policy" })).toContainText("excess")
       await page.screenshot({ path: testInfo.outputPath("schema-sql-options.png") })
       await page.getByText(/^Database changes/).click()
       await page.getByRole("button", { name: "Export SQL", exact: true }).click()
@@ -244,7 +253,7 @@ test.describe("the underwriter app's quotes", () => {
 
       const { columns } = readStore({ columns: { sql: "SELECT name FROM pragma_table_info('policy')" } })
       expect(columns.map((column) => column.name)).toContain("excess")
-      // The app checks its closed store again on its own bound, with no restart.
+      // The app checks the store again on its own bound, with no restart.
       await page.goto(`${restarted.url}/quotes/${REFERENCE}/1`)
       await expect(page.getByTestId("quote-reference")).toHaveText(LABEL, { timeout: 60_000 })
       await expect(page.getByRole("main", { name: "Sheets" })).toBeVisible()
