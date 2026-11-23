@@ -33,26 +33,38 @@ export function chunkLoadUrl(error: Error): string | null {
   return match ? match[0] : null
 }
 
-/** Why a chunk did not load: a file the server no longer has, or a server that did not answer. */
-export type ChunkLoadVerdict = "gone" | "unanswered"
+/**
+ * Why a chunk did not load: a file the server no longer has, a server that did not answer,
+ * or, for a failure that names no file, not known.
+ */
+export type ChunkLoadVerdict = "gone" | "unanswered" | "unknown"
+
+/** How long the question of a failed chunk waits for an answer before it counts as none. */
+export const CHUNK_PROBE_TIMEOUT_MS = 5_000
 
 /**
  * Ask the server for the chunk that failed, once it has. It no longer has the file (404)
  * when it was rebuilt, since the page names the files of the build it was served from; it
- * did not answer when the file is there now or nothing answers yet. A failure that names no
- * file is taken for a rebuild once the server answers. The question is a static file's, not
- * an API call, so it is the browser's own fetch.
+ * did not answer when the file is there now, or nothing answers within
+ * `CHUNK_PROBE_TIMEOUT_MS`. A failure that names no file (Safari's) says nothing of which
+ * file it was, so nothing is asked and the verdict is not known. The question is a static
+ * file's, not an API call, so it is the browser's own fetch.
  */
 export async function chunkLoadVerdict(error: Error): Promise<ChunkLoadVerdict> {
   const url = chunkLoadUrl(error)
+  if (url === null) return "unknown"
+  const deadline = new AbortController()
+  const timer = setTimeout(() => deadline.abort(), CHUNK_PROBE_TIMEOUT_MS)
   let status: number
   try {
-    status = (await fetch(url ?? "/", { cache: "no-store" })).status
+    status = (await fetch(url, { cache: "no-store", signal: deadline.signal })).status
   } catch {
-    // A request that got no answer is exactly the verdict asked for.
+    // A request that got no answer, or none in time, is exactly the verdict asked for.
     return "unanswered"
+  } finally {
+    clearTimeout(timer)
   }
-  return url === null || status === 404 ? "gone" : "unanswered"
+  return status === 404 ? "gone" : "unanswered"
 }
 
 /**

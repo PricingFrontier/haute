@@ -111,38 +111,43 @@ const OWN_STATE: Record<string, string> = {
     "the trace story in focus, reset for another story",
   "frontend/src/panels/useRecordedNodeColumns.ts::useRecordedNodeColumns::adjust":
     "the columns a preview recorded for the node: a run's answer, kept per source and config",
-  "frontend/src/panels/assistant/AssistantPanel.tsx::AssistantPanel::position":
+  "frontend/src/panels/assistant/AssistantPanel.tsx::AssistantPanel::position(key={`${entry.kind}-${index}`})":
     "the chat's transcript, appended to and never edited: an entry's place is its identity",
-  "frontend/src/panels/assistant/ChangeCard.tsx::DataCheck::position":
+  "frontend/src/panels/assistant/ChangeCard.tsx::DataCheck::position(key={index})":
     "a check's findings, shown as the server answered them; nothing is edited",
-  "frontend/src/panels/assistant/ChangeCard.tsx::ChangeCard::position":
+  "frontend/src/panels/assistant/ChangeCard.tsx::ChangeCard::position(key={index})":
     "a change's notes, shown as the server answered them; nothing is edited",
-  "frontend/src/panels/DataPreview.tsx::DataPreview::position":
+  "frontend/src/panels/DataPreview.tsx::DataPreview::position(key={i})":
     "the preview's rows, a run's answer shown read-only",
-  "frontend/src/panels/editors/polarsSteps/fields.tsx::LiteralListField::position":
+  "frontend/src/panels/editors/polarsSteps/fields.tsx::LiteralListField::position(key={`${index}-${String(item.value)}`})":
     "a list's values as chips, each only removed: no draft is held in one",
-  "frontend/src/panels/editors/polarsSteps/forms.tsx::FunctionArgs::position":
+  "frontend/src/panels/editors/polarsSteps/forms.tsx::FunctionArgs::position(key={index})":
     "a function's arguments by their place in its signature, which is their identity",
-  "frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor::position":
-    "a table's factor slots and the combined outputs' tabs: controlled selects and labels with no draft, a slot's place being its axis",
-  "frontend/src/panels/editors/WorkbenchInputEditor.tsx::WorkbenchInputEditor::position":
+  "frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor::position(key={fi})":
+    "a table's factor slot, a controlled select with no draft: the slot's place is its axis",
+  "frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor::position(key={`fsel-${tableKeys.keys[safeIdx]}-${fi}`})":
+    "a factor slot's select, kept by its table's identity and its axis",
+  "frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor::position(key={i})":
+    "the combined outputs' tabs: labels with no draft",
+  "frontend/src/panels/editors/WorkbenchInputEditor.tsx::WorkbenchInputEditor::position(key={`${index}:${table.port}`})":
     "the form's tables as the node reads them, shown read-only",
-  "frontend/src/panels/editors/WorkbenchOutputEditor.tsx::WorkbenchOutputEditor::position":
+  "frontend/src/panels/editors/WorkbenchOutputEditor.tsx::WorkbenchOutputEditor::position(key={`${index}:${table.port}`})":
     "the form's output tables, shown read-only",
-  "frontend/src/panels/explore/SchemaTableCard.tsx::SchemaTableCard::position":
+  "frontend/src/panels/explore/SchemaTableCard.tsx::SchemaTableCard::position(key={`${column.name}:${firstVisibleIndex + index}`})":
     "the schema's rows, a read of the data shown read-only",
-  "frontend/src/panels/FilesPanel.tsx::FilesPanel::position":
+  "frontend/src/panels/FilesPanel.tsx::FilesPanel::position(key={crumbs.slice(0, index + 1).join(\"/\")})":
     "a breadcrumb keyed by the folder path it leads to",
-  "frontend/src/panels/modelling/ChartScaffold.tsx::ChartLegend::position":
+  "frontend/src/panels/modelling/ChartScaffold.tsx::ChartLegend::position(key={index})":
     "a chart's legend, drawn from its series",
-  "frontend/src/panels/modelling/EBMInteractionsConfig.tsx::EBMInteractionsConfig::position":
+  "frontend/src/panels/modelling/EBMInteractionsConfig.tsx::EBMInteractionsConfig::position(key={index})":
     "a pair's two controlled selects, with no draft: the stored pairs are shown as they are",
-  "frontend/src/panels/modelling/GLMInteractionsConfig.tsx::InteractionCard::position":
+  "frontend/src/panels/modelling/GLMInteractionsConfig.tsx::InteractionCard::position(key={slotKeys.keys[slot] ?? `slot-${slot}`})":
     "slots keyed by useRowKeys; the place stands in only for a slot not yet written",
 }
 
 type Rule = "field" | "seed" | "copy" | "adjust" | "position"
-type Finding = { line: number; scope: string; rule: Rule; text: string }
+/** `detail`: for a position, the attribute that keeps it (`key={fi}`), so each is named alone. */
+type Finding = { line: number; scope: string; rule: Rule; text: string; detail?: string }
 
 const TYPED_INPUT_TYPES = new Set(["text", "number", "search", "date", "datetime-local", "time", "email", "url", "tel", "password", "month", "week"])
 const GRAPH_READS = new Set(["useGraph", "useGraphStore"])
@@ -357,12 +362,13 @@ function holdsComponentOrField(element: ts.JsxOpeningLikeElement): boolean {
 export function draftsByHand(source: string, fileName = "source.tsx"): Finding[] {
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
   const findings: Finding[] = []
-  const report = (node: ts.Node, scope: string, rule: Rule) => {
+  const report = (node: ts.Node, scope: string, rule: Rule, detail?: string) => {
     findings.push({
       line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
       scope,
       rule,
       text: node.getText(file).split("\n")[0].slice(0, 120),
+      ...(detail === undefined ? {} : { detail }),
     })
   }
 
@@ -426,11 +432,11 @@ export function draftsByHand(source: string, fileName = "source.tsx"): Finding[]
         for (const name of ["key", "owner", "row"]) {
           const given = attributeValue(node, name, objects)
           if (given === undefined || given === true || !readsIndex(given, indexes)) continue
-          if (name !== "key" || holdsComponentOrField(node)) report(node, scope, "position")
+          if (name !== "key" || holdsComponentOrField(node)) report(node, scope, "position", `${name}={${given.getText(file)}}`)
         }
       }
       if (ts.isPropertyAssignment(node) && node.name.getText() === "owner" && readsIndex(node.initializer, indexes)) {
-        report(node, scope, "position")
+        report(node, scope, "position", `owner: ${node.initializer.getText(file)}`)
       }
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
         objects.set(node.name.text, node.initializer)
@@ -529,6 +535,12 @@ function sourceFiles(directory: string): string[] {
   })
 }
 
+/** A finding's name on `OWN_STATE`: `path::scope::rule`, a position's with its attribute. */
+function repositoryKey(rel: string, finding: Finding): string {
+  const key = `${rel}::${finding.scope}::${finding.rule}`
+  return finding.detail === undefined ? key : `${key}(${finding.detail})`
+}
+
 function repositoryFindings(): Map<string, Finding[]> {
   const found = new Map<string, Finding[]>()
   for (const directory of SCANNED) {
@@ -536,7 +548,7 @@ function repositoryFindings(): Map<string, Finding[]> {
       const rel = `frontend/src/${relative(SRC, path).split(sep).join("/")}`
       if (SHARED.has(rel)) continue
       for (const finding of draftsByHand(readFileSync(path, "utf-8"), path)) {
-        const key = `${rel}::${finding.scope}::${finding.rule}`
+        const key = repositoryKey(rel, finding)
         found.set(key, [...(found.get(key) ?? []), finding])
       }
     }
@@ -679,6 +691,17 @@ describe("no panel holds its own copy of a stored value", () => {
       .filter(([key]) => !(key in OWN_STATE))
       .map(([key, findings]) => `${key} (line ${findings.map((f) => f.line).join(", ")}): ${findings[0].text}`)
     expect(unlisted.join("\n")).toBe("")
+  })
+
+  it("refuses the selected table's Default kept by position, beside the named slots of the same editor", () => {
+    const rel = "frontend/src/panels/editors/RatingStepEditor.tsx"
+    const source = readFileSync(resolve(SRC, "panels/editors/RatingStepEditor.tsx"), "utf-8")
+    const keyed = "key={`def-${tableKeys.keys[safeIdx]}`}"
+    expect(source).toContain(keyed)
+    const reverted = draftsByHand(source.replace(keyed, "key={`def-${safeIdx}`}"), rel)
+      .map((finding) => repositoryKey(rel, finding))
+      .filter((key) => !(key in OWN_STATE))
+    expect(reverted).toEqual([`${rel}::RatingStepEditor::position(key={\`def-\${safeIdx}\`})`])
   })
 
   it("every named exception is still found", () => {

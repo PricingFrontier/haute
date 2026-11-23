@@ -16,8 +16,13 @@ interface State {
   chunk: ChunkLoadVerdict | "asking" | null;
 }
 
-/** What the fallback says for a part of the page that could not be loaded, by why. */
-const CHUNK_NOTICES: Record<ChunkLoadVerdict, { title: string; reason: string }> = {
+/**
+ * What the fallback says for a part of the page that could not be loaded, by why. While the
+ * server is asked, and when why is not known, it says only that, and still offers the Reload.
+ */
+const CHUNK_NOTICES: Record<ChunkLoadVerdict | "asking", { title: string; reason: string }> = {
+  asking: { title: "This part of the page could not be loaded", reason: "Reload to load it." },
+  unknown: { title: "This part of the page could not be loaded", reason: "Reload to load it." },
   gone: {
     title: "Haute has been updated",
     reason: "This page was opened before the update and cannot load this part of it. Reload to use the new version.",
@@ -69,7 +74,7 @@ export class ErrorBoundary extends Component<Props, State> {
       // A part of the page that could not be loaded stays failed in this page (the browser
       // keeps the failure of the chunk and of what it preloaded), so only a reload recovers.
       const { chunk } = this.state;
-      const notice = chunk === null || chunk === "asking" ? null : CHUNK_NOTICES[chunk];
+      const notice = chunk === null ? null : CHUNK_NOTICES[chunk];
       return (
         <div
           style={{
@@ -82,11 +87,11 @@ export class ErrorBoundary extends Component<Props, State> {
           }}
         >
           <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-primary)" }}>
-            {notice ? notice.title : chunk === "asking" ? "This part of the page could not be loaded" : "Something went wrong"}
+            {notice ? notice.title : "Something went wrong"}
           </p>
           {notice ? (
             <ReloadNotice reason={notice.reason} />
-          ) : chunk === "asking" ? null : (
+          ) : (
             <>
               <p style={{ margin: "0 0 12px", fontFamily: "var(--font-code)", fontSize: "11px" }}>
                 {this.state.error?.message}

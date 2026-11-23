@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { lazy, Suspense } from "react"
 import { ErrorBoundary } from "../../components/ErrorBoundary"
-import { recordChunkLoadFailures } from "../../utils/chunkLoadError"
+import { CHUNK_PROBE_TIMEOUT_MS, recordChunkLoadFailures } from "../../utils/chunkLoadError"
 import useGraphStore from "../../stores/useGraphStore"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ describe("ErrorBoundary", () => {
       expect(await screen.findByText("Haute has been updated")).toBeTruthy()
       expect(probe).toHaveBeenCalledWith(
         "http://127.0.0.1:8200/assets/ModellingPreview-DMczYKmb.js",
-        { cache: "no-store" },
+        expect.objectContaining({ cache: "no-store" }),
       )
       expect(screen.queryByText("Something went wrong")).toBeNull()
       expect(screen.queryByRole("button", { name: "Try again" })).toBeNull()
@@ -293,13 +293,45 @@ describe("ErrorBoundary", () => {
       expect(reload).toHaveBeenCalledTimes(1)
     })
 
-    it("takes a failure that names no file for a rebuild once the server answers", async () => {
-      // Safari's message names no file: the page's own address is asked instead.
-      serverAnswers(200)
-      renderResultsWorkspace(new TypeError("Importing a module script failed."))
+    it.each([200, 503])(
+      "says neither an update nor an outage for a failure that names no file, the server answering %i",
+      async (status) => {
+        // Safari's message names no file: nothing says which file failed, or why.
+        serverAnswers(status)
+        renderResultsWorkspace(new TypeError("Importing a module script failed."))
 
-      expect(await screen.findByText("Haute has been updated")).toBeTruthy()
-      expect(probe).toHaveBeenCalledWith("/", { cache: "no-store" })
+        expect(await screen.findByText("This part of the page could not be loaded")).toBeTruthy()
+        expect(screen.getByText("Reload to load it.")).toBeTruthy()
+        expect(screen.queryByText("Haute has been updated")).toBeNull()
+        expect(screen.queryByText("Haute's server did not answer")).toBeNull()
+        expect(probe).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+        expect(reload).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it("offers the Reload while the server is asked, and says it did not answer once the question times out", async () => {
+      vi.useFakeTimers()
+      try {
+        // A server, or a proxy, that takes the question and never answers it.
+        probe.mockImplementation((_url: RequestInfo | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
+        }))
+        renderResultsWorkspace(
+          new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1:8200/assets/BandingEditor-x1.js"),
+        )
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+        expect(screen.getByText("This part of the page could not be loaded")).toBeTruthy()
+        fireEvent.click(screen.getByRole("button", { name: "Reload" }))
+        expect(reload).toHaveBeenCalledTimes(1)
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(CHUNK_PROBE_TIMEOUT_MS) })
+
+        expect(screen.getByText("Haute's server did not answer")).toBeTruthy()
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it("asks for unsaved canvas changes to be saved before a reload loses them", async () => {

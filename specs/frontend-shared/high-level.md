@@ -652,8 +652,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   asks the server for the chunk and tells the two causes apart: a page names the chunk
   files of the build it was served from and a rebuild replaces them, so a file the server
   answers 404 for says "Haute has been updated"; any other answer, or none, says "Haute's
-  server did not answer", the part having been asked for while the server was away. Both
-  offer a Reload that reloads the page. A reload loses unsaved canvas changes and the app has
+  server did not answer", the part having been asked for while the server was away. A
+  failure that names no file (Safari's) says neither, only that the part could not be
+  loaded. The question is bounded by a deadline, and the Reload is offered while it is
+  asked as well as after. A reload loses unsaved canvas changes and the app has
   no unload guard, so while the graph has unsaved changes the fallback asks for
   a save first (Ctrl+S) and its button reads "Reload without saving". Vite's `vite:preloadError` failures are recorded at
   start-up and surface through that same fallback.

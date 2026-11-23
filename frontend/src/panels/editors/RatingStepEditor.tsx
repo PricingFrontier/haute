@@ -318,7 +318,8 @@ export default function RatingStepEditor({
   const tableKeys = useRowKeys(tables)
   const combinedKeys = useRowKeys(combinedOutputs)
   const commitTables = (next: RatingTable[], change: RowChange = { kind: "edit" }) => {
-    tableKeys.expect(next, change)
+    // The tables as they come back: the stored config is read, and normalised, as it renders.
+    tableKeys.expect(normaliseRatingTables({ ...config, tables: next }), change)
     return onUpdate("tables", next)
   }
 
@@ -427,7 +428,7 @@ export default function RatingStepEditor({
   }
 
   const commitCombinedOutputs = (next: CombinedOutput[], change: RowChange = { kind: "edit" }) => {
-    combinedKeys.expect(next, change)
+    combinedKeys.expect(normaliseCombinedOutputs({ ...config, combined_outputs: next }), change)
     onUpdate({ combined_outputs: next })
   }
 
@@ -657,11 +658,11 @@ export default function RatingStepEditor({
         </div>
       )}
       {factorCount === 1 && !tableTooLarge && (
-        <OneWayEditor table={table} bandingLevels={factorLevels}
+        <OneWayEditor key={`grid-${tableKeys.keys[safeIdx]}`} table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
       {factorCount === 2 && !tableTooLarge && (
-        <TwoWayGrid table={table} bandingLevels={factorLevels}
+        <TwoWayGrid key={`grid-${tableKeys.keys[safeIdx]}`} table={table} bandingLevels={factorLevels}
           onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)} />
       )}
       {factorCount === 3 && !tableTooLarge && (
@@ -680,7 +681,7 @@ export default function RatingStepEditor({
             </select>
           </div>
           {sliceLevels.length > 0 && (
-            <TwoWayGrid table={table} bandingLevels={factorLevels}
+            <TwoWayGrid key={`grid-${tableKeys.keys[safeIdx]}-${selectedSlice}`} table={table} bandingLevels={factorLevels}
               onUpdateEntries={(e) => onUpdateEntries(safeIdx, e)}
               factorOverrides={{
                 factors: [table.factors[0], table.factors[1]],

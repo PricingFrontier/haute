@@ -167,7 +167,11 @@
    state adjusted while rendering, or a list's row or the selected item's field kept by a
    position (a `key` holding a component or a field, or a draft's `owner` or a cell's `row`,
    read from a `.map` index or a name ending in `Idx` or `Index`), each except the named
-   page-own state. Every failure an editor
+   page-own state, a position named with the attribute that keeps it so that naming one
+   element of an editor names no other. A list's expectation of its own write is the rows as
+   the stored config is read back and normalised (the API Input's `readV2(writeV2(next))`,
+   the Rating Step's `normaliseRatingTables`), and the selected Rating Step table's grids are
+   keyed by its identity (and the slice shown). Every failure an editor
    shows is `apiErrorMessage`'s text (`frontend/src/api/errors.ts`), so a refused request shows
    the server's detail rather than `HTTP <status>`. Node-label commits are async and
    disabled while the prospective server identity resolves; failure remains inline and

@@ -981,6 +981,25 @@ describe("ApiInputEditor - W1.4 label validation (blank / duplicate / sanitised 
     expect(input.getAttribute("aria-invalid")).toBe("true")
   })
 
+  it("keeps a refused label draft through an ordinary column added to its table", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={TWO_EMIT_TABLES} onUpdateSpy={onUpdateSpy} />)
+
+    const input = () => screen.getByTestId("api-input-table-0-label") as HTMLInputElement
+    input().focus()
+    fireEvent.change(input(), { target: { value: "" } })
+    fireEvent.blur(input())
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+
+    // The editor's own write, read back and normalised as it renders: the table keeps its
+    // identity, so the field is not remounted and what was refused stays on screen.
+    fireEvent.click(screen.getByTestId("api-input-table-0-add-col"))
+
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    expect(input().value).toBe("")
+    expect(screen.getByTestId("api-input-table-0-label-error")).toBeTruthy()
+  })
+
   it("a duplicate label shows validation and refuses to commit (no __<idx> disambiguation)", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={TWO_EMIT_TABLES} onUpdateSpy={onUpdateSpy} />)

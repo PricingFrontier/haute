@@ -148,9 +148,16 @@ export default function ApiInputEditor({
   // Helpers to push state changes back through onUpdate. Each write
   // recomposes the full v2 record-shaped object so we never have to fan
   // out individual onUpdate calls per nested field.
-  const writeBack = (next: ApiInputConfigV2, change: RowChange = { kind: "edit" }): OnUpdateConfigResult => {
-    tableKeys.expect(next.tables, change)
+  const writeBack = (
+    next: ApiInputConfigV2,
+    change: RowChange = { kind: "edit" },
+    columns?: { table: number; expect: ExpectColumns; change: RowChange },
+  ): OnUpdateConfigResult => {
     const raw = writeV2(next)
+    // The rows as they come back: the stored config is read, and normalised, as it renders.
+    const stored = readV2(raw)
+    tableKeys.expect(stored.tables, change)
+    if (columns) columns.expect(stored.tables[columns.table]?.columns ?? [], columns.change)
     // Use a single batched update so NodePanel only fires one
     // handleConfigUpdate (per the existing OnUpdateConfig contract).
     const commitResult = onUpdate(raw)
@@ -241,8 +248,7 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    expectColumns(next.tables[tableIdx].columns, { kind: "edit" })
-    return writeBack(next)
+    return writeBack(next, { kind: "edit" }, { table: tableIdx, expect: expectColumns, change: { kind: "edit" } })
   }
   const addColumn = (tableIdx: number, expectColumns: ExpectColumns) => {
     // A hand-added column arrives BLANK (ruled 2026-07-09): no placeholder
@@ -269,8 +275,7 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    expectColumns(next.tables[tableIdx].columns, { kind: "add" })
-    writeBack(next)
+    writeBack(next, { kind: "edit" }, { table: tableIdx, expect: expectColumns, change: { kind: "add" } })
   }
   const removeColumn = (tableIdx: number, colIdx: number, expectColumns: ExpectColumns) => {
     const next = {
@@ -281,8 +286,7 @@ export default function ApiInputEditor({
           : t,
       ),
     }
-    expectColumns(next.tables[tableIdx].columns, { kind: "remove", index: colIdx })
-    writeBack(next)
+    writeBack(next, { kind: "edit" }, { table: tableIdx, expect: expectColumns, change: { kind: "remove", index: colIdx } })
   }
   // Bundle 3d — PASTE-IN for a table's columns. The pasted grid is
   // tab-separated `name<TAB>path<TAB>type<TAB>selected` rows (the shape Copy
