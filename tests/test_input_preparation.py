@@ -51,6 +51,7 @@ from haute._worker_failures import (
 from haute._worker_isolation import IsolatedWorkerConfig, process_memory_caps_supported
 from haute.errors import InputPreparationError
 from tests._project import use_project
+from tests._worker_envelope import remote_failure
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -1286,6 +1287,98 @@ def test_a_remote_worker_failure_is_classified_by_the_childs_own_exception_type(
     assert excinfo.value.reason_code == expected
 
 
+class _EnvelopeSpawn:
+    """Run the child's entry point in this process and report its failure as the real
+    spawn does: through the child's error envelope, its answer classified where it was
+    raised (``haute._failure_answers.failure_payload``)."""
+
+    def __call__(self, function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+        try:
+            return _real_child_build(request, budget)
+        except Exception as exc:
+            raise remote_failure(exc) from None
+
+
+def _prepare_where(
+    where: str, config: dict[str, object], store: SourceCacheStore, base_dir: Path
+) -> InputPreparationError:
+    """The refusal preparing *config* raises, built in this process or in a worker."""
+    context = _context()
+    try:
+        with pytest.raises(InputPreparationError) as excinfo:
+            if where == "in_process":
+                with native_memory_backend_scope("rlimit"):
+                    _prepare(config, store=store, base_dir=base_dir, context=context)
+            else:
+                _prepare(
+                    config, store=store, base_dir=base_dir, context=context, spawn=_EnvelopeSpawn()
+                )
+    finally:
+        context.release_admission()
+    return excinfo.value
+
+
+@pytest.mark.parametrize("where", ["in_process", "worker"])
+def test_an_input_whose_reader_package_is_missing_names_the_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """IOL-01: Haute's own configuration refusal reaches the run, whichever process builds."""
+    import haute._polars_io_registry as registry
+
+    store = _project(tmp_path, monkeypatch)
+    (tmp_path / "rates.xlsx").write_bytes(b"PK")
+    monkeypatch.setattr(registry, "missing_engines", lambda engines: list(engines))
+    config = {"input_type": "file", "format": "excel", "path": str(tmp_path / "rates.xlsx")}
+
+    refused = _prepare_where(where, config, store, tmp_path)
+
+    assert refused.reason_code == "source_invalid"
+    assert refused.message.startswith("Preparing this Data Input's snapshot failed: ")
+    assert "Format 'excel' needs an engine package to read: install one of " in refused.message
+    assert "'fastexcel'" in refused.message
+    assert refused.remediation == (
+        "Correct what the message names in this Data Input's file or settings, then try again."
+    )
+
+
+@pytest.mark.parametrize("where", ["in_process", "worker"])
+def test_a_providers_failure_keeps_the_fixed_text_and_never_its_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """IOL-01: a failure nothing names is never said; a database's can hold a password."""
+    import sqlite3
+    from contextlib import closing
+
+    import haute._input_providers as input_providers
+
+    store = _project(tmp_path, monkeypatch)
+    database = tmp_path / "policies.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE policies (id INTEGER)")
+        connection.commit()
+    config = {
+        "input_type": "database",
+        "format": "database",
+        "uri": f"sqlite:///{database.as_posix()}",
+        "query": "SELECT id FROM policies",
+    }
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(
+            "connection to server at db.internal failed: "
+            "postgresql://admin:hunter2@db.internal/policies"
+        )
+
+    monkeypatch.setattr(input_providers, "build_input_snapshot", refuse)
+
+    refused = _prepare_where(where, config, store, tmp_path)
+
+    assert refused.reason_code == "build_failed"
+    assert refused.message == "Preparing this Data Input's snapshot failed."
+    assert "hunter2" not in str(refused)
+    assert "hunter2" not in json.dumps(refused.to_payload())
+
+
 def test_each_preparation_reason_code_has_its_own_remediation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1619,8 +1712,10 @@ def test_an_absent_source_without_a_generation_is_refused_before_any_spawn(
     finally:
         context.release_admission()
 
-    assert excinfo.value.reason_code == "build_failed"
-    assert "source is unavailable" in str(excinfo.value)
+    assert excinfo.value.reason_code == "source_invalid"
+    # The path from the project root, as a save and haute lint name a misspelt one.
+    assert excinfo.value.message.startswith("never-written.csv names no file: ")
+    assert str(tmp_path) not in excinfo.value.message
     assert spawned == []
 
 

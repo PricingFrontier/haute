@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+import orjson
+
 from haute._api_input_schema import (
     _RESERVED_LEAF as _SCALAR_VALUE_LEAF,
 )
@@ -20,6 +22,7 @@ from haute._api_input_schema import (
     make_table_path,
 )
 from haute._cpu_performance import configure_process_high_qos
+from haute._input_files import file_json_error
 from haute._json_shred import _inference_filter, _records
 from haute._json_shred._inference_cache import _INFERENCE_CACHE
 from haute._json_shred._inference_filter import InferenceFilter, InferenceSeed
@@ -264,9 +267,9 @@ def _learn_jsonl_prefix(
     known_structure = InferenceFilter()
     offset = 0
     learned = 0
-    for raw_line in _records._iter_range_lines(data_path, 0, end):
-        offset += len(raw_line)
-        record = _records._jsonl_record(raw_line, None)
+    for line_offset, raw_line in _records._iter_range_lines(data_path, 0, end):
+        offset = line_offset + len(raw_line)
+        record = _records._jsonl_record(raw_line, None, offset=line_offset)
         if record is None:
             continue
         state.walk(record)
@@ -278,17 +281,21 @@ def _learn_jsonl_prefix(
 
 
 def _infer_jsonl_lines(
-    lines: Iterable[bytes],
+    lines: Iterable[tuple[int, bytes]],
     *,
     seed: InferenceSeed | None = None,  # pragma: no mutate
 ) -> _InferenceState:
-    """Collect new evidence while checking known JSON shapes in one native pass."""
+    """Collect new evidence while checking known JSON shapes in one native pass.
+
+    *lines* are a file's lines, each with the byte offset it starts at. A line whose
+    shape is known holds values of known types under every key, a repeated one's
+    first value among them, so it adds no evidence and is not parsed."""
     state = _InferenceState()
     known_structure = InferenceFilter(seed, json_mode=True)
-    for raw_line in lines:
+    for offset, raw_line in lines:
         if known_structure.matches_json(raw_line):
             continue
-        record = _records._jsonl_record(raw_line, None)
+        record = _records._jsonl_record(raw_line, None, offset=offset)
         if record is not None:
             state.walk(record)
             known_structure.observe(record)
@@ -332,7 +339,10 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
     started = time.perf_counter()
     # Prefix evidence must precede range evidence: workers may skip records
     # covered by this seed, and column order follows first file observation.
-    merged, seed, prefix_end = _learn_jsonl_prefix(data_path, ranges[-1][1])
+    try:
+        merged, seed, prefix_end = _learn_jsonl_prefix(data_path, ranges[-1][1])
+    except orjson.JSONDecodeError as exc:
+        raise file_json_error(data_path, exc.pos, exc.msg) from exc
     # The ranges resume where the prefix stopped (a line boundary).
     remaining = [(max(start, prefix_end), end) for start, end in ranges if end > prefix_end]
     if not remaining:
@@ -356,7 +366,7 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
     try:
         for result in pool.map(_infer_chunk, tasks):
             if result.failure is not None:
-                _records._raise_worker_failure(result.failure)
+                _records._raise_worker_failure(result.failure, data_path)
             if result.state is None:
                 raise RuntimeError(
                     f"parallel schema inference chunk {result.index} returned no state"

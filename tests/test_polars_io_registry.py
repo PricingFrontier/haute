@@ -30,7 +30,7 @@ from haute._polars_io_registry import (
     write_polars_output,
 )
 from haute._polars_io_schema import io_functions_by_key
-from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.errors import BoundedMemoryUnsupportedError, InputFileError, SchemaMismatchError
 from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from tests.conftest import make_graph
@@ -974,3 +974,71 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
 
         for name in ("excel", "ods"):
             assert "new_columns" in formats[name]["input"]["arguments"]["read"]
+
+
+class TestACsvIsReadAsUtf8Text:
+    """IOL-04: a CSV saved in another encoding is refused, never read as columns."""
+
+    _TEXT = "row_id,value\n1,a\n2,b\n"
+
+    @pytest.mark.parametrize("mode", ["scan", "read"])
+    @pytest.mark.parametrize(
+        ("encoding", "found"),
+        [("utf-16", "UTF-16 (little-endian)"), ("utf-16-le", "UTF-16 (little-endian)")],
+        ids=["with-mark", "without-mark"],
+    )
+    def test_a_utf16_csv_is_refused_naming_its_encoding(
+        self, haute_scratch: Path, mode: str, encoding: str, found: str
+    ) -> None:
+        path = haute_scratch / "quotes.csv"
+        path.write_bytes(self._TEXT.encode(encoding))
+
+        with pytest.raises(InputFileError) as refused:
+            read_polars_input({"format": "csv", "mode": mode, "path": str(path)}).collect()
+
+        assert refused.value.message.endswith(
+            f"quotes.csv is saved as {found}, not UTF-8. Save it as UTF-8."
+        )
+
+    @pytest.mark.parametrize("mode", ["scan", "read"])
+    @pytest.mark.parametrize("mark", [b"", b"\xef\xbb\xbf"], ids=["plain", "byte-order-mark"])
+    def test_a_utf8_csv_reads_its_rows_with_or_without_a_mark(
+        self, haute_scratch: Path, mode: str, mark: bytes
+    ) -> None:
+        path = haute_scratch / "quotes.csv"
+        path.write_bytes(mark + self._TEXT.encode())
+
+        frame = read_polars_input({"format": "csv", "mode": mode, "path": str(path)}).collect()
+
+        assert frame.columns == ["row_id", "value"]
+        assert frame.rows() == [(1, "a"), (2, "b")]
+
+    def test_a_read_naming_its_encoding_decodes_the_file_itself(self, haute_scratch: Path) -> None:
+        path = haute_scratch / "quotes.csv"
+        path.write_bytes(self._TEXT.encode("utf-16"))
+
+        frame = read_polars_input(
+            {
+                "format": "csv",
+                "mode": "read",
+                "path": str(path),
+                "arguments": {"encoding": "utf-16"},
+            }
+        ).collect()
+
+        assert frame.rows() == [(1, "a"), (2, "b")]
+
+
+def test_a_json_lines_file_with_a_byte_order_mark_is_refused_in_words(haute_scratch: Path) -> None:
+    """IOL-02: Polars cannot read through the mark; the refusal names the file and it,
+    never ``InternalError(TapeError)``."""
+    path = haute_scratch / "rows.jsonl"
+    path.write_bytes(b'\xef\xbb\xbf{"a": 1}\n')
+
+    with pytest.raises(InputFileError) as refused:
+        read_polars_input({"format": "ndjson", "mode": "scan", "path": str(path)}).collect()
+
+    assert refused.value.message.endswith(
+        "rows.jsonl starts with a byte-order mark, which a Data Input cannot read a JSON Lines "
+        "file through. Save it as UTF-8 without one."
+    )

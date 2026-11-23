@@ -916,6 +916,36 @@ def _check_csv_header(source: Any, arguments: Mapping[str, Any]) -> None:
     )
 
 
+def _refuse_text_haute_cannot_read(
+    fmt: IoFormat, config: Mapping[str, Any], arguments: Mapping[str, Any]
+) -> None:
+    """Refuse, in words, a text file the read would take wrongly or refuse in Polars' words.
+
+    A CSV file the read decodes as UTF-8 that is saved in another encoding: read as
+    UTF-8, a UTF-16 file gives columns named with null characters and a row the file
+    does not hold, without a word, where a Latin-1 file is refused as invalid UTF-8
+    (:func:`haute._input_files.text_encoding_refusal`). A read that names its
+    ``encoding`` decodes the file itself. A JSON Lines file that starts with a
+    byte-order mark, which Polars cannot read through
+    (:func:`haute._input_files.refuse_json_lines_with_a_mark`). Each file a folder or a
+    pattern names is judged by its first bytes.
+    """
+    from haute._input_files import refuse_json_lines_with_a_mark, refuse_text_in_another_encoding
+    from haute._input_providers import named_source_files
+
+    if fmt.name == "csv" and str(arguments.get("encoding", "utf8")) in {"utf8", "utf8-lossy"}:
+        refuse = refuse_text_in_another_encoding
+    elif fmt.name == "ndjson":
+        refuse = refuse_json_lines_with_a_mark
+    else:
+        return
+    path = config.get("path")
+    if not isinstance(path, str) or not path:
+        return
+    for file in named_source_files(config, Path(path)):
+        refuse(file)
+
+
 # The bytes a non-UTF-8 CSV file is decoded in at a time for its header check.
 _CSV_DECODE_CHUNK_BYTES = 1024 * 1024
 
@@ -1066,6 +1096,7 @@ def _invoke_polars_input(
         else frozenset()
     )
     polars_arguments = {name: value for name, value in arguments.items() if name not in haute_owned}
+    _refuse_text_haute_cannot_read(fmt, config, polars_arguments)
     if fmt.name == "csv":
         _check_csv_header(source_args[0], polars_arguments)
     fn = getattr(pl, callable_name)

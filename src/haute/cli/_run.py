@@ -52,6 +52,13 @@ def _frames(
     return [(name, output)]
 
 
+def _remediation(error: Exception) -> str:
+    """The remedy a refusal carries for the analyst (an input that could not be prepared, an
+    operation the run's memory profile cannot take), on a line of its own, else nothing."""
+    remediation = getattr(error, "remediation", None)
+    return f"\n{remediation}" if isinstance(remediation, str) and remediation else ""
+
+
 def _fail(message: str) -> NoReturn:
     if message:
         click.echo(message, err=True)
@@ -201,7 +208,7 @@ def _run_in_project(config: RunConfig) -> list[tuple[str, pl.DataFrame]]:
                 )
                 _fail("")
             if isinstance(e, expected):
-                _fail(f"Error executing pipeline: {e}")
+                _fail(f"Error executing pipeline: {e}{_remediation(e)}")
             raise
     finally:
         context.release_admission(preserve_primary_error=True)

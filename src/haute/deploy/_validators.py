@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
+from haute._input_files import keep_first
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._output_assembler import pruned_document
@@ -117,7 +118,8 @@ def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
 
 def _load_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
     """The cases of the test-quote JSON file at *path*, one a row."""
-    raw = json.loads(read_user_text(path))
+    # A repeated key keeps its first value, as the service reads a request.
+    raw = json.loads(read_user_text(path), object_pairs_hook=keep_first)
     if not isinstance(raw, list):
         raise ValueError("Expected a JSON array of quote objects")
     return [_parse_test_quote_case(row, row_index=i) for i, row in enumerate(raw)]

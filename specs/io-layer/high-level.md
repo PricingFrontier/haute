@@ -85,6 +85,16 @@ files infers its schema from the first ten (`infer_schema_files`), and a
 `schema_overrides` list must cover every column; Haute's configurations give
 `schema_overrides` as a mapping, which may name some.
 
+A flat Quote Input's CSV sample, which carries no types of its own, is read with the types
+its table declares, on every execution profile: the editor's preview, `haute run`, plain
+Python and a deploy's input schema read one frame alike, as a bounded run needs a declared
+type for every column it reads. A column the read takes that the table types nowhere is
+refused before anything is read, naming the column and the file and asking for its type
+in the node's table, never inferred: inferring it gave one type in a preview and a refusal
+asking for settings a Quote Input cannot hold in a bounded run. A `date` column is read as
+text and parsed in its declared `format` (ISO-8601 when it declares none), as the shredder
+reads one. A Parquet sample carries its own types.
+
 Raw database URIs are permitted only when credential-free. URI userinfo and recognised
 secret-bearing query parameters are rejected by one shared validator before a sidecar,
 cache identity, metadata document, or connector can receive the value. Named connection
@@ -280,6 +290,38 @@ come from the selected format; explicit extensions are preserved. Destination pr
 and writing use the same resolution, and writing creates missing parent directories.
 Database and lakehouse locators retain their provider-specific resolution.
 
+**Reading an input's bytes.** One set of rules reads the bytes of an input's own file,
+whichever node reads it (`haute._input_files`), so one file reads alike as a request, as
+data and as a loaded object, and a file a feed writes is not refused for its form alone:
+
+- A leading UTF-8 byte-order mark is read through: by the request shredder, Load File,
+  every CSV read and a deployment's served request. Windows PowerShell 5.1 and some
+  exports write one, and feeds are not the analyst's to control. Polars reads a Data
+  Input's JSON and CSV through it too; its JSON Lines reader cannot, and a scan cannot
+  skip the mark without copying the file, so such a file is refused naming it and the
+  mark rather than in Polars' words.
+- A JSON object that repeats a key keeps its first value: Polars keeps it reading a Data
+  Input's JSON and JSON Lines, and the request shredder, a served request, the dry run's
+  test quotes and Load File keep it too. Nothing is refused for it.
+- A `.json` request file or Load File holding nothing is refused as empty, naming the
+  file; a request file of no quotes is `[]`, and an empty JSON Lines file holds none.
+- A CSV file saved as UTF-16 or UTF-32 (a byte-order mark of either, or null bytes in its
+  first line) is refused naming the file and the encoding found and saying to save it as
+  UTF-8, by both of a Data Input's CSV readers and by a Quote Input, unless a Data Input's
+  read names its `encoding`: read as UTF-8 it gave columns named with null characters, a
+  row the file does not hold and no word. A Latin-1 file was already refused, as invalid
+  UTF-8.
+- Load File reads a JSON file's bytes as UTF-8 strictly: a byte that is not UTF-8 is
+  refused naming the file and the byte's line and column, never replaced, so no loaded
+  value (or a key a lookup then never matches) changes without a word. Its JSON is
+  Python's, as before, so `NaN` and integers of any size still load.
+- A file whose bytes cannot be read is an `InputFileError` naming the file from the
+  project root and, for a fault in it, its line and column: the words every edge says,
+  automatic preparation's `source_invalid` among them.
+
+These rules are for an input's own file. Haute's own files (a node's settings, the
+pipeline settings) keep their own readers' rules.
+
 **Column kinds.** Every place that reads a column by its kind (the pivot, the frame
 profile, the Banding statistics, a Rating lookup, the optimiser's analysis, the impact
 report, the editor's column lists) asks one module what kind the column's type is:
@@ -340,11 +382,19 @@ Connector, cancellation, deadline, and schema failures abort staging and preserv
 previous pointer.
 
 Automatic preparation surfaces its outcome as `InputPreparationError` with a stable reason
-code (`cap_unavailable`, `build_failed`, `memory_limited`, `cancelled`, `timed_out`,
-`path_too_long`) and the node's identity digest. `path_too_long` is a cache path Windows refused
+code (`cap_unavailable`, `build_failed`, `source_invalid`, `memory_limited`, `cancelled`,
+`timed_out`, `path_too_long`) and the node's identity digest. `path_too_long` is a cache path Windows refused
 for its length: a project in a folder with a long path, while Windows' long paths are off. A
 host that cannot install the required
-native cap is refused typed rather than built without one. It is a public contract error:
+native cap is refused typed rather than built without one. `source_invalid` is a build that
+failed for a reason Haute names, said after the fixed sentence in the words every edge gives
+it, so `haute run`, a preview and the input's panel say one thing of one file: a value its
+column's type does not hold (the shredder's schema error, with its remedies), a file Haute
+cannot read as its format (`InputFileError`, naming the file from the project root and the
+line and column of the fault), a setting or a reader package Haute refuses
+(`PolarsIoConfigError`), or a file the operating system refused or that is not there, named.
+A failure nothing names keeps the fixed sentence alone, as `build_failed`, since a provider's
+message can hold a connection string. It is a public contract error:
 synchronous routes answer HTTP 422 with its payload, and background jobs record the
 `memory_limited` terminal state for `memory_limited` and the contract-error fields
 otherwise. A corrupt generation is never rebuilt automatically.

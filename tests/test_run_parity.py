@@ -1834,24 +1834,41 @@ def test_a_transform_crossing_a_constant_answers_every_way(
     _assert_one_answer(_answers(project, Target("quote_response"), capsys, monkeypatch))
 
 
-def _csv_quotes(root: Path, columns: Columns) -> Written:
-    """A Quote Input whose sample is a CSV file, every column's type declared in its table."""
-    pl.DataFrame(_QUOTES).write_csv(root / "data" / "quotes.csv")
-    config = _quote_input_config()
-    config["path"] = "data/quotes.csv"
-    _write_json(root, "config/quote_input.json", config)
-    return _transform(root, columns)
+def _sampled_quotes(sample: str, *, untyped: str | None = None) -> Callable[..., Written]:
+    """A Quote Input whose sample is *sample* (``csv``, ``json``, ``jsonl`` or ``parquet``),
+    every column's type declared in its table but *untyped*'s, feeding the transform."""
+
+    def write(root: Path, columns: Columns) -> Written:
+        quotes = pl.DataFrame(_QUOTES)
+        path = root / "data" / f"quotes.{sample}"
+        if sample == "csv":
+            quotes.write_csv(path)
+        elif sample == "jsonl":
+            quotes.write_ndjson(path)
+        elif sample == "parquet":
+            quotes.write_parquet(path)
+        else:
+            _write_json(root, "data/quotes.json", _QUOTES)
+        config = _quote_input_config()
+        config["path"] = f"data/quotes.{sample}"
+        for column in config["tables"][0]["columns"]:
+            if column["name"] == untyped:
+                del column["type"]
+        _write_json(root, "config/quote_input.json", config)
+        return _transform(root, columns)
+
+    return write
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="IOL-03: a bounded run reads a Quote Input's CSV without the types its table declares",
-)
-def test_a_quote_input_on_a_csv_answers_every_way(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("sample", ["csv", "json", "jsonl", "parquet"])
+def test_a_quote_input_answers_every_way_whatever_its_samples_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], sample: str
 ) -> None:
-    project = _generated_project(tmp_path, Generated(NodeType.API_INPUT, "calc", _csv_quotes))
+    """IOL-03: a CSV sample is read with the types its table declares, as the other
+    formats are read with theirs, so a bounded run answers as the preview does."""
+    project = _generated_project(
+        tmp_path, Generated(NodeType.API_INPUT, "calc", _sampled_quotes(sample))
+    )
     target = Target("calc", leaf="leaf.py")
 
     answers = {
@@ -1859,10 +1876,103 @@ def test_a_quote_input_on_a_csv_answers_every_way(
         Way.HAUTE_RUN: _haute_run(project, target, capsys),
         Way.PYTHON: _python(project, target),
     }
-    _owned(
-        "IOL-03",
+
+    _assert_one_answer(answers)
+    assert answers[Way.HAUTE_RUN].dtypes == ("String", "Int64", "String", "Float64", "Int64")
+
+
+def test_a_quote_input_on_a_csv_deploys_as_it_previews(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _generated_project(
+        tmp_path, Generated(NodeType.POLARS, "calc", _sampled_quotes("csv"))
+    )
+    project.request = [_QUOTES[0]]
+
+    _assert_one_answer(_deploy_answers(project, capsys, monkeypatch))
+
+
+def test_a_csv_column_its_table_leaves_untyped_is_refused_every_way(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """IOL-03: named, with the one remedy the node's settings can hold."""
+    project = _generated_project(
+        tmp_path,
+        Generated(NodeType.API_INPUT, "calc", _sampled_quotes("csv", untyped="age")),
+    )
+    target = Target("calc", leaf="leaf.py")
+
+    answers = {
+        Way.PREVIEW: _preview(project, target),
+        Way.HAUTE_RUN: _haute_run(project, target, capsys),
+        Way.PYTHON: _python(project, target),
+    }
+
+    _assert_one_answer(
         answers,
-        {Way.HAUTE_RUN: lambda answer: _refuses(answer, "CSV sources require declared dtypes")},
+        refusal="Column 'age' of data/quotes.csv has no type in this Quote Input's table: "
+        "confirm each column's type in the node's table.",
+    )
+    assert "quote_input" in (answers[Way.HAUTE_RUN].refusal or "")
+    for answer in answers.values():
+        assert "schema_overrides" not in (answer.refusal or "")
+
+
+def _utf16_rows(root: Path, columns: Columns) -> Written:
+    """A Data Input on a CSV saved as UTF-16, as Windows PowerShell 5.1 redirects output."""
+    (root / "data").mkdir(exist_ok=True)
+    (root / "data" / "rows.csv").write_bytes(pl.DataFrame(_QUOTES).write_csv().encode("utf-16"))
+    _write_json(
+        root,
+        "config/data_input/rows.json",
+        {"input_type": "file", "format": "csv", "mode": "scan", "path": "data/rows.csv"},
+    )
+    return Written(
+        [
+            _Def(
+                "rows",
+                '@pipeline.data_input(config="config/data_input/rows.json")\ndef rows(): ...',
+            )
+        ],
+        list(_QUOTE_COLUMNS),
+    )
+
+
+def _utf16_quotes(root: Path, columns: Columns) -> Written:
+    written = _sampled_quotes("csv")(root, columns)
+    path = root / "data" / "quotes.csv"
+    path.write_bytes(path.read_text(encoding="utf-8").encode("utf-16"))
+    return written
+
+
+@pytest.mark.parametrize(
+    ("node_type", "node", "write", "file"),
+    [
+        (NodeType.DATA_INPUT, "rows", _utf16_rows, "data/rows.csv"),
+        (NodeType.API_INPUT, "calc", _utf16_quotes, "data/quotes.csv"),
+    ],
+    ids=["data-input", "quote-input"],
+)
+def test_a_csv_saved_as_utf16_is_refused_naming_its_encoding_every_way(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    node_type: NodeType,
+    node: str,
+    write: Callable[[Path, Columns], Written],
+    file: str,
+) -> None:
+    """IOL-04: never read as columns named with null characters."""
+    project = _generated_project(tmp_path, Generated(node_type, node, write))
+    target = Target(node, leaf="leaf.py")
+
+    answers = {
+        Way.PREVIEW: _preview(project, target),
+        Way.HAUTE_RUN: _haute_run(project, target, capsys),
+        Way.PYTHON: _python(project, target),
+    }
+
+    _assert_one_answer(
+        answers, refusal=f"{file} is saved as UTF-16 (little-endian), not UTF-8. Save it as UTF-8."
     )
 
 

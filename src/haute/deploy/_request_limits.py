@@ -7,6 +7,8 @@ import os
 from collections.abc import AsyncIterator, Mapping
 from typing import Any, Protocol
 
+from haute._input_files import keep_first
+
 _MIB = 1024 * 1024
 
 DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES = 8 * _MIB
@@ -150,7 +152,9 @@ async def read_limited_json_body(
         chunks.append(chunk)
 
     try:
-        return json.loads(b"".join(chunks))
+        # A repeated key keeps its first value, as the Quote Input's sample is read
+        # (haute._input_files): one quote prices alike in the editor and when served.
+        return json.loads(b"".join(chunks), object_pairs_hook=keep_first)
     except (ValueError, RecursionError) as exc:
         # Not JSON Python can read: malformed text, a body that is not UTF-8, an integer
         # past the interpreter's digit limit, or nesting past its recursion limit.

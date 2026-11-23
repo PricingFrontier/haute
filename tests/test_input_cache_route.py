@@ -1626,6 +1626,25 @@ def test_api_input_worker_failure_is_a_failed_job(
     assert status["state"] == "missing"
 
 
+def test_an_api_input_file_that_is_not_json_is_named_with_its_line_and_column(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """IOL-01: the panel's build names the file's fault, as the run does, never an incident."""
+    (tmp_path / "quotes.jsonl").write_text(
+        '{"id": 1, "drivers": []}\n{"id": 2, "drivers": [}\n', encoding="utf-8"
+    )
+
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["status"] == "contract_error"
+    assert terminal["error_code"] == "input_file_unreadable"
+    assert terminal["message"] == (
+        "quotes.jsonl is not valid JSON: unexpected character at line 2, column 23."
+    )
+
+
 def test_api_input_worker_refused_a_path_for_its_length_says_so(
     client: TestClient,
     tmp_path: Path,

@@ -47,7 +47,11 @@ from haute._json_shred._writer import (
     _raise_chunk_error,
     _shred_chunk,
 )
+from haute.errors import InputFileError
 from tests._project import use_project
+
+# The source passed with a worker failure that is not a JSON fault: it is never read.
+_UNREAD_SOURCE = Path("source.jsonl")
 
 
 def _write_jsonl(path: Path, records: list[Any]) -> Path:
@@ -573,7 +577,7 @@ def test_parallel_inference_of_a_file_within_its_prefix_starts_no_pool(
 
 def test_fused_lines_skip_blanks_without_discarding_later_evidence() -> None:
     state = _inference._infer_jsonl_lines(
-        [b'{"id":1}\n', b" \t\r\n", b"null\n", b'{"late":"present"}\n']
+        [(0, b'{"id":1}\n'), (9, b" \t\r\n"), (13, b"null\n"), (18, b'{"late":"present"}\n')]
     )
 
     assert _assemble_inference_schema(state) == _full_walk_schema([{"id": 1}, {"late": "present"}])
@@ -730,8 +734,9 @@ def test_parallel_inference_preserves_post_prefix_error_evidence(
             "\n".join([*(json.dumps(record) for record in prefix), "{bad"]) + "\n",
             encoding="utf-8",
         )
-        with pytest.raises(orjson.JSONDecodeError) as expected:
-            orjson.loads(b"{bad")
+        # The serial reader's refusal of the same file.
+        with pytest.raises(InputFileError) as expected:
+            list(_records._iter_records(src))
 
     _force_parallel(monkeypatch, chunk_bytes=30_000)
 
@@ -746,11 +751,23 @@ def test_parallel_inference_preserves_post_prefix_error_evidence(
         assert actual.value.context == expected.value.context
         assert str(actual.value) == str(expected.value)
     else:
-        with pytest.raises(orjson.JSONDecodeError) as actual:
+        with pytest.raises(InputFileError) as actual:
             infer_v2_schema_from_data(src)
-        assert actual.value.msg == expected.value.msg
-        assert actual.value.doc == expected.value.doc
-        assert actual.value.pos == expected.value.pos
+        # The `b` of `{bad`, on the line after the 10,000 records.
+        assert actual.value.message == (
+            "malformed-json.jsonl is not valid JSON: unexpected character at line 10001, column 2."
+        )
+        assert (actual.value.file, actual.value.line, actual.value.column) == (
+            "malformed-json.jsonl",
+            10001,
+            2,
+        )
+        assert actual.value.message == expected.value.message
+        assert (actual.value.file, actual.value.line, actual.value.column) == (
+            expected.value.file,
+            expected.value.line,
+            expected.value.column,
+        )
         assert str(actual.value) == str(expected.value)
 
 
@@ -1053,30 +1070,55 @@ def test_parallel_json_decode_error_matches_serial_exactly(
         ]
     }
 
-    with pytest.raises(orjson.JSONDecodeError) as serial_exc:
+    with pytest.raises(InputFileError) as serial_exc:
         _shred_build(src, schema, tmp_path / "serial_cache")
 
     _force_parallel(monkeypatch)
-    with pytest.raises(orjson.JSONDecodeError) as parallel_exc:
+    with pytest.raises(InputFileError) as parallel_exc:
         _shred_build(src, schema, tmp_path / "parallel_cache")
 
-    assert parallel_exc.value.msg == serial_exc.value.msg
-    assert parallel_exc.value.doc == serial_exc.value.doc
-    assert parallel_exc.value.pos == serial_exc.value.pos
+    # The `b` of `{bad`, on the line after the 200 records.
+    assert serial_exc.value.message == (
+        "bad-json.jsonl is not valid JSON: unexpected character at line 201, column 2."
+    )
+    assert (serial_exc.value.file, serial_exc.value.line, serial_exc.value.column) == (
+        "bad-json.jsonl",
+        201,
+        2,
+    )
+    assert parallel_exc.value.message == serial_exc.value.message
+    assert (parallel_exc.value.file, parallel_exc.value.line, parallel_exc.value.column) == (
+        serial_exc.value.file,
+        serial_exc.value.line,
+        serial_exc.value.column,
+    )
     assert str(parallel_exc.value) == str(serial_exc.value)
 
 
-def test_worker_json_error_reconstruction_preserves_zero_position() -> None:
-    failure = _ChunkFailure(
-        type_name="JSONDecodeError",
-        module="orjson",
-        message="bad json",
-        doc="x",
-        pos=0,
-    )
-    with pytest.raises(orjson.JSONDecodeError) as excinfo:
-        _raise_worker_failure(failure)
-    assert excinfo.value.pos == 0
+def test_worker_json_error_reconstruction_preserves_zero_position(tmp_path: Path) -> None:
+    """A worker's JSON fault is the refusal of the file it read, at the byte it names:
+    byte 0 is line 1, column 1, and byte 17, the `x`, is line 2, column 8."""
+    source = tmp_path / "worker.jsonl"
+    source.write_bytes(b'{"id": 1}\n{"id": x}\n')
+
+    def reconstructed(pos: int) -> InputFileError:
+        failure = _ChunkFailure(
+            type_name="JSONDecodeError",
+            module="orjson",
+            message="bad json",
+            doc="",
+            pos=pos,
+        )
+        with pytest.raises(InputFileError) as excinfo:
+            _raise_worker_failure(failure, source)
+        return excinfo.value
+
+    at_start = reconstructed(0)
+    assert at_start.message == "worker.jsonl is not valid JSON: bad json at line 1, column 1."
+    assert (at_start.file, at_start.line, at_start.column) == ("worker.jsonl", 1, 1)
+    later = reconstructed(17)
+    assert later.message == "worker.jsonl is not valid JSON: bad json at line 2, column 8."
+    assert (later.file, later.line, later.column) == ("worker.jsonl", 2, 8)
 
 
 @pytest.mark.parametrize(
@@ -1095,20 +1137,24 @@ def test_worker_failure_dispatch_requires_exact_known_type_and_module(
     failure: _ChunkFailure,
 ) -> None:
     with pytest.raises(RuntimeError, match="parallel json shred worker failed"):
-        _raise_worker_failure(failure)
+        _raise_worker_failure(failure, _UNREAD_SOURCE)
 
 
 def test_worker_failure_dispatch_uses_module_value_equality() -> None:
     non_interned_builtins = "".join(["built", "ins"])
     with pytest.raises(PermissionError, match="denied"):
-        _raise_worker_failure(_ChunkFailure("PermissionError", non_interned_builtins, "denied"))
+        _raise_worker_failure(
+            _ChunkFailure("PermissionError", non_interned_builtins, "denied"), _UNREAD_SOURCE
+        )
     with pytest.raises(ValueError, match="invalid"):
-        _raise_worker_failure(_ChunkFailure("ValueError", non_interned_builtins, "invalid"))
+        _raise_worker_failure(
+            _ChunkFailure("ValueError", non_interned_builtins, "invalid"), _UNREAD_SOURCE
+        )
 
 
 def test_worker_os_error_reconstruction_preserves_optional_arguments() -> None:
     with pytest.raises(OSError) as message_only:
-        _raise_worker_failure(_ChunkFailure("OSError", "builtins", "plain"))
+        _raise_worker_failure(_ChunkFailure("OSError", "builtins", "plain"), _UNREAD_SOURCE)
     assert message_only.value.args == ("plain",)
 
     with pytest.raises(PermissionError) as with_source:
@@ -1121,7 +1167,8 @@ def test_worker_os_error_reconstruction_preserves_optional_arguments() -> None:
                 strerror="denied",
                 filename="source.jsonl",
                 winerror=5,
-            )
+            ),
+            _UNREAD_SOURCE,
         )
     assert with_source.value.errno == 13
     assert with_source.value.filename == "source.jsonl"
@@ -1136,7 +1183,8 @@ def test_worker_os_error_reconstruction_preserves_optional_arguments() -> None:
                 strerror="rename failed",
                 filename="source",
                 filename2="destination",
-            )
+            ),
+            _UNREAD_SOURCE,
         )
     assert with_destination.value.filename == "source"
     assert with_destination.value.filename2 == "destination"
@@ -1151,7 +1199,8 @@ def test_worker_os_error_reconstruction_preserves_optional_arguments() -> None:
                 strerror="no source",
                 winerror=123,
                 filename2="ignored",
-            )
+            ),
+            _UNREAD_SOURCE,
         )
     assert without_source.value.filename is None
     assert without_source.value.filename2 is None
@@ -1186,7 +1235,7 @@ def test_parallel_missing_source_remains_file_not_found(tmp_path: Path) -> None:
     result = _shred_chunk((str(missing), 0, 1, 0, schema, str(tmp_path)))
 
     with pytest.raises(FileNotFoundError) as parallel_exc:
-        _raise_chunk_error(result)
+        _raise_chunk_error(result, missing)
 
     assert str(parallel_exc.value) == str(serial_exc.value)
 
@@ -1203,7 +1252,7 @@ def test_chunk_error_without_recorded_failure_fails_loudly() -> None:
     )
 
     with pytest.raises(RuntimeError, match="chunk has no recorded failure"):
-        _raise_chunk_error(result)
+        _raise_chunk_error(result, _UNREAD_SOURCE)
 
 
 def test_worker_does_not_disguise_process_control_signals(

@@ -41,6 +41,7 @@ from haute._native_memory_limit import native_memory_backend_scope
 from haute._source_cache import SourceCacheCorruptError, SourceCacheStore
 from haute.errors import InputPreparationError
 from tests._project import use_project
+from tests._worker_envelope import remote_failure
 from tests.conftest import make_edge, make_graph, make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -866,12 +867,12 @@ def test_a_missing_source_without_published_tables_is_refused(
     root, store = project
     data = root / "absent.jsonl"
 
-    with pytest.raises(InputPreparationError, match="unavailable") as raised:
+    with pytest.raises(InputPreparationError, match="absent.jsonl is not there") as raised:
         _prepare(_config(data), store, root)
 
-    assert raised.value.reason_code == "build_failed"
+    assert raised.value.reason_code == "source_invalid"
     # The request input's remediation, which names its tables, not a Data Input's snapshot.
-    assert "input's tables" in raised.value.remediation
+    assert "input's file or tables" in raised.value.remediation
 
 
 def test_a_corrupt_table_is_reported_not_rebuilt(project: tuple[Path, SourceCacheStore]) -> None:
@@ -921,6 +922,63 @@ def test_preparation_fails_typed_when_the_build_fails(
     with pytest.raises(InputPreparationError, match="tables failed") as raised:
         _prepare(_config(data), store, root)
     assert raised.value.reason_code == "build_failed"
+
+
+class _EnvelopeSpawn:
+    """Runs the child in-process, its failure reported as the real spawn reports it."""
+
+    def __call__(self, function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+        try:
+            return function(request, budget)
+        except Exception as exc:
+            raise remote_failure(exc) from None
+
+
+@pytest.mark.parametrize("where", ["in_process", "worker"])
+@pytest.mark.parametrize(
+    ("content", "said"),
+    [
+        (
+            '{"id": "abc", "premium": 1.5, "drivers": []}\n',
+            "Preparing this API Input's tables failed: column 'id' has values that don't match "
+            "its declared type 'int'; re-infer the schema or change the column's type to match "
+            "the data",
+        ),
+        (
+            '{"id": 1, "premium": 1.5, "drivers": []}\n{"id": 2, "premium": ',
+            "Preparing this API Input's tables failed: quotes.jsonl is not valid JSON: "
+            "unexpected end of data at line 2, column 21.",
+        ),
+    ],
+    ids=["value-of-another-type", "truncated"],
+)
+def test_a_build_failure_haute_names_is_said_whichever_process_builds(
+    project: tuple[Path, SourceCacheStore],
+    monkeypatch: pytest.MonkeyPatch,
+    worker_context: list[_ContextStub],
+    where: str,
+    content: str,
+    said: str,
+) -> None:
+    """IOL-01: the run says what the input's panel says of the file, never fixed text."""
+    import haute._input_preparation as preparation
+
+    root, store = project
+    data = root / "quotes.jsonl"
+    data.write_text(content, encoding="utf-8")
+    kwargs: dict[str, Any] = {}
+    if where == "worker":
+        monkeypatch.setattr(preparation, "process_memory_caps_supported", lambda: True)
+        kwargs = {"backend": None, "spawn": _EnvelopeSpawn()}
+
+    with pytest.raises(InputPreparationError) as raised:
+        _prepare(_config(data), store, root, **kwargs)
+
+    assert raised.value.reason_code == "source_invalid"
+    assert raised.value.message == said
+    assert raised.value.remediation == (
+        "Correct what the message names in this input's file or tables, then try again."
+    )
 
 
 class _PreparationSpawn:

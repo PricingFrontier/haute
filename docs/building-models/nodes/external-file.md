@@ -69,6 +69,8 @@ The preview then shows your data with a new `prediction` column.
 
 ### JSON lookup example
 
+A JSON file must be UTF-8: a byte that is not, as in a file saved as Latin-1, is refused naming the file and the byte's line and column, so no value or key changes without a word. A byte-order mark at the start is read through, and a key repeated in one object keeps its first value.
+
 If your file is a JSON dictionary (e.g. area factors), choose **JSON** as the **FILE TYPE** and use it as a lookup table in a **Free code** step. Areas missing from the dictionary get a factor of 1.0:
 
 ```python

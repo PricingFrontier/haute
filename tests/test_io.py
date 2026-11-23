@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
 import pytest
 
-from haute._api_input_schema import is_json_api_input_path
+from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
 from haute._execution_context import ExecutionProfile
 from haute._io import (
     UnsupportedSourceFormatError,
@@ -19,7 +20,8 @@ from haute._io import (
     read_data_source,
     read_source,
 )
-from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.errors import BoundedMemoryUnsupportedError, InputFileError, SchemaMismatchError
+from tests.conftest import flat_quote_table
 
 # ---------------------------------------------------------------------------
 # read_source
@@ -394,6 +396,27 @@ class TestLoadExternalObjectJSON:
         assert result == data
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_a_json_file_that_is_not_utf8_is_refused_naming_the_file(self, tmp_path: Path) -> None:
+        """IOL-05: its bytes are never replaced, so no loaded value holds a character the
+        file did not."""
+        path = tmp_path / "lookup.json"
+        path.write_bytes('{"name": "Crème"}'.encode("latin-1"))
+
+        # The sandbox fixture widens the project root, so the file is named from it.
+        with pytest.raises(
+            InputFileError,
+            match=r"lookup\.json is not valid UTF-8: byte 0xE8 at line 1, column 13\. Save it",
+        ):
+            load_external_object(str(path), "json")
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_a_utf8_json_file_with_text_beyond_ascii_loads_as_written(self, tmp_path: Path) -> None:
+        path = tmp_path / "lookup.json"
+        path.write_text('{"name": "Crème", "name": "later"}', encoding="utf-8")
+
+        assert load_external_object(str(path), "json") == {"name": "Crème"}
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_json_caching(self, tmp_path: Path) -> None:
         path = tmp_path / "model.json"
         path.write_text('{"x": 1}')
@@ -506,68 +529,88 @@ class TestDataSourceAdapterFlatFile:
         path = tmp_path / "source.csv"
         pl.DataFrame({"premium": [10.5, 12.0]}).write_csv(path)
 
-        result = read_data_source({"source_type": "flat_file", "path": str(path)}).collect()
+        result = read_data_source(
+            {"source_type": "flat_file", "path": str(path), **flat_quote_table(premium="float")}
+        ).collect()
 
         assert result["premium"].to_list() == [10.5, 12.0]
 
-    def test_read_data_source_forwards_projection_and_schema(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "profile", [None, ExecutionProfile.LAZY_SINK, ExecutionProfile.OPTIMISER_SOLVE]
+    )
+    def test_a_csv_sample_is_read_with_its_tables_types_on_every_profile(
+        self, tmp_path: Path, profile: ExecutionProfile | None
+    ) -> None:
+        """IOL-03: no profile infers a type the table declares: ``001`` stays text."""
         path = tmp_path / "source.csv"
         path.write_text("quote_id,premium,unused\n001,10.5,x\n", encoding="utf-8")
+        config = {
+            "source_type": "flat_file",
+            "path": str(path),
+            **flat_quote_table(quote_id="str", premium="float"),
+        }
 
-        lf = read_data_source(
-            {
-                "source_type": "flat_file",
-                "path": str(path),
-                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
-            },
-            profile=ExecutionProfile.LAZY_SINK,
-            columns=["quote_id", "premium"],
+        lf = read_data_source(config, profile=profile, columns=["quote_id", "premium"])
+
+        assert lf.collect_schema() == pl.Schema({"quote_id": pl.String, "premium": pl.Float64})
+        assert lf.collect().row(0) == ("001", 10.5)
+
+    def test_a_csv_date_column_is_read_in_its_declared_format(self, tmp_path: Path) -> None:
+        path = tmp_path / "source.csv"
+        path.write_text("quote_id,start\nq1,15/01/2024\n", encoding="utf-8")
+        config = {
+            "source_type": "flat_file",
+            "path": str(path),
+            **flat_quote_table(quote_id="str", start=("date", "%d/%m/%Y")),
+        }
+
+        result = read_data_source(config, profile=ExecutionProfile.LAZY_SINK).collect()
+
+        assert result["start"].to_list() == [date(2024, 1, 15)]
+
+    @pytest.mark.parametrize("profile", [None, ExecutionProfile.LAZY_SINK])
+    def test_a_csv_column_without_a_declared_type_is_refused_by_name(
+        self, tmp_path: Path, profile: ExecutionProfile | None
+    ) -> None:
+        """IOL-03: one refusal on every profile, naming no setting a Quote Input cannot
+        hold."""
+        path = tmp_path / "source.csv"
+        path.write_text("quote_id,premium,area\n001,10.5,N\n", encoding="utf-8")
+        config = {"source_type": "flat_file", "path": str(path), **flat_quote_table(quote_id="str")}
+
+        with pytest.raises(ApiInputSchemaError) as refused:
+            read_data_source(config, profile=profile)
+
+        assert str(refused.value) == (
+            "Columns 'premium', 'area' of source.csv have no type in this Quote Input's table: "
+            "confirm each column's type in the node's table."
         )
 
-        assert lf.collect_schema().names() == ["quote_id", "premium"]
-        result = lf.collect()
-        assert result["quote_id"].to_list() == ["001"]
-
-    @pytest.mark.parametrize(
-        "schema_key",
-        ["schema_overrides", "dtypes", "column_dtypes", "schema"],
-    )
-    def test_read_data_source_accepts_all_declared_dtype_config_keys(
-        self,
-        tmp_path: Path,
-        schema_key: str,
-    ) -> None:
+    def test_a_csv_sample_whose_header_is_not_utf8_is_refused_as_such(self, tmp_path: Path) -> None:
+        """Never as a column named with replacement characters that the table types nowhere."""
         path = tmp_path / "source.csv"
-        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        path.write_bytes("quote_id,région\n001,N\n".encode("latin-1"))
+        config = {
+            "source_type": "flat_file",
+            "path": str(path),
+            **flat_quote_table(quote_id="str", région="str"),
+        }
 
-        result = read_data_source(
-            {
-                "source_type": "flat_file",
-                "path": str(path),
-                schema_key: {"quote_id": "String", "premium": "Float64"},
-            },
-            profile=ExecutionProfile.OPTIMISER_SOLVE,
-        ).collect()
+        with pytest.raises(InputFileError) as refused:
+            read_data_source(config, profile=ExecutionProfile.LAZY_SINK)
 
-        assert result.schema["quote_id"] == pl.String
-        assert result["quote_id"].to_list() == ["001"]
+        assert refused.value.message == (
+            "source.csv is not valid UTF-8: byte 0xE9 at line 1, column 11. Save it as UTF-8."
+        )
 
-    def test_read_data_source_rejects_bounded_csv_without_dtypes(
-        self,
-        tmp_path: Path,
-    ) -> None:
+    def test_a_csv_column_the_run_does_not_read_needs_no_type(self, tmp_path: Path) -> None:
         path = tmp_path / "source.csv"
-        path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        path.write_text("quote_id,unused\n001,x\n", encoding="utf-8")
+        config = {"source_type": "flat_file", "path": str(path), **flat_quote_table(quote_id="str")}
 
-        with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
-            read_data_source(
-                {
-                    "source_type": "flat_file",
-                    "path": str(path),
-                    "expected_columns": ["quote_id", "premium"],
-                },
-                profile=ExecutionProfile.OPTIMISER_SOLVE,
-            )
+        lf = read_data_source(config, profile=ExecutionProfile.LAZY_SINK, columns=["quote_id"])
+
+        assert lf.collect()["quote_id"].to_list() == ["001"]
 
     def test_source_config_is_not_mutated(self, tmp_path: Path) -> None:
         path = tmp_path / "source.parquet"

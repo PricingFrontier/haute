@@ -172,7 +172,21 @@ class TestInferExceptions:
         (data_dir / "broken.json").write_bytes(b"{ broken")
         resp = client.post("/api/json-cache/infer", json={"path": "data/broken.json"})
         assert resp.status_code == 422
-        assert "Invalid JSON in data file" in resp.json()["detail"]
+        # Named from the project root, with the fault's place, as a build names it.
+        assert resp.json()["detail"] == (
+            "data/broken.json is not valid JSON: unexpected character at line 1, column 3."
+        )
+
+    def test_infer_an_empty_json_file_returns_422_naming_it(
+        self, client: TestClient, project: Path
+    ) -> None:
+        (project / "data").mkdir()
+        (project / "data" / "empty.json").write_bytes(b"")
+        resp = client.post("/api/json-cache/infer", json={"path": "data/empty.json"})
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == (
+            "data/empty.json is empty, so it is not JSON. A JSON file that holds no quotes is []."
+        )
 
     def test_infer_generic_exception_returns_500(self, client: TestClient, project: Path) -> None:
         """Unexpected internal error during inference → 500 with opaque detail."""

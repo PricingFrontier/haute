@@ -188,7 +188,7 @@ def test_snapshot_executor_rejects_symlink_escape(
     symlinked_source_graph = _data_input_graph("customers.csv").model_copy(
         update={"source_file": str(link / "pipeline.py")}
     )
-    with pytest.raises(InputPreparationError, match="source is unavailable"):
+    with pytest.raises(InputPreparationError, match="^customers.csv names no file: "):
         execute_graph(symlinked_source_graph, target_node_id="src")
 
 

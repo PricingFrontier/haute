@@ -202,7 +202,7 @@ def source_cache_identity(
     return SourceCacheIdentity(provider=provider, descriptor=descriptor)
 
 
-def _local_source_path(config: Mapping[str, Any], base_dir: str | Path | None) -> Path | None:
+def local_source_path(config: Mapping[str, Any], base_dir: str | Path | None) -> Path | None:
     """The local file a ``file`` provider reads, or ``None`` for any other provider."""
     validated = validate_data_input_config(config)
     # Lakehouse locators are tables/directories whose freshness needs a
@@ -224,7 +224,7 @@ def source_signature(
     names (:func:`haute._json_shred._source_proof.files_signature`); a path that names
     no file is ``"missing"``.
     """
-    path = _local_source_path(config, base_dir)
+    path = local_source_path(config, base_dir)
     if path is None:
         return None
     files = named_source_files(config, path)
@@ -246,7 +246,7 @@ def signed_source_files(
     as ``"missing"``), have none. Configuration and a listing of the files: no
     file's content is read.
     """
-    path = _local_source_path(config, base_dir)
+    path = local_source_path(config, base_dir)
     return () if path is None else named_source_files(config, path)
 
 

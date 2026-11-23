@@ -14,6 +14,7 @@ from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotOwner, NodeSn
 from haute._seed_plans import preview_input_node_ids, preview_lineage_admitted
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests._project import use_project
+from tests.conftest import flat_quote_table
 
 
 def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNode:
@@ -104,7 +105,7 @@ def test_api_input_reading_undeclared_csv_is_not_admitted(project: Path) -> None
 
 
 def test_api_input_reading_declared_csv_is_admitted(project: Path) -> None:
-    graph = _joined(project, _csv_api_input(project, dtypes={"id": "Int64", "a": "Int64"}))
+    graph = _joined(project, _csv_api_input(project, **flat_quote_table(id="int", a="int")))
     assert preview_lineage_admitted(graph, "B", source="live") is True
 
 

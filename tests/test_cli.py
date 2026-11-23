@@ -777,6 +777,47 @@ pipeline.connect("source", "bad")
         assert "Traceback" not in result.output
         assert "boom" not in result.output
 
+    @pytest.mark.parametrize(
+        ("request_text", "said"),
+        [
+            (
+                '[{"quote_id": "q1", "fixture_value": "ten"}]',
+                "Error executing pipeline: Preparing this API Input's tables failed: column "
+                "'fixture_value' has values that don't match its declared type 'int'; re-infer "
+                "the schema or change the column's type to match the data (node=quote_input, ",
+            ),
+            (
+                '[{"quote_id": "q1",\n  "fixture_value": 10',
+                "Error executing pipeline: Preparing this API Input's tables failed: "
+                "data/quote.json is not valid JSON: unexpected end of data at line 2, column 22.",
+            ),
+        ],
+        ids=["value-of-another-type", "truncated"],
+    )
+    def test_a_request_file_that_is_wrong_is_named_with_its_fault(
+        self, runner: CliRunner, tmp_path: Path, request_text: str, said: str
+    ):
+        """IOL-01: the run says what a deploy's dry run and the input's panel say of the file,
+        and the remedy the refusal carries."""
+        import shutil
+
+        project = tmp_path / "project"
+        examples = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
+        shutil.copytree(examples / "minimal_live_quote", project)
+        make_haute_project(project)
+        (project / "data" / "quote.json").write_text(request_text, encoding="utf-8")
+        use_project(project)
+
+        result = runner.invoke(cli, ["run", str(project / "pipeline.py")])
+
+        assert result.exit_code == 1
+        assert said in result.output, result.output
+        assert (
+            "\nCorrect what the message names in this input's file or tables, then try again."
+            in result.output
+        )
+        assert "memory headroom" not in result.output
+
     def test_an_unknown_node_is_refused(self, runner: CliRunner, project_dir: Path):
         result = runner.invoke(cli, ["run", str(project_dir / "main.py"), "--node", "nope"])
         assert result.exit_code == 1

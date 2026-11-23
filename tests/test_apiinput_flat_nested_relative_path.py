@@ -46,6 +46,7 @@ from haute._project_context import current_project
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 from tests._project import use_project
+from tests.conftest import flat_quote_table
 
 #: The apiInput ``path`` written into the node config — RELATIVE, pipeline-
 #: directory-relative (resolves under ``rating/`` at runtime), and FLAT (``.csv``
@@ -92,8 +93,9 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def _api_input_config(path: str) -> dict[str, Any]:
     """A flat-file apiInput config carrying a (relative) ``path``, as the frontend
-    serialises a flat apiInput (``source_type`` is not an apiInput config key)."""
-    return {"path": path}
+    serialises a flat apiInput (``source_type`` is not an apiInput config key), with the
+    table that types its CSV's columns (IOL-03)."""
+    return {"path": path, **flat_quote_table(customer_id="int", premium="int")}
 
 
 def _api_input_graph(path: str) -> PipelineGraph:

@@ -158,11 +158,11 @@ def _shred_records_into(
     return stats, record_count
 
 
-def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
+def _raise_chunk_error(result: _ChunkResult, data_path: Path) -> NoReturn:
     """Re-raise a shred worker failure without pickling arbitrary exceptions."""
     if result.failure is None:
         raise RuntimeError("parallel json shred chunk has no recorded failure")
-    _records._raise_worker_failure(result.failure)
+    _records._raise_worker_failure(result.failure, data_path)
 
 
 class _BoundedParquetRowGroupWriter:
@@ -442,7 +442,7 @@ def _write_tables_in_parallel(
         # ``map`` yields in submission order, which is file order.
         for result in pool.map(_shred_chunk, tasks):
             if result.failure is not None:
-                _raise_chunk_error(result)
+                _raise_chunk_error(result, data_path)
             results.append(result)
     finally:
         # ``map`` submits every chunk up front, so a plain shutdown would wait

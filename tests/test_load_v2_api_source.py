@@ -14,7 +14,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import orjson
 import polars as pl
 import pytest
 
@@ -25,6 +24,7 @@ from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._snapshots import api_input_snapshot_source
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._source_cache import SourceCacheStore
+from haute.errors import InputFileError
 from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
@@ -644,8 +644,12 @@ def test_uncached_malformed_json_surfaces_decode_error(tmp_path: Path) -> None:
     data.write_text('[{"id": 1},', encoding="utf-8")
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
 
-    with pytest.raises(orjson.JSONDecodeError):
+    with pytest.raises(InputFileError) as refused:
         load_v2_api_source(str(data), cfg)
+    assert refused.value.message == (
+        "data.json is not valid JSON: unexpected end of data at line 1, column 12."
+    )
+    assert (refused.value.file, refused.value.line, refused.value.column) == ("data.json", 1, 12)
 
 
 def test_missing_raw_source_stays_a_file_not_found_error(tmp_path: Path) -> None:

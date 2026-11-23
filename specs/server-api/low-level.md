@@ -1360,6 +1360,7 @@ through the shared analysis helper.
 | Public contract errors (closed set below) | any route (failure answers) | 422 / 507 / 409 | Routes that also log or order them against a broader clause keep an explicit clause with the same refusal. |
 | `PipelineSettingsError` | any route (failure answers); background jobs | 409 / failed job | `.haute/pipeline-settings.json` is unreadable or invalid. The detail is the error's message, which names the file and the key; a job records the same message as its error, with `error_code: "pipeline_settings_invalid"`. Raised wherever the settings are read, so admission refuses before any work starts; a route that answers its own config `ValueError`s with 400 (the optimiser's timeout checks) lets this one through to the 409. |
 | `ConfigError` (not otherwise mapped) | any route, job or command (failure answers) | 422 | `config_invalid`, the error's own message without its context (a path), which names the setting and what is wrong. |
+| `PolarsIoConfigError` (not otherwise mapped) | any route, job or command (failure answers) | 422 | `config_invalid`, the message: a Data Input's or Data Output's settings Haute cannot read or write with, a format whose engine package the install lacks among them. A route that must not echo the settings posted to it (the input-cache routes' `invalid_input_config`) refuses them before they reach a reader. |
 | `HauteValidationError` (not otherwise mapped, such as a `ConfigSettingError` the sidecar writer raises) | any route (failure answers) | 400 | `validation_refused`: a message Haute wrote for the user about what was sent, as the detail, so a refused setting is never a 500; a subclass with its own mapping (a public contract error such as `NodeConfigError`) keeps it. Save validation runs the banding sidecar writer's row checks itself (`validate_banding_config`), so a blank band name, categorical value or mapping, or a repeated value, is refused naming the node and the rule before anything is written. |
 | `GitError` family | any route (failure answers) | 409 / 403 / 400 | Files off version history → 409 `unrecorded_files`, the message and `files` in the detail (`GitUnrecordedFilesError`), guardrail → 403 verbatim (`git_guardrail`), domain → 400 verbatim (`git_refused`), plain `GitError` → 400 `git_failed`, "Git refused this", with an incident under which git's own message, which can hold paths and remote addresses, is logged (`git_refusal_answer`). A save whose capture git refuses warns in the same words. |
 | `PathOutsideProjectError`, `InvalidPathError`, `RuntimePathOutsideProjectError`, `MalformedRuntimePathError` | any route (failure answers) | 403 / 400 | Raised by the sandbox's `contained_path` and the runtime path resolution for a request path; detail is the bare message ("Cannot access paths outside the project root" / "Invalid path"), never the refused path. |
@@ -1391,6 +1392,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |
+| `InputFileError` | `input_file_unreadable` | `file`, `line`, `column` |
 | `GroupByExecutionUnsupportedError` | `group_by_execution_unsupported` | `node_id`, `operator`, `profile`, `reason_code`, `remediation`, `estimated_peak_bytes`, `headroom_bytes` |
 | `TraceCorrelationUnsupportedError` | `trace_correlation_unsupported` | `node_id`, `key_columns`, `dtypes`, `reason_code` |
 | `NodeFailedError` | `node_failed` | `node_id`, `node` |
@@ -1467,8 +1469,8 @@ detail holding `error_code` and `message`, and a job records the answer's `job_f
 during); a refusal a service raised (`RequestRefusedError`, its headers kept); a
 public contract error; a worker that could not finish (`answer_from_remote` for what its child
 put into words); git, pipeline-settings, workbench and path refusals; a node's own failure
-(`node_failed_error`); a graph refused (`ParseError`), a setting refused (`ConfigError`) and a
-validation refusal (`HauteValidationError`); the operating system refusing a file; and the quote
+(`node_failed_error`); a graph refused (`ParseError`), a setting refused (`ConfigError`,
+`PolarsIoConfigError`) and a validation refusal (`HauteValidationError`); the operating system refusing a file; and the quote
 store's database. `pipeline_failure(exc)` adds, for an edge that ran the pipeline, its own
 contracts, schemas and data as a preview of the node says them. `answer_failure(exc)` is
 `classify_failure`, then git's own refusal and a statement the database refused (each logged
