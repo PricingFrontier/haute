@@ -26,8 +26,9 @@ tables again at once, 503 when they no longer fit.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar
 
 from fastapi import APIRouter, Query, Request, Response
@@ -61,6 +62,7 @@ from haute._quote_store import (
 )
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._workbench_app import Pricing
+from haute._workbench_app_editing import EDIT_LEASE_SECONDS, EditHeldError, EditLeases
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate
 from haute._workbench_export import (
     XLSX_MEDIA_TYPE,
@@ -91,6 +93,8 @@ from haute.errors import (
     UnprocessableError,
 )
 from haute.schemas import (
+    WorkbenchAppEditing,
+    WorkbenchAppEditingResponse,
     WorkbenchAppPeopleResponse,
     WorkbenchAppQuote,
     WorkbenchAppQuoteActivityEntry,
@@ -121,22 +125,24 @@ PRICE_TOLERANCE = 1e-9
 #: why not.
 Pricer = Callable[[WorkbenchValues], Awaitable[Pricing]]
 
-#: The quote_details cells the app sets, by table and column name: no typing.
+#: The quote_details cells the app sets, by table and column name, and the quote's name, which
+#: a save keeps as the quote was made (:meth:`QuoteBook.managed`): no typing.
 _APP_SET_CELLS = frozenset(
-    (QUOTE_DETAILS_NAME, column_name) for column_name in QUOTE_DETAILS_MANAGED
+    (QUOTE_DETAILS_NAME, column_name) for column_name in (*QUOTE_DETAILS_MANAGED, "quote_name")
 )
 
 
 @dataclass(frozen=True)
 class QuoteApp:
     """What the quote routes work with: the release running, its sheets, the gate of its
-    quote store and the release's pricing."""
+    quote store, the release's pricing and who is editing which quote."""
 
     release_id: str
     form_revision: str
     form: FormSpec
     gate: StoreGate
     price: Pricer
+    editing: EditLeases = field(default_factory=EditLeases)
 
 
 def _iso(moment: Any) -> str | None:
@@ -275,6 +281,30 @@ async def _answered(
             if refusal is not None:
                 raise RequestRefusedError(refusal.detail, status_code=503) from None
         raise answer.refusal() from None
+
+
+def _being_edited(reference: str, option: int, editor: str) -> RequestRefusedError:
+    return RequestRefusedError(
+        {
+            "message": f"{editor} is editing {identity_label(reference, option)}.",
+            "error_code": "quote_being_edited",
+            "editor": editor,
+        },
+        status_code=409,
+    )
+
+
+@contextmanager
+def _writing(app: QuoteApp, reference: str, option: int, actor: str) -> Iterator[None]:
+    """The quote held for *actor* while their write is made (:meth:`EditLeases.writing`):
+    refused (409) while anyone else is editing or changing it, and no one else takes it
+    before the write ends. Only its editor changes a quote, and anyone may while no one is
+    editing it."""
+    try:
+        with app.editing.writing((reference, option), actor):
+            yield
+    except EditHeldError as held:
+        raise _being_edited(reference, option, held.editor) from None
 
 
 def _editor(http: Request) -> str:
@@ -468,34 +498,37 @@ def quote_router(app: QuoteApp) -> APIRouter:
         if replay is not None:
             return answer(replay, body.shown)
         _drawn_for(app, body)
-        current = await _call(app, lambda book: book.get(reference, option))
-        # One instant stamps the save: the request priced and the rows written.
-        at = book.now()
-        values = as_written(body.values, book.managed(current, at=at, actor=actor))
-        # The details the app sets show on the sheets as any value does, but are no typing.
-        if not quote_request(app.form, values, untyped=_APP_SET_CELLS):
-            raise UnprocessableError("Type the quote first")
-        priced = None
-        if body.shown is not None:
-            # A value not of its column's type refuses the save before it is priced, naming each.
-            await _call(app, lambda _book: input_rows(app.form, values, identity))
-            pricing = await app.price(values)
-            priced = PricedOutputs(app.release_id, pricing.document)
-        saved = await _call(
-            app,
-            lambda book: book.save(
-                reference,
-                option,
-                operation=body.operation,
-                version=body.version,
-                actor=actor,
-                values=body.values,
-                priced=priced,
-                at=at,
-            ),
-            identity,
-        )
-        return answer(saved, body.shown)
+        # Held for the actor from here to the write, so no one takes it in between.
+        with _writing(app, reference, option, actor):
+            current = await _call(app, lambda book: book.get(reference, option))
+            # One instant stamps the save: the request priced and the rows written.
+            at = book.now()
+            values = as_written(body.values, book.managed(current, at=at, actor=actor))
+            # The details the app sets show on the sheets as any value does, but are no typing.
+            if not quote_request(app.form, values, untyped=_APP_SET_CELLS):
+                raise UnprocessableError("Type the quote first")
+            priced = None
+            if body.shown is not None:
+                # A value not of its column's type refuses the save before it is priced,
+                # naming each.
+                await _call(app, lambda _book: input_rows(app.form, values, identity))
+                pricing = await app.price(values)
+                priced = PricedOutputs(app.release_id, pricing.document)
+            saved = await _call(
+                app,
+                lambda book: book.save(
+                    reference,
+                    option,
+                    operation=body.operation,
+                    version=body.version,
+                    actor=actor,
+                    values=body.values,
+                    priced=priced,
+                    at=at,
+                ),
+                identity,
+            )
+            return answer(saved, body.shown)
 
     def change(
         path: str,
@@ -507,9 +540,12 @@ def quote_router(app: QuoteApp) -> APIRouter:
         ) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
             body = await app_body(http, model)
-            quote = await _call(
-                app, lambda book: apply(book, reference, option, body, actor), (reference, option)
-            )
+            with _writing(app, reference, option, actor):
+                quote = await _call(
+                    app,
+                    lambda book: apply(book, reference, option, body, actor),
+                    (reference, option),
+                )
             return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
         router.add_api_route(
@@ -594,9 +630,10 @@ def quote_router(app: QuoteApp) -> APIRouter:
     async def note(reference: str, option: int, http: Request) -> WorkbenchAppQuoteChangeResponse:
         actor = _editor(http)
         body = await app_body(http, WorkbenchAppQuoteNote)
-        quote = await _call(
-            app, lambda book: book.set_note(reference, option, actor=actor, note=body.note)
-        )
+        with _writing(app, reference, option, actor):
+            quote = await _call(
+                app, lambda book: book.set_note(reference, option, actor=actor, note=body.note)
+            )
         return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
     @router.get(
@@ -621,6 +658,33 @@ def quote_router(app: QuoteApp) -> APIRouter:
             source=None if done.source is None else _related(done.source),
             derived=[_related(quote) for quote in done.derived],
         )
+
+    @router.post("/quotes/{reference}/{option}/edit", response_model=WorkbenchAppEditingResponse)
+    async def take_editing(
+        reference: str, option: int, http: Request
+    ) -> WorkbenchAppEditingResponse:
+        """The quote held to edit by the page (session) of whoever asks, taken or renewed;
+        refused (409) naming who
+        else is editing it, and 404 when the app keeps no such quote."""
+        actor = _editor(http)
+        body = await app_body(http, WorkbenchAppEditing)
+        await _call(app, lambda book: book.get(reference, option), (reference, option))
+        editor = app.editing.take((reference, option), actor, body.session)
+        if editor is not None:
+            raise _being_edited(reference, option, editor)
+        return WorkbenchAppEditingResponse(editor=actor, lease_seconds=EDIT_LEASE_SECONDS)
+
+    @router.post(
+        "/quotes/{reference}/{option}/edit/release", response_model=WorkbenchAppEditingResponse
+    )
+    async def release_editing(
+        reference: str, option: int, http: Request
+    ) -> WorkbenchAppEditingResponse:
+        """The quote let go by the page (session) of whoever asks, as it leaves the quote."""
+        principal: str = http.state.principal
+        body = await app_body(http, WorkbenchAppEditing)
+        app.editing.release((reference, option), principal, body.session)
+        return WorkbenchAppEditingResponse(editor=None, lease_seconds=EDIT_LEASE_SECONDS)
 
     @router.get("/people", response_model=WorkbenchAppPeopleResponse)
     async def people() -> WorkbenchAppPeopleResponse:

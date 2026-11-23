@@ -14,7 +14,7 @@ import { ask, newest } from "../utils/answers"
 import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
 import { BUTTON } from "./ui"
 import useAppStore from "./useAppStore"
-import useNewQuoteStore from "./useNewQuoteStore"
+import useNewQuoteStore, { type WindowOrigin } from "./useNewQuoteStore"
 
 type Loaded = { ready: true } | { error: string }
 
@@ -80,10 +80,10 @@ function Routed() {
 }
 
 /**
- * `/quotes/new`, plain or naming a quote to duplicate or renew: the New quote window opened
- * over the Quotes page, at its default list.
+ * `/quotes/new`, plain or naming a quote to duplicate, renew or make an alternative of: the
+ * New quote window opened over the Quotes page, at its default list.
  */
-function AskedNewQuote({ reference, option, relation }: { reference: string | null; option: number; relation: "duplicate" | "renewal" }) {
+function AskedNewQuote({ reference, option, relation }: { reference: string | null; option: number; relation: WindowOrigin["relation"] }) {
   useEffect(() => {
     const store = useNewQuoteStore.getState()
     if (reference === null) store.openNew({ addressed: true })
@@ -93,17 +93,13 @@ function AskedNewQuote({ reference, option, relation }: { reference: string | nu
 }
 
 function RoutedPage({ route }: { route: AppRoute }) {
-  if (route.page === "new" && route.from?.relation !== "alternative") {
+  if (route.page === "new") {
     const { from } = route
     return (
       <>
         <AppHeader label="Quotes toolbar" />
         <QuotesPage query={quotesQueryOf("")} />
-        <AskedNewQuote
-          reference={from?.reference ?? null}
-          option={from?.option ?? 1}
-          relation={from?.relation === "renewal" ? "renewal" : "duplicate"}
-        />
+        <AskedNewQuote reference={from?.reference ?? null} option={from?.option ?? 1} relation={from?.relation ?? "duplicate"} />
       </>
     )
   }

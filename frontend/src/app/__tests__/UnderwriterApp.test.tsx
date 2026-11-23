@@ -15,6 +15,8 @@ vi.mock("../../api/app", () => ({
   fetchAppQuotes: vi.fn(),
   fetchAppPeople: vi.fn(),
   openAppQuote: vi.fn(),
+  editAppQuote: vi.fn(async () => ({ editor: "ana@example.com", lease_seconds: 180 })),
+  releaseAppQuote: vi.fn(async () => {}),
   createAppQuote: vi.fn(),
 }))
 
@@ -43,6 +45,7 @@ const release: WorkbenchAppReleaseResponse = {
   quotes: CLOSED,
   edit_role: null,
   can_edit: true,
+  environment: "test",
 }
 
 async function opened() {

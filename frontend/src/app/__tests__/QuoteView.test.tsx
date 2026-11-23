@@ -14,12 +14,14 @@ vi.mock("../../api/app", () => ({
   fetchAppPeople: vi.fn(),
   fetchAppQuoteActivity: vi.fn(),
   openAppQuote: vi.fn(),
+  editAppQuote: vi.fn(async () => ({ editor: "ana@example.com", lease_seconds: 180 })),
+  releaseAppQuote: vi.fn(async () => {}),
   saveAppQuote: vi.fn(),
 }))
 
-import { changeAppQuote, createAppQuote, fetchAppPeople, fetchAppQuoteActivity, openAppQuote, saveAppQuote } from "../../api/app"
+import { changeAppQuote, createAppQuote, editAppQuote, fetchAppPeople, fetchAppQuoteActivity, openAppQuote, releaseAppQuote, saveAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
-import type { WorkbenchAppQuoteActivityEntry, WorkbenchAppQuoteResponse } from "../../api/types"
+import type { WorkbenchAppQuoteActivityEntry } from "../../api/types"
 import ToastContainer from "../../components/Toast"
 import useToastStore from "../../stores/useToastStore"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -28,7 +30,7 @@ import useWorkbenchViewStore from "../../stores/useWorkbenchViewStore"
 import { detailsTable, sheetForm, stubLayout } from "../../workbench/__tests__/fixtures"
 import { APP_SET_COLUMNS } from "../openRelease"
 import NewQuoteWindow from "../NewQuoteWindow"
-import { draftKey, writeDraft } from "../quoteValues"
+import { draftKey, EDIT_RENEW_MS, writeDraft } from "../quoteValues"
 import QuoteView from "../QuoteView"
 import { navigate, setLeaveGuard, type AppRoute } from "../route"
 import QuestionDialog from "../../components/QuestionDialog"
@@ -37,10 +39,9 @@ import useAppStore from "../useAppStore"
 import useOpenQuoteStore from "../useOpenQuoteStore"
 import { answer, appQuote, changed, release, VALUES } from "./fixtures"
 
-type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
+type QuoteRoute = Extract<AppRoute, { page: "quote" }>
 
-const QUOTE: QuoteRoute = { page: "quote", reference: "Q-000001", option: 1 }
-const ALTERNATIVE = { reference: "Q-000001", option: 1, relation: "alternative" } as const
+const QUOTE: QuoteRoute = { page: "quote", reference: "Q-000001", option: 1, mode: "edit" }
 
 function show(route: QuoteRoute) {
   return render(
@@ -96,7 +97,7 @@ describe("QuoteView", () => {
     useToastStore.setState({ toasts: [] })
     vi.mocked(fetchAppPeople).mockResolvedValue({ people: ["jo@example.com"] })
     vi.mocked(fetchAppQuoteActivity).mockResolvedValue({ entries: [], source: null, derived: [] })
-    await navigate("/quotes/Q-000001/1", { force: true })
+    await navigate("/quotes/Q-000001/1/edit", { force: true })
   })
 
   afterEach(() => {
@@ -107,60 +108,6 @@ describe("QuoteView", () => {
     setLeaveGuard(null)
     window.localStorage.clear()
     window.sessionStorage.clear()
-  })
-
-  it("makes an alternative as it is asked for, from its source's values under its reference, and takes it to its own address", async () => {
-    await navigate("/quotes/new?from=Q-000001&option=1&as=alternative", { force: true })
-    const values = { policy: [{ state: "NY" }] }
-    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values }))
-    vi.mocked(createAppQuote).mockResolvedValue(
-      answer({ option: 2, relation: "alternative", source_reference: "Q-000001", source_option: 1, source_label: "Q-000001/1", priced_release: null }, { values }),
-    )
-    show({ page: "new", from: ALTERNATIVE })
-
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/Q-000001/2"))
-    const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
-    expect([body.values, source, reference]).toEqual([values, ALTERNATIVE, null])
-    // Its source read once, and the quote made not read again at its address.
-    expect(vi.mocked(openAppQuote).mock.calls).toEqual([["Q-000001", 1]])
-    expect(screen.getByTestId("quote-reference")).toHaveTextContent("Q-000001/2")
-    expect(screen.getByTestId("quote-line")).toHaveTextContent("Alternative of Q-000001/1")
-    expect(screen.getByRole("link", { name: "Q-000001/1" })).toHaveAttribute("href", "/quotes/Q-000001/1")
-    expect(screen.queryByTestId("quote-unsaved")).toBeNull()
-    // No window: an alternative takes its source's reference.
-    expect(screen.queryByTestId("new-quote-window")).toBeNull()
-  })
-
-  it("makes an alternative once though its answer is lost and the page is loaded again", async () => {
-    await navigate("/quotes/new?from=Q-000001&option=1&as=alternative", { force: true })
-    vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue(answer({ option: 2, relation: "alternative", priced_release: null }))
-    const view = show({ page: "new", from: ALTERNATIVE })
-    expect(await screen.findByText(/Failed to fetch/)).toBeInTheDocument()
-    view.unmount()
-
-    show({ page: "new", from: ALTERNATIVE })
-
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/Q-000001/2"))
-    const [first, second] = vi.mocked(createAppQuote).mock.calls.map(([body]) => body.operation)
-    expect(second).toBe(first)
-  })
-
-  it("stays on the Quotes page when an alternative's answer comes after it was left", async () => {
-    await navigate("/quotes/new?from=Q-000001&option=1&as=alternative", { force: true })
-    vi.mocked(openAppQuote).mockResolvedValue(answer())
-    let creating: (value: WorkbenchAppQuoteResponse) => void = () => {}
-    vi.mocked(createAppQuote).mockReturnValue(new Promise((resolve) => (creating = resolve)))
-    const view = show({ page: "new", from: ALTERNATIVE })
-    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalled())
-
-    await navigate("/", { force: true })
-    view.unmount()
-    await act(async () => creating(answer({ option: 2, priced_release: null })))
-
-    expect(window.location.pathname).toBe("/")
   })
 
   it("shows who saved it, saying nothing of a price, and saves on Ctrl+S", async () => {
@@ -194,7 +141,7 @@ describe("QuoteView", () => {
     expect(await screen.findByTestId("question")).toHaveTextContent("Leave without saving?")
     confirmQuestion("Cancel")
     expect(await left).toBe("kept")
-    expect(window.location.pathname).toBe("/quotes/Q-000001/1")
+    expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit")
   })
 
   it("keeps unsaved values in the browser as they are typed", async () => {
@@ -303,7 +250,7 @@ describe("QuoteView", () => {
     // Back, with the question open: another quote, at the same version, opens.
     view.rerender(
       <>
-        <QuoteView route={{ page: "quote", reference: "Q-000002", option: 1 }} />
+        <QuoteView route={{ page: "quote", reference: "Q-000002", option: 1, mode: "edit" }} />
         <QuestionDialog />
         <ToastContainer />
       </>,
@@ -325,7 +272,7 @@ describe("QuoteView", () => {
 
     view.unmount()
     await opened()
-    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Save the quote first")
+    expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "The quote has no price yet")
     expect(screen.getByTestId("quote-line")).not.toHaveTextContent(/priced/i)
   })
 
@@ -341,15 +288,17 @@ describe("QuoteView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save mine as a new quote" }))
     // The window over the quote, filled from the sheets, its reference blank.
     expect(screen.getByRole("dialog", { name: "Save as a new quote" })).toBeInTheDocument()
-    expect(window.location.pathname).toBe("/quotes/Q-000001/1")
+    expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit")
     key("Quote reference", "DEF-2")
+    key("Quote name", "Fleet, mine")
     fireEvent.click(screen.getByTestId("new-quote-create"))
 
-    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/DEF-2/1"))
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/DEF-2/1/edit"))
     const [body, source, reference] = vi.mocked(createAppQuote).mock.calls[0]
     expect([source, reference]).toEqual([{ reference: "Q-000001", option: 1, relation: "duplicate" }, "DEF-2"])
-    // The values on the sheets, unsaved ones and all, made unpriced.
+    // The values on the sheets, unsaved ones and all, made unpriced, under the name keyed.
     expect(body.values.policy).toEqual([{ state: "CA" }])
+    expect(body.values.quote_details).toEqual([{ quote_name: "Fleet, mine" }])
     expect(body).not.toHaveProperty("shown")
   })
 
@@ -398,7 +347,7 @@ describe("QuoteView", () => {
     fireEvent.click(within(await screen.findByTestId("notice-conflict")).getByRole("button", { name: "Open the newest" }))
 
     await vi.waitFor(() => expect(useOpenQuoteStore.getState().quote?.version).toBe(2))
-    expect(window.location.pathname).toBe("/quotes/Q-000001/1")
+    expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit")
     expect(vi.mocked(openAppQuote).mock.calls).toEqual([
       ["Q-000001", 1],
       ["Q-000001", 1],
@@ -415,16 +364,13 @@ describe("QuoteView", () => {
     expect(screen.queryByTestId("notice-dropped")).toBeNull()
   })
 
-  it("restores an archived quote from its notice", async () => {
+  it("says an archived quote is archived, its Restore the Quotes page's alone", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer({ archived: true, archived_at: "2026-10-12T10:00:00+00:00", archived_by: "jo@example.com" }))
-    vi.mocked(changeAppQuote).mockResolvedValueOnce(changed({ version: 2 }))
     await opened()
+
     expect(screen.getByTestId("notice-archived")).toHaveTextContent("Archived by jo@example.com")
-
-    fireEvent.click(screen.getByRole("button", { name: "Restore" }))
-
-    await vi.waitFor(() => expect(screen.queryByTestId("notice-archived")).toBeNull())
-    expect(vi.mocked(changeAppQuote).mock.calls.map((call) => call.slice(2, 4))).toEqual([["restore", 1]])
+    expect(screen.getByTestId("notice-archived")).toHaveTextContent("Restore it from the Quotes page to change it.")
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull()
   })
 
   it("keeps what is done to the quote as a whole off its bar, for the Quotes page", async () => {
@@ -521,22 +467,196 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
   })
 
-  it("names the quote in its quote_details.quote_name cell, saved with the quote", async () => {
+  it("reads a quote, changing nothing and holding nothing, with Edit to edit it", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockResolvedValue(answer({ version: 2 }))
+    await navigate("/quotes/Q-000001/1", { force: true })
+    await opened({ ...QUOTE, mode: "read" })
+
+    expect(editAppQuote).not.toHaveBeenCalled()
+    expect(useWorkbenchPreviewStore.getState().readOnly).toBe(true)
+    expect(screen.getByTestId("save-quote")).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Mark final" })).toBeDisabled()
+    expect(screen.getByLabelText("Assigned to")).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }))
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit"))
+    expect(editAppQuote).toHaveBeenCalledWith("Q-000001", 1, expect.any(String))
+  })
+
+  it("takes no handover note on a quote opened to read", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(fetchAppQuoteActivity).mockResolvedValue({ entries: [], source: null, derived: [] })
+    await opened({ ...QUOTE, mode: "read" })
+    fireEvent.click(screen.getByRole("button", { name: "History" }))
+
+    expect(await screen.findByLabelText("Handover note")).toBeDisabled()
+    expect(await useOpenQuoteStore.getState().change("note", { note: "Call back" })).toBeNull()
+    expect(changeAppQuote).not.toHaveBeenCalled()
+  })
+
+  it("keeps a quote_name the app set when rows are set whole, as an Import sets them", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { ...VALUES, quote_details: [{ quote_name: "Fleet" }] } }))
     await opened()
 
-    const name = screen.getByLabelText("Quote name")
-    expect(name).toHaveAttribute("placeholder", "Fleet")
-    fireEvent.change(name, { target: { value: " Fleet renewal " } })
-    fireEvent.blur(name)
+    act(() => useWorkbenchPreviewStore.getState().setRows({ quote_details: [{ quote_name: "Imported name", insured: "Acme" }] }))
 
-    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ quote_name: "Fleet renewal" }])
-    expect(screen.getByTestId("quote-unsaved")).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId("save-quote"))
-    await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
-    expect(vi.mocked(saveAppQuote).mock.calls[0][2].values.quote_details).toEqual([{ quote_name: "Fleet renewal" }])
-    expect(changeAppQuote).not.toHaveBeenCalled()
+    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ quote_name: "Fleet", insured: "Acme" }])
+  })
+
+  it("says why a quote opened to read takes no change: read only, and final or archived as it is", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ stage: "final", final_by: "jo@example.com", final_at: "2026-10-12T10:05:00+00:00" }))
+    await opened({ ...QUOTE, mode: "read" })
+
+    expect(screen.getByTestId("quote-read-only")).toHaveTextContent("Read only")
+    expect(screen.getByTestId("notice-final")).toHaveTextContent("Marked final by jo@example.com")
+    expect(screen.getByTestId("save-quote")).toHaveAttribute("title", "Press Edit to change this quote")
+    expect(screen.getByRole("button", { name: "Amend" })).toHaveAttribute("title", "Press Edit to change this quote")
+  })
+
+  it("holds a quote open to edit, renewing it while it is open and letting it go as it is left", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(openAppQuote).mockResolvedValue(answer())
+      const view = await opened()
+      expect(editAppQuote).toHaveBeenCalledTimes(1)
+      expect(useWorkbenchPreviewStore.getState().readOnly).toBe(false)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
+      })
+      expect(editAppQuote).toHaveBeenCalledTimes(2)
+      // Renewed and let go under the session it was taken under: this page's own.
+      const sessions = vi.mocked(editAppQuote).mock.calls.map((call) => call[2])
+      expect(new Set(sessions).size).toBe(1)
+
+      // Hidden with a renewal of its session still unanswered, the page lets the quote go;
+      // shown again as it was, it takes it again under a new session, which the release and
+      // the renewal before say nothing of, whenever they are answered.
+      let late!: (error: unknown) => void
+      vi.mocked(editAppQuote).mockReturnValueOnce(new Promise((_resolve, reject) => { late = reject }))
+      const before = useOpenQuoteStore.getState().keepEditing()
+      // One renewal of a session at a time.
+      await act(async () => useOpenQuoteStore.getState().keepEditing())
+      expect(editAppQuote).toHaveBeenCalledTimes(3)
+      act(() => void window.dispatchEvent(new Event("pagehide")))
+      expect(releaseAppQuote).toHaveBeenLastCalledWith("Q-000001", 1, sessions[0], { keepalive: true })
+      await act(async () => {
+        window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }))
+      })
+      const resumed = vi.mocked(editAppQuote).mock.calls.at(-1)?.[2]
+      expect(editAppQuote).toHaveBeenCalledTimes(4)
+      expect(resumed).not.toBe(sessions[0])
+      // The old session's renewal refused late, naming someone else: the page, holding the
+      // quote under its new session, stays editable.
+      const detail = { message: "jo@example.com is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo@example.com" }
+      await act(async () => {
+        late(new ApiError("HTTP 409", 409, detail.message, { detail }, detail))
+        await before
+      })
+      expect(screen.queryByTestId("notice-editing")).toBeNull()
+      expect(useWorkbenchPreviewStore.getState().readOnly).toBe(false)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
+      })
+      expect(vi.mocked(editAppQuote).mock.calls.at(-1)?.[2]).toBe(resumed)
+      sessions[0] = resumed as string
+
+      // A renewal answered once the page has left lets the session go again, and arms nothing.
+      let renewed!: (value: { editor: string; lease_seconds: number }) => void
+      vi.mocked(editAppQuote).mockReturnValueOnce(new Promise((resolve) => { renewed = resolve }))
+      const renewing = useOpenQuoteStore.getState().keepEditing()
+      view.unmount()
+      expect(releaseAppQuote).toHaveBeenLastCalledWith("Q-000001", 1, sessions[0], {})
+      const released = vi.mocked(releaseAppQuote).mock.calls.length
+      renewed({ editor: "ana@example.com", lease_seconds: 180 })
+      await renewing
+      expect(vi.mocked(releaseAppQuote).mock.calls.length).toBe(released + 1)
+      expect(vi.mocked(releaseAppQuote).mock.calls.at(-1)?.slice(0, 3)).toEqual(["Q-000001", 1, sessions[0]])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("renews a quote whose opening took longer than a renewal, and keeps a save's late answer read only once the quote is taken", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let opens!: (value: ReturnType<typeof answer>) => void
+      vi.mocked(openAppQuote).mockReturnValue(new Promise((resolve) => { opens = resolve }))
+      show(QUOTE)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS + 1000)
+      })
+      expect(editAppQuote).toHaveBeenCalledTimes(1)
+      await act(async () => opens(answer()))
+      await screen.findByTestId("quote-line")
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
+      })
+      expect(editAppQuote).toHaveBeenCalledTimes(2)
+
+      // A save under way as someone else takes the quote: its answer leaves the sheets read only.
+      let saves!: (value: ReturnType<typeof answer>) => void
+      vi.mocked(saveAppQuote).mockReturnValue(new Promise((resolve) => { saves = resolve }))
+      type("CA")
+      const saving = useOpenQuoteStore.getState().save()
+      await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
+      const detail = { message: "jo@example.com is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo@example.com" }
+      vi.mocked(editAppQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, detail.message, { detail }, detail))
+      await act(async () => useOpenQuoteStore.getState().keepEditing())
+      await act(async () => {
+        saves(answer({ version: 2 }, { values: { policy: [{ state: "CA" }] } }))
+        await saving
+      })
+      expect(useWorkbenchPreviewStore.getState().readOnly).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("opens a quote someone else is editing read only, naming them, and holds it read only once its lease is taken", async () => {
+    const detail = { message: "jo@example.com is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo@example.com" }
+    const taken = () => new ApiError("HTTP 409", 409, detail.message, { detail }, detail)
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(editAppQuote).mockRejectedValueOnce(taken())
+    const view = await opened()
+
+    expect(screen.getByTestId("notice-editing")).toHaveTextContent("jo@example.com is editing this quote, so it is open read only.")
+    // Nothing was typed, so nothing is said to be kept.
+    expect(screen.getByTestId("notice-editing")).not.toHaveTextContent("What you typed")
+    expect(useWorkbenchPreviewStore.getState().readOnly).toBe(true)
+    expect(screen.getByTestId("save-quote")).toBeDisabled()
+    // Try again takes the quote once its editor has let it go.
+    fireEvent.click(within(screen.getByTestId("notice-editing")).getByRole("button", { name: "Try again" }))
+    await vi.waitFor(() => expect(useWorkbenchPreviewStore.getState().readOnly).toBe(false))
+    expect(screen.queryByTestId("notice-editing")).toBeNull()
+    vi.mocked(editAppQuote).mockRejectedValueOnce(taken())
+    await act(async () => useOpenQuoteStore.getState().keepEditing())
+    view.unmount()
+    // Held by someone else, it is not this page's to let go.
+    expect(releaseAppQuote).not.toHaveBeenCalled()
+
+    // Held, then lost: typed values are kept as the quote turns read only.
+    await opened()
+    expect(screen.queryByTestId("notice-editing")).toBeNull()
+    type("CA")
+    vi.mocked(editAppQuote).mockRejectedValueOnce(taken())
+    await act(async () => useOpenQuoteStore.getState().keepEditing())
+
+    expect(screen.getByTestId("notice-editing")).toHaveTextContent("What you typed is kept in this browser.")
+    expect(useWorkbenchPreviewStore.getState().readOnly).toBe(true)
+    expect(window.localStorage.getItem(draftKey("motor", "ana@example.com", "Q-000001/1"))).toContain("CA")
+  })
+
+  it("shows the quote's name as it was made, offering nothing to rename it, its cell taking no typing", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { ...VALUES, quote_details: [{ quote_name: "Fleet" }] } }))
+    await opened()
+
+    expect(screen.getByTestId("quote-name")).toHaveTextContent("Fleet")
+    expect(screen.queryByRole("textbox", { name: "Quote name" })).toBeNull()
+    // A quote_name cell on the sheets is the app's once the quote is made.
+    act(() => useWorkbenchPreviewStore.getState().setCell("quote_details", 0, "quote_name", "Fleet renewal"))
+    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ quote_name: "Fleet" }])
+    expect(screen.queryByTestId("quote-unsaved")).toBeNull()
   })
 
   it("shows the history: the note, the related quotes and what was done, newest first", async () => {
@@ -585,7 +705,6 @@ describe("QuoteView", () => {
     expect(screen.getByTestId("notice-reader")).toHaveTextContent("changing them needs the Quotes.Edit role")
     expect(screen.getByTestId("save-quote")).toBeDisabled()
     expect(screen.getByRole("button", { name: "Mark final" })).toHaveAttribute("title", "Changing quotes needs the app's edit role")
-    expect(screen.getByLabelText("Quote name")).toBeDisabled()
     expect(screen.getByLabelText("Assigned to")).toBeDisabled()
     expect(screen.getByRole("combobox", { name: "State" })).toBeDisabled()
   })

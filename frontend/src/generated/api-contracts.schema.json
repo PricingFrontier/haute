@@ -27799,6 +27799,48 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchAppEditing": {
+      "description": "The page taking, renewing or letting go of a quote to edit: its session, a key of its\nown for each opening of the quote, so one tab's leaving lets go of no other's hold.",
+      "properties": {
+        "session": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Session",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "title": "WorkbenchAppEditing",
+      "type": "object"
+    },
+    "WorkbenchAppEditingResponse": {
+      "description": "Who holds the quote to edit after the request: the one asking once taken or renewed,\nnone once let go; a lease lapses *lease_seconds* after it was taken unless renewed.",
+      "properties": {
+        "editor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Editor"
+        },
+        "lease_seconds": {
+          "title": "Lease Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "editor",
+        "lease_seconds"
+      ],
+      "title": "WorkbenchAppEditingResponse",
+      "type": "object"
+    },
     "WorkbenchAppFormResponse": {
       "description": "The release's form, without its sample, with the revision a price quotes.",
       "properties": {
@@ -28880,6 +28922,18 @@
           "default": null,
           "title": "Edit Role"
         },
+        "environment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environment"
+        },
         "form_revision": {
           "title": "Form Revision",
           "type": "string"
@@ -28926,7 +28980,8 @@
         "principal",
         "quotes",
         "edit_role",
-        "can_edit"
+        "can_edit",
+        "environment"
       ],
       "title": "WorkbenchAppReleaseResponse",
       "type": "object"
@@ -30965,6 +31020,12 @@
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
     },
+    "WorkbenchAppEditing": {
+      "$ref": "#/$defs/WorkbenchAppEditing"
+    },
+    "WorkbenchAppEditingResponse": {
+      "$ref": "#/$defs/WorkbenchAppEditingResponse"
+    },
     "WorkbenchAppFormResponse": {
       "$ref": "#/$defs/WorkbenchAppFormResponse"
     },
@@ -31097,6 +31158,7 @@
     "WorkbenchAppQuoteAssign",
     "WorkbenchAppQuoteAmend",
     "WorkbenchAppQuoteNote",
+    "WorkbenchAppEditing",
     "WorkbenchTestQuoteSaveRequest",
     "WorkbenchTestQuotesAcceptRequest",
     "UtilityListResponse",
@@ -31214,6 +31276,7 @@
     "WorkbenchAppQuoteChangeResponse",
     "WorkbenchAppQuoteActivityResponse",
     "WorkbenchAppPeopleResponse",
+    "WorkbenchAppEditingResponse",
     "WorkbenchImportResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
@@ -31344,7 +31407,8 @@
       "WorkbenchAppQuoteChange",
       "WorkbenchAppQuoteAssign",
       "WorkbenchAppQuoteAmend",
-      "WorkbenchAppQuoteNote"
+      "WorkbenchAppQuoteNote",
+      "WorkbenchAppEditing"
     ],
     "workbench-requests": [
       "WorkbenchTestQuoteSaveRequest",
@@ -31537,7 +31601,8 @@
       "WorkbenchAppQuoteResponse",
       "WorkbenchAppQuoteChangeResponse",
       "WorkbenchAppQuoteActivityResponse",
-      "WorkbenchAppPeopleResponse"
+      "WorkbenchAppPeopleResponse",
+      "WorkbenchAppEditingResponse"
     ],
     "workbench-import": [
       "WorkbenchImportResponse"

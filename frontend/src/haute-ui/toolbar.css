@@ -142,6 +142,11 @@
   text-align: center;
   transition: background 150ms;
 }
+/* A fill in a table's row: the row's height, not the toolbar's. */
+.toolbar-fill-compact {
+  padding: 1px 8px;
+  font-size: 11px;
+}
 .toolbar-fill-save {
   background: var(--accent);
 }

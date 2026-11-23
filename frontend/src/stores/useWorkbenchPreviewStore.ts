@@ -80,6 +80,29 @@ export type QuoteImporter = (componentId: string, values: Record<string, SampleR
 /** The pricing asked for last; an answer to an earlier one is dropped. */
 const pricings = requestKind()
 
+/**
+ * `rowsByTable` with each locked column's cells as `quote` holds them, row for row: rows set
+ * whole, as an Import sets them, change no cell that takes no typing.
+ */
+function withLocked<R extends Record<string, unknown>>(quote: Record<string, R[]>, rowsByTable: Record<string, R[]>, locked: ReadonlySet<string>): Record<string, R[]> {
+  if (locked.size === 0) return rowsByTable
+  return Object.fromEntries(
+    Object.entries(rowsByTable).map(([tableId, rows]) => [
+      tableId,
+      rows.map((row, at) => {
+        const before: Record<string, unknown> = quote[tableId]?.[at] ?? {}
+        const next: Record<string, unknown> = { ...row }
+        for (const name of new Set([...Object.keys(row), ...Object.keys(before)])) {
+          if (!locked.has(columnKey(tableId, name))) continue
+          if (name in before) next[name] = before[name]
+          else delete next[name]
+        }
+        return next as R
+      }),
+    ]),
+  )
+}
+
 /** No column locked: every cell takes typing. */
 export const NOTHING_LOCKED: ReadonlySet<string> = new Set()
 
@@ -128,7 +151,7 @@ const useWorkbenchPreviewStore = create<WorkbenchPreviewState>()((set, get) => {
     },
     setRows: (rowsByTable) => {
       if (get().readOnly) return
-      set((s) => ({ quote: { ...s.quote, ...rowsByTable } }))
+      set((s) => ({ quote: { ...s.quote, ...withLocked(s.quote, rowsByTable, s.locked) } }))
       get().schedule()
     },
     open: (quote, price, readOnly) => {

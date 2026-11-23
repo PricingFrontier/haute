@@ -121,8 +121,9 @@ test.describe("the underwriter app's quotes", () => {
       await page.getByTestId("new-quote").click()
       const newQuote = page.getByRole("dialog", { name: "New quote" })
       await newQuote.getByRole("textbox", { name: "Quote reference" }).fill(REFERENCE)
+      await newQuote.getByRole("textbox", { name: "Quote name" }).fill("Fleet")
       await newQuote.getByRole("button", { name: "Create" }).click()
-      await expect(page).toHaveURL(`${app.url}/quotes/${REFERENCE}/1`)
+      await expect(page).toHaveURL(`${app.url}/quotes/${REFERENCE}/1/edit`)
       await expect(page.getByTestId("quote-reference")).toHaveText(LABEL)
       await expect(page.getByTestId("stage-draft")).toBeVisible()
 

@@ -49,6 +49,7 @@ export const release: WorkbenchAppReleaseResponse = {
   quotes: OPEN,
   edit_role: null,
   can_edit: true,
+  environment: "test",
 }
 export const VALUES = { policy: [{ state: "NY" }] }
 export const TABLES = { premiums: [{ item: "Crane", premium: 120 }] }

@@ -227,6 +227,16 @@ export function storeMisfits(error: unknown): { misfits: StoreMisfit[]; environm
 /** While the quote store refuses the Quotes page's list or a quote's opening, it is asked for again this often: the store's own bound. */
 export const QUOTES_RECHECK_MS = 10_000
 
+/** How often a quote open to edit renews its lease, well within the server's (`EDIT_LEASE_SECONDS`, 3 minutes). */
+export const EDIT_RENEW_MS = 30_000
+
+/** Who else is editing the quote, when `error` is a change refused as theirs (409 `quote_being_edited`); else null. */
+export function beingEditedBy(error: unknown): string | null {
+  if (apiErrorStatus(error) !== 409 || apiErrorCode(error) !== "quote_being_edited") return null
+  const editor = apiErrorRawDetail(error)?.editor
+  return typeof editor === "string" ? editor : null
+}
+
 /** Whether `error` is the quote store refusing a route (503 with a code of the store's), which a check past its bound may lift. */
 export const storeRefused = (error: unknown): boolean =>
   apiErrorStatus(error) === 503 && (apiErrorCode(error) ?? "").startsWith("quote_store_")
@@ -317,13 +327,20 @@ export interface ListColumn {
 /** The quote_details columns the Quotes page lists after the quote's reference and title. */
 const LISTED = ["insured", "broker", "inception_date"] as const satisfies readonly QuoteDetailName[]
 
+/** The quote_details column `key` of `form`'s schema, or null when it has none. */
+function detailColumn(form: FormSpec | null, key: QuoteDetailName): SchemaColumn | null {
+  const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
+  return table?.inputs.find((candidate) => candidate.name === key) ?? null
+}
+
+/** A quote_details column as the schema names it: its label, else its name read as words. */
+export function detailLabel(form: FormSpec | null, key: QuoteDetailName): string {
+  return detailColumn(form, key)?.label || readableName(key)
+}
+
 /** The listed columns, as the release's sheets label and format them. */
 export function listColumns(form: FormSpec | null): ListColumn[] {
-  const table = form?.schema.tables.find((candidate) => candidate.name === QUOTE_DETAILS_NAME)
-  return LISTED.map((key) => {
-    const column = table?.inputs.find((candidate) => candidate.name === key) ?? null
-    return { key, label: column?.label || readableName(key), column }
-  })
+  return LISTED.map((key) => ({ key, label: detailLabel(form, key), column: detailColumn(form, key) }))
 }
 
 /** A value as the list shows it: a date as a day, a number as its column formats it, a dash when blank. */
@@ -426,46 +443,6 @@ export function clearDraft(key: string): void {
 
 /** A new operation key (`utils/operationKey.ts`), which the pipeline save shares. */
 export { operationKey }
-
-// ── A quote asked for ────────────────────────────────────────────────────
-
-const CREATING_PREFIX = "haute-app-creating"
-
-/**
- * Where the operation key of a quote asked for is held in this tab until its answer comes:
- * one per app, person and what was asked, a new quote or one made from a quote.
- */
-export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
-
-/**
- * The operation key held under `key`, sent and not yet answered, or null: a reload before
- * the answer came asks again with the same key, so the quote is made once.
- */
-export function heldOperation(key: string): string | null {
-  try {
-    return window.sessionStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-/** Hold `operation` under `key` as it is sent; a tab that keeps nothing holds nothing. */
-export function holdOperation(key: string, operation: string): void {
-  try {
-    window.sessionStorage.setItem(key, operation)
-  } catch {
-    // Kept nowhere, it is asked with a new key next time.
-  }
-}
-
-/** Let go of the key held under `key`: its quote was made, or refused, and the next is asked for anew. */
-export function releaseOperation(key: string): void {
-  try {
-    window.sessionStorage.removeItem(key)
-  } catch {
-    // Nothing held, nothing to let go.
-  }
-}
 
 // ── A new quote keyed in the window ──────────────────────────────────────
 

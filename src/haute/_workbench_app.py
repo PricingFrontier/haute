@@ -822,6 +822,13 @@ def create_app(
             named_by=location.named_by,
         )
 
+    def environment_name() -> str | None:
+        """The environment the app keeps its quotes in, as the bar names it: the store's own
+        on an analyst's machine, the host's ``HAUTE_ENVIRONMENT`` when hosted."""
+        if callable(store):
+            return os.environ.get(ENVIRONMENT_ENV) or None
+        return None if store is None else store.environment
+
     gate = StoreGate(open_store)
     # Tried once as the app is made, so a store that fits is open for the first request; a
     # closed one is logged by the gate and never stops the app.
@@ -886,6 +893,7 @@ def create_app(
             principal=request.state.principal,
             quotes=await run_in_threadpool(gate.state),
             can_edit=request.state.can_edit,
+            environment=environment_name(),
         )
 
     @app.get("/api/app/form", response_model=WorkbenchAppFormResponse)

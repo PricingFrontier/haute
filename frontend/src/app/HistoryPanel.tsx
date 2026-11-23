@@ -12,7 +12,7 @@ import { relativeTime } from "../utils/relativeTime"
 import { RELATION_TEXT as RELATION, activityText, fullTime } from "./quoteValues"
 import { followLink, quotePath } from "./route"
 import { BUTTON, Collapsible } from "./ui"
-import useOpenQuoteStore, { busy, canEdit } from "./useOpenQuoteStore"
+import useOpenQuoteStore, { busy, readOnlyReason, takesChanges } from "./useOpenQuoteStore"
 
 const MIN_WIDTH = 300
 const maxWidth = () => halfWindowWidth(MIN_WIDTH)
@@ -27,7 +27,8 @@ function NoteEditor({ quote }: { quote: WorkbenchAppQuote }) {
     setEditedFrom(quote.note)
     setNote(quote.note)
   }
-  const locked = quote.archived || !canEdit()
+  // A note is a change: the quote open to edit takes it, final included.
+  const locked = !useOpenQuoteStore((s) => takesChanges(readOnlyReason(s)))
   return (
     <div className="flex flex-col gap-1">
       <textarea
