@@ -948,6 +948,13 @@ class WorkbenchAppPeopleResponse(BaseModel):
     people: list[str]
 
 
+class WorkbenchAppEditing(BaseModel):
+    """The page taking, renewing or letting go of a quote to edit: its session, a key of its
+    own for each opening of the quote, so one tab's leaving lets go of no other's hold."""
+
+    session: str = Field(min_length=8, max_length=64)
+
+
 class WorkbenchAppEditingResponse(BaseModel):
     """Who holds the quote to edit after the request: the one asking once taken or renewed,
     none once let go; a lease lapses *lease_seconds* after it was taken unless renewed."""

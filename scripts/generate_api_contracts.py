@@ -157,6 +157,7 @@ from haute.schemas import (
     UtilityReadResponse,
     UtilityWriteResponse,
     WarehouseListResponse,
+    WorkbenchAppEditing,
     WorkbenchAppEditingResponse,
     WorkbenchAppFormResponse,
     WorkbenchAppImportRequest,
@@ -233,6 +234,7 @@ REQUEST_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         WorkbenchAppQuoteAssign,
         WorkbenchAppQuoteAmend,
         WorkbenchAppQuoteNote,
+        WorkbenchAppEditing,
     ),
     # The open request carries a whole form, read as the form's save reads one: described in
     # validation mode it would split every form type into an input and an output shape.

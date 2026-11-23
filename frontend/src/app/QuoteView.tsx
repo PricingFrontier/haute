@@ -73,12 +73,13 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   const renewals = useOpenQuoteStore((s) => s.renewals)
   const editedBy = useOpenQuoteStore((s) => s.editedBy)
   useEffect(() => {
-    if (route.mode !== "edit" || editedBy !== null) return
+    // Armed once the quote is open, however long its opening took.
+    if (route.mode !== "edit" || editedBy !== null || status !== "ready") return
     const timer = window.setTimeout(() => void useOpenQuoteStore.getState().keepEditing(), EDIT_RENEW_MS)
     return () => window.clearTimeout(timer)
     // The route's key says the rest of it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, renewals, editedBy])
+  }, [routeKey, renewals, editedBy, status])
 
   // Let go as the page leaves the quote or the tab closes.
   useEffect(() => {
@@ -99,9 +100,10 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   useEffect(() => {
     if (status !== "error" || refusedOpen === null) return
     const { reference, option } = refusedOpen
-    const timer = window.setTimeout(() => void useOpenQuoteStore.getState().openQuote(reference, option), QUOTES_RECHECK_MS)
+    // As the route asked for it: a quote opened to edit is asked for again to edit.
+    const timer = window.setTimeout(() => void useOpenQuoteStore.getState().openQuote(reference, option, route.mode), QUOTES_RECHECK_MS)
     return () => window.clearTimeout(timer)
-  }, [status, refusedOpen])
+  }, [status, refusedOpen, route.mode])
 
   // Leaving with values not saved asks first; closing the tab warns.
   useEffect(() => {
@@ -473,7 +475,7 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
   const discardDraft = useOpenQuoteStore((s) => s.discardDraft)
   const reason = useOpenQuoteStore(readOnlyReason)
   const editedBy = useOpenQuoteStore((s) => s.editedBy)
-  const keptTyping = useOpenQuoteStore((s) => s.keptTyping)
+  const heldTyping = useOpenQuoteStore((s) => s.heldTyping)
 
   const openNewest = async () => {
     if (quote === null) return
@@ -559,7 +561,9 @@ function QuoteNotices({ unkept }: { unkept: boolean }) {
             </button>
           }
         >
-          {editedBy} is editing this quote, so it is open read only.{keptTyping && " What you typed is kept in this browser."}
+          {editedBy} is editing this quote, so it is open read only.
+          {heldTyping === "kept" && " What you typed is kept in this browser."}
+          {heldTyping === "lost" && " What you typed could not be kept in this browser: copy what you need before trying again."}
         </Notice>
       )}
       {!canEdit() && (

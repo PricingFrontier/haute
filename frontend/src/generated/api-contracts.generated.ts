@@ -6957,6 +6957,13 @@ export interface WorkbenchAppQuoteNote {
   note: string;
 }
 /**
+ * The page taking, renewing or letting go of a quote to edit: its session, a key of its
+ * own for each opening of the quote, so one tab's leaving lets go of no other's hold.
+ */
+export interface WorkbenchAppEditing {
+  session: string;
+}
+/**
  * Save the sample as saved: under a new ``name``, or over the test quote ``replace``
  * names; with the branch and the form folder's revision the panel saved.
  */

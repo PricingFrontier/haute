@@ -189,7 +189,7 @@ describe("QuotesPage", () => {
     fireEvent.click(within(await screen.findByTestId("quote-row-ABC 1/2")).getByRole("button", { name: "Edit ABC 1/2" }))
     // Held as the asker's first, then opened to edit.
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC%201/2/edit"))
-    expect(editAppQuote).toHaveBeenCalledWith("ABC 1", 2)
+    expect(editAppQuote).toHaveBeenCalledWith("ABC 1", 2, expect.any(String))
     await navigate("/", { force: true })
     await pick("ABC 1/2", "Duplicate")
 

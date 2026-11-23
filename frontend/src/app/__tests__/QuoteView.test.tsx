@@ -480,7 +480,27 @@ describe("QuoteView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit" }))
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/Q-000001/1/edit"))
-    expect(editAppQuote).toHaveBeenCalledWith("Q-000001", 1)
+    expect(editAppQuote).toHaveBeenCalledWith("Q-000001", 1, expect.any(String))
+  })
+
+  it("takes no handover note on a quote opened to read", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer())
+    vi.mocked(fetchAppQuoteActivity).mockResolvedValue({ entries: [], source: null, derived: [] })
+    await opened({ ...QUOTE, mode: "read" })
+    fireEvent.click(screen.getByRole("button", { name: "History" }))
+
+    expect(await screen.findByLabelText("Handover note")).toBeDisabled()
+    expect(await useOpenQuoteStore.getState().change("note", { note: "Call back" })).toBeNull()
+    expect(changeAppQuote).not.toHaveBeenCalled()
+  })
+
+  it("keeps a quote_name the app set when rows are set whole, as an Import sets them", async () => {
+    vi.mocked(openAppQuote).mockResolvedValue(answer({}, { values: { ...VALUES, quote_details: [{ quote_name: "Fleet" }] } }))
+    await opened()
+
+    act(() => useWorkbenchPreviewStore.getState().setRows({ quote_details: [{ quote_name: "Imported name", insured: "Acme" }] }))
+
+    expect(useWorkbenchPreviewStore.getState().quote.quote_details).toEqual([{ quote_name: "Fleet", insured: "Acme" }])
   })
 
   it("says why a quote opened to read takes no change: read only, and final or archived as it is", async () => {
@@ -505,9 +525,48 @@ describe("QuoteView", () => {
         await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
       })
       expect(editAppQuote).toHaveBeenCalledTimes(2)
+      // Renewed and let go under the session it was taken under: this page's own.
+      const sessions = vi.mocked(editAppQuote).mock.calls.map((call) => call[2])
+      expect(new Set(sessions).size).toBe(1)
       view.unmount()
 
-      expect(releaseAppQuote).toHaveBeenCalledWith("Q-000001", 1, {})
+      expect(releaseAppQuote).toHaveBeenCalledWith("Q-000001", 1, sessions[0], {})
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("renews a quote whose opening took longer than a renewal, and keeps a save's late answer read only once the quote is taken", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let opens!: (value: ReturnType<typeof answer>) => void
+      vi.mocked(openAppQuote).mockReturnValue(new Promise((resolve) => { opens = resolve }))
+      show(QUOTE)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS + 1000)
+      })
+      expect(editAppQuote).toHaveBeenCalledTimes(1)
+      await act(async () => opens(answer()))
+      await screen.findByTestId("quote-line")
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
+      })
+      expect(editAppQuote).toHaveBeenCalledTimes(2)
+
+      // A save under way as someone else takes the quote: its answer leaves the sheets read only.
+      let saves!: (value: ReturnType<typeof answer>) => void
+      vi.mocked(saveAppQuote).mockReturnValue(new Promise((resolve) => { saves = resolve }))
+      type("CA")
+      const saving = useOpenQuoteStore.getState().save()
+      await vi.waitFor(() => expect(saveAppQuote).toHaveBeenCalled())
+      const detail = { message: "jo@example.com is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo@example.com" }
+      vi.mocked(editAppQuote).mockRejectedValueOnce(new ApiError("HTTP 409", 409, detail.message, { detail }, detail))
+      await act(async () => useOpenQuoteStore.getState().keepEditing())
+      await act(async () => {
+        saves(answer({ version: 2 }, { values: { policy: [{ state: "CA" }] } }))
+        await saving
+      })
+      expect(useWorkbenchPreviewStore.getState().readOnly).toBe(true)
     } finally {
       vi.useRealTimers()
     }

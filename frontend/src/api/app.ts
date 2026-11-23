@@ -15,6 +15,7 @@ import { exportedFile, type ExportedFile } from "./workbench"
 import { fileText, importedRows, IMPORT_TIMEOUT_MS } from "./workbenchImport"
 import type { KeyedTicket } from "./keyedWrites"
 import type {
+  WorkbenchAppEditing,
   WorkbenchAppEditingResponse,
   WorkbenchAppFormResponse,
   WorkbenchAppImportRequest,
@@ -191,17 +192,19 @@ export async function fetchAppQuoteActivity(reference: string, option: number): 
 }
 
 /**
- * The quote `reference`/`option` held to edit by whoever is signed in, taken or renewed: a
- * refusal (409, `quote_being_edited`) names who else is editing it.
+ * The quote `reference`/`option` held to edit by this page's `session` for whoever is signed
+ * in, taken or renewed: a refusal (409, `quote_being_edited`) names who else is editing it.
  */
-export async function editAppQuote(reference: string, option: number): Promise<WorkbenchAppEditingResponse> {
-  const data = await post<unknown>(`${quoteRoute(reference, option)}/edit`, {})
+export async function editAppQuote(reference: string, option: number, session: string): Promise<WorkbenchAppEditingResponse> {
+  const body: WorkbenchAppEditing = { session }
+  const data = await post<unknown>(`${quoteRoute(reference, option)}/edit`, body)
   return expectGeneratedContract("WorkbenchAppEditingResponse", (await workbenchValidators()).validateWorkbenchAppEditingResponse, data)
 }
 
-/** Let the quote `reference`/`option` go, when whoever is signed in holds it; `keepalive` as the page closes. */
-export async function releaseAppQuote(reference: string, option: number, options: { keepalive?: boolean } = {}): Promise<void> {
-  await post<unknown>(`${quoteRoute(reference, option)}/edit/release`, {}, options)
+/** Let this page's `session` of the quote `reference`/`option` go; `keepalive` as the page closes. */
+export async function releaseAppQuote(reference: string, option: number, session: string, options: { keepalive?: boolean } = {}): Promise<void> {
+  const body: WorkbenchAppEditing = { session }
+  await post<unknown>(`${quoteRoute(reference, option)}/edit/release`, body, options)
 }
 
 /** The people quotes are with, or were made, saved or changed by. */

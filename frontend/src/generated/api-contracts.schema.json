@@ -27799,6 +27799,22 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchAppEditing": {
+      "description": "The page taking, renewing or letting go of a quote to edit: its session, a key of its\nown for each opening of the quote, so one tab's leaving lets go of no other's hold.",
+      "properties": {
+        "session": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Session",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "title": "WorkbenchAppEditing",
+      "type": "object"
+    },
     "WorkbenchAppEditingResponse": {
       "description": "Who holds the quote to edit after the request: the one asking once taken or renewed,\nnone once let go; a lease lapses *lease_seconds* after it was taken unless renewed.",
       "properties": {
@@ -31004,6 +31020,9 @@
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
     },
+    "WorkbenchAppEditing": {
+      "$ref": "#/$defs/WorkbenchAppEditing"
+    },
     "WorkbenchAppEditingResponse": {
       "$ref": "#/$defs/WorkbenchAppEditingResponse"
     },
@@ -31139,6 +31158,7 @@
     "WorkbenchAppQuoteAssign",
     "WorkbenchAppQuoteAmend",
     "WorkbenchAppQuoteNote",
+    "WorkbenchAppEditing",
     "WorkbenchTestQuoteSaveRequest",
     "WorkbenchTestQuotesAcceptRequest",
     "UtilityListResponse",
@@ -31387,7 +31407,8 @@
       "WorkbenchAppQuoteChange",
       "WorkbenchAppQuoteAssign",
       "WorkbenchAppQuoteAmend",
-      "WorkbenchAppQuoteNote"
+      "WorkbenchAppQuoteNote",
+      "WorkbenchAppEditing"
     ],
     "workbench-requests": [
       "WorkbenchTestQuoteSaveRequest",

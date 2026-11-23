@@ -21,7 +21,7 @@ vi.mock("../../api/app", () => ({
   fetchAppPeople: vi.fn(),
 }))
 
-import { changeAppQuote, createAppQuote, fetchAppQuoteActivity, openAppQuote, saveAppQuote } from "../../api/app"
+import { changeAppQuote, createAppQuote, editAppQuote, fetchAppQuoteActivity, openAppQuote, releaseAppQuote, saveAppQuote } from "../../api/app"
 import { ApiError } from "../../api/client"
 import type { FormSpec, WorkbenchAppQuoteActivityResponse, WorkbenchAppQuoteChangeResponse, WorkbenchAppQuoteResponse } from "../../api/types"
 import useWorkbenchFormStore from "../../stores/useWorkbenchFormStore"
@@ -842,6 +842,29 @@ describe("useOpenQuoteStore", () => {
     expect(preview().readOnly).toBe(true)
     expect(changeAppQuote).not.toHaveBeenCalled()
     expect(createAppQuote).not.toHaveBeenCalled()
+  })
+
+  it("leaves a quote opened since alone when an earlier opening's lease is refused late, and lets go of one taken late", async () => {
+    const detail = { message: "jo is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo" }
+    let refuse!: (error: unknown) => void
+    vi.mocked(editAppQuote).mockReturnValueOnce(new Promise((_resolve, reject) => { refuse = reject }))
+    vi.mocked(openAppQuote).mockResolvedValue(answer({ reference: "Q-000002" }))
+    const first = useOpenQuoteStore.getState().openQuote("Q-000001", 1, "edit")
+    await useOpenQuoteStore.getState().openQuote("Q-000002", 1, "edit")
+    refuse(new ApiError("HTTP 409", 409, detail.message, { detail }, detail))
+    await first
+
+    expect(useOpenQuoteStore.getState().editedBy).toBeNull()
+    expect(useWorkbenchPreviewStore.getState().readOnly).toBe(false)
+
+    // Taken once another quote was opened, the earlier quote's lease is let go.
+    let take!: (value: { editor: string; lease_seconds: number }) => void
+    vi.mocked(editAppQuote).mockReturnValueOnce(new Promise((resolve) => { take = resolve }))
+    const third = useOpenQuoteStore.getState().openQuote("Q-000003", 1, "edit")
+    await useOpenQuoteStore.getState().openQuote("Q-000002", 1, "edit")
+    take({ editor: "ana@example.com", lease_seconds: 180 })
+    await third
+    expect(vi.mocked(releaseAppQuote).mock.calls.map((call) => call.slice(0, 2))).toContainEqual(["Q-000003", 1])
   })
 })
 
