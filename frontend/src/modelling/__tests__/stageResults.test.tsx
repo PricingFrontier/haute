@@ -20,10 +20,10 @@ function result() {
   const snapshot = {
     metrics: { rmse: .2 }, feature_importance: [], features: ["age"], cat_features: [],
     diagnostics_set: "validation", ave_per_feature: [], ave_left_out: [], tboost_tables: null,
-    loss_history: [], fit_evidence: null, diagnostics_errors: [], revision: "a".repeat(64), recipe: [],
+    loss_history: [], fit_evidence: null, diagnostics_errors: [], revision: "a".repeat(64), recipe: { schema_version: 1, operations: [] },
   }
   value.staged = {
-    schema_version: 1, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0", evaluation_identity: "b".repeat(64),
+    schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0", evaluation_identity: "b".repeat(64),
     fit_config_digest: "c".repeat(64), configuration: {},
     stages: { full: { ...snapshot, metrics: { rmse: .3 } }, pruned: snapshot },
     pruning_path: { table_counts: [1, 2, 3], oob_deviance: [.5, .3, .4], minimum_step: 1, oob_rows: 600 },
@@ -130,7 +130,7 @@ it("compares only matching saved evaluation identities and measures changed cell
   expect(comparison(before, { ...after, diagnostics_set: "development" })).toBeNull()
   expect(evidenceLabel({ ...after, staged: { ...after.staged!, diagnostics_basis: "out_of_fold" } })).toBe("OOF validation")
   expect(appliedChain({ ...saved, staged: { ...saved.staged!, stages: { ...saved.staged!.stages,
-    pruned: { ...saved.staged!.stages.pruned, recipe: [{ stage: "pruned" }] } } } })).toBe("Full GBM → Pruned")
+    pruned: { ...saved.staged!.stages.pruned, recipe: { schema_version: 1, operations: [{ stage: "pruned" }] } } } } })).toBe("Full GBM → Pruned")
 })
 
 it("keeps ordinary stage visibility through comparison and ordinary polls", () => {

@@ -26,7 +26,7 @@ import useModellingViewStore, { openModelInModellingView, type TrainAction } fro
 import { applyModelUpdate, hasModels, interactiveModels, modelResultKey } from "../modelling/interactiveModels"
 import { ModelCheckpoints } from "../modelling/ModelCheckpoints"
 import { TrainingPane } from "../modelling/TrainingPane"
-import { stageConfiguration, stageMatchesDraft, STAGES, type ModelStage } from "../modelling/stageSettings"
+import { appliedPath, EMPTY_RECIPE, stageConfiguration, stageMatchesDraft, STAGES, type ModelStage } from "../modelling/stageSettings"
 import { availablePaths, selectedCandidate, selectedPathPoint } from "../modelling/pathSelection"
 import { useStagedTraining, useAppliedStageRecipe, useStagedViews } from "../modelling/useStagedTraining"
 import { hashConfig } from "../utils/configHash"
@@ -779,7 +779,7 @@ function ModellingEditor({
     const target = { ...requestTarget() }
     if (operation !== undefined && modelId !== undefined) {
       const updates = { params: stagedDraft.params, stages: stagedDraft.stages }
-      const submitted = operation === "full" ? { ...updates, stages: { ...updates.stages, applied_recipe: [] } } : updates
+      const submitted = operation === "full" ? { ...updates, stages: { ...updates.stages, applied_recipe: EMPTY_RECIPE } } : updates
       const updated = onUpdate(updates)
       if (updated?.ok === false) { setSubmitting(false); return }
       target.graph = { ...target.graph, nodes: target.graph.nodes.map((node) => node.id === target.nodeId
@@ -791,7 +791,7 @@ function ModellingEditor({
     const lineage = trainingLineage(target.graph)
     const configHash = operation === undefined ? trainingHash : hashConfig(trainingIdentityConfig({
       ...config, params: stagedDraft.params, stages: { ...stagedDraft.stages,
-        applied_recipe: operation === "full" ? [] : stagedDraft.stages.applied_recipe },
+        applied_recipe: operation === "full" ? EMPTY_RECIPE : stagedDraft.stages.applied_recipe },
     }))
     const attempt = { configHash, source: activeSource, structuralVersion }
     try {
@@ -1005,7 +1005,7 @@ function ModellingEditor({
             const snapshot = current?.stages[name]
             if (!snapshot) continue
             if (!stagedDraft.stages.enabled[name] || pending.includes(snapshot.parent as ModelStage)
-              || !stageMatchesDraft(stagedDraft.stages, name, snapshot, current.configuration.applied_path ?? current.configuration.path)) pending.push(name)
+              || !stageMatchesDraft(stagedDraft.stages, name, snapshot)) pending.push(name)
           }
           const savedJob = stageBuild.state?.job
           const queued = stageBuild.state?.next_preview?.status === "queued"
@@ -1061,7 +1061,7 @@ function ModellingEditor({
               pending={pending}
               stages={STAGES.filter((name) => current?.stages[name] !== undefined)}
               pathAvailable={current?.pruning_path != null}
-              pathChanged={current !== undefined && hashConfig({ path: current.configuration.applied_path ?? current.configuration.path }) !== hashConfig({ path: stagedDraft.stages.path })}
+              pathChanged={current !== undefined && hashConfig({ path: appliedPath(current.configuration) }) !== hashConfig({ path: stagedDraft.stages.path })}
               active={active} busy={submitting || cancelling || stageBuild.busy || queued}
               blocked={hasTrainingConfigurationIssues || Boolean(stagedDraft.error) || otherTraining}
               blockingReasons={[...validationIssues.map((issue) => issue.message),

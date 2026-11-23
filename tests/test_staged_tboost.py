@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 import pytest
-from t_boost import TBoostRegressor, _Booster
+from t_boost import Recipe, TBoostRegressor, _Booster
 
 from haute.errors import HauteValidationError
 from haute.modelling._staged_config import StagedConfig
@@ -25,16 +25,15 @@ def test_adapter_full_then_recipe_matches_library_and_preserves_native_metadata(
     assert session is not None
     np.testing.assert_array_equal(
         model.estimator.predict(model.prepared(data)),
-        session.full_model.predict(model.prepared(data)),
+        session.stage("full").model.predict(model.prepared(data)),
     )
     assert model.estimator.prune is False
     assert model.estimator.graduate is False
     assert fitted.loss_history
-    session.prune()
-    session.band()
-    expected = session.smooth()
+    for stage in ("pruned", "banded", "smoothed"):
+        expected = session.apply(config.operation(stage)).model
     payload = config.to_plain_data()
-    payload["applied_recipe"] = session.recipe("smoothed")
+    payload["applied_recipe"] = session.stage("smoothed").recipe.to_plain_data()
     staged = fit_adapter(data, params=PARAMS, stages=payload, offset="exposure", weight="weight")
     np.testing.assert_array_equal(
         staged.model.estimator.predict(model.prepared(data)), expected.predict(model.prepared(data))
@@ -75,7 +74,9 @@ def test_canonical_job_and_generated_script_replay_the_same_recipe(tmp_path):
     data.write_parquet(source)
     stages = StagedConfig.from_plain_data({"path": {"min_rows": 20}})
     payload = stages.to_plain_data()
-    payload["applied_recipe"] = [stages.operation("pruned"), stages.operation("banded")]
+    payload["applied_recipe"] = Recipe(
+        (stages.operation("pruned"), stages.operation("banded"))
+    ).to_plain_data()
     config = {
         "name": "staged",
         "algorithm": "tboost",

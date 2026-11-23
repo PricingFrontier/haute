@@ -371,7 +371,8 @@ def test_reading_an_unbuilt_model_stores_nothing(tmp_path):
     assert {path.name for path in store._directory(key).iterdir()} <= {"manifest.lock"}
 
 
-def test_an_older_store_reads_as_empty_until_a_full_build_reclaims_it(tmp_path):
+@pytest.mark.parametrize("older", [2, 3])
+def test_an_older_store_reads_as_empty_until_a_full_build_reclaims_it(tmp_path, older):
     store = StageStore(tmp_path)
     key = store.key("p", "n", "m")
     directory = store._directory(key)
@@ -380,12 +381,12 @@ def test_an_older_store_reads_as_empty_until_a_full_build_reclaims_it(tmp_path):
     legacy = [directory / f"{old}.hstage", directory / f"{old}.result.json"]
     for path in legacy:
         path.write_bytes(b"old format")
-    (directory / "manifest.json").write_text(json.dumps({"schema_version": 2, "current": {}}))
+    (directory / "manifest.json").write_text(json.dumps({"schema_version": older, "current": {}}))
     assert store.snapshot(key)["current"] is None
     assert all(path.exists() for path in legacy)  # a read interprets and removes nothing
     publish(store, key, tmp_path)
     assert not any(path.exists() for path in legacy)
-    assert json.loads((directory / "manifest.json").read_bytes())["schema_version"] == 3
+    assert json.loads((directory / "manifest.json").read_bytes())["schema_version"] == 4
 
 
 @pytest.mark.parametrize("operation", ["banded", "smoothed"])
@@ -605,7 +606,7 @@ def test_large_dense_results_publish_and_checkpoint_without_growing_manifests(tm
     pointer = store._directory(key) / "manifest.json"
     assert pointer.stat().st_size < 8192
     raw = json.loads(pointer.read_bytes())
-    assert raw["schema_version"] == 3
+    assert raw["schema_version"] == 4
     assert "result" not in raw["current"]
     assert revision_file(store, key, preview.revision).stat().st_size < 8192
     # Both revisions share one history object and one compact view.

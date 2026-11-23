@@ -2,7 +2,7 @@ import { useCallback, useId, useState, type ReactNode } from "react"
 import { Play, Square } from "lucide-react"
 import { NumberField, type NumberBounds } from "../panels/modelling/NumberField"
 import { MODELLING_INPUT_STYLE } from "../panels/modelling/styles"
-import { STAGE_LABELS, resolveStageParents, stageMatchesDraft, type ModelStage, type PostFitStage, type StageSettings } from "./stageSettings"
+import { STAGE_LABELS, resolveStageParents, savedStageSettings, stageMatchesDraft, type ModelStage, type PostFitStage, type StageSettings } from "./stageSettings"
 import type { StagePathPayload } from "../generated/api-contracts.generated"
 import type { TrainResponse } from "../api/types"
 import { StageDecision } from "./StageDecision"
@@ -193,7 +193,7 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
       {([['pruned', 'Pruning', 'full'], ['banded', 'Banding', settings.banding.parent], ['smoothed', 'Smoothing', settings.smoothing.parent]] as const).map(([stage, name, parent], index) => {
         const candidate = preview && previewStage === stage && !appliedPoint
         const snapshot = previewResult?.staged?.stages[stage]
-        const changed = candidate && !candidatePath && (pending.includes(parent) || (snapshot !== undefined && !stageMatchesDraft(settings, stage, snapshot, previewResult?.staged?.configuration.applied_path ?? previewResult?.staged?.configuration.path)))
+        const changed = candidate && !candidatePath && (pending.includes(parent) || (snapshot !== undefined && !stageMatchesDraft(settings, stage, snapshot)))
         const point = candidatePath?.points.find((entry) => entry.id === candidatePoint)
         const ready = candidate && !changed && !inspectionPending && point?.status !== "rejected"
         const missingParent = !stages.includes(parent) || pending.includes(parent)
@@ -201,7 +201,7 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
         return <StageAction key={stage} name={name} number={index + 2} action={ready ? point?.identity ? "Keep unchanged" : `Apply ${name.toLowerCase()}` : `Build ${name.toLowerCase()}`} status={changed ? "Path needs refresh" : stageState(stage, parent)}
           disabled={disabled || (candidate && (inspectionPending || point?.status === "rejected")) || invalidPhase(stage) || !settings.enabled[stage] || (ready ? postfitBlocked || missingParent : !available)} running={active === stage} busy={busy} onAction={active === stage ? onCancel : ready ? onApply : action(stage)}>
           <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{!settings.enabled[stage] ? `${name} disabled in Parameters` : candidate ? changed ? pending.includes(parent) ? `Parent settings changed. Rebuild ${STAGE_LABELS[parent]} first.` : "Settings changed. Build this path again." : "Candidate ready · inspect the path and shapes, then apply" : postfitBlocked ? "Rebuild the GBM to use the changed configuration" : missingParent ? `Build and apply ${STAGE_LABELS[parent]} first, or disable that phase in Parameters` : `Uses ${STAGE_LABELS[parent]}.`}</p>
-          {pending.includes(stage) && currentResult?.staged?.stages[stage] && <details className="text-[10px]" style={{ color: "var(--text-muted)" }}><summary className="cursor-pointer">Saved settings</summary><pre className="overflow-x-auto pt-2">{JSON.stringify(currentResult.staged.stages[stage].settings, null, 2)}</pre></details>}
+          {pending.includes(stage) && currentResult?.staged?.stages[stage] && <details className="text-[10px]" style={{ color: "var(--text-muted)" }}><summary className="cursor-pointer">Saved settings</summary><pre className="overflow-x-auto pt-2">{JSON.stringify(savedStageSettings(currentResult.staged.stages[stage]), null, 2)}</pre></details>}
           {candidate && onInspect && <button type="button" className={linkClass} onClick={() => onInspect("paths", stage)}>Inspect {name.toLowerCase()} path</button>}
           {point?.status === "rejected" && <p className="text-[11px]">The training guard rejected this candidate. Select another point in Paths.</p>}
           {candidate && currentResult && previewResult && <StageDecision current={currentResult} candidate={previewResult} stage={stage} metric={primaryMetric} onCompare={onCompare} onFactor={onFactor} />}

@@ -11,7 +11,7 @@ import { hashConfig } from "../utils/configHash"
 import { INTERACTIVE_MODEL_KEYS, applyModelUpdate, interactiveModels, modelConfig } from "./interactiveModels"
 import type { TrainResponse } from "../api/types"
 import { selectedPathPoint, type AvailablePath } from "./pathSelection"
-import { stageConfiguration, type PostFitStage } from "./stageSettings"
+import { EMPTY_RECIPE, stageConfiguration, type PostFitStage } from "./stageSettings"
 import type { ModelStage } from "./stageSettings"
 
 /** Match the stage-training draft without committing edits when a saved view opens. */
@@ -217,7 +217,7 @@ export function useStagedTraining({ enabled, resultKey, request, jobId }: {
         const actual = next.current?.result.response.staged?.configuration
         const restored = Object.fromEntries(INTERACTIVE_MODEL_KEYS.map((field) => [field, saved[field]]))
         if (actual) restored.stages = { ...(saved.stages as Record<string, unknown> | undefined),
-          applied_recipe: actual.applied_recipe, applied_path: actual.applied_path ?? null }
+          applied_recipe: actual.applied_recipe }
         const result = onRestore(restored)
         if (result && typeof result === "object" && "ok" in result && result.ok === false) {
           throw new Error("The checkpoint was restored, but its settings could not be adopted. Reopen the model and restore again.")
@@ -260,7 +260,7 @@ export function useAppliedStageRecipe(state: StageState | undefined, config: Rec
     const actual = applied.result.response.staged?.configuration
     if (!actual) return
     const drafts = config.stages as Record<string, unknown> | undefined
-    const selected: Record<string, unknown> = { applied_recipe: actual.applied_recipe, applied_path: actual.applied_path ?? null }
+    const selected: Record<string, unknown> = { applied_recipe: actual.applied_recipe }
     if (adoption?.revision === applied.revision) {
       const section = adoption.stage === "pruned" ? "pruning" : adoption.stage === "banded" ? "banding" : "smoothing"
       selected[section] = actual[section]
@@ -269,7 +269,7 @@ export function useAppliedStageRecipe(state: StageState | undefined, config: Rec
       selected.enabled = { ...draftSettings.enabled, [adoption.stage]: actualSettings.enabled[adoption.stage] }
       if (adoption.stage === "pruned") selected.path = actual.path
     }
-    if (adoption?.revision === applied.revision || hashConfig(selected) !== hashConfig({ applied_recipe: drafts?.applied_recipe ?? [], applied_path: drafts?.applied_path ?? null })) {
+    if (adoption?.revision === applied.revision || hashConfig(selected) !== hashConfig({ applied_recipe: drafts?.applied_recipe ?? EMPTY_RECIPE })) {
       const result = onUpdate({ stages: { ...drafts, ...selected } })
       if (result && typeof result === "object" && "ok" in result && result.ok === false) return
     }

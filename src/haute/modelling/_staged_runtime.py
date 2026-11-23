@@ -355,20 +355,29 @@ class StageBundle:
             cached = (identity, size, parent)
         self._retain(key, cached)
         session = cached[2].fork()
-        from haute.modelling._stage_paths import resolve_path
+        if (path_id is not None or self.metadata.get("path") is not None) and not raw:
+            session.apply(self.candidate(key, session, point_id=point_id, path_id=path_id))
+        return session
+
+    def candidate(
+        self, key: str, session: Any, *, point_id: str | None = None, path_id: str | None = None
+    ) -> Any:
+        """A retained fit's path point, restored and validated against ``session``.
+
+        By default the bundle's current path and its selected point. Its model is the
+        estimator built to validate it, so applying and reading it costs one build.
+        """
+        from t_boost import TBoostCandidate
+
+        from haute.modelling._stage_paths import candidate_member, require_point, resolve_path
 
         path = resolve_path(self, path_id) if path_id is not None else self.metadata.get("path")
-        if path is not None and not raw:
-            from t_boost import TBoostPathFamily
-
-            from haute.modelling._stage_paths import candidate_member, require_point
-
-            point = require_point(path, point_id or path["selected_point"])
-            family = TBoostPathFamily.from_candidate_bytes(
-                session, self.read_bytes(candidate_member(path["id"], point["id"], key))
-            )
-            family.apply(session, point["id"])
-        return session
+        if path is None:
+            raise HauteValidationError("Stage checkpoint has no prepared path")
+        point = require_point(path, point_id or path["selected_point"])
+        return TBoostCandidate.from_bytes(
+            session, self.read_bytes(candidate_member(path["id"], point["id"], key))
+        )
 
     def replace_checkpoint(self, key: str, session: Any) -> None:
         """Write a retained fit's new stage chain from ``session``; its evidence is unchanged.
@@ -660,18 +669,20 @@ class StageRuntime:
         return copy.copy(shared)
 
     def adapter_kwargs(self, job: Any) -> dict[str, Any]:
+        """What the adapter acquires: the exact path candidate, or the draft operation."""
         if self.bundle is None:
             return {}
-        session = self.bundle.session(_fit_key(job), point_id=self.candidate_id)
+        key = _fit_key(job)
         if self.candidate_id is not None:
-            from haute.modelling._stage_paths import require_point
-
-            point = require_point(self.bundle.metadata["path"], self.candidate_id)
-            selected = (
-                self.bundle.metadata["path"]["parent"] if point["identity"] else self.operation
-            )
-            return {"stage_session": session, "prepared_stage": selected}
-        return {"stage_session": session, "stage_operation": self.operation}
+            # The candidate's parent is in the retained chain itself; applying it replaces
+            # whatever the bundle's selected point would have installed.
+            session = self.bundle.session(key, raw=True)
+            target = self.bundle.candidate(key, session, point_id=self.candidate_id)
+            return {"stage_session": session, "stage_target": target}
+        return {
+            "stage_session": self.bundle.session(key),
+            "stage_target": job.stages.operation(self.operation),
+        }
 
     def retain_trial(self, trial: StageRuntime, params: Mapping[str, Any]) -> None:
         """Replace the retained best trial; never accumulate every candidate's banks."""
@@ -751,25 +762,50 @@ class StageRuntime:
         session, key = model.training_session, _fit_key(job)
         if session is None:
             raise HauteValidationError("Stage job did not retain its training session")
+        # The summary computes pruning evidence first, so the saved chain stores it.
+        self.remember_session(key, session, model.selected_stage, job.stages)
         if self.candidate_id is None:
             if self.bundle is None:
                 session.save_evidence(self.root / f"{key}.evidence")
                 session.save_chain(self.root / f"{key}.chain")
             else:
                 self.bundle.replace_checkpoint(key, session)
-        self.remember_session(key, session, model.selected_stage)
 
-    def remember_session(self, key: str, session: Any, selected: str) -> None:
-        """Record stage identity separately from row evaluation (also used by exact aliases)."""
+    def published_path(self, config: StagedConfig) -> dict[str, Any]:
+        """The draft path settings a job publishes: a pruning job's own, else the retained ones.
+
+        Only a pruning job adopts pending path edits; other stages keep the bundle's.
+        """
+        if self.bundle is not None and self.operation != "pruned":
+            return copy.deepcopy(self.bundle.metadata["staged"]["configuration"]["path"])
+        return config.to_plain_data()["path"]
+
+    def remember_session(self, key: str, session: Any, selected: str, config: StagedConfig) -> None:
+        """Record stage identity separately from row evaluation (also used by exact aliases).
+
+        The pruning evidence shown is the one the retained pruned stage was built from,
+        or, before pruning, that of the path settings this job publishes.
+        """
+        from t_boost import Prune, PruningPathSettings
+
+        pruned = session.stages.get("pruned")
+        settings = (
+            pruned.operation.path
+            if pruned is not None
+            else PruningPathSettings(**self.published_path(config))
+        )
+        evidence = session.pruning_path(settings)
         self.fits[key] = {"data_digest": session.data_digest}
         self.summary = {
             "selected_stage": selected,
-            "stages": session.stages,
-            "recipes": {name: session.recipe(name) for name in session.stages},
-            "pruning_path": session.pruning_path,
-            "path_unavailable_reason": session.path_unavailable_reason,
-            "recommendation": session.pruning_selection()
-            if session.pruning_path is not None
+            "stages": {name: info.to_plain_data() for name, info in session.stages.items()},
+            "recipes": {
+                name: session.stage(name).recipe.to_plain_data() for name in session.stages
+            },
+            "pruning_path": evidence,
+            "path_unavailable_reason": session.pruning_unavailable_reason(settings),
+            "recommendation": session.pruning_selection(Prune(path=settings))
+            if evidence is not None
             else None,
         }
 
@@ -793,21 +829,9 @@ class StageRuntime:
             raise HauteValidationError("Stage job did not capture a fitted model")
         selected = self.summary["selected_stage"]
         config = job.stages.to_plain_data()
-        if self.bundle is not None and self.operation != "pruned":
-            config["path"] = copy.deepcopy(self.bundle.metadata["staged"]["configuration"]["path"])
+        config["path"] = self.published_path(job.stages)
+        # The applied policy, path settings included, is the selected stage's own recipe.
         config["applied_recipe"] = self.summary["recipes"][selected]
-        uses_pruning = any(op["stage"] == "pruned" for op in config["applied_recipe"])
-        if uses_pruning and self.operation == "pruned":
-            config["applied_path"] = copy.deepcopy(config["path"])
-        elif uses_pruning and self.bundle is not None:
-            previous = self.bundle.metadata["staged"]["configuration"]
-            config["applied_path"] = copy.deepcopy(
-                self.bundle.metadata["staged"]["stages"]["pruned"].get("path_settings")
-                or previous.get("applied_path")
-                or previous["path"]
-            )
-        else:
-            config["applied_path"] = None
         job.stages = StagedConfig.from_plain_data(config)
         kwargs = _kwargs(job)
         digest = fit_config_digest(kwargs)
@@ -844,11 +868,6 @@ class StageRuntime:
         snapshots[selected] = {
             **self.summary["stages"][selected],
             "recipe": self.summary["recipes"][selected],
-            **(
-                {"path_settings": copy.deepcopy(config["applied_path"])}
-                if selected == "pruned"
-                else {}
-            ),
             # Shared, not copied: after finalisation a result's diagnostics are only read
             # (serialised, split or returned), so the snapshot and the result cannot diverge.
             **{name: getattr(result, name) for name in _DIAGNOSTICS},
@@ -859,7 +878,7 @@ class StageRuntime:
             ),
         }
         result.staged = {
-            "schema_version": 1,
+            "schema_version": 2,
             **({"diagnostic_scope": "path"} if self.candidate_id is not None else {}),
             "selected_stage": selected,
             "configuration": config,

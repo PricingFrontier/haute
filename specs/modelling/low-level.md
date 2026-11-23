@@ -2883,19 +2883,21 @@ taxonomy.
 ## Staged t-boost contract
 
 `modelling._staged_config.StagedConfig` validates the optional per-model `stages` mapping.
-Its JSON form is `{schema_version: 1, path, pruning, banding, smoothing, applied_recipe}`.
-Omitted sections use explicit defaults; unknown keys, wrong scalar types and non-finite
-numbers fail. `path` has `steps` (integer >=2, default32), `main_effects` (Boolean,false),
-`min_rows` (integer >=1,500). `pruning` has `fraction` (0,1],.995), `tolerance` (>=0,.001)
-and `max_tables` (null or non-negative integer). A manual budget cannot be combined with
-non-default automatic controls. `banding` has parent full/pruned (defaultpruned), positive
-`tolerance` (.75) and `deviance_cap` (.001). `smoothing` has parent full/pruned/banded
-(defaultbanded), `alpha` (null or non-negative) and `high_order_alpha` ([0,1],0).
+Its JSON form is `{schema_version: 2, path, pruning, banding, smoothing, selection, enabled,
+applied_recipe}`. The draft sections and enabled phases are Haute's; what a draft means is
+t-boost's. `operation(stage)` builds the t-boost operation a draft describes (`Prune`, with
+the draft `path` as its `PruningPathSettings`; `Band`; `Smooth`), and t-boost validates it.
+Omitted sections use explicit defaults: `path` `steps` 32, `main_effects` false, `min_rows`
+500; `pruning` `fraction` .995, `tolerance` .001, `max_tables` null; `banding` parent pruned,
+`tolerance` .75, `deviance_cap` .001; `smoothing` parent banded, `alpha` null,
+`high_order_alpha` 0, `strength` 1. Haute itself validates only `selection` (its
+recommendation tolerances) and the enabled flags. `require_parent(parent, recipe)` refuses a
+parent stage built without the enabled phases.
 
-`applied_recipe` defaults to an empty list (full output). Each entry has exact keys
-`stage`, `parent`, `settings`; it must form an increasing continuous chain beginning at
-full, with the same per-stage field validation. It contains no support sets, path indices,
-artifact paths or row identifiers. The canonical GBM `params` and tuning space reject
+`applied_recipe` is a t-boost `Recipe` in its plain form, `{schema_version: 1, operations}`,
+the empty recipe meaning full output. A pruning operation records its own path settings,
+so the applied policy is complete and independent of later draft edits. It contains no
+support sets, path indices, artifact paths or row identifiers. The canonical GBM `params` and tuning space reject
 post-fit parameters whenever `stages` is present, with the parameter and owning stage in
 the error. Only descriptors declaring staged-training support admit this contract.
 Legacy flat params remain unchanged without `stages`. Migration is explicit: the editor
@@ -2903,8 +2905,13 @@ creates staged settings on the first requested staged build, moves supported pos
 settings to their section and refuses unsupported legacy controls instead of ignoring them.
 
 The t-boost adapter accepts `stages` through canonical training kwargs. It prepares labels,
-offsets, categories, groups and callbacks once through existing helpers, calls public
-`fit_staged`, then public `apply_recipe`; it never orchestrates private library methods.
+offsets, categories, groups and callbacks once through existing helpers, then acquires its
+model with one public `session.apply(target)`. A fresh fit's target is the applied recipe; a
+stage job passes the retained session with either the draft operation (checked with
+`require_parent`) or the exact path candidate the bundle restored (`StageBundle.candidate`),
+whose validated estimator becomes the model, so a path point costs one estimator build. It
+never orchestrates private library methods, and it passes no pruning-path parameters to the
+fit: they belong to each `Prune`.
 The native model retains its session while the job publishes checkpoints and records the
 recipe in Haute's native metadata. Inference export remains loadable through plain t-boost.
 No checkpoint is implicitly loaded from a user-supplied native inference artifact.
@@ -3064,9 +3071,13 @@ includes the shared local-source content proof and imported utility fingerprint;
 providers continue using the explicitly frozen build snapshot until a new build.
 
 
-Applied recipes retain `applied_path` separately from draft `path` settings. Pruned stage
-snapshots also retain their path settings, so selecting a previously built pruned parent
-preserves its replay settings even after a different output chain was selected. Only a
+Applied recipes carry their pruning operation's path settings, separately from draft `path`
+settings. Stage snapshots record the t-boost `StageInfo` (stage, revision, parent, parent
+revision and operation) and their recipe, so selecting a previously built pruned parent
+preserves its replay settings even after a different output chain was selected. The staged
+summary shows the pruning evidence the retained pruned stage was built from, or, before
+pruning, the draft path's; it is computed before the chain is saved, so the checkpoint
+stores it. Only a
 successful full publication clears the canonical applied recipe; failed/cancelled rebuilds
 leave it intact. All model restorers synchronise completed recipes, including background
 models. Overlay compatibility includes target, task, positive-class, weight, offset and
@@ -3347,8 +3358,10 @@ work. Unknown source cardinality keeps the conservative whole-budget reservation
 
 ### Stage storage (version 2)
 
-Format versions are: store manifest `schema_version` 3, revision manifest version 2,
-portable `.hstage` version 2, and t-boost training checkpoint and path-candidate version 2.
+Format versions are: store manifest `schema_version` 4, revision manifest version 2,
+portable `.hstage` version 2, and t-boost training checkpoint and path-candidate version 3.
+Store schema 4 coincides with staged payload schema 2 (typed stage records); an older store
+reads as empty until a full build replaces it.
 Public stage-state schema version 1 is unchanged; storage versions never appear in public
 responses.
 

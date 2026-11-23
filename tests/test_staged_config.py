@@ -1,34 +1,42 @@
 """Stage settings are replayable and cannot silently enter the GBM parameter space."""
 
+import json
+
 import pytest
+from t_boost import Band, Prune, PruningPathSettings, Recipe, Smooth
 
 from haute.errors import HauteValidationError
 from haute.modelling._staged_config import StagedConfig
 
 
 def test_defaults_and_applied_recipe_are_independent_of_draft_controls():
-    config = StagedConfig.from_plain_data({"schema_version": 1, "pruning": {"max_tables": 8}})
-    assert config.applied_recipe == []
-    assert config.operation("pruned") == {
-        "stage": "pruned",
-        "parent": "full",
-        "settings": {"fraction": 0.995, "tolerance": 0.001, "max_tables": 8},
-    }
+    config = StagedConfig.from_plain_data({"schema_version": 2, "pruning": {"max_tables": 8}})
+    assert config.applied_recipe == Recipe()
+    assert config.output_stage == "full"
+    assert config.operation("pruned") == Prune(max_tables=8)
+    assert config.operation("banded") == Band()
+    assert config.operation("smoothed") == Smooth()
     payload = config.to_plain_data()
-    payload["applied_recipe"] = [config.operation("pruned"), config.operation("banded")]
-    applied = StagedConfig.from_plain_data(payload)
+    payload["applied_recipe"] = Recipe(
+        (config.operation("pruned"), config.operation("banded"))
+    ).to_plain_data()
+    applied = StagedConfig.from_plain_data(json.loads(json.dumps(payload)))
     assert applied.output_stage == "banded"
     assert StagedConfig.from_plain_data(applied.to_plain_data()) == applied
-    payload["applied_recipe"][0]["settings"]["max_tables"] = 1
-    assert applied.applied_recipe[0]["settings"]["max_tables"] == 8
+    payload["applied_recipe"]["operations"][0]["settings"]["max_tables"] = 1
+    assert applied.applied_recipe.operations[0].max_tables == 8
+    assert applied.without_applied_recipe().applied_recipe == Recipe()
+    assert applied.without_applied_recipe().to_plain_data()["pruning"]["max_tables"] == 8
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"schema_version": 2},
+        {"schema_version": 1},
+        {"schema_version": 3},
         {"schema_version": True},
         {"extra": 1},
+        {"applied_path": None},
         {"path": {"steps": 1}},
         {"path": {"main_effects": 1}},
         {"pruning": {"max_tables": True}},
@@ -37,8 +45,21 @@ def test_defaults_and_applied_recipe_are_independent_of_draft_controls():
         {"banding": {"parent": "smoothed"}},
         {"smoothing": {"high_order_alpha": 1.1}},
         {"smoothing": {"alpha": True}},
-        {"applied_recipe": [{"stage": "smoothed", "parent": "banded", "settings": {}}]},
-        {"applied_recipe": [{"stage": "pruned", "parent": "full", "settings": {"alpha": 1}}]},
+        {"smoothing": {"alpha": 1.0, "strength": 2.0}},
+        {"selection": {"relative_tolerance": -1}},
+        {"applied_recipe": []},
+        {
+            "applied_recipe": {
+                "schema_version": 1,
+                "operations": [Smooth("banded").to_plain_data()],
+            }
+        },
+        {
+            "applied_recipe": {
+                "schema_version": 1,
+                "operations": [{"stage": "pruned", "parent": "full", "settings": {"alpha": 1}}],
+            }
+        },
     ],
 )
 def test_invalid_settings_are_actionable(payload):
@@ -54,20 +75,16 @@ def test_postfit_settings_are_not_gbm_or_tuning_parameters():
             config.validate_gbm_params({key: 1})
 
 
-def test_applied_path_is_independent_of_pending_path_settings():
-    recipe = [{"stage": "pruned", "parent": "full", "settings": {}}]
+def test_applied_recipe_carries_its_path_independently_of_pending_path_settings():
+    applied = PruningPathSettings(steps=16, main_effects=True, min_rows=20)
     config = StagedConfig.from_plain_data(
         {
-            "applied_recipe": recipe,
-            "applied_path": {"steps": 16, "min_rows": 20, "main_effects": True},
+            "applied_recipe": Recipe((Prune(path=applied),)).to_plain_data(),
             "path": {"steps": 32, "min_rows": 99999, "main_effects": False},
         }
     )
-    assert config.path_params == {
-        "prune_path_steps": 16,
-        "prune_guard_min_rows": 20,
-        "prune_main_effects": True,
-    }
+    assert config.applied_recipe.operations[0].path == applied
+    assert config.operation("pruned").path == PruningPathSettings(min_rows=99999)
     assert config.to_plain_data()["path"]["min_rows"] == 99999
 
 
@@ -84,10 +101,17 @@ def test_enabled_phases_resolve_the_previous_enabled_parent(pruning, banding, sm
         ("smoothed", "banded" if banding else "pruned" if pruning else "full"),
     ):
         if enabled[stage]:
-            assert config.operation(stage)["parent"] == parent
+            assert config.operation(stage).parent == parent
         else:
             with pytest.raises(HauteValidationError, match="disabled"):
                 config.operation(stage)
+
+
+def test_a_parent_must_have_been_built_with_the_enabled_phases():
+    config = StagedConfig.from_plain_data({"enabled": {"pruned": False}})
+    config.require_parent("banded", Recipe((Band("full"),)))
+    with pytest.raises(HauteValidationError, match="Rebuild banded"):
+        config.require_parent("banded", Recipe((Prune(), Band("pruned"))))
 
 
 @pytest.mark.parametrize("enabled", [{"pruned": 1}, {"unknown": True}, None])
@@ -97,9 +121,9 @@ def test_phase_flags_refuse_invalid_values(enabled):
 
 
 def test_phase_drafts_leave_existing_applied_recipe_unchanged():
-    recipe = [{"stage": "pruned", "parent": "full", "settings": {}}]
+    recipe = Recipe((Prune(),)).to_plain_data()
     config = StagedConfig.from_plain_data({"enabled": {"pruned": False}, "applied_recipe": recipe})
     assert config.output_stage == "pruned"
-    assert config.applied_recipe[0]["stage"] == "pruned"
+    assert config.applied_recipe.operations[0] == Prune()
     legacy = StagedConfig.from_plain_data({"smoothing": {"parent": "full"}})
-    assert legacy.operation("smoothed")["parent"] == "full"
+    assert legacy.operation("smoothed").parent == "full"

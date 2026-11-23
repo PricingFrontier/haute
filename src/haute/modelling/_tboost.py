@@ -294,12 +294,13 @@ class TBoostModel(NativeModel):
         """The selected snapshot and recipe, without any retained training rows."""
         if self.training_session is None:
             raise HauteValidationError("This model has no resumable training session")
+        selected = self.training_session.stage(self.selected_stage)  # builds no model
         return {
-            "schema_version": 1,
-            "stage": self.selected_stage,
-            "revision": self.training_session.stages[self.selected_stage]["revision"],
-            "recipe": self.training_session.recipe(self.selected_stage),
-            "data_digest": self.training_session.data_digest,
+            "schema_version": 2,
+            "stage": selected.info.stage,
+            "revision": selected.info.revision,
+            "recipe": selected.recipe.to_plain_data(),
+            "data_digest": selected.data_digest,
         }
 
     selected_stage: str = "full"
@@ -351,7 +352,7 @@ class TBoostModel(NativeModel):
         if stage_record is not None:
             from haute.modelling._staged_config import StagedConfig
 
-            if not isinstance(stage_record, dict) or stage_record.get("schema_version") != 1:
+            if not isinstance(stage_record, dict) or stage_record.get("schema_version") != 2:
                 raise HauteValidationError("Invalid saved t-boost stage metadata")
             config = StagedConfig.from_plain_data({"applied_recipe": stage_record.get("recipe")})
             if stage_record.get("stage") != config.output_stage:
@@ -580,7 +581,7 @@ class TBoostAlgorithm(BaseAlgorithm):
         feature_weights: dict[str, float] | None = None,
         **kwargs: Any,
     ) -> FitResult:
-        from t_boost import TBoostClassifier, TBoostRegressor
+        from t_boost import Band, Prune, Smooth, TBoostClassifier, TBoostRegressor
 
         from haute.modelling._descriptors import TBOOST
 
@@ -591,7 +592,7 @@ class TBoostAlgorithm(BaseAlgorithm):
         loss = kwargs.get("loss")
         if not loss:
             raise HauteValidationError("t-boost needs an explicit loss")
-        from haute.modelling._staged_config import STAGE_NAMES, resolve_stages
+        from haute.modelling._staged_config import resolve_stages
 
         stages = resolve_stages(kwargs.get("stages"), "tboost", params)
         native = TBOOST.native_loss(task, str(loss))
@@ -621,8 +622,6 @@ class TBoostAlgorithm(BaseAlgorithm):
             "unknown_category": UNKNOWN_CATEGORY,
             "n_jobs": threads,
         }
-        if stages is not None:
-            estimator_params.update(stages.path_params)
         if task == "classification":
             estimator: Any = TBoostClassifier(**estimator_params)
         else:
@@ -652,40 +651,21 @@ class TBoostAlgorithm(BaseAlgorithm):
                 estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
                 history = estimator.evals_result_ if int(estimator.n_trees_) else {}
             else:
+                # One acquisition: a fresh fit replays the applied recipe; a stage job
+                # applies its operation, or the exact candidate a path point prepared.
                 session = kwargs.get("stage_session")
                 if session is None:
                     session = estimator.fit_staged(
                         features_frame, label, **fit_kwargs, callbacks=progress
                     )
-                    estimator = session.apply_recipe(stages.applied_recipe)
-                    model.selected_stage = stages.output_stage
-                elif kwargs.get("prepared_stage") is not None:
-                    model.selected_stage = str(kwargs["prepared_stage"])
-                    estimator = session.model(model.selected_stage)
+                    target = stages.applied_recipe
                 else:
-                    operation = stages.operation(str(kwargs.get("stage_operation")))
-                    enabled = stages.to_plain_data().get("enabled")
-                    if enabled is not None:
-                        parent = operation["parent"]
-                        expected = [
-                            stage
-                            for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1]
-                            if enabled[stage]
-                        ]
-                        if [item["stage"] for item in session.recipe(parent)] != expected:
-                            raise HauteValidationError(
-                                f"Rebuild {parent} with the enabled phases "
-                                "before using it as a parent"
-                            )
-                    name, settings = operation["stage"], operation["settings"]
-                    if name == "pruned":
-                        session.configure_path(**stages.to_plain_data()["path"])
-                        estimator = session.prune(**settings)
-                    elif name == "banded":
-                        estimator = session.band(parent=operation["parent"], **settings)
-                    else:
-                        estimator = session.smooth(parent=operation["parent"], **settings)
-                    model.selected_stage = name
+                    target = kwargs["stage_target"]
+                    if isinstance(target, (Prune, Band, Smooth)):
+                        stages.require_parent(target.parent, session.stage(target.parent).recipe)
+                result = session.apply(target)
+                estimator = result.model
+                model.selected_stage = result.info.stage
                 history = session.loss_history
                 model.training_session = session
         progress.finish()

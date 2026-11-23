@@ -88,7 +88,7 @@ def apply_path(
                 path["stage"]: True,
             }
             if (
-                StagedConfig.from_plain_data(proposed).operation(path["stage"])["parent"]
+                StagedConfig.from_plain_data(proposed).operation(path["stage"]).parent
                 != path["parent"]
             ):
                 raise ConflictError("The enabled predecessor changed; prepare this path again")
@@ -104,8 +104,7 @@ def apply_path(
                 **merged.get("enabled", {}),
                 path["stage"]: body.point_id != "unchanged",
             }
-            for key in ("applied_recipe", "applied_path"):
-                merged[key] = copy.deepcopy(applied_config[key])
+            merged["applied_recipe"] = copy.deepcopy(applied_config["applied_recipe"])
             if path["stage"] == "pruned":
                 merged["path"] = copy.deepcopy(applied_config["path"])
             merged = StagedConfig.from_plain_data(merged).to_plain_data()

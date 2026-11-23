@@ -1,0 +1,1972 @@
+diff --git a/frontend/src/generated/api-contracts.generated.ts b/frontend/src/generated/api-contracts.generated.ts
+index c4c133061..ede5e50cb 100644
+--- a/frontend/src/generated/api-contracts.generated.ts
++++ b/frontend/src/generated/api-contracts.generated.ts
+@@ -5457,7 +5457,7 @@ export interface StagedBuildPayload {
+     [k: string]: unknown;
+   } | null;
+   reference_fit: 'development' | 'validation-0';
+-  schema_version: 1;
++  schema_version: 2;
+   selected_stage: 'full' | 'pruned' | 'banded' | 'smoothed';
+   stages: {
+     [k: string]: {
+diff --git a/frontend/src/generated/api-contracts.schema.json b/frontend/src/generated/api-contracts.schema.json
+index 8ad5bc5af..9f0d527f5 100644
+--- a/frontend/src/generated/api-contracts.schema.json
++++ b/frontend/src/generated/api-contracts.schema.json
+@@ -24575,7 +24575,7 @@
+           "type": "string"
+         },
+         "schema_version": {
+-          "const": 1,
++          "const": 2,
+           "title": "Schema Version",
+           "type": "integer"
+         },
+diff --git a/frontend/src/modelling/TrainingPane.tsx b/frontend/src/modelling/TrainingPane.tsx
+index b90d72360..ee1f7639c 100644
+--- a/frontend/src/modelling/TrainingPane.tsx
++++ b/frontend/src/modelling/TrainingPane.tsx
+@@ -2,7 +2,7 @@ import { useCallback, useId, useState, type ReactNode } from "react"
+ import { Play, Square } from "lucide-react"
+ import { NumberField, type NumberBounds } from "../panels/modelling/NumberField"
+ import { MODELLING_INPUT_STYLE } from "../panels/modelling/styles"
+-import { STAGE_LABELS, resolveStageParents, stageMatchesDraft, type ModelStage, type PostFitStage, type StageSettings } from "./stageSettings"
++import { STAGE_LABELS, resolveStageParents, savedStageSettings, stageMatchesDraft, type ModelStage, type PostFitStage, type StageSettings } from "./stageSettings"
+ import type { StagePathPayload } from "../generated/api-contracts.generated"
+ import type { TrainResponse } from "../api/types"
+ import { StageDecision } from "./StageDecision"
+@@ -193,7 +193,7 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
+       {([['pruned', 'Pruning', 'full'], ['banded', 'Banding', settings.banding.parent], ['smoothed', 'Smoothing', settings.smoothing.parent]] as const).map(([stage, name, parent], index) => {
+         const candidate = preview && previewStage === stage && !appliedPoint
+         const snapshot = previewResult?.staged?.stages[stage]
+-        const changed = candidate && !candidatePath && (pending.includes(parent) || (snapshot !== undefined && !stageMatchesDraft(settings, stage, snapshot, previewResult?.staged?.configuration.applied_path ?? previewResult?.staged?.configuration.path)))
++        const changed = candidate && !candidatePath && (pending.includes(parent) || (snapshot !== undefined && !stageMatchesDraft(settings, stage, snapshot)))
+         const point = candidatePath?.points.find((entry) => entry.id === candidatePoint)
+         const ready = candidate && !changed && !inspectionPending && point?.status !== "rejected"
+         const missingParent = !stages.includes(parent) || pending.includes(parent)
+@@ -201,7 +201,7 @@ export function TrainingPane({ view = "train", settings, gbm, stages, pathAvaila
+         return <StageAction key={stage} name={name} number={index + 2} action={ready ? point?.identity ? "Keep unchanged" : `Apply ${name.toLowerCase()}` : `Build ${name.toLowerCase()}`} status={changed ? "Path needs refresh" : stageState(stage, parent)}
+           disabled={disabled || (candidate && (inspectionPending || point?.status === "rejected")) || invalidPhase(stage) || !settings.enabled[stage] || (ready ? postfitBlocked || missingParent : !available)} running={active === stage} busy={busy} onAction={active === stage ? onCancel : ready ? onApply : action(stage)}>
+           <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>{!settings.enabled[stage] ? `${name} disabled in Parameters` : candidate ? changed ? pending.includes(parent) ? `Parent settings changed. Rebuild ${STAGE_LABELS[parent]} first.` : "Settings changed. Build this path again." : "Candidate ready · inspect the path and shapes, then apply" : postfitBlocked ? "Rebuild the GBM to use the changed configuration" : missingParent ? `Build and apply ${STAGE_LABELS[parent]} first, or disable that phase in Parameters` : `Uses ${STAGE_LABELS[parent]}.`}</p>
+-          {pending.includes(stage) && currentResult?.staged?.stages[stage] && <details className="text-[10px]" style={{ color: "var(--text-muted)" }}><summary className="cursor-pointer">Saved settings</summary><pre className="overflow-x-auto pt-2">{JSON.stringify(currentResult.staged.stages[stage].settings, null, 2)}</pre></details>}
++          {pending.includes(stage) && currentResult?.staged?.stages[stage] && <details className="text-[10px]" style={{ color: "var(--text-muted)" }}><summary className="cursor-pointer">Saved settings</summary><pre className="overflow-x-auto pt-2">{JSON.stringify(savedStageSettings(currentResult.staged.stages[stage]), null, 2)}</pre></details>}
+           {candidate && onInspect && <button type="button" className={linkClass} onClick={() => onInspect("paths", stage)}>Inspect {name.toLowerCase()} path</button>}
+           {point?.status === "rejected" && <p className="text-[11px]">The training guard rejected this candidate. Select another point in Paths.</p>}
+           {candidate && currentResult && previewResult && <StageDecision current={currentResult} candidate={previewResult} stage={stage} metric={primaryMetric} onCompare={onCompare} onFactor={onFactor} />}
+diff --git a/frontend/src/modelling/__tests__/ModellingView.test.tsx b/frontend/src/modelling/__tests__/ModellingView.test.tsx
+index f992e121e..4cd3d89b0 100644
+--- a/frontend/src/modelling/__tests__/ModellingView.test.tsx
++++ b/frontend/src/modelling/__tests__/ModellingView.test.tsx
+@@ -211,16 +211,16 @@ describe("ModellingView", () => {
+   })
+ 
+   it("restores two background recipes against the latest canonical node without losing either", () => {
+-    const entries = ["m1", "m2", "m3"].map((id) => ({ id, name: id, algorithm: "tboost", stages: { applied_recipe: [] } }))
++    const entries = ["m1", "m2", "m3"].map((id) => ({ id, name: id, algorithm: "tboost", stages: { applied_recipe: { schema_version: 1, operations: [] } } }))
+     const modelNode = node("frequency", "modelling", { ...frequency.data.config, models: entries })
+     const nodes = [quotes, modelNode]
+     useGraphStore.setState({ nodes: nodes.map((entry) => ({ ...entry, position: { x: 0, y: 0 } })) as Node[], edges: [], focus: null })
+     const document = documentExecutionKey(useDocumentStatusStore.getState())
+-    const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }]
++    const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }] }
+     for (const id of ["m2", "m3"]) {
+       const response = makeTrainResult({ staged: {
+-        schema_version: 1, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
+-        configuration: { applied_recipe: recipe, applied_path: null }, evaluation_identity: "e".repeat(64),
++        schema_version: 2, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
++        configuration: { applied_recipe: recipe }, evaluation_identity: "e".repeat(64),
+         fit_config_digest: "f".repeat(64), stages: { full: {}, banded: {} },
+         pruning_path: null, path_unavailable_reason: null, recommendation: null,
+       } })
+@@ -745,7 +745,7 @@ describe("ModellingView", () => {
+     completed[M1].jobId = "job_2"
+     completed[M1].result.job_id = "job_2"
+     completed[M1].result.staged = {
+-      schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
++      schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+       configuration: {}, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+       stages: {}, pruning_path: null, path_unavailable_reason: null, recommendation: null,
+     }
+@@ -853,9 +853,9 @@ describe("ModellingView", () => {
+     useGraphStore.setState({ nodes: [quotes, two].map((entry) => ({ ...entry, position: { x: 0, y: 0 } })) as Node[] })
+     const snapshot = { metrics: { rmse: .2 }, feature_importance: [], features: ["age"], cat_features: [],
+       diagnostics_set: "validation", ave_per_feature: [ageRow], ave_left_out: [], tboost_tables: null,
+-      loss_history: [], fit_evidence: null, diagnostics_errors: [], recipe: [] }
+-    const response = makeTrainResult({ staged: { schema_version: 1, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
+-      configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
++      loss_history: [], fit_evidence: null, diagnostics_errors: [], recipe: { schema_version: 1, operations: [] } }
++    const response = makeTrainResult({ staged: { schema_version: 2, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
++      configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+       stages: { full: snapshot, pruned: snapshot, banded: snapshot }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+     const record = { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "c".repeat(64), config_digest: "f".repeat(64),
+       result: { graph_digest: "d".repeat(64), response } }
+diff --git a/frontend/src/modelling/__tests__/TrainingPane.test.tsx b/frontend/src/modelling/__tests__/TrainingPane.test.tsx
+index 7456e7b8c..901c5b848 100644
+--- a/frontend/src/modelling/__tests__/TrainingPane.test.tsx
++++ b/frontend/src/modelling/__tests__/TrainingPane.test.tsx
+@@ -16,7 +16,7 @@ afterEach(cleanup)
+ 
+ it("labels the selected applied point as Applied instead of offering it again", () => {
+   const p = props()
+-  const current = makeTrainResult({ staged: { schema_version: 1, selected_stage: "smoothed",
++  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "smoothed",
+     diagnostics_basis: "partition", reference_fit: "development", configuration: {},
+     evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
+     stages: { smoothed: { revision: "same-candidate" } }, pruning_path: null,
+@@ -36,7 +36,7 @@ it("labels the selected applied point as Applied instead of offering it again",
+ it("keeps an unchanged point actionable until its phase is explicitly skipped", () => {
+   const p = props()
+   const path = { id: "path", stage: "pruned", parent: "full", selected_point: "unchanged", points: [{ id: "unchanged", identity: true, revision: "parent", status: "unchanged" }] } as unknown as NonNullable<Parameters<typeof TrainingPane>[0]["candidatePath"]>
+-  const current = makeTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "development", configuration: { enabled: { pruned: true } }, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64), stages: { full: { revision: "parent" } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
++  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "development", configuration: { enabled: { pruned: true } }, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64), stages: { full: { revision: "parent" } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+   const { rerender } = render(<TrainingPane {...p} currentResult={current} preview candidatePath={path} candidatePoint="unchanged" stages={["full"]} />)
+   fireEvent.click(screen.getByRole("button", { name: "Keep unchanged" }))
+   expect(p.onApply).toHaveBeenCalledOnce()
+@@ -45,6 +45,20 @@ it("keeps an unchanged point actionable until its phase is explicitly skipped",
+   expect(screen.queryByRole("button", { name: "Keep unchanged" })).not.toBeInTheDocument()
+ })
+ 
++it("shows a changed stage's saved operation, with pruning's recorded path settings", () => {
++  const p = props()
++  const path = { steps: 16, main_effects: true, min_rows: 20 }
++  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition",
++    reference_fit: "development", configuration: {}, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
++    stages: { full: {}, pruned: { stage: "pruned", parent: "full", operation: { stage: "pruned", parent: "full",
++      settings: { fraction: .995, tolerance: .001, max_tables: 7 }, path } } },
++    pruning_path: null, path_unavailable_reason: null, recommendation: null } })
++  render(<TrainingPane {...p} currentResult={current} pending={["pruned"]} />)
++  fireEvent.click(screen.getByText("Saved settings"))
++  const saved = JSON.parse(screen.getByText(/max_tables/).textContent ?? "{}")
++  expect(saved).toEqual({ fraction: .995, tolerance: .001, max_tables: 7, path })
++})
++
+ describe("Training pane", () => {
+   it("keeps independent actions visible when cards are collapsed and checks their parent", () => {
+     const p = props()
+@@ -211,9 +225,10 @@ it("uses Apply as the primary action when the previous phase prepared its candid
+ 
+ it("refreshes a candidate whose pruning settings changed before allowing Apply", () => {
+   const p = props()
+-  const candidate = makeTrainResult({ staged: { schema_version: 1, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0",
++  const candidate = makeTrainResult({ staged: { schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0",
+     configuration: { path: p.settings.path }, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
+-    stages: { full: {}, pruned: { parent: "full", settings: { ...p.settings.pruning, max_tables: 3 } } },
++    stages: { full: {}, pruned: { stage: "pruned", parent: "full", operation: { stage: "pruned", parent: "full",
++      settings: { ...p.settings.pruning, max_tables: 3 }, path: p.settings.path } } },
+     pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+   render(<TrainingPane {...p} preview previewResult={candidate} />)
+   expect(screen.queryByRole("button", { name: "Apply pruning" })).not.toBeInTheDocument()
+diff --git a/frontend/src/modelling/__tests__/stageResults.test.tsx b/frontend/src/modelling/__tests__/stageResults.test.tsx
+index 11be6c2c6..f531b7f0a 100644
+--- a/frontend/src/modelling/__tests__/stageResults.test.tsx
++++ b/frontend/src/modelling/__tests__/stageResults.test.tsx
+@@ -20,10 +20,10 @@ function result() {
+   const snapshot = {
+     metrics: { rmse: .2 }, feature_importance: [], features: ["age"], cat_features: [],
+     diagnostics_set: "validation", ave_per_feature: [], ave_left_out: [], tboost_tables: null,
+-    loss_history: [], fit_evidence: null, diagnostics_errors: [], revision: "a".repeat(64), recipe: [],
++    loss_history: [], fit_evidence: null, diagnostics_errors: [], revision: "a".repeat(64), recipe: { schema_version: 1, operations: [] },
+   }
+   value.staged = {
+-    schema_version: 1, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0", evaluation_identity: "b".repeat(64),
++    schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0", evaluation_identity: "b".repeat(64),
+     fit_config_digest: "c".repeat(64), configuration: {},
+     stages: { full: { ...snapshot, metrics: { rmse: .3 } }, pruned: snapshot },
+     pruning_path: { table_counts: [1, 2, 3], oob_deviance: [.5, .3, .4], minimum_step: 1, oob_rows: 600 },
+@@ -130,7 +130,7 @@ it("compares only matching saved evaluation identities and measures changed cell
+   expect(comparison(before, { ...after, diagnostics_set: "development" })).toBeNull()
+   expect(evidenceLabel({ ...after, staged: { ...after.staged!, diagnostics_basis: "out_of_fold" } })).toBe("OOF validation")
+   expect(appliedChain({ ...saved, staged: { ...saved.staged!, stages: { ...saved.staged!.stages,
+-    pruned: { ...saved.staged!.stages.pruned, recipe: [{ stage: "pruned" }] } } } })).toBe("Full GBM → Pruned")
++    pruned: { ...saved.staged!.stages.pruned, recipe: { schema_version: 1, operations: [{ stage: "pruned" }] } } } } })).toBe("Full GBM → Pruned")
+ })
+ 
+ it("keeps ordinary stage visibility through comparison and ordinary polls", () => {
+diff --git a/frontend/src/modelling/__tests__/stageSettings.test.ts b/frontend/src/modelling/__tests__/stageSettings.test.ts
+index a5cfda1c7..3c33de47f 100644
+--- a/frontend/src/modelling/__tests__/stageSettings.test.ts
++++ b/frontend/src/modelling/__tests__/stageSettings.test.ts
+@@ -10,11 +10,12 @@ describe("stage settings", () => {
+     expect(result.stages.path).toEqual({ steps: 16, main_effects: true, min_rows: 500 })
+     expect(result.stages.banding.tolerance).toBe(.75)
+     expect(result.stages.smoothing.alpha).toBe(2)
+-    expect(result.stages.applied_recipe).toEqual([])
++    expect(result.stages.applied_recipe).toEqual({ schema_version: 1, operations: [] })
+     expect(config.params.prune).toBe(false)
+   })
+   it("keeps an explicit applied recipe and refuses unsupported legacy choices", () => {
+-    const recipe = [{ stage: "pruned", parent: "full", settings: { max_tables: 3 } }]
++    const recipe = { schema_version: 1, operations: [{ stage: "pruned", parent: "full",
++      settings: { fraction: .995, tolerance: .001, max_tables: 3 }, path: { steps: 32, main_effects: false, min_rows: 500 } }] }
+     expect(stageConfiguration({ stages: { applied_recipe: recipe } }).stages.applied_recipe).toEqual(recipe)
+     expect(() => stageConfiguration({ params: { prune_selector: "fold_vote" } })).toThrow(/prune_selector/)
+     expect(() => stageConfiguration({ params: { prune_box_budget: 10 } })).toThrow(/prune_box_budget/)
+@@ -30,7 +31,7 @@ it.each([false, true].flatMap((pruned) => [false, true].map((banded) => ({ prune
+ )
+ 
+ it("migrates the previous parent chain without changing its applied recipe", () => {
+-  const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .3 } }]
++  const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .3, deviance_cap: .001 } }] }
+   const { stages } = stageConfiguration({ stages: { banding: { parent: "full", tolerance: .3 }, applied_recipe: recipe } })
+   expect(stages.enabled).toEqual({ pruned: false, banded: true, smoothed: true })
+   expect(stages.banding.parent).toBe("full")
+diff --git a/frontend/src/modelling/__tests__/useStagedTraining.test.tsx b/frontend/src/modelling/__tests__/useStagedTraining.test.tsx
+index 5a6d77128..e154487f9 100644
+--- a/frontend/src/modelling/__tests__/useStagedTraining.test.tsx
++++ b/frontend/src/modelling/__tests__/useStagedTraining.test.tsx
+@@ -24,7 +24,7 @@ describe("durable stage restoration", () => {
+     await act(() => vi.advanceTimersByTimeAsync(100))
+     const sent = (vi.mocked(readStages).mock.calls[0][0].graph.nodes[0].data.config as Record<string, unknown>).models as Array<Record<string, unknown>>
+     expect(sent[0].params).toEqual({ n_trees: 4000 })
+-    expect(sent[0].stages).toMatchObject({ schema_version: 1 })
++    expect(sent[0].stages).toMatchObject({ schema_version: 2 })
+     expect(JSON.stringify(input)).toBe(before)
+   })
+   it("loads dense tables on demand and never shows a result from a superseded revision", async () => {
+@@ -78,16 +78,16 @@ describe("durable stage restoration", () => {
+   })
+   it("synchronises a completed background model's applied recipe while preserving drafts", () => {
+     const update = vi.fn()
+-    const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }]
++    const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }] }
+     const state = { ...empty, current: { revision: "a".repeat(32), result: { response: {
+-      staged: { configuration: { applied_recipe: recipe, applied_path: null } },
++      staged: { configuration: { applied_recipe: recipe } },
+     } } } } as unknown as StageState
+-    const config = { stages: { applied_recipe: [], path: { min_rows: 50 }, banding: { tolerance: .7 } } }
++    const config = { stages: { applied_recipe: { schema_version: 1, operations: [] }, path: { min_rows: 50 }, banding: { tolerance: .7 } } }
+     const { rerender } = renderHook(({ value }) => useAppliedStageRecipe(value, config, update),
+       { initialProps: { value: empty } })
+     expect(update).not.toHaveBeenCalled()
+     rerender({ value: state })
+-    expect(update).toHaveBeenCalledWith({ stages: { ...config.stages, applied_recipe: recipe, applied_path: null } })
++    expect(update).toHaveBeenCalledWith({ stages: { ...config.stages, applied_recipe: recipe } })
+     rerender({ value: state })
+     expect(update).toHaveBeenCalledOnce()
+   })
+@@ -111,9 +111,9 @@ it("restores only per-model settings and the actual applied recipe", async () =>
+   vi.useFakeTimers()
+   const current = { revision: "a".repeat(32) } as NonNullable<StageState["current"]>
+   vi.mocked(readStages).mockResolvedValue({ ...empty, current })
+-  const recipe = [{ stage: "pruned", parent: "full", settings: {} }]
++  const recipe = { schema_version: 1, operations: [{ stage: "pruned", parent: "full", settings: {} }] }
+   const restored = { ...empty, current: { ...current, result: { graph_digest: "b".repeat(64),
+-    config: { params: { n_trees: 10 }, target: "do-not-restore", evaluation: { seed: 999 }, stages: { applied_recipe: [] } },
++    config: { params: { n_trees: 10 }, target: "do-not-restore", evaluation: { seed: 999 }, stages: { applied_recipe: { schema_version: 1, operations: [] } } },
+     response: { staged: { configuration: { applied_recipe: recipe } } },
+   } } } as unknown as StageState
+   vi.mocked(updateStageCheckpoint).mockResolvedValue(restored)
+@@ -121,7 +121,7 @@ it("restores only per-model settings and the actual applied recipe", async () =>
+   await act(() => vi.advanceTimersByTimeAsync(100))
+   const onRestore = vi.fn()
+   await act(() => result.current.checkpointAction("restore", "checkpoint", onRestore))
+-  expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ params: { n_trees: 10 }, stages: { applied_recipe: recipe, applied_path: null } }))
++  expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ params: { n_trees: 10 }, stages: { applied_recipe: recipe } }))
+   expect(onRestore.mock.calls[0][0]).not.toHaveProperty("target")
+   expect(onRestore.mock.calls[0][0]).not.toHaveProperty("evaluation")
+   unmount(); vi.useRealTimers(); useStagedViews.setState({ models: {}, preferences: {} })
+@@ -175,7 +175,7 @@ describe("path inspection", () => {
+   it("fences out-of-order points without changing saved state, then applies the inspected point", async () => {
+     const path = { id: "d".repeat(64), stage: "banded", parent: "full", selected_point: "point-1", points: [] } as unknown as StagePathPayload
+     const saved = makeTrainResult()
+-    saved.staged = { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0", pruning_path: null, recommendation: null, path_unavailable_reason: null, configuration: {}, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64), stages: { full: {} }, paths: { banded: path }, prepared_path: path.id }
++    saved.staged = { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0", pruning_path: null, recommendation: null, path_unavailable_reason: null, configuration: {}, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64), stages: { full: {} }, paths: { banded: path }, prepared_path: path.id }
+     const state = { ...empty, current: { revision: "a".repeat(32), result: { response: makeTrainResult() } }, preview: { revision: "b".repeat(32), result: { response: saved } } } as StageState
+     const { result } = renderHook(() => useStagedTraining({ enabled: false, resultKey: "node#model:model", request }))
+     act(() => useStagedViews.getState().update(result.current.key, { state }))
+@@ -215,20 +215,20 @@ describe("path inspection", () => {
+ 
+ it("adopts only the applied path phase and its enable flag, preserving other drafts", () => {
+   const key = JSON.stringify([JSON.stringify(["", "document"]), "node#model:phase-adoption"])
+-  const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .25, deviance_cap: .0001 } }]
++  const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .25, deviance_cap: .0001 } }] }
+   const actual = { enabled: { pruned: false, banded: true, smoothed: true },
+     banding: { parent: "full", tolerance: .25, deviance_cap: .0001 }, applied_recipe: recipe }
+   const state = { ...empty, current: { revision: "selected", result: { response: {
+     staged: { configuration: actual },
+   } } } } as unknown as StageState
+   const config = { stages: { enabled: { pruned: false, banded: false, smoothed: false },
+-    banding: { tolerance: .75 }, smoothing: { alpha: 12 }, path: { min_rows: 70 }, applied_recipe: [] } }
++    banding: { tolerance: .75 }, smoothing: { alpha: 12 }, path: { min_rows: 70 }, applied_recipe: { schema_version: 1, operations: [] } } }
+   useStagedViews.getState().update(key, { adoption: { revision: "selected", stage: "banded" } })
+   const update = vi.fn()
+   const { unmount } = renderHook(() => useAppliedStageRecipe(state, config, update, key))
+   expect(update).toHaveBeenCalledOnce()
+   expect(update).toHaveBeenCalledWith({ stages: { ...config.stages, banding: actual.banding,
+-    enabled: { pruned: false, banded: true, smoothed: false }, applied_recipe: recipe, applied_path: null } })
++    enabled: { pruned: false, banded: true, smoothed: false }, applied_recipe: recipe } })
+   expect(useStagedViews.getState().models[key].adoption).toBeUndefined()
+   unmount(); useStagedViews.setState({ models: {}, preferences: {} })
+ })
+diff --git a/frontend/src/modelling/stageEvidence.ts b/frontend/src/modelling/stageEvidence.ts
+index d1369ac1b..a0efe643e 100644
+--- a/frontend/src/modelling/stageEvidence.ts
++++ b/frontend/src/modelling/stageEvidence.ts
+@@ -9,9 +9,9 @@ export function evidenceLabel(result: TrainResponse): string {
+ 
+ export function appliedChain(result?: TrainResponse): string {
+   const selected = result?.staged?.selected_stage
+-  const recipe = selected && result?.staged?.stages[selected]?.recipe
+-  if (!Array.isArray(recipe)) return selected ? STAGE_LABELS[selected] : "No applied model"
+-  return ["Full GBM", ...recipe.map((step: { stage: ModelStage }) => STAGE_LABELS[step.stage])].join(" → ")
++  const recipe = selected && result?.staged?.stages[selected]?.recipe as { operations?: unknown } | undefined
++  if (!Array.isArray(recipe?.operations)) return selected ? STAGE_LABELS[selected] : "No applied model"
++  return ["Full GBM", ...recipe.operations.map((step: { stage: ModelStage }) => STAGE_LABELS[step.stage])].join(" → ")
+ }
+ 
+ export const cellCount = (values: NestedNumbers[]): number => values.reduce<number>((sum, value) => sum + (Array.isArray(value) ? cellCount(value) : 1), 0)
+diff --git a/frontend/src/modelling/stageSettings.ts b/frontend/src/modelling/stageSettings.ts
+index 968b91519..cdc4cd71e 100644
+--- a/frontend/src/modelling/stageSettings.ts
++++ b/frontend/src/modelling/stageSettings.ts
+@@ -6,21 +6,28 @@ export type PostFitStage = Exclude<ModelStage, "full">
+ export const STAGE_LABELS: Record<ModelStage, string> = {
+   full: "Full GBM", pruned: "Pruned", banded: "Banded", smoothed: "Smoothed",
+ }
++/** A t-boost operation's storage form; a pruning operation records its path settings. */
+ export interface StageRecipeOperation {
+   stage: Exclude<ModelStage, "full">
+   parent: ModelStage
+   settings: Record<string, unknown>
++  path?: StageSettings["path"]
+ }
+-export interface StageSettings {
++/** A t-boost recipe's storage form: the applied policy, path settings included. */
++export interface StageRecipe {
+   schema_version: 1
++  operations: StageRecipeOperation[]
++}
++export const EMPTY_RECIPE: StageRecipe = { schema_version: 1, operations: [] }
++export interface StageSettings {
++  schema_version: 2
+   enabled: Record<PostFitStage, boolean>
+   path: { steps: number; main_effects: boolean; min_rows: number }
+   pruning: { fraction: number; tolerance: number; max_tables: number | null }
+   banding: { parent: "full" | "pruned"; tolerance: number; deviance_cap: number }
+   smoothing: { parent: "full" | "pruned" | "banded"; alpha: number | null; high_order_alpha: number; strength?: number }
+   selection?: { relative_tolerance: number; absolute_tolerance: number }
+-  applied_recipe: StageRecipeOperation[]
+-  applied_path: StageSettings["path"] | null
++  applied_recipe: StageRecipe
+ }
+ 
+ const object = (value: unknown): Record<string, unknown> =>
+@@ -30,19 +37,18 @@ const object = (value: unknown): Record<string, unknown> =>
+ export function stageConfiguration(config: Record<string, unknown>): { params: Record<string, unknown>; stages: StageSettings } {
+   const params = { ...object(config.params) }
+   const raw = object(config.stages)
+-  if (raw.schema_version !== undefined && raw.schema_version !== 1) throw new Error("Unsupported stage settings version. Update Haute before editing this model.")
++  if (raw.schema_version !== undefined && raw.schema_version !== 2) throw new Error("Unsupported stage settings version. Update Haute before editing this model.")
+   const stages: StageSettings = {
+-    schema_version: 1,
++    schema_version: 2,
+     enabled: { pruned: true, banded: true, smoothed: true },
+     path: { steps: 32, main_effects: false, min_rows: 500, ...object(raw.path) },
+     pruning: { fraction: .995, tolerance: .001, max_tables: null, ...object(raw.pruning) },
+     banding: { parent: "pruned", tolerance: .75, deviance_cap: .001, ...object(raw.banding) },
+     smoothing: { parent: "banded", alpha: null, high_order_alpha: 0, strength: 1, ...object(raw.smoothing) },
+     selection: { relative_tolerance: .001, absolute_tolerance: 1e-10, ...object(raw.selection) },
+-    applied_path: raw.applied_path == null ? null : structuredClone(raw.applied_path as StageSettings["path"]),
+-    applied_recipe: structuredClone((raw.applied_recipe ?? []) as StageRecipeOperation[]),
++    applied_recipe: structuredClone((raw.applied_recipe ?? EMPTY_RECIPE) as StageRecipe),
+   }
+-  const moved: Record<string, [keyof Omit<StageSettings, "schema_version" | "applied_recipe" | "applied_path" | "enabled" | "selection">, string]> = {
++  const moved: Record<string, [keyof Omit<StageSettings, "schema_version" | "applied_recipe" | "enabled" | "selection">, string]> = {
+     prune_path_steps: ["path", "steps"], prune_main_effects: ["path", "main_effects"],
+     prune_guard_min_rows: ["path", "min_rows"], prune_path_fraction: ["pruning", "fraction"],
+     prune_path_tolerance: ["pruning", "tolerance"], band_tolerance: ["banding", "tolerance"],
+@@ -88,11 +94,25 @@ export function nextEnabledStage(settings: StageSettings, applied: ModelStage):
+   return STAGES.slice(STAGES.indexOf(applied) + 1).find((stage) => stage !== "full" && settings.enabled[stage]) as PostFitStage | undefined ?? null
+ }
+ 
+-export function stageMatchesDraft(settings: StageSettings, stage: PostFitStage, snapshot: Record<string, unknown>, path: unknown): boolean {
++/** The pruning-path settings a configuration's applied model was built with, else its draft's. */
++export function appliedPath(configuration: Record<string, unknown>): unknown {
++  const recipe = object(configuration.applied_recipe) as Partial<StageRecipe>
++  return recipe.operations?.find((operation) => operation.stage === "pruned")?.path ?? configuration.path
++}
++
++/** A built stage's own settings, with a pruning stage's recorded path settings. */
++export function savedStageSettings(snapshot: Record<string, unknown>): Record<string, unknown> {
++  const operation = object(snapshot.operation)
++  return { ...object(operation.settings), ...(operation.path === undefined ? {} : { path: operation.path }) }
++}
++
++/** Whether a built stage's operation is the one the draft would build now. */
++export function stageMatchesDraft(settings: StageSettings, stage: PostFitStage, snapshot: Record<string, unknown>): boolean {
+   const section = stage === "pruned" ? "pruning" : stage === "banded" ? "banding" : "smoothing"
+   const { parent = "full", ...draft } = settings[section] as unknown as Record<string, unknown>
+-  const actual = { ...object(snapshot.settings) }
++  const operation = object(snapshot.operation)
++  const actual = { ...object(operation.settings) }
+   if (stage === "smoothed") { actual.strength ??= 1; draft.strength ??= 1 }
+-  return snapshot.parent === parent && hashConfig({ settings: actual }) === hashConfig({ settings: draft })
+-    && (stage !== "pruned" || hashConfig({ path: snapshot.path_settings ?? path }) === hashConfig({ path: settings.path }))
++  return operation.parent === parent && hashConfig({ settings: actual }) === hashConfig({ settings: draft })
++    && (stage !== "pruned" || hashConfig({ path: operation.path }) === hashConfig({ path: settings.path }))
+ }
+diff --git a/frontend/src/modelling/useStagedTraining.ts b/frontend/src/modelling/useStagedTraining.ts
+index 827084d9f..eb94fb8ea 100644
+--- a/frontend/src/modelling/useStagedTraining.ts
++++ b/frontend/src/modelling/useStagedTraining.ts
+@@ -11,7 +11,7 @@ import { hashConfig } from "../utils/configHash"
+ import { INTERACTIVE_MODEL_KEYS, applyModelUpdate, interactiveModels, modelConfig } from "./interactiveModels"
+ import type { TrainResponse } from "../api/types"
+ import { selectedPathPoint, type AvailablePath } from "./pathSelection"
+-import { stageConfiguration, type PostFitStage } from "./stageSettings"
++import { EMPTY_RECIPE, stageConfiguration, type PostFitStage } from "./stageSettings"
+ import type { ModelStage } from "./stageSettings"
+ 
+ /** Match the stage-training draft without committing edits when a saved view opens. */
+@@ -217,7 +217,7 @@ export function useStagedTraining({ enabled, resultKey, request, jobId }: {
+         const actual = next.current?.result.response.staged?.configuration
+         const restored = Object.fromEntries(INTERACTIVE_MODEL_KEYS.map((field) => [field, saved[field]]))
+         if (actual) restored.stages = { ...(saved.stages as Record<string, unknown> | undefined),
+-          applied_recipe: actual.applied_recipe, applied_path: actual.applied_path ?? null }
++          applied_recipe: actual.applied_recipe }
+         const result = onRestore(restored)
+         if (result && typeof result === "object" && "ok" in result && result.ok === false) {
+           throw new Error("The checkpoint was restored, but its settings could not be adopted. Reopen the model and restore again.")
+@@ -260,7 +260,7 @@ export function useAppliedStageRecipe(state: StageState | undefined, config: Rec
+     const actual = applied.result.response.staged?.configuration
+     if (!actual) return
+     const drafts = config.stages as Record<string, unknown> | undefined
+-    const selected: Record<string, unknown> = { applied_recipe: actual.applied_recipe, applied_path: actual.applied_path ?? null }
++    const selected: Record<string, unknown> = { applied_recipe: actual.applied_recipe }
+     if (adoption?.revision === applied.revision) {
+       const section = adoption.stage === "pruned" ? "pruning" : adoption.stage === "banded" ? "banding" : "smoothing"
+       selected[section] = actual[section]
+@@ -269,7 +269,7 @@ export function useAppliedStageRecipe(state: StageState | undefined, config: Rec
+       selected.enabled = { ...draftSettings.enabled, [adoption.stage]: actualSettings.enabled[adoption.stage] }
+       if (adoption.stage === "pruned") selected.path = actual.path
+     }
+-    if (adoption?.revision === applied.revision || hashConfig(selected) !== hashConfig({ applied_recipe: drafts?.applied_recipe ?? [], applied_path: drafts?.applied_path ?? null })) {
++    if (adoption?.revision === applied.revision || hashConfig(selected) !== hashConfig({ applied_recipe: drafts?.applied_recipe ?? EMPTY_RECIPE })) {
+       const result = onUpdate({ stages: { ...drafts, ...selected } })
+       if (result && typeof result === "object" && "ok" in result && result.ok === false) return
+     }
+diff --git a/frontend/src/panels/ModellingConfig.tsx b/frontend/src/panels/ModellingConfig.tsx
+index 867d02e7d..d4021ce1d 100644
+--- a/frontend/src/panels/ModellingConfig.tsx
++++ b/frontend/src/panels/ModellingConfig.tsx
+@@ -26,7 +26,7 @@ import useModellingViewStore, { openModelInModellingView, type TrainAction } fro
+ import { applyModelUpdate, hasModels, interactiveModels, modelResultKey } from "../modelling/interactiveModels"
+ import { ModelCheckpoints } from "../modelling/ModelCheckpoints"
+ import { TrainingPane } from "../modelling/TrainingPane"
+-import { stageConfiguration, stageMatchesDraft, STAGES, type ModelStage } from "../modelling/stageSettings"
++import { appliedPath, EMPTY_RECIPE, stageConfiguration, stageMatchesDraft, STAGES, type ModelStage } from "../modelling/stageSettings"
+ import { availablePaths, selectedCandidate, selectedPathPoint } from "../modelling/pathSelection"
+ import { useStagedTraining, useAppliedStageRecipe, useStagedViews } from "../modelling/useStagedTraining"
+ import { hashConfig } from "../utils/configHash"
+@@ -779,7 +779,7 @@ function ModellingEditor({
+     const target = { ...requestTarget() }
+     if (operation !== undefined && modelId !== undefined) {
+       const updates = { params: stagedDraft.params, stages: stagedDraft.stages }
+-      const submitted = operation === "full" ? { ...updates, stages: { ...updates.stages, applied_recipe: [] } } : updates
++      const submitted = operation === "full" ? { ...updates, stages: { ...updates.stages, applied_recipe: EMPTY_RECIPE } } : updates
+       const updated = onUpdate(updates)
+       if (updated?.ok === false) { setSubmitting(false); return }
+       target.graph = { ...target.graph, nodes: target.graph.nodes.map((node) => node.id === target.nodeId
+@@ -791,7 +791,7 @@ function ModellingEditor({
+     const lineage = trainingLineage(target.graph)
+     const configHash = operation === undefined ? trainingHash : hashConfig(trainingIdentityConfig({
+       ...config, params: stagedDraft.params, stages: { ...stagedDraft.stages,
+-        applied_recipe: operation === "full" ? [] : stagedDraft.stages.applied_recipe },
++        applied_recipe: operation === "full" ? EMPTY_RECIPE : stagedDraft.stages.applied_recipe },
+     }))
+     const attempt = { configHash, source: activeSource, structuralVersion }
+     try {
+@@ -1005,7 +1005,7 @@ function ModellingEditor({
+             const snapshot = current?.stages[name]
+             if (!snapshot) continue
+             if (!stagedDraft.stages.enabled[name] || pending.includes(snapshot.parent as ModelStage)
+-              || !stageMatchesDraft(stagedDraft.stages, name, snapshot, current.configuration.applied_path ?? current.configuration.path)) pending.push(name)
++              || !stageMatchesDraft(stagedDraft.stages, name, snapshot)) pending.push(name)
+           }
+           const savedJob = stageBuild.state?.job
+           const queued = stageBuild.state?.next_preview?.status === "queued"
+@@ -1061,7 +1061,7 @@ function ModellingEditor({
+               pending={pending}
+               stages={STAGES.filter((name) => current?.stages[name] !== undefined)}
+               pathAvailable={current?.pruning_path != null}
+-              pathChanged={current !== undefined && hashConfig({ path: current.configuration.applied_path ?? current.configuration.path }) !== hashConfig({ path: stagedDraft.stages.path })}
++              pathChanged={current !== undefined && hashConfig({ path: appliedPath(current.configuration) }) !== hashConfig({ path: stagedDraft.stages.path })}
+               active={active} busy={submitting || cancelling || stageBuild.busy || queued}
+               blocked={hasTrainingConfigurationIssues || Boolean(stagedDraft.error) || otherTraining}
+               blockingReasons={[...validationIssues.map((issue) => issue.message),
+diff --git a/frontend/src/panels/__tests__/ModellingConfig.test.tsx b/frontend/src/panels/__tests__/ModellingConfig.test.tsx
+index 7c5c33cd8..837b3f173 100644
+--- a/frontend/src/panels/__tests__/ModellingConfig.test.tsx
++++ b/frontend/src/panels/__tests__/ModellingConfig.test.tsx
+@@ -170,7 +170,7 @@ it("keeps the evaluation estimate when only a staged recipe changes, but refresh
+       <ModellingConfig {...props} config={next} />
+     </GraphProvider>,
+   )
+-  renderNext({ ...config, stages: { smoothing: { strength: 4 }, applied_recipe: [{ stage: "pruned" }] } })
++  renderNext({ ...config, stages: { smoothing: { strength: 4 }, applied_recipe: { schema_version: 1, operations: [{ stage: "pruned" }] } } })
+   expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(count)
+   renderNext({ ...config, evaluation: { ...config.evaluation, seed: 99 } })
+   expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(count + 1)
+@@ -3687,7 +3687,7 @@ describe("Staged interactive training", () => {
+     mockReadStages.mockResolvedValue({ schema_version: 1, next_preview: null, checkpoints: [], current: null, preview: null, job: null, stale_reason: null })
+     mockTrainModel.mockResolvedValue({ status: "started", job_id: "staged-gbm" })
+     mockCancelTrain.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
+-    const recipe = [{ stage: "smoothed", parent: "full", settings: { alpha: .2, high_order_alpha: 0 } }]
++    const recipe = { schema_version: 1, operations: [{ stage: "smoothed", parent: "full", settings: { alpha: .2, high_order_alpha: 0 } }] }
+     const onUpdate = vi.fn()
+     const flat: Record<string, unknown> = { ...defaultProps().config, algorithm: "tboost", interactive_build: true,
+       stages: { applied_recipe: recipe }, params: { n_trees: 10, n_bags: 3, prune: false, band_tolerance: null, graduate: false } }
+@@ -3704,13 +3704,13 @@ describe("Staged interactive training", () => {
+     expect(payload.model).toBe("m1")
+     const submitted = payload.graph.nodes.find((entry: { id: string }) => entry.id === "node_1").data.config.models[0]
+     expect(submitted.params).toEqual({ n_trees: 10, n_bags: 3 })
+-    expect(submitted.stages.applied_recipe).toEqual([])
++    expect(submitted.stages.applied_recipe).toEqual({ schema_version: 1, operations: [] })
+     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ stages: expect.objectContaining({ applied_recipe: recipe }) }))
+     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled())
+     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+     await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("staged-gbm"))
+     await waitFor(() => expect(screen.getByRole("button", { name: "Train GBM" })).toBeEnabled())
+-    expect(onUpdate.mock.calls.every(([updates]) => updates.stages?.applied_recipe.length !== 0)).toBe(true)
++    expect(onUpdate.mock.calls.every(([updates]) => updates.stages?.applied_recipe.operations.length !== 0)).toBe(true)
+   })
+ })
+ 
+@@ -3721,9 +3721,9 @@ it.each(["fixed", "tuning"] as const)("checkpoint restore clears the %s JSON dra
+   const config = { ...defaultProps().config, algorithm: "tboost", params: { n_trees: 40 }, stages: {},
+     ...(mode === "tuning" ? { tuning: { schema_version: 1, trial_count: 5, seed: 42, metric: "gini", search_space: { n_trees: [20, 40] } } } : {}) }
+   const label = mode === "fixed" ? "t-boost hyperparameters JSON" : "t-boost search space JSON"
+-  const response = makeCanonicalTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+-    configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+-    stages: { full: { recipe: [] } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
++  const response = makeCanonicalTrainResult({ staged: { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
++    configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
++    stages: { full: { recipe: { schema_version: 1, operations: [] } } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+   const state = { schema_version: 1, next_preview: null, checkpoints: [{ id: "c".repeat(32), name: "Baseline", revision: "a".repeat(32), created_at: "2026-11-21T00:00:00Z", output_stage: "full" }],
+     preview: null, final: null, job: null, stale_reason: null,
+     current: { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "d".repeat(64), config_digest: "f".repeat(64),
+@@ -3751,9 +3751,9 @@ it.each(["queued", "running", "finishing", "manual"] as const)("keeps %s stage w
+   const { useStagedViews } = await import("../../modelling/useStagedTraining")
+   useStagedViews.setState({ models: {}, preferences: {} })
+   const config = { ...defaultProps().config, algorithm: "tboost", params: { n_trees: 40 }, stages: {} }
+-  const response = makeCanonicalTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+-    configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+-    stages: { full: { recipe: [] } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
++  const response = makeCanonicalTrainResult({ staged: { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
++    configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
++    stages: { full: { recipe: { schema_version: 1, operations: [] } } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+   const state = { schema_version: 1, checkpoints: [], preview: null, final: null, stale_reason: null,
+     next_preview: phase === "queued" ? { operation: "pruned", parent_revision: "a".repeat(32), owner_pid: 1, status: "queued", message: "Preparing the next stage preview" } : null,
+     job: phase === "queued" ? null : { id: "followup", operation: "pruned", automatic: phase !== "manual", expected_revision: "a".repeat(32), owner_pid: 1, status: "running", message: "Running" },
+diff --git a/modelling-brainstorm/boundary-plan-2026-11-22.md b/modelling-brainstorm/boundary-plan-2026-11-22.md
+index 02fbfcfa4..7c385db47 100644
+--- a/modelling-brainstorm/boundary-plan-2026-11-22.md
++++ b/modelling-brainstorm/boundary-plan-2026-11-22.md
+@@ -51,6 +51,25 @@ Standards for every step:
+ - **Bit identity:** across thread counts, processes and seeded reruns, comparing native model bytes separately from estimator envelopes, and working banks as well as inference banks.
+ - **Caches:** they share an explicit memory budget.
+ 
++## Progress (23 Nov)
++
++- **Step 1, oracle:** recorded from the old API as data (`baselines/oracle_record.py`,
++  `oracle-staged-api.json`).
++- **Steps 2–4, t-boost:** the typed API (`tboost-api-design-2026-11-22.md`), committed as
++  t-boost `72d0075`. `oracle_compare.py` reports no difference from the old API's numbers.
++- **Steps 3, 4 and 7, Haute:**
++  - the adapter acquires its model with one `session.apply(target)`;
++  - bundles restore candidates themselves (`StageBundle.candidate`);
++  - `applied_path`, `path_params` and Haute's own recipe interpretation are removed;
++  - `StagedConfig` builds t-boost operations;
++  - stage configuration and staged payloads are schema version 2;
++  - the stage goldens are regenerated for the structural changes only. Every configuration
++    and snapshot value equals the old goldens'.
++- **Cost:** a restored 7 MB path candidate cost about 0.42 s (decode with one build, apply
++  with another build and re-serialisation, then the adapter's third build); it now costs
++  about 0.23 s (decode with one build; apply installs the snapshot).
++- **Remaining:** steps 5 (acquire before preparing frames) and 6 (`PreparedInput`).
++
+ ## Done before this plan (22 Nov)
+ 
+ - **Pruning family:** pruning budgets run together natively.
+diff --git a/specs/modelling/low-level.md b/specs/modelling/low-level.md
+index 3817fc5fa..c8f2d3d64 100644
+--- a/specs/modelling/low-level.md
++++ b/specs/modelling/low-level.md
+@@ -2883,19 +2883,21 @@ taxonomy.
+ ## Staged t-boost contract
+ 
+ `modelling._staged_config.StagedConfig` validates the optional per-model `stages` mapping.
+-Its JSON form is `{schema_version: 1, path, pruning, banding, smoothing, applied_recipe}`.
+-Omitted sections use explicit defaults; unknown keys, wrong scalar types and non-finite
+-numbers fail. `path` has `steps` (integer >=2, default32), `main_effects` (Boolean,false),
+-`min_rows` (integer >=1,500). `pruning` has `fraction` (0,1],.995), `tolerance` (>=0,.001)
+-and `max_tables` (null or non-negative integer). A manual budget cannot be combined with
+-non-default automatic controls. `banding` has parent full/pruned (defaultpruned), positive
+-`tolerance` (.75) and `deviance_cap` (.001). `smoothing` has parent full/pruned/banded
+-(defaultbanded), `alpha` (null or non-negative) and `high_order_alpha` ([0,1],0).
+-
+-`applied_recipe` defaults to an empty list (full output). Each entry has exact keys
+-`stage`, `parent`, `settings`; it must form an increasing continuous chain beginning at
+-full, with the same per-stage field validation. It contains no support sets, path indices,
+-artifact paths or row identifiers. The canonical GBM `params` and tuning space reject
++Its JSON form is `{schema_version: 2, path, pruning, banding, smoothing, selection, enabled,
++applied_recipe}`. The draft sections and enabled phases are Haute's; what a draft means is
++t-boost's. `operation(stage)` builds the t-boost operation a draft describes (`Prune`, with
++the draft `path` as its `PruningPathSettings`; `Band`; `Smooth`), and t-boost validates it.
++Omitted sections use explicit defaults: `path` `steps` 32, `main_effects` false, `min_rows`
++500; `pruning` `fraction` .995, `tolerance` .001, `max_tables` null; `banding` parent pruned,
++`tolerance` .75, `deviance_cap` .001; `smoothing` parent banded, `alpha` null,
++`high_order_alpha` 0, `strength` 1. Haute itself validates only `selection` (its
++recommendation tolerances) and the enabled flags. `require_parent(parent, recipe)` refuses a
++parent stage built without the enabled phases.
++
++`applied_recipe` is a t-boost `Recipe` in its plain form, `{schema_version: 1, operations}`,
++the empty recipe meaning full output. A pruning operation records its own path settings,
++so the applied policy is complete and independent of later draft edits. It contains no
++support sets, path indices, artifact paths or row identifiers. The canonical GBM `params` and tuning space reject
+ post-fit parameters whenever `stages` is present, with the parameter and owning stage in
+ the error. Only descriptors declaring staged-training support admit this contract.
+ Legacy flat params remain unchanged without `stages`. Migration is explicit: the editor
+@@ -2903,8 +2905,13 @@ creates staged settings on the first requested staged build, moves supported pos
+ settings to their section and refuses unsupported legacy controls instead of ignoring them.
+ 
+ The t-boost adapter accepts `stages` through canonical training kwargs. It prepares labels,
+-offsets, categories, groups and callbacks once through existing helpers, calls public
+-`fit_staged`, then public `apply_recipe`; it never orchestrates private library methods.
++offsets, categories, groups and callbacks once through existing helpers, then acquires its
++model with one public `session.apply(target)`. A fresh fit's target is the applied recipe; a
++stage job passes the retained session with either the draft operation (checked with
++`require_parent`) or the exact path candidate the bundle restored (`StageBundle.candidate`),
++whose validated estimator becomes the model, so a path point costs one estimator build. It
++never orchestrates private library methods, and it passes no pruning-path parameters to the
++fit: they belong to each `Prune`.
+ The native model retains its session while the job publishes checkpoints and records the
+ recipe in Haute's native metadata. Inference export remains loadable through plain t-boost.
+ No checkpoint is implicitly loaded from a user-supplied native inference artifact.
+@@ -3064,9 +3071,13 @@ includes the shared local-source content proof and imported utility fingerprint;
+ providers continue using the explicitly frozen build snapshot until a new build.
+ 
+ 
+-Applied recipes retain `applied_path` separately from draft `path` settings. Pruned stage
+-snapshots also retain their path settings, so selecting a previously built pruned parent
+-preserves its replay settings even after a different output chain was selected. Only a
++Applied recipes carry their pruning operation's path settings, separately from draft `path`
++settings. Stage snapshots record the t-boost `StageInfo` (stage, revision, parent, parent
++revision and operation) and their recipe, so selecting a previously built pruned parent
++preserves its replay settings even after a different output chain was selected. The staged
++summary shows the pruning evidence the retained pruned stage was built from, or, before
++pruning, the draft path's; it is computed before the chain is saved, so the checkpoint
++stores it. Only a
+ successful full publication clears the canonical applied recipe; failed/cancelled rebuilds
+ leave it intact. All model restorers synchronise completed recipes, including background
+ models. Overlay compatibility includes target, task, positive-class, weight, offset and
+@@ -3347,8 +3358,10 @@ work. Unknown source cardinality keeps the conservative whole-budget reservation
+ 
+ ### Stage storage (version 2)
+ 
+-Format versions are: store manifest `schema_version` 3, revision manifest version 2,
+-portable `.hstage` version 2, and t-boost training checkpoint and path-candidate version 2.
++Format versions are: store manifest `schema_version` 4, revision manifest version 2,
++portable `.hstage` version 2, and t-boost training checkpoint and path-candidate version 3.
++Store schema 4 coincides with staged payload schema 2 (typed stage records); an older store
++reads as empty until a full build replaces it.
+ Public stage-state schema version 1 is unchanged; storage versions never appear in public
+ responses.
+ 
+diff --git a/src/haute/modelling/_candidate_run.py b/src/haute/modelling/_candidate_run.py
+index e4ee4aa1a..e8f224cb7 100644
+--- a/src/haute/modelling/_candidate_run.py
++++ b/src/haute/modelling/_candidate_run.py
+@@ -383,10 +383,9 @@ def build_candidate_run(
+ 
+         staged = StagedConfig.from_plain_data(stages)
+         tags["haute.output_stage"] = staged.output_stage
+-        if any(op["stage"] == "pruned" for op in staged.applied_recipe):
+-            params["stage_path"] = json.dumps(staged.path_params, sort_keys=True)
++        # The recipe carries its pruning-path settings.
+         params["stage_recipe"] = json.dumps(
+-            staged.applied_recipe, sort_keys=True, separators=(",", ":")
++            staged.applied_recipe.to_plain_data(), sort_keys=True, separators=(",", ":")
+         )
+     if provenance.node_id:
+         tags["haute.node_id"] = provenance.node_id
+diff --git a/src/haute/modelling/_stage_paths.py b/src/haute/modelling/_stage_paths.py
+index 5ce451f37..c9b383247 100644
+--- a/src/haute/modelling/_stage_paths.py
++++ b/src/haute/modelling/_stage_paths.py
+@@ -152,10 +152,11 @@ def _reuse_evaluation(
+ 
+     result = copy.deepcopy(prior)
+     reference = bundle.metadata["staged"]["reference_fit"]
+-    session = bundle.session(reference, point_id=point["id"])
+-    selected = bundle.metadata["path"]["parent"] if point["identity"] else runtime.operation
++    session = bundle.session(reference, raw=True)
++    acquired = session.apply(bundle.candidate(reference, session, point_id=point["id"]))
++    selected = acquired.info.stage
+     runtime.fits = copy.deepcopy(bundle.metadata["fits"])
+-    runtime.remember_session(reference, session, selected)
++    runtime.remember_session(reference, session, selected, job.stages)
+     runtime.oof_rows = int(prior.staged["diagnostics_basis"] == "out_of_fold")
+     runtime.finalize(job, result, str(bundle.source), bundle.plan)
+     # Alias exports carry the alias's own policy and stage revision, even though
+@@ -166,7 +167,7 @@ def _reuse_evaluation(
+         if source.is_file():
+             shutil.copyfile(source, output / source.name)
+     model = TBoostModel.load(prior.model_path)
+-    model.estimator = session.model(selected)
++    model.estimator = acquired.model
+     model.training_session, model.selected_stage = session, selected
+     result.model_path = str(output / Path(prior.model_path).name)
+     model.save(Path(result.model_path))
+@@ -185,20 +186,21 @@ def _pruning_budgets(
+ 
+     Each fit's configured parent is written here once; the family loop reuses it.
+     """
++    selection = config.operation("pruned")
+     schedule: list[int] = []
+     minimum = 0
+     for index, key in enumerate(fit_keys):
+         cancel()
+         # Each fit is read before its own replacement, so the previous envelope still
+-        # applies here; it is dropped once every parent is flattened.
++        # applies here; it is dropped once every parent is flattened. The replacement
++        # chain also stores this fit's evidence for the selection's path settings.
+         session = bundle.session(key)
+-        session.configure_path(**config.to_plain_data()["path"])
+-        evidence = session.pruning_path
++        evidence = session.pruning_path(selection.path)
+         if evidence is None:
+-            raise HauteValidationError(session.path_unavailable_reason)
++            raise HauteValidationError(session.pruning_unavailable_reason(selection.path))
+         minimum = max(minimum, evidence["table_counts"][0])
+         if index == 0:
+-            schedule = session.pruning_budgets(**config.operation("pruned")["settings"])
++            schedule = session.pruning_budgets(selection)
+         bundle.replace_checkpoint(key, session)
+         del session
+     bundle.metadata.pop("path", None)
+@@ -252,6 +254,17 @@ def _resolve_point_paths(
+     return TrainResult(**stored)
+ 
+ 
++def _path_request(operation: Any, budgets: list[int] | None) -> Any:
++    """The t-boost path request for a draft operation (budgets: the cross-fit schedule)."""
++    from t_boost import Band, BandPath, Prune, PrunePath, SmoothPath
++
++    if isinstance(operation, Prune):
++        return PrunePath(operation, None if budgets is None else tuple(budgets))
++    if isinstance(operation, Band):
++        return BandPath(operation)
++    return SmoothPath(operation)
++
++
+ def run_path_job(
+     bundle: StageBundle,
+     *,
+@@ -265,7 +278,7 @@ def run_path_job(
+     from haute.modelling._training_job import TrainingJob
+ 
+     op = config.operation(operation)
+-    parent, settings = op["parent"], op["settings"]
++    parent = op.parent
+     original = copy.deepcopy(bundle.metadata)
+     reference = original["staged"]["reference_fit"]
+     fit_keys = [reference, *(key for key in original["fits"] if key != reference)]
+@@ -285,35 +298,25 @@ def run_path_job(
+     for key in fit_keys:
+         cancel()
+         session = bundle.session(key)
+-        enabled = config.to_plain_data().get("enabled")
+-        if enabled is not None:
+-            from haute.modelling._staged_config import STAGE_NAMES
+-
+-            expected = [
+-                stage for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1] if enabled[stage]
+-            ]
+-            if [item["stage"] for item in session.recipe(parent)] != expected:
+-                raise HauteValidationError(f"Rebuild {parent} with the enabled phases first")
+-        if operation == "pruned":
+-            session.configure_path(**config.to_plain_data()["path"])
+-        family = session.prepare_path(
+-            operation, parent=parent, settings=settings, values=pruning_budgets
+-        )
++        config.require_parent(parent, session.stage(parent).recipe)
++        family = session.prepare_path(_path_request(op, pruning_budgets))
++        metadata = [candidate.to_plain_data() for candidate in family.candidates]
+         if key == reference:
+-            points = family.points
+-        if [p["id"] for p in family.points] != [p["id"] for p in points]:
++            points = metadata
++        if [p["id"] for p in metadata] != [p["id"] for p in points]:
+             raise HauteValidationError("Retained fits produced different logical path points")
+         family_ids[key] = family.path_id
+-        parent_revisions[key] = session.stages[parent]["revision"]
++        parent_revisions[key] = session.stages[parent].revision
+         # Flatten a previous path envelope once; all new candidates share this parent.
+         if flatten:
+             bundle.replace_checkpoint(key, session)
+-        for point in family.points:
+-            outcomes.setdefault(point["id"], []).append(point["diagnostics"]["outcome_id"])
+-            destination = bundle.scratch / f"candidate-{point['id']}-{key}.member"
+-            destination.write_bytes(family.candidate_bytes(point["id"]))
+-            pending[(point["id"], key)] = destination
+-            fold_status.setdefault(point["id"], []).append(dict(fit=key, status=point["status"]))
++        for candidate in family.candidates:
++            point_id = candidate.point_id
++            outcomes.setdefault(point_id, []).append(candidate.outcome_id)
++            destination = bundle.scratch / f"candidate-{point_id}-{key}.member"
++            destination.write_bytes(candidate.to_bytes())
++            pending[(point_id, key)] = destination
++            fold_status.setdefault(point_id, []).append(dict(fit=key, status=candidate.status))
+         del family, session
+     path_id = hashlib.sha256(
+         _json(
+@@ -345,7 +348,11 @@ def run_path_job(
+         evidence=evidence,
+         metric=path_metric(original["job_kwargs"]["task"], original["job_kwargs"]["loss_function"]),
+         evaluation_identity=original["staged"]["evaluation_identity"],
+-        controls=copy.deepcopy(settings),
++        controls={
++            name: value
++            for name, value in config.to_plain_data()[_SECTIONS[operation]].items()
++            if name != "parent"
++        },
+         selection=config.to_plain_data()["selection"],
+         reference_fit=reference,
+     )
+diff --git a/src/haute/modelling/_stage_store.py b/src/haute/modelling/_stage_store.py
+index 60a4fde6a..9b56c1412 100644
+--- a/src/haute/modelling/_stage_store.py
++++ b/src/haute/modelling/_stage_store.py
+@@ -51,7 +51,8 @@ from haute.modelling._stage_views import compact_result
+ 
+ logger = get_logger(component="stage_store")
+ 
+-_SCHEMA = 3
++# 4: staged results carry t-boost's typed stage records (staged payload schema 2).
++_SCHEMA = 4
+ _HEX32 = re.compile(r"[a-f0-9]{32}\Z")
+ _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
+ _MANIFEST_LIMIT = 32 * 1024 * 1024
+diff --git a/src/haute/modelling/_staged_config.py b/src/haute/modelling/_staged_config.py
+index 4ae4d1155..fd153dda2 100644
+--- a/src/haute/modelling/_staged_config.py
++++ b/src/haute/modelling/_staged_config.py
+@@ -1,4 +1,9 @@
+-"""Versioned, replayable t-boost stage settings shared by jobs, scripts and the editor."""
++"""Versioned t-boost stage settings shared by jobs, scripts and the editor.
++
++The draft controls and the enabled phases are Haute's. What a draft means is t-boost's:
++each one becomes a t-boost operation, which validates itself, and the applied policy is a
++t-boost ``Recipe``. Haute keeps only its own selection tolerances.
++"""
+ 
+ from __future__ import annotations
+ 
+@@ -6,10 +11,14 @@ import copy
+ import math
+ from collections.abc import Mapping
+ from dataclasses import dataclass
+-from typing import Any
++from typing import TYPE_CHECKING, Any
+ 
+ from haute.errors import HauteValidationError
+ 
++if TYPE_CHECKING:
++    from t_boost import Operation, Recipe
++
++SCHEMA_VERSION = 2
+ STAGE_NAMES = ("full", "pruned", "banded", "smoothed")
+ _DEFAULTS: dict[str, dict[str, Any]] = {
+     "path": {"steps": 32, "main_effects": False, "min_rows": 500},
+@@ -32,108 +41,80 @@ def _mapping(raw: object, keys: set[str], label: str) -> dict[str, Any]:
+     return copy.deepcopy(dict(raw))
+ 
+ 
+-def _integer(value: object, minimum: int, label: str) -> None:
+-    if type(value) is not int or value < minimum:
+-        _fail(f"{label} must be an integer >= {minimum}")
+-
+-
+-def _number(
+-    value: object, minimum: float, maximum: float | None, label: str, *, positive: bool = False
+-) -> None:
++def _tolerance(value: object, label: str) -> None:
+     if (
+         isinstance(value, bool)
+         or not isinstance(value, (int, float))
+         or not math.isfinite(value)
+-        or value < minimum
+-        or (positive and value == minimum)
+-        or (maximum is not None and value > maximum)
++        or value < 0
+     ):
+-        _fail(
+-            f"{label} must be a finite number {'>' if positive else '>='} {minimum}"
+-            + (f" and <= {maximum}" if maximum is not None else "")
+-        )
++        _fail(f"{label} must be a finite number >= 0")
++
++
++def _operation(section: str, values: Mapping[str, Any], path: Mapping[str, Any]) -> Operation:
++    """The t-boost operation a draft section describes; t-boost validates it."""
++    from t_boost import Band, Prune, PruningPathSettings, Smooth
++
++    try:
++        if section == "pruning":
++            return Prune(path=PruningPathSettings(**path), **values)
++        if section == "banding":
++            return Band(**values)
++        return Smooth(**values)
++    except ValueError as exc:
++        _fail(f"{section}: {exc}")
++        raise  # unreachable: _fail raises
+ 
+ 
+-def _settings(section: str, raw: object) -> dict[str, Any]:
++def _draft(section: str, raw: object, path: Mapping[str, Any]) -> dict[str, Any]:
+     values = {**_DEFAULTS[section], **_mapping(raw, set(_DEFAULTS[section]), section)}
+-    if section == "path":
+-        _integer(values["steps"], 2, "path.steps")
+-        _integer(values["min_rows"], 1, "path.min_rows")
+-        if type(values["main_effects"]) is not bool:
+-            _fail("path.main_effects must be a boolean")
+-    elif section == "pruning":
+-        _number(values["fraction"], 0, 1, "pruning.fraction", positive=True)
+-        _number(values["tolerance"], 0, None, "pruning.tolerance")
+-        if values["max_tables"] is not None:
+-            _integer(values["max_tables"], 0, "pruning.max_tables")
+-            if values["fraction"] != 0.995 or values["tolerance"] != 0.001:
+-                _fail("pruning.max_tables cannot be combined with non-default fraction/tolerance")
+-    elif section == "banding":
+-        if values["parent"] not in ("full", "pruned"):
+-            _fail("banding.parent must be full or pruned")
+-        _number(values["tolerance"], 0, None, "banding.tolerance", positive=True)
+-        _number(values["deviance_cap"], 0, None, "banding.deviance_cap", positive=True)
+-    elif section == "selection":
+-        _number(values["relative_tolerance"], 0, None, "selection.relative_tolerance")
+-        _number(values["absolute_tolerance"], 0, None, "selection.absolute_tolerance")
++    if section == "selection":
++        _tolerance(values["relative_tolerance"], "selection.relative_tolerance")
++        _tolerance(values["absolute_tolerance"], "selection.absolute_tolerance")
++    elif section == "path":
++        from t_boost import PruningPathSettings
++
++        try:
++            PruningPathSettings(**values)
++        except ValueError as exc:
++            _fail(f"path: {exc}")
+     else:
+-        if values["parent"] not in ("full", "pruned", "banded"):
+-            _fail("smoothing.parent must be full, pruned or banded")
+-        if values["alpha"] is not None:
+-            _number(values["alpha"], 0, None, "smoothing.alpha")
+-        _number(values["high_order_alpha"], 0, 1, "smoothing.high_order_alpha")
+-        _number(values["strength"], 0, None, "smoothing.strength", positive=True)
+-        if values["alpha"] is not None and values["strength"] != 1:
+-            _fail("manual smoothing alpha requires strength 1")
++        _operation(section, values, path)
+     return values
+ 
+ 
+-def _recipe(raw: object) -> list[dict[str, Any]]:
+-    if not isinstance(raw, list) or len(raw) > 3:
+-        _fail("applied_recipe must be a list of at most three operations")
+-    assert isinstance(raw, list)
+-    result = []
+-    parent = "full"
+-    for item in raw:
+-        op = _mapping(item, {"stage", "parent", "settings"}, "recipe operation")
+-        if set(op) != {"stage", "parent", "settings"}:
+-            _fail("recipe operations require stage, parent and settings")
+-        name = op["stage"]
+-        if not isinstance(name, str) or name not in _SECTIONS or op["parent"] != parent:
+-            _fail("recipe operations must form a continuous stage chain starting from full")
+-        if STAGE_NAMES.index(name) <= STAGE_NAMES.index(parent):
+-            _fail("recipe stages must proceed from full to pruned, banded or smoothed")
+-        section = _SECTIONS[name]
+-        keys = set(_DEFAULTS[section]) - {"parent"}
+-        settings = _mapping(op["settings"], keys, f"{name} settings")
+-        if name != "pruned":
+-            settings["parent"] = parent
+-        settings = _settings(section, settings)
+-        settings.pop("parent", None)
+-        if name == "smoothed" and settings.get("strength") == 1:
+-            settings.pop("strength")
+-        result.append({"stage": name, "parent": parent, "settings": settings})
+-        parent = name
+-    return result
++def _recipe(raw: object) -> Recipe:
++    from t_boost import Recipe
++
++    try:
++        return Recipe.from_plain_data(raw)
++    except ValueError as exc:
++        _fail(f"applied_recipe: {exc}")
++        raise  # unreachable: _fail raises
+ 
+ 
+ @dataclass(frozen=True)
+ class StagedConfig:
+-    """Validated settings; public projections are independent copies."""
++    """Validated draft controls and the applied recipe; projections are independent copies."""
+ 
+     _value: dict[str, Any]
++    _applied: Recipe
+ 
+     @classmethod
+     def from_plain_data(cls, raw: object) -> StagedConfig:
++        from t_boost import Recipe
++
+         value = _mapping(
+-            raw,
+-            {"schema_version", *_DEFAULTS, "applied_recipe", "applied_path", "enabled"},
+-            "configuration",
++            raw, {"schema_version", *_DEFAULTS, "applied_recipe", "enabled"}, "configuration"
+         )
+-        version = value.get("schema_version", 1)
+-        if type(version) is not int or version != 1:
+-            _fail("unsupported schema_version; expected 1")
+-        sections = {name: _settings(name, value.get(name, {})) for name in _DEFAULTS}
++        version = value.get("schema_version", SCHEMA_VERSION)
++        if type(version) is not int or version != SCHEMA_VERSION:
++            _fail(f"unsupported schema_version; expected {SCHEMA_VERSION}")
++        path = _draft("path", value.get("path", {}), {})
++        sections = {
++            name: path if name == "path" else _draft(name, value.get(name, {}), path)
++            for name in _DEFAULTS
++        }
+         enabled: dict[str, Any] | None = None
+         if "enabled" in value:
+             enabled = {
+@@ -146,52 +127,53 @@ class StagedConfig:
+             sections["smoothing"]["parent"] = (
+                 "banded" if enabled["banded"] else "pruned" if enabled["pruned"] else "full"
+             )
++        applied = _recipe(value.get("applied_recipe", Recipe().to_plain_data()))
+         return cls(
+             {
+-                "schema_version": 1,
++                "schema_version": SCHEMA_VERSION,
+                 **sections,
+                 **({"enabled": enabled} if enabled is not None else {}),
+-                "applied_recipe": _recipe(value.get("applied_recipe", [])),
+-                "applied_path": _settings("path", value["applied_path"])
+-                if value.get("applied_path") is not None
+-                else None,
+-            }
++            },
++            applied,
+         )
+ 
+     def to_plain_data(self) -> dict[str, Any]:
+-        return copy.deepcopy(self._value)
++        return {**copy.deepcopy(self._value), "applied_recipe": self._applied.to_plain_data()}
+ 
+     @property
+-    def applied_recipe(self) -> list[dict[str, Any]]:
+-        return copy.deepcopy(self._value["applied_recipe"])
++    def applied_recipe(self) -> Recipe:
++        """The applied policy: what a final or fold fit replays."""
++        return self._applied
+ 
+     @property
+     def output_stage(self) -> str:
+-        recipe = self.applied_recipe
+-        return str(recipe[-1]["stage"]) if recipe else "full"
++        return self._applied.stage
+ 
+-    @property
+-    def path_params(self) -> dict[str, Any]:
+-        value = (
+-            self._value["applied_path"]
+-            if self._value["applied_path"] is not None
+-            and any(op["stage"] == "pruned" for op in self.applied_recipe)
+-            else self._value["path"]
+-        )
+-        return {
+-            "prune_path_steps": value["steps"],
+-            "prune_main_effects": value["main_effects"],
+-            "prune_guard_min_rows": value["min_rows"],
+-        }
++    def without_applied_recipe(self) -> StagedConfig:
++        """The same drafts with nothing applied: a fresh fit's full GBM."""
++        from t_boost import Recipe
++
++        return StagedConfig(copy.deepcopy(self._value), Recipe())
+ 
+-    def operation(self, stage: str) -> dict[str, Any]:
++    def operation(self, stage: str) -> Operation:
++        """The draft operation for ``stage``; pruning carries the draft path settings."""
+         if stage not in _SECTIONS:
+             _fail(f"unknown post-fit stage {stage!r}")
+         if not self._value.get("enabled", {}).get(stage, True):
+             _fail(f"{stage} is disabled; enable that phase before running it")
+-        settings = copy.deepcopy(self._value[_SECTIONS[stage]])
+-        parent = settings.pop("parent", "full")
+-        return {"stage": stage, "parent": parent, "settings": settings}
++        section = _SECTIONS[stage]
++        return _operation(section, self._value[section], self._value["path"])
++
++    def require_parent(self, parent: str, recipe: Recipe) -> None:
++        """Refuse a parent stage that was not built with the enabled phases."""
++        enabled = self._value.get("enabled")
++        if enabled is None:
++            return
++        expected = [
++            stage for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1] if enabled[stage]
++        ]
++        if [operation.stage for operation in recipe.operations] != expected:
++            _fail(f"Rebuild {parent} with the enabled phases before using it as a parent")
+ 
+     def validate_gbm_params(self, params: Mapping[str, Any]) -> None:
+         for name in params:
+diff --git a/src/haute/modelling/_staged_runtime.py b/src/haute/modelling/_staged_runtime.py
+index d905cb778..5f99c66b0 100644
+--- a/src/haute/modelling/_staged_runtime.py
++++ b/src/haute/modelling/_staged_runtime.py
+@@ -355,20 +355,29 @@ class StageBundle:
+             cached = (identity, size, parent)
+         self._retain(key, cached)
+         session = cached[2].fork()
+-        from haute.modelling._stage_paths import resolve_path
++        if (path_id is not None or self.metadata.get("path") is not None) and not raw:
++            session.apply(self.candidate(key, session, point_id=point_id, path_id=path_id))
++        return session
+ 
+-        path = resolve_path(self, path_id) if path_id is not None else self.metadata.get("path")
+-        if path is not None and not raw:
+-            from t_boost import TBoostPathFamily
++    def candidate(
++        self, key: str, session: Any, *, point_id: str | None = None, path_id: str | None = None
++    ) -> Any:
++        """A retained fit's path point, restored and validated against ``session``.
+ 
+-            from haute.modelling._stage_paths import candidate_member, require_point
++        By default the bundle's current path and its selected point. Its model is the
++        estimator built to validate it, so applying and reading it costs one build.
++        """
++        from t_boost import TBoostCandidate
+ 
+-            point = require_point(path, point_id or path["selected_point"])
+-            family = TBoostPathFamily.from_candidate_bytes(
+-                session, self.read_bytes(candidate_member(path["id"], point["id"], key))
+-            )
+-            family.apply(session, point["id"])
+-        return session
++        from haute.modelling._stage_paths import candidate_member, require_point, resolve_path
++
++        path = resolve_path(self, path_id) if path_id is not None else self.metadata.get("path")
++        if path is None:
++            raise HauteValidationError("Stage checkpoint has no prepared path")
++        point = require_point(path, point_id or path["selected_point"])
++        return TBoostCandidate.from_bytes(
++            session, self.read_bytes(candidate_member(path["id"], point["id"], key))
++        )
+ 
+     def replace_checkpoint(self, key: str, session: Any) -> None:
+         """Write a retained fit's new stage chain from ``session``; its evidence is unchanged.
+@@ -660,18 +669,20 @@ class StageRuntime:
+         return copy.copy(shared)
+ 
+     def adapter_kwargs(self, job: Any) -> dict[str, Any]:
++        """What the adapter acquires: the exact path candidate, or the draft operation."""
+         if self.bundle is None:
+             return {}
+-        session = self.bundle.session(_fit_key(job), point_id=self.candidate_id)
++        key = _fit_key(job)
+         if self.candidate_id is not None:
+-            from haute.modelling._stage_paths import require_point
+-
+-            point = require_point(self.bundle.metadata["path"], self.candidate_id)
+-            selected = (
+-                self.bundle.metadata["path"]["parent"] if point["identity"] else self.operation
+-            )
+-            return {"stage_session": session, "prepared_stage": selected}
+-        return {"stage_session": session, "stage_operation": self.operation}
++            # The candidate's parent is in the retained chain itself; applying it replaces
++            # whatever the bundle's selected point would have installed.
++            session = self.bundle.session(key, raw=True)
++            target = self.bundle.candidate(key, session, point_id=self.candidate_id)
++            return {"stage_session": session, "stage_target": target}
++        return {
++            "stage_session": self.bundle.session(key),
++            "stage_target": job.stages.operation(self.operation),
++        }
+ 
+     def retain_trial(self, trial: StageRuntime, params: Mapping[str, Any]) -> None:
+         """Replace the retained best trial; never accumulate every candidate's banks."""
+@@ -751,25 +762,50 @@ class StageRuntime:
+         session, key = model.training_session, _fit_key(job)
+         if session is None:
+             raise HauteValidationError("Stage job did not retain its training session")
++        # The summary computes pruning evidence first, so the saved chain stores it.
++        self.remember_session(key, session, model.selected_stage, job.stages)
+         if self.candidate_id is None:
+             if self.bundle is None:
+                 session.save_evidence(self.root / f"{key}.evidence")
+                 session.save_chain(self.root / f"{key}.chain")
+             else:
+                 self.bundle.replace_checkpoint(key, session)
+-        self.remember_session(key, session, model.selected_stage)
+ 
+-    def remember_session(self, key: str, session: Any, selected: str) -> None:
+-        """Record stage identity separately from row evaluation (also used by exact aliases)."""
++    def published_path(self, config: StagedConfig) -> dict[str, Any]:
++        """The draft path settings a job publishes: a pruning job's own, else the retained ones.
++
++        Only a pruning job adopts pending path edits; other stages keep the bundle's.
++        """
++        if self.bundle is not None and self.operation != "pruned":
++            return copy.deepcopy(self.bundle.metadata["staged"]["configuration"]["path"])
++        return config.to_plain_data()["path"]
++
++    def remember_session(self, key: str, session: Any, selected: str, config: StagedConfig) -> None:
++        """Record stage identity separately from row evaluation (also used by exact aliases).
++
++        The pruning evidence shown is the one the retained pruned stage was built from,
++        or, before pruning, that of the path settings this job publishes.
++        """
++        from t_boost import Prune, PruningPathSettings
++
++        pruned = session.stages.get("pruned")
++        settings = (
++            pruned.operation.path
++            if pruned is not None
++            else PruningPathSettings(**self.published_path(config))
++        )
++        evidence = session.pruning_path(settings)
+         self.fits[key] = {"data_digest": session.data_digest}
+         self.summary = {
+             "selected_stage": selected,
+-            "stages": session.stages,
+-            "recipes": {name: session.recipe(name) for name in session.stages},
+-            "pruning_path": session.pruning_path,
+-            "path_unavailable_reason": session.path_unavailable_reason,
+-            "recommendation": session.pruning_selection()
+-            if session.pruning_path is not None
++            "stages": {name: info.to_plain_data() for name, info in session.stages.items()},
++            "recipes": {
++                name: session.stage(name).recipe.to_plain_data() for name in session.stages
++            },
++            "pruning_path": evidence,
++            "path_unavailable_reason": session.pruning_unavailable_reason(settings),
++            "recommendation": session.pruning_selection(Prune(path=settings))
++            if evidence is not None
+             else None,
+         }
+ 
+@@ -793,21 +829,9 @@ class StageRuntime:
+             raise HauteValidationError("Stage job did not capture a fitted model")
+         selected = self.summary["selected_stage"]
+         config = job.stages.to_plain_data()
+-        if self.bundle is not None and self.operation != "pruned":
+-            config["path"] = copy.deepcopy(self.bundle.metadata["staged"]["configuration"]["path"])
++        config["path"] = self.published_path(job.stages)
++        # The applied policy, path settings included, is the selected stage's own recipe.
+         config["applied_recipe"] = self.summary["recipes"][selected]
+-        uses_pruning = any(op["stage"] == "pruned" for op in config["applied_recipe"])
+-        if uses_pruning and self.operation == "pruned":
+-            config["applied_path"] = copy.deepcopy(config["path"])
+-        elif uses_pruning and self.bundle is not None:
+-            previous = self.bundle.metadata["staged"]["configuration"]
+-            config["applied_path"] = copy.deepcopy(
+-                self.bundle.metadata["staged"]["stages"]["pruned"].get("path_settings")
+-                or previous.get("applied_path")
+-                or previous["path"]
+-            )
+-        else:
+-            config["applied_path"] = None
+         job.stages = StagedConfig.from_plain_data(config)
+         kwargs = _kwargs(job)
+         digest = fit_config_digest(kwargs)
+@@ -844,11 +868,6 @@ class StageRuntime:
+         snapshots[selected] = {
+             **self.summary["stages"][selected],
+             "recipe": self.summary["recipes"][selected],
+-            **(
+-                {"path_settings": copy.deepcopy(config["applied_path"])}
+-                if selected == "pruned"
+-                else {}
+-            ),
+             # Shared, not copied: after finalisation a result's diagnostics are only read
+             # (serialised, split or returned), so the snapshot and the result cannot diverge.
+             **{name: getattr(result, name) for name in _DIAGNOSTICS},
+@@ -859,7 +878,7 @@ class StageRuntime:
+             ),
+         }
+         result.staged = {
+-            "schema_version": 1,
++            "schema_version": 2,
+             **({"diagnostic_scope": "path"} if self.candidate_id is not None else {}),
+             "selected_stage": selected,
+             "configuration": config,
+diff --git a/src/haute/modelling/_tboost.py b/src/haute/modelling/_tboost.py
+index 4a3cea890..973c9a0e1 100644
+--- a/src/haute/modelling/_tboost.py
++++ b/src/haute/modelling/_tboost.py
+@@ -294,12 +294,13 @@ class TBoostModel(NativeModel):
+         """The selected snapshot and recipe, without any retained training rows."""
+         if self.training_session is None:
+             raise HauteValidationError("This model has no resumable training session")
++        selected = self.training_session.stage(self.selected_stage)  # builds no model
+         return {
+-            "schema_version": 1,
+-            "stage": self.selected_stage,
+-            "revision": self.training_session.stages[self.selected_stage]["revision"],
+-            "recipe": self.training_session.recipe(self.selected_stage),
+-            "data_digest": self.training_session.data_digest,
++            "schema_version": 2,
++            "stage": selected.info.stage,
++            "revision": selected.info.revision,
++            "recipe": selected.recipe.to_plain_data(),
++            "data_digest": selected.data_digest,
+         }
+ 
+     selected_stage: str = "full"
+@@ -351,7 +352,7 @@ class TBoostModel(NativeModel):
+         if stage_record is not None:
+             from haute.modelling._staged_config import StagedConfig
+ 
+-            if not isinstance(stage_record, dict) or stage_record.get("schema_version") != 1:
++            if not isinstance(stage_record, dict) or stage_record.get("schema_version") != 2:
+                 raise HauteValidationError("Invalid saved t-boost stage metadata")
+             config = StagedConfig.from_plain_data({"applied_recipe": stage_record.get("recipe")})
+             if stage_record.get("stage") != config.output_stage:
+@@ -580,7 +581,7 @@ class TBoostAlgorithm(BaseAlgorithm):
+         feature_weights: dict[str, float] | None = None,
+         **kwargs: Any,
+     ) -> FitResult:
+-        from t_boost import TBoostClassifier, TBoostRegressor
++        from t_boost import Band, Prune, Smooth, TBoostClassifier, TBoostRegressor
+ 
+         from haute.modelling._descriptors import TBOOST
+ 
+@@ -591,7 +592,7 @@ class TBoostAlgorithm(BaseAlgorithm):
+         loss = kwargs.get("loss")
+         if not loss:
+             raise HauteValidationError("t-boost needs an explicit loss")
+-        from haute.modelling._staged_config import STAGE_NAMES, resolve_stages
++        from haute.modelling._staged_config import resolve_stages
+ 
+         stages = resolve_stages(kwargs.get("stages"), "tboost", params)
+         native = TBOOST.native_loss(task, str(loss))
+@@ -621,8 +622,6 @@ class TBoostAlgorithm(BaseAlgorithm):
+             "unknown_category": UNKNOWN_CATEGORY,
+             "n_jobs": threads,
+         }
+-        if stages is not None:
+-            estimator_params.update(stages.path_params)
+         if task == "classification":
+             estimator: Any = TBoostClassifier(**estimator_params)
+         else:
+@@ -652,40 +651,21 @@ class TBoostAlgorithm(BaseAlgorithm):
+                 estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
+                 history = estimator.evals_result_ if int(estimator.n_trees_) else {}
+             else:
++                # One acquisition: a fresh fit replays the applied recipe; a stage job
++                # applies its operation, or the exact candidate a path point prepared.
+                 session = kwargs.get("stage_session")
+                 if session is None:
+                     session = estimator.fit_staged(
+                         features_frame, label, **fit_kwargs, callbacks=progress
+                     )
+-                    estimator = session.apply_recipe(stages.applied_recipe)
+-                    model.selected_stage = stages.output_stage
+-                elif kwargs.get("prepared_stage") is not None:
+-                    model.selected_stage = str(kwargs["prepared_stage"])
+-                    estimator = session.model(model.selected_stage)
++                    target = stages.applied_recipe
+                 else:
+-                    operation = stages.operation(str(kwargs.get("stage_operation")))
+-                    enabled = stages.to_plain_data().get("enabled")
+-                    if enabled is not None:
+-                        parent = operation["parent"]
+-                        expected = [
+-                            stage
+-                            for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1]
+-                            if enabled[stage]
+-                        ]
+-                        if [item["stage"] for item in session.recipe(parent)] != expected:
+-                            raise HauteValidationError(
+-                                f"Rebuild {parent} with the enabled phases "
+-                                "before using it as a parent"
+-                            )
+-                    name, settings = operation["stage"], operation["settings"]
+-                    if name == "pruned":
+-                        session.configure_path(**stages.to_plain_data()["path"])
+-                        estimator = session.prune(**settings)
+-                    elif name == "banded":
+-                        estimator = session.band(parent=operation["parent"], **settings)
+-                    else:
+-                        estimator = session.smooth(parent=operation["parent"], **settings)
+-                    model.selected_stage = name
++                    target = kwargs["stage_target"]
++                    if isinstance(target, (Prune, Band, Smooth)):
++                        stages.require_parent(target.parent, session.stage(target.parent).recipe)
++                result = session.apply(target)
++                estimator = result.model
++                model.selected_stage = result.info.stage
+                 history = session.loss_history
+                 model.training_session = session
+         progress.finish()
+diff --git a/src/haute/modelling/_training_job.py b/src/haute/modelling/_training_job.py
+index 54cc76cd6..9ebbd6050 100644
+--- a/src/haute/modelling/_training_job.py
++++ b/src/haute/modelling/_training_job.py
+@@ -1693,11 +1693,7 @@ class TrainingJob:
+                         source_sha256=source_sha256,
+                     )
+                     if self.stages is not None:
+-                        from haute.modelling._staged_config import StagedConfig
+-
+-                        child.stages = StagedConfig.from_plain_data(
+-                            {**self.stages.to_plain_data(), "applied_recipe": []}
+-                        )
++                        child.stages = self.stages.without_applied_recipe()
+                     if trial_runtime is not None:
+                         child._stage_runtime = trial_runtime
+                     fit_results.append(
+@@ -1844,7 +1840,7 @@ class TrainingJob:
+             if self.purpose == "exploration" and self._stage_runtime is None:
+                 from haute.modelling._staged_runtime import StageRuntime
+ 
+-                if self.stages is not None and self.stages.applied_recipe:
++                if self.stages is not None and self.stages.applied_recipe.operations:
+                     raise HauteValidationError(
+                         "Start exploration with the full GBM before applying stages"
+                     )
+diff --git a/src/haute/routes/_training_lifecycle.py b/src/haute/routes/_training_lifecycle.py
+index 4da233576..2db5e746a 100644
+--- a/src/haute/routes/_training_lifecycle.py
++++ b/src/haute/routes/_training_lifecycle.py
+@@ -1974,7 +1974,13 @@ class TrainService:
+             if stage_scope is not None:
+                 job_kwargs["purpose"] = "exploration"
+                 if stage_scope.operation == "full":
+-                    job_kwargs["stages"] = {**job_kwargs["stages"], "applied_recipe": []}
++                    from haute.modelling._staged_config import StagedConfig
++
++                    job_kwargs["stages"] = (
++                        StagedConfig.from_plain_data(job_kwargs["stages"])
++                        .without_applied_recipe()
++                        .to_plain_data()
++                    )
+             job_kwargs["mlflow_experiment"] = (
+                 None  # GUI logging is manual: the post-training button logs.
+             )
+diff --git a/src/haute/routes/_training_paths.py b/src/haute/routes/_training_paths.py
+index 4481b1a6c..02c452218 100644
+--- a/src/haute/routes/_training_paths.py
++++ b/src/haute/routes/_training_paths.py
+@@ -88,7 +88,7 @@ def apply_path(
+                 path["stage"]: True,
+             }
+             if (
+-                StagedConfig.from_plain_data(proposed).operation(path["stage"])["parent"]
++                StagedConfig.from_plain_data(proposed).operation(path["stage"]).parent
+                 != path["parent"]
+             ):
+                 raise ConflictError("The enabled predecessor changed; prepare this path again")
+@@ -104,8 +104,7 @@ def apply_path(
+                 **merged.get("enabled", {}),
+                 path["stage"]: body.point_id != "unchanged",
+             }
+-            for key in ("applied_recipe", "applied_path"):
+-                merged[key] = copy.deepcopy(applied_config[key])
++            merged["applied_recipe"] = copy.deepcopy(applied_config["applied_recipe"])
+             if path["stage"] == "pruned":
+                 merged["path"] = copy.deepcopy(applied_config["path"])
+             merged = StagedConfig.from_plain_data(merged).to_plain_data()
+diff --git a/src/haute/schemas.py b/src/haute/schemas.py
+index 70c83573c..197166e51 100644
+--- a/src/haute/schemas.py
++++ b/src/haute/schemas.py
+@@ -4056,7 +4056,7 @@ class StagePathPayload(BaseModel):
+ 
+ class StagedBuildPayload(BaseModel):
+     model_config = ConfigDict(extra="forbid")
+-    schema_version: Literal[1]
++    schema_version: Literal[2]
+     diagnostic_scope: Literal["full", "path"] = Field(
+         default="full", exclude_if=lambda value: value == "full"
+     )
+diff --git a/tests/test_candidate_run.py b/tests/test_candidate_run.py
+index 92396951b..299e34de8 100644
+--- a/tests/test_candidate_run.py
++++ b/tests/test_candidate_run.py
+@@ -369,9 +369,18 @@ def test_an_external_memory_fit_is_recorded_on_the_candidate_run(tmp_path: Path)
+ def test_candidate_records_applied_stage_recipe_not_pending_settings(tmp_path):
+     import json
+ 
+-    recipe = [{"stage": "smoothed", "parent": "full", "settings": {"alpha": 0.2}}]
++    from t_boost import Prune, PruningPathSettings, Recipe, Smooth
++
++    path = PruningPathSettings(min_rows=20)
++    recipe = Recipe((Prune(path=path), Smooth("pruned", alpha=0.2))).to_plain_data()
+     run = _build(
+-        tmp_path, algorithm="tboost", stages={"applied_recipe": recipe, "smoothing": {"alpha": 9}}
++        tmp_path,
++        algorithm="tboost",
++        stages={"applied_recipe": recipe, "smoothing": {"alpha": 9}, "path": {"min_rows": 7}},
+     )
+     assert run.tags["haute.output_stage"] == "smoothed"
+-    assert json.loads(run.params["stage_recipe"])[0]["settings"]["alpha"] == 0.2
++    recorded = json.loads(run.params["stage_recipe"])
++    assert recorded["operations"][1]["settings"]["alpha"] == 0.2
++    # The applied recipe records its own path settings, not the pending draft's.
++    assert recorded["operations"][0]["path"]["min_rows"] == 20
++    assert "stage_path" not in run.params
+diff --git a/tests/test_stage_store.py b/tests/test_stage_store.py
+index 3263bd110..d994f2a33 100644
+--- a/tests/test_stage_store.py
++++ b/tests/test_stage_store.py
+@@ -371,7 +371,8 @@ def test_reading_an_unbuilt_model_stores_nothing(tmp_path):
+     assert {path.name for path in store._directory(key).iterdir()} <= {"manifest.lock"}
+ 
+ 
+-def test_an_older_store_reads_as_empty_until_a_full_build_reclaims_it(tmp_path):
++@pytest.mark.parametrize("older", [2, 3])
++def test_an_older_store_reads_as_empty_until_a_full_build_reclaims_it(tmp_path, older):
+     store = StageStore(tmp_path)
+     key = store.key("p", "n", "m")
+     directory = store._directory(key)
+@@ -380,12 +381,12 @@ def test_an_older_store_reads_as_empty_until_a_full_build_reclaims_it(tmp_path):
+     legacy = [directory / f"{old}.hstage", directory / f"{old}.result.json"]
+     for path in legacy:
+         path.write_bytes(b"old format")
+-    (directory / "manifest.json").write_text(json.dumps({"schema_version": 2, "current": {}}))
++    (directory / "manifest.json").write_text(json.dumps({"schema_version": older, "current": {}}))
+     assert store.snapshot(key)["current"] is None
+     assert all(path.exists() for path in legacy)  # a read interprets and removes nothing
+     publish(store, key, tmp_path)
+     assert not any(path.exists() for path in legacy)
+-    assert json.loads((directory / "manifest.json").read_bytes())["schema_version"] == 3
++    assert json.loads((directory / "manifest.json").read_bytes())["schema_version"] == 4
+ 
+ 
+ @pytest.mark.parametrize("operation", ["banded", "smoothed"])
+@@ -605,7 +606,7 @@ def test_large_dense_results_publish_and_checkpoint_without_growing_manifests(tm
+     pointer = store._directory(key) / "manifest.json"
+     assert pointer.stat().st_size < 8192
+     raw = json.loads(pointer.read_bytes())
+-    assert raw["schema_version"] == 3
++    assert raw["schema_version"] == 4
+     assert "result" not in raw["current"]
+     assert revision_file(store, key, preview.revision).stat().st_size < 8192
+     # Both revisions share one history object and one compact view.
+diff --git a/tests/test_staged_config.py b/tests/test_staged_config.py
+index 5c134cd54..29296d10c 100644
+--- a/tests/test_staged_config.py
++++ b/tests/test_staged_config.py
+@@ -1,34 +1,42 @@
+ """Stage settings are replayable and cannot silently enter the GBM parameter space."""
+ 
++import json
++
+ import pytest
++from t_boost import Band, Prune, PruningPathSettings, Recipe, Smooth
+ 
+ from haute.errors import HauteValidationError
+ from haute.modelling._staged_config import StagedConfig
+ 
+ 
+ def test_defaults_and_applied_recipe_are_independent_of_draft_controls():
+-    config = StagedConfig.from_plain_data({"schema_version": 1, "pruning": {"max_tables": 8}})
+-    assert config.applied_recipe == []
+-    assert config.operation("pruned") == {
+-        "stage": "pruned",
+-        "parent": "full",
+-        "settings": {"fraction": 0.995, "tolerance": 0.001, "max_tables": 8},
+-    }
++    config = StagedConfig.from_plain_data({"schema_version": 2, "pruning": {"max_tables": 8}})
++    assert config.applied_recipe == Recipe()
++    assert config.output_stage == "full"
++    assert config.operation("pruned") == Prune(max_tables=8)
++    assert config.operation("banded") == Band()
++    assert config.operation("smoothed") == Smooth()
+     payload = config.to_plain_data()
+-    payload["applied_recipe"] = [config.operation("pruned"), config.operation("banded")]
+-    applied = StagedConfig.from_plain_data(payload)
++    payload["applied_recipe"] = Recipe(
++        (config.operation("pruned"), config.operation("banded"))
++    ).to_plain_data()
++    applied = StagedConfig.from_plain_data(json.loads(json.dumps(payload)))
+     assert applied.output_stage == "banded"
+     assert StagedConfig.from_plain_data(applied.to_plain_data()) == applied
+-    payload["applied_recipe"][0]["settings"]["max_tables"] = 1
+-    assert applied.applied_recipe[0]["settings"]["max_tables"] == 8
++    payload["applied_recipe"]["operations"][0]["settings"]["max_tables"] = 1
++    assert applied.applied_recipe.operations[0].max_tables == 8
++    assert applied.without_applied_recipe().applied_recipe == Recipe()
++    assert applied.without_applied_recipe().to_plain_data()["pruning"]["max_tables"] == 8
+ 
+ 
+ @pytest.mark.parametrize(
+     "payload",
+     [
+-        {"schema_version": 2},
++        {"schema_version": 1},
++        {"schema_version": 3},
+         {"schema_version": True},
+         {"extra": 1},
++        {"applied_path": None},
+         {"path": {"steps": 1}},
+         {"path": {"main_effects": 1}},
+         {"pruning": {"max_tables": True}},
+@@ -37,8 +45,21 @@ def test_defaults_and_applied_recipe_are_independent_of_draft_controls():
+         {"banding": {"parent": "smoothed"}},
+         {"smoothing": {"high_order_alpha": 1.1}},
+         {"smoothing": {"alpha": True}},
+-        {"applied_recipe": [{"stage": "smoothed", "parent": "banded", "settings": {}}]},
+-        {"applied_recipe": [{"stage": "pruned", "parent": "full", "settings": {"alpha": 1}}]},
++        {"smoothing": {"alpha": 1.0, "strength": 2.0}},
++        {"selection": {"relative_tolerance": -1}},
++        {"applied_recipe": []},
++        {
++            "applied_recipe": {
++                "schema_version": 1,
++                "operations": [Smooth("banded").to_plain_data()],
++            }
++        },
++        {
++            "applied_recipe": {
++                "schema_version": 1,
++                "operations": [{"stage": "pruned", "parent": "full", "settings": {"alpha": 1}}],
++            }
++        },
+     ],
+ )
+ def test_invalid_settings_are_actionable(payload):
+@@ -54,20 +75,16 @@ def test_postfit_settings_are_not_gbm_or_tuning_parameters():
+             config.validate_gbm_params({key: 1})
+ 
+ 
+-def test_applied_path_is_independent_of_pending_path_settings():
+-    recipe = [{"stage": "pruned", "parent": "full", "settings": {}}]
++def test_applied_recipe_carries_its_path_independently_of_pending_path_settings():
++    applied = PruningPathSettings(steps=16, main_effects=True, min_rows=20)
+     config = StagedConfig.from_plain_data(
+         {
+-            "applied_recipe": recipe,
+-            "applied_path": {"steps": 16, "min_rows": 20, "main_effects": True},
++            "applied_recipe": Recipe((Prune(path=applied),)).to_plain_data(),
+             "path": {"steps": 32, "min_rows": 99999, "main_effects": False},
+         }
+     )
+-    assert config.path_params == {
+-        "prune_path_steps": 16,
+-        "prune_guard_min_rows": 20,
+-        "prune_main_effects": True,
+-    }
++    assert config.applied_recipe.operations[0].path == applied
++    assert config.operation("pruned").path == PruningPathSettings(min_rows=99999)
+     assert config.to_plain_data()["path"]["min_rows"] == 99999
+ 
+ 
+@@ -84,12 +101,19 @@ def test_enabled_phases_resolve_the_previous_enabled_parent(pruning, banding, sm
+         ("smoothed", "banded" if banding else "pruned" if pruning else "full"),
+     ):
+         if enabled[stage]:
+-            assert config.operation(stage)["parent"] == parent
++            assert config.operation(stage).parent == parent
+         else:
+             with pytest.raises(HauteValidationError, match="disabled"):
+                 config.operation(stage)
+ 
+ 
++def test_a_parent_must_have_been_built_with_the_enabled_phases():
++    config = StagedConfig.from_plain_data({"enabled": {"pruned": False}})
++    config.require_parent("banded", Recipe((Band("full"),)))
++    with pytest.raises(HauteValidationError, match="Rebuild banded"):
++        config.require_parent("banded", Recipe((Prune(), Band("pruned"))))
++
++
+ @pytest.mark.parametrize("enabled", [{"pruned": 1}, {"unknown": True}, None])
+ def test_phase_flags_refuse_invalid_values(enabled):
+     with pytest.raises(HauteValidationError, match="enabled"):
+@@ -97,9 +121,9 @@ def test_phase_flags_refuse_invalid_values(enabled):
+ 
+ 
+ def test_phase_drafts_leave_existing_applied_recipe_unchanged():
+-    recipe = [{"stage": "pruned", "parent": "full", "settings": {}}]
++    recipe = Recipe((Prune(),)).to_plain_data()
+     config = StagedConfig.from_plain_data({"enabled": {"pruned": False}, "applied_recipe": recipe})
+     assert config.output_stage == "pruned"
+-    assert config.applied_recipe[0]["stage"] == "pruned"
++    assert config.applied_recipe.operations[0] == Prune()
+     legacy = StagedConfig.from_plain_data({"smoothing": {"parent": "full"}})
+-    assert legacy.operation("smoothed")["parent"] == "full"
++    assert legacy.operation("smoothed").parent == "full"
+diff --git a/tests/test_staged_runtime.py b/tests/test_staged_runtime.py
+index 25883be01..988f6435d 100644
+--- a/tests/test_staged_runtime.py
++++ b/tests/test_staged_runtime.py
+@@ -4,9 +4,10 @@ from pathlib import Path
+ 
+ import numpy as np
+ import pytest
+-from t_boost import _Booster
++from t_boost import PruningPathSettings, _Booster
+ 
+ from haute.modelling._stage_objects import StageArchive, read_archive_object
++from haute.modelling._staged_config import StagedConfig
+ from haute.modelling._staged_runtime import open_stage_bundle, run_stage_job
+ from haute.modelling._tboost import TBoostModel
+ from haute.modelling._training_job import TrainingJob
+@@ -41,16 +42,20 @@ def build(tmp_path, validation=None):
+     return data, result
+ 
+ 
++def draft(bundle, stage):
++    """The draft operation the bundle's own stage settings describe."""
++    return StagedConfig.from_plain_data(bundle.metadata["job_kwargs"]["stages"]).operation(stage)
++
++
+ def test_full_prune_band_smooth_resume_through_canonical_jobs(tmp_path, monkeypatch):
+     data, full = build(tmp_path)
+     checkpoint = full.stage_checkpoint_path
+     assert checkpoint is not None
+     with open_stage_bundle(checkpoint) as bundle:
+-        expected_session = bundle.session("validation-0")
+-        expected_session.prune()
+-        expected_session.band()
+-        expected = expected_session.smooth()
+         settings = bundle.metadata["job_kwargs"]["stages"]
++        expected_session = bundle.session("validation-0")
++        for stage in ("pruned", "banded", "smoothed"):
++            expected = expected_session.apply(draft(bundle, stage)).model
+     with open(checkpoint, "rb") as source:
+         original = source.read()
+     monkeypatch.setattr(_Booster, "fit", lambda *a, **kw: pytest.fail("resumed job fitted"))
+@@ -103,15 +108,19 @@ def test_bundle_reuses_validated_parent_without_sharing_stage_mutations(tmp_path
+     _, full = build(tmp_path)
+     with open_stage_bundle(full.stage_checkpoint_path) as bundle:
+         first = bundle.session("validation-0")
+-        first.prune()
++        first.apply(draft(bundle, "pruned"))
+         monkeypatch.setattr(
+             TBoostTrainingSession, "load", lambda *a, **kw: pytest.fail("parent reloaded")
+         )
+         second = bundle.session("validation-0")
+         assert set(second.stages) == {"full"}
+         np.testing.assert_array_equal(
+-            second.full_model._model.predict_raw(second._state.x, cat_x=second._state.categories),
+-            first.full_model._model.predict_raw(first._state.x, cat_x=first._state.categories),
++            second.stage("full").model._model.predict_raw(
++                second._state.x, cat_x=second._state.categories
++            ),
++            first.stage("full").model._model.predict_raw(
++                first._state.x, cat_x=first._state.categories
++            ),
+         )
+ 
+ 
+@@ -575,7 +584,7 @@ def test_cross_validation_stages_use_each_folds_predictions_and_never_test_rows(
+             predictions = np.full(len(source), np.nan)
+             for fold in range(3):
+                 session = bundle.session(f"validation-{fold}")
+-                model = replace(reference, estimator=session.model(stage))
++                model = replace(reference, estimator=session.stage(stage).model)
+                 rows = np.flatnonzero(bundle.plan.selection_mask(fold) == PARTITION_VALIDATION)
+                 assert np.isnan(predictions[rows]).all()
+                 predictions[rows] = model.predict_response(source[rows])
+@@ -643,7 +652,7 @@ def test_staged_tuning_retains_only_winner_and_resumes_without_trials(
+         assert len(bundle.metadata["fits"]) == folds + 1
+         winner = result.tuning["final_params"]
+         for key in bundle.metadata["fits"]:
+-            assert bundle.session(key).full_model.learning_rate == winner["learning_rate"]
++            assert bundle.session(key).stage("full").model.learning_rate == winner["learning_rate"]
+     monkeypatch.setattr(_Booster, "fit", lambda *a, **kw: pytest.fail("postfit tuning fitted"))
+     _, pruned = run_stage_job(
+         result.stage_checkpoint_path,
+@@ -706,7 +715,7 @@ def test_draft_path_edits_do_not_change_applied_recipe_replay(tmp_path):
+     )
+     with open_stage_bundle(pruned.stage_checkpoint_path) as bundle:
+         config = deepcopy(pruned.staged["configuration"])
+-        assert config["applied_path"]["min_rows"] == 20
++        assert config["applied_recipe"]["operations"][0]["path"]["min_rows"] == 20
+         kwargs = {**bundle.metadata["job_kwargs"], "data": str(bundle.source), "purpose": "final"}
+         baseline = TrainingJob(
+             **{**kwargs, "stages": config, "output_dir": str(tmp_path / "baseline")}
+@@ -755,12 +764,9 @@ def test_skipped_phases_reuse_the_nearest_enabled_fit(tmp_path, monkeypatch, pru
+     for stage, enabled in (("pruned", pruning), ("banded", banding), ("smoothed", True)):
+         if not enabled:
+             continue
+-        if stage == "pruned":
+-            estimator = expected.prune()
+-        elif stage == "banded":
+-            estimator = expected.band(parent=parent)
+-        else:
+-            estimator = expected.smooth(parent=parent)
++        operation = StagedConfig.from_plain_data(settings).operation(stage)
++        assert operation.parent == parent
++        estimator = expected.apply(operation).model
+         _, result = run_stage_job(
+             previous.stage_checkpoint_path,
+             operation=stage,
+@@ -774,13 +780,31 @@ def test_skipped_phases_reuse_the_nearest_enabled_fit(tmp_path, monkeypatch, pru
+         )
+         assert result.staged["stages"][stage]["parent"] == parent
+         previous, parent = result, stage
+-    assert [op["stage"] for op in previous.staged["configuration"]["applied_recipe"]] == [
++    applied = previous.staged["configuration"]["applied_recipe"]["operations"]
++    assert [op["stage"] for op in applied] == [
+         stage
+         for stage, enabled in (("pruned", pruning), ("banded", banding), ("smoothed", True))
+         if enabled
+     ]
+ 
+ 
++def test_a_stage_built_on_full_publishes_evidence_for_the_path_it_keeps(tmp_path):
++    """Only pruning adopts a pending path edit: a banding job on full keeps the retained
++    path settings, and the evidence it shows is for those settings."""
++    _, full = build(tmp_path)
++    _, banded = run_stage_job(
++        full.stage_checkpoint_path,
++        operation="banded",
++        stages={"path": {"min_rows": 99999}, "enabled": {"pruned": False}},
++        output_dir=str(tmp_path / "banded"),
++    )
++    staged = banded.staged
++    assert staged["configuration"]["path"]["min_rows"] == 20
++    assert staged["pruning_path"] is not None
++    assert staged["path_unavailable_reason"] is None
++    assert staged["pruning_path"] == full.staged["pruning_path"]
++
++
+ def test_phase_change_requires_rebuilding_an_old_parent_chain(tmp_path, monkeypatch):
+     _, full = build(tmp_path)
+     previous = full
+@@ -863,7 +887,7 @@ def test_banding_path_retains_parent_once_and_applies_exact_candidate(
+         assert not any("split" in name for name in bundle.manifest.objects)
+         chosen = summary["points"][2]["id"]
+         candidate_result = read_path_result(bundle, summary["id"], chosen)
+-        selected = bundle.session("validation-0", point_id=chosen).model("banded")
++        selected = bundle.session("validation-0", point_id=chosen).stage("banded").model
+         from t_boost import TBoostTrainingSession
+ 
+         with monkeypatch.context() as patch:
+@@ -884,12 +908,15 @@ def test_banding_path_retains_parent_once_and_applies_exact_candidate(
+         with open_stage_bundle(artifact) as restored:
+             actual = restored.session("validation-0")
+             np.testing.assert_array_equal(
+-                actual.model("banded")._model.predict_raw(
++                actual.stage("banded").model._model.predict_raw(
+                     actual._state.x, cat_x=actual._state.categories
+                 ),
+                 selected._model.predict_raw(actual._state.x, cat_x=actual._state.categories),
+             )
+-            assert actual.recipe("banded")[-1]["settings"] == summary["points"][2]["settings"]
++            assert (
++                actual.stage("banded").recipe.operations[-1].settings()
++                == summary["points"][2]["settings"]
++            )
+ 
+ 
+ def test_smoothing_path_scores_each_retained_fold_and_preserves_earlier_paths(
+@@ -939,7 +966,7 @@ def test_smoothing_path_scores_each_retained_fold_and_preserves_earlier_paths(
+             session = bundle.session(
+                 f"validation-{fold}", path_id=smooth_path["id"], point_id="point-2"
+             )
+-            model = replace(reference, estimator=session.model("smoothed"))
++            model = replace(reference, estimator=session.stage("smoothed").model)
+             rows = np.flatnonzero(bundle.plan.selection_mask(fold) == PARTITION_VALIDATION)
+             predictions[rows] = model.predict_response(source[rows])
+         scored = np.flatnonzero(np.isfinite(predictions))
+@@ -1003,7 +1030,7 @@ def test_identical_path_outcomes_share_evaluation_but_keep_exact_policies(tmp_pa
+         alias = read_path_result(bundle, path["id"], "point-6")
+         assert alias.staged["selected_stage"] == "banded"
+         assert (
+-            alias.staged["configuration"]["applied_recipe"][-1]["settings"]
++            alias.staged["configuration"]["applied_recipe"]["operations"][-1]["settings"]
+             == path["points"][6]["settings"]
+         )
+         assert alias.metrics == read_path_result(bundle, path["id"], "unchanged").metrics
+@@ -1014,10 +1041,13 @@ def test_identical_path_outcomes_share_evaluation_but_keep_exact_policies(tmp_pa
+             session = restored.session("validation-0")
+             model = TBoostModel.load(full.model_path)
+             np.testing.assert_array_equal(
+-                session.model("banded").predict(model.prepared(data)),
++                session.stage("banded").model.predict(model.prepared(data)),
+                 model.estimator.predict(model.prepared(data)),
+             )
+-            assert applied.staged["configuration"]["applied_recipe"] == session.recipe("banded")
++            assert (
++                applied.staged["configuration"]["applied_recipe"]
++                == session.stage("banded").recipe.to_plain_data()
++            )
+ 
+ 
+ def test_pruning_path_uses_budgets_feasible_for_every_retained_fit(tmp_path):
+@@ -1048,7 +1078,9 @@ def test_pruning_path_uses_budgets_feasible_for_every_retained_fit(tmp_path):
+     ).run()
+     with open_stage_bundle(full.stage_checkpoint_path) as bundle:
+         floors = {
+-            key: bundle.session(key).pruning_path["table_counts"][0]
++            key: bundle.session(key).pruning_path(PruningPathSettings(min_rows=10))["table_counts"][
++                0
++            ]
+             for key in bundle.metadata["fits"]
+         }
+         assert max(floors.values()) > floors["development"]
+diff --git a/tests/test_staged_tboost.py b/tests/test_staged_tboost.py
+index 406033af4..0c67da877 100644
+--- a/tests/test_staged_tboost.py
++++ b/tests/test_staged_tboost.py
+@@ -4,7 +4,7 @@ import json
+ 
+ import numpy as np
+ import pytest
+-from t_boost import TBoostRegressor, _Booster
++from t_boost import Recipe, TBoostRegressor, _Booster
+ 
+ from haute.errors import HauteValidationError
+ from haute.modelling._staged_config import StagedConfig
+@@ -25,16 +25,15 @@ def test_adapter_full_then_recipe_matches_library_and_preserves_native_metadata(
+     assert session is not None
+     np.testing.assert_array_equal(
+         model.estimator.predict(model.prepared(data)),
+-        session.full_model.predict(model.prepared(data)),
++        session.stage("full").model.predict(model.prepared(data)),
+     )
+     assert model.estimator.prune is False
+     assert model.estimator.graduate is False
+     assert fitted.loss_history
+-    session.prune()
+-    session.band()
+-    expected = session.smooth()
++    for stage in ("pruned", "banded", "smoothed"):
++        expected = session.apply(config.operation(stage)).model
+     payload = config.to_plain_data()
+-    payload["applied_recipe"] = session.recipe("smoothed")
++    payload["applied_recipe"] = session.stage("smoothed").recipe.to_plain_data()
+     staged = fit_adapter(data, params=PARAMS, stages=payload, offset="exposure", weight="weight")
+     np.testing.assert_array_equal(
+         staged.model.estimator.predict(model.prepared(data)), expected.predict(model.prepared(data))
+@@ -75,7 +74,9 @@ def test_canonical_job_and_generated_script_replay_the_same_recipe(tmp_path):
+     data.write_parquet(source)
+     stages = StagedConfig.from_plain_data({"path": {"min_rows": 20}})
+     payload = stages.to_plain_data()
+-    payload["applied_recipe"] = [stages.operation("pruned"), stages.operation("banded")]
++    payload["applied_recipe"] = Recipe(
++        (stages.operation("pruned"), stages.operation("banded"))
++    ).to_plain_data()
+     config = {
+         "name": "staged",
+         "algorithm": "tboost",
+diff --git a/tests/test_training_stages.py b/tests/test_training_stages.py
+index f92afd26e..659c3a3ef 100644
+--- a/tests/test_training_stages.py
++++ b/tests/test_training_stages.py
+@@ -302,7 +302,7 @@ def test_stage_routes_restore_only_selected_model_and_apply_with_revision_checks
+         "response": TrainResponse(
+             status="started",
+             staged={
+-                "schema_version": 1,
++                "schema_version": 2,
+                 "selected_stage": "full",
+                 "evaluation_identity": "a" * 64,
+                 "fit_config_digest": digest,

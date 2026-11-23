@@ -4056,7 +4056,7 @@ class StagePathPayload(BaseModel):
 
 class StagedBuildPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     diagnostic_scope: Literal["full", "path"] = Field(
         default="full", exclude_if=lambda value: value == "full"
     )

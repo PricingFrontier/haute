@@ -383,10 +383,9 @@ def build_candidate_run(
 
         staged = StagedConfig.from_plain_data(stages)
         tags["haute.output_stage"] = staged.output_stage
-        if any(op["stage"] == "pruned" for op in staged.applied_recipe):
-            params["stage_path"] = json.dumps(staged.path_params, sort_keys=True)
+        # The recipe carries its pruning-path settings.
         params["stage_recipe"] = json.dumps(
-            staged.applied_recipe, sort_keys=True, separators=(",", ":")
+            staged.applied_recipe.to_plain_data(), sort_keys=True, separators=(",", ":")
         )
     if provenance.node_id:
         tags["haute.node_id"] = provenance.node_id

@@ -5457,7 +5457,7 @@ export interface StagedBuildPayload {
     [k: string]: unknown;
   } | null;
   reference_fit: 'development' | 'validation-0';
-  schema_version: 1;
+  schema_version: 2;
   selected_stage: 'full' | 'pruned' | 'banded' | 'smoothed';
   stages: {
     [k: string]: {

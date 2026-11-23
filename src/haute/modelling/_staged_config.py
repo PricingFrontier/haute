@@ -1,4 +1,9 @@
-"""Versioned, replayable t-boost stage settings shared by jobs, scripts and the editor."""
+"""Versioned t-boost stage settings shared by jobs, scripts and the editor.
+
+The draft controls and the enabled phases are Haute's. What a draft means is t-boost's:
+each one becomes a t-boost operation, which validates itself, and the applied policy is a
+t-boost ``Recipe``. Haute keeps only its own selection tolerances.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +11,14 @@ import copy
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from haute.errors import HauteValidationError
 
+if TYPE_CHECKING:
+    from t_boost import Operation, Recipe
+
+SCHEMA_VERSION = 2
 STAGE_NAMES = ("full", "pruned", "banded", "smoothed")
 _DEFAULTS: dict[str, dict[str, Any]] = {
     "path": {"steps": 32, "main_effects": False, "min_rows": 500},
@@ -32,108 +41,80 @@ def _mapping(raw: object, keys: set[str], label: str) -> dict[str, Any]:
     return copy.deepcopy(dict(raw))
 
 
-def _integer(value: object, minimum: int, label: str) -> None:
-    if type(value) is not int or value < minimum:
-        _fail(f"{label} must be an integer >= {minimum}")
-
-
-def _number(
-    value: object, minimum: float, maximum: float | None, label: str, *, positive: bool = False
-) -> None:
+def _tolerance(value: object, label: str) -> None:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
         or not math.isfinite(value)
-        or value < minimum
-        or (positive and value == minimum)
-        or (maximum is not None and value > maximum)
+        or value < 0
     ):
-        _fail(
-            f"{label} must be a finite number {'>' if positive else '>='} {minimum}"
-            + (f" and <= {maximum}" if maximum is not None else "")
-        )
+        _fail(f"{label} must be a finite number >= 0")
 
 
-def _settings(section: str, raw: object) -> dict[str, Any]:
+def _operation(section: str, values: Mapping[str, Any], path: Mapping[str, Any]) -> Operation:
+    """The t-boost operation a draft section describes; t-boost validates it."""
+    from t_boost import Band, Prune, PruningPathSettings, Smooth
+
+    try:
+        if section == "pruning":
+            return Prune(path=PruningPathSettings(**path), **values)
+        if section == "banding":
+            return Band(**values)
+        return Smooth(**values)
+    except ValueError as exc:
+        _fail(f"{section}: {exc}")
+        raise  # unreachable: _fail raises
+
+
+def _draft(section: str, raw: object, path: Mapping[str, Any]) -> dict[str, Any]:
     values = {**_DEFAULTS[section], **_mapping(raw, set(_DEFAULTS[section]), section)}
-    if section == "path":
-        _integer(values["steps"], 2, "path.steps")
-        _integer(values["min_rows"], 1, "path.min_rows")
-        if type(values["main_effects"]) is not bool:
-            _fail("path.main_effects must be a boolean")
-    elif section == "pruning":
-        _number(values["fraction"], 0, 1, "pruning.fraction", positive=True)
-        _number(values["tolerance"], 0, None, "pruning.tolerance")
-        if values["max_tables"] is not None:
-            _integer(values["max_tables"], 0, "pruning.max_tables")
-            if values["fraction"] != 0.995 or values["tolerance"] != 0.001:
-                _fail("pruning.max_tables cannot be combined with non-default fraction/tolerance")
-    elif section == "banding":
-        if values["parent"] not in ("full", "pruned"):
-            _fail("banding.parent must be full or pruned")
-        _number(values["tolerance"], 0, None, "banding.tolerance", positive=True)
-        _number(values["deviance_cap"], 0, None, "banding.deviance_cap", positive=True)
-    elif section == "selection":
-        _number(values["relative_tolerance"], 0, None, "selection.relative_tolerance")
-        _number(values["absolute_tolerance"], 0, None, "selection.absolute_tolerance")
+    if section == "selection":
+        _tolerance(values["relative_tolerance"], "selection.relative_tolerance")
+        _tolerance(values["absolute_tolerance"], "selection.absolute_tolerance")
+    elif section == "path":
+        from t_boost import PruningPathSettings
+
+        try:
+            PruningPathSettings(**values)
+        except ValueError as exc:
+            _fail(f"path: {exc}")
     else:
-        if values["parent"] not in ("full", "pruned", "banded"):
-            _fail("smoothing.parent must be full, pruned or banded")
-        if values["alpha"] is not None:
-            _number(values["alpha"], 0, None, "smoothing.alpha")
-        _number(values["high_order_alpha"], 0, 1, "smoothing.high_order_alpha")
-        _number(values["strength"], 0, None, "smoothing.strength", positive=True)
-        if values["alpha"] is not None and values["strength"] != 1:
-            _fail("manual smoothing alpha requires strength 1")
+        _operation(section, values, path)
     return values
 
 
-def _recipe(raw: object) -> list[dict[str, Any]]:
-    if not isinstance(raw, list) or len(raw) > 3:
-        _fail("applied_recipe must be a list of at most three operations")
-    assert isinstance(raw, list)
-    result = []
-    parent = "full"
-    for item in raw:
-        op = _mapping(item, {"stage", "parent", "settings"}, "recipe operation")
-        if set(op) != {"stage", "parent", "settings"}:
-            _fail("recipe operations require stage, parent and settings")
-        name = op["stage"]
-        if not isinstance(name, str) or name not in _SECTIONS or op["parent"] != parent:
-            _fail("recipe operations must form a continuous stage chain starting from full")
-        if STAGE_NAMES.index(name) <= STAGE_NAMES.index(parent):
-            _fail("recipe stages must proceed from full to pruned, banded or smoothed")
-        section = _SECTIONS[name]
-        keys = set(_DEFAULTS[section]) - {"parent"}
-        settings = _mapping(op["settings"], keys, f"{name} settings")
-        if name != "pruned":
-            settings["parent"] = parent
-        settings = _settings(section, settings)
-        settings.pop("parent", None)
-        if name == "smoothed" and settings.get("strength") == 1:
-            settings.pop("strength")
-        result.append({"stage": name, "parent": parent, "settings": settings})
-        parent = name
-    return result
+def _recipe(raw: object) -> Recipe:
+    from t_boost import Recipe
+
+    try:
+        return Recipe.from_plain_data(raw)
+    except ValueError as exc:
+        _fail(f"applied_recipe: {exc}")
+        raise  # unreachable: _fail raises
 
 
 @dataclass(frozen=True)
 class StagedConfig:
-    """Validated settings; public projections are independent copies."""
+    """Validated draft controls and the applied recipe; projections are independent copies."""
 
     _value: dict[str, Any]
+    _applied: Recipe
 
     @classmethod
     def from_plain_data(cls, raw: object) -> StagedConfig:
+        from t_boost import Recipe
+
         value = _mapping(
-            raw,
-            {"schema_version", *_DEFAULTS, "applied_recipe", "applied_path", "enabled"},
-            "configuration",
+            raw, {"schema_version", *_DEFAULTS, "applied_recipe", "enabled"}, "configuration"
         )
-        version = value.get("schema_version", 1)
-        if type(version) is not int or version != 1:
-            _fail("unsupported schema_version; expected 1")
-        sections = {name: _settings(name, value.get(name, {})) for name in _DEFAULTS}
+        version = value.get("schema_version", SCHEMA_VERSION)
+        if type(version) is not int or version != SCHEMA_VERSION:
+            _fail(f"unsupported schema_version; expected {SCHEMA_VERSION}")
+        path = _draft("path", value.get("path", {}), {})
+        sections = {
+            name: path if name == "path" else _draft(name, value.get(name, {}), path)
+            for name in _DEFAULTS
+        }
         enabled: dict[str, Any] | None = None
         if "enabled" in value:
             enabled = {
@@ -146,52 +127,53 @@ class StagedConfig:
             sections["smoothing"]["parent"] = (
                 "banded" if enabled["banded"] else "pruned" if enabled["pruned"] else "full"
             )
+        applied = _recipe(value.get("applied_recipe", Recipe().to_plain_data()))
         return cls(
             {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 **sections,
                 **({"enabled": enabled} if enabled is not None else {}),
-                "applied_recipe": _recipe(value.get("applied_recipe", [])),
-                "applied_path": _settings("path", value["applied_path"])
-                if value.get("applied_path") is not None
-                else None,
-            }
+            },
+            applied,
         )
 
     def to_plain_data(self) -> dict[str, Any]:
-        return copy.deepcopy(self._value)
+        return {**copy.deepcopy(self._value), "applied_recipe": self._applied.to_plain_data()}
 
     @property
-    def applied_recipe(self) -> list[dict[str, Any]]:
-        return copy.deepcopy(self._value["applied_recipe"])
+    def applied_recipe(self) -> Recipe:
+        """The applied policy: what a final or fold fit replays."""
+        return self._applied
 
     @property
     def output_stage(self) -> str:
-        recipe = self.applied_recipe
-        return str(recipe[-1]["stage"]) if recipe else "full"
+        return self._applied.stage
 
-    @property
-    def path_params(self) -> dict[str, Any]:
-        value = (
-            self._value["applied_path"]
-            if self._value["applied_path"] is not None
-            and any(op["stage"] == "pruned" for op in self.applied_recipe)
-            else self._value["path"]
-        )
-        return {
-            "prune_path_steps": value["steps"],
-            "prune_main_effects": value["main_effects"],
-            "prune_guard_min_rows": value["min_rows"],
-        }
+    def without_applied_recipe(self) -> StagedConfig:
+        """The same drafts with nothing applied: a fresh fit's full GBM."""
+        from t_boost import Recipe
 
-    def operation(self, stage: str) -> dict[str, Any]:
+        return StagedConfig(copy.deepcopy(self._value), Recipe())
+
+    def operation(self, stage: str) -> Operation:
+        """The draft operation for ``stage``; pruning carries the draft path settings."""
         if stage not in _SECTIONS:
             _fail(f"unknown post-fit stage {stage!r}")
         if not self._value.get("enabled", {}).get(stage, True):
             _fail(f"{stage} is disabled; enable that phase before running it")
-        settings = copy.deepcopy(self._value[_SECTIONS[stage]])
-        parent = settings.pop("parent", "full")
-        return {"stage": stage, "parent": parent, "settings": settings}
+        section = _SECTIONS[stage]
+        return _operation(section, self._value[section], self._value["path"])
+
+    def require_parent(self, parent: str, recipe: Recipe) -> None:
+        """Refuse a parent stage that was not built with the enabled phases."""
+        enabled = self._value.get("enabled")
+        if enabled is None:
+            return
+        expected = [
+            stage for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1] if enabled[stage]
+        ]
+        if [operation.stage for operation in recipe.operations] != expected:
+            _fail(f"Rebuild {parent} with the enabled phases before using it as a parent")
 
     def validate_gbm_params(self, params: Mapping[str, Any]) -> None:
         for name in params:

@@ -1974,7 +1974,13 @@ class TrainService:
             if stage_scope is not None:
                 job_kwargs["purpose"] = "exploration"
                 if stage_scope.operation == "full":
-                    job_kwargs["stages"] = {**job_kwargs["stages"], "applied_recipe": []}
+                    from haute.modelling._staged_config import StagedConfig
+
+                    job_kwargs["stages"] = (
+                        StagedConfig.from_plain_data(job_kwargs["stages"])
+                        .without_applied_recipe()
+                        .to_plain_data()
+                    )
             job_kwargs["mlflow_experiment"] = (
                 None  # GUI logging is manual: the post-training button logs.
             )

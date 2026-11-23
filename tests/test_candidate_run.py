@@ -369,9 +369,18 @@ def test_an_external_memory_fit_is_recorded_on_the_candidate_run(tmp_path: Path)
 def test_candidate_records_applied_stage_recipe_not_pending_settings(tmp_path):
     import json
 
-    recipe = [{"stage": "smoothed", "parent": "full", "settings": {"alpha": 0.2}}]
+    from t_boost import Prune, PruningPathSettings, Recipe, Smooth
+
+    path = PruningPathSettings(min_rows=20)
+    recipe = Recipe((Prune(path=path), Smooth("pruned", alpha=0.2))).to_plain_data()
     run = _build(
-        tmp_path, algorithm="tboost", stages={"applied_recipe": recipe, "smoothing": {"alpha": 9}}
+        tmp_path,
+        algorithm="tboost",
+        stages={"applied_recipe": recipe, "smoothing": {"alpha": 9}, "path": {"min_rows": 7}},
     )
     assert run.tags["haute.output_stage"] == "smoothed"
-    assert json.loads(run.params["stage_recipe"])[0]["settings"]["alpha"] == 0.2
+    recorded = json.loads(run.params["stage_recipe"])
+    assert recorded["operations"][1]["settings"]["alpha"] == 0.2
+    # The applied recipe records its own path settings, not the pending draft's.
+    assert recorded["operations"][0]["path"]["min_rows"] == 20
+    assert "stage_path" not in run.params

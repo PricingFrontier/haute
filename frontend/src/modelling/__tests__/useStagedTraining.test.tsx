@@ -24,7 +24,7 @@ describe("durable stage restoration", () => {
     await act(() => vi.advanceTimersByTimeAsync(100))
     const sent = (vi.mocked(readStages).mock.calls[0][0].graph.nodes[0].data.config as Record<string, unknown>).models as Array<Record<string, unknown>>
     expect(sent[0].params).toEqual({ n_trees: 4000 })
-    expect(sent[0].stages).toMatchObject({ schema_version: 1 })
+    expect(sent[0].stages).toMatchObject({ schema_version: 2 })
     expect(JSON.stringify(input)).toBe(before)
   })
   it("loads dense tables on demand and never shows a result from a superseded revision", async () => {
@@ -78,16 +78,16 @@ describe("durable stage restoration", () => {
   })
   it("synchronises a completed background model's applied recipe while preserving drafts", () => {
     const update = vi.fn()
-    const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }]
+    const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }] }
     const state = { ...empty, current: { revision: "a".repeat(32), result: { response: {
-      staged: { configuration: { applied_recipe: recipe, applied_path: null } },
+      staged: { configuration: { applied_recipe: recipe } },
     } } } } as unknown as StageState
-    const config = { stages: { applied_recipe: [], path: { min_rows: 50 }, banding: { tolerance: .7 } } }
+    const config = { stages: { applied_recipe: { schema_version: 1, operations: [] }, path: { min_rows: 50 }, banding: { tolerance: .7 } } }
     const { rerender } = renderHook(({ value }) => useAppliedStageRecipe(value, config, update),
       { initialProps: { value: empty } })
     expect(update).not.toHaveBeenCalled()
     rerender({ value: state })
-    expect(update).toHaveBeenCalledWith({ stages: { ...config.stages, applied_recipe: recipe, applied_path: null } })
+    expect(update).toHaveBeenCalledWith({ stages: { ...config.stages, applied_recipe: recipe } })
     rerender({ value: state })
     expect(update).toHaveBeenCalledOnce()
   })
@@ -111,9 +111,9 @@ it("restores only per-model settings and the actual applied recipe", async () =>
   vi.useFakeTimers()
   const current = { revision: "a".repeat(32) } as NonNullable<StageState["current"]>
   vi.mocked(readStages).mockResolvedValue({ ...empty, current })
-  const recipe = [{ stage: "pruned", parent: "full", settings: {} }]
+  const recipe = { schema_version: 1, operations: [{ stage: "pruned", parent: "full", settings: {} }] }
   const restored = { ...empty, current: { ...current, result: { graph_digest: "b".repeat(64),
-    config: { params: { n_trees: 10 }, target: "do-not-restore", evaluation: { seed: 999 }, stages: { applied_recipe: [] } },
+    config: { params: { n_trees: 10 }, target: "do-not-restore", evaluation: { seed: 999 }, stages: { applied_recipe: { schema_version: 1, operations: [] } } },
     response: { staged: { configuration: { applied_recipe: recipe } } },
   } } } as unknown as StageState
   vi.mocked(updateStageCheckpoint).mockResolvedValue(restored)
@@ -121,7 +121,7 @@ it("restores only per-model settings and the actual applied recipe", async () =>
   await act(() => vi.advanceTimersByTimeAsync(100))
   const onRestore = vi.fn()
   await act(() => result.current.checkpointAction("restore", "checkpoint", onRestore))
-  expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ params: { n_trees: 10 }, stages: { applied_recipe: recipe, applied_path: null } }))
+  expect(onRestore).toHaveBeenCalledWith(expect.objectContaining({ params: { n_trees: 10 }, stages: { applied_recipe: recipe } }))
   expect(onRestore.mock.calls[0][0]).not.toHaveProperty("target")
   expect(onRestore.mock.calls[0][0]).not.toHaveProperty("evaluation")
   unmount(); vi.useRealTimers(); useStagedViews.setState({ models: {}, preferences: {} })
@@ -175,7 +175,7 @@ describe("path inspection", () => {
   it("fences out-of-order points without changing saved state, then applies the inspected point", async () => {
     const path = { id: "d".repeat(64), stage: "banded", parent: "full", selected_point: "point-1", points: [] } as unknown as StagePathPayload
     const saved = makeTrainResult()
-    saved.staged = { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0", pruning_path: null, recommendation: null, path_unavailable_reason: null, configuration: {}, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64), stages: { full: {} }, paths: { banded: path }, prepared_path: path.id }
+    saved.staged = { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0", pruning_path: null, recommendation: null, path_unavailable_reason: null, configuration: {}, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64), stages: { full: {} }, paths: { banded: path }, prepared_path: path.id }
     const state = { ...empty, current: { revision: "a".repeat(32), result: { response: makeTrainResult() } }, preview: { revision: "b".repeat(32), result: { response: saved } } } as StageState
     const { result } = renderHook(() => useStagedTraining({ enabled: false, resultKey: "node#model:model", request }))
     act(() => useStagedViews.getState().update(result.current.key, { state }))
@@ -215,20 +215,20 @@ describe("path inspection", () => {
 
 it("adopts only the applied path phase and its enable flag, preserving other drafts", () => {
   const key = JSON.stringify([JSON.stringify(["", "document"]), "node#model:phase-adoption"])
-  const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .25, deviance_cap: .0001 } }]
+  const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .25, deviance_cap: .0001 } }] }
   const actual = { enabled: { pruned: false, banded: true, smoothed: true },
     banding: { parent: "full", tolerance: .25, deviance_cap: .0001 }, applied_recipe: recipe }
   const state = { ...empty, current: { revision: "selected", result: { response: {
     staged: { configuration: actual },
   } } } } as unknown as StageState
   const config = { stages: { enabled: { pruned: false, banded: false, smoothed: false },
-    banding: { tolerance: .75 }, smoothing: { alpha: 12 }, path: { min_rows: 70 }, applied_recipe: [] } }
+    banding: { tolerance: .75 }, smoothing: { alpha: 12 }, path: { min_rows: 70 }, applied_recipe: { schema_version: 1, operations: [] } } }
   useStagedViews.getState().update(key, { adoption: { revision: "selected", stage: "banded" } })
   const update = vi.fn()
   const { unmount } = renderHook(() => useAppliedStageRecipe(state, config, update, key))
   expect(update).toHaveBeenCalledOnce()
   expect(update).toHaveBeenCalledWith({ stages: { ...config.stages, banding: actual.banding,
-    enabled: { pruned: false, banded: true, smoothed: false }, applied_recipe: recipe, applied_path: null } })
+    enabled: { pruned: false, banded: true, smoothed: false }, applied_recipe: recipe } })
   expect(useStagedViews.getState().models[key].adoption).toBeUndefined()
   unmount(); useStagedViews.setState({ models: {}, preferences: {} })
 })

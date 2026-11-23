@@ -170,7 +170,7 @@ it("keeps the evaluation estimate when only a staged recipe changes, but refresh
       <ModellingConfig {...props} config={next} />
     </GraphProvider>,
   )
-  renderNext({ ...config, stages: { smoothing: { strength: 4 }, applied_recipe: [{ stage: "pruned" }] } })
+  renderNext({ ...config, stages: { smoothing: { strength: 4 }, applied_recipe: { schema_version: 1, operations: [{ stage: "pruned" }] } } })
   expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(count)
   renderNext({ ...config, evaluation: { ...config.evaluation, seed: 99 } })
   expect(mockEstimateTrainingRam).toHaveBeenCalledTimes(count + 1)
@@ -3687,7 +3687,7 @@ describe("Staged interactive training", () => {
     mockReadStages.mockResolvedValue({ schema_version: 1, next_preview: null, checkpoints: [], current: null, preview: null, job: null, stale_reason: null })
     mockTrainModel.mockResolvedValue({ status: "started", job_id: "staged-gbm" })
     mockCancelTrain.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
-    const recipe = [{ stage: "smoothed", parent: "full", settings: { alpha: .2, high_order_alpha: 0 } }]
+    const recipe = { schema_version: 1, operations: [{ stage: "smoothed", parent: "full", settings: { alpha: .2, high_order_alpha: 0 } }] }
     const onUpdate = vi.fn()
     const flat: Record<string, unknown> = { ...defaultProps().config, algorithm: "tboost", interactive_build: true,
       stages: { applied_recipe: recipe }, params: { n_trees: 10, n_bags: 3, prune: false, band_tolerance: null, graduate: false } }
@@ -3704,13 +3704,13 @@ describe("Staged interactive training", () => {
     expect(payload.model).toBe("m1")
     const submitted = payload.graph.nodes.find((entry: { id: string }) => entry.id === "node_1").data.config.models[0]
     expect(submitted.params).toEqual({ n_trees: 10, n_bags: 3 })
-    expect(submitted.stages.applied_recipe).toEqual([])
+    expect(submitted.stages.applied_recipe).toEqual({ schema_version: 1, operations: [] })
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ stages: expect.objectContaining({ applied_recipe: recipe }) }))
     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled())
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
     await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("staged-gbm"))
     await waitFor(() => expect(screen.getByRole("button", { name: "Train GBM" })).toBeEnabled())
-    expect(onUpdate.mock.calls.every(([updates]) => updates.stages?.applied_recipe.length !== 0)).toBe(true)
+    expect(onUpdate.mock.calls.every(([updates]) => updates.stages?.applied_recipe.operations.length !== 0)).toBe(true)
   })
 })
 
@@ -3721,9 +3721,9 @@ it.each(["fixed", "tuning"] as const)("checkpoint restore clears the %s JSON dra
   const config = { ...defaultProps().config, algorithm: "tboost", params: { n_trees: 40 }, stages: {},
     ...(mode === "tuning" ? { tuning: { schema_version: 1, trial_count: 5, seed: 42, metric: "gini", search_space: { n_trees: [20, 40] } } } : {}) }
   const label = mode === "fixed" ? "t-boost hyperparameters JSON" : "t-boost search space JSON"
-  const response = makeCanonicalTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
-    configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
-    stages: { full: { recipe: [] } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+  const response = makeCanonicalTrainResult({ staged: { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+    configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+    stages: { full: { recipe: { schema_version: 1, operations: [] } } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
   const state = { schema_version: 1, next_preview: null, checkpoints: [{ id: "c".repeat(32), name: "Baseline", revision: "a".repeat(32), created_at: "2026-11-21T00:00:00Z", output_stage: "full" }],
     preview: null, final: null, job: null, stale_reason: null,
     current: { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "d".repeat(64), config_digest: "f".repeat(64),
@@ -3751,9 +3751,9 @@ it.each(["queued", "running", "finishing", "manual"] as const)("keeps %s stage w
   const { useStagedViews } = await import("../../modelling/useStagedTraining")
   useStagedViews.setState({ models: {}, preferences: {} })
   const config = { ...defaultProps().config, algorithm: "tboost", params: { n_trees: 40 }, stages: {} }
-  const response = makeCanonicalTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
-    configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
-    stages: { full: { recipe: [] } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+  const response = makeCanonicalTrainResult({ staged: { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+    configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+    stages: { full: { recipe: { schema_version: 1, operations: [] } } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
   const state = { schema_version: 1, checkpoints: [], preview: null, final: null, stale_reason: null,
     next_preview: phase === "queued" ? { operation: "pruned", parent_revision: "a".repeat(32), owner_pid: 1, status: "queued", message: "Preparing the next stage preview" } : null,
     job: phase === "queued" ? null : { id: "followup", operation: "pruned", automatic: phase !== "manual", expected_revision: "a".repeat(32), owner_pid: 1, status: "running", message: "Running" },

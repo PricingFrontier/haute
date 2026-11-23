@@ -302,7 +302,7 @@ def test_stage_routes_restore_only_selected_model_and_apply_with_revision_checks
         "response": TrainResponse(
             status="started",
             staged={
-                "schema_version": 1,
+                "schema_version": 2,
                 "selected_stage": "full",
                 "evaluation_identity": "a" * 64,
                 "fit_config_digest": digest,

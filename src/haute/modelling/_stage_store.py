@@ -51,7 +51,8 @@ from haute.modelling._stage_views import compact_result
 
 logger = get_logger(component="stage_store")
 
-_SCHEMA = 3
+# 4: staged results carry t-boost's typed stage records (staged payload schema 2).
+_SCHEMA = 4
 _HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
 _MANIFEST_LIMIT = 32 * 1024 * 1024

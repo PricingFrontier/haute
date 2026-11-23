@@ -51,6 +51,25 @@ Standards for every step:
 - **Bit identity:** across thread counts, processes and seeded reruns, comparing native model bytes separately from estimator envelopes, and working banks as well as inference banks.
 - **Caches:** they share an explicit memory budget.
 
+## Progress (23 Nov)
+
+- **Step 1, oracle:** recorded from the old API as data (`baselines/oracle_record.py`,
+  `oracle-staged-api.json`).
+- **Steps 2–4, t-boost:** the typed API (`tboost-api-design-2026-11-22.md`), committed as
+  t-boost `72d0075`. `oracle_compare.py` reports no difference from the old API's numbers.
+- **Steps 3, 4 and 7, Haute:**
+  - the adapter acquires its model with one `session.apply(target)`;
+  - bundles restore candidates themselves (`StageBundle.candidate`);
+  - `applied_path`, `path_params` and Haute's own recipe interpretation are removed;
+  - `StagedConfig` builds t-boost operations;
+  - stage configuration and staged payloads are schema version 2;
+  - the stage goldens are regenerated for the structural changes only. Every configuration
+    and snapshot value equals the old goldens'.
+- **Cost:** a restored 7 MB path candidate cost about 0.42 s (decode with one build, apply
+  with another build and re-serialisation, then the adapter's third build); it now costs
+  about 0.23 s (decode with one build; apply installs the snapshot).
+- **Remaining:** steps 5 (acquire before preparing frames) and 6 (`PreparedInput`).
+
 ## Done before this plan (22 Nov)
 
 - **Pruning family:** pruning budgets run together natively.

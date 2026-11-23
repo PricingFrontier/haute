@@ -16,7 +16,7 @@ afterEach(cleanup)
 
 it("labels the selected applied point as Applied instead of offering it again", () => {
   const p = props()
-  const current = makeTrainResult({ staged: { schema_version: 1, selected_stage: "smoothed",
+  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "smoothed",
     diagnostics_basis: "partition", reference_fit: "development", configuration: {},
     evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
     stages: { smoothed: { revision: "same-candidate" } }, pruning_path: null,
@@ -36,13 +36,27 @@ it("labels the selected applied point as Applied instead of offering it again", 
 it("keeps an unchanged point actionable until its phase is explicitly skipped", () => {
   const p = props()
   const path = { id: "path", stage: "pruned", parent: "full", selected_point: "unchanged", points: [{ id: "unchanged", identity: true, revision: "parent", status: "unchanged" }] } as unknown as NonNullable<Parameters<typeof TrainingPane>[0]["candidatePath"]>
-  const current = makeTrainResult({ staged: { schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "development", configuration: { enabled: { pruned: true } }, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64), stages: { full: { revision: "parent" } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "development", configuration: { enabled: { pruned: true } }, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64), stages: { full: { revision: "parent" } }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
   const { rerender } = render(<TrainingPane {...p} currentResult={current} preview candidatePath={path} candidatePoint="unchanged" stages={["full"]} />)
   fireEvent.click(screen.getByRole("button", { name: "Keep unchanged" }))
   expect(p.onApply).toHaveBeenCalledOnce()
   const applied = { ...current, staged: { ...current.staged!, configuration: { enabled: { pruned: false } }, paths: { pruned: path } } }
   rerender(<TrainingPane {...p} currentResult={applied} preview candidatePath={path} candidatePoint="unchanged" stages={["full"]} />)
   expect(screen.queryByRole("button", { name: "Keep unchanged" })).not.toBeInTheDocument()
+})
+
+it("shows a changed stage's saved operation, with pruning's recorded path settings", () => {
+  const p = props()
+  const path = { steps: 16, main_effects: true, min_rows: 20 }
+  const current = makeTrainResult({ staged: { schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition",
+    reference_fit: "development", configuration: {}, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
+    stages: { full: {}, pruned: { stage: "pruned", parent: "full", operation: { stage: "pruned", parent: "full",
+      settings: { fraction: .995, tolerance: .001, max_tables: 7 }, path } } },
+    pruning_path: null, path_unavailable_reason: null, recommendation: null } })
+  render(<TrainingPane {...p} currentResult={current} pending={["pruned"]} />)
+  fireEvent.click(screen.getByText("Saved settings"))
+  const saved = JSON.parse(screen.getByText(/max_tables/).textContent ?? "{}")
+  expect(saved).toEqual({ fraction: .995, tolerance: .001, max_tables: 7, path })
 })
 
 describe("Training pane", () => {
@@ -211,9 +225,10 @@ it("uses Apply as the primary action when the previous phase prepared its candid
 
 it("refreshes a candidate whose pruning settings changed before allowing Apply", () => {
   const p = props()
-  const candidate = makeTrainResult({ staged: { schema_version: 1, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0",
+  const candidate = makeTrainResult({ staged: { schema_version: 2, selected_stage: "pruned", diagnostics_basis: "partition", reference_fit: "validation-0",
     configuration: { path: p.settings.path }, evaluation_identity: "a".repeat(64), fit_config_digest: "b".repeat(64),
-    stages: { full: {}, pruned: { parent: "full", settings: { ...p.settings.pruning, max_tables: 3 } } },
+    stages: { full: {}, pruned: { stage: "pruned", parent: "full", operation: { stage: "pruned", parent: "full",
+      settings: { ...p.settings.pruning, max_tables: 3 }, path: p.settings.path } } },
     pruning_path: null, path_unavailable_reason: null, recommendation: null } })
   render(<TrainingPane {...p} preview previewResult={candidate} />)
   expect(screen.queryByRole("button", { name: "Apply pruning" })).not.toBeInTheDocument()

@@ -1,0 +1,11 @@
+1. **P2 — Existing stores bypass the schema migration.** [schemas.py:4059](/home/ralph/suite/haute/src/haute/schemas.py:4059) requires staged payload version 2, but the [store version remains 3](/home/ralph/suite/haute/src/haute/modelling/_stage_store.py:54). Existing stores therefore load their version-1 results, and `/stages/read` fails response validation instead of treating them as requiring a rebuild. I reproduced the validation failure using the old golden payload. Invalidate incompatible stores before hydration and add an upgrade-read regression test.
+
+2. **P2 — Pruning evidence can disagree with the published configuration.** [Remembering evidence](/home/ralph/suite/haute/src/haute/modelling/_staged_runtime.py:786) uses the incoming draft path when no pruned stage exists, but [finalize](/home/ralph/suite/haute/src/haute/modelling/_staged_runtime.py:823) replaces that path with the bundle’s previous path for banding/smoothing. An in-memory reproduction published `min_rows=20` with `pruning_path=None` and an unavailable reason citing `99999`, although evidence for 20 was available. Use a consistent settings context for evidence and the published configuration. Add coverage for pending path edits followed by a stage built directly from full.
+
+3. **P3 — “Saved settings” still reads a removed field.** [TrainingPane.tsx:204](/home/ralph/suite/haute/frontend/src/modelling/TrainingPane.tsx:204) reads `snapshot.settings`. New snapshots carry `operation.settings`, so expanding this disclosure after editing a built stage displays nothing. Port the rendering and add a component assertion; pruning should also expose its recorded path settings.
+
+The raw candidate acquisition probes passed for identity and non-identity points across all three stages, preserving predictions, recipes and revisions. I independently confirmed structural-only golden changes across 200 configurations and 370 snapshots. No further defects surfaced in flattening, alias acquisition, applied-recipe replay or the apply-route merge. The existing tests miss the transitions above; the full-suite result remains pending.
+
+No files were modified.
+
+REQUEST_CHANGES

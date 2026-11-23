@@ -152,10 +152,11 @@ def _reuse_evaluation(
 
     result = copy.deepcopy(prior)
     reference = bundle.metadata["staged"]["reference_fit"]
-    session = bundle.session(reference, point_id=point["id"])
-    selected = bundle.metadata["path"]["parent"] if point["identity"] else runtime.operation
+    session = bundle.session(reference, raw=True)
+    acquired = session.apply(bundle.candidate(reference, session, point_id=point["id"]))
+    selected = acquired.info.stage
     runtime.fits = copy.deepcopy(bundle.metadata["fits"])
-    runtime.remember_session(reference, session, selected)
+    runtime.remember_session(reference, session, selected, job.stages)
     runtime.oof_rows = int(prior.staged["diagnostics_basis"] == "out_of_fold")
     runtime.finalize(job, result, str(bundle.source), bundle.plan)
     # Alias exports carry the alias's own policy and stage revision, even though
@@ -166,7 +167,7 @@ def _reuse_evaluation(
         if source.is_file():
             shutil.copyfile(source, output / source.name)
     model = TBoostModel.load(prior.model_path)
-    model.estimator = session.model(selected)
+    model.estimator = acquired.model
     model.training_session, model.selected_stage = session, selected
     result.model_path = str(output / Path(prior.model_path).name)
     model.save(Path(result.model_path))
@@ -185,20 +186,21 @@ def _pruning_budgets(
 
     Each fit's configured parent is written here once; the family loop reuses it.
     """
+    selection = config.operation("pruned")
     schedule: list[int] = []
     minimum = 0
     for index, key in enumerate(fit_keys):
         cancel()
         # Each fit is read before its own replacement, so the previous envelope still
-        # applies here; it is dropped once every parent is flattened.
+        # applies here; it is dropped once every parent is flattened. The replacement
+        # chain also stores this fit's evidence for the selection's path settings.
         session = bundle.session(key)
-        session.configure_path(**config.to_plain_data()["path"])
-        evidence = session.pruning_path
+        evidence = session.pruning_path(selection.path)
         if evidence is None:
-            raise HauteValidationError(session.path_unavailable_reason)
+            raise HauteValidationError(session.pruning_unavailable_reason(selection.path))
         minimum = max(minimum, evidence["table_counts"][0])
         if index == 0:
-            schedule = session.pruning_budgets(**config.operation("pruned")["settings"])
+            schedule = session.pruning_budgets(selection)
         bundle.replace_checkpoint(key, session)
         del session
     bundle.metadata.pop("path", None)
@@ -252,6 +254,17 @@ def _resolve_point_paths(
     return TrainResult(**stored)
 
 
+def _path_request(operation: Any, budgets: list[int] | None) -> Any:
+    """The t-boost path request for a draft operation (budgets: the cross-fit schedule)."""
+    from t_boost import Band, BandPath, Prune, PrunePath, SmoothPath
+
+    if isinstance(operation, Prune):
+        return PrunePath(operation, None if budgets is None else tuple(budgets))
+    if isinstance(operation, Band):
+        return BandPath(operation)
+    return SmoothPath(operation)
+
+
 def run_path_job(
     bundle: StageBundle,
     *,
@@ -265,7 +278,7 @@ def run_path_job(
     from haute.modelling._training_job import TrainingJob
 
     op = config.operation(operation)
-    parent, settings = op["parent"], op["settings"]
+    parent = op.parent
     original = copy.deepcopy(bundle.metadata)
     reference = original["staged"]["reference_fit"]
     fit_keys = [reference, *(key for key in original["fits"] if key != reference)]
@@ -285,35 +298,25 @@ def run_path_job(
     for key in fit_keys:
         cancel()
         session = bundle.session(key)
-        enabled = config.to_plain_data().get("enabled")
-        if enabled is not None:
-            from haute.modelling._staged_config import STAGE_NAMES
-
-            expected = [
-                stage for stage in STAGE_NAMES[1 : STAGE_NAMES.index(parent) + 1] if enabled[stage]
-            ]
-            if [item["stage"] for item in session.recipe(parent)] != expected:
-                raise HauteValidationError(f"Rebuild {parent} with the enabled phases first")
-        if operation == "pruned":
-            session.configure_path(**config.to_plain_data()["path"])
-        family = session.prepare_path(
-            operation, parent=parent, settings=settings, values=pruning_budgets
-        )
+        config.require_parent(parent, session.stage(parent).recipe)
+        family = session.prepare_path(_path_request(op, pruning_budgets))
+        metadata = [candidate.to_plain_data() for candidate in family.candidates]
         if key == reference:
-            points = family.points
-        if [p["id"] for p in family.points] != [p["id"] for p in points]:
+            points = metadata
+        if [p["id"] for p in metadata] != [p["id"] for p in points]:
             raise HauteValidationError("Retained fits produced different logical path points")
         family_ids[key] = family.path_id
-        parent_revisions[key] = session.stages[parent]["revision"]
+        parent_revisions[key] = session.stages[parent].revision
         # Flatten a previous path envelope once; all new candidates share this parent.
         if flatten:
             bundle.replace_checkpoint(key, session)
-        for point in family.points:
-            outcomes.setdefault(point["id"], []).append(point["diagnostics"]["outcome_id"])
-            destination = bundle.scratch / f"candidate-{point['id']}-{key}.member"
-            destination.write_bytes(family.candidate_bytes(point["id"]))
-            pending[(point["id"], key)] = destination
-            fold_status.setdefault(point["id"], []).append(dict(fit=key, status=point["status"]))
+        for candidate in family.candidates:
+            point_id = candidate.point_id
+            outcomes.setdefault(point_id, []).append(candidate.outcome_id)
+            destination = bundle.scratch / f"candidate-{point_id}-{key}.member"
+            destination.write_bytes(candidate.to_bytes())
+            pending[(point_id, key)] = destination
+            fold_status.setdefault(point_id, []).append(dict(fit=key, status=candidate.status))
         del family, session
     path_id = hashlib.sha256(
         _json(
@@ -345,7 +348,11 @@ def run_path_job(
         evidence=evidence,
         metric=path_metric(original["job_kwargs"]["task"], original["job_kwargs"]["loss_function"]),
         evaluation_identity=original["staged"]["evaluation_identity"],
-        controls=copy.deepcopy(settings),
+        controls={
+            name: value
+            for name, value in config.to_plain_data()[_SECTIONS[operation]].items()
+            if name != "parent"
+        },
         selection=config.to_plain_data()["selection"],
         reference_fit=reference,
     )

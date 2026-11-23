@@ -211,16 +211,16 @@ describe("ModellingView", () => {
   })
 
   it("restores two background recipes against the latest canonical node without losing either", () => {
-    const entries = ["m1", "m2", "m3"].map((id) => ({ id, name: id, algorithm: "tboost", stages: { applied_recipe: [] } }))
+    const entries = ["m1", "m2", "m3"].map((id) => ({ id, name: id, algorithm: "tboost", stages: { applied_recipe: { schema_version: 1, operations: [] } } }))
     const modelNode = node("frequency", "modelling", { ...frequency.data.config, models: entries })
     const nodes = [quotes, modelNode]
     useGraphStore.setState({ nodes: nodes.map((entry) => ({ ...entry, position: { x: 0, y: 0 } })) as Node[], edges: [], focus: null })
     const document = documentExecutionKey(useDocumentStatusStore.getState())
-    const recipe = [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }]
+    const recipe = { schema_version: 1, operations: [{ stage: "banded", parent: "full", settings: { tolerance: .5 } }] }
     for (const id of ["m2", "m3"]) {
       const response = makeTrainResult({ staged: {
-        schema_version: 1, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
-        configuration: { applied_recipe: recipe, applied_path: null }, evaluation_identity: "e".repeat(64),
+        schema_version: 2, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
+        configuration: { applied_recipe: recipe }, evaluation_identity: "e".repeat(64),
         fit_config_digest: "f".repeat(64), stages: { full: {}, banded: {} },
         pruning_path: null, path_unavailable_reason: null, recommendation: null,
       } })
@@ -745,7 +745,7 @@ describe("ModellingView", () => {
     completed[M1].jobId = "job_2"
     completed[M1].result.job_id = "job_2"
     completed[M1].result.staged = {
-      schema_version: 1, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
+      schema_version: 2, selected_stage: "full", diagnostics_basis: "partition", reference_fit: "validation-0",
       configuration: {}, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
       stages: {}, pruning_path: null, path_unavailable_reason: null, recommendation: null,
     }
@@ -853,9 +853,9 @@ describe("ModellingView", () => {
     useGraphStore.setState({ nodes: [quotes, two].map((entry) => ({ ...entry, position: { x: 0, y: 0 } })) as Node[] })
     const snapshot = { metrics: { rmse: .2 }, feature_importance: [], features: ["age"], cat_features: [],
       diagnostics_set: "validation", ave_per_feature: [ageRow], ave_left_out: [], tboost_tables: null,
-      loss_history: [], fit_evidence: null, diagnostics_errors: [], recipe: [] }
-    const response = makeTrainResult({ staged: { schema_version: 1, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
-      configuration: { applied_recipe: [], applied_path: null }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
+      loss_history: [], fit_evidence: null, diagnostics_errors: [], recipe: { schema_version: 1, operations: [] } }
+    const response = makeTrainResult({ staged: { schema_version: 2, selected_stage: "banded", diagnostics_basis: "partition", reference_fit: "validation-0",
+      configuration: { applied_recipe: { schema_version: 1, operations: [] } }, evaluation_identity: "e".repeat(64), fit_config_digest: "f".repeat(64),
       stages: { full: snapshot, pruned: snapshot, banded: snapshot }, pruning_path: null, path_unavailable_reason: null, recommendation: null } })
     const record = { revision: "a".repeat(32), build_id: "b".repeat(32), parent_revision: null, size: 1, sha256: "c".repeat(64), config_digest: "f".repeat(64),
       result: { graph_digest: "d".repeat(64), response } }

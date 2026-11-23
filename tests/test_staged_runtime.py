@@ -4,9 +4,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from t_boost import _Booster
+from t_boost import PruningPathSettings, _Booster
 
 from haute.modelling._stage_objects import StageArchive, read_archive_object
+from haute.modelling._staged_config import StagedConfig
 from haute.modelling._staged_runtime import open_stage_bundle, run_stage_job
 from haute.modelling._tboost import TBoostModel
 from haute.modelling._training_job import TrainingJob
@@ -41,16 +42,20 @@ def build(tmp_path, validation=None):
     return data, result
 
 
+def draft(bundle, stage):
+    """The draft operation the bundle's own stage settings describe."""
+    return StagedConfig.from_plain_data(bundle.metadata["job_kwargs"]["stages"]).operation(stage)
+
+
 def test_full_prune_band_smooth_resume_through_canonical_jobs(tmp_path, monkeypatch):
     data, full = build(tmp_path)
     checkpoint = full.stage_checkpoint_path
     assert checkpoint is not None
     with open_stage_bundle(checkpoint) as bundle:
-        expected_session = bundle.session("validation-0")
-        expected_session.prune()
-        expected_session.band()
-        expected = expected_session.smooth()
         settings = bundle.metadata["job_kwargs"]["stages"]
+        expected_session = bundle.session("validation-0")
+        for stage in ("pruned", "banded", "smoothed"):
+            expected = expected_session.apply(draft(bundle, stage)).model
     with open(checkpoint, "rb") as source:
         original = source.read()
     monkeypatch.setattr(_Booster, "fit", lambda *a, **kw: pytest.fail("resumed job fitted"))
@@ -103,15 +108,19 @@ def test_bundle_reuses_validated_parent_without_sharing_stage_mutations(tmp_path
     _, full = build(tmp_path)
     with open_stage_bundle(full.stage_checkpoint_path) as bundle:
         first = bundle.session("validation-0")
-        first.prune()
+        first.apply(draft(bundle, "pruned"))
         monkeypatch.setattr(
             TBoostTrainingSession, "load", lambda *a, **kw: pytest.fail("parent reloaded")
         )
         second = bundle.session("validation-0")
         assert set(second.stages) == {"full"}
         np.testing.assert_array_equal(
-            second.full_model._model.predict_raw(second._state.x, cat_x=second._state.categories),
-            first.full_model._model.predict_raw(first._state.x, cat_x=first._state.categories),
+            second.stage("full").model._model.predict_raw(
+                second._state.x, cat_x=second._state.categories
+            ),
+            first.stage("full").model._model.predict_raw(
+                first._state.x, cat_x=first._state.categories
+            ),
         )
 
 
@@ -575,7 +584,7 @@ def test_cross_validation_stages_use_each_folds_predictions_and_never_test_rows(
             predictions = np.full(len(source), np.nan)
             for fold in range(3):
                 session = bundle.session(f"validation-{fold}")
-                model = replace(reference, estimator=session.model(stage))
+                model = replace(reference, estimator=session.stage(stage).model)
                 rows = np.flatnonzero(bundle.plan.selection_mask(fold) == PARTITION_VALIDATION)
                 assert np.isnan(predictions[rows]).all()
                 predictions[rows] = model.predict_response(source[rows])
@@ -643,7 +652,7 @@ def test_staged_tuning_retains_only_winner_and_resumes_without_trials(
         assert len(bundle.metadata["fits"]) == folds + 1
         winner = result.tuning["final_params"]
         for key in bundle.metadata["fits"]:
-            assert bundle.session(key).full_model.learning_rate == winner["learning_rate"]
+            assert bundle.session(key).stage("full").model.learning_rate == winner["learning_rate"]
     monkeypatch.setattr(_Booster, "fit", lambda *a, **kw: pytest.fail("postfit tuning fitted"))
     _, pruned = run_stage_job(
         result.stage_checkpoint_path,
@@ -706,7 +715,7 @@ def test_draft_path_edits_do_not_change_applied_recipe_replay(tmp_path):
     )
     with open_stage_bundle(pruned.stage_checkpoint_path) as bundle:
         config = deepcopy(pruned.staged["configuration"])
-        assert config["applied_path"]["min_rows"] == 20
+        assert config["applied_recipe"]["operations"][0]["path"]["min_rows"] == 20
         kwargs = {**bundle.metadata["job_kwargs"], "data": str(bundle.source), "purpose": "final"}
         baseline = TrainingJob(
             **{**kwargs, "stages": config, "output_dir": str(tmp_path / "baseline")}
@@ -755,12 +764,9 @@ def test_skipped_phases_reuse_the_nearest_enabled_fit(tmp_path, monkeypatch, pru
     for stage, enabled in (("pruned", pruning), ("banded", banding), ("smoothed", True)):
         if not enabled:
             continue
-        if stage == "pruned":
-            estimator = expected.prune()
-        elif stage == "banded":
-            estimator = expected.band(parent=parent)
-        else:
-            estimator = expected.smooth(parent=parent)
+        operation = StagedConfig.from_plain_data(settings).operation(stage)
+        assert operation.parent == parent
+        estimator = expected.apply(operation).model
         _, result = run_stage_job(
             previous.stage_checkpoint_path,
             operation=stage,
@@ -774,11 +780,29 @@ def test_skipped_phases_reuse_the_nearest_enabled_fit(tmp_path, monkeypatch, pru
         )
         assert result.staged["stages"][stage]["parent"] == parent
         previous, parent = result, stage
-    assert [op["stage"] for op in previous.staged["configuration"]["applied_recipe"]] == [
+    applied = previous.staged["configuration"]["applied_recipe"]["operations"]
+    assert [op["stage"] for op in applied] == [
         stage
         for stage, enabled in (("pruned", pruning), ("banded", banding), ("smoothed", True))
         if enabled
     ]
+
+
+def test_a_stage_built_on_full_publishes_evidence_for_the_path_it_keeps(tmp_path):
+    """Only pruning adopts a pending path edit: a banding job on full keeps the retained
+    path settings, and the evidence it shows is for those settings."""
+    _, full = build(tmp_path)
+    _, banded = run_stage_job(
+        full.stage_checkpoint_path,
+        operation="banded",
+        stages={"path": {"min_rows": 99999}, "enabled": {"pruned": False}},
+        output_dir=str(tmp_path / "banded"),
+    )
+    staged = banded.staged
+    assert staged["configuration"]["path"]["min_rows"] == 20
+    assert staged["pruning_path"] is not None
+    assert staged["path_unavailable_reason"] is None
+    assert staged["pruning_path"] == full.staged["pruning_path"]
 
 
 def test_phase_change_requires_rebuilding_an_old_parent_chain(tmp_path, monkeypatch):
@@ -863,7 +887,7 @@ def test_banding_path_retains_parent_once_and_applies_exact_candidate(
         assert not any("split" in name for name in bundle.manifest.objects)
         chosen = summary["points"][2]["id"]
         candidate_result = read_path_result(bundle, summary["id"], chosen)
-        selected = bundle.session("validation-0", point_id=chosen).model("banded")
+        selected = bundle.session("validation-0", point_id=chosen).stage("banded").model
         from t_boost import TBoostTrainingSession
 
         with monkeypatch.context() as patch:
@@ -884,12 +908,15 @@ def test_banding_path_retains_parent_once_and_applies_exact_candidate(
         with open_stage_bundle(artifact) as restored:
             actual = restored.session("validation-0")
             np.testing.assert_array_equal(
-                actual.model("banded")._model.predict_raw(
+                actual.stage("banded").model._model.predict_raw(
                     actual._state.x, cat_x=actual._state.categories
                 ),
                 selected._model.predict_raw(actual._state.x, cat_x=actual._state.categories),
             )
-            assert actual.recipe("banded")[-1]["settings"] == summary["points"][2]["settings"]
+            assert (
+                actual.stage("banded").recipe.operations[-1].settings()
+                == summary["points"][2]["settings"]
+            )
 
 
 def test_smoothing_path_scores_each_retained_fold_and_preserves_earlier_paths(
@@ -939,7 +966,7 @@ def test_smoothing_path_scores_each_retained_fold_and_preserves_earlier_paths(
             session = bundle.session(
                 f"validation-{fold}", path_id=smooth_path["id"], point_id="point-2"
             )
-            model = replace(reference, estimator=session.model("smoothed"))
+            model = replace(reference, estimator=session.stage("smoothed").model)
             rows = np.flatnonzero(bundle.plan.selection_mask(fold) == PARTITION_VALIDATION)
             predictions[rows] = model.predict_response(source[rows])
         scored = np.flatnonzero(np.isfinite(predictions))
@@ -1003,7 +1030,7 @@ def test_identical_path_outcomes_share_evaluation_but_keep_exact_policies(tmp_pa
         alias = read_path_result(bundle, path["id"], "point-6")
         assert alias.staged["selected_stage"] == "banded"
         assert (
-            alias.staged["configuration"]["applied_recipe"][-1]["settings"]
+            alias.staged["configuration"]["applied_recipe"]["operations"][-1]["settings"]
             == path["points"][6]["settings"]
         )
         assert alias.metrics == read_path_result(bundle, path["id"], "unchanged").metrics
@@ -1014,10 +1041,13 @@ def test_identical_path_outcomes_share_evaluation_but_keep_exact_policies(tmp_pa
             session = restored.session("validation-0")
             model = TBoostModel.load(full.model_path)
             np.testing.assert_array_equal(
-                session.model("banded").predict(model.prepared(data)),
+                session.stage("banded").model.predict(model.prepared(data)),
                 model.estimator.predict(model.prepared(data)),
             )
-            assert applied.staged["configuration"]["applied_recipe"] == session.recipe("banded")
+            assert (
+                applied.staged["configuration"]["applied_recipe"]
+                == session.stage("banded").recipe.to_plain_data()
+            )
 
 
 def test_pruning_path_uses_budgets_feasible_for_every_retained_fit(tmp_path):
@@ -1048,7 +1078,9 @@ def test_pruning_path_uses_budgets_feasible_for_every_retained_fit(tmp_path):
     ).run()
     with open_stage_bundle(full.stage_checkpoint_path) as bundle:
         floors = {
-            key: bundle.session(key).pruning_path["table_counts"][0]
+            key: bundle.session(key).pruning_path(PruningPathSettings(min_rows=10))["table_counts"][
+                0
+            ]
             for key in bundle.metadata["fits"]
         }
         assert max(floors.values()) > floors["development"]

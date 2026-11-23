@@ -1693,11 +1693,7 @@ class TrainingJob:
                         source_sha256=source_sha256,
                     )
                     if self.stages is not None:
-                        from haute.modelling._staged_config import StagedConfig
-
-                        child.stages = StagedConfig.from_plain_data(
-                            {**self.stages.to_plain_data(), "applied_recipe": []}
-                        )
+                        child.stages = self.stages.without_applied_recipe()
                     if trial_runtime is not None:
                         child._stage_runtime = trial_runtime
                     fit_results.append(
@@ -1844,7 +1840,7 @@ class TrainingJob:
             if self.purpose == "exploration" and self._stage_runtime is None:
                 from haute.modelling._staged_runtime import StageRuntime
 
-                if self.stages is not None and self.stages.applied_recipe:
+                if self.stages is not None and self.stages.applied_recipe.operations:
                     raise HauteValidationError(
                         "Start exploration with the full GBM before applying stages"
                     )

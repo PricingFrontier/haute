@@ -9,9 +9,9 @@ export function evidenceLabel(result: TrainResponse): string {
 
 export function appliedChain(result?: TrainResponse): string {
   const selected = result?.staged?.selected_stage
-  const recipe = selected && result?.staged?.stages[selected]?.recipe
-  if (!Array.isArray(recipe)) return selected ? STAGE_LABELS[selected] : "No applied model"
-  return ["Full GBM", ...recipe.map((step: { stage: ModelStage }) => STAGE_LABELS[step.stage])].join(" → ")
+  const recipe = selected && result?.staged?.stages[selected]?.recipe as { operations?: unknown } | undefined
+  if (!Array.isArray(recipe?.operations)) return selected ? STAGE_LABELS[selected] : "No applied model"
+  return ["Full GBM", ...recipe.operations.map((step: { stage: ModelStage }) => STAGE_LABELS[step.stage])].join(" → ")
 }
 
 export const cellCount = (values: NestedNumbers[]): number => values.reduce<number>((sum, value) => sum + (Array.isArray(value) ? cellCount(value) : 1), 0)
