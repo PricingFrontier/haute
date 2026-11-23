@@ -2202,9 +2202,9 @@ Out of scope:
   whose database it is. `GET /api/app/release` says whether the whole store fits (`quotes`),
   every table and privilege, as a rollout checks it; the page does not close on it. The page
   shows a refusal where it was met, each misfit under its table, a column by its label on
-  the sheets and its name ("Renewal (is_renewal) is missing"), then that whoever owns the
-  environment's database can put it right with the SQL the Workbench view's schema pane
-  writes: the Quotes page says why where its list would be, and asks for it again every 10
+  the sheets and its name ("Renewal (is_renewal) is missing"), and nothing more, as whoever
+  reads it knows who looks after the database: the Quotes page says why where its list would
+  be, and asks for it again every 10
   seconds until it is read; a quote that cannot be opened says why where it would open, and
   asks for it again on the same bound, still saying why, until it opens; one that cannot be
   made says why in the New quote window, nothing made or kept; and a quote open when its pricing or a save is refused stays open, saying why, its

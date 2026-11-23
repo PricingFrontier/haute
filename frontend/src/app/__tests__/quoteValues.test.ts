@@ -232,14 +232,13 @@ describe("the quote store's refusals", () => {
         "    The table is missing",
         "  haute_activity",
         "    Actor (actor) is missing",
-        "Whoever owns the dev database can put it right with the SQL the Workbench view's schema pane writes.",
       ].join("\n"),
     )
     expect(appErrorMessage(refused, form, { oneLine: true })).toBe(
       "The dev database doesn't match the form: policy: State (state) is missing, Year built (year) holds string, not integer; equipment: The table is missing; haute_activity: Actor (actor) is missing.",
     )
     // No environment named, the database is the store's.
-    expect(appErrorMessage(storeRefusal({ ...MISFIT, environment: null }), null)).toMatch(/^The quote store's database doesn't match the form:\n {2}policy\n {4}State \(state\) is missing\n/)
+    expect(appErrorMessage(storeRefusal({ ...MISFIT, environment: null }), null)).toBe("The quote store's database doesn't match the form:\n  policy\n    State (state) is missing")
   })
 
   it("say any other refusal of the store as its message, and know the store's from a busy pricing's", () => {

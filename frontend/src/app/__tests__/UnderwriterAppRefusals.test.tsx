@@ -93,7 +93,6 @@ describe("UnderwriterApp's quote store refusals", () => {
           "The quote could not be opened: The dev database doesn't match the form:",
           "  policy",
           "    State (state) is missing",
-          "Whoever owns the dev database can put it right with the SQL the Workbench view's schema pane writes.",
         ].join("\n"),
       )
       expect(screen.getByTestId("app-release")).toBeInTheDocument()

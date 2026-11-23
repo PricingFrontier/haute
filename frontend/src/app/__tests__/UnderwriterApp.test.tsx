@@ -167,7 +167,6 @@ describe("UnderwriterApp", () => {
           "The quotes could not be read: The dev database doesn't match the form:",
           "  policy",
           "    State (state) is missing",
-          "Whoever owns the dev database can put it right with the SQL the Workbench view's schema pane writes.",
         ].join("\n"),
       )
       expect(screen.queryByTestId("notice-quotes-closed")).toBeNull()

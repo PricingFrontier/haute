@@ -242,8 +242,7 @@ function misfitSaid(misfit: StoreMisfit, form: FormSpec | null): string {
 /**
  * What the app says of a route's failure (specs/workbench): tables that do not fit named
  * misfit by misfit under each table, each column by its label on `form`'s sheets and its
- * name, then who puts them right; any other failure as its message. On one line with
- * `oneLine`, as a bar shows it.
+ * name; any other failure as its message. On one line with `oneLine`, as a bar shows it.
  */
 export function appErrorMessage(error: unknown, form: FormSpec | null, { oneLine = false }: { oneLine?: boolean } = {}): string {
   const found = storeMisfits(error)
@@ -256,12 +255,7 @@ export function appErrorMessage(error: unknown, form: FormSpec | null, { oneLine
     return `${database} doesn't match the form: ${listed.join("; ")}.`
   }
   const listed = [...tables].flatMap(([table, said]) => [`  ${table}`, ...said.map((each) => `    ${each}`)])
-  const owner = found.environment === null ? "the database" : `the ${found.environment} database`
-  return [
-    `${database} doesn't match the form:`,
-    ...listed,
-    `Whoever owns ${owner} can put it right with the SQL the Workbench view's schema pane writes.`,
-  ].join("\n")
+  return [`${database} doesn't match the form:`, ...listed].join("\n")
 }
 
 /** A page drawn for another release than the one serving it: 409 without a code of the store's. */
