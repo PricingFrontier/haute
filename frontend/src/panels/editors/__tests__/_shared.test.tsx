@@ -38,6 +38,7 @@ vi.mock("../../../stores/useSettingsStore", () => {
 })
 
 import { listFiles } from "../../../api/client"
+import { commitOpenDrafts, isDraftOpen } from "../../../components/form/useCommittedDraft"
 const mockListFiles = listFiles as ReturnType<typeof vi.fn>
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -325,129 +326,83 @@ describe("CodeEditor", () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it("does not overwrite focused local edits with an external refresh", async () => {
+  /** The editor and how to type in it, as an analyst does: each change a transaction of its own. */
+  function editorWith(defaultValue: string, onChange: (value: string) => void) {
     let view: EditorView | null = null
-    const onChange = vi.fn()
-    const { container, rerender } = render(
-      <CodeEditor
-        defaultValue="import math"
-        onChange={onChange}
-        onEditorView={(editorView) => { view = editorView }}
-      />,
+    const element = (value: string) => (
+      <CodeEditor defaultValue={value} onChange={onChange} onEditorView={(editorView) => { view = editorView }} />
     )
+    const rendered = render(element(defaultValue))
+    return {
+      text: () => getEditorText(rendered.container),
+      type: (text: string) => act(() => {
+        view?.focus()
+        view?.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
+      }),
+      store: (value: string) => rendered.rerender(element(value)),
+      blur: () => act(() => { view?.contentDOM.dispatchEvent(new Event("blur")) }),
+    }
+  }
 
-    act(() => {
-      view?.focus()
-      view?.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: "import local_edit" },
-      })
-    })
-
-    rerender(
-      <CodeEditor
-        defaultValue="import statistics as websocket_sync_probe"
-        onChange={onChange}
-        onEditorView={(editorView) => { view = editorView }}
-      />,
-    )
-
-    await waitFor(() => {
-      expect(getEditorText(container)).toContain("import local_edit")
-    })
-    expect(getEditorText(container)).not.toContain("websocket_sync_probe")
-  })
-
-  it("flushes a pending local edit before an external sync is applied", () => {
+  it("shows the stored value when it moves under typing not yet committed, and commits nothing of it", () => {
     vi.useFakeTimers()
     try {
-      let view: EditorView | null = null
       const onChange = vi.fn()
-      const { container, rerender } = render(
-        <CodeEditor
-          defaultValue="print('initial')"
-          onChange={onChange}
-          onEditorView={(editorView) => { view = editorView }}
-        />,
-      )
+      const editor = editorWith("import math", onChange)
+      editor.type("import local_edit")
+      expect(isDraftOpen()).toBe(true)
 
-      act(() => {
-        view?.dispatch({
-          changes: {
-            from: 0,
-            to: view.state.doc.length,
-            insert: "print('stale local edit')",
-          },
-        })
-      })
+      // An Undo, a sync frame or the assistant's change moves the stored value.
+      editor.store("import statistics as websocket_sync_probe")
+
+      expect(editor.text()).toContain("websocket_sync_probe")
+      expect(editor.text()).not.toContain("local_edit")
+      expect(isDraftOpen()).toBe(false)
+      editor.blur()
+      act(() => { vi.advanceTimersByTime(151) })
       expect(onChange).not.toHaveBeenCalled()
-
-      rerender(
-        <CodeEditor
-          defaultValue="print('external sync')"
-          onChange={onChange}
-          onEditorView={(editorView) => { view = editorView }}
-        />,
-      )
-
-      expect(onChange).toHaveBeenCalledWith("print('stale local edit')")
-      expect(getEditorText(container)).toContain("print('external sync')")
-
-      act(() => {
-        vi.advanceTimersByTime(151)
-      })
-
-      expect(onChange).toHaveBeenCalledTimes(1)
-      expect(getEditorText(container)).toContain("print('external sync')")
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("applies a pending empty external sync on blur after local edits are reverted", () => {
+  it("keeps what is typed after a commit when that commit's own echo arrives", () => {
     vi.useFakeTimers()
     try {
-      let view: EditorView | null = null
       const onChange = vi.fn()
-      const { container, rerender } = render(
-        <CodeEditor
-          defaultValue="import math"
-          onChange={onChange}
-          onEditorView={(editorView) => { view = editorView }}
-        />,
-      )
+      const editor = editorWith("x = 1", onChange)
+      editor.type("x = 2")
+      act(() => { vi.advanceTimersByTime(151) })
+      expect(onChange).toHaveBeenLastCalledWith("x = 2")
+      editor.type("x = 23")
 
-      act(() => {
-        view?.focus()
-        view?.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: "import local_edit" },
-        })
-      })
+      // The owner stores what it was sent, and hands it back.
+      editor.store("x = 2")
 
-      rerender(
-        <CodeEditor
-          defaultValue=""
-          onChange={onChange}
-          onEditorView={(editorView) => { view = editorView }}
-        />,
-      )
+      expect(editor.text()).toBe("x = 23")
+      act(() => { vi.advanceTimersByTime(151) })
+      expect(onChange).toHaveBeenLastCalledWith("x = 23")
+      expect(onChange).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
-      expect(getEditorText(container)).toContain("import local_edit")
+  it("holds typing not yet committed as an open draft, which a save commits", () => {
+    vi.useFakeTimers()
+    try {
+      const onChange = vi.fn()
+      const editor = editorWith("y = 1", onChange)
+      expect(isDraftOpen()).toBe(false)
+      editor.type("y = 2")
+      expect(isDraftOpen()).toBe(true)
 
-      act(() => {
-        view?.dispatch({
-          changes: { from: 0, to: view.state.doc.length, insert: "import math" },
-        })
-        view?.contentDOM.dispatchEvent(new Event("blur"))
-      })
+      act(() => { commitOpenDrafts() })
 
-      expect(getEditorText(container)).not.toContain("import math")
-      expect(getEditorText(container)).not.toContain("import local_edit")
-
-      act(() => {
-        vi.advanceTimersByTime(151)
-      })
-
-      expect(onChange).not.toHaveBeenCalled()
+      expect(onChange).toHaveBeenCalledExactlyOnceWith("y = 2")
+      expect(isDraftOpen()).toBe(false)
+      act(() => { vi.advanceTimersByTime(151) })
+      expect(onChange).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }

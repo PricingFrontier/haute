@@ -684,7 +684,7 @@ export default function BandingEditor({
           </div>
           {showImport && importOptions}
           <BandingRulesGrid
-            key={safeIdx}
+            key={factorKeys.keys[safeIdx]}
             factor={factor}
             onUpdateFactor={(patch) => updateFactor(safeIdx, patch)}
             accentColor={accentColor}
@@ -717,7 +717,7 @@ export default function BandingEditor({
           )}
         </div>
         <CommittedTextField
-          key={`def-${safeIdx}`}
+          key={`def-${factorKeys.keys[safeIdx]}`}
           type="text" value={factor.default ?? ""}
           onCommit={(v) => {
             const name = bandName(v)

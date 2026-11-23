@@ -86,6 +86,7 @@ import {
 import { StepSchemaContext, UNKNOWN_SCHEMA, schemaFor, useStepSchema, type StepSchema } from "./stepSchema"
 import { useCompletionList, type Completion } from "./useCompletionList"
 import { useRowKeys } from "../shared/useRowKeys"
+import type { RowChange } from "../../../utils/rowKeys"
 import { CALCULATIONS, calculationEntry, calculationExpr, calculationLabel, calculationOf, computedValue, stepSection, type CalculationId, type FunctionSection } from "./calculations"
 import type {
   AggregationSpec,
@@ -1523,8 +1524,10 @@ function UnpivotForm({ step, onChange, ctx }: FormProps<UnpivotStep>) {
 
 function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
   const [filters, setFilters] = useState(() => step.aggregations.some((a) => !("dtype" in a) && a.where !== undefined))
+  // Each aggregation's identity, which its fields' drafts are kept by.
+  const aggregationKeys = useRowKeys(step.aggregations)
   const set = (index: number, next: AggregationSpec) =>
-    onChange({ ...step, aggregations: step.aggregations.map((a, i) => (i === index ? next : a)) })
+    onChange({ ...step, aggregations: aggregationKeys.edit(step.aggregations.map((a, i) => (i === index ? next : a))) })
   const many = step.aggregations.length > 1
   const lastColumn = [...step.aggregations].reverse().find((a): a is ColumnAggregation => !("dtype" in a))?.column ?? ""
   const namesBesides = (index: number): ReadonlySet<string> =>
@@ -1537,15 +1540,15 @@ function GroupByForm({ step, onChange, ctx }: FormProps<GroupByStep>) {
       <Field label="Aggregations">
         <div className="grid gap-1.5">
           {step.aggregations.map((entry, index) => {
-            const remove = many ? () => onChange({ ...step, aggregations: step.aggregations.filter((_, i) => i !== index) }) : undefined
+            const remove = many ? () => onChange({ ...step, aggregations: aggregationKeys.remove(index, step.aggregations.filter((_, i) => i !== index)) }) : undefined
             return "dtype" in entry ? (
-              <DtypeAggregationRow key={index} entry={entry} index={index} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} />
+              <DtypeAggregationRow key={aggregationKeys.keys[index]} entry={entry} index={index} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} />
             ) : (
-              <AggregationRow key={index} entry={entry} index={index} taken={namesBesides(index)} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
+              <AggregationRow key={aggregationKeys.keys[index]} entry={entry} index={index} taken={namesBesides(index)} ctx={ctx} onChange={(next) => set(index, next)} onRemove={remove} boxed={many} showFilter={filters} />
             )
           })}
           <QuietAction
-            onClick={() => onChange({ ...step, aggregations: [...step.aggregations, { column: lastColumn, agg: "sum", name: "" } as ColumnAggregation] })}
+            onClick={() => onChange({ ...step, aggregations: aggregationKeys.add([...step.aggregations, { column: lastColumn, agg: "sum", name: "" } as ColumnAggregation]) })}
             className="justify-self-start"
           >
             Add aggregation
@@ -1570,8 +1573,13 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
   )
   const pairCount = Math.max(1, step.left_on.length, step.right_on.length)
   const pairs = Array.from({ length: pairCount }, (_, i) => [step.left_on[i] ?? "", step.right_on[i] ?? ""] as [string, string])
-  const setPairs = (next: Array<[string, string]>) => onChange({ ...step, left_on: next.map((p) => p[0]), right_on: next.map((p) => p[1]) })
-  const setPair = (index: number, pair: [string, string]) => setPairs(pairs.map((p, i) => (i === index ? pair : p)))
+  // Each key pair's identity, which its boxes' drafts are kept by.
+  const pairKeys = useRowKeys(pairs)
+  const setPairs = (next: Array<[string, string]>, change: RowChange) => {
+    pairKeys.expect(next, change)
+    onChange({ ...step, left_on: next.map((p) => p[0]), right_on: next.map((p) => p[1]) })
+  }
+  const setPair = (index: number, pair: [string, string]) => setPairs(pairs.map((p, i) => (i === index ? pair : p)), { kind: "edit" })
   const nothingToJoin = step.input === "" && ctx.inputNames.length <= 1
   const used = step.validate !== undefined || step.maintain_order !== DEFAULT_JOIN_ORDER[step.how] || step.suffix !== "_right"
   return (
@@ -1601,7 +1609,7 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
         <Field label="Match on" note="a column here = a column there">
           <div className="grid gap-1.5">
             {pairs.map(([left, rightKey], index) => (
-              <div key={index} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Join key ${index + 1}`}>
+              <div key={pairKeys.keys[index]} className="flex flex-wrap items-center gap-1.5" role="group" aria-label={`Join key ${index + 1}`}>
                 <span className="flex-1 basis-28 min-w-0">
                   <ColumnPicker
                     value={left}
@@ -1623,10 +1631,10 @@ function JoinForm({ step, onChange, ctx }: FormProps<JoinStep>) {
                     />
                   </StepSchemaContext.Provider>
                 </span>
-                {pairCount > 1 && <RowRemove label={`Remove join key ${index + 1}`} onClick={() => setPairs(pairs.filter((_, i) => i !== index))} />}
+                {pairCount > 1 && <RowRemove label={`Remove join key ${index + 1}`} onClick={() => setPairs(pairs.filter((_, i) => i !== index), { kind: "remove", index })} />}
               </div>
             ))}
-            <QuietAction onClick={() => setPairs([...pairs, ["", ""]])} className="justify-self-start">Add key</QuietAction>
+            <QuietAction onClick={() => setPairs([...pairs, ["", ""]], { kind: "add" })} className="justify-self-start">Add key</QuietAction>
           </div>
         </Field>
       )}

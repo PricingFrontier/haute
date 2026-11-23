@@ -16,6 +16,8 @@ import { INPUT_STYLE, SELECT_STYLE } from "./_shared"
 import type { OnUpdateConfig, SimpleEdge, SimpleNode } from "./_shared"
 import { joinOrderAfterHowChange } from "./polarsSteps/catalogue"
 import type { JoinHow } from "./polarsSteps/types"
+import { useRowKeys } from "./shared/useRowKeys"
+import type { RowChange } from "../../utils/rowKeys"
 
 type KeyMode = "same" | "paired"
 
@@ -126,40 +128,47 @@ export default function EdgeJoinEditor({
     ["--focus-ring-shadow" as string]: withAlpha(accentColor, 0.1),
   }
 
+  // Each key row's identity, which its box's draft is kept by: it follows the editor's own
+  // writes, and any other change (an Undo, a sync frame) gives every row a new one.
+  const sameKeys = useRowKeys(sameRows)
+  const pairKeys = useRowKeys(pairedRows)
+  const writeSame = (on: string[], change: RowChange) => {
+    sameKeys.expect(on.length > 0 ? on : [""], change)
+    onUpdate({ on, left_on: [], right_on: [] })
+  }
+  const writePaired = (left: string[], right: string[], change: RowChange) => {
+    pairKeys.expect(buildPairedRows(left, right), change)
+    onUpdate({ on: [], left_on: left, right_on: right })
+  }
+
   const updateSameKey = (index: number, value: string) => {
-    const next = replaceAt(sameRows, index, value)
-    onUpdate({ on: normalizeKeyRows(next), left_on: [], right_on: [] })
+    writeSame(normalizeKeyRows(replaceAt(sameRows, index, value)), { kind: "edit" })
   }
 
   const addSameKey = () => {
-    onUpdate({ on: [...sameRows, ""], left_on: [], right_on: [] })
+    writeSame([...sameRows, ""], { kind: "add" })
   }
 
   const removeSameKey = (index: number) => {
-    const next = sameRows.filter((_, rowIndex) => rowIndex !== index)
-    onUpdate({ on: normalizeKeyRows(next), left_on: [], right_on: [] })
+    writeSame(normalizeKeyRows(sameRows.filter((_, rowIndex) => rowIndex !== index)), { kind: "remove", index })
   }
 
   const updatePairedKey = (index: number, side: "left" | "right", value: string) => {
     const nextLeft = replaceAt(pairedRows.map((row) => row.left), index, side === "left" ? value : pairedRows[index]?.left ?? "")
     const nextRight = replaceAt(pairedRows.map((row) => row.right), index, side === "right" ? value : pairedRows[index]?.right ?? "")
-    onUpdate({ on: [], left_on: normalizeKeyRows(nextLeft), right_on: normalizeKeyRows(nextRight) })
+    writePaired(normalizeKeyRows(nextLeft), normalizeKeyRows(nextRight), { kind: "edit" })
   }
 
   const addPairedKey = () => {
-    onUpdate({
-      on: [],
-      left_on: [...pairedRows.map((row) => row.left), ""],
-      right_on: [...pairedRows.map((row) => row.right), ""],
-    })
+    writePaired([...pairedRows.map((row) => row.left), ""], [...pairedRows.map((row) => row.right), ""], { kind: "add" })
   }
 
   const removePairedKey = (index: number) => {
-    onUpdate({
-      on: [],
-      left_on: normalizeKeyRows(pairedRows.map((row) => row.left).filter((_, rowIndex) => rowIndex !== index)),
-      right_on: normalizeKeyRows(pairedRows.map((row) => row.right).filter((_, rowIndex) => rowIndex !== index)),
-    })
+    writePaired(
+      normalizeKeyRows(pairedRows.map((row) => row.left).filter((_, rowIndex) => rowIndex !== index)),
+      normalizeKeyRows(pairedRows.map((row) => row.right).filter((_, rowIndex) => rowIndex !== index)),
+      { kind: "remove", index },
+    )
   }
 
   return (
@@ -278,7 +287,7 @@ export default function EdgeJoinEditor({
             {keyMode === "same" ? (
               <div className="space-y-1.5">
                 {sameRows.map((key, index) => (
-                  <div key={`same-${index}`} className="flex items-end gap-2">
+                  <div key={sameKeys.keys[index]} className="flex items-end gap-2">
                     <KeyInput
                       id={`edge-join-same-key-${index}`}
                       label={`Same-name key ${index + 1}`}
@@ -298,7 +307,7 @@ export default function EdgeJoinEditor({
             ) : (
               <div className="space-y-1.5">
                 {pairedRows.map((row, index) => (
-                  <div key={`pair-${index}`} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                  <div key={pairKeys.keys[index]} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
                     <KeyInput
                       id={`edge-join-left-key-${index}`}
                       label={`Base key ${index + 1}`}

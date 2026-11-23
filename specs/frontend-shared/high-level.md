@@ -302,14 +302,20 @@ graph-backed configuration cannot create one undo entry per character.
 
 **Panel values and Undo.** A value being edited in a panel or a node, whatever its kind (a
 line of text, a number, a JSON text, a grid cell, a list of rows), is held by one shared
-draft, `useCommittedDraft`. The few still held another way (a code editor's typing, the
-colour picker's preview, the Columns tab's empty selection, and the fields of lists still keyed
-by position) are listed under
-[FES-07](../roadmap/frontend-shared.md#fes-07--the-last-panel-values-outside-the-shared-draft). The field shows the stored value until the
+draft, `useCommittedDraft`: a code editor's typing not yet flushed, a colour being picked and
+the Columns tab's empty selection among them. The field shows the stored value until the
 analyst types; the typed draft commits once, on blur or Enter (a text area: on blur), as one
 undo step, and a commit whose value is unchanged commits nothing. When the stored value moves
 under an open draft, by an Undo, a Redo, a live-sync frame or any other change from outside
-the field, the draft lets go and the field shows what the store holds. A draft belongs to the
+the field, the draft lets go and the field shows what the store holds. A code editor follows
+the same rule: a change from outside replaces its text and drops typing not yet flushed,
+while the echo of its own last flush leaves typing since then alone, every owner storing
+exactly the text it is sent; its typing not yet flushed is an open draft, which a save
+commits first and a late answer waits for. A colour picked with each step previewed in the
+store keeps its draft through those previews, as a commit that stays does, and lets it go on
+any other change. A list's row, and the selected item of a list, keep their fields' drafts
+by the row's identity from `useRowKeys`, never by position, so a change from outside that
+leaves the same text at the same place gives the row a new identity and its draft goes. A draft belongs to the
 item it edits: a value in a list's row is keyed by that row's identity rather than its
 position, and a row keeps its identity only through the list's own edits, additions,
 removals and moves; a list replaced from outside, as by an Undo, gives every row a new

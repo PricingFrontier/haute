@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { answer, newest, requestKind } from "../utils/answers";
 import { chunkLoadVerdict, isChunkLoadError, type ChunkLoadVerdict } from "../utils/chunkLoadError";
 import { ERROR_FALLBACK_BUTTON_STYLE, ReloadNotice } from "./ReloadNotice";
 
@@ -28,7 +29,9 @@ const CHUNK_NOTICES: Record<ChunkLoadVerdict, { title: string; reason: string }>
 };
 
 export class ErrorBoundary extends Component<Props, State> {
-  private unmounted = false;
+  // The question of why a part of the page could not be loaded: only the one asked for the
+  // error the boundary holds is answered (`utils/answers.ts`).
+  private readonly verdicts = requestKind();
 
   constructor(props: Props) {
     super(props);
@@ -46,14 +49,19 @@ export class ErrorBoundary extends Component<Props, State> {
       errorInfo.componentStack
     );
     if (!isChunkLoadError(error)) return;
-    void chunkLoadVerdict(error).then((chunk) => {
-      if (!this.unmounted && this.state.error === error) this.setState({ chunk });
+    void answer([newest(this.verdicts)], chunkLoadVerdict(error), {
+      ok: (chunk) => this.setState({ chunk }),
     });
   }
 
   componentWillUnmount(): void {
-    this.unmounted = true;
+    this.verdicts.bump();
   }
+
+  private reset = (): void => {
+    this.verdicts.bump();
+    this.setState({ hasError: false, error: null, chunk: null });
+  };
 
   render(): ReactNode {
     if (this.state.hasError) {
@@ -83,7 +91,7 @@ export class ErrorBoundary extends Component<Props, State> {
               <p style={{ margin: "0 0 12px", fontFamily: "var(--font-code)", fontSize: "11px" }}>
                 {this.state.error?.message}
               </p>
-              <button onClick={() => this.setState({ hasError: false, error: null, chunk: null })} style={ERROR_FALLBACK_BUTTON_STYLE}>
+              <button onClick={this.reset} style={ERROR_FALLBACK_BUTTON_STYLE}>
                 Try again
               </button>
             </>

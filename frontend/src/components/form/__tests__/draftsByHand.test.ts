@@ -17,7 +17,12 @@
  *   component's props or from the graph store;
  * - `resync`: an effect that sets the component's state from its props or the graph;
  * - `adjust`: state set while rendering, the pattern the shared draft uses to drop a copy
- *   when the value under it changes.
+ *   when the value under it changes;
+ * - `position`: what a field's draft is kept by given a position: a `key` of a list's row
+ *   (or of the selected item's fields) that holds a component or a field, or a draft's
+ *   `owner` or a cell's `row`, read from an index (a `.map` callback's, or a name ending in
+ *   `Idx` or `Index`). A change from outside that leaves the same text at the same place
+ *   would carry a draft to another row; a row's key from `useRowKeys` does not.
  *
  * State that is only the page's own (an open menu, a search box, a dialog's form) or a
  * mirror a callback reads is on `OWN_STATE` with its reason, keyed `path::scope::rule`.
@@ -106,9 +111,37 @@ const OWN_STATE: Record<string, string> = {
     "the trace story in focus, reset for another story",
   "frontend/src/panels/useRecordedNodeColumns.ts::useRecordedNodeColumns::adjust":
     "the columns a preview recorded for the node: a run's answer, kept per source and config",
+  "frontend/src/panels/assistant/AssistantPanel.tsx::AssistantPanel::position":
+    "the chat's transcript, appended to and never edited: an entry's place is its identity",
+  "frontend/src/panels/assistant/ChangeCard.tsx::DataCheck::position":
+    "a check's findings, shown as the server answered them; nothing is edited",
+  "frontend/src/panels/assistant/ChangeCard.tsx::ChangeCard::position":
+    "a change's notes, shown as the server answered them; nothing is edited",
+  "frontend/src/panels/DataPreview.tsx::DataPreview::position":
+    "the preview's rows, a run's answer shown read-only",
+  "frontend/src/panels/editors/polarsSteps/fields.tsx::LiteralListField::position":
+    "a list's values as chips, each only removed: no draft is held in one",
+  "frontend/src/panels/editors/polarsSteps/forms.tsx::FunctionArgs::position":
+    "a function's arguments by their place in its signature, which is their identity",
+  "frontend/src/panels/editors/RatingStepEditor.tsx::RatingStepEditor::position":
+    "a table's factor slots and the combined outputs' tabs: controlled selects and labels with no draft, a slot's place being its axis",
+  "frontend/src/panels/editors/WorkbenchInputEditor.tsx::WorkbenchInputEditor::position":
+    "the form's tables as the node reads them, shown read-only",
+  "frontend/src/panels/editors/WorkbenchOutputEditor.tsx::WorkbenchOutputEditor::position":
+    "the form's output tables, shown read-only",
+  "frontend/src/panels/explore/SchemaTableCard.tsx::SchemaTableCard::position":
+    "the schema's rows, a read of the data shown read-only",
+  "frontend/src/panels/FilesPanel.tsx::FilesPanel::position":
+    "a breadcrumb keyed by the folder path it leads to",
+  "frontend/src/panels/modelling/ChartScaffold.tsx::ChartLegend::position":
+    "a chart's legend, drawn from its series",
+  "frontend/src/panels/modelling/EBMInteractionsConfig.tsx::EBMInteractionsConfig::position":
+    "a pair's two controlled selects, with no draft: the stored pairs are shown as they are",
+  "frontend/src/panels/modelling/GLMInteractionsConfig.tsx::InteractionCard::position":
+    "slots keyed by useRowKeys; the place stands in only for a slot not yet written",
 }
 
-type Rule = "field" | "seed" | "copy" | "adjust"
+type Rule = "field" | "seed" | "copy" | "adjust" | "position"
 type Finding = { line: number; scope: string; rule: Rule; text: string }
 
 const TYPED_INPUT_TYPES = new Set(["text", "number", "search", "date", "datetime-local", "time", "email", "url", "tel", "password", "month", "week"])
@@ -276,6 +309,50 @@ function stateSetters(fn: ComponentFn): Map<string, string> {
   return states
 }
 
+/** A name an index is held under: `i`, `idx`, `index`, or one ending in `Idx` or `Index`. */
+const INDEX_NAME = /^(?:i|idx|index)$|(?:Idx|Index)$/
+
+/** Whether *expression* reads an index: one of *indexes* (a `.map` callback's) or an index's name. */
+function readsIndex(expression: ts.Node, indexes: ReadonlySet<string>): boolean {
+  let found = false
+  const visit = (current: ts.Node) => {
+    if (found) return
+    if (ts.isIdentifier(current) && isValueReference(current) && (indexes.has(current.text) || INDEX_NAME.test(current.text))) {
+      found = true
+      return
+    }
+    // `keys[i]` is a row's key looked up by position, not the position itself.
+    if (ts.isElementAccessExpression(current)) {
+      visit(current.expression)
+      return
+    }
+    ts.forEachChild(current, visit)
+  }
+  visit(expression)
+  return found
+}
+
+/** Whether a JSX element is a component, or holds one or a typed field, below it. */
+function holdsComponentOrField(element: ts.JsxOpeningLikeElement): boolean {
+  if (/^[A-Z]/.test(element.tagName.getText())) return true
+  const container = ts.isJsxOpeningElement(element) ? element.parent : null
+  if (!container) return false
+  let found = false
+  const visit = (current: ts.Node) => {
+    if (found) return
+    if (ts.isJsxOpeningElement(current) || ts.isJsxSelfClosingElement(current)) {
+      const tag = current.tagName.getText()
+      if (/^[A-Z]/.test(tag) || tag === "input" || tag === "textarea" || tag === "select") {
+        found = true
+        return
+      }
+    }
+    ts.forEachChild(current, visit)
+  }
+  ts.forEachChild(container, visit)
+  return found
+}
+
 /** Every place in *source* where a component or hook holds its own copy of a stored value. */
 export function draftsByHand(source: string, fileName = "source.tsx"): Finding[] {
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
@@ -335,7 +412,26 @@ export function draftsByHand(source: string, fileName = "source.tsx"): Finding[]
     const objects = new Map<string, ts.ObjectLiteralExpression>()
     const counted = new Set<ts.Node>()
     const adjusted = counted
+    // The index parameters of the `.map` callbacks inside the component.
+    const indexes = new Set<string>()
     const walk = (node: ts.Node, topLevel: boolean) => {
+      if (
+        ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "map"
+      ) {
+        const callback = node.arguments[0]
+        const index = callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) ? callback.parameters[1] : undefined
+        if (index && ts.isIdentifier(index.name)) indexes.add(index.name.text)
+      }
+      if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+        for (const name of ["key", "owner", "row"]) {
+          const given = attributeValue(node, name, objects)
+          if (given === undefined || given === true || !readsIndex(given, indexes)) continue
+          if (name !== "key" || holdsComponentOrField(node)) report(node, scope, "position")
+        }
+      }
+      if (ts.isPropertyAssignment(node) && node.name.getText() === "owner" && readsIndex(node.initializer, indexes)) {
+        report(node, scope, "position")
+      }
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
         objects.set(node.name.text, node.initializer)
       }
@@ -529,6 +625,35 @@ describe("the scan finds a copy held by hand", () => {
         return null
       }`)
     expect(findings.map((f) => f.rule)).toEqual(["adjust"])
+  })
+
+  it("finds a list's row, or the selected item's field, kept by its position", () => {
+    const findings = draftsByHand(`
+      export function Keys({ keys, selectedIdx, onUpdate }) {
+        return <>
+          {keys.map((key, n) => <KeyRow key={n} value={key} onCommit={(v) => onUpdate(n, v)} />)}
+          {keys.map((key, n) => <div key={\`key-\${n}\`}><CommittedTextField value={key} onCommit={(v) => onUpdate(n, v)} /></div>)}
+          <CommittedTextField key={\`default-\${selectedIdx}\`} value={keys[selectedIdx]} onCommit={(v) => onUpdate(selectedIdx, v)} />
+        </>
+      }
+      function useCell(value, onCommit, index) {
+        return useCommittedDraft(value, onCommit, { owner: index })
+      }`)
+    expect(findings.map((f) => [f.scope, f.rule])).toEqual([
+      ["Keys", "position"], ["Keys", "position"], ["Keys", "position"], ["useCell", "position"],
+    ])
+  })
+
+  it("finds nothing in rows kept by their keys, nor in a position holding no field", () => {
+    const findings = draftsByHand(`
+      export function Keys({ keys, onUpdate }) {
+        const rowKeys = useRowKeys(keys)
+        return <>
+          {keys.map((key, i) => <KeyRow key={rowKeys.keys[i]} value={key} onCommit={(v) => onUpdate(i, v)} />)}
+          {keys.map((key, i) => <span key={i}>{key}</span>)}
+        </>
+      }`)
+    expect(findings).toEqual([])
   })
 
   it("finds nothing in a field built on the shared draft, nor in the page's own state", () => {
