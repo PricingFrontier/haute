@@ -68,7 +68,30 @@ Standards for every step:
 - **Cost:** a restored 7 MB path candidate cost about 0.42 s (decode with one build, apply
   with another build and re-serialisation, then the adapter's third build); it now costs
   about 0.23 s (decode with one build; apply installs the snapshot).
-- **Remaining:** steps 5 (acquire before preparing frames) and 6 (`PreparedInput`).
+- **Profile after step 3** (542k-row demo, single validation, in-process path jobs, with a
+  concurrent review; proportions, not clean wall time):
+
+  | Path job | Total | Native family | Point results written | Points (evaluate) |
+  |---|---|---|---|---|
+  | pruned (11 points) | 24.0 s | 7.8 s | 3.7 s | 8.7 s |
+  | banded (7 points) | 31.1 s | 15.1 s | 4.5 s | about 9 s |
+  | smoothed (6 points) | 13.4 s | 2.8 s | 2.8 s | about 5 s |
+
+  Input preparation (`split_polars_columns`) is 0.5–1.0 s per job; raw scoring under 1 s.
+- **Step 5, done in part** (Haute `114273d30`):
+  - table reports on demand: selection and fold fits build none, so a cross-validated job
+    builds 1 instead of 4;
+  - point results reuse the stored parent diagnostics (StoredNames): pruning's writes went
+    from 3.7 s to 2.2 s.
+- **Step 5, not done:** acquiring a retained fold model without materialising its training
+  rows. The reported fit needs those rows for its table report anyway. For the others it
+  would need a persisted feature contract, to save a partition read of about 0.1 s per fit.
+- **Step 6, not done:** a `PreparedInput` would save the 0.5–1.0 s of preparation per job
+  only through a cross-job cache keyed by split and batch, under a memory budget. That is
+  more machinery than about 3% justifies. Revisit if serving or table export grows.
+- **What remains large:** the native families (banding most of all) and per-point
+  evaluation (about 0.8 s a point, mainly the adapter's acquisition and table report,
+  metrics, and AvE).
 
 ## Done before this plan (22 Nov)
 
