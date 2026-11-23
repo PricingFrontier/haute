@@ -715,6 +715,29 @@ def test_merge_widens_scalar_array_types_across_chunk_states() -> None:
     assert _scalar_table_type(_assemble_inference_schema(concrete_then_empty), "tags") == "int"
 
 
+def test_parallel_inference_refuses_a_fault_in_the_shared_prefix_as_the_serial_reader_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fault the parent meets learning the prefix, before any range starts, is the file's
+    refusal at its line and column, as the serial reader refuses it."""
+    lines = [*(json.dumps({"id": i}) for i in range(5)), '{"id": 5,', '{"id": 6}']
+    src = tmp_path / "prefix-fault.jsonl"
+    src.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(InputFileError) as expected:
+        list(_records._iter_records(src))
+    _force_parallel(monkeypatch, chunk_bytes=20)
+
+    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
+
+    monkeypatch.setattr(_records, "_iter_records_for_inference", reject_serial_dispatch)
+    with pytest.raises(InputFileError) as actual:
+        infer_v2_schema_from_data(src)
+
+    assert actual.value.message == expected.value.message
+    assert (actual.value.line, actual.value.column) == (6, 10)
+
+
 @pytest.mark.parametrize("tail", ["invalid-key", "malformed-json"])
 def test_parallel_inference_preserves_post_prefix_error_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail: str

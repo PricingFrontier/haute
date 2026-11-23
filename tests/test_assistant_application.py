@@ -1756,7 +1756,11 @@ class TestWrittenNodesAreReady:
             ).plan
 
         assert raised.value.code == "node_not_ready"
-        assert "JSONDecodeError" in str(raised.value)
+        # Load File's own refusal: the file and the fault's place (IOL-05), not its text.
+        assert str(raised.value) == (
+            "Node 'lookup' is not ready: lookup.json is not valid JSON: Expecting property name "
+            "enclosed in double quotes at line 1, column 2."
+        )
         assert "not json" not in str(raised.value)
 
     async def test_the_valid_glm_applies(self, modelling_project: Path):

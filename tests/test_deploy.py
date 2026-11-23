@@ -2581,8 +2581,9 @@ class TestInferInputSchemaEdgeCases:
     """Extra edge cases for infer_input_schema."""
 
     def test_csv_file_schema(self, tmp_path):
-        """infer_input_schema can read schema from CSV files."""
+        """infer_input_schema reads a CSV sample's schema as its table types it (IOL-03)."""
         from haute.deploy._schema import infer_input_schema
+        from tests.conftest import flat_quote_table
 
         csv_path = tmp_path / "input.csv"
         pl.DataFrame({"name": ["alice"], "score": [95.5]}).write_csv(csv_path)
@@ -2595,7 +2596,10 @@ class TestInferInputSchemaEdgeCases:
                         "data": {
                             "label": "src",
                             "nodeType": "apiInput",
-                            "config": {"path": str(csv_path)},
+                            "config": {
+                                "path": str(csv_path),
+                                **flat_quote_table(name="str", score="float"),
+                            },
                         },
                     },
                 ],
@@ -2603,9 +2607,7 @@ class TestInferInputSchemaEdgeCases:
         )
 
         schema = infer_input_schema(graph, "src")
-        assert "name" in schema
-        assert "score" in schema
-        assert isinstance(schema["name"], str)
+        assert schema == {"name": "String", "score": "Float64"}
 
     def test_parquet_multiple_columns(self, tmp_path):
         """infer_input_schema returns all columns from a multi-column parquet."""
