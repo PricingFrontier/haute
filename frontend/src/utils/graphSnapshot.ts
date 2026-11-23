@@ -141,19 +141,21 @@ function stripNodeDataMetadataFields(
   return out
 }
 
-function stripGraphMetadataTransientFields(value: unknown, forFingerprint = false): unknown {
-  if (value === null || typeof value !== "object") return value
-  if (Array.isArray(value)) return value.map((child) => stripGraphMetadataTransientFields(child, forFingerprint))
-
-  const record = value as Record<string, unknown>
-  const isSubmodelDefinition =
-    typeof record.definitionId === "string"
+function isSubmodelDefinitionRecord(record: Record<string, unknown>): boolean {
+  return typeof record.definitionId === "string"
     && typeof record.file === "string"
     && typeof record.graph === "object"
     && record.graph !== null
     && Array.isArray(record.inputPorts)
     && Array.isArray(record.outputPorts)
-  if (isSubmodelDefinition) {
+}
+
+function stripGraphMetadataTransientFields(value: unknown, forFingerprint = false): unknown {
+  if (value === null || typeof value !== "object") return value
+  if (Array.isArray(value)) return value.map((child) => stripGraphMetadataTransientFields(child, forFingerprint))
+
+  const record = value as Record<string, unknown>
+  if (isSubmodelDefinitionRecord(record)) {
     return Object.fromEntries(
       Object.entries(record)
         .filter(([key]) => !key.startsWith("_"))
@@ -169,26 +171,6 @@ function stripGraphMetadataTransientFields(value: unknown, forFingerprint = fals
 
   return Object.fromEntries(
     Object.entries(record).map(([key, child]) => [key, stripGraphMetadataTransientFields(child, forFingerprint)]),
-  )
-}
-
-function stripGraphHistoryTransientFields(value: unknown): unknown {
-  if (value === null || typeof value !== "object") return value
-  if (Array.isArray(value)) return value.map(stripGraphHistoryTransientFields)
-
-  const record = value as Record<string, unknown>
-  if (typeof record.source === "string" && typeof record.target === "string") {
-    return stripEdgeHistoryFields(record as unknown as PipelineEdge)
-  }
-  if (typeof record.id === "string" && "data" in record) {
-    return stripNodeHistoryFields(record as unknown as Node)
-  }
-
-  return Object.fromEntries(
-    Object.entries(record).map(([key, child]) => [
-      key,
-      stripGraphHistoryTransientFields(child),
-    ]),
   )
 }
 
@@ -314,16 +296,17 @@ export function serializeSnapshot(input: {
 // ---------------------------------------------------------------------------
 // The persisted fingerprint
 //
-// What `serializeSnapshot` reads, as one digest per node, edge, preamble,
-// definition set and constant list, each kept for its object's identity. The
-// graph replaces what it changes, so an edit to one node digests that node
-// alone, and two fingerprints compare in time that follows the node count,
-// never the size of a node's settings (FEG-01).
+// What `serializeSnapshot` reads, as one digest per node, edge, preamble and
+// constant list, and the definitions' digest composed of one per definition and
+// per child, each kept for its object's identity. The graph replaces what it
+// changes and the store freezes what it holds (`freezeGraphValue`), so an edit
+// to one node digests that node alone, and two fingerprints compare in time that
+// follows the node count, never the size of a node's settings (FEG-01).
 // ---------------------------------------------------------------------------
 
 const persistedNodeDigests = new WeakMap<Node, string>()
 const persistedEdgeDigests = new WeakMap<PipelineEdge, string>()
-const persistedSubmodelsDigests = new WeakMap<Record<string, unknown>, string>()
+const persistedValueDigests = new WeakMap<object, string>()
 const persistedConstantsDigests = new WeakMap<readonly GlobalConstantDraft[], string>()
 const NO_CONSTANTS: readonly GlobalConstantDraft[] = Object.freeze([])
 
@@ -333,6 +316,41 @@ function persistedNodeDigest(node: Node): string {
 
 function persistedEdgeDigest(edge: PipelineEdge): string {
   return cachedDigest(persistedEdgeDigests, edge, (value) => canonicalJson(stripEdgeUiFields(value)))
+}
+
+/** What a value adds to the digest of the value holding it: an object, its own digest. */
+function persistedPart(value: unknown): string {
+  return value !== null && typeof value === "object" ? `o:${persistedValueDigest(value)}` : `p:${canonicalJson(value)}`
+}
+
+/** A record's fields `keep` admits, as JSON writes them (sorted, `undefined` left out), each by its part. */
+function persistedRecordParts(record: Record<string, unknown>, keep: (key: string) => boolean = () => true): string {
+  return Object.keys(record)
+    .filter((key) => keep(key) && record[key] !== undefined && typeof record[key] !== "function")
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${persistedPart(record[key])}`)
+    .join(",")
+}
+
+/**
+ * The digest of a value of the definitions, read as `stripGraphMetadataTransientFields`
+ * reads it for `serializeSnapshot`: a node or an edge by its serialisation, anything else
+ * by its fields' own digests. Each is kept for its object, so a change to one child of one
+ * definition reads that child alone.
+ */
+function persistedValueDigest(value: object): string {
+  return cachedDigest(persistedValueDigests, value, (object) => {
+    if (Array.isArray(object)) return `[${object.map(persistedPart).join(",")}]`
+    const record = object as Record<string, unknown>
+    if (isSubmodelDefinitionRecord(record)) return `definition{${persistedRecordParts(record, (key) => !key.startsWith("_"))}}`
+    if (typeof record.source === "string" && typeof record.target === "string") {
+      return `edge:${canonicalJson(stripEdgeUiFields(record as unknown as PipelineEdge))}`
+    }
+    if (typeof record.id === "string" && "data" in record) {
+      return `node:${canonicalJson(stripNodeUiFields(record as unknown as Node, true))}`
+    }
+    return `{${persistedRecordParts(record)}}`
+  })
 }
 
 /**
@@ -347,34 +365,33 @@ export function persistedFingerprint(input: {
   submodels: Record<string, unknown>
   globalConstants?: readonly GlobalConstantDraft[]
 }): string {
-  const submodels = cachedDigest(
-    persistedSubmodelsDigests,
-    input.submodels,
-    (value) => canonicalJson(stripGraphMetadataTransientFields(value, true)),
-  )
   const constants = cachedDigest(persistedConstantsDigests, input.globalConstants ?? NO_CONSTANTS, canonicalJson)
   return `nodes:${input.nodes.map(persistedNodeDigest).join(",")}`
     + `|edges:${input.edges.map(persistedEdgeDigest).join(",")}`
-    + `|preamble:${contentDigest(input.preamble)}|submodels:${submodels}|constants:${constants}`
+    + `|preamble:${contentDigest(input.preamble)}|submodels:${persistedValueDigest(input.submodels)}|constants:${constants}`
 }
 
 // ---------------------------------------------------------------------------
 // History forms
 //
-// A history entry holds each node and edge in its history form, kept for the
-// object it is the form of and frozen: the entries share every node a change
-// did not touch, so one hundred edits beside a large table hold the table once
-// (FEG-01). Freezing is the check that nothing writes into a committed node in
-// place: such a write would reach every entry sharing it, and it throws instead.
+// A history entry holds each node, edge and definition in its history form, kept
+// for the object it is the form of and frozen: the entries share everything a
+// change did not touch, so one hundred edits beside a large table hold the table
+// once, in the pipeline or in a submodel (FEG-01).
 // ---------------------------------------------------------------------------
 
 const historyForms = new WeakMap<object, object>()
 const deepFrozen = new WeakSet<object>()
 
-function deepFreeze<T>(value: T): T {
+/**
+ * Freeze `value` and everything it holds, once per object. The graph store freezes each
+ * value it accepts (`stores/useGraphStore.ts`), so a write into a committed node in place
+ * throws instead of going round the digests and history forms kept for its identity.
+ */
+export function freezeGraphValue<T>(value: T): T {
   if (value === null || typeof value !== "object" || deepFrozen.has(value)) return value
   deepFrozen.add(value)
-  for (const child of Object.values(value)) deepFreeze(child)
+  for (const child of Object.values(value)) freezeGraphValue(child)
   return Object.freeze(value)
 }
 
@@ -382,7 +399,7 @@ function deepFreeze<T>(value: T): T {
 function historyForm<T extends object>(value: T, strip: (value: T) => object): T {
   const known = historyForms.get(value)
   if (known !== undefined) return known as T
-  const form = deepFreeze(strip(value)) as T
+  const form = freezeGraphValue(strip(value)) as T
   historyForms.set(value, form)
   historyForms.set(form, form)
   return form
@@ -399,6 +416,29 @@ function edgeHistoryForm(edge: PipelineEdge): PipelineEdge {
   const form = historyForm(edge, stripEdgeHistoryFields)
   if (form !== edge && !persistedEdgeDigests.has(form)) persistedEdgeDigests.set(form, persistedEdgeDigest(edge))
   return form
+}
+
+/**
+ * A value of the definitions in its history form, kept for each object at every level: a
+ * node and an edge without their presentation and execution fields, anything else field by
+ * field. An unchanged definition, and an unchanged child of a changed one, is shared by
+ * every entry holding it.
+ */
+function graphHistoryForm<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value
+  const object = value as object
+  const form = historyForm(object, (each) => {
+    if (Array.isArray(each)) return each.map(graphHistoryForm)
+    const record = each as Record<string, unknown>
+    if (typeof record.source === "string" && typeof record.target === "string") {
+      return stripEdgeHistoryFields(record as unknown as PipelineEdge)
+    }
+    if (typeof record.id === "string" && "data" in record) return stripNodeHistoryFields(record as unknown as Node)
+    return Object.fromEntries(Object.entries(record).map(([key, child]) => [key, graphHistoryForm(child)]))
+  })
+  // The form leaves out only what the persisted fingerprint leaves out too.
+  if (form !== object && !persistedValueDigests.has(form)) persistedValueDigests.set(form, persistedValueDigest(object))
+  return form as T
 }
 
 /**
@@ -429,7 +469,7 @@ export function historyGraphSnapshot(input: {
     nodes: input.nodes.map(nodeHistoryForm),
     edges: input.edges.map(edgeHistoryForm),
     preamble: input.preamble,
-    submodels: historyForm(input.submodels, (submodels) => stripGraphHistoryTransientFields(submodels) as object),
+    submodels: graphHistoryForm(input.submodels),
   }
 }
 

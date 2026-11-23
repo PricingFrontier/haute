@@ -580,13 +580,14 @@ export function prepareNodeUpdate(input: PrepareNodeUpdateInput): PrepareNodeUpd
   const edgeResult = reconcileSourceEdges({ ...input, previousNode })
   if (!edgeResult.ok) return edgeResult
 
-  const tentativeSubmodels = structuredClone(input.submodels)
+  // The definitions are read, never written: the plan replaces the root nodes it changes,
+  // and every definition it leaves keeps its identity, which its digests are kept for.
   const rootScope: RenameGraphScope = {
     nodes: input.graph.nodes.map((node) => (
       node.id === input.nodeId ? { ...node, data: input.data } : node
     )),
     edges: edgeResult.edges,
-    submodels: tentativeSubmodels,
+    submodels: input.submodels,
   }
   const failure = reconcileConsumerBindings(rootScope, edgeResult.rebound)
   if (failure) return failure
@@ -597,7 +598,7 @@ export function prepareNodeUpdate(input: PrepareNodeUpdateInput): PrepareNodeUpd
     data: input.data,
     nodes: rootScope.nodes,
     edges: rootScope.edges,
-    submodels: tentativeSubmodels,
+    submodels: input.submodels,
     removed: edgeResult.removed,
   }
 }

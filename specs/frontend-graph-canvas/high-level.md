@@ -308,19 +308,24 @@ toast.
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
   Both undo and redo stacks retain at most 100 entries. An entry shares every
-  node and edge its step did not change with the entries beside it and with the
-  canvas, so its size follows what the step changed: one hundred edits beside a
-  100,000-row rating table hold the table once. The graph replaces a node or
-  edge it changes and never writes into one in place; a committed node's
-  settings are frozen, so a write into one fails loudly instead of rewriting
-  history and the saved baseline.
+  node, edge and definition its step did not change, and every unchanged
+  child of a changed definition, with the entries beside it and with the
+  canvas, so its size follows what the step changed: one hundred edits beside
+  a 100,000-row rating table hold the table once, whether it is in the
+  pipeline or in a submodel. The graph replaces a node or edge it changes and
+  never writes into one in place; everything the graph store holds is frozen
+  as it is committed, so a write into a node, its settings or the lists
+  holding them fails loudly instead of going round the dirty flag, history and
+  the saved baseline.
 - **Dirty state** is derived, not imperatively toggled: it's a fingerprint
   comparison over persisted nodes, edges, preamble, and submodels against the
   last-saved snapshot, recomputed on every persisted mutation. Undoing back
   to exactly the saved state always reports clean. Every fingerprint is made of
-  one digest per node, edge and definition set, kept for as long as that object
-  lives, so an edit costs what it changed: typing into a code node beside a
-  100,000-row rating table takes well under 5 ms, not the size of the table.
+  one digest per node, edge, definition and definition child, kept for as long
+  as that object lives, so an edit costs what it changed: typing into a code
+  node beside a 100,000-row rating table takes well under 5 ms, not the size of
+  the table, in the pipeline or inside a submodel, and so does any edit the
+  editor's update plan makes beside a submodel holding one.
 - **Graph context.** `GraphProvider`/`useGraph()` exposes a render-stable
   `{allNodes, edges, submodels, preamble}` snapshot to the node inspector's
   subtree. Calling `useGraph()` outside a provider throws immediately.
