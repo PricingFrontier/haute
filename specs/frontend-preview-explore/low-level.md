@@ -2,19 +2,30 @@
 
 ## Preview column freshness
 
+- No preview `usePipelineAPI` sends names `requestedPreviewColumns`: not a
+  selected node's, a refreshed node's, an upstream node's previewed for a
+  Refresh, a recovery preview's, nor the preparation that asks which inputs a
+  preview reads (`previewInputs`). The server reads the schema it finds and
+  previews a wide frame's first columns up to its initial preview column limit
+  (`src/haute/executor.py::PREVIEW_INITIAL_COLUMN_LIMIT`). The columns a node
+  last previewed with are no projection, because the data under a node can
+  change while nothing in the graph does: a data file replaced on disk with a
+  column added, removed or renamed, or a workbench table saved without a field.
+  A remembered name the data no longer has would fail the preview with a
+  message about a column the analyst never asked for.
+- Deselecting join columns therefore lets downstream pass-through previews
+  discover the remaining columns. Actual code and join dependencies retain the
+  backend's strict missing-column validation.
 - Column metadata captured by `usePipelineAPI` records the request's structural
   version as `_columnsStructuralVersion`, alongside `_columnsSource`. Both are
   transient result metadata and do not change graph identity or persisted state.
-- Preview requests may seed `requestedPreviewColumns` from cached columns only
-  when their structural version and source match the request. Missing provenance
-  or a mismatch requires schema discovery by omitting that optional projection.
-  This applies to direct, recovery and upstream refresh
-  requests. Fresh schemas retain the initial preview column limit.
-- Deselecting join columns must therefore let downstream pass-through previews
-  discover the remaining columns without requesting the old schema. Actual code
-  and join dependencies retain the backend's strict missing-column validation.
-- Result-shape invalidation clears the structural version tag along with the
+  Result-shape invalidation clears the structural version tag along with the
   source tag; selection-only edits still preserve the pre-filter column choices.
+- A preview that fails for the graph as it is forgets the node's stored preview
+  (`useNodeResultsStore`'s `forgetPreview`; for a frame preview, only when it is
+  the frame the node previews), as a success would have replaced it. Showing
+  the node again then asks again instead of showing the rows from before the
+  failure as current.
 
 ## Module map
 
@@ -44,6 +55,7 @@
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 | `frontend/src/panels/explore/exploreTableStyles.ts`, `frontend/src/panels/explore/ExploreTableHead.tsx` | What the Explore report tables share: the cell padding, uppercase label style, text-colour styles and row border, and `ExploreTableHead`, the header row (column headers with `scope="col"`, a blank label rendered as an `aria-hidden` spacer, an optional dense variant for nested tables and a sticky variant for scrolling ones). |
 | `frontend/e2e/input-import.spec.ts` | Import browser journey: a CSV Data Input previews its rows, the file grows, and Import re-reads it and previews the new rows. |
+| `frontend/e2e/replaced-data.spec.ts` | Browser journeys over data files replaced on disk while the editor is open: one Refresh previews a Parquet file that lost, gained or renamed a column on the input and on a pass-through node below it, and coming back shows the same table. |
 | `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
 
 ## Key types and data structures
@@ -544,7 +556,11 @@ Generic browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
 `frontend/e2e/data-preview-scroll.spec.ts` scrolls a preview fully right with the wheel and
 checks that it stays fully right, with the new column in view, through two Refreshes that each
-add a column.
+add a column. `frontend/e2e/replaced-data.spec.ts` replaces data files under open nodes (see the
+module map). In `frontend/src/hooks/__tests__/usePipelineAPI.test.ts`, a selected preview, a
+Refresh and a Refresh that previews an upstream node first each ask for none of the columns the
+node last previewed with, against a server that refuses the remembered one, and a node whose
+Refresh failed is asked again when it is shown again rather than showing its earlier rows.
 Explore owns a dedicated browser journey in `frontend/e2e/explore.spec.ts`: it authors and
 connects an Explore node, caches the whole dataset, reloads the application, opens Pivots,
 asserts that the profile's post-code schema populates the field palette, commits a Pivot

@@ -13,56 +13,13 @@ editor was open. The main session added the Banding editor's case.
 
 ## Priorities
 
-**Start with:** `FEP-01`
+**Start with:** `FEP-02`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FEP-01 | Planned | P2 | After a data file's columns change, one Refresh previews the file as it is, instead of failing on the columns the editor remembered. |
 | FEP-02 | Planned | P2 | A node's Refresh brings the Explore overview, and the Banding editor's counts and values, up to date with the data, as it does the preview. |
 
 ## Planned improvements
-
-### FEP-01 — A Refresh reads the file as it now is
-**Why:** Reproduced on 10 November 2026 in the editor. A Data Input over a
-Parquet file of six columns is previewed. The file is then replaced by a new
-extract without one of them, `mileage`. Every Refresh answers "Requested
-preview column(s) not found on target: mileage": the table empties and that
-line is all the pane shows. The analyst asked for no column. The editor
-remembers the columns of the last preview and sends them as the columns to
-fetch, and the server refuses a name the data no longer has. Selecting
-another node and coming back shows the old table again, `mileage` included,
-with no request and no message. Only reloading the page reads the file as it
-is.
-
-A file that gains a column previews, but the new column appears only at the
-second Refresh: the first still asks for the remembered six. With a wide
-file cut from 60 columns to 10, a Transform and an Explore node downstream
-fail their first Refresh with the engine's "Eager projection references
-columns missing" and work at the second (seen by the sweep and in the main
-session's re-run of it). A renamed column takes the same path and was not
-run.
-
-The specification's rule for the remembered layout ("Preview column
-freshness") lets it seed a request only while the graph's structure and the
-active source are the ones that produced it. Neither changes when the data
-under the node does, and that is the case Refresh exists for.
-
-**Plan:** A Refresh sends no remembered columns, so the server reports the
-schema it finds, as after an edit. As a second line, when the server answers
-that a requested column is not there, drop the remembered layout and ask
-once more without it. Drop the node's cached preview with it, so that coming
-back to the node does not show the table from before.
-
-**Acceptance:** After a previewed Data Input's file loses a column, gains
-one, or has one renamed, one Refresh shows the file's columns and rows on
-that node and on a node downstream of it; no message names columns the
-analyst did not ask for; and coming back to the node shows the same table. A
-browser test replaces the file under a previewed node.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/usePipelineAPI.ts::previewColumnNamesForNode`;
-`src/haute/executor.py::_preview_projection_columns`.
 
 ### FEP-02 — A Refresh reaches the data the Explore panes and the editors read
 **Why:** Reproduced on 10 November 2026 in the editor. An Explore node's

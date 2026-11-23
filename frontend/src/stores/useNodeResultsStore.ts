@@ -570,6 +570,12 @@ interface NodeResultsState {
    * other data is left alone.
    */
   advancePreviewEpoch: (nodeId: string, data: PreviewData, nodeDataEpoch: number) => void
+  /**
+   * Forget the preview stored under *nodeId*: a newer request for it failed, so
+   * the stored rows are no longer what the node gives, and showing it again
+   * asks again rather than showing them.
+   */
+  forgetPreview: (nodeId: string) => void
   /** Returns cached preview, or null if no entry exists. */
   getPreview: (nodeId: string) => CachedPreview | null
   /** Protect the open preview node from entry-count LRU eviction. */
@@ -736,6 +742,16 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       if (!entry || entry.data !== data) return {}
       return { previews: { ...s.previews, [nodeId]: { ...entry, nodeDataEpoch } } }
     }),
+
+  forgetPreview: (nodeId) => {
+    dropCachedResult(previewRecency, nodeId)
+    set((s) => {
+      if (!(nodeId in s.previews)) return {}
+      const { [nodeId]: _forgotten, ...previews } = s.previews
+      void _forgotten
+      return { previews }
+    })
+  },
 
   getPreview: (nodeId) => {
     const cached = get().previews[nodeId]

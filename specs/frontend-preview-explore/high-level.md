@@ -1,9 +1,12 @@
 # Frontend Preview & Explore — High-Level Specification
 
-After an upstream column selection changes, downstream previews automatically
-discover the current output columns. Users do not need to restore deselected
-columns merely to satisfy a remembered preview layout. A calculation that uses
-a removed column still requires the user to update it or restore that column.
+A preview shows the columns its node has now. The columns a node last previewed
+with never limit what a preview asks for, so after an upstream column selection
+changes, or a data file is replaced on disk with a column added, removed or
+renamed, the next preview of that node or of any node below it shows the data
+as it is. Users do not need to restore a column merely to satisfy a remembered
+preview layout. A calculation that uses a removed column still requires the
+user to update it or restore that column.
 
 ## Purpose
 
@@ -183,4 +186,6 @@ state. Invalid optional overview configuration is discarded while parsing. Inval
 chart- or pivot-card configuration is surfaced in its pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
 fabricated. A preview that read no snapshot shows no cached data label, and a refetch after a
-snapshot change that fails shows the ordinary preview error.
+snapshot change that fails shows the ordinary preview error. A failed preview
+takes the place of the node's stored rows: selecting the node again asks again
+rather than showing the table from before the failure.
