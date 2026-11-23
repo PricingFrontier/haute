@@ -134,9 +134,12 @@ function SchemaRow({
 export default function SchemaTableCard({ report }: SchemaTableCardProps) {
   const accent = NODE_GROUP_COLORS.explore
   const columnCount = report.column_count
+  const searchable = columnCount > SCHEMA_PAGE_SIZE
   const [query, setQuery] = useState("")
   const [pageIndex, setPageIndex] = useState(0)
-  const normalisedQuery = query.trim().toLowerCase()
+  // The search applies only while its box is shown: a schema refreshed too short
+  // to show the box is shown whole, never filtered by text with no control to clear it.
+  const normalisedQuery = searchable ? query.trim().toLowerCase() : ""
   const filteredColumns = useMemo(() => {
     if (!normalisedQuery) return report.columns
     return report.columns.filter((column) => {
@@ -216,7 +219,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
         />
       </div>
 
-      {columnCount > SCHEMA_PAGE_SIZE && (
+      {searchable && (
         <div className="flex flex-wrap items-center gap-2" data-testid="explore-schema-controls">
           <label
             className="focus-within:brightness-110 flex min-w-[180px] flex-1 items-center gap-1.5 rounded-md px-2 py-1.5"

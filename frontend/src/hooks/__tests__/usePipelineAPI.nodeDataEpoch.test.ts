@@ -338,10 +338,7 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
 
     act(() => result.current.refreshPreview(response))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(3), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[2][0]).toMatchObject({
-      target: nodeTarget("response", { portLabel: "layers_output" }),
-      requestedPreviewColumns: ["layer"],
-    })
+    expect(mockPreview.mock.calls[2][0]).toMatchObject({ target: nodeTarget("response", { portLabel: "layers_output" }) })
     await settle(result)
     expect(result.current.previewData?.selected_frame).toBe("layers_output")
   })
@@ -416,38 +413,6 @@ describe("usePipelineAPI - previews and the node-data epoch", () => {
     act(() => result.current.refreshPreview(workbenchOutput()))
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2), { timeout: STEP_TIMEOUT_MS })
     expect(mockPreview.mock.calls[1][0]).toMatchObject({ target: nodeTarget("response", { portLabel: "pricing_output" }) })
-    await settle(result)
-  })
-
-  it("asks for none of the columns it recorded before a fetch that changes the workbench's tables, which may have taken one away", async () => {
-    // A form saved without a column changes what a node below a Workbench Input holds,
-    // though nothing in the graph changes: the columns recorded before are no projection.
-    const policy = (...names: string[]): WorkbenchTable => side("policy", "input", "one", names.map((name) => ({ name, type: "float" as const })))
-    await fetchTables({ tables: [policy("exposure", "limit")], sample: {}, response_tables: [], store_columns: {} })
-    mockPreview.mockResolvedValue(envelope([], "exposure"))
-    const { result } = await renderLoaded([makeNode("priced")])
-    const recordedAt = useGraphStore.getState().structuralVersion
-    const priced = makeNode("priced", "polars", {
-      data: {
-        label: "priced",
-        nodeType: "polars",
-        config: {},
-        _columns: [{ name: "limit", dtype: "f64" }, { name: "exposure", dtype: "f64" }],
-        _columnsSource: "live",
-        _columnsStructuralVersion: recordedAt,
-      },
-    })
-
-    act(() => result.current.refreshPreview(priced))
-    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls[0][0].requestedPreviewColumns).toEqual(["limit", "exposure"])
-    await settle(result)
-
-    await fetchTables({ tables: [policy("exposure")], sample: {}, response_tables: [], store_columns: {} })
-    expect(useGraphStore.getState().structuralVersion).toBe(recordedAt + 1)
-    act(() => result.current.refreshPreview(priced))
-    await waitFor(() => expect(mockPreview.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: STEP_TIMEOUT_MS })
-    expect(mockPreview.mock.calls.at(-1)?.[0].requestedPreviewColumns).toBeUndefined()
     await settle(result)
   })
 
