@@ -300,13 +300,19 @@ data and as a loaded object, and a file a feed writes is not refused for its for
   Input's JSON and CSV through it too; its JSON Lines reader cannot, and a scan cannot
   skip the mark without copying the file, so such a file is refused naming it and the
   mark rather than in Polars' words.
-- A JSON object that repeats a key keeps its first value: Polars keeps it reading a Data
-  Input's JSON and JSON Lines, and the request shredder, a served request, the dry run's
-  test quotes and Load File keep it too. Nothing is refused for it.
+- A JSON object that repeats a key keeps its last value in every reader Haute parses with
+  (the request shredder, a served request, deploy's and the Workbench's test quotes, Load
+  File), as orjson, Python and JavaScript read it, and nothing is refused for it. A Data
+  Input's JSON is read by Polars, by its own rules: a top-level key repeated with one type
+  keeps its first value and one repeated with two types becomes text, a key repeated inside
+  a nested object is refused (`DuplicateError`), and in JSON Lines a nested object repeated
+  with other fields keeps the later object's fields, empty. Making a Data Input agree would
+  take a pass over every file before Polars reads it.
 - A `.json` request file or Load File holding nothing is refused as empty, naming the
   file; a request file of no quotes is `[]`, and an empty JSON Lines file holds none.
 - A CSV file saved as UTF-16 or UTF-32 (a byte-order mark of either, or null bytes in its
-  first line) is refused naming the file and the encoding found and saying to save it as
+  first line, judged in the text a gzip, zlib or zstd file decompresses to, as Polars
+  decompresses it) is refused naming the file and the encoding found and saying to save it as
   UTF-8, by both of a Data Input's CSV readers and by a Quote Input, unless a Data Input's
   read names its `encoding`: read as UTF-8 it gave columns named with null characters, a
   row the file does not hold and no word. A Latin-1 file was already refused, as invalid
@@ -314,10 +320,15 @@ data and as a loaded object, and a file a feed writes is not refused for its for
 - Load File reads a JSON file's bytes as UTF-8 strictly: a byte that is not UTF-8 is
   refused naming the file and the byte's line and column, never replaced, so no loaded
   value (or a key a lookup then never matches) changes without a word. Its JSON is
-  Python's, as before, so `NaN` and integers of any size still load.
+  Python's, as before, so `NaN`, integers of any size and a repeated key's last value
+  load as they did.
 - A file whose bytes cannot be read is an `InputFileError` naming the file from the
   project root and, for a fault in it, its line and column: the words every edge says,
-  automatic preparation's `source_invalid` among them.
+  automatic preparation's `source_invalid` among them. So is a `PolarsIoConfigError`, so
+  its message names a configured path only as `display_file` names it and never holds a
+  caught exception's text: an engine that fails to import is named by its module, the
+  import's own message logged (`tests/test_polars_io_registry.py` holds every message to
+  this).
 
 These rules are for an input's own file. Haute's own files (a node's settings, the
 pipeline settings) keep their own readers' rules.

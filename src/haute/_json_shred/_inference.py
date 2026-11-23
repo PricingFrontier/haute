@@ -287,9 +287,8 @@ def _infer_jsonl_lines(
 ) -> _InferenceState:
     """Collect new evidence while checking known JSON shapes in one native pass.
 
-    *lines* are a file's lines, each with the byte offset it starts at. A line whose
-    shape is known holds values of known types under every key, a repeated one's
-    first value among them, so it adds no evidence and is not parsed."""
+    *lines* are a file's lines, each with the byte offset it starts at, so a fault is
+    raised at its byte offset in the file."""
     state = _InferenceState()
     known_structure = InferenceFilter(seed, json_mode=True)
     for offset, raw_line in lines:

@@ -412,9 +412,12 @@ class TestLoadExternalObjectJSON:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_a_utf8_json_file_with_text_beyond_ascii_loads_as_written(self, tmp_path: Path) -> None:
         path = tmp_path / "lookup.json"
-        path.write_text('{"name": "Crème", "name": "later"}', encoding="utf-8")
+        path.write_text('{"name": "Crème", "région": "Île-de-France"}', encoding="utf-8")
 
-        assert load_external_object(str(path), "json") == {"name": "Crème"}
+        assert load_external_object(str(path), "json") == {
+            "name": "Crème",
+            "région": "Île-de-France",
+        }
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_json_caching(self, tmp_path: Path) -> None:

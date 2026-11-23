@@ -5,53 +5,15 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import orjson
 import pytest
 
 from haute._input_files import (
     UTF8_BOM,
     file_position,
     load_json_file,
-    loads_keeping_first,
     text_encoding_refusal,
 )
 from haute.errors import InputFileError
-
-# --------------------------------------------------------------------------- repeated keys
-
-
-@pytest.mark.parametrize(
-    ("raw", "value"),
-    [
-        (b'{"region": "north", "region": "south"}', {"region": "north"}),
-        (b'[{"a": {"b": 1, "b": 2}}, {"a": 3}]', [{"a": {"b": 1}}, {"a": 3}]),
-        (b'{"na\\u006de": "first", "name": "second"}', {"name": "first"}),
-        # A colon inside a string is no member: nothing repeats.
-        (b'{"time": "10:30", "url": "a:b:c"}', {"time": "10:30", "url": "a:b:c"}),
-        (b'{"time": "10:30", "id": 1, "id": 2}', {"time": "10:30", "id": 1}),
-        # An escaped colon is written back as one, so the native check cannot judge it.
-        (b'{"t": "10\\u003a30", "id": 1, "id": 2}', {"t": "10:30", "id": 1}),
-    ],
-    ids=["flat", "nested", "escaped", "colons-in-strings", "colons-and-a-repeat", "escaped-colon"],
-)
-def test_a_repeated_key_keeps_its_first_value(raw: bytes, value: object) -> None:
-    """IOL-02: as Polars reads a Data Input's JSON, never orjson's last value."""
-    assert loads_keeping_first(raw) == value
-
-
-def test_the_slower_parse_of_a_repeated_key_reads_numbers_as_orjson_does() -> None:
-    raw = b'{"a": 1, "a": 2, "big": 123456789012345678901234567890, "max": 18446744073709551615}'
-
-    value = loads_keeping_first(raw)
-
-    assert value == {"a": 1, "big": orjson.loads(raw)["big"], "max": 18446744073709551615}
-    assert isinstance(value["big"], float)
-
-
-def test_text_that_is_not_json_is_refused_as_orjson_refuses_it() -> None:
-    with pytest.raises(orjson.JSONDecodeError, match="trailing comma"):
-        loads_keeping_first(b'{"a": 1,}')
-
 
 # --------------------------------------------------------------------------- positions
 
@@ -145,10 +107,11 @@ def test_a_json_file_that_is_not_utf8_is_refused_naming_its_byte(tmp_path: Path)
 
 def test_a_json_file_reads_as_written_through_its_byte_order_mark(tmp_path: Path) -> None:
     path = tmp_path / "lookup.json"
-    path.write_bytes(UTF8_BOM + '{"name": "Crème", "name": "x", "rate": NaN}'.encode())
+    path.write_bytes(UTF8_BOM + '{"name": "x", "name": "Crème", "rate": NaN}'.encode())
 
     loaded = load_json_file(path)
 
+    # Python's JSON reader, as before: a repeated key's last value, NaN loaded.
     assert loaded["name"] == "Crème"
     assert math.isnan(loaded["rate"])
 
@@ -190,32 +153,29 @@ class _Request:
         yield self._body
 
 
-def test_every_reader_of_a_json_input_keeps_a_repeated_keys_first_value(tmp_path: Path) -> None:
-    """IOL-02: a Data Input (through Polars), the Quote Input's shredder, its served
-    request and Load File read one record alike, and none refuses it."""
+def test_haute_reads_a_repeated_key_by_one_rule_and_a_data_input_by_polars(
+    tmp_path: Path,
+) -> None:
+    """IOL-02: the Quote Input's shredder, its served request, the dry run's test quotes and
+    Load File keep a repeated key's last value, as orjson, Python and JavaScript read it,
+    and none refuses it; a Data Input reads by Polars' rules, which the specification
+    states (the first value of a top-level key repeated with one type)."""
     import asyncio
 
     from haute._json_shred._records import _iter_records
     from haute._polars_io_registry import read_polars_input
     from haute.deploy._request_limits import read_limited_json_body
+    from haute.deploy._validators import load_test_quote_file
 
     record = b'{"quote_id": "q1", "region": "north", "region": "south"}'
     as_json = tmp_path / "quotes.json"
     as_json.write_bytes(b"[" + record + b"]")
     as_jsonl = tmp_path / "quotes.jsonl"
     as_jsonl.write_bytes(record + b"\n")
+    test_quotes = tmp_path / "test_quotes.json"
+    test_quotes.write_bytes(b'[{"input": ' + record + b"}]")
 
-    regions = {
-        "Data Input, JSON": read_polars_input(
-            {"format": "json", "mode": "read", "path": str(as_json)}
-        )
-        .collect()["region"]
-        .to_list(),
-        "Data Input, JSON Lines": read_polars_input(
-            {"format": "ndjson", "mode": "scan", "path": str(as_jsonl)}
-        )
-        .collect()["region"]
-        .to_list(),
+    haute = {
         "Quote Input, JSON": [row["region"] for row in _iter_records(as_json)],
         "Quote Input, JSON Lines": [row["region"] for row in _iter_records(as_jsonl)],
         "served request": [
@@ -226,10 +186,24 @@ def test_every_reader_of_a_json_input_keeps_a_repeated_keys_first_value(tmp_path
                 )
             )
         ],
+        "test quotes": [row["region"] for row in load_test_quote_file(test_quotes)],
         "Load File": [row["region"] for row in load_json_file(as_json)],
     }
+    polars = {
+        "Data Input, JSON": read_polars_input(
+            {"format": "json", "mode": "read", "path": str(as_json)}
+        )
+        .collect()["region"]
+        .to_list(),
+        "Data Input, JSON Lines": read_polars_input(
+            {"format": "ndjson", "mode": "scan", "path": str(as_jsonl)}
+        )
+        .collect()["region"]
+        .to_list(),
+    }
 
-    assert regions == dict.fromkeys(regions, ["north"])
+    assert haute == dict.fromkeys(haute, ["south"])
+    assert polars == dict.fromkeys(polars, ["north"])
 
 
 @pytest.mark.parametrize(

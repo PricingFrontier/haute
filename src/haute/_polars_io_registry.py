@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 import polars as pl
 
 from haute._execution_context import ExecutionProfile
+from haute._logging import get_logger
 from haute._map_columns import (
     iter_parquet_map_entries,
     map_column_names,
@@ -73,6 +74,8 @@ _IO_UNIVERSAL_KEYS = {
     "column_renames",
     "contract",
 }
+
+logger = get_logger(component="polars_io")
 
 
 def format_group(fmt: IoFormat) -> IoGroup:
@@ -1001,6 +1004,20 @@ def missing_engines(engines: tuple[str, ...]) -> list[str]:
     return list(engines)
 
 
+def _engine_unavailable(
+    fmt: IoFormat, operation: str, engines: tuple[str, ...], exc: ImportError
+) -> PolarsIoConfigError:
+    """A format's engine that failed to import, said by the module's name alone: the
+    import's own message can hold the install's absolute paths, so it is logged, never
+    said (every edge says a ``PolarsIoConfigError``, ``haute._failure_answers``)."""
+    logger.warning("io_engine_import_failed", format=fmt.name, operation=operation, error=str(exc))
+    module = repr(exc.name) if exc.name else "a module it needs"
+    return PolarsIoConfigError(
+        f"Format {fmt.name!r} needs an engine package to {operation} that this haute install "
+        f"cannot import ({module}): install one of {list(engines)}."
+    )
+
+
 def _require_engines(fmt: IoFormat, engines: tuple[str, ...], *, operation: str) -> None:
     absent = missing_engines(engines)
     if absent:
@@ -1103,10 +1120,7 @@ def _invoke_polars_input(
     try:
         result = fn(*source_args, **polars_arguments)
     except (ImportError, ModuleNotFoundError) as exc:
-        raise PolarsIoConfigError(
-            f"Reading format {fmt.name!r} needs an engine package this haute install "
-            f"lacks ({exc}). Candidates: {list(fmt.read_engines)}."
-        ) from exc
+        raise _engine_unavailable(fmt, "read", fmt.read_engines, exc) from exc
 
     if isinstance(result, pl.DataFrame) and "new_columns" in haute_owned:
         names = arguments.get("new_columns")
@@ -1297,8 +1311,11 @@ def read_parquet_map_entries_for_snapshot(
     if not path.is_file():
         maps = parquet_source_map_columns(source, config.get("arguments") or {})
         if maps:
+            from haute._failure_answers import display_file
+
             raise PolarsIoConfigError(
-                f"The Parquet source {config['path']!r} names several files and has map "
+                f"The Parquet source {display_file(config['path'])!r} names several files and "
+                "has map "
                 f"column(s) {maps}. Polars reads a map keeping only the last value of a "
                 "repeated key, and Haute keeps every entry only when it reads one file "
                 "through pyarrow: give each file its own Data Input, or write the files with "
@@ -1318,8 +1335,11 @@ def read_parquet_map_entries_for_snapshot(
         and value is not False
     )
     if refused:
+        from haute._failure_answers import display_file
+
         raise PolarsIoConfigError(
-            f"The Parquet file {config['path']!r} has a map column, so Haute reads it through "
+            f"The Parquet file {display_file(config['path'])!r} has a map column, so Haute "
+            "reads it through "
             "pyarrow to keep every entry, and that read applies only columns and n_rows: "
             f"remove {refused}, or do their work in a later node."
         )
@@ -1518,10 +1538,7 @@ def write_polars_output(
         getattr(df, callable_name)(resolved_path, **arguments)
         return df.height
     except (ImportError, ModuleNotFoundError) as exc:
-        raise PolarsIoConfigError(
-            f"Writing format {fmt.name!r} needs an engine package this haute install "
-            f"lacks ({exc}). Candidates: {list(fmt.write_engines)}."
-        ) from exc
+        raise _engine_unavailable(fmt, "write", fmt.write_engines, exc) from exc
 
 
 def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -> dict[str, Any]:

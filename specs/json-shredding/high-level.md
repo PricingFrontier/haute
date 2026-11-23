@@ -123,9 +123,8 @@ A request file is read by the rules every input's file is read by
 ([IO layer](../io-layer/high-level.md), "Reading an input's bytes"), so no file a feed
 writes is refused for its form alone. A leading UTF-8 byte-order mark, which Windows
 PowerShell 5.1 and some exports write, is read through: the file gives the tables the file
-without it gives. A JSON object that repeats a key keeps its first value, as Polars keeps
-it reading a Data Input's JSON, so a record reads alike as a request and as data; nothing
-is refused for it. A `.json` file that holds nothing, or only whitespace, is not JSON and
+without it gives. A JSON object that repeats a key keeps its last value, as orjson, Python
+and JavaScript read it, in the editor and when served alike; nothing is refused for it. A `.json` file that holds nothing, or only whitespace, is not JSON and
 is refused naming the file, as a truncated one is: `[]` is how a JSON file holds no
 quotes, so a failed export never looks like a day with none. An empty JSON Lines file,
 which has no `[]`, holds no quotes. A file that is not JSON, or whose bytes are not UTF-8,

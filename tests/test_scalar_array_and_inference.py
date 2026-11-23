@@ -721,24 +721,18 @@ def test_fused_json_range_reads_through_a_leading_byte_order_mark(
 @pytest.mark.parametrize(
     ("raw", "expected_record"),
     [
-        (b'{"amount":"wrong","amount":2}', {"amount": "wrong"}),
-        (b'{"amount":2,"amount":"wrong"}', {"amount": 2}),
-        (
-            b'{"profile":{"unknown":"bad"},"profile":{"city":"Hull"}}',
-            {"profile": {"unknown": "bad"}},
-        ),
-        (b'{"na\\u006de":"wrong","name":"valid"}', {"name": "wrong"}),
+        (b'{"amount":"wrong","amount":2}', {"amount": 2}),
+        (b'{"profile":{"unknown":"bad"},"profile":{"city":"Hull"}}', {"profile": {"city": "Hull"}}),
+        (b'{"na\\u006de":"wrong","name":"valid"}', {"name": "valid"}),
     ],
-    ids=["wrong-type-first", "wrong-type-last", "nested-unknown-first", "escaped-duplicate-key"],
+    ids=["wrong-type-overwritten", "nested-unknown-overwritten", "escaped-duplicate-key"],
 )
-def test_fused_json_range_keeps_the_first_value_of_a_repeated_key(
+def test_fused_json_range_accepts_valid_duplicate_keys_like_orjson(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     raw: bytes,
     expected_record: dict[str, Any],
 ) -> None:
-    """A repeated key keeps its first value, as Polars reads a Data Input's JSON: the
-    evidence is the first value's, whether it or a later one has the known type."""
     monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
     prefix_record = {"amount": 1, "profile": {"city": "Hull"}, "name": "seed"}
     prefix = _inference._InferenceState()

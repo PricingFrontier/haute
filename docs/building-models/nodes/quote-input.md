@@ -85,7 +85,7 @@ Then shape the tables in the editor:
 ## How the preview file is read
 
 - A file that starts with a byte-order mark, as Windows PowerShell 5.1 and some exports write one, is read as the same file without it.
-- A record that repeats a key, such as `{"region": "north", "region": "south"}`, keeps the first value, `north`, as a [Data Input](data-input.md) reads it.
+- A record that repeats a key, such as `{"region": "north", "region": "south"}`, keeps the last value, `south`, in the preview and in a deployed pipeline alike.
 - A `.json` file that holds nothing is refused, naming the file: write `[]` for a file with no quotes. An empty `.jsonl` or `.ndjson` file holds no quotes.
 - A file that is not valid JSON, or whose bytes are not UTF-8, is refused naming the file and the line and column of the fault, in the preview, the node's data preview and `haute run` alike.
 - In two namespaces, two XML elements of one name, such as `<a:code>` and `<b:code>`, are refused naming both: their fields cannot be told apart.

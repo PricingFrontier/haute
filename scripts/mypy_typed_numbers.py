@@ -46,10 +46,6 @@ _REGEX_TEMPORAL_DIGITS = (
 #: anyone. Each exception covers its one call (a second of the same call in one function is
 #: ``call#2``), so another conversion beside it is still refused.
 NOT_TYPED: dict[str, str] = {
-    "haute._input_files._orjson_int::int(text)": (
-        "an integer's digits Python's JSON reader matched in a file orjson already parsed, "
-        "read again as orjson reads them, not text anyone types into a field"
-    ),
     "haute._project_settings._parse_bytes::int(at.group(1))": (
         "the line tomllib's own refusal names in digits, not text anyone types"
     ),

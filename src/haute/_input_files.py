@@ -7,8 +7,9 @@ served request), so one file reads alike whichever node reads it (specs/io-layer
 
 - A leading UTF-8 byte-order mark is read through, never taken for content: feeds and
   Windows tools write one, and they are not the analyst's to control.
-- A JSON object that repeats a key keeps its first value, as Polars, which reads a Data
-  Input's JSON, keeps it. Nothing is refused for it.
+- A JSON object that repeats a key keeps its last value, as orjson, Python and JavaScript
+  read it. Nothing is refused for it. (A Data Input's JSON is read by Polars, by its
+  own rules.)
 - A file whose bytes cannot be read is an :class:`~haute.errors.InputFileError` naming
   the file from the project root and the line and column of the fault.
 """
@@ -16,10 +17,14 @@ served request), so one file reads alike whichever node reads it (specs/io-layer
 from __future__ import annotations
 
 import codecs
+import gzip
+import io
 import json
-import re
+import zlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import orjson
 
@@ -42,60 +47,64 @@ def without_bom(raw: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# A repeated key keeps its first value
+# The bytes a reader takes
 # ---------------------------------------------------------------------------
 
-
-def keep_first(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """``json``'s ``object_pairs_hook``: an object's repeated key keeps its first value."""
-    record: dict[str, Any] = {}
-    for key, value in pairs:
-        record.setdefault(key, value)
-    return record
+# The starts of the compressed streams Polars' CSV and JSON Lines readers decompress, as
+# Polars recognises them: gzip, zlib (each of its three usual headers) and zstd.
+_GZIP = b"\x1f\x8b"
+_ZLIB = (b"\x78\x01", b"\x78\x9c", b"\x78\xda")
+_ZSTD = b"\x28\xb5\x2f\xfd"
 
 
-# A JSON string, escapes and all: outside them, a colon is only ever an object's
-# separator between a key and its value.
-_JSON_STRING = re.compile(rb'"(?:[^"\\]++|\\.)*+"', re.DOTALL)
+class _InflatingReader(io.RawIOBase):
+    """A zlib stream's bytes, inflated a bounded piece at a time, so a small stream that
+    inflates to a great deal is never held whole."""
+
+    def __init__(self, raw: BinaryIO) -> None:
+        self._raw = raw
+        self._inflate = zlib.decompressobj()
+        self._pending = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        while not self._pending:
+            source = self._inflate.unconsumed_tail or self._raw.read(_POSITION_CHUNK_BYTES)
+            if not source:
+                self._pending = self._inflate.flush()
+                if not self._pending:
+                    return 0
+                break
+            self._pending = self._inflate.decompress(source, _POSITION_CHUNK_BYTES)
+        taken = min(len(buffer), len(self._pending))
+        buffer[:taken] = self._pending[:taken]
+        self._pending = self._pending[taken:]
+        return taken
 
 
-def _orjson_int(text: str) -> int | float:
-    """An integer as orjson reads it: exact within 64 bits (signed, or unsigned when
-    positive), a float beyond them."""
-    value = int(text)
-    return value if -(2**63) <= value < 2**64 else float(value)
+@contextmanager
+def open_input_bytes(path: str | Path) -> Iterator[BinaryIO]:
+    """The bytes of the file *path* as Polars' text readers take them: decompressed when
+    the file starts as a gzip, zlib or zstd stream, which Polars decompresses whatever the
+    file's name, else as they are. Every judgement of a text file's bytes here reads them
+    so, and a fault's line and column count in them."""
+    with Path(path).open("rb") as raw:
+        head = raw.read(len(_ZSTD))
+        raw.seek(0)
+        if head.startswith(_GZIP):
+            with gzip.GzipFile(fileobj=raw) as inflated:
+                yield cast(BinaryIO, inflated)
+        elif head[:2] in _ZLIB:
+            yield cast(BinaryIO, io.BufferedReader(_InflatingReader(raw)))
+        elif head.startswith(_ZSTD):
+            import pyarrow as pa
 
-
-def _member_count(value: Any) -> int:
-    """The members of every object in *value*, as parsed: a repeated key counts once."""
-    if isinstance(value, dict):
-        return len(value) + sum(_member_count(child) for child in value.values())
-    if isinstance(value, list):
-        return sum(_member_count(child) for child in value)
-    return 0
-
-
-def loads_keeping_first(raw: bytes | bytearray | memoryview) -> Any:
-    """Parse the JSON text *raw* with orjson, a repeated key keeping its first value.
-
-    orjson keeps a repeated key's last value. Every member of an object has one colon
-    outside a string, and orjson writes the parsed value back with the same strings, so
-    when *raw* holds no ``\\u`` escape (the one way a string's colon can be spelt without
-    one) and as many colons as the value written back, no key repeats: the native check
-    that every record takes. Otherwise the text's colons outside strings are counted
-    against the parsed members, and when they outnumber them a key repeats and the text
-    is parsed again keeping the first (the slower parse, for that record alone). Raises
-    orjson's ``JSONDecodeError`` for text that is not JSON.
-    """
-    value = orjson.loads(raw)
-    if not isinstance(value, dict | list):
-        return value
-    text = bytes(raw)
-    if b"\\u" not in text and text.count(b":") == orjson.dumps(value).count(b":"):
-        return value
-    if _JSON_STRING.sub(b"", text).count(b":") != _member_count(value):
-        value = json.loads(text, object_pairs_hook=keep_first, parse_int=_orjson_int)
-    return value
+            with pa.input_stream(raw, compression="zstd") as inflated:
+                yield cast(BinaryIO, inflated)
+        else:
+            yield raw
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +127,7 @@ def file_position(path: str | Path, offset: int) -> tuple[int, int]:
     lines = 0
     line_start = 0
     read = 0
-    with Path(path).open("rb") as source:
+    with open_input_bytes(path) as source:
         while read < offset:
             chunk = source.read(min(_POSITION_CHUNK_BYTES, offset - read))
             if not chunk:
@@ -128,7 +137,8 @@ def file_position(path: str | Path, offset: int) -> tuple[int, int]:
                 lines += newlines
                 line_start = read + chunk.rfind(b"\n") + 1
             read += len(chunk)
-        source.seek(line_start)
+    with open_input_bytes(path) as source:
+        source.read(line_start)
         current_line = source.read(max(0, min(offset, read) - line_start))
     return lines + 1, _column(current_line, first_line=line_start == 0)
 
@@ -166,7 +176,7 @@ def not_utf8_file_error(path: str | Path) -> InputFileError | None:
     """
     decoder = codecs.getincrementaldecoder("utf-8")()
     read = 0
-    with Path(path).open("rb") as source:
+    with open_input_bytes(path) as source:
         while chunk := source.read(_POSITION_CHUNK_BYTES):
             pending = len(decoder.getstate()[0])
             try:
@@ -231,6 +241,7 @@ def file_json_error(path: str | Path, offset: int, words: str) -> InputFileError
     are not UTF-8 named by their byte, anything else as JSON that is not JSON."""
     if words == _ORJSON_NOT_UTF8:
         with Path(path).open("rb") as source:
+            # The shredder reads a request file's bytes as they are: offsets count in them.
             source.seek(offset)
             byte = source.read(1)
         return not_utf8_error(path, offset, byte[0] if byte else 0)
@@ -279,7 +290,7 @@ def text_encoding_refusal(path: str | Path) -> InputFileError | None:
     characters, so it is refused naming the encoding found. Only the file's first bytes
     are read. A UTF-8 byte-order mark is UTF-8, and is read through.
     """
-    with Path(path).open("rb") as source:
+    with open_input_bytes(path) as source:
         head = source.read(_ENCODING_PROBE_BYTES)
     found = next((name for mark, name in _OTHER_BOMS if head.startswith(mark)), None)
     if found is None:
@@ -314,9 +325,9 @@ def load_json_file(path: str | Path) -> Any:
     The bytes are read as UTF-8, strictly: a byte that is not UTF-8 is refused naming the
     file and the byte's place, never replaced, so a value (or a key a lookup then never
     matches) is never changed without a word. A leading byte-order mark is read through;
-    a file holding nothing is refused as empty; a repeated key keeps its first value.
-    Python's own JSON reader parses the text, so what it took before (``NaN``,
-    integers of any size) it still takes.
+    a file holding nothing is refused as empty. Python's own JSON reader parses the
+    text, as before, so ``NaN``, integers of any size and a repeated key's last value
+    are read as they were.
     """
     raw = Path(path).read_bytes()
     start = bom_length(raw)
@@ -327,7 +338,7 @@ def load_json_file(path: str | Path) -> Any:
     if not text.strip():
         raise empty_json_error(path)
     try:
-        return json.loads(text, object_pairs_hook=keep_first)
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         offset = start + len(text[: exc.pos].encode("utf-8"))
         raise json_syntax_error(path, offset, exc.msg) from None
@@ -341,7 +352,7 @@ def refuse_json_lines_with_a_mark(path: str | Path) -> None:
     would say ``InternalError(TapeError) at character 0``. Haute's own readers read
     through the mark.
     """
-    with Path(path).open("rb") as source:
+    with open_input_bytes(path) as source:
         if bom_length(source.read(len(UTF8_BOM))) == 0:
             return
     name = display_name(path)

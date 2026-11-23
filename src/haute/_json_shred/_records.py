@@ -33,7 +33,6 @@ from haute._input_files import (
     decode_error_offset,
     empty_json_error,
     file_json_error,
-    loads_keeping_first,
 )
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
@@ -470,9 +469,9 @@ def _iter_records(
     (W2 item 2.7). Blank JSONL lines are formatting, not records, and are
     never counted. The file is read as every input's file is
     (:mod:`haute._input_files`): through a leading byte-order mark, a repeated
-    key keeping its first value. A JSON file holding nothing, and one that is
-    not JSON, are refused as :class:`~haute.errors.InputFileError` naming the
-    file and the fault's line and column.
+    key keeping its last value, as orjson reads it. A JSON file holding nothing,
+    and one that is not JSON, are refused as :class:`~haute.errors.InputFileError`
+    naming the file and the fault's line and column.
     """
     if record_format(data_path) == "xml":
         yield from _iter_xml_records(data_path)
@@ -518,10 +517,10 @@ def _iter_json_records(data_path: Path, stats: ShredSkipStats | None) -> Iterato
 
 
 def _loads_at(raw: bytes | bytearray | memoryview, start: int) -> Any:
-    """The JSON value *raw*, found at byte *start* of its file, a repeated key keeping its
-    first value; a fault is raised positioned at its byte offset in the file."""
+    """The JSON value *raw*, found at byte *start* of its file; a fault is raised
+    positioned at its byte offset in the file."""
     try:
-        return loads_keeping_first(raw)
+        return orjson.loads(raw)
     except orjson.JSONDecodeError as exc:
         offset, words = decode_error_offset(raw, exc)
         raise _json_decode_error(words, start + offset) from exc
@@ -697,7 +696,7 @@ def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
             guess = bracketed_element.match(chunk, at)
             if guess is not None and guess.start(2) - guess.start(1) <= limit:
                 try:
-                    value = loads_keeping_first(view[guess.start(1) : guess.end(1)])
+                    value = orjson.loads(view[guess.start(1) : guess.end(1)])
                 except orjson.JSONDecodeError:
                     pass  # misled by a string, or malformed: found exactly below
                 else:

@@ -19,6 +19,7 @@ from haute._hashing import content_hash
 from haute._input_files import (
     load_json_file,
     not_utf8_file_error,
+    open_input_bytes,
     refuse_text_in_another_encoding,
 )
 from haute._logging import get_logger
@@ -227,9 +228,13 @@ def _select_columns(
 
 
 def _csv_header_columns(path: str) -> list[str]:
-    """A CSV file's header, decoded strictly: a header that is not UTF-8 is refused at
-    its first bad byte, never read as names holding replacement characters."""
-    with open(path, encoding="utf-8-sig", newline="") as f:
+    """A CSV file's header, decoded strictly from the bytes Polars reads (a compressed
+    file's decompressed): a header that is not UTF-8 is refused at its first bad byte,
+    never read as names holding replacement characters."""
+    with (
+        open_input_bytes(path) as raw,
+        io.TextIOWrapper(raw, encoding="utf-8-sig", newline="") as f,
+    ):
         try:
             header = next(csv.reader(f))
         except UnicodeDecodeError as exc:

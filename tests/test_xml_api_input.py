@@ -469,3 +469,40 @@ def test_a_table_built_before_singleton_lists_is_not_read_as_current(
             load_v2_api_source(str(data_path), config, read_snapshots=True)
     finally:
         use_project(original_root)
+
+
+def test_a_table_published_under_version_3_is_not_read_as_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Version 3 merged two vocabularies' children of one name into one list and published
+    a table of no rows from an empty ``.json`` file (IOL-02, IOL-06): a table it published
+    never answers for its source now (``SHRED_SEMANTICS_VERSION``), so the build that
+    replaces it refuses such a file."""
+    from haute._json_shred import _snapshots
+
+    data_path = tmp_path / "quotes.json"
+    data_path.write_text('[{"id": "1"}]', encoding="utf-8")
+    config = {
+        "path": str(data_path),
+        "contract": "opaque",
+        "tables": [
+            {
+                "label": "quotes",
+                "path": "$[:]",
+                "emit": True,
+                "columns": [{"name": "id", "path": "$[:].id", "type": "str", "selected": True}],
+            }
+        ],
+    }
+    original_root = current_project().root
+    use_project(tmp_path)
+    try:
+        with monkeypatch.context() as previous:
+            previous.setattr(_snapshots, "SHRED_SEMANTICS_VERSION", 3)
+            build_test_api_input_snapshots(data_path, config)
+            assert load_v2_api_source(str(data_path), config, read_snapshots=True) is not None
+
+        with pytest.raises(InputSnapshotMissingError):
+            load_v2_api_source(str(data_path), config, read_snapshots=True)
+    finally:
+        use_project(original_root)

@@ -109,8 +109,8 @@ Submodel graph expansion and boundary rewiring are owned by
   offset (to the file's end when `end` is `None`), reading through the file's leading
   byte-order mark in the range that starts at 0; the serial JSONL arm of `_iter_records`
   is `_iter_range_records(path, 0, None, stats)`.
-- `_loads_at(raw, start)` — every record parse: `haute._input_files.loads_keeping_first`
-  (a repeated key keeps its first value), a fault re-raised as
+- `_loads_at(raw, start)` — every record parse: orjson (a repeated key keeps its last
+  value), a fault re-raised as
   `orjson.JSONDecodeError(msg, "", offset)` at its byte offset in the file
   (`decode_error_offset`: orjson's character position in the slice, or the first byte
   that is not UTF-8). Every reader in the module raises its faults so, and
@@ -336,7 +336,10 @@ at a declared array as one-element lists and counted a skip for every table at o
 below a non-list there. Version 3 also holds a null or an empty string as absent
 wherever an object or an array is expected, counts the misshapen elements and object
 steps above an emitting table, and reads date columns in their declared format (ISO
-unless set) rather than by Polars' format guess.
+unless set) rather than by Polars' format guess. Version 4 reads a request file through a
+leading byte-order mark, refuses a `.json` file holding nothing (which version 3 published
+as a table of no rows) and two XML children of one name in different namespaces (which it
+merged into one list), so a table published from such a file is built again and refused.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
 `source_signature`: `xxh64:<digest>:<size>` from the shared
@@ -648,9 +651,7 @@ planning, so an admitted execution sizes the generation it will read.
    decoded value; only records decoded by the existing `orjson` parser supply
    new inference evidence. Decoder shape/syntax failures and invalid UTF-8
    return the original bytes to the ordinary parser/walker, preserving its
-   accepted input, duplicate-key behavior, scalar types and structured errors. A
-   line the decoder admits holds values of the known types under every key, a
-   repeated key's first value among them, so skipping it loses no evidence.
+   accepted input, duplicate-key behavior, scalar types and structured errors.
    Native integer fields in this JSON fast path are limited to signed 64-bit
    values: larger JSON integers must use `orjson`, which can parse them as
    unsigned integers or floating-point values. A parser mismatch never becomes

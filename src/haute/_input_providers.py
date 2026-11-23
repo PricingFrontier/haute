@@ -463,7 +463,11 @@ def _infer_input_schema(
     if rejected:
         raise _not_inferable(f"only the eager reader accepts its argument(s) {rejected}")
     if not Path(str(anchored["path"])).is_file():
-        raise PolarsIoConfigError(f"Data Input file {config['path']!r} does not exist.")
+        from haute._failure_answers import display_file
+
+        raise PolarsIoConfigError(
+            f"Data Input file {display_file(config['path'])!r} does not exist."
+        )
     frame, inference_rows = scan_polars_input_for_schema(anchored)
     # The schema the snapshot will hold: its build turns every map into entries.
     return map_entries_frame(frame), InferredInputSchema(
