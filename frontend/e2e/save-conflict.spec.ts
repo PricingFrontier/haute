@@ -113,12 +113,9 @@ test.describe("save conflict", () => {
     // 4. On page A: click Save. Reject toast / sync banner appears, local edit survives
     await pageA.getByRole("button", { name: "Save", exact: true }).click()
     await expect(pageA.getByRole("alert").filter({ hasText: /Save rejected/ })).toBeVisible()
-    await expect(
-      pageA.getByText(
-        STALE_BANNER,
-        { exact: true },
-      ),
-    ).toBeVisible()
+    // The banner, whose Reload file sits beside it; the node panel gives the same reason.
+    const banner = pageA.getByRole("button", { name: "Reload file" }).locator("xpath=..")
+    await expect(banner.getByText(STALE_BANNER, { exact: true })).toBeVisible()
     await expect(labelInputA).toHaveValue("raw_rows_a")
 
     // 5. On page A: reload. Assert B's saved label is shown
