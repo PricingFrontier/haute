@@ -52,9 +52,6 @@ describe("helper bans", () => {
     ["export const STATUSES = ['running', 'memory_limited', 'contract_error']", "JOB_STATUS_VALUES"],
     ["export const text = (n: number) => n.toLocaleString('en-GB')", "browser's locale"],
     ["export const f = new Intl.NumberFormat('en', {})", "browser's locale"],
-    ["export const get = () => fetch('/api/pipeline')", "transport in api/client.ts"],
-    ["export const get = () => window.fetch('/api/pipeline')", "transport in api/client.ts"],
-    ["export const send = () => new XMLHttpRequest()", "transport in api/client.ts"],
     ["export const read = (r: Response) => r.json()", "readJsonAnswer"],
   ])("rejects %s", async (code, helper) => {
     const messages = await restrictedMessages(code)
@@ -85,10 +82,8 @@ describe("helper bans", () => {
     ["src/utils/formatValue.ts", "export function formatFixed(v: number, d: number) { return v.toFixed(d) }"],
     ["src/utils/isoDate.ts", "export function isDay(t: string) { return t.length === 10 }"],
     ["src/api/types.ts", "export const JOB_STATUS_VALUES = ['running', 'memory_limited', 'contract_error'] as const"],
-    ["src/api/client.ts", "export const get = () => fetch('/api/pipeline')"],
-    ["src/api/clientUpload.ts", "export const send = () => new XMLHttpRequest()"],
+    ["src/api/client.ts", "export const read = (r: Response) => r.json()"],
     ["src/api/transportErrors.ts", "export const read = (r: Response) => r.json()"],
-    ["src/utils/chunkLoadError.ts", "export const ask = () => fetch('/assets/a.js')"],
   ])("exempts the owning module %s", async (filePath, code) => {
     expect(await restrictedMessages(code, filePath)).toEqual([])
   })

@@ -1,3 +1,5 @@
+import { staticFileStatus } from "../api/client"
+
 /**
  * Recognises a lazily loaded chunk that failed to load, and asks why. A page names the
  * chunk files of the build it was served from; a rebuild replaces them. A file that could
@@ -48,7 +50,7 @@ export const CHUNK_PROBE_TIMEOUT_MS = 5_000
  * did not answer when the file is there now, or nothing answers within
  * `CHUNK_PROBE_TIMEOUT_MS`. A failure that names no file (Safari's) says nothing of which
  * file it was, so nothing is asked and the verdict is not known. The question is a static
- * file's, not an API call, so it is the browser's own fetch.
+ * file's, not an API call, asked through the client's `staticFileStatus`.
  */
 export async function chunkLoadVerdict(error: Error): Promise<ChunkLoadVerdict> {
   const url = chunkLoadUrl(error)
@@ -57,7 +59,7 @@ export async function chunkLoadVerdict(error: Error): Promise<ChunkLoadVerdict> 
   const timer = setTimeout(() => deadline.abort(), CHUNK_PROBE_TIMEOUT_MS)
   let status: number
   try {
-    status = (await fetch(url, { cache: "no-store", signal: deadline.signal })).status
+    status = await staticFileStatus(url, deadline.signal)
   } catch {
     // A request that got no answer, or none in time, is exactly the verdict asked for.
     return "unanswered"

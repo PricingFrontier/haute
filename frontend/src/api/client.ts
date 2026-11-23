@@ -605,6 +605,15 @@ function jsonOf<T>(url: string, response: Response): Promise<T> {
 }
 
 /**
+ * The status a static file of the page's (a lazily loaded chunk) is answered with now, asked
+ * past every cache; a request that gets no answer rejects as `ServerUnreachableError`, and
+ * *signal* aborts it. No API call, so no session or retry.
+ */
+export async function staticFileStatus(url: string, signal: AbortSignal): Promise<number> {
+  return (await fetchAnswer(url, { cache: "no-store", signal })).status
+}
+
+/**
  * The browser's `fetch`, the one the transport sends through: a request that gets no answer
  * at all rejects as `ServerUnreachableError`, and an abort stays the `AbortError` it is.
  */

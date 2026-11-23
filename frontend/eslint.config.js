@@ -87,15 +87,11 @@ const HELPER_SELECTORS = [
     message: "Numbers and dates follow the browser's locale: pass undefined.",
   },
 ]
-// Requests leave through the transport (api/client.ts), which says when one got no answer
-// of Haute's: none at all, or a page in Haute's place. A fetch, an XMLHttpRequest or a read
-// of a response's JSON anywhere else would show the browser's or the parser's own words.
-const TRANSPORT_MESSAGE = 'Send requests through the transport in api/client.ts; read JSON answers with readJsonAnswer (api/transportErrors.ts).'
+// An answer's JSON is read by the transport (api/client.ts), which says when one is not
+// Haute's: a page in Haute's place. A read anywhere else would show the parser's own words.
+// (No request leaves but through the client: api/__tests__/writesByKind.test.ts.)
+const TRANSPORT_MESSAGE = 'Read JSON answers with readJsonAnswer (api/transportErrors.ts), in the transport.'
 const TRANSPORT_SELECTORS = [
-  {
-    selector: 'CallExpression[callee.name="fetch"], CallExpression[callee.object.name=/^(window|globalThis|self)$/][callee.property.name="fetch"], NewExpression[callee.name="XMLHttpRequest"]',
-    message: TRANSPORT_MESSAGE,
-  },
   { selector: 'CallExpression[callee.property.name="json"][arguments.length=0]', message: TRANSPORT_MESSAGE },
 ]
 const SOURCE_FILES = ['src/**/*.{ts,tsx}']
@@ -160,9 +156,8 @@ export default defineConfig([
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS, TRANSPORT_SELECTORS),
   },
   {
-    // The transport's own homes, and the one question of a static file (a chunk that
-    // could not be loaded), which is no API call.
-    files: ['src/api/client.ts', 'src/api/clientUpload.ts', 'src/api/transportErrors.ts', 'src/utils/chunkLoadError.ts'],
+    // The transport's own homes.
+    files: ['src/api/client.ts', 'src/api/transportErrors.ts'],
     rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
   },
   {

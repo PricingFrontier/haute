@@ -36,6 +36,7 @@ export class ServerUnreachableError extends Error {
     super("Haute's server could not be reached.", { cause })
     this.name = "ServerUnreachableError"
     this.url = url
+    // The browser's own words, kept for the console: the screen shows this error's.
     console.warn(`[api] ${url}: no answer`, cause)
   }
 }
@@ -59,6 +60,7 @@ export class ForeignAnswerError extends Error {
     this.name = "ForeignAnswerError"
     this.url = url
     this.status = status
+    // The proxy's page or the parser's words, kept for the console: the screen shows this error's.
     console.warn(`[api] ${url}: an answer that is not Haute's (HTTP ${status})`, cause)
   }
 }
