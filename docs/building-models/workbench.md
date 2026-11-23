@@ -1077,7 +1077,8 @@ builder on screen. With a quote store it is where they manage their quotes too.
   the key column to match, keeping its values and the key. A table made by a Haute from
   before 5 November 2026 is keyed by Haute's own row number, `quote_row`, with the index
   in a column beside it. The script makes that column the key instead. A numbered index
-  takes `quote_row`'s number where it is empty. The index's type is converted, and the
+  takes `quote_row`'s number; that store never wrote one, so its column is empty. If a
+  numbered index's column already holds values, its key isn't moved. The index's type is converted, and the
   primary key is dropped and made again on the index. `quote_row` stays, allowing blanks,
   with its `DROP` left commented out. If an index value is missing or appears twice in a
   quote, the script stops and nothing changes. SQLite cannot change a table's key, so there

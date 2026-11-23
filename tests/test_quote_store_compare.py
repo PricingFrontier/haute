@@ -790,6 +790,26 @@ def test_an_index_renamed_onto_another_columns_name_is_refused(target: Target) -
     assert target.read("SELECT row_number, item_number FROM vehicles") == []
 
 
+def test_a_numbered_index_whose_column_holds_values_moves_no_key(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "item_number"))
+    made_from_sql(target, before)
+    quote(target, before, "A-1")
+    target.run(
+        "INSERT INTO vehicles (quote_reference, quote_option, row_number, item_number) "
+        "VALUES ('A-1', 1, 1, 42), ('A-1', 1, 2, 7)"
+    )
+    swapped = form(_vehicles_of("item_number", "row_number"))
+    read = catalogue(target)
+    comparison = compare(swapped, read, provider=PROVIDERS[target.backend])
+
+    additions = additions_plan(swapped, read, comparison)
+
+    # 42 and 7 are no rows' numbers: the swap stays refused, and the export keys nothing.
+    assert not any(step.kind in ("rekey table", "rename key") for step in additions.steps)
+    assert comparison.plan.refusals
+    assert not answered_by(comparison, additions)
+
+
 def test_a_tables_rows_are_read_from_its_key(target: Target) -> None:
     # Keyed by the identity alone, the database's table is one row a quote; by one more
     # column, many, whatever that column is named.

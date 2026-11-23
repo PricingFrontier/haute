@@ -295,6 +295,11 @@ def additions_plan(form: FormSpec, catalogue: Catalogue, comparison: Comparison)
     which a type change and a key's are written from."""
     compared = comparison.plan
     wanted = structure(form)
+    numbered = {
+        each.name
+        for each in form.data_schema.tables
+        if each.index is not None and each.index.index == "numbered"
+    }
     retypes = [
         step
         for step in compared.steps
@@ -307,7 +312,7 @@ def additions_plan(form: FormSpec, catalogue: Catalogue, comparison: Comparison)
             steps.append(Step("create table", table["name"], table["key"]))
             continue
         present = {column.name.casefold() for column in found.columns}
-        key = _key_step(table, found, comparison)
+        key = _key_step(table, found, comparison, numbered=table["key"] in numbered)
         if key is not None:
             steps.append(key)
             present.add(str(key.column).casefold())
@@ -364,7 +369,9 @@ def answered_by(comparison: Comparison, additions: Plan) -> frozenset[str]:
     )
 
 
-def _key_step(table: dict[str, Any], found: CatalogueTable, comparison: Comparison) -> Step | None:
+def _key_step(
+    table: dict[str, Any], found: CatalogueTable, comparison: Comparison, *, numbered: bool
+) -> Step | None:
     """The step moving *found*'s key to *table*'s index, which the comparison pairs with the
     database's key column after the identity whatever either is named: none while they are
     one column. Where the database also holds a column of the index's name, as a store keyed
@@ -372,7 +379,10 @@ def _key_step(table: dict[str, Any], found: CatalogueTable, comparison: Comparis
     table``); else, the key column of the index's type and comparison, it is renamed for the
     index (``rename key``). A key column of another type with no column of the index's name
     stays as it was, the index added beside it with its note. A column of the index's name
-    but for its case is left alone, as an addition would be."""
+    but for its case is left alone, as an addition would be, and so is one of a *numbered*
+    index holding values, or not counted: that store never wrote a numbered index, so its
+    column is empty, and values held there, a swap of two columns' names, would be taken
+    for the rows' numbers."""
     index = next((column for column in table["columns"] if column["index"]), None)
     keyed = [name for name in found.primary_key if name not in IDENTITY]
     if index is None or len(keyed) != 1 or keyed[0] == index["name"]:
@@ -391,7 +401,8 @@ def _key_step(table: dict[str, Any], found: CatalogueTable, comparison: Comparis
         quotes=found.quotes if found.quotes is not None and found.quotes >= 0 else None,
     )
     if held is not None:
-        return step if held.name == name else None
+        empty = held.quotes == 0
+        return step if held.name == name and (empty or not numbered) else None
     differs = {
         each.kind
         for each in comparison.differences

@@ -123,7 +123,8 @@ Live `store-compare` uses `_compare.additions_plan(form, catalogue, comparison)`
 `changes` and SQL. It returns a `Plan` of create-table/add-column steps from the form's
 structure and actual catalogue names, each many-row table's key step (`_key_step`: the
 index paired with a key column of another name; `rekey table` where the database also
-holds a column of the index's name, exactly, else `rename key` unless the index's type or
+holds a column of the index's name, exactly, a numbered index's only while that column is
+counted holding no values, else `rename key` unless the index's type or
 collation differs, which stays an addition with its note), the index then never added, and
 the full comparison's `retype column` steps not superseded (a column the analyst pairs is
 added afresh, so it is never converted); existing column names are compared

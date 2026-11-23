@@ -939,8 +939,10 @@ Out of scope:
     index's name, is renamed for the index, keeping its values and the key; a table keyed by
     a column beside one holding the index's name, as a store keyed by its row number made it
     before 2026-11-05 (`quote_row`, the index a column of its own, a numbered one left
-    empty), is keyed by that column: a numbered index filled from the old key's row number
-    where empty, the index typed as the store types it and made to take no null, the primary
+    empty), is keyed by that column, a numbered index's only while its column holds no values
+    (values there, as a swap of two names leaves them, would be taken for the rows' numbers):
+    a numbered index filled from the old key's row number where empty, the index typed as
+    the store types it and made to take no null, the primary
     key dropped by whatever name it has and made again as the store makes it, the old key
     column kept taking a null, its DROP commented out. An index value missing or held twice
     in a quote stops the script, changing nothing. SQLite, which cannot change a key, gets a

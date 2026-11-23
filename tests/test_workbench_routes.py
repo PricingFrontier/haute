@@ -1877,17 +1877,8 @@ def test_store_export_adds_columns_despite_existing_index_or_row_differences(
     review = response.json()
     assert "ALTER TABLE perils ADD COLUMN new_cover DOUBLE" in review["sql"]
     assert "renamed" not in review["sql"] and "Keep unused" not in review["sql"]
-    # Keyed by quote_row beside a column of the index's name, the many-row table's key moves
-    # to its index: on SQLite, which cannot do that in place, a manual change and a note.
-    rekey = [change for change in review["changes"] if change["kind"] == "rekey table"]
-    assert [(each["table"], each["column"], each["disposition"]) for each in rekey] == (
-        [("perils", "peril", "manual")] if rows == "many" else []
-    )
-    assert {change["kind"] for change in review["changes"]} <= {
-        "create table",
-        "add column",
-        "rekey table",
-    }
+    # The numbered index's column holds a value (7), no row's number: no key moves.
+    assert {change["kind"] for change in review["changes"]} <= {"create table", "add column"}
     assert "ALTER TABLE policy_details ADD COLUMN flood_zone" in review["sql"]
     assert "CREATE TABLE pricing_output" in review["sql"]
     assert "RENAME" not in review["sql"] and "DROP " not in review["sql"]
@@ -1902,12 +1893,8 @@ def test_store_export_adds_columns_despite_existing_index_or_row_differences(
         assert "flood_zone" in {row[1] for row in raw.execute("PRAGMA table_info(policy_details)")}
 
     again = _compare(proposed, _catalogue().json()["tables"]).json()
-    assert again["changes"] == rekey
-    if rows == "many":
-        assert "SQLite cannot change a\n-- table's key in place" in again["sql"]
-        assert again["blocked"] == []
-    else:
-        assert again["sql"] == "-- No missing tables or columns.\n"
+    assert again["changes"] == []
+    assert again["sql"] == "-- No missing tables or columns.\n"
 
 
 def test_store_review_requires_release_coordination_for_manual_key_repairs(project: Path) -> None:
