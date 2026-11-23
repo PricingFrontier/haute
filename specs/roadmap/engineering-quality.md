@@ -15,6 +15,8 @@ the main session ran the gate of `EQ-05` itself and the two tests of
 
 ## Priorities
 
+**Start with:** `EQ-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | EQ-01 | Planned | P3 | The frontend's lint gate checks that a promise is awaited or deliberately dropped. |
@@ -100,8 +102,8 @@ under `src/haute`, and the gate runs `RUF100`.
 `src/haute/routes/_optimiser_solver.py:1478`; `pyproject.toml`.
 
 ### EQ-04 — The commands are run whole on the shipped examples
-**Why:** Four of the review's findings (`MLR-04`, `DPL-03`, `IOL-01` and
-`IOL-02`) came from running `haute lint`, `haute run` and
+**Why:** Four of the review's findings (`MLR-04`, `DPL-03` and the IO
+layer's `IOL-01` and `IOL-02`) came from running `haute lint`, `haute run` and
 `haute deploy --dry-run` on the sixteen shipped example projects, as they
 are and then with wrong inputs. Since 20 November 2026
 `tests/test_run_parity.py::test_a_shipped_example_gives_one_answer_every_way`
@@ -136,12 +138,15 @@ the scenario in the workflow coverage ledger under the `cli` entry point.
 
 **Acceptance:** Run at `HEAD`, the test reports the `model_lifecycle`
 traceback. It passes once `MLR-04` lands, and the wrong-input table holds the
-lines `IOL-01` and `IOL-02` settle, and the unknown target and the missing
+lines the IO layer has given since 23 November 2026 (a wrong value names its
+column, declared type and remedies; a truncated file its line and column; a
+byte-order mark reads through; an empty `.json` file is refused as empty;
+`tests/test_cli.py::TestRun` holds the first two), and the unknown target and the missing
 pipeline file the dry run now refuses in one line. The backend job's time before and after is
 recorded in the pull request.
 
-**Dependencies:** None to write the test. `MLR-04`, `IOL-01` and `IOL-02`
-decide the lines it holds.
+**Dependencies:** None to write the test. `MLR-04` decides the lines it
+holds for `model_lifecycle`.
 
 **Evidence:** `tests/test_cli_deploy.py::_mock_resolved` and
 `tests/test_cli_architecture.py` hold the patched dry runs;

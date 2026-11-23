@@ -180,6 +180,18 @@ the watcher isolates each change once, processes healthy entries, and logs and d
 the still-failing entries instead of poisoning future batches or creating an unbounded retry
 chain.
 
+The watcher's filter names what live sync reads: `.py` files, JSON files (`config/*.json`
+and `.haute.json` sidecars among them), `haute.toml`, and any file in the workbench's form
+folder. Haute's own folders (`.haute_cache`, `.haute`) and the folders the watcher library
+already leaves out (`.git`, `.venv`, `__pycache__`, `node_modules` and its other defaults) are
+never reported, so a cache write of thousands of part files, an output written as CSV or
+Parquet, or a data folder's files start no batch. A batch's routing and its document loads
+run in a worker thread, one batch at a time; the event loop publishes the batch's events once
+the thread has finished. A newer batch arriving while one runs waits for it: the running
+batch's events are still published, never dropped or reprocessed. The preview route computes
+its supersession key in a worker thread, as trace does, since the key hashes the preamble's
+utility files.
+
 **Pipeline CRUD, preview, trace, and output publication.** `GET /api/pipelines` lists every
 discovered pipeline with `ready`, `degraded`, or `source_only` load status. The editor-facing
 `GET /api/pipeline` and `GET /api/pipeline/{name}` routes return a versioned editor document,
@@ -399,8 +411,8 @@ public-error adapter is a closed set mapped to synchronous HTTP 422 and backgrou
 `GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
 `RatingFactorMissingError`, `RatingFactorDtypeContractError`,
-`LiveSwitchScenarioError`, `NodeConfigError`, `OutputNestingKeyError`, and
-`InputPreparationError`. The one
+`LiveSwitchScenarioError`, `NodeConfigError`, `OutputNestingKeyError`,
+`InputPreparationError`, and `InputFileError`. The one
 exception to the uniform mapping is `InputPreparationError` with reason code
 `memory_limited`: automatic input preparation is the single public contract error that can
 report memory exhaustion, so it maps to background-job `memory_limited` with error code

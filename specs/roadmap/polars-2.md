@@ -17,6 +17,8 @@ carries, and quantile and rank binning—remain deferred.
 
 ## Priorities
 
+**Start with:** `PL2-17`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PL2-17 | Reverify | P2 | RAM-estimate calibration and large-scale operator measurements rest on Polars 2 evidence. |

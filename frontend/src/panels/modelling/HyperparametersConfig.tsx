@@ -7,6 +7,7 @@ import { MODELLING_INPUT_STYLE } from "./styles"
 import { fitBudgetLabel } from "./trainingFitBudget"
 import { parseHyperparameters, parseTuningSearchSpace } from "./hyperparameters"
 import type { HyperparameterDrafts } from "./useHyperparameterDrafts"
+import { apiErrorMessage } from "../../api/errors"
 
 type Props = {
   algorithmLabel: string
@@ -53,13 +54,13 @@ export function HyperparametersConfig({
     try {
       parseHyperparameters(drafts.params.shown, reservedKeys, reservedKeysHelp)
     } catch (cause) {
-      fixedError = cause instanceof Error ? cause.message : "Invalid JSON"
+      fixedError = apiErrorMessage(cause, "Invalid JSON")
     }
   } else {
     try {
       parseTuningSearchSpace(drafts.searchSpace.shown)
     } catch (cause) {
-      searchError = cause instanceof Error ? cause.message : "Invalid JSON"
+      searchError = apiErrorMessage(cause, "Invalid JSON")
     }
   }
   // The Train pane's run summary words the same budget.

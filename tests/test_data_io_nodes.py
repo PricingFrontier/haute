@@ -51,6 +51,7 @@ from haute.routes._isolated_worker_async import WorkerCancellationGate
 from haute.schemas import ExecutionMetricsPayload, WriteOutputResponse
 from tests._failure_assertions import assert_unnamed
 from tests._project import use_project
+from tests._unportable_destinations import UNPORTABLE_DESTINATIONS, files_in, prepare_exports
 from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
@@ -982,6 +983,66 @@ class TestExecuteSinkDataOutput:
         # for this fixture (the research's byte-identity leg is ported in the
         # round-trip suite; this asserts the node-level path preserves values).
         assert_frame_equal(read_back, struct_frame)
+
+    def test_a_write_removes_the_staged_copies_an_earlier_write_cut_short_left(
+        self, haute_scratch: Path, struct_frame: pl.DataFrame
+    ) -> None:
+        """SRV-05: a Write killed as it published its file left its staged copy beside the
+        output; the next Write to that destination removes it, however recent, since it
+        holds the destination's lock and no other Write of it can be live. Another
+        destination's copy stays."""
+
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        outputs = haute_scratch / "outputs"
+        outputs.mkdir()
+        left = outputs / f".result.haute-stage-{'a' * 32}.parquet"
+        other = outputs / f".other.haute-stage-{'c' * 32}.parquet"
+        left.write_bytes(b"a cut-short Write's copy")
+        other.write_bytes(b"a cut-short Write's copy")
+        recent = outputs / f".result.haute-stage-{'b' * 32}.parquet"
+        recent.write_bytes(b"a copy left a moment ago")
+        graph = PipelineGraph(
+            nodes=[
+                _ready_data_input_node(
+                    "din", {"input_type": "file", "format": "parquet", "path": str(src_path)}
+                ),
+                _data_output_node(
+                    "dout",
+                    {
+                        "output_type": "file",
+                        "format": "parquet",
+                        "path": str(outputs / "result.parquet"),
+                    },
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+
+        write_data_output(graph, "dout")
+
+        assert sorted(path.name for path in outputs.iterdir()) == sorted(
+            ["result.parquet", other.name]
+        )
+
+    def test_a_write_s_staged_copies_are_removed_only_under_its_destination_s_lock(
+        self, tmp_path: Path
+    ) -> None:
+        from haute.executor import (
+            data_output_destination_lock,
+            remove_leftover_data_output_staging,
+        )
+
+        final = tmp_path / "result.parquet"
+        left = tmp_path / f".result.haute-stage-{'a' * 32}.parquet"
+        left.write_bytes(b"a dead Write's copy")
+
+        with pytest.raises(RuntimeError, match="only under its destination's lock"):
+            remove_leftover_data_output_staging(final)
+        assert left.exists()
+        with data_output_destination_lock(final):
+            remove_leftover_data_output_staging(final)
+        assert not left.exists()
 
     def test_eager_write_format_reports_row_count(self, haute_scratch, struct_frame) -> None:
         src_path = haute_scratch / "in.parquet"
@@ -2709,6 +2770,7 @@ def test_executor_manifest_helpers_reject_invalid_states_and_cleanup_failures(
         executor_module._validate_plain_output_artifact(tmp_path)
 
     monkeypatch.setattr(executor_module, "prepare_data_output", lambda *_args, **_kwargs: staged)
+    monkeypatch.setattr(executor_module, "data_output_file_destination", lambda *_a, **_k: None)
     monkeypatch.setattr(
         executor_module,
         "commit_prepared_data_output",
@@ -2751,6 +2813,7 @@ def test_executor_rejects_unexpected_optional_manifest_fields_and_cleanup_failur
 
     clean = replace(transactional, final_path=None)
     monkeypatch.setattr(executor_module, "prepare_data_output", lambda *_args, **_kwargs: clean)
+    monkeypatch.setattr(executor_module, "data_output_file_destination", lambda *_a, **_k: None)
     monkeypatch.setattr(
         executor_module, "commit_prepared_data_output", lambda _prepared: clean.response
     )
@@ -2961,3 +3024,106 @@ def test_isolated_sink_failures_map_to_stable_http_contracts(
     if expected_status == 500:
         assert_unnamed(response.json()["detail"])
         assert "private" not in response.text
+
+
+def test_the_write_route_removes_the_staged_copies_an_earlier_write_left(
+    client, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SRV-05: the route's Write removes its destination's leftover staged copies before it
+    stages its own, whatever then becomes of it."""
+
+    import haute.routes.pipeline as pipeline_route
+
+    use_project(haute_scratch)
+    # A bare file name is written under outputs/.
+    (haute_scratch / "outputs").mkdir()
+    left = haute_scratch / "outputs" / f".sink_failure.haute-stage-{'a' * 32}.parquet"
+    left.write_bytes(b"a cut-short Write's copy")
+
+    def _stop(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("stopped after the cleanup")
+
+    monkeypatch.setattr(pipeline_route, "open_seed_plan", _stop)
+    response = client.post(
+        "/api/pipeline/write-output",
+        json={
+            "graph": _sink_route_graph().model_dump(),
+            "target": {"occurrence": None, "node_id": "sink"},
+        },
+    )
+
+    assert response.status_code == 500, response.text
+    assert not left.exists()
+
+
+@pytest.mark.parametrize(("typed", "rule"), UNPORTABLE_DESTINATIONS)
+def test_a_write_refuses_a_name_windows_cannot_hold_by_name_and_writes_nothing(
+    client, haute_scratch: Path, typed: str, rule: str
+) -> None:
+    """SRV-07: a Data Output's Write refuses a typed name a file cannot have, naming the
+    path and the rule, before anything is written."""
+    use_project(haute_scratch)
+    before = prepare_exports(haute_scratch)
+    path = typed.format(ext=".parquet")
+    graph = _sink_route_graph()
+    graph.nodes[1].data.config["path"] = path
+
+    response = client.post(
+        "/api/pipeline/write-output",
+        json={"graph": graph.model_dump(), "target": {"occurrence": None, "node_id": "sink"}},
+    )
+
+    assert response.status_code == 400, response.text
+    assert repr(path) in response.json()["detail"]
+    assert rule in response.json()["detail"]
+    assert files_in(haute_scratch) == before
+
+
+@pytest.mark.parametrize("why", ["cancelled", "timed_out"])
+def test_a_write_waiting_for_another_write_of_its_file_stops_when_it_is_no_longer_wanted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """Codex review: a Write waits for another Write of the same file only while it is
+    still wanted and within its time limit, so a cancelled one gives up its admission."""
+    import threading
+
+    from haute._worker_failures import WorkerStoppedError, WorkerTimeoutError
+    from haute.executor import data_output_destination_lock
+    from haute.routes import pipeline as pipeline_route
+
+    final = tmp_path / "result.parquet"
+    staging = tmp_path / f".result.haute-stage-{'a' * 32}.parquet"
+    holding, release = threading.Event(), threading.Event()
+
+    def _other_write() -> None:
+        with data_output_destination_lock(final):
+            holding.set()
+            release.wait(10)
+
+    other = threading.Thread(target=_other_write)
+    other.start()
+    assert holding.wait(10)
+    gate = WorkerCancellationGate()
+    if why == "cancelled":
+        gate.request()
+    else:
+        monkeypatch.setattr(pipeline_route, "_pipeline_time_limit", lambda: 0.2)
+    expected = WorkerStoppedError if why == "cancelled" else WorkerTimeoutError
+    try:
+        with pytest.raises(expected):
+            pipeline_route._output_write_transaction(
+                graph=None,  # type: ignore[arg-type]
+                output_node_id="sink",
+                source="batch",
+                project_root=tmp_path,
+                overwrite=False,
+                final_path=final,
+                staging_path=staging,
+                budget=None,  # type: ignore[arg-type]
+                cancellation_requested=gate,
+                display_path="result.parquet",
+                execution_context=None,  # type: ignore[arg-type]
+            )
+    finally:
+        release.set()
+        other.join(10)

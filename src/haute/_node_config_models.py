@@ -113,7 +113,7 @@ class ApiInputConfig(NodeConfigBase, total=False):
     file)."""
     tables: list[TableV2]
     """For a structured request file, the tables read from it: each a path into the document, a
-    label, and its columns."""
+    label, and its columns. A CSV sample's table types its columns, which it reads by name."""
 
 
 @closed
@@ -1076,7 +1076,9 @@ class ConfigGap(NamedTuple):
 
 
 CheckHook = Callable[[Mapping[str, Any]], None]
-InputsHook = Callable[[Mapping[str, Any], Sequence[str]], None]
+#: A config's rules on its connected input names: the config, those names, and the node's
+#: name on the canvas, which a refusal names it by.
+InputsHook = Callable[[Mapping[str, Any], Sequence[str], str], None]
 CompletenessHook = Callable[[Mapping[str, Any], Sequence[str] | None], list[ConfigGap]]
 
 
@@ -1492,11 +1494,13 @@ def _check_optimiser(config: Mapping[str, Any]) -> None:
     validate_optimiser_analysis_config(config)
 
 
-def _optimiser_inputs(config: Mapping[str, Any], input_names: Sequence[str]) -> None:
+def _optimiser_inputs(
+    config: Mapping[str, Any], input_names: Sequence[str], node_label: str
+) -> None:
     from haute._config_validation import validate_optimiser_input_selectors
 
     validate_optimiser_input_selectors(
-        NodeType.OPTIMISER, config, input_names, node_label="optimiser"
+        NodeType.OPTIMISER, config, input_names, node_label=node_label
     )
 
 
@@ -1531,11 +1535,13 @@ def _check_optimiser_apply(config: Mapping[str, Any]) -> None:
     require_optimiser_apply_source_type(config)
 
 
-def _optimiser_apply_inputs(config: Mapping[str, Any], input_names: Sequence[str]) -> None:
+def _optimiser_apply_inputs(
+    config: Mapping[str, Any], input_names: Sequence[str], node_label: str
+) -> None:
     from haute._config_validation import validate_optimiser_input_selectors
 
     validate_optimiser_input_selectors(
-        NodeType.OPTIMISER_APPLY, config, input_names, node_label="optimiserApply"
+        NodeType.OPTIMISER_APPLY, config, input_names, node_label=node_label
     )
 
 

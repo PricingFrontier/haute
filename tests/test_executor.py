@@ -3729,7 +3729,11 @@ class TestPreviewCacheInvalidation:
         _widen_sandbox_root,
     ):
 
-        from haute.executor import commit_prepared_data_output, prepare_data_output
+        from haute.executor import (
+            commit_prepared_data_output,
+            data_output_destination_lock,
+            prepare_data_output,
+        )
         from haute.graph_utils import PipelineGraph
 
         use_project(tmp_path)
@@ -3770,8 +3774,10 @@ class TestPreviewCacheInvalidation:
             )
 
         graph1 = _make_output_graph(out1)
-        prepared1 = prepare_data_output(graph1, "dout")
-        commit_prepared_data_output(prepared1)
+        # A Write prepared in this process runs under its destination's lock.
+        with data_output_destination_lock(out1):
+            prepared1 = prepare_data_output(graph1, "dout")
+            commit_prepared_data_output(prepared1)
 
         helper.write_text(
             "VALUE = 200\n# longer content to ensure size differs\n",
@@ -3779,8 +3785,9 @@ class TestPreviewCacheInvalidation:
         )
 
         graph2 = _make_output_graph(out2)
-        prepared2 = prepare_data_output(graph2, "dout")
-        commit_prepared_data_output(prepared2)
+        with data_output_destination_lock(out2):
+            prepared2 = prepare_data_output(graph2, "dout")
+            commit_prepared_data_output(prepared2)
 
         assert pl.read_parquet(out1)["v"][0] == 10
         assert pl.read_parquet(out2)["v"][0] == 200

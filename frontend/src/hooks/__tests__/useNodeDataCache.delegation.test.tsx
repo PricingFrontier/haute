@@ -15,7 +15,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
 import useGraphStore from "../../stores/useGraphStore"
-import useNodeDataCache from "../useNodeDataCache"
+import useNodeDataCache, { refreshNodeDataCache } from "../useNodeDataCache"
 
 vi.mock("../../api/client", () => ({
   ApiError: class ApiError extends Error {
@@ -178,6 +178,43 @@ describe("delegated data-point builds", () => {
     expect(mockBuildInputCache).toHaveBeenCalledWith(
       expect.objectContaining({ refresh: true, config: expect.objectContaining({ path: "quotes.csv" }) }),
     )
+  })
+
+  it("joins on Refresh a snapshot build this page did not start, and shows the data it publishes", async () => {
+    // The preview's own preparation starts building the snapshot just before
+    // Refresh asks for the point: the answer is `building`, with no job here to watch.
+    let server: "current" | "building" | "rebuilt" = "current"
+    mockGetPoint.mockImplementation(async (args) =>
+      server === "building"
+        ? delegatedPoint(args.target.node_id, "building", { data_version: null })
+        : delegatedPoint(args.target.node_id, "current", { data_version: server === "rebuilt" ? "input-gen-2" : "input-gen-1" }),
+    )
+    mockRun.mockImplementation(async (args) => ({
+      status: "delegated" as const,
+      job_id: null,
+      cached: false,
+      message: "Build this Data Input's snapshot",
+      point: delegatedPoint(args.target.node_id, "building", { data_version: null }),
+    }))
+    mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
+    mockBuildInputCache.mockResolvedValue({ job_id: "preview-build", status: "running", joined: true } as never)
+    mockInputCacheJob.mockImplementation(async () => {
+      server = "rebuilt"
+      return { status: "completed", message: "" } as never
+    })
+    const banding = renderConsumer("banding")
+    await waitFor(() => expect(banding.result.current.dataVersion).toBe("input-gen-1"))
+    server = "building"
+
+    await act(async () => {
+      refreshNodeDataCache("banding")
+    })
+
+    await waitFor(() => expect(banding.result.current.dataVersion).toBe("input-gen-2"))
+    expect(banding.result.current.availability).toBe("current")
+    // It joined the running build rather than forcing another.
+    expect(mockBuildInputCache).toHaveBeenCalledTimes(1)
+    expect(mockBuildInputCache.mock.calls[0][0]).toMatchObject({ refresh: false })
   })
 
   it("lets a second consumer cancel the build the first one started, and waits for it to stop", async () => {

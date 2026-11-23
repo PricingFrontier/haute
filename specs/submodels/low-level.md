@@ -360,7 +360,6 @@ Existing test suites cover multi-instance occurrences across backend and fronten
 - dissolve-one/remove-one preserving sibling occurrences and definitions (`tests/test_submodel_routes.py`);
 - frontend view projection, public-handle rendering, and multi-occurrence input bindings (`frontend/src/utils/__tests__/submodelViewGraph.test.ts`);
 - boundary connection editing, input-port removal, and parent-binding cleanup (`frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`);
-- native deletion policy across definition owners and copies (`frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts`);
 - save-route rejection of invalid or unrouted bindings (`tests/test_submodel_persistence.py`).
 
 ### Route request and response models
@@ -788,7 +787,7 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 `tests/test_submodel_persistence.py`, with related parser coverage in
 `tests/test_parser_submodels.py`, and frontend coverage in
 `frontend/src/utils/__tests__/submodelBoundaryEditing.test.ts`,
-`frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts`, and
+`frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts`, and
 `frontend/src/utils/__tests__/submodelViewGraph.test.ts`.
 
 - `tests/test_submodel_identity.py` — the SUB-L03 contract: an owner and a copy
@@ -933,8 +932,9 @@ Tests live in `tests/test_submodel_identity.py`, `tests/test_submodel_instances.
 - `frontend/src/components/__tests__/ConnectionDropMenu.test.tsx` and
   `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` — input choices at the drop,
   selection before commit and the resulting canonical target handle.
-- `frontend/src/utils/__tests__/submodelDeletionPolicy.test.ts` — deletion
-  policy guarding definition owners and instance copies.
+- `frontend/src/hooks/__tests__/useKeyboardShortcuts.test.ts` — the keyboard
+  delete, the canvas's only one, guarding definition owners and deleting
+  instance copies.
 - `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — submodel view graph
   projection, public port boundaries, and cards that hold only what they show with
   bindings from several occurrences.

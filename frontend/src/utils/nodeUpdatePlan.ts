@@ -507,7 +507,13 @@ function findInputCollision(affectedByScope: AffectedTargets): NodeUpdatePlanFai
   return null
 }
 
-/** Preserve authored consumer bindings when a graph-wide identity refresh renames edges. */
+/**
+ * Preserve authored consumer bindings when an identity refresh renames edges: each edge of
+ * *next* that *previous* holds under the same id and endpoints, read under another input
+ * name, moves what its target names that input by (a code's `input_mapping`, step
+ * references, input selectors), as a rename of the input does. Boundary edits and paste
+ * (whose *previous* is the copied nodes under their new ids, FEG-06) go through it.
+ */
 export function reconcileGraphInputBindings(
   previous: RenameGraphScope,
   next: RenameGraphScope,
@@ -520,7 +526,8 @@ export function reconcileGraphInputBindings(
     const before = previousEdges.get(edge.id)
     if (
       !before || before.source !== edge.source || before.target !== edge.target
-      || before.sourceHandle !== edge.sourceHandle || before.targetHandle !== edge.targetHandle
+      || (before.sourceHandle ?? null) !== (edge.sourceHandle ?? null)
+      || (before.targetHandle ?? null) !== (edge.targetHandle ?? null)
     ) continue
     const from = edgeInputName(
       before as unknown as SimpleEdge,
@@ -539,7 +546,16 @@ export function reconcileGraphInputBindings(
   return failure ?? { ok: true, ...scope }
 }
 
-function reconcileConsumerBindings(
+/**
+ * The one rename transaction of a consumer's inputs: each rebound edge's target now reads
+ * the input `from` named under `to`, so what the target calls it moves (a Quote Response's
+ * `output_mapping`, a Source Switch's scenario map, an `input_mapping`, a coded Transform's
+ * logical binding, stepped references, the Optimiser's and Optimiser Apply's input
+ * selectors), every target checked for a name two inputs would share. A rename, an identity
+ * refresh, a paste and an Edge Join insertion all go through it. *scope*'s nodes are
+ * replaced in place; a failure names the target and the colliding name.
+ */
+export function reconcileConsumerBindings(
   scope: RenameGraphScope,
   rebound: readonly { edge: Edge; from: string; to: string }[],
 ): NodeUpdatePlanFailure | null {
@@ -564,13 +580,14 @@ export function prepareNodeUpdate(input: PrepareNodeUpdateInput): PrepareNodeUpd
   const edgeResult = reconcileSourceEdges({ ...input, previousNode })
   if (!edgeResult.ok) return edgeResult
 
-  const tentativeSubmodels = structuredClone(input.submodels)
+  // The definitions are read, never written: the plan replaces the root nodes it changes,
+  // and every definition it leaves keeps its identity, which its digests are kept for.
   const rootScope: RenameGraphScope = {
     nodes: input.graph.nodes.map((node) => (
       node.id === input.nodeId ? { ...node, data: input.data } : node
     )),
     edges: edgeResult.edges,
-    submodels: tentativeSubmodels,
+    submodels: input.submodels,
   }
   const failure = reconcileConsumerBindings(rootScope, edgeResult.rebound)
   if (failure) return failure
@@ -581,7 +598,7 @@ export function prepareNodeUpdate(input: PrepareNodeUpdateInput): PrepareNodeUpd
     data: input.data,
     nodes: rootScope.nodes,
     edges: rootScope.edges,
-    submodels: tentativeSubmodels,
+    submodels: input.submodels,
     removed: edgeResult.removed,
   }
 }

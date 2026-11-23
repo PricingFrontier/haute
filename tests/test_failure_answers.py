@@ -30,6 +30,7 @@ from haute._failure_answers import (
 )
 from haute._file_ops import PathTooLongError
 from haute._memory_errors import memory_error_in
+from haute._topo import CycleError, UnknownEdgeEndpointError
 from haute._worker_failures import WorkerRemoteError
 from haute.errors import (
     ContractMismatchError,
@@ -119,6 +120,44 @@ class TestNamedFailures:
         assert answer is not None
         assert answer.status == 422
         assert answer.detail["error_code"] == "node_config_invalid"  # type: ignore[index]
+
+    def test_an_io_setting_haute_cannot_read_with_is_said_as_written(self) -> None:
+        """IOL-01: a reader package the install lacks reaches every edge, a worker's parent
+        included, in the words Haute wrote."""
+        from haute._polars_io_registry import PolarsIoConfigError
+
+        refused = PolarsIoConfigError(
+            "Format 'excel' needs an engine package to read: install one of ['fastexcel']."
+        )
+
+        answer = classify_failure(refused)
+        sent = failure_payload(refused)
+
+        assert answer is not None
+        assert (answer.status, answer.code, answer.message) == (422, "config_invalid", str(refused))
+        assert sent is not None and answer_from_payload(sent["failure_answer"]) == answer
+
+    def test_an_input_file_that_cannot_be_read_keeps_its_file_and_place(self) -> None:
+        from haute.errors import InputFileError
+
+        refused = InputFileError(
+            "data/quote.json is not valid JSON: unexpected end of data at line 2, column 9.",
+            file="data/quote.json",
+            line=2,
+            column=9,
+        )
+
+        answer = classify_failure(refused)
+
+        assert answer is not None
+        assert (answer.status, answer.terminal_reason) == (422, "contract_error")
+        assert answer.detail == {
+            "error_code": "input_file_unreadable",
+            "message": refused.message,
+            "file": "data/quote.json",
+            "line": 2,
+            "column": 9,
+        }
 
     def test_a_nodes_own_failure_names_the_node(self) -> None:
         exc = ZeroDivisionError("division by zero")
@@ -252,6 +291,22 @@ class TestQuoteStore:
 
 
 class TestUnexpected:
+    @pytest.mark.parametrize(
+        ("failure", "named"),
+        [
+            (CycleError(["loop_b", "loop_a"]), "loop_a, loop_b"),
+            (UnknownEdgeEndpointError(("ghost",), ()), "ghost"),
+        ],
+        ids=["a loop", "an edge to a missing node"],
+    )
+    def test_a_graph_that_cannot_run_is_refused_in_its_own_words(
+        self, failure: Exception, named: str
+    ) -> None:
+        answer = answer_failure(failure, operation="save")
+        assert (answer.status, answer.code) == (400, "graph_refused")
+        assert named in answer.message
+        assert answer.incident is None
+
     def test_a_failure_nothing_names_is_words_and_an_incident(self) -> None:
         try:
             raise KeyError("internal_slot")

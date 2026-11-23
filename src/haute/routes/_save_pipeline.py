@@ -1503,7 +1503,8 @@ class SavePipelineService:
                 source_names = [
                     input_name for _edge, input_name in incoming_edge_bindings(flattened, node.id)
                 ]
-                check_inputs(node.data.config, source_names)
+                # A refusal names the node as the canvas does (FEG-07).
+                check_inputs(node.data.config, source_names, node.data.label or node.id)
         except (ConfigError, ValueError) as exc:
             raise InvalidRequestError(str(exc)) from None
 

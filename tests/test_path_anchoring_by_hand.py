@@ -58,6 +58,9 @@ _SIDECAR = (
 #: The scope is the enclosing function, ``Class.method`` for a method.
 _ANCHORED_BY_HAND: dict[str, str] = {
     "src/haute/_config_io.py::load_node_config": _SIDECAR,
+    "src/haute/_editor_identities.py::settings_file_problem": (
+        _SIDECAR + ", measured for its length when the node is named"
+    ),
     "src/haute/_model_scorer.py::score_from_config": _SIDECAR,
     "src/haute/_pipeline_repair.py::_resolve_config_reference": _SIDECAR,
     "src/haute/_recovery_sources.py::read_raw_node_settings": _SIDECAR,

@@ -7,7 +7,7 @@ import dataclasses
 import json
 import time
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -176,12 +176,14 @@ from haute.executor import (
     PreviewProjectionError,
     _preview_required_columns_by_node,
     commit_prepared_data_output,
+    data_output_destination_lock,
     data_output_seed_plan_request,
     discard_data_output_staging_path,
     discard_prepared_data_output,
     execute_graph,
     new_data_output_staging_path,
     prepare_data_output,
+    remove_leftover_data_output_staging,
     resolve_data_output_path,
     validate_prepared_data_output_identity,
 )
@@ -400,7 +402,14 @@ async def resolve_pipeline_editor_identities(
             graph = None
         else:
             named, graph = await run_in_threadpool(
-                name_candidates, body.graph, candidates, read_utility, allocate=body.allocate
+                partial(
+                    name_candidates,
+                    allocate=body.allocate,
+                    pipeline_root=current_project().pipeline_dir,
+                ),
+                body.graph,
+                candidates,
+                read_utility,
             )
         identities: list[EditorIdentityResponseNode] = []
         for node, name in zip(body.nodes, named, strict=True):
@@ -1825,19 +1834,24 @@ async def _preview_canonical_graph(
                 # The worker's captures stage under this token; whatever a killed
                 # or superseded worker left there is removed once it settles.
                 staging_token = new_staging_token()
+                # Key computation hashes preamble utility files from disk, as trace's
+                # does: off the event loop.
+                supersession_key = await run_in_threadpool(
+                    lambda: _preview_supersession_key(
+                        graph,
+                        body.source,
+                        target.key,
+                        body.row_limit,
+                        body.requested_preview_columns,
+                        target.port_label,
+                        None if target.port_labels is None else list(target.port_labels),
+                        memo=fingerprint_memo,
+                    )
+                )
                 return await await_until_disconnected(
                     http_request,
                     _preview_supersession.run_latest(
-                        _preview_supersession_key(
-                            graph,
-                            body.source,
-                            target.key,
-                            body.row_limit,
-                            body.requested_preview_columns,
-                            target.port_label,
-                            None if target.port_labels is None else list(target.port_labels),
-                            memo=fingerprint_memo,
-                        ),
+                        supersession_key,
                         lambda: _run_interactive(
                             run,
                             worker=_execute_preview_worker,
@@ -2420,6 +2434,70 @@ def _output_write_transaction(
     display_path: str,
     execution_context: ExecutionContext,
 ) -> WriteOutputResponse:
+    """Run one Data Output Write's transaction holding its destination's lock, so no other
+    Write of the file, here or in another process, is live from staging to publishing: the
+    staged copies beside it are dead Writes' to remove (:func:`_held_output_write`)."""
+    deadline = time.monotonic() + _pipeline_time_limit()
+    if final_path is None or staging_path is None:
+        held: AbstractContextManager[object] = nullcontext()
+    else:
+        held = _destination_lock_held(final_path, cancellation_requested, deadline)
+    with held:
+        return _held_output_write(
+            graph,
+            output_node_id,
+            source,
+            project_root,
+            overwrite,
+            final_path,
+            staging_path,
+            budget,
+            cancellation_requested,
+            display_path=display_path,
+            execution_context=execution_context,
+            deadline=deadline,
+        )
+
+
+@contextmanager
+def _destination_lock_held(
+    final_path: Path, cancellation_requested: WorkerCancellationGate, deadline: float
+) -> Iterator[None]:
+    """Hold *final_path*'s Data Output lock, waiting for another Write of the file only
+    while this Write is still wanted and within its time limit: a cancelled Write gives up
+    its wait, and so its admission, at once."""
+    lock = data_output_destination_lock(final_path)
+    while not lock.acquire(blocking=False):
+        if cancellation_requested.is_set():
+            raise WorkerStoppedError(terminal_reason="cancelled")
+        if time.monotonic() >= deadline:
+            raise WorkerTimeoutError(timeout_seconds=_pipeline_time_limit())
+        time.sleep(_DESTINATION_LOCK_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+#: How often a Write waiting for another Write of its file looks again.
+_DESTINATION_LOCK_POLL_SECONDS = 0.05
+
+
+def _held_output_write(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str,
+    project_root: Path,
+    overwrite: bool,
+    final_path: Path | None,
+    staging_path: Path | None,
+    budget: IsolatedExecutionBudget,
+    cancellation_requested: WorkerCancellationGate,
+    *,
+    display_path: str,
+    execution_context: ExecutionContext,
+    deadline: float,
+) -> WriteOutputResponse:
     """Prepare inputs and open the seed plan, supervise the sink child, and publish.
 
     A node's signature signs its prepared inputs, so this process prepares them
@@ -2429,8 +2507,9 @@ def _output_write_transaction(
     """
     prepared: PreparedDataOutput | None = None
     primary_error: BaseException | None = None
-    deadline = time.monotonic() + _pipeline_time_limit()
     try:
+        if final_path is not None and staging_path is not None:
+            remove_leftover_data_output_staging(final_path, own_staging=staging_path)
         if cancellation_requested.is_set():
             raise WorkerStoppedError(terminal_reason="cancelled")
         # Preparing inputs here stops with the request.

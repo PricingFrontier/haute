@@ -9,6 +9,7 @@ they are reached through a link or reparse point.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat as stat_module
@@ -17,6 +18,9 @@ import time
 from pathlib import Path
 from typing import Any, Literal, cast
 from weakref import WeakValueDictionary
+
+#: The errors a non-blocking ``flock`` reports for a lock another holder has.
+_LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES})
 
 
 def _acquire_file_lock(
@@ -49,7 +53,9 @@ def _acquire_file_lock(
                 )
                 return True
             except OSError as exc:
-                if exc.errno not in {11, 13}:
+                # Held by another holder: EWOULDBLOCK (EAGAIN, 11 on Linux, 35 on macOS) or
+                # EACCES, as each platform's flock reports it, never a number of one platform.
+                if exc.errno not in _LOCK_HELD_ERRNOS:
                     raise
                 if not blocking or (deadline is not None and time.monotonic() >= deadline):
                     return False

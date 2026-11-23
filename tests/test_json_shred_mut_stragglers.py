@@ -35,10 +35,11 @@ def test_resolve_leaf_dotted_through_list_fails_loud() -> None:
 
 def test_root_array_rejects_an_unbalanced_close_brace() -> None:
     # At depth 0 a ']' ends the element and a '}' is unbalanced: '{}}' drives
-    # depth 1 -> 0, then the bare '}' raises at the byte after it.
+    # depth 1 -> 0, then the bare '}' raises at its own byte offset in the file (the
+    # '[' read before it is byte 0), where orjson places one.
     with pytest.raises(orjson.JSONDecodeError, match="unexpected '}'") as raised:
         list(_iter_root_array_values(io.BytesIO(b"{}}]"), 1, 1 << 20))
-    assert raised.value.pos == 4
+    assert raised.value.pos == 3
 
 
 def test_root_array_element_ends_at_the_top_level_close_bracket() -> None:

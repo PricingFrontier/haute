@@ -65,6 +65,10 @@ IGNORE_NAMES = (
 # path relative to the repository :: name -> why it stays.
 ALLOWLIST: dict[str, str] = {
     "src/haute/__init__.py::__getattr__": "PEP 562 lazy attribute of the package.",
+    "src/haute/_input_files.py::readinto": (
+        "io.RawIOBase's protocol method: io.BufferedReader calls it to fill its buffer from "
+        "a decompressing reader."
+    ),
     "src/haute/__init__.py::__dir__": "PEP 562 companion of the lazy attributes.",
     "src/haute/_polars_dtypes.py::polars_type_kinds": (
         "Read by scripts/generate_api_contracts.py, which writes it into the contract the "
@@ -116,7 +120,6 @@ ALLOWLIST: dict[str, str] = {
     "src/haute/_dedicated_workers.py::child_limit_evidence_counter": (
         "Child-side counter the memory-limit notification tests read."
     ),
-    "src/haute/_file_lock.py::owned_by_current_thread": "Ownership read under the lock's guard.",
     "src/haute/_mlflow_io.py::get_model_cache_stats": "Cache counters read under the cache lock.",
     "src/haute/_mlflow_io.py::clear_local_model_cache": "Cache reset under the cache lock.",
     "src/haute/_mlflow_utils.py::_restore_mlflow_databricks_credentials": (

@@ -14,6 +14,7 @@ import {
   prepareNodeUpdate,
   type PreparedNodeUpdate,
 } from "../utils/nodeUpdatePlan"
+import { apiErrorMessage } from "../api/errors"
 
 type ToastType = "success" | "error" | "warning" | "info"
 
@@ -279,7 +280,7 @@ export default function useGraphCommitController({
     }
     const failedUpdate = (error: unknown): OnUpdateConfigResult => {
       retireDraft(nodeId, draft)
-      return { ok: false, error: `Update node failed: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Update node failed: ${apiErrorMessage(error)}` }
     }
     const attempt = async (n: number, request: GraphCommitRequest): Promise<OnUpdateConfigResult> => {
       const liveNode = canvasGraph().nodes.find((node) => node.id === nodeId)
@@ -415,7 +416,7 @@ export default function useGraphCommitController({
     // The server's own wording names the other node, helper or reserved name.
     const failedRename = (error: unknown): OnUpdateConfigResult => error instanceof EditorNameCollisionError
       ? { ok: false, error: error.message }
-      : { ok: false, error: `Rename failed: ${error instanceof Error ? error.message : String(error)}` }
+      : { ok: false, error: `Rename failed: ${apiErrorMessage(error)}` }
     const attempt = async (n: number): Promise<OnUpdateConfigResult> => {
       if (n > MAX_IDENTITY_ATTEMPTS) {
         return {

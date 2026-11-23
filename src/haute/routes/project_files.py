@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse
 from haute import _git
 from haute._artifact_paths import PathProblem, ordinary_path_problem
 from haute._failure_answers import answer_failure, file_answer
-from haute._file_ops import ensure_disk_headroom, file_revision, publish_staged_file
+from haute._file_ops import ensure_disk_headroom, file_revision, literal_path, publish_staged_file
 from haute._git_core import _is_git_repo, git_binary_available
 from haute._git_read_models import FileState
 from haute._git_state import read_working_branch
@@ -145,8 +145,12 @@ def _place(project_root: Path, name: ProjectFilePlace) -> _Place:
     return _Place("local", "", LOCAL_FOLDERS)
 
 
-def _target(project_root: Path, place_name: ProjectFilePlace, path: str) -> _Target:
-    """Resolve a place-relative *path*, refusing anything but an ordinary visible name."""
+def _target(
+    project_root: Path, place_name: ProjectFilePlace, path: str, *, any_name: bool = False
+) -> _Target:
+    """Resolve a place-relative *path*, refusing anything but an ordinary visible name; with
+    *any_name*, a file already there is taken under whatever name it has
+    (:func:`ordinary_path_problem`), for a delete."""
     place = _place(project_root, place_name)
     text = path.replace("\\", "/")
     parts = text.split("/") if text else []
@@ -164,7 +168,7 @@ def _target(project_root: Path, place_name: ProjectFilePlace, path: str) -> _Tar
         )
     project_relative = str(PurePosixPath(place.root, relative)) if place.root else relative
     resolved, problem = (
-        ordinary_path_problem(project_root, project_relative)
+        ordinary_path_problem(project_root, project_relative, any_name=any_name)
         if project_relative
         else (project_root, None)
     )
@@ -281,8 +285,10 @@ async def list_project_files(place: ProjectFilePlace, path: str = "") -> Project
     return await run_in_threadpool(_list_folder, place, path)
 
 
-def _file_target(project_root: Path, place: ProjectFilePlace, path: str) -> _Target:
-    target = _target(project_root, place, path)
+def _file_target(
+    project_root: Path, place: ProjectFilePlace, path: str, *, any_name: bool = False
+) -> _Target:
+    target = _target(project_root, place, path, any_name=any_name)
     if not target.relative or (
         target.place.name == "local" and len(PurePosixPath(target.relative).parts) < 2
     ):
@@ -290,8 +296,10 @@ def _file_target(project_root: Path, place: ProjectFilePlace, path: str) -> _Tar
     return target
 
 
-def _writable_file_target(project_root: Path, place: ProjectFilePlace, path: str) -> _Target:
-    target = _file_target(project_root, place, path)
+def _writable_file_target(
+    project_root: Path, place: ProjectFilePlace, path: str, *, any_name: bool = False
+) -> _Target:
+    target = _file_target(project_root, place, path, any_name=any_name)
     if not target.writable:
         raise _refusal(
             403,
@@ -533,19 +541,22 @@ async def download_project_file(place: ProjectFilePlace, path: str) -> FileRespo
 
 def _delete(place: ProjectFilePlace, path: str, revision: str) -> ProjectFileDeleteResponse:
     project_root = current_project().root
-    target = _writable_file_target(project_root, place, path)
+    # Any file a panel lists can be deleted, whatever its name: one a program outside Haute
+    # named after a device, or with a trailing dot, which nothing else could remove.
+    target = _writable_file_target(project_root, place, path, any_name=True)
     display = target.project_relative
-    _target(project_root, target.place.name, target.relative)
-    if not target.path.is_file():
+    _target(project_root, target.place.name, target.relative, any_name=True)
+    literal = literal_path(target.path)
+    if not literal.is_file():
         raise _refusal(404, "file_missing", f"{display} doesn't exist.")
-    if file_revision(target.path.stat()) != revision:
+    if file_revision(literal.stat()) != revision:
         raise _refusal(
             412,
             "file_changed",
             f"{display} changed since you chose to delete it. Look again, then retry.",
         )
     try:
-        target.path.unlink()
+        literal.unlink()
     except OSError as exc:
         raise _file_refusal(exc, display) from None
     warnings: list[str] = []

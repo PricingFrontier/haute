@@ -194,8 +194,6 @@ interface ImmediatePreviewOptions {
    */
   nodeKey?: string
 }
-export const PREVIEW_INITIAL_COLUMN_LIMIT = 200
-
 const NON_EXECUTABLE_PREVIEW_TYPES = new Set<string>([
   NODE_TYPES.SUBMODEL_PORT,
 ])
@@ -263,24 +261,6 @@ function resultToPreview(
   })
 }
 
-function previewColumnNamesForNode(
-  node: Node,
-  source: string,
-  structuralVersion: number,
-  portLabel: string | undefined,
-): string[] | undefined {
-  const data = nodeData(node)
-  // A remembered preview layout is only a valid projection for the graph that
-  // produced it. After an edit, let the server discover the current schema.
-  if (data._columnsSource !== source || data._columnsStructuralVersion !== structuralVersion) return undefined
-  // A frame of a multi-frame node is projected onto that frame's columns: the
-  // flat ones are of whichever frame was last previewed.
-  const columns = (portLabel === undefined ? undefined : data._frameColumns?.[portLabel]) ?? data._columns
-  return columns && columns.length > 0
-    ? columns.slice(0, PREVIEW_INITIAL_COLUMN_LIMIT).map((column) => column.name)
-    : undefined
-}
-
 function submodelRecoveryPreviewNotice(node: Node): PreviewData {
   // Recovery preview is planned server-side from the root document, so a
   // drilled submodel view has no admissible preview; say so instead of
@@ -303,11 +283,15 @@ function canPreviewNode(node: Node): boolean {
     !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
 }
 
-/** One preview whose inputs are prepared before it runs. */
+/**
+ * One preview whose inputs are prepared before it runs. No preview names the columns
+ * it wants: the columns a node last showed are no projection once the data under it
+ * has changed, which can happen with nothing in the graph changing (a file replaced on
+ * disk), so the server reads the schema it finds and applies its own column limit.
+ */
 interface PreviewInputTarget {
   target: FrameTargetPayload
   source: string
-  requestedPreviewColumns?: string[]
 }
 
 /**
@@ -794,7 +778,6 @@ export default function usePipelineAPI({
             graph,
             target: target.target,
             source: target.source,
-            requestedPreviewColumns: target.requestedPreviewColumns,
             signal,
           }),
         ),
@@ -877,7 +860,7 @@ export default function usePipelineAPI({
     // The load belongs to this run of the effect: unmounting lets it go, and aborts it.
     const asked = ask([newest(pipelineLoads)])
     const failed = (err: unknown) => {
-      const detail = err instanceof Error ? err.message : String(err)
+      const detail = apiErrorMessage(err)
       setLoadError(detail)
       addToast("error", `Failed to load pipeline: ${detail}`)
       setLoading(false)
@@ -1065,7 +1048,6 @@ export default function usePipelineAPI({
     const target = output?.target ?? nodeFrame(canvasNodeAddress(node.id), portLabel ?? null)
     const wireTarget = frameTargetPayload(target)
     const selectedFrame = output?.outputName ?? portLabel
-    const requestedPreviewColumns = output ? undefined : previewColumnNamesForNode(node, snapshotSource, structuralVersion, portLabel)
     // Cache-first: show cached data immediately if available
     const cached = getPreview(cacheKey)
     if (
@@ -1143,7 +1125,6 @@ export default function usePipelineAPI({
           targetRecoveryId: node.id,
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
-          requestedPreviewColumns,
           portLabel,
           requestId,
           signal: controller.signal,
@@ -1154,7 +1135,6 @@ export default function usePipelineAPI({
           target: wireTarget,
           rowLimit: snapshotRowLimit,
           source: snapshotSource,
-          requestedPreviewColumns,
           requestId,
           signal: controller.signal,
         }))
@@ -1182,7 +1162,6 @@ export default function usePipelineAPI({
           {
             target: wireTarget,
             source: snapshotSource,
-            requestedPreviewColumns,
           },
         ],
         controller.signal,
@@ -1257,6 +1236,9 @@ export default function usePipelineAPI({
             return
           }
           setPreviewData(failure)
+          // The rows stored before are no longer what the node gives: coming back to
+          // it asks again rather than showing them.
+          useNodeResultsStore.getState().forgetPreview(cacheKey)
           setNodeStatuses({})
           if (isApiTimeoutError(err)) {
             addToast("error", `Preview timed out for "${label}": ${detail}`)
@@ -1534,7 +1516,6 @@ export default function usePipelineAPI({
             target: frameTargetPayload(upstreamTarget),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
-            requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion, portLabelFor(upstream)),
             signal: controller.signal,
           }), {
             ok: (result) => {
@@ -1597,7 +1578,6 @@ export default function usePipelineAPI({
       [node, ...staleUpstream].map((previewed) => ({
         target: frameTargetPayload(nodeFrame(canvasNodeAddress(previewed.id), portLabelFor(previewed) ?? null)),
         source: snapshotSource,
-        requestedPreviewColumns: previewColumnNamesForNode(previewed, snapshotSource, structuralVersion, portLabelFor(previewed)),
       })),
       controller.signal,
     ), {
@@ -1630,6 +1610,7 @@ export default function usePipelineAPI({
               error: detail,
             }), undefined, nodeKey),
           )
+          useNodeResultsStore.getState().forgetPreview(nodeKey)
           setNodeStatuses({})
           setPreviewBusy(false)
         } finally {
@@ -1779,6 +1760,10 @@ export default function usePipelineAPI({
           if (isAbortError(err) || isPreviewSupersededError(err)) return
           const detail = apiErrorMessage(err)
           setPreviewData(keyedPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }), undefined, nodeKey))
+          // As its success is, the failure of the frame the node previews is the node's.
+          if (portLabelFor(node) === portLabel && useGraphStore.getState().structuralVersion === structuralVersion) {
+            useNodeResultsStore.getState().forgetPreview(nodeKey)
+          }
           if (isApiTimeoutError(err)) {
             addToast("error", `Preview timed out for "${label}": ${detail}`)
           }

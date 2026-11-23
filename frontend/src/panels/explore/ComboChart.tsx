@@ -4,6 +4,7 @@ import type { ExploreChartConfig } from "./chartConfig"
 import { chartExportFileName, type PivotChartData } from "./chartData"
 import { buildComboChartOptions } from "./chartOptions"
 import { chartThemeTokens, prefersReducedMotion, useChartEnvironmentRevision } from "./chartTheme"
+import { apiErrorMessage } from "../../api/errors"
 
 type ComboChartProps = { chart: ExploreChartConfig; data: PivotChartData }
 type ComboChartRuntime = {
@@ -51,7 +52,7 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
         }
         setError(null)
       } catch (cause) {
-        if (!disposed) setError(cause instanceof Error ? cause.message : "Unable to render chart.")
+        if (!disposed) setError(apiErrorMessage(cause, "Unable to render chart."))
       }
     }
     void start()
@@ -73,7 +74,7 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
       dataUrl = runtime.getDataURL()
     } catch (cause) {
       setExportError(
-        cause instanceof Error ? cause.message : "Could not export the chart image.",
+        apiErrorMessage(cause, "Could not export the chart image."),
       )
       return
     }
@@ -103,11 +104,7 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
         anchor.click()
         setExportError(null)
       } catch (cause) {
-        setExportError(
-          cause instanceof Error
-            ? cause.message
-            : "Could not export the chart image.",
-        )
+        setExportError(apiErrorMessage(cause, "Could not export the chart image."))
       }
     }
     image.onerror = () => {

@@ -427,13 +427,18 @@ class TestNoManualInvalidation:
         # "is this inside _file_watcher?" check by walking the function
         # def hierarchy for each offender.
         def _in_file_watcher(py: Path, lineno: int) -> bool:
-            """True iff ``lineno`` in ``py`` is inside ``_file_watcher`` or
-            ``_broadcast_tree_change`` (or a def nested in either)."""
+            """True iff ``lineno`` in ``py`` is inside ``_file_watcher``, the batch routing
+            it runs in a worker thread (``_watcher_batch_events``) or
+            ``_broadcast_tree_change`` (or a def nested in one)."""
             tree = ast.parse(py.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                     continue
-                if node.name not in {"_file_watcher", "_broadcast_tree_change"}:
+                if node.name not in {
+                    "_file_watcher",
+                    "_watcher_batch_events",
+                    "_broadcast_tree_change",
+                }:
                     continue
                 start = node.lineno
                 end = node.end_lineno or start

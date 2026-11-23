@@ -148,30 +148,15 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Priorities",
     "## Planned improvements",
 )
-_EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
-    "assistant",
-    "engineering-quality",
-    "frontend-graph-canvas",
-    "frontend-modelling-optimiser-ui",
-    "frontend-preview-explore",
-    "frontend-shared",
-    "io-layer",
-    "mlflow-model-registry",
-    "modelling",
-    "optimiser",
-    "polars-2",
-    "polars-node-clarity",
-    "sandbox-security",
-    "server-api",
-    "workbench",
-)
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-plan.md",
     "price-contour-polars-2.md",
 )
-# One shared cause each, taken before the packages it lists. They stand alone: no row in
-# the index and no priorities table.
-_ROADMAP_ROOT_CAUSES: tuple[str, ...] = ()
+# One shared cause each, taken before the packages it lists: one package, no priorities table.
+_ROADMAP_ROOT_CAUSE = "root-cause-*.md"
+#: A component roadmap's starting package: a non-deferred package of its own, or — when
+#: every package it holds is deferred.
+_ROADMAP_START_WITH = re.compile(r"^\*\*Start with:\*\*\s*`?([^`\n]+?)`?\s*$", re.MULTILINE)
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
     flags=re.MULTILINE,
@@ -387,25 +372,23 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
 
 
 def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> None:
-    expected_markdown = (
-        {"README.md"}
-        | {f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS}
-        | set(_ROADMAP_SUPPORTING_REPORTS)
-        | set(_ROADMAP_ROOT_CAUSES)
-    )
-    roadmap_markdown = {
-        path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
-    }
-    assert roadmap_markdown == expected_markdown
+    """The roadmap folder is flat, and every component in it is found by listing the
+    folder, so no file lists the components and a branch that adds or retires one edits
+    nothing another component's branch does."""
+    root_causes = {path.name for path in ROADMAP_ROOT.glob(_ROADMAP_ROOT_CAUSE)}
+    assert {path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")} == {
+        path.name for path in ROADMAP_ROOT.glob("*.md")
+    }, "the roadmap folder is flat"
+    roadmap_markdown = {path.name for path in ROADMAP_ROOT.glob("*.md")}
+    assert set(_ROADMAP_SUPPORTING_REPORTS) <= roadmap_markdown
 
     component_files = {
         path.stem: path
         for path in ROADMAP_ROOT.glob("*.md")
         if path.name != ROADMAP_INDEX.name
         and path.name not in _ROADMAP_SUPPORTING_REPORTS
-        and path.name not in _ROADMAP_ROOT_CAUSES
+        and path.name not in root_causes
     }
-    assert tuple(sorted(component_files)) == _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
 
     index = ROADMAP_INDEX.read_text(encoding="utf-8")
     for name in _ROADMAP_SUPPORTING_REPORTS:
@@ -430,22 +413,18 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
                 f"or to missing {local_target}"
             )
 
-    start_with: dict[str, str] = {}
-    for line in index.splitlines():
-        match = re.match(
-            r"^\|\s*\[[^\]]+\]\(([^)#]+)[^)]*\)\s*\|.*\|\s*([^|]+?)\s*\|$",
-            line,
-        )
-        if match:
-            start_with[Path(match.group(1)).stem] = match.group(2).strip().strip("`")
-
     package_owners: dict[str, str] = {}
     for component, path in component_files.items():
         text = path.read_text(encoding="utf-8")
         headings = _h2_sections(text)
         for heading in _REQUIRED_COMPONENT_ROADMAP_HEADINGS:
             assert heading[3:] in headings, f"{path.relative_to(ROOT)} is missing {heading}"
-        assert f"({component}.md)" in index
+        starts = _ROADMAP_START_WITH.findall(headings["Priorities"])
+        assert len(starts) == 1, (
+            f"{path.relative_to(ROOT)} names its starting package once, under Priorities, "
+            f"as **Start with:**; got {starts}"
+        )
+        start_with = {component: starts[0].strip()}
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
         assert package_ids, (
@@ -516,7 +495,7 @@ def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> Non
                     f"{path.relative_to(ROOT)} package {package_id} is missing {field}"
                 )
 
-    for name in _ROADMAP_ROOT_CAUSES:
+    for name in sorted(root_causes):
         path = ROADMAP_ROOT / name
         text = path.read_text(encoding="utf-8")
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)

@@ -205,12 +205,64 @@ def test_xml_mixed_object_children_stay_in_one_root_record(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("source", "kind"),
+    [
+        ('<quote xmlns:a="urn:a" xmlns:b="urn:b" a:id="1" b:id="2"/>', "attributes"),
+        (
+            '<quote xmlns:a="urn:a" xmlns:b="urn:b"><a:id>1</a:id><b:id>2</b:id></quote>',
+            "children",
+        ),
+        # The same at a document's root: two vocabularies' children are not its records.
+        (
+            '<quotes xmlns:a="urn:a" xmlns:b="urn:b"><a:id><n>1</n></a:id>'
+            "<b:id><n>2</n></b:id></quotes>",
+            "children",
+        ),
+    ],
+    ids=["attributes", "children", "root-children"],
+)
+def test_xml_names_that_collide_once_namespaces_are_removed_are_one_refusal(
+    tmp_path, source: str, kind: str
+) -> None:
+    """IOL-06: an attribute's and a child's collision are refused alike, naming both."""
+    data_path = tmp_path / "collision.xml"
+    data_path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(ApiInputSchemaError) as refused:
+        list(_iter_xml_records(data_path))
+
+    element = "quote" if "<quote " in source else "quotes"
+    assert refused.value.message == (
+        f"XML element {element!r} has two {kind} named 'id' once namespaces are removed, "
+        "'{urn:a}id' and '{urn:b}id': Haute cannot tell their fields apart."
+    )
+
+
+def test_infer_tables_refuses_two_vocabularies_children_of_one_name(tmp_path) -> None:
+    """IOL-06: never offered as one repeated table ``code``."""
+    data_path = tmp_path / "policy.xml"
+    data_path.write_text(
+        '<policy xmlns:a="urn:a" xmlns:b="urn:b"><a:code>1</a:code><b:code>2</b:code></policy>',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ApiInputSchemaError, match="two children named 'code'"):
+        infer_v2_schema_from_data(data_path)
+
+
+def test_children_of_one_name_in_one_namespace_are_still_a_list(tmp_path) -> None:
+    data_path = tmp_path / "policy.xml"
+    data_path.write_text(
+        '<policy xmlns:a="urn:a"><a:code>1</a:code><a:code>2</a:code></policy>',
+        encoding="utf-8",
+    )
+
+    assert list(_iter_xml_records(data_path)) == [{"code": ["1", "2"]}]
+
+
+@pytest.mark.parametrize(
     ("source", "message"),
     [
-        (
-            '<quote xmlns:a="urn:a" xmlns:b="urn:b" a:id="1" b:id="2"/>',
-            "duplicate XML attribute name",
-        ),
         ('<quote id="1"><id>2</id></quote>', "attribute and child element"),
         ('<quote value="1">text</quote>', "'value' attribute and text"),
     ],
@@ -413,6 +465,43 @@ def test_a_table_built_before_singleton_lists_is_not_read_as_current(
     original_root = current_project().root
     use_project(tmp_path)
     try:
+        with pytest.raises(InputSnapshotMissingError):
+            load_v2_api_source(str(data_path), config, read_snapshots=True)
+    finally:
+        use_project(original_root)
+
+
+def test_a_table_published_under_version_3_is_not_read_as_current(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Version 3 merged two vocabularies' children of one name into one list and published
+    a table of no rows from an empty ``.json`` file (IOL-02, IOL-06): a table it published
+    never answers for its source now (``SHRED_SEMANTICS_VERSION``), so the build that
+    replaces it refuses such a file."""
+    from haute._json_shred import _snapshots
+
+    data_path = tmp_path / "quotes.json"
+    data_path.write_text('[{"id": "1"}]', encoding="utf-8")
+    config = {
+        "path": str(data_path),
+        "contract": "opaque",
+        "tables": [
+            {
+                "label": "quotes",
+                "path": "$[:]",
+                "emit": True,
+                "columns": [{"name": "id", "path": "$[:].id", "type": "str", "selected": True}],
+            }
+        ],
+    }
+    original_root = current_project().root
+    use_project(tmp_path)
+    try:
+        with monkeypatch.context() as previous:
+            previous.setattr(_snapshots, "SHRED_SEMANTICS_VERSION", 3)
+            build_test_api_input_snapshots(data_path, config)
+            assert load_v2_api_source(str(data_path), config, read_snapshots=True) is not None
+
         with pytest.raises(InputSnapshotMissingError):
             load_v2_api_source(str(data_path), config, read_snapshots=True)
     finally:

@@ -302,6 +302,12 @@ class ParseError(HauteError):
     """Pipeline source parsing failure."""
 
 
+class GraphStructureError(HauteError):
+    """A graph whose edges cannot be run as they are: they close a loop, or name a node the
+    graph does not hold. Its message names the nodes and what to change, so every edge
+    answers it as a refusal of the graph it was sent (``graph_refused``), never an incident."""
+
+
 class ExecutionError(HauteError):
     """Runtime execution failure."""
 
@@ -693,9 +699,33 @@ class NodeFailedError(ExecutionError):
         super().__init__(message, node_id=node_id)
 
 
+class InputFileError(ExecutionError):
+    """An input's file whose bytes cannot be read as its format.
+
+    The reader that found the fault raises it, naming the file as a message names one
+    (from the project root, else by its own name) and, when it has one, the line and
+    column of the fault. Examples are a JSON file that is not JSON or holds nothing, a
+    CSV file saved in another encoding than UTF-8, and bytes that are not UTF-8. The
+    message is about the analyst's own file, so it holds no locator outside the project
+    and no secret, and every edge says it as written. A public contract error: HTTP 422.
+    """
+
+    error_code = "input_file_unreadable"
+    public_fields = ("file", "line", "column")
+
+    def __init__(
+        self, message: str, *, file: str, line: int | None = None, column: int | None = None
+    ) -> None:
+        self.file = file
+        self.line = line
+        self.column = column
+        super().__init__(message)
+
+
 INPUT_PREPARATION_REASON_CODES: tuple[str, ...] = (
     "cap_unavailable",
     "build_failed",
+    "source_invalid",
     "memory_limited",
     "cancelled",
     "timed_out",

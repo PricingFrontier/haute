@@ -423,6 +423,26 @@ class TestValidateOptimiserInputSelectors:
         assert "ratebook_input" in exc_info.value.detail
         assert not (tmp_path / "pipeline.py").exists()
 
+    def test_a_refused_selector_names_the_node_as_the_canvas_does(self, tmp_path: Path) -> None:
+        graph = _make_graph(
+            _make_node("rows", "browser_optimiser_rows", "dataInput", {"path": "rows.parquet"}),
+            _make_node("join", "edge_join", "polars", {"code": "df = browser_optimiser_rows"}),
+            _make_node(
+                "optimiser",
+                "browser_ratebook",
+                "optimiser",
+                {"data_input": "browser_optimiser_rows"},
+            ),
+            edges=[_make_edge("rows", "join"), _make_edge("join", "optimiser")],
+        )
+
+        with pytest.raises(RequestRefusedError) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="pipeline.py")
+
+        detail = exc_info.value.detail
+        assert "'browser_ratebook' data_input 'browser_optimiser_rows'" in detail, detail
+        assert "'optimiser'" not in detail
+
 
 class TestValidateBandingRulesTheWriterRefuses:
     """A banding rule the sidecar writer cannot write is refused by save validation, a 400

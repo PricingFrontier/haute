@@ -14,6 +14,7 @@ import { chartThemeTokens, prefersReducedMotion, useChartEnvironmentRevision } f
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import { chartMessage, sheetChartData, sheetChartOptions } from "../utils/sheetChart"
 import { useSheetValues } from "./useSheetValues"
+import { apiErrorMessage } from "../api/errors"
 
 /** What a new option replaces whole rather than merges: what a change of type, orientation or legend adds or drops. */
 const REPLACED = ["series", "xAxis", "yAxis", "grid", "legend"]
@@ -90,7 +91,7 @@ export default function ChartBody({ widget }: { widget: ChartWidget }) {
         chart.setOption(sheetChartOptions(widget, data, chartThemeTokens(host), prefersReducedMotion()), { replaceMerge: REPLACED })
         setError(null)
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "The chart could not be drawn.")
+        if (!cancelled) setError(apiErrorMessage(cause, "The chart could not be drawn."))
       }
     }
     void draw()

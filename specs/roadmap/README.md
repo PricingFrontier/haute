@@ -9,32 +9,20 @@ Shipped behaviour remains defined by code, tests, and the component
 specifications. `Reverify` packages came from older evidence and must be
 reproduced against `HEAD` before implementation. `Decision` packages require
 an explicit product or architecture choice. Remove a package when its outcome
-is covered by current specifications and ordinary regression tests.
-`Start with` names a non-deferred package; it is `—` when a component has no
-currently startable package. Priority `P1` marks a package that threatens
-persisted work, computed results, or security; `P2` a material correctness, UX,
-or maintenance issue; `P3` opportunistic work.
+is covered by current specifications and ordinary regression tests. Priority
+`P1` marks a package that threatens persisted work, computed results, or
+security; `P2` a material correctness, UX, or maintenance issue; `P3`
+opportunistic work.
 
 Keep measured defects, source-supported risks, unconfirmed reachability, product
 decisions and maintenance work distinct.
 
-| Component | Improvement surface | Start with |
-|---|---|---|
-| [Assistant](assistant.md) | The shipped examples refused on a copy of Haute that pip installed; an applied or undone change that says nothing when its version capture fails; a step's comment, earlier answers and restricted settings sent to a provider whose policy withholds them; an apply saved after the time limit and shown as failed | `AST-01` |
-| [Engineering quality](engineering-quality.md) | Promise rules in the frontend lint gate; a test that never runs in CI; dead branches and unused suppressions; the commands run whole on the shipped examples by a test; a coverage gate that misses a change on a statement's later lines; two Windows-only tests no job runs | `EQ-01` |
-| [Frontend graph canvas](frontend-graph-canvas.md) | What one edit costs and what the undo history holds when the graph carries large tables; a Backspace delete that takes two undo steps; a connection that closes a loop accepted by the canvas, after which no save lands; a tab with unsaved work left read-only after the file on disk is back as it was; pasted nodes that still read the originals; an Edge Join that leaves an optimiser's input behind; an error screen in place of a submodel's comparison | `FEG-01` |
-| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | A missing value in the optimiser's data preview drawn as zero, and crashing its Statistics pane; a result pane that crashes when a t-boost model is trained again under a three-way table | `FEM-01` |
-| [Frontend preview and Explore](frontend-preview-explore.md) | A Refresh after a data file changed: the preview failing on the columns it remembered, and the Explore overview and the Banding editor left on the old data | `FEP-01` |
-| [Frontend shared](frontend-shared.md) | Failed calls told in the browser's or the JSON parser's own words, offered to the assistant as a node's error, or reported as a new version of Haute; the last panel values held outside the shared draft (a code editor's typing, a decision) | `FES-03` |
-| [IO layer](io-layer.md) | Inputs whose file is wrong and the fixed text the analyst is given; byte-order marks, empty files and repeated keys in JSON inputs (a decision); a Quote Input on a CSV that cannot be run; a UTF-16 CSV read as garbled columns; Load File replacing bytes it cannot read; XML names that collide across namespaces | `IOL-01` |
-| [MLflow model registry](mlflow-model-registry.md) | The model-load retry that treats every failure as a corrupt artifact; eviction of local model copies; the run picker's silent omissions; a missing run reported as a traceback; a load that waits minutes on a server that cannot be reached; a registered version that scores another model file of its run; a re-logged model file that is not picked up; a logged model that refuses a part-year exposure; a canvas GLM logged with no parameters; Retry after a changed experiment showing the old run as logged to the new one | `MLR-01` |
-| [Modelling](modelling.md) | Temporal splits on a date column with gaps; tuning and rerun messages; evaluation planning cost; the constructor-only split seam; how `haute train` loads a script; a GLM asked to classify; nulls and infinities a model family cannot take; an imported LightGBM model's Boolean categories scored as missing | `MDL-01` |
-| [Optimiser](optimiser.md) | Scenario grids the solver cannot use answered "check the server logs"; a solve with one constraint that does not converge where its own frontier's first point does; a ratebook solve marked converged short of a bound it could meet (a decision); a solver process kept for every finished solve of a node | `OPM-01` |
-| [Polars 2](polars-2.md) | Remaining RAM-estimate calibration, large-scale operator measurements and worker baselines; Map columns and quantile/rank binning (deferred) | `PL2-17` |
-| [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
-| [Sandbox and local security](sandbox-security.md) | The hosted editor's cross-site checks; NumPy 1 pickles and the refusal's wording; temporary folders shared between users | `SBS-01` |
-| [Server API](server-api.md) | Live sync on the event loop; node and submodel names too long for their files refused only by the save; the staged copies a cut-short Data Output Write and a model save leave; a missing pipeline file shown as "HTTP 500" on the page; typed file names that Windows cannot hold refused without naming the rule, and an output with a device name that stops every Commit | `SRV-02` |
-| [Workbench](workbench.md) | The underwriter app on hosts past Azure Container Apps (a Databricks App, AWS, internal platforms); a workbench project's release started by an export template and its sheets driven in a browser in CI; managing quotes in the app past the Quotes page: outcomes, many quotes at once; exports from templates; test quotes analysts keep and price again, built again after the first version was taken out (awaiting decisions); the app's sign-in; typed-in allowed values (a decision); from the 9 November 2026 review: the hosted check's single probes, a save priced before it is refused, a form request answered 500, a column name the save accepts and the pipeline refuses, and a SQLite file held exclusively, damaged or deleted not named as such; on its server databases, a quote reached through a padded reference on SQL Server, and a quote list searched and ordered differently on each database; a release id that changes with the checkout's line endings; a corrected `.env` password ignored until restart | `WB-50` |
+Each `<component>.md` file here is one component's roadmap: its scope, its
+priorities, which package to start with (`**Start with:**`, a non-deferred
+package, or `—` when every package is deferred) and the packages themselves. A
+`root-cause-<name>.md` file is one shared cause, taken before the packages it
+lists. This README names no component roadmap, so a branch that works on one
+roadmap edits no file another roadmap's branch does.
 
 ## price-contour on Polars 2 — 18 October 2026
 
@@ -58,17 +46,16 @@ not reach.
 
 ## Working protocol
 
-1. Pick one package from its owning component, starting with the package the
-   table above names; a component's scope says when packages go together.
+1. Pick one package from its owning component, starting with the package its
+   `Start with` line names; a component's scope says when packages go together.
 2. For `Reverify`, reproduce the stated failure against `HEAD`; retire the
    package if current code and tests already prove the outcome.
 3. Update the owning component specification before changing behaviour.
 4. Add the smallest failing regression, implement the change, and run the
    affected tests once.
 5. Commit each package on its own, with its ID in the message, removing the
-   package from its component roadmap in the same commit. Delete a component
-   roadmap left empty, with its row above and its
-   `_EXPECTED_ACTIVE_COMPONENT_ROADMAPS` entry in `tests/test_docs_accuracy.py`.
+   package from its component roadmap in the same commit, and point its
+   `Start with` line at the next package. Delete a component roadmap left empty.
 
 Packages that go together share one branch cut from a fresh `origin/main` and
 one pull request, with "Before a pull request" in `AGENTS.md` followed first;

@@ -729,6 +729,24 @@ class TestWriterEdgeCases:
 class TestAtomicCopyFiles:
     """Tests for ``atomic_copy_files`` (stage-all-then-replace-all copy)."""
 
+    def test_a_read_only_target_leaves_no_backup(self, tmp_path: Path) -> None:
+        """SRV-05: a model saved over a read-only model file leaves the new file alone in
+        its folder, however many times it is saved: Windows refuses to delete a read-only
+        backup, so the backup is made writable first."""
+        import stat
+
+        model = tmp_path / "motor.cbm"
+        model.write_bytes(b"old model")
+        model.chmod(stat.S_IREAD)
+        for save in range(3):
+            source = tmp_path / "trained" / f"model-{save}.cbm"
+            source.parent.mkdir(exist_ok=True)
+            source.write_bytes(f"model {save}".encode())
+            atomic_copy_files([(source, model)])
+
+        assert model.read_bytes() == b"model 2"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["motor.cbm", "trained"]
+
     def test_copies_two_pairs_and_replaces_existing_targets(self, tmp_path: Path) -> None:
         src_a = tmp_path / "a_src.bin"
         src_b = tmp_path / "b_src.bin"
@@ -1073,3 +1091,88 @@ class TestWindowsPathTooLong:
 
         assert raised.value.filename == str(stage)
         assert isinstance(raised.value.__cause__, FileNotFoundError)
+
+
+def test_a_server_start_removes_the_staging_files_left_under_haute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SRV-05: a settings write, an undelete or a branch-away killed at its rename leaves
+    its staging file under .haute; the next start removes it, since its owner's lock can be
+    taken. Another live writer's stage stays however old, as does this process's own and
+    every other file."""
+    from haute import _file_ops, server
+    from haute._file_lock import FileLock
+    from tests._project import use_project
+
+    monkeypatch.setattr(_file_ops, "_writer_locks", lambda: tmp_path / "writers")
+    use_project(tmp_path)
+    haute_dir = tmp_path / ".haute"
+    (haute_dir / "uploads").mkdir(parents=True)
+    # Left by writers that are gone: nobody holds their tokens' locks.
+    (haute_dir / "pipeline-settings.3b78e6a00000.tmp").write_text("{}")
+    (haute_dir / "trash.0123abcd0000.tmp").write_text("{}")
+    (haute_dir / "uploads" / "state.89abcdef0000.tmp").write_text("{}")
+    # Another server's write, still live: it holds its token's lock.
+    live_writer = FileLock(tmp_path / "writers" / "fedcba98.lock")
+    assert live_writer.acquire(blocking=False)
+    (haute_dir / "state.fedcba980000.tmp").write_text("{}")
+    # This process's own stage, named as _temp_path_for names one.
+    own = haute_dir / f"prefs.{_file_ops._writer_token()}0000.tmp"
+    own.write_text("{}")
+    (haute_dir / "state.json").write_text("{}")
+
+    try:
+        server._remove_leftover_staging()
+    finally:
+        live_writer.release()
+
+    assert sorted(p.name for p in haute_dir.rglob("*") if p.is_file()) == sorted(
+        ["state.fedcba980000.tmp", own.name, "state.json"]
+    )
+
+
+def test_a_haute_folder_reached_through_a_link_is_not_searched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review: a .haute that links elsewhere could take startup cleanup outside the
+    project, so it is not searched at all."""
+    from haute import _file_ops, server
+    from tests._project import use_project
+    from tests.test_save_record import _link
+
+    monkeypatch.setattr(_file_ops, "_writer_locks", lambda: tmp_path / "writers")
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    project.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "settings.0123abcd0000.tmp").write_text("{}")
+    # The registered directory-link helper: Windows withholds the privilege by default.
+    _link(project / ".haute", elsewhere)
+    use_project(project)
+
+    server._remove_leftover_staging()
+
+    assert (elsewhere / "settings.0123abcd0000.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    ("windows", "refused"),
+    [(False, True), (True, False)],
+    ids=["utf-8-bytes", "utf-16-units"],
+)
+def test_a_name_is_counted_as_its_filesystem_counts_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool, refused: bool
+) -> None:
+    """Codex review: 100 Japanese characters and .json are 305 UTF-8 bytes, past what ext4
+    and APFS hold, and 105 UTF-16 units, which NTFS holds."""
+    from haute import _file_ops
+
+    monkeypatch.setattr(_file_ops, "_IS_WINDOWS", windows)
+    monkeypatch.setattr(_file_ops, "windows_long_paths_enabled", lambda: True)
+    target = tmp_path / ("日" * 100 + ".json")
+
+    problem = _file_ops.written_file_length_problem([target])
+
+    assert (problem is not None) == refused
+    if refused:
+        assert "its file name would be 305 bytes long" in problem

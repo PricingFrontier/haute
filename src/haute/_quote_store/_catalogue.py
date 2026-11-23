@@ -69,6 +69,13 @@ class CatalogueMovedError(WorkbenchError):
     error_code = "quote_store_moved"
 
 
+#: What a :class:`CatalogueMovedError` says.
+CATALOGUE_MOVED = (
+    "The database's tables changed while they were read, as SQL run beside the read "
+    "changes them: read them again once it has run."
+)
+
+
 #: The columns every table of the store leads with: the quote's identity.
 IDENTITY = ("quote_reference", "quote_option")
 #: The most values one statement counting quotes reads, a table's quotes and each of its
@@ -298,10 +305,7 @@ def read_catalogue(
         # the database's refusal, raised as it is.
         if not names_missing(exc):
             raise
-        raise CatalogueMovedError(
-            "The database's tables changed while they were read, as SQL run beside the read "
-            "changes them: read them again once it has run."
-        ) from None
+        raise CatalogueMovedError(CATALOGUE_MOVED) from None
     tables: list[CatalogueTable] = []
     for table, reflected, numbered in found:
         quotes, counted = counts[table.name] if table.name in countable else (None, {})

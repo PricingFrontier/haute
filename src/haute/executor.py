@@ -17,6 +17,7 @@ import gc
 import hashlib
 import os
 import stat as stat_module
+import tempfile
 import threading
 import time
 import uuid
@@ -43,6 +44,7 @@ from haute._execute_lazy import (
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile, naming_nodes_from
+from haute._file_lock import FileLock, file_lock_for
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._input_providers import recording_schema_tiers
@@ -55,6 +57,7 @@ from haute._output_assembler import render_output_document
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     _normalise_path_text,
+    reject_unportable_destination,
     reject_unportable_path_text,
 )
 from haute._pipeline_settings import project_pipeline_settings
@@ -1939,6 +1942,69 @@ def new_data_output_staging_path(final_path: str | Path) -> Path:  # pragma: no 
     return final.with_name(f".{final.stem}.haute-stage-{uuid.uuid4().hex}{final.suffix}")
 
 
+def data_output_destination_lock(final_path: str | Path) -> FileLock:
+    """The lock every Write to the file *final_path* holds from staging its copy to
+    publishing it, across processes: a second server or a run writing the same file waits.
+
+    Holding it, a Write knows that no other Write of the destination is live, so every
+    staged copy beside the file is one a Write that died left. Kept outside the project, as
+    the project mutation lock is, so no output folder holds lock files.
+    """
+    key = hashlib.sha256(os.path.normcase(os.path.abspath(final_path)).encode()).hexdigest()
+    return file_lock_for(Path(tempfile.gettempdir()) / "haute-output-locks" / f"{key}.lock")
+
+
+def data_output_file_destination(
+    graph: PipelineGraph, output_node_id: str, project_root: str | Path | None = None
+) -> Path | None:
+    """The file a Data Output writes, or ``None`` for a table it writes in a database."""
+    from haute._polars_io_registry import data_output_group
+
+    config = _data_output_config(graph, output_node_id)
+    if data_output_group(config) != "file":
+        return None
+    root = current_project().root if project_root is None else Path(project_root).resolve()
+    out, _path = resolve_data_output_path(graph, config, project_root=root)
+    return out
+
+
+def remove_leftover_data_output_staging(
+    final_path: str | Path, *, own_staging: str | Path | None = None
+) -> None:
+    """Remove the staged copies of *final_path* that earlier Writes left behind.
+
+    A Write cut short when its process died, as it published its file, leaves its staged
+    copy (:func:`new_data_output_staging_path`) beside the destination, where nothing else
+    would remove it. Run before a Write stages its own copy, holding the destination's lock
+    (:func:`data_output_destination_lock`), so every staged copy there but the Write's own
+    (*own_staging*, a name it has chosen already) is a dead Write's.
+    """
+    final = Path(final_path)
+    own = None if own_staging is None else os.path.normcase(os.path.abspath(own_staging))
+    if not data_output_destination_lock(final).owned_by_current_thread():
+        raise RuntimeError(
+            "A Data Output's staged copies are removed only under its destination's lock."
+        )
+    prefix = f".{final.stem}.haute-stage-"
+    try:
+        names = [entry for entry in final.parent.iterdir() if entry.name.startswith(prefix)]
+    except FileNotFoundError:
+        return
+    for candidate in names:
+        if os.path.normcase(os.path.abspath(candidate)) == own:
+            continue
+        try:
+            _validate_output_staging_identity(final, candidate)
+            if stat_module.S_ISREG(candidate.lstat().st_mode):
+                candidate.unlink()
+        except ValueError:
+            continue
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("data_output_staging_not_removed", file=candidate.name, error=str(exc))
+
+
 def _validate_output_staging_identity(final_path: Path, staging_path: Path) -> None:
     expected_prefix = f".{final_path.stem}.haute-stage-"
     name_without_suffix = (
@@ -2124,8 +2190,19 @@ def resolve_data_output_path(
         # The setting as written: joined to the root, a drive-letter path would land in a
         # folder named ``C:``, and ``C:priced.csv`` loses its drive once put in ``outputs/``.
         reject_unportable_path_text(config["path"], project_root=root)
-    target = str(root / _normalise_path_text(path)) if format_group(fmt_entry) == "file" else path
-    return _contain_output_path(graph, target, project_root=root), path
+    if format_group(fmt_entry) != "file":
+        return _contain_output_path(graph, path, project_root=root), path
+    # A name Windows cannot hold is refused by name before anything is written, and before
+    # the path is resolved: the file is staged under a longer hidden sibling name first.
+    contained = reject_unportable_destination(
+        path,
+        lambda: _contain_output_path(
+            graph, str(root / _normalise_path_text(path)), project_root=root
+        ),
+        project_root=root,
+        staged_as=lambda target: [new_data_output_staging_path(target)],
+    )
+    return contained, path
 
 
 def data_output_written_path(config: Mapping[str, Any]) -> str:
@@ -2269,11 +2346,14 @@ def prepare_data_output(
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         if is_file_target:
-            staging_out = (
-                new_data_output_staging_path(out)
-                if staging_path is None
-                else Path(staging_path).resolve()
-            )
+            if staging_path is None:
+                # This process stages and publishes the file itself: it clears what an
+                # earlier Write left first. A parent that hands its worker the staging
+                # path clears them before it does.
+                remove_leftover_data_output_staging(out)
+                staging_out = new_data_output_staging_path(out)
+            else:
+                staging_out = Path(staging_path).resolve()
             _validate_output_publish_paths(out, staging_out, project_root=root)
             _validate_output_staging_identity(out, staging_out)
             if staging_out.exists() or staging_out.is_symlink():
@@ -2603,6 +2683,28 @@ def write_data_output(
         finally:
             admitted_context.release_admission(preserve_primary_error=True)
 
+    destination = data_output_file_destination(graph, output_node_id, project_root)
+    with nullcontext() if destination is None else data_output_destination_lock(destination):
+        return _write_prepared_data_output(
+            graph,
+            output_node_id,
+            source,
+            execution_context=execution_context,
+            project_root=project_root,
+            overwrite=overwrite,
+        )
+
+
+def _write_prepared_data_output(
+    graph: PipelineGraph,
+    output_node_id: str,
+    source: str,
+    *,
+    execution_context: ExecutionContext,
+    project_root: str | Path | None,
+    overwrite: bool,
+) -> WriteOutputResponse:
+    """Prepare and publish one Data Output in this process, under its destination's lock."""
     prepared: PreparedDataOutput | None = None  # pragma: no mutate
     primary_error: BaseException | None = None  # pragma: no mutate
     try:

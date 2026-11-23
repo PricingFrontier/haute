@@ -1526,9 +1526,10 @@ def test_partial_hit_under_captures_executes_as_a_miss(
     assert "stale" not in stored["eager_outputs"]
 
 
-def test_undeclared_csv_api_input_preview_seeds_and_captures_nothing(
+def test_an_undeclared_csv_api_input_is_refused_and_captures_nothing(
     project: Path, store: NodeSnapshotStore
 ) -> None:
+    from haute._api_input_schema import ApiInputSchemaError
     from haute._execution_admission import create_admitted_execution_context
     from haute._native_memory_limit import native_memory_backend_scope
     from haute.executor import execute_graph
@@ -1557,11 +1558,18 @@ def test_undeclared_csv_api_input_preview_seeds_and_captures_nothing(
     context = create_admitted_execution_context(
         operation="preview_seeding_test", profile=ExecutionProfile.PREVIEW_EAGER
     )
+    # IOL-03: a CSV sample's columns are typed by the node's table on every profile, so
+    # one its table does not type is refused, named, rather than inferred here and
+    # refused by a bounded run.
     try:
-        # The join over a CSV has no row-count estimate; the preview worker
-        # runs it under its hard memory cap.
-        with native_memory_backend_scope("rlimit"):
-            results = execute_graph(
+        with (
+            native_memory_backend_scope("rlimit"),
+            pytest.raises(
+                ApiInputSchemaError,
+                match="^Columns 'id', 'a' of policies.csv have no type in this Quote Input's",
+            ),
+        ):
+            execute_graph(
                 graph,
                 target_node_id="banding",
                 row_limit=200,
@@ -1572,8 +1580,6 @@ def test_undeclared_csv_api_input_preview_seeds_and_captures_nothing(
     finally:
         context.release_admission()
 
-    assert results["banding"].status == "ok", results["banding"].error
-    assert results["banding"].row_count == _ROWS
     assert context.preview_seed_plan == ()
     assert context.metrics_payload(status="completed")["shared_snapshot_captures"] == []
     assert store.latest_generation(_identity(store, graph, "join")) is None

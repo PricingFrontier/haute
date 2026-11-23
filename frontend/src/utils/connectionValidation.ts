@@ -9,6 +9,8 @@ import {
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
 } from "./apiInputPorts"
+import { apiErrorMessage } from "../api/errors"
+import { CLOSES_A_LOOP, hasDirectedCycle } from "./directedCycle"
 
 type ConnectionLike = {
   source: string | null | undefined
@@ -166,6 +168,11 @@ export function validatePipelineConnection(
     return { ok: false, reason: { kind: "invalid-connection", message: `Connect from one of ${sourceNode.data.label}'s tables, not the node itself` } }
   }
 
+  // The pipeline runs each node after its inputs, so an edge that closes a loop cannot run.
+  if (hasDirectedCycle(nodes, [...edges, candidate])) {
+    return { ok: false, reason: { kind: "invalid-connection", message: CLOSES_A_LOOP } }
+  }
+
   if (targetNode.data.nodeType === NODE_TYPES.WORKBENCH_OUTPUT) {
     const failure = workbenchOutputConnectionFailure(candidate, targetNode, nodesById, edges, workbench)
     if (failure !== null) return { ok: false, reason: { kind: "invalid-connection", message: failure } }
@@ -189,7 +196,7 @@ export function validatePipelineConnection(
       ok: false,
       reason: {
         kind: "invalid-connection",
-        message: error instanceof Error ? error.message : String(error),
+        message: apiErrorMessage(error),
       },
     }
   }
@@ -259,7 +266,7 @@ export function validatePipelineConnection(
       ok: false,
       reason: {
         kind: "invalid-connection",
-        message: error instanceof Error ? error.message : String(error),
+        message: apiErrorMessage(error),
       },
     }
   }

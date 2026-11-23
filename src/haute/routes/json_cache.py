@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import orjson
 from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
@@ -27,7 +26,7 @@ from haute._api_input_schema import ApiInputSchemaError
 from haute._failure_answers import failure_refusal
 from haute._path_resolution import RuntimePathError, resolve_node_input_path
 from haute._project_context import current_project
-from haute.errors import NotFoundError, UnprocessableError
+from haute.errors import InputFileError, NotFoundError, UnprocessableError
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
@@ -83,8 +82,9 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
         )
     except FileNotFoundError:
         raise NotFoundError("Data file not found") from None
-    except orjson.JSONDecodeError as e:
-        raise UnprocessableError(f"Invalid JSON in data file: {e}") from None
+    except InputFileError as e:
+        # A file that is not JSON, or holds nothing: named with the fault's line and column.
+        raise UnprocessableError(e.message) from None
     except ApiInputSchemaError as e:
         # e.g. a nested array (array of arrays) that can't be a flat table —
         # surface the structured 422 naming the field rather than an opaque 500.

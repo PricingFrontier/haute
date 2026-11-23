@@ -2,19 +2,30 @@
 
 ## Preview column freshness
 
+- No preview `usePipelineAPI` sends names `requestedPreviewColumns`: not a
+  selected node's, a refreshed node's, an upstream node's previewed for a
+  Refresh, a recovery preview's, nor the preparation that asks which inputs a
+  preview reads (`previewInputs`). The server reads the schema it finds and
+  previews a wide frame's first columns up to its initial preview column limit
+  (`src/haute/executor.py::PREVIEW_INITIAL_COLUMN_LIMIT`). The columns a node
+  last previewed with are no projection, because the data under a node can
+  change while nothing in the graph does: a data file replaced on disk with a
+  column added, removed or renamed, or a workbench table saved without a field.
+  A remembered name the data no longer has would fail the preview with a
+  message about a column the analyst never asked for.
+- Deselecting join columns therefore lets downstream pass-through previews
+  discover the remaining columns. Actual code and join dependencies retain the
+  backend's strict missing-column validation.
 - Column metadata captured by `usePipelineAPI` records the request's structural
   version as `_columnsStructuralVersion`, alongside `_columnsSource`. Both are
   transient result metadata and do not change graph identity or persisted state.
-- Preview requests may seed `requestedPreviewColumns` from cached columns only
-  when their structural version and source match the request. Missing provenance
-  or a mismatch requires schema discovery by omitting that optional projection.
-  This applies to direct, recovery and upstream refresh
-  requests. Fresh schemas retain the initial preview column limit.
-- Deselecting join columns must therefore let downstream pass-through previews
-  discover the remaining columns without requesting the old schema. Actual code
-  and join dependencies retain the backend's strict missing-column validation.
-- Result-shape invalidation clears the structural version tag along with the
+  Result-shape invalidation clears the structural version tag along with the
   source tag; selection-only edits still preserve the pre-filter column choices.
+- A preview that fails for the graph as it is forgets the node's stored preview
+  (`useNodeResultsStore`'s `forgetPreview`; for a frame preview, only when it is
+  the frame the node previews), as a success would have replaced it. Showing
+  the node again then asks again instead of showing the rows from before the
+  failure as current.
 
 ## Module map
 
@@ -44,6 +55,7 @@
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 | `frontend/src/panels/explore/exploreTableStyles.ts`, `frontend/src/panels/explore/ExploreTableHead.tsx` | What the Explore report tables share: the cell padding, uppercase label style, text-colour styles and row border, and `ExploreTableHead`, the header row (column headers with `scope="col"`, a blank label rendered as an `aria-hidden` spacer, an optional dense variant for nested tables and a sticky variant for scrolling ones). |
 | `frontend/e2e/input-import.spec.ts` | Import browser journey: a CSV Data Input previews its rows, the file grows, and Import re-reads it and previews the new rows. |
+| `frontend/e2e/replaced-data.spec.ts` | Browser journeys over data files replaced on disk while the editor is open: one Refresh previews a Parquet file that lost, gained or renamed a column on the input and on a pass-through node below it, and coming back shows the same table; one Refresh brings Explore's Overview to a replaced Parquet file and a replaced snapshotted CSV file, and the Banding editor's count and categorical values to a replaced file. |
 | `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
 
 ## Key types and data structures
@@ -126,13 +138,24 @@
    tabpanel until that module is ready.
 4. Explore shows no cache state of its own. The node's Refresh button brings its data up to date
    through `refreshNodeDataCache(nodeId)`, which asks every consumer registered for that node to
-   do so: when the consumer's last inspection failed or was refused, it asks for the point again,
-   whatever point it keeps from an earlier answer, and the new answer decides the next Refresh;
-   otherwise `missing` sends a plain build; `stale`, `partial` and `corrupt` send a refresh, which
-   is also the recovery path from an unreadable snapshot; and `current`, `building` and
-   `checking` do nothing, so a Refresh pressed to re-read a node's generated fields never
-   recomputes a dataset that has not changed. While the data is built or profiled, a progress bar runs under the
-   frame's header. The subtitle names the source and, while the profile runs or after it fails,
+   do so. A consumer whose build is under way does nothing (the build reads the point when it
+   ends); every other asks for the point again, whatever it last heard, because the data under a
+   point can change with nothing on the page hearing of it: a file replaced on disk under a
+   direct read moves its data version, and one under a snapshot or a built output makes it
+   stale. That answer is published like any other, so a moved data version reaches every pane,
+   profile and whole-data answer of the point (the Overview, Pivots, Charts and Relationships
+   panes, and the Banding and Rating Step editors), and it decides the Refresh: `missing` sends a
+   plain build; `stale`, `partial` and `corrupt` send a refresh, which is also the recovery path
+   from an unreadable snapshot; a build the page already watches (a job, or a delegated build of
+   this tab) is left to end; a build it has nothing to watch, such as an input snapshot the
+   preview's own preparation is building (the point reports no job for it), is joined as a plain
+   build, so its end is read like any build's; and `current` does nothing more, so a Refresh
+   pressed to re-read a node's generated fields never recomputes a dataset that has not
+   changed. A failed or refused answer is held as the consumer's problem, as any inspection's is.
+   The wait for that answer belongs to the identity and the document Refresh was pressed for: a
+   Stop, the consumer moving to another identity (even one it later returns to) or another
+   document ends it, and an answer arriving afterwards decides nothing.
+   While the data is built or profiled, a progress bar runs under the frame's header. The subtitle names the source and, while the profile runs or after it fails,
    the profile's progress or failure.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
@@ -142,7 +165,9 @@
 6. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
    display fields they render and pass it to `ExploreTableActions`. Copy serialises the header
    and every exported row as TSV; download uses the shared CSV escaping helper. Schema supplies
-   every column matching its current search query, not only the current 50-row page. Numeric and
+   every column matching its current search query, not only the current 50-row page. The
+   search box shows only for a schema of more than 50 columns, and the query applies only while
+   it shows: a schema refreshed too short for the box is shown and exported whole. Numeric and
    categorical summaries export their complete profile lists. The actions do not offer JSON
    sharing or paste-in because Explore reports are read-only analysis artifacts. The shared
    serializers remain click-loaded from the already-lazy Overview code.
@@ -544,7 +569,16 @@ Generic browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
 `frontend/e2e/data-preview-scroll.spec.ts` scrolls a preview fully right with the wheel and
 checks that it stays fully right, with the new column in view, through two Refreshes that each
-add a column.
+add a column. `frontend/e2e/replaced-data.spec.ts` replaces data files under open nodes (see the
+module map). In `frontend/src/hooks/__tests__/usePipelineAPI.test.ts`, a selected preview, a
+Refresh and a Refresh that previews an upstream node first each ask for none of the columns the
+node last previewed with, against a server that refuses the remembered one, and a node whose
+Refresh failed is asked again when it is shown again rather than showing its earlier rows.
+`frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
+`frontend/src/__tests__/editors/BandingEditorStats.test.tsx` show
+the Overview and the Banding editor's count following a point whose data version moved, after
+one Refresh with no build, and `frontend/src/panels/explore/__tests__/SchemaTableCard.test.tsx` a
+searched long schema refreshed to a short one showing every column.
 Explore owns a dedicated browser journey in `frontend/e2e/explore.spec.ts`: it authors and
 connects an Explore node, caches the whole dataset, reloads the application, opens Pivots,
 asserts that the profile's post-code schema populates the field palette, commits a Pivot

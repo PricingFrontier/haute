@@ -993,3 +993,19 @@ def test_an_opened_test_quotes_row_whose_value_is_no_longer_allowed_is_left_out_
 
     assert not_opened == ["cover[1]"]
     assert values["cover"] == [{"code": "01"}, {"code": "02", "amount": "200"}]
+
+
+def test_deploy_and_the_workbench_read_one_test_quote_file_alike(tmp_path: Path) -> None:
+    """A file with a byte-order mark and a repeated key is one quote to both readers."""
+    from haute.deploy._validators import load_test_quote_file
+
+    path = tmp_path / "north.json"
+    path.write_bytes(
+        b'\xef\xbb\xbf[{"input": {"region": "north", "region": "south"}, '
+        b'"expected": {"t": [{"p": 1}]}}]'
+    )
+
+    read = test_quotes.read_test_quote(path)
+
+    assert read.problem is None
+    assert [read.input] == load_test_quote_file(path) == [{"region": "south"}]

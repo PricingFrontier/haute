@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import glob
 import os
+from collections.abc import Callable, Sequence
 from pathlib import Path, PureWindowsPath
 
 from haute._project_context import current_project
@@ -79,6 +80,87 @@ def _reject_reserved_device_components(raw_path: str | Path, path: Path) -> None
                 "extension) cannot name a file on Windows, so they are rejected on "
                 "every platform to keep a project portable."
             )
+
+
+#: The characters Windows does not allow in a file or folder name, beside control characters.
+_WINDOWS_FORBIDDEN_NAME_CHARACTERS = frozenset('<>:"|?*')
+
+
+def reject_unportable_destination(
+    display_path: str,
+    resolve: Callable[[], Path],
+    *,
+    project_root: Path,
+    staged_as: Callable[[Path], Sequence[Path]] | None = None,
+) -> Path:
+    """Refuse a destination a person typed that a file cannot have, before anything is
+    written, naming the path and the rule.
+
+    The one rule of the saves that write where the analyst says (an optimiser result, a
+    model, a Data Output), on every platform so a project stays loadable on Windows: a
+    character Windows does not allow in a name, a name ending with a dot or a space, which
+    Windows drops, a device name (:func:`_reject_reserved_device_components`), a folder of
+    the path that is a file, and a name or path too long for the disk as the save writes it
+    (*staged_as*, the sibling names its write makes: an atomic write's unless said;
+    :func:`haute._file_ops.written_file_length_problem`). *display_path* is the path as
+    typed, which Windows would have changed by resolving it. Its names are judged as typed
+    first, their length included, and only then is it resolved (*resolve*, the save's own
+    resolution and containment): Linux refuses to resolve a name too long for it at all.
+    Returns the resolved file.
+    """
+    from haute._file_ops import (
+        MAX_FILE_NAME_CHARS,
+        atomic_write_names,
+        name_unit_word,
+        name_units,
+        written_file_length_problem,
+    )
+
+    text = _normalise_path_text(display_path)
+    _reject_reserved_device_components(display_path, Path(text))
+    typed = PureWindowsPath(text)
+    for name in typed.parts[1:] if typed.anchor else typed.parts:
+        if name in (".", ".."):
+            continue
+        refused = sorted(
+            {c for c in name if c in _WINDOWS_FORBIDDEN_NAME_CHARACTERS or ord(c) < 32}
+        )
+        if refused:
+            shown = " ".join(repr(c) for c in refused)
+            raise MalformedRuntimePathError(
+                f"Path {display_path!r} has {shown} in {name!r}: a file or folder name cannot "
+                'hold < > : " | ? * or a control character on Windows, so it is refused on '
+                "every platform. Choose another name."
+            )
+        if name.endswith((".", " ")):
+            raise MalformedRuntimePathError(
+                f"Path {display_path!r} has {name!r}, which ends with a dot or a space: "
+                "Windows drops it, so the file would have another name. Choose another name."
+            )
+        if name_units(name) > MAX_FILE_NAME_CHARS:
+            shown = name if len(name) <= 40 else name[:40] + "…"
+            raise MalformedRuntimePathError(
+                f"Path {display_path!r} cannot be saved: its name {shown!r} would be "
+                f"{name_units(name)} {name_unit_word()} long, more than the "
+                f"{MAX_FILE_NAME_CHARS} a file or folder name may be. Choose a shorter name."
+            )
+    target = resolve()
+    root = project_root.resolve()
+    for folder in target.parents:
+        if not is_contained(root, folder) or folder == root:
+            break
+        if folder.exists() and not folder.is_dir():
+            raise MalformedRuntimePathError(
+                f"Path {display_path!r} puts the file in "
+                f"{folder.relative_to(root).as_posix()!r}, which is a file, not a folder. "
+                "Choose another folder."
+            )
+    too_long = written_file_length_problem([target], staged_as=staged_as or atomic_write_names)
+    if too_long is not None:
+        raise MalformedRuntimePathError(
+            f"Path {display_path!r} cannot be saved: {too_long}. Choose a shorter name."
+        )
+    return target
 
 
 def _resolve_source_file_parent(  # pragma: no mutate

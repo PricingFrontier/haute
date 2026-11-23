@@ -2,7 +2,9 @@
  * Phase 3 Wave 7 package 7D / 7E — Item #99
  *
  * Pins the canonical `serializeSnapshot` + `selectIsDirty` helpers that back
- * the GUI's unsaved-changes indicator.
+ * the GUI's unsaved-changes indicator. The store compares `persistedFingerprint`s
+ * (digests of what `serializeSnapshot` writes, kept per node, FEG-01); every
+ * `serializeSnapshot` case below also checks the two tell documents apart alike.
  *
  * Consolidation history:
  *   - Pre-7D: two fields encoded dirty state (a boolean `dirty` plus a
@@ -26,10 +28,14 @@
  *     read any store.
  */
 
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import useUIStore from "../useUIStore"
 import useGraphStore from "../useGraphStore"
-import { selectIsDirty, serializeSnapshot as canonicalSerializeSnapshot } from "../../utils/graphSnapshot"
+import {
+  persistedFingerprint,
+  selectIsDirty,
+  serializeSnapshot as canonicalSerializeSnapshot,
+} from "../../utils/graphSnapshot"
 import type { Node, Edge } from "@xyflow/react"
 
 // ---------------------------------------------------------------------------
@@ -47,8 +53,28 @@ function makeEdge(id: string, source: string, target: string): Edge {
 // Most cases exercise one persisted dimension at a time; default the other
 // persisted submodel dimension to the canonical empty map.
 function serializeSnapshot(input: { nodes: readonly Node[]; edges: readonly Edge[]; preamble: string; submodels?: Record<string, unknown> }) {
-  return canonicalSerializeSnapshot({ ...input, submodels: input.submodels ?? {} })
+  const graph = { ...input, submodels: input.submodels ?? {} }
+  const text = canonicalSerializeSnapshot(graph)
+  // The store compares persisted fingerprints, which tell documents apart exactly as their text does.
+  fingerprintOfText.set(text, persistedFingerprint(graph))
+  return text
 }
+
+const fingerprintOfText = new Map<string, string>()
+
+/** The persisted fingerprint `selectIsDirty` compares, of the document `serializeSnapshot` writes. */
+function fingerprint(input: { nodes: readonly Node[]; edges: readonly Edge[]; preamble: string; submodels?: Record<string, unknown> }) {
+  return persistedFingerprint({ ...input, submodels: input.submodels ?? {} })
+}
+
+afterEach(() => {
+  // Two documents with the same text have the same fingerprint, and two with different text different ones.
+  const pairs = [...fingerprintOfText]
+  for (const [text, print] of pairs) {
+    for (const [otherText, otherPrint] of pairs) expect(print === otherPrint).toBe(text === otherText)
+  }
+  fingerprintOfText.clear()
+})
 
 /**
  * Reset both stores to a clean "never-saved" state for each test.  The UI
@@ -266,12 +292,12 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
       // Pinned choice: untouched + never-saved counts as NOT dirty.
       // The fresh canonical workspace has empty nodes, edges, preamble, and
       // submodels; an untouched empty workspace is treated as clean.
-      const empty = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
+      const empty = fingerprint({ nodes: [], edges: [], preamble: "" })
       expect(selectIsDirty({ lastSavedSnapshot: null }, empty)).toBe(false)
     })
 
     it("returns false when current snapshot equals the saved snapshot", () => {
-      const snap = serializeSnapshot({
+      const snap = fingerprint({
         nodes: [makeNode("a")],
         edges: [],
         preamble: "import x",
@@ -280,8 +306,8 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
     })
 
     it("returns true when current !== saved (node added after save)", () => {
-      const saved = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      const current = serializeSnapshot({
+      const saved = fingerprint({ nodes: [makeNode("a")], edges: [], preamble: "" })
+      const current = fingerprint({
         nodes: [makeNode("a"), makeNode("b")],
         edges: [],
         preamble: "",
@@ -290,12 +316,12 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
     })
 
     it("returns true when node config changed after save", () => {
-      const saved = serializeSnapshot({
+      const saved = fingerprint({
         nodes: [makeNode("a", { value: 1 })],
         edges: [],
         preamble: "",
       })
-      const edited = serializeSnapshot({
+      const edited = fingerprint({
         nodes: [makeNode("a", { value: 2 })],
         edges: [],
         preamble: "",
@@ -304,15 +330,15 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
     })
 
     it("returns true when preamble changed after save", () => {
-      const saved = serializeSnapshot({ nodes: [], edges: [], preamble: "old" })
-      const edited = serializeSnapshot({ nodes: [], edges: [], preamble: "new" })
+      const saved = fingerprint({ nodes: [], edges: [], preamble: "old" })
+      const edited = fingerprint({ nodes: [], edges: [], preamble: "new" })
       expect(selectIsDirty({ lastSavedSnapshot: saved }, edited)).toBe(true)
     })
 
     it("returns true when an edge is added after save", () => {
       const nodes = [makeNode("a"), makeNode("b")]
-      const saved = serializeSnapshot({ nodes, edges: [], preamble: "" })
-      const current = serializeSnapshot({
+      const saved = fingerprint({ nodes, edges: [], preamble: "" })
+      const current = fingerprint({
         nodes,
         edges: [makeEdge("e1", "a", "b")],
         preamble: "",
@@ -323,8 +349,8 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
     // --------------------- Crucial: save → edit → save → edit → save ---------------------
 
     it("returns false again after a second save (dirty clears)", () => {
-      const v1 = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
-      const v2 = serializeSnapshot({
+      const v1 = fingerprint({ nodes: [makeNode("a")], edges: [], preamble: "" })
+      const v2 = fingerprint({
         nodes: [makeNode("a"), makeNode("b")],
         edges: [],
         preamble: "",
@@ -344,14 +370,14 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
     // cannot happen.
 
     it("returns false after undoing back to the last-saved graph state", () => {
-      const saved = serializeSnapshot({
+      const saved = fingerprint({
         nodes: [makeNode("a", { value: 1 })],
         edges: [],
         preamble: "import x",
       })
 
       // Simulate an edit:
-      const edited = serializeSnapshot({
+      const edited = fingerprint({
         nodes: [makeNode("a", { value: 2 })],
         edges: [],
         preamble: "import x",
@@ -359,7 +385,7 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
       expect(selectIsDirty({ lastSavedSnapshot: saved }, edited)).toBe(true)
 
       // Simulate undo, which produces exactly the saved snapshot:
-      const undone = serializeSnapshot({
+      const undone = fingerprint({
         nodes: [makeNode("a", { value: 1 })],
         edges: [],
         preamble: "import x",
@@ -373,8 +399,8 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
       // selectIsDirty should therefore return true. This test pins that
       // "pre-save history is still dirty" — undo does not reach further
       // back and accidentally show clean.
-      const preSave = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
-      const saved = serializeSnapshot({ nodes: [makeNode("a")], edges: [], preamble: "" })
+      const preSave = fingerprint({ nodes: [], edges: [], preamble: "" })
+      const saved = fingerprint({ nodes: [makeNode("a")], edges: [], preamble: "" })
 
       // preSave != saved, so undoing past the save-point is dirty:
       expect(preSave).not.toBe(saved)
@@ -394,7 +420,7 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
 
   describe("selector semantics", () => {
     it("selectIsDirty is a pure function of (state, snapshot)", () => {
-      const saved = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
+      const saved = fingerprint({ nodes: [], edges: [], preamble: "" })
       const state = { lastSavedSnapshot: saved }
       // Identical inputs → identical outputs across repeated calls, no
       // mutation of state.
@@ -412,14 +438,14 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
       // call would cause every component that subscribes to dirty-ness to
       // re-render on every store update. Pin: the selector returns a
       // boolean primitive.
-      const saved = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
+      const saved = fingerprint({ nodes: [], edges: [], preamble: "" })
       const result = selectIsDirty({ lastSavedSnapshot: saved }, saved)
       expect(typeof result).toBe("boolean")
     })
 
     it("selectIsDirty with `null` lastSavedSnapshot treats the empty graph as clean", () => {
       // Fresh store, never saved. Current = empty graph = initial app state.
-      const empty = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
+      const empty = fingerprint({ nodes: [], edges: [], preamble: "" })
       expect(selectIsDirty({ lastSavedSnapshot: null }, empty)).toBe(false)
     })
 
@@ -427,7 +453,7 @@ describe("derived dirty flag: serializeSnapshot, selectIsDirty and the graph sto
       // Edge case: the user types/drags a node before the initial load
       // completes (or the initial load failed). A non-empty graph with
       // nothing saved = dirty.
-      const nonEmpty = serializeSnapshot({
+      const nonEmpty = fingerprint({
         nodes: [makeNode("a")],
         edges: [],
         preamble: "",

@@ -464,7 +464,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // gives a moved node or a copy and the baseline lookup by it (`utils/documentRequest.ts`, which the
 // request gateway, the save and the graph store's load use) bring the merged initial bundle
 // to 306.1 KiB; 307 KiB restores ~0.9 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 307
+// An edit costs what it changed (FEG-01..09, 23 November 2026): the per-object digests and
+// history forms the graph store's fingerprints and undo history are made of, the freeze at
+// its write boundary, the shared cycle check, the submodel definitions context and the
+// sync banner's Reload file bring the merged initial bundle to 307.9 KiB; 310 KiB (approved)
+// restores ~2.1 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 310
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

@@ -54,6 +54,17 @@ _inference_values = st.recursive(
 )
 
 
+def _jsonl_lines(records: list[dict[str, Any]]) -> list[tuple[int, bytes]]:
+    """*records* as the lines of a JSONL file, each with the byte offset it starts at."""
+    lines: list[tuple[int, bytes]] = []
+    offset = 0
+    for record in records:
+        line = orjson.dumps(record) + b"\n"
+        lines.append((offset, line))
+        offset += len(line)
+    return lines
+
+
 @given(
     st.lists(
         st.dictionaries(st.sampled_from(["a", "b", "c"]), _inference_values, max_size=3),
@@ -78,7 +89,7 @@ def test_native_filter_matches_full_walk_across_shape_changes(phases: list[dict[
             assert native_actual.value.message == expected.message
             assert native_actual.value.context == expected.context
             with pytest.raises(ApiInputSchemaError) as fused_actual:
-                _inference._infer_jsonl_lines(orjson.dumps(record) for record in records)
+                _inference._infer_jsonl_lines(_jsonl_lines(records))
             assert fused_actual.value.message == expected.message
             assert fused_actual.value.context == expected.context
         else:
@@ -92,7 +103,7 @@ def test_native_filter_matches_full_walk_across_shape_changes(phases: list[dict[
                 filter_.observe(record)
             prefix.merge(
                 _inference._infer_jsonl_lines(
-                    (orjson.dumps(record) for record in records[125:]),
+                    _jsonl_lines(records)[125:],
                     seed=filter_.snapshot(),
                 )
             )

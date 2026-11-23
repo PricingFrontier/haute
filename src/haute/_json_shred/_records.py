@@ -26,6 +26,14 @@ from haute._execution_context import (
     ExecutionContext,
     current_execution_context,
 )
+from haute._input_files import (
+    NO_QUOTES,
+    UTF8_BOM,
+    bom_length,
+    decode_error_offset,
+    empty_json_error,
+    file_json_error,
+)
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
 
@@ -116,14 +124,36 @@ def _xml_local_name(name: str) -> str:
     return name.rsplit("}", 1)[-1].split(":", 1)[-1]
 
 
+def _xml_name_collision(
+    element: ET.Element, kind: str, name: str, first: str, second: str
+) -> ApiInputSchemaError:
+    """Two of *element*'s attributes or children, *first* and *second* in full, that are
+    both *name* once their namespaces are removed: refused, never read as one field."""
+    return ApiInputSchemaError(
+        f"XML element {_xml_local_name(element.tag)!r} has two {kind} named {name!r} once "
+        f"namespaces are removed, {first!r} and {second!r}: Haute cannot tell their fields "
+        "apart.",
+        element=_xml_local_name(element.tag),
+        name=name,
+    )
+
+
 def _xml_element_value(element: ET.Element) -> Any:
-    """Convert an XML element into the object/list/scalar shape used by shredding."""
+    """Convert an XML element into the object/list/scalar shape used by shredding.
+
+    Names lose their namespaces. Two attributes, or two children, whose full names
+    differ but are one name without them are refused (:func:`_xml_name_collision`):
+    children are grouped by their full names, so one child repeated is a list and two
+    vocabularies' children are never merged into one.
+    """
     result: dict[str, Any] = {}
+    full_attribute: dict[str, str] = {}
 
     for raw_name, value in element.attrib.items():
         name = _xml_local_name(raw_name)
         if name in result:
-            raise ApiInputSchemaError(f"duplicate XML attribute name {name!r}")
+            raise _xml_name_collision(element, "attributes", name, full_attribute[name], raw_name)
+        full_attribute[name] = raw_name
         result[name] = value
 
     children = list(element)
@@ -146,8 +176,12 @@ def _xml_element_value(element: ET.Element) -> Any:
         )
 
     grouped: dict[str, list[Any]] = {}
+    full_child: dict[str, str] = {}
     for child in children:
         name = _xml_local_name(child.tag)
+        first = full_child.setdefault(name, child.tag)
+        if first != child.tag:
+            raise _xml_name_collision(element, "children", name, first, child.tag)
         grouped.setdefault(name, []).append(_xml_element_value(child))
 
     for name, values in grouped.items():
@@ -287,7 +321,8 @@ def _inspect_xml_record_shape(data_path: Path, limit: int) -> _XmlRecordShape:
                         value = _xml_element_value(element)
                         if isinstance(value, dict):
                             _validate_xml_record_value_size(value, limit)
-                        child_name = _xml_local_name(element.tag)
+                        # By full name: two vocabularies' children are not one record kind.
+                        child_name = element.tag
                         if direct_child_name is None:
                             direct_child_name = child_name
                         elif child_name != direct_child_name:
@@ -432,36 +467,45 @@ def _iter_records(
     a root array, a scalar root) is not a record and is skipped — *stats*,
     when provided, counts each one so the build can surface the loss
     (W2 item 2.7). Blank JSONL lines are formatting, not records, and are
-    never counted. Malformed JSON still raises.
+    never counted. The file is read as every input's file is
+    (:mod:`haute._input_files`): through a leading byte-order mark, a repeated
+    key keeping its last value, as orjson reads it. A JSON file holding nothing,
+    and one that is not JSON, are refused as :class:`~haute.errors.InputFileError`
+    naming the file and the fault's line and column.
     """
-
-    record_limit = _structured_input_record_limit()
     if record_format(data_path) == "xml":
         yield from _iter_xml_records(data_path)
         return
+    try:
+        yield from _iter_json_records(data_path, stats)
+    except orjson.JSONDecodeError as exc:
+        raise file_json_error(data_path, exc.pos, exc.msg) from exc
+
+
+def _iter_json_records(data_path: Path, stats: ShredSkipStats | None) -> Iterator[dict[str, Any]]:
+    """:func:`_iter_records` of a JSON or JSONL file, a fault raised as orjson's
+    ``JSONDecodeError`` positioned at its byte offset in the file."""
+    record_limit = _structured_input_record_limit()
     suffix = data_path.suffix.lower()
     if suffix in (".jsonl", ".ndjson"):
-        with data_path.open("rb", buffering=_JSONL_READ_BUFFER_BYTES) as f:
-            while raw_line := f.readline(record_limit + 1):
-                if len(raw_line) > record_limit:
-                    raise _record_limit_error("JSONL record", record_limit)
-                record = _jsonl_record(raw_line, stats)
-                if record is not None:
-                    yield record
+        yield from _iter_range_records(data_path, 0, None, stats)
         return
     with data_path.open("rb") as f:
-        first, pos = _read_first_non_whitespace(f)
+        f.seek(bom_length(f.read(len(UTF8_BOM))))
+        first = _read_first_non_whitespace(f)
         if not first:
-            return
+            raise empty_json_error(data_path, instead=NO_QUOTES)
+        pos = f.tell()
         if first != b"[":
             # Root-object/scalar semantics remain exactly the existing JSON
             # semantics, with one explicit hard logical-record bound.
+            start = pos - 1
             document = bytearray(first)
             while chunk := f.read(min(_STRUCTURED_INPUT_PARSE_CHUNK_BYTES, record_limit + 1)):
                 document.extend(chunk)
                 if len(document) > record_limit:
                     raise _record_limit_error("JSON root record", record_limit)
-            obj = orjson.loads(document)
+            obj = _loads_at(document, start)
             if isinstance(obj, dict):
                 yield obj
             elif stats is not None:
@@ -472,16 +516,29 @@ def _iter_records(
         yield from _iter_root_array_records(f, pos, limit=record_limit, stats=stats)
 
 
-def _jsonl_record(raw_line: bytes, stats: ShredSkipStats | None) -> dict[str, Any] | None:
+def _loads_at(raw: bytes | bytearray | memoryview, start: int) -> Any:
+    """The JSON value *raw*, found at byte *start* of its file; a fault is raised
+    positioned at its byte offset in the file."""
+    try:
+        return orjson.loads(raw)
+    except orjson.JSONDecodeError as exc:
+        offset, words = decode_error_offset(raw, exc)
+        raise _json_decode_error(words, start + offset) from exc
+
+
+def _jsonl_record(
+    raw_line: bytes, stats: ShredSkipStats | None, *, offset: int
+) -> dict[str, Any] | None:
     """One JSONL line's record, or ``None`` for a blank line or a non-object value.
 
     A blank line is formatting and counts nothing; *stats*, when given, counts a
-    line whose value is not an object.
+    line whose value is not an object. *offset* is where the line starts in its
+    file, so a fault is raised at its byte offset there.
     """
     stripped = raw_line.strip()
     if not stripped:
         return None
-    value = orjson.loads(stripped)
+    value = _loads_at(stripped, offset + len(raw_line) - len(raw_line.lstrip()))
     if isinstance(value, dict):
         return value
     if stats is not None:
@@ -489,18 +546,18 @@ def _jsonl_record(raw_line: bytes, stats: ShredSkipStats | None) -> dict[str, An
     return None
 
 
-def _read_first_non_whitespace(f: BinaryIO) -> tuple[bytes, int]:
-    """A JSON file's first byte that is not whitespace (empty when there is none),
-    and the number of bytes read up to and including it."""
-    pos = 0
+def _read_first_non_whitespace(f: BinaryIO) -> bytes:
+    """A JSON file's next byte that is not whitespace (empty when there is none),
+    *f* left just past it."""
     while byte := f.read(1):
-        pos += 1
         if byte not in _JSON_WHITESPACE:
-            return byte, pos
-    return b"", pos
+            return byte
+    return b""
 
 
 def _json_decode_error(message: str, pos: int) -> orjson.JSONDecodeError:
+    """A fault at byte *pos* of the file being read: every reader here raises its faults
+    so, for :func:`_iter_records` to name the file's line and column."""
     return orjson.JSONDecodeError(message, "", pos)
 
 
@@ -527,16 +584,17 @@ def _iter_sampled_json_array_records(
     before any cache is materialised.
     """
     with data_path.open("rb") as f:
-        first, pos = _read_first_non_whitespace(f)
-        if not first:
-            return
-        if first != b"[":
+        f.seek(bom_length(f.read(len(UTF8_BOM))))
+        if _read_first_non_whitespace(f) != b"[":
             yield from islice(_iter_records(data_path), sample_size)
             return
         records = _iter_root_array_records(
-            f, pos, limit=_structured_input_record_limit(), stats=None
+            f, f.tell(), limit=_structured_input_record_limit(), stats=None
         )
-        yield from islice(records, sample_size)
+        try:
+            yield from islice(records, sample_size)
+        except orjson.JSONDecodeError as exc:
+            raise file_json_error(data_path, exc.pos, exc.msg) from exc
 
 
 _JSON_WHITESPACE = b" \t\r\n"
@@ -592,7 +650,8 @@ def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
     the chunks it spans, its trailing whitespace stripped, and parsed. An element
     longer than *limit* bytes is refused before more than one chunk past the limit
     is held. The closing bracket and everything after it are read and checked too;
-    decode errors carry the number of bytes read when they were found.
+    a fault is raised at its byte offset in the file, a trailing comma at the comma,
+    as orjson places one.
     """
     chunk_size = _STRUCTURED_INPUT_PARSE_CHUNK_BYTES
     bracketed_element = _bracketed_element()
@@ -602,9 +661,11 @@ def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
     at = 0  # the next byte of chunk to scan
     state = _SEEK
     start = 0  # where the element begins in chunk
+    element_offset = 0  # where the element begins in the file
     held = bytearray()  # the element's bytes from chunks before this one
     depth = 0
     expect_value = False
+    comma_offset = 0  # where the comma that set expect_value is in the file
     while True:
         if at >= len(chunk):
             if state != _SEEK:
@@ -645,6 +706,7 @@ def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
                         _validate_after_array(f, chunk, at, base)
                         return
                     expect_value = True
+                    comma_offset = base + at - 1
                     continue
             found = _NON_WHITESPACE.search(chunk, at)
             if found is None:
@@ -654,10 +716,11 @@ def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
             byte = chunk[at]
             if byte == _CLOSE_ARRAY:
                 if expect_value:
-                    raise _json_decode_error("trailing comma in array", base + at + 1)
+                    raise _json_decode_error("trailing comma in array", comma_offset)
                 _validate_after_array(f, chunk, at + 1, base)
                 return
             start = at
+            element_offset = base + at
             held.clear()
             depth = 1 if byte in _OPENERS else 0
             state = _STRING if byte == _QUOTE else _ELEMENT
@@ -681,11 +744,12 @@ def _iter_root_array_values(f: BinaryIO, pos: int, limit: int) -> Iterator[Any]:
         elif len(held) + at - start > limit:
             raise _record_limit_error("JSON array element", limit)
         elif byte == _CLOSE_OBJECT:
-            raise _json_decode_error("unexpected '}'", base + at + 1)
+            raise _json_decode_error("unexpected '}'", base + at)
         else:
             # A top-level comma or closing bracket ends the element.
             element = bytes(held) + chunk[start:at] if held else chunk[start:at]
-            yield orjson.loads(element.rstrip())
+            yield _loads_at(element.rstrip(), element_offset)
+            comma_offset = base + at
             at += 1
             if byte == _CLOSE_ARRAY:
                 _validate_after_array(f, chunk, at, base)
@@ -791,37 +855,43 @@ def _jsonl_byte_ranges(data_path: Path, chunk_bytes: int) -> list[tuple[int, int
     return [(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
 
 
-def _iter_range_lines(data_path: Path, start: int, end: int) -> Iterator[bytes]:
-    """Yield bounded raw JSONL lines beginning before the range's end."""
+def _iter_range_lines(data_path: Path, start: int, end: int | None) -> Iterator[tuple[int, bytes]]:
+    """Yield bounded raw JSONL lines beginning before the range's end (the file's end when
+    *end* is ``None``), each with the byte offset it starts at. The file's leading
+    byte-order mark, in the range that starts it, is read through."""
     record_limit = _structured_input_record_limit()
     with data_path.open("rb", buffering=_JSONL_READ_BUFFER_BYTES) as f:
         f.seek(start)
-        remaining = end - start
-        while remaining > 0:
+        offset = start
+        if start == 0:
+            offset = bom_length(f.read(len(UTF8_BOM)))
+            f.seek(offset)
+        while end is None or offset < end:
             raw_line = f.readline(record_limit + 1)
             if not raw_line:
                 break
             if len(raw_line) > record_limit:
                 raise _record_limit_error("JSONL record", record_limit)
-            remaining -= len(raw_line)
-            yield raw_line
+            yield offset, raw_line
+            offset += len(raw_line)
 
 
 def _iter_range_records(
     data_path: Path,
     start: int,
-    end: int,
+    end: int | None,
     stats: ShredSkipStats | None = None,  # pragma: no mutate - type declaration
 ) -> Iterator[dict[str, Any]]:
-    """Yield records from ``[start, end)`` of a newline-delimited file.
+    """Yield records from ``[start, end)`` of a newline-delimited file (to its end when
+    *end* is ``None``): the JSONL arm of :func:`_iter_records`, whose faults it raises
+    at their byte offsets in the file.
 
-    Mirrors the JSONL arm of :func:`_iter_records` exactly — blank lines are
-    formatting and never counted, and a non-object line is recorded through
-    optional *stats* — but reads bytes so a range can be seeked to directly.
-    ``orjson`` validates UTF-8 itself, so decoding stays inside the JSON parse.
+    Blank lines are formatting and never counted, and a non-object line is
+    recorded through optional *stats*; bytes are read so a range can be seeked to
+    directly. ``orjson`` validates UTF-8 itself, so decoding stays inside the JSON parse.
     """
-    for raw_line in _iter_range_lines(data_path, start, end):
-        record = _jsonl_record(raw_line, stats)
+    for offset, raw_line in _iter_range_lines(data_path, start, end):
+        record = _jsonl_record(raw_line, stats, offset=offset)
         if record is not None:
             yield record
 
@@ -878,12 +948,13 @@ def _failure_from_exception(exc: Exception) -> _ChunkFailure:
     )
 
 
-def _raise_worker_failure(failure: _ChunkFailure) -> NoReturn:
-    """Reconstruct one ordinary worker failure in the parent process."""
+def _raise_worker_failure(failure: _ChunkFailure, data_path: Path) -> NoReturn:
+    """Reconstruct one ordinary worker failure in the parent process; a fault in the
+    JSON of *data_path*, the file the worker read, is the file's refusal."""
     if failure.type_name == "ApiInputSchemaError":
         raise ApiInputSchemaError(failure.message, **failure.context)
     if failure.type_name == "JSONDecodeError":
-        raise orjson.JSONDecodeError(failure.message, failure.doc or "", failure.pos or 0)
+        raise file_json_error(data_path, failure.pos or 0, failure.message)
 
     os_error_types: dict[str, type[OSError]] = {
         "OSError": OSError,

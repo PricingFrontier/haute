@@ -280,7 +280,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item carries `{name, description, file, node_count, load_status, diagnostic_count}`. |
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. A `haute.toml` the settings parse refuses answers the source-only document of `haute.toml` (`project_settings_editor_document`: its text, one `project_settings_invalid` diagnostic in the parse's words, marked at TOML's line and column when it names one), never the empty canvas; so does `GET /api/pipeline/{name}`. The list is the one list of the project's pipelines (`discover_pipelines`), the pipelines beside the configured one included. Readable authored errors remain HTTP 200. The `x-haute-document-fingerprint` header carries `pipeline_document_fingerprint` of the returned document. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. Carries the same `x-haute-document-fingerprint` header. |
-| `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}], graph?, allocate=false}` | `EditorIdentitiesResponse {identities:[{node_id,label,alias,collision,function_name,config_reference,default_input_name,source_handle_input_names}], violations}` in exact request order; public handles are sanitised server-side, each node's `label`/`alias` is its resolved name (allocated with `allocate`), `collision` is the naming rule's refusal of it (only with a naming context and without `allocate`), `violations` lists the naming context's name violations after the nodes are applied (`null` without one), and the operation writes no project state. |
+| `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}], graph?, allocate=false}` | `EditorIdentitiesResponse {identities:[{node_id,label,alias,collision,function_name,config_reference,default_input_name,source_handle_input_names}], violations}` in exact request order; public handles are sanitised server-side, each node's `label`/`alias` is its resolved name (allocated with `allocate`), `collision` is the naming rule's refusal of it, a name too long for its settings file's name or path included (only with a naming context; with `allocate`, only that length refusal, which no numbered name escapes), `violations` lists the naming context's name violations after the nodes are applied (`null` without one), and the operation writes no project state. |
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision, connection_id=null, operation=null}`, a `DocumentRequest` (see "Requests that carry the document"); `base_revision` is a required `RevisionToken | null`; a node sent with a saved code is written from it, its steps not read, one sent with saved steps (a node saved with unfinished steps) from that list, and one sent with saved settings from them, its settings file left as it was; every other part is read from the request ([codegen](../codegen/high-level.md), "Which parts a request reads"); an `active_source` not in `sources` is a 422 before anything is staged; `connection_id` names the saving tab's socket, left out of the route's broadcast of the saved document; `working_branch` (default null) is the working branch the saving tab shows, and a save naming one is refused (`refuse_another_branch`), under the repository lock, after a repeat of a committed save is answered from its receipt and before anything changes a file, the settle of the record a save before it left included, with `409` and a structured `detail` `{"error_code":"branch_changed","message"}` when the clone records another working branch ("This tab shows the branch '<shown>', but the project is on '<recorded>' now, so nothing was saved. Your changes are still here.", or "has no working branch now") or the checkout is on neither it nor its ledger ("The project is checked out on '<branch>' | an earlier version (a detached HEAD), not on '<recorded>', so nothing was saved. Your changes are still here."); the recorded working branch is compared without git, so another one recorded refuses even where git refuses to work in the repository (`GitBlockedError`), whose checkout alone is then not checked, the save landing with its capture's warning; a server-built save (the assistant's) names none; `operation` (8 to 64 characters) makes a repeated save write once: a save repeated with the operation of one that committed, under the save lock, is answered with that save's response from its receipt, after a restart too, and writes and publishes nothing (`haute/_save_records.py`) | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, document_fingerprint, saved_parts=[], warnings=[], git_sha=null, identity_required=false, uncaptured=[]}` (`saved_parts`: `[{submodel, node_id, code, settings}]`, the saved form of each part the save read from its request, as the file it wrote holds it: `code`, for a node whose steps it read, the code the node loads with (its steps' rendering, as a reload builds it, and empty when they do not render), or `steps` in its place, the list `.haute.json` records, for one it wrote with the raising placeholder, and `settings`, for a node whose settings it read, the settings it wrote as JSON text; each null for a part it did not read), or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches), or beginning `save_operation_reused:` when `operation` names a committed save whose request differed (compared without `operation` and `connection_id`, as the request reads it, with the parts it read from the request) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/polars-steps/render` | `PolarsStepsRenderRequest {steps:[object], input_names:[str], start:"input"|"frame"}` (`start` is required: `input` renders a transform's list, `frame` a surface whose `df` is already bound) | `PolarsStepsRenderResponse {ok, code, step_lines:[[start,end]], step_index, message}`; a step validation failure is `ok: false` with HTTP 200, an empty frame-mode list is `ok: true` with empty code, and the call touches no project state and executes no authored code |
@@ -297,7 +297,7 @@ when a path/query/body fails model validation):
 | `GET /api/project-files` | Query `place` (`pipeline` or `local`), `path=""` (a folder relative to the place) | `ProjectFolderResponse {place, path, root, writable, entries:[{name, path, kind: file\|folder, size, modified, revision, status: new\|changed\|ignored\|null}]}`: `root` is the place's folder relative to the project root (`rating/files`, or `""` for local); folders come first, then files, ignoring case. The pipeline place's root also lists `data` and `models`, and the local root exactly `data` and `outputs`, each even before it exists. In the pipeline place `status` is `new` for a file with no committed version (untracked, or staged but never committed), `changed` for one edited since it was committed, and `ignored` for one `.gitignore` ignores; a file with no status is in version history as it is, and a folder `.gitignore` ignores is not `writable`. Dot-names, `__pycache__`, links and junctions are never listed. 400 `invalid_path`, 404 `folder_missing`, 409 `no_pipeline_folder` |
 | `PUT /api/project-files/content` | Query `place`, `path` (the file, relative to the place), optional `replace_revision`; raw `application/octet-stream` body with `Content-Length` | `ProjectFileWriteResponse {path, size, revision, replaced, status, git_sha, identity_required, warnings, uncaptured}`. Without `replace_revision` an existing file is 409 `file_exists`; with it, a file whose revision differs (or that is gone) is 412 `file_changed`. Also 411 without a length, 413 `too_large_for_history` over 100 MiB in the pipeline place, 403 `read_only` outside a writable folder, 403 `hosted_local_files` for the local place in a hosted app, 409 `ignored` naming the `.gitignore` rule, 409 `branch_changed`, 409 `file_in_use`, 409 `staging_unavailable` when `.haute/uploads/` is reached through a link, 400 `length_mismatch`, 400 `invalid_path`, 500 `disk_full` |
 | `GET /api/project-files/content` | Query `place`, `path` | The file as an attachment (`application/octet-stream`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`); 404 `file_missing`, 400 `invalid_path` |
-| `DELETE /api/project-files/content` | Query `place`, `path`, `revision` | `ProjectFileDeleteResponse {path, git_sha, identity_required, warnings, uncaptured}`; 412 `file_changed`, 404 `file_missing`, 403 `read_only`, 400 `invalid_path` |
+| `DELETE /api/project-files/content` | Query `place`, `path`, `revision` | `ProjectFileDeleteResponse {path, git_sha, identity_required, warnings, uncaptured}`; 412 `file_changed`, 404 `file_missing`, 403 `read_only`, 400 `invalid_path`. A file the panel lists is deleted whatever its name (`ordinary_path_problem(any_name=True)`, reached through `_file_ops.literal_path`, Windows' extended-length form): one another program named after a device (`aux.csv`) or with a trailing dot, which a write refuses and git cannot add, so Commit, which versions the pipeline folder as a whole, succeeds once it is gone. Traversal, `.git`, `.haute`, links and, on Windows, a colon stay refused. |
 | `GET /api/model-file` | Required query `path` (project-relative) | `ModelFileInspectionResponse {model_path, flavor, label, task?, features, categorical_features, offset_column?, offset_link?, contract_path?}` from `inspect_model_file`; a `ConfigError` or `FeatureMismatchError` (missing file, unsupported suffix, undeclared offset, contract mismatch) is 400 with its message; a path outside the project is the shared runtime-path refusal (403) |
 | `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
 | `GET /api/schema` | Required query `path`; optional `format` and `arguments` (a JSON object, only with `format`) read the file as that Data Input format's scanner would, without the `schema` argument; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`, the preview rows read through `exact_rows` (a datetime, time or duration value its exact text, all nine digits of a nanosecond one); a file read as Parquet (by `format`, else by its `.parquet` suffix) takes `row_count` from its metadata, and one read as another format is never read as Parquet whatever its name; invalid/unsafe XML, arguments without a format or not a JSON object, an unknown format and arguments the scanner rejects are 400 |
@@ -619,11 +619,21 @@ and restarts). `_file_watcher()` watches `cwd`, the pipeline directory and its
 (recursive); a `haute.toml` the settings parse refuses, which the editor's load shows as
 the document's issue, leaves it watching `cwd` alone (`file_watcher_settings_refused`), never
 a crash-restart loop; if `watchfiles` isn't installed, live sync is disabled with a warning, not a
-crash. Every filesystem event batches into `pending_changes`; a 300ms debounce timer
-(`asyncio.Task`, cancelled and restarted on each new event) triggers `_flush()`, which:
+crash. The watch filter (`_LiveSyncFilter`, a `watchfiles.DefaultFilter`) reports only what
+live sync reads: a `.py` or `.json` file, `haute.toml`, or any file inside the workbench's
+form folder as it was last read (at the watcher's start and at each flush), and never a path
+under `.haute_cache`, `.haute` or one of the library's default ignored folders. Every
+reported event batches into `pending_changes`; a 300ms debounce timer (`asyncio.Task`,
+cancelled and restarted on each new event) triggers `_flush()`, which takes the flush lock
+(one batch at a time) and then:
 1. Snapshots and clears `pending_changes` (so new events queue independently of the batch
    being processed).
 2. Bails out entirely if `watcher_is_paused()` (a haute-initiated git op holds the pause).
+   Otherwise steps 3 to 5 run in a worker thread (`_watcher_batch_events`), which returns
+   the batch's bus events in order; the event loop publishes them. A cancellation while the
+   thread runs (a newer event restarting the debounce) waits for the thread, publishes its
+   events and does not requeue the batch: the thread has consumed its self-write markers
+   and recorded its fingerprints.
 3. Announces a change to a file of the workbench's form folder, the pipeline folder's
    `workbench/` while the workbench is enabled (`_workbench_form_file`, read at each
    flush, nothing while `haute.toml` cannot be read), before any self-write check: one
@@ -657,7 +667,7 @@ crash. Every filesystem event batches into `pending_changes`; a 300ms debounce t
    re-broadcasts even if the bytes happen to match a previous good state.
 6. If the flush body itself raises, the *entire* processed batch is requeued and `_flush`
    retries it in the same task at most three times with exponential backoff. Cancellation
-   after snapshotting also requeues the batch. On exhaustion, `_flush` removes that batch
+   after snapshotting and before the worker thread starts also requeues the batch. On exhaustion, `_flush` removes that batch
    from `pending_changes`, tries each change once in isolation so healthy paths still
    broadcast, and logs/drops each still-failing event. A later event for a dropped path is a
    fresh attempt; no retry task is recursively scheduled.
@@ -1287,81 +1297,32 @@ through the shared analysis helper.
 
 ## Edge cases and invariants
 
-Save preconditions capture artifact identities **before** validating the client's
-document revision. Revision validation must not bless bytes captured after an
-external edit. The same ordering covers a new destination appearing during save;
-later write and cleanup checks still compare against the captured identities.
-
-- **Partial frontend build never serves.** `static_build_ready()` requires both
-  `index.html` *and* `assets/` to exist — an interrupted `npm run build` or a hand-created
-  directory with only one of the two would otherwise pass a bare `.exists()` check, mount
-  `assets/` (raising `RuntimeError` at import if the dir is genuinely missing), or 500 at
-  request time reading a missing `index.html`.
-- **Windows `.js` MIME type.** The Windows registry commonly maps `.js` to `text/plain`,
-  which browsers reject as a script; `mimetypes.add_type` is patched at module import, before
-  any `StaticFiles`/`FileResponse` construction.
-- **Self-writes are tracked per path, by content.** `mark_self_write(path, ...)` and
-  `is_self_write(path)` always name a path: the file watcher checks each event against the
-  marker for its own path. A path marker records the
-  SHA-256 of the bytes the server committed, or a deletion flag; it matches only while the
-  current file bytes (or absence) still equal that identity, and `consume=True` removes the
-  entry on match. A marker whose identity no longer matches is discarded so a later external
-  write to the same path is broadcast. Path-only marking is not supported: every `Writer`
-  callback, staged delete, and rollback write supplies the committed content. Per-path entries
-  are pruned after 60 seconds of retention so a crashed or never-consumed marker cannot leak
-  memory indefinitely.
-- **Watcher pause is reentrant and watchdog-bounded.** `pause_watcher()` depth-counts nested
-  git operations sharing one pause; the outermost call sets a hard deadline (default 60s) that
-  only extends, never shrinks, on a nested call. `watcher_is_paused()` force-resumes (returns
-  `False`) once that deadline is exceeded, logging once per overrun — a hung or
-  non-unwinding git op can never freeze live-sync permanently. A 1-second "settle window"
-  after release absorbs the checkout's own debounced trailing filesystem events so they are
-  not mistaken for user edits.
-- **`ws_clients` mutation is lock-guarded** even though CPython's GIL would normally make
-  `set.add`/`set.discard` atomic — the comment notes this is deliberate for multi-worker
-  deployments and free-threaded (`--disable-gil`) CPython, where that guarantee no longer
-  holds.
-- **Per-client WebSocket sends are serialized, not concurrent.** `broadcast()` tracks
-  in-flight sends per client (`_ws_send_inflight`) and queues (`_ws_send_pending`) any
-  message that arrives while a send to that client is still outstanding, replaying the queue
-  after the current send completes — so two rapid broadcasts to a slow client never race each
-  other out of order. Each send (and each stalled-client close) has a hard 1-second timeout;
-  a timeout marks the client dead and discards it rather than blocking the whole fan-out.
-- **The pipeline index has three lifecycle mutation points**: startup priming, watcher
-  invalidation for a direct pipeline `.py` add/modify/delete, and invalidation after a
-  successful save.
-  `_ensure_pipeline_index()` uses double-checked locking so concurrent cold-cache readers
-  never scan twice. The module-dependency twin uses a dedicated single-builder lock and
-  snapshots the pipeline-index generation; it publishes only if that generation is still
-  current, otherwise it rescans. Invalidators therefore remain short and a stale in-flight
-  dependency scan cannot overwrite them.
-- **Module-dependency keys are resolved, casefolded paths** (`_module_dep_key`) because
-  the build side derives a module file from the `from modules import <name>` a
-  registration names its definition by (`extract_submodel_registrations`, each
-  registration's derived `modules/<name>.py` beside its own pipeline) while the watcher
-  passes an *on-disk path* — on case-insensitive filesystems (macOS, Windows) those can
-  differ in case and must still match, or live-sync silently goes stale for that
-  module. Two pipelines in different folders importing their own `modules/rates.py`
-  have two keys, so an edit refreshes only the importer beside the file.
-- **One refused pipeline leaves the module-dependency map whole.** `_ensure_module_deps`
-  skips, with a `module_deps_parse_failed` warning, a pipeline that does not parse or whose
-  submodel imports or registrations the parser refuses (the removed path form, an unused or
-  misspelled import), so the other pipelines' module re-parses keep working. The skipped
-  pipeline is not re-parsed for a change to a module it registers until an edit of its own
-  file, which invalidates the index (`invalidate_pipeline_index`), lets the rebuilt map
-  include it.
-- **Sidecar position keys use persisted node identity.** Submodel occurrences
-  use their occurrence name (node.id == label == alias == name) and ordinary nodes use their
-  parser ids; load and save use those exact keys without deriving identities
-  from names or filenames.
-- **Every casefold-collision guard in `_save_pipeline.py`** (config sidecar paths, module
-  output paths, save-vs-delete-target overlap) treats names differing only in case as the
-  *same file*, even on case-sensitive Linux — the guard runs on every platform so a pipeline
-  saved on Linux stays loadable on a macOS/Windows checkout, at the cost of leaving harmless
-  same-case residue behind on Linux in the delete-skip case.
-- **Windows-reserved device names** (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`,
-  any casing, any extension) are rejected for both codegen output filenames and config
-  sidecar filenames, on every platform, for the same cross-platform-loadability reason.
+- **A destination a person types is held to one rule before anything is written.** The
+  optimiser's save (`POST /api/optimiser/save`), the model save (`POST /api/modelling/save`,
+  for the model and its contract) and a Data Output's file path (`resolve_data_output_path`,
+  so its Write and everything that resolves it) call
+  `_path_resolution.reject_unportable_destination`, on every platform: a name holding
+  `< > : " | ? *` or a control character, a name ending with a dot or a space, a device name,
+  a folder of the path that is a file, and a name or path too long as that save writes it (its
+  own staging names: an atomic write's, `atomic_copy_files`' staged copy and backup, a Data
+  Output's `.haute-stage-` copy) are each a 400 `invalid_path` naming the path as typed and the
+  rule, and the folder holds no new file. A colon no longer leaves an empty file named for
+  what precedes it (Windows reads the rest as a stream's name).
+- **A name too long for its file is refused when it is typed.** A node's settings file
+  (`config/<type>/<function name>.json`, a character outside ASCII written as six or seven)
+  and a submodel's module and sidecar (`modules/<name>.py`, `modules/<name>.haute.json`) are
+  named from the name, so one rule, `_file_ops.written_file_length_problem`, judges them as
+  a write makes them: every folder's name and the file's, counted as the filesystem counts
+  them (UTF-16 units on Windows, UTF-8 bytes elsewhere), may be at most 255 long, less for
+  the file what its write's staging names add (`_temp_path_for`, or the save's own); on
+  Windows without long paths the whole path at most 259, less the same. The editor identity
+  request applies it to each named node whose type keeps a settings file, under the
+  project's pipeline folder (`settings_file_problem`): the refusal is the node's
+  `collision`, "Node '<name>' would keep its settings in config/<type>/<file>, and its file
+  name would be N bytes long, more than the L a saved file's name may be. Choose a shorter
+  name." (or the path's count and Windows' limit), so the rename dialog and the node panel
+  show it before anything is saved. `POST /api/submodel/create` refuses a submodel name
+  whose module or sidecar fails it with a 400 in the same words, naming the submodel.
 - **`apiInput` validation guardrails**: An unknown column `type` string is rejected at
   validate time; two table labels whose filesystem-safe sanitisation collides *casefolded*
   are rejected (case-insensitive filesystems would otherwise let the second table's parquet
@@ -1388,7 +1349,7 @@ later write and cleanup checks still compare against the captured identities.
 | `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. A public contract error that is also a `ConfigError` or `SchemaMismatchError` (`NodeConfigError`, `RatingFactorMissingError`) is not swallowed: in thread and process mode alike the preview answers its public 422, and the preview worker re-raises it with its payload. |
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
-| `ParseError` | any route (failure answers); preview execution | 400 / embedded `NodeResult.error` | `classify_failure` answers a graph the browser sent that `flatten_executable_graph` refuses (a name collision, an undeclared handle) and save's structural refusals with the message and its context (`str(exc)`: the edge or definition it names), code `graph_refused`; every route that takes a graph flattens it before anything else. The preview shows that refusal on the node instead, as it does a graph-shape issue raised while it runs. An unreadable document on the editor-document routes is answered by the failure middleware (authored failures arrive as 200 degraded/source-only documents). |
+| `ParseError`, `GraphStructureError` (`CycleError`, `UnknownEdgeEndpointError`) | any route (failure answers); preview execution | 400 / embedded `NodeResult.error` | `classify_failure` answers a graph the browser sent that `flatten_executable_graph` refuses (a name collision, an undeclared handle), a graph whose edges close a loop or name a node it does not hold, and save's structural refusals with the message and its context (`str(exc)`: the edge or definition it names, or "Cycle detected in pipeline graph involving nodes: a, b. Remove one of the edges to break the cycle."), code `graph_refused`, never an incident; every route that takes a graph flattens it before anything else. The preview shows that refusal on the node instead, as it does a graph-shape issue raised while it runs. An unreadable document on the editor-document routes is answered by the failure middleware (authored failures arrive as 200 degraded/source-only documents). |
 | `NodeFailedError` | trace, Data Output write, training preparation, the optimiser's setup and solve, the underwriter app's pricing, any route | 422 / `contract_error` job | A failure the graph walk marked with the node it was building or running (`failing_node`, the walk's name for it in `failing_node_name`) that is the node's own (`own_failing_node`: not a run-level contract, schema, a Data Output's rows failing (`DataOutputRowsError`, which names its output), cancellation, memory, deadline or refusal), the public contract error `node_failed` with `node_id` (and the trace's `node` reference) and the message "'<node>' failed: <message>", the message as a preview records it, or the words for a file or database refusal behind it (`node_failed_error`). Classified where it is raised, in a worker too, so a Write, a Train and a Solve name the node as a trace does (specs/optimiser/error-detail-policy.md). |
 | `TraceRequestError` family | trace | 409 / 400 / 404 | Mapped by type (`_TRACE_REFUSAL_STATUS`), by the `error_code` a worker's payload carries for an exact remote type: `trace_row_mismatch` and `trace_row_ambiguous` 409 (the preview is refreshed), `trace_row_out_of_range` and `trace_target_unsupported` (a multi-frame target, a Workbench Output table the trace cannot take) 400, `trace_target_not_found` 404. The detail is the message. |
 | `WorkbenchTablesError`, `WorkbenchInputError` | workbench tables; preview execution | 422 | A workbench node's tables the pipeline cannot take, or a Workbench Input with no port or a sample or request that does not fit its tables; the tables route and the preview worker (which maps a remote error by its exact class) answer the public payload. |
@@ -1399,6 +1360,7 @@ later write and cleanup checks still compare against the captured identities.
 | Public contract errors (closed set below) | any route (failure answers) | 422 / 507 / 409 | Routes that also log or order them against a broader clause keep an explicit clause with the same refusal. |
 | `PipelineSettingsError` | any route (failure answers); background jobs | 409 / failed job | `.haute/pipeline-settings.json` is unreadable or invalid. The detail is the error's message, which names the file and the key; a job records the same message as its error, with `error_code: "pipeline_settings_invalid"`. Raised wherever the settings are read, so admission refuses before any work starts; a route that answers its own config `ValueError`s with 400 (the optimiser's timeout checks) lets this one through to the 409. |
 | `ConfigError` (not otherwise mapped) | any route, job or command (failure answers) | 422 | `config_invalid`, the error's own message without its context (a path), which names the setting and what is wrong. |
+| `PolarsIoConfigError` (not otherwise mapped) | any route, job or command (failure answers) | 422 | `config_invalid`, the message: a Data Input's or Data Output's settings Haute cannot read or write with, a format whose engine package the install lacks among them. A route that must not echo the settings posted to it (the input-cache routes' `invalid_input_config`) refuses them before they reach a reader. |
 | `HauteValidationError` (not otherwise mapped, such as a `ConfigSettingError` the sidecar writer raises) | any route (failure answers) | 400 | `validation_refused`: a message Haute wrote for the user about what was sent, as the detail, so a refused setting is never a 500; a subclass with its own mapping (a public contract error such as `NodeConfigError`) keeps it. Save validation runs the banding sidecar writer's row checks itself (`validate_banding_config`), so a blank band name, categorical value or mapping, or a repeated value, is refused naming the node and the rule before anything is written. |
 | `GitError` family | any route (failure answers) | 409 / 403 / 400 | Files off version history → 409 `unrecorded_files`, the message and `files` in the detail (`GitUnrecordedFilesError`), guardrail → 403 verbatim (`git_guardrail`), domain → 400 verbatim (`git_refused`), plain `GitError` → 400 `git_failed`, "Git refused this", with an incident under which git's own message, which can hold paths and remote addresses, is logged (`git_refusal_answer`). A save whose capture git refuses warns in the same words. |
 | `PathOutsideProjectError`, `InvalidPathError`, `RuntimePathOutsideProjectError`, `MalformedRuntimePathError` | any route (failure answers) | 403 / 400 | Raised by the sandbox's `contained_path` and the runtime path resolution for a request path; detail is the bare message ("Cannot access paths outside the project root" / "Invalid path"), never the refused path. |
@@ -1430,6 +1392,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `PreambleError` | `preamble_failed` | `source_line` |
 | `ContractResolutionError` | `contract_resolution_failed` | `node_id`, `node_type`, `failure_kind` |
 | `InputPreparationError` | `input_preparation_failed` | `node_id`, `identity_digest`, `build_class`, `reason_code`, `remediation` |
+| `InputFileError` | `input_file_unreadable` | `file`, `line`, `column` |
 | `GroupByExecutionUnsupportedError` | `group_by_execution_unsupported` | `node_id`, `operator`, `profile`, `reason_code`, `remediation`, `estimated_peak_bytes`, `headroom_bytes` |
 | `TraceCorrelationUnsupportedError` | `trace_correlation_unsupported` | `node_id`, `key_columns`, `dtypes`, `reason_code` |
 | `NodeFailedError` | `node_failed` | `node_id`, `node` |
@@ -1506,8 +1469,8 @@ detail holding `error_code` and `message`, and a job records the answer's `job_f
 during); a refusal a service raised (`RequestRefusedError`, its headers kept); a
 public contract error; a worker that could not finish (`answer_from_remote` for what its child
 put into words); git, pipeline-settings, workbench and path refusals; a node's own failure
-(`node_failed_error`); a graph refused (`ParseError`), a setting refused (`ConfigError`) and a
-validation refusal (`HauteValidationError`); the operating system refusing a file; and the quote
+(`node_failed_error`); a graph refused (`ParseError`), a setting refused (`ConfigError`,
+`PolarsIoConfigError`) and a validation refusal (`HauteValidationError`); the operating system refusing a file; and the quote
 store's database. `pipeline_failure(exc)` adds, for an edge that ran the pipeline, its own
 contracts, schemas and data as a preview of the node says them. `answer_failure(exc)` is
 `classify_failure`, then git's own refusal and a statement the database refused (each logged

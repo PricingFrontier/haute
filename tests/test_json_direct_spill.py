@@ -19,6 +19,7 @@ import pytest
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _cache, _records, _runtime_storage, _shred, _source_proof, _writer
 from haute._project_context import current_project
+from haute.errors import InputFileError
 from tests._project import use_project
 
 
@@ -63,10 +64,21 @@ def test_root_array_streams_without_read_bytes_and_validates_tail(
         _cache.load_v2_api_source(str(data), config)
 
 
-def test_root_array_parser_accepts_empty_input_and_whitespace_array(tmp_path: Path) -> None:
+def test_root_array_parser_refuses_a_blank_file_but_reads_a_whitespace_array(
+    tmp_path: Path,
+) -> None:
     blank = tmp_path / "blank.json"
     blank.write_bytes(b" \n\t")
-    assert list(_records._iter_records(blank)) == []
+    with pytest.raises(InputFileError) as refused:
+        list(_records._iter_records(blank))
+    assert refused.value.message == (
+        "blank.json is empty, so it is not JSON. A JSON file that holds no quotes is []."
+    )
+    assert (refused.value.file, refused.value.line, refused.value.column) == (
+        "blank.json",
+        None,
+        None,
+    )
     empty = tmp_path / "empty.json"
     empty.write_bytes(b" [ ] \r\n")
     assert list(_records._iter_records(empty)) == []
@@ -210,24 +222,43 @@ def test_root_array_streaming_preserves_nested_values_and_escaped_delimiters(
 
 
 @pytest.mark.parametrize(
-    ("contents", "message"),
+    ("contents", "words", "column"),
     [
-        ("[] trailing", "trailing"),
-        ('[{"id": 1},]', "trailing comma"),
-        ('[{"id": 1} {"id": 2}]', "unexpected"),
-        ('[{"id": 1}', "end of data"),
-        ('[{"id": 1}] unexpected', "trailing"),
+        ("[] trailing", "unexpected trailing data", 4),
+        # The comma, where orjson places a trailing comma too.
+        ('[{"id": 1},]', "trailing comma in array", 11),
+        # The second object, after the first: orjson's words for the element.
+        ('[{"id": 1} {"id": 2}]', "unexpected content after document", 12),
+        ('[{"id": 1}', "unexpected end of data", 11),
+        ('[{"id": 1}] unexpected', "unexpected trailing data", 13),
+    ],
+    # The ids the parameters had before they carried the column (the mutation targets
+    # name two of them).
+    ids=[
+        "[] trailing-trailing",
+        '[{"id": 1},]-trailing comma',
+        '[{"id": 1} {"id": 2}]-unexpected',
+        '[{"id": 1}-end of data',
+        '[{"id": 1}] unexpected-trailing',
     ],
 )
 def test_root_array_streaming_rejects_malformed_documents(
-    tmp_path: Path, contents: str, message: str
+    tmp_path: Path, contents: str, words: str, column: int
 ) -> None:
     data = tmp_path / "records.json"
     data.write_text(contents, encoding="utf-8")
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
 
-    with pytest.raises(orjson.JSONDecodeError, match=message):
+    with pytest.raises(InputFileError) as refused:
         _cache.load_v2_api_source(str(data), config)
+    assert refused.value.message == (
+        f"records.json is not valid JSON: {words} at line 1, column {column}."
+    )
+    assert (refused.value.file, refused.value.line, refused.value.column) == (
+        "records.json",
+        1,
+        column,
+    )
 
 
 @pytest.mark.parametrize(

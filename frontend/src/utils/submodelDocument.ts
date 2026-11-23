@@ -94,6 +94,7 @@ function sameAuthoredNode(previous: Node | undefined, next: Node): boolean {
 }
 
 function samePlacedElsewhere(previous: Node | undefined, next: Node): boolean {
+  if (previous === next) return true
   if (!previous) return false
   return canonicalJson({ ...authoredNodeForm(previous), position: null })
     === canonicalJson({ ...authoredNodeForm(next), position: null })
@@ -213,6 +214,16 @@ export function liftSubmodelCanvas({
     nextBoundary
       .filter((boundary) => boundary.direction === "input" && boundary.port === port)
       .map((boundary) => ({ nodeId: boundary.child, handleId: boundary.childHandle }))
+  // A child or an edge the write left as it was keeps the definition's own object, whose
+  // digests and history form are kept for it (FEG-01).
+  const definitionNodes = new Map(definition.graph.nodes.map((node) => [node.id, node]))
+  const definitionEdges = new Map((definition.graph.edges ?? []).map((edge) => [edge.id, edge]))
+  const childForm = (node: Node): Node => (
+    previousChildren.get(node.id) === node ? definitionNodes.get(node.id) ?? authoredNodeForm(node) : authoredNodeForm(node)
+  )
+  const edgeForm = (edge: Edge): PipelineEdge => (
+    previousInternal.get(edge.id) === edge ? definitionEdges.get(edge.id) ?? definitionEdgeForm(edge) : definitionEdgeForm(edge)
+  )
   const outputPorts = definition.outputPorts.map((port) => {
     const source = nextBoundary.find((boundary) => boundary.direction === "output" && boundary.port === port.name)
     if (!source) throw new Error(`Submodel output ${port.name} has no edge into the Output card`)
@@ -225,8 +236,8 @@ export function liftSubmodelCanvas({
       ...definition,
       graph: {
         ...definition.graph,
-        nodes: children.map(authoredNodeForm),
-        edges: internal.map(definitionEdgeForm),
+        nodes: children.map(childForm),
+        edges: internal.map(edgeForm),
       },
       inputPorts: definition.inputPorts.map((port) => ({ name: port.name, targets: targetsOf(port.name) })),
       outputPorts,

@@ -5,10 +5,12 @@ from __future__ import annotations
 import functools
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from haute._config_io import config_path_for_node, has_config_folder
 from haute._executable_names import ROOT_MODULE
+from haute._file_ops import written_file_length_problem
 from haute._graph_utils import _sanitize_func_name, executable_input_name, is_frame_label
 from haute._node_specs import (
     REQUEST_INPUT_NODE_TYPES,
@@ -220,6 +222,24 @@ def _name_problem(
     return None
 
 
+def settings_file_problem(node_type: NodeType | str, label: str, pipeline_root: Path) -> str | None:
+    """Why a node named *label* cannot have its settings file under *pipeline_root*, or
+    ``None``: the file is named from the node's name (a character outside ASCII written as
+    six or seven), and a name that makes its file's name or path too long for the
+    platform is refused by name, before any save tries to write it."""
+    kind = NodeType(node_type)
+    if not has_config_folder(kind):
+        return None
+    relative = config_path_for_node(kind, _sanitize_func_name(label))
+    reason = written_file_length_problem([pipeline_root / relative])
+    if reason is None:
+        return None
+    return (
+        f"Node {label!r} would keep its settings in {relative.as_posix()}, and {reason}. "
+        "Choose a shorter name."
+    )
+
+
 def _suffixed(candidate: NamingCandidate, base: str, attempt: int) -> str:
     if attempt == 1:
         return base
@@ -233,6 +253,7 @@ def name_candidates(
     read_utility: UtilityReader,
     *,
     allocate: bool,
+    pipeline_root: Path | None = None,
 ) -> tuple[list[NamedCandidate], PipelineGraph]:
     """Name each candidate in request order against *graph*, and return the graph after.
 
@@ -242,7 +263,10 @@ def name_candidates(
     its name, and a name the rule refuses comes back as its collision. A
     request input or response node has its type's one name (READ-46): it is
     allocated that name, never a numbered one, and is refused when another
-    node holds it.
+    node holds it. With *pipeline_root*, the folder the pipeline's ``config/``
+    is in, a name whose settings file would be too long for the platform comes
+    back as its collision too (:func:`settings_file_problem`); a numbered name
+    is never shorter, so allocation does not try one for it.
     """
     read_utility = functools.cache(read_utility)
     named: list[NamedCandidate] = []
@@ -271,6 +295,8 @@ def name_candidates(
                     f"name is taken: {problem} Rename the node that holds it first."
                 )
             raise ValueError(f"No free name for node {candidate.label!r}.")
+        if problem is None and pipeline_root is not None:
+            problem = settings_file_problem(candidate.node_type, label, pipeline_root)
         graph = trial
         alias = label if _is_occurrence(candidate.node_type) else None
         named.append(NamedCandidate(label=label, alias=alias, collision=problem))

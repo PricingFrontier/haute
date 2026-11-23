@@ -25,6 +25,7 @@ from tests._modelling_route_helpers import (
     _random_evaluation_config,
 )
 from tests._project import use_project
+from tests._unportable_destinations import UNPORTABLE_DESTINATIONS, files_in, prepare_exports
 from tests.conftest import (
     make_edge,
     make_file_input_config,
@@ -266,6 +267,22 @@ class TestSaveModelEndpoint:
         ).read_text() == _seeded_model.contract_text
         assert _seeded_model.model_path.read_bytes() == b"model-bytes"
         assert _seeded_model.contract_path.read_text() == _seeded_model.contract_text
+
+    @pytest.mark.parametrize(("typed", "rule"), UNPORTABLE_DESTINATIONS)
+    def test_a_name_windows_cannot_hold_is_refused_by_name_and_writes_nothing(
+        self, client, _seeded_model, typed: str, rule: str
+    ):
+        """SRV-07: the model save refuses a typed name a file cannot have, naming the path
+        and the rule, before anything is written."""
+        before = prepare_exports(_seeded_model.project_root)
+        output_path = typed.format(ext=".cbm")
+
+        resp = self._save(client, output_path)
+
+        assert resp.status_code == 400, resp.text
+        assert repr(output_path) in resp.json()["detail"]
+        assert rule in resp.json()["detail"]
+        assert files_in(_seeded_model.project_root) == before
 
     def test_folder_paths_are_project_root_relative(self, client, _seeded_model):
         resp = self._save(client, "exports/severity.cbm")

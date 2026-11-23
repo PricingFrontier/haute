@@ -389,15 +389,6 @@ NOT_NODE_TYPES: Mapping[tuple[str, str, str, str], tuple[int, str]] = {
         1,
         "the ratebook-input refusal's node label",
     ),
-    (
-        "_node_config_models.py",
-        "_optimiser_apply_inputs",
-        "optimiserApply",
-        "call:validate_optimiser_input_selectors",
-    ): (
-        1,
-        "the selector refusal's node label",
-    ),
     # The input-cache HTTP contract's source kinds: how a source is read (a Workbench
     # Input's tables are sent as apiInput), spelled as the types they were named after.
     ("schemas.py", "InputCacheSourceRequest", "dataInput", "literal:Tuple"): (
