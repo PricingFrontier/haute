@@ -321,20 +321,65 @@ def test_a_raw_file_that_starts_like_a_compressed_stream_is_placed_in_its_own_by
     with pytest.raises(InputFileError) as shredded:
         list(_iter_records(path))
 
-    assert loaded.value.message == shredded.value.message == (
-        "bad.json is not valid UTF-8: byte 0x8B at line 1, column 2. Save it as UTF-8."
+    assert (
+        loaded.value.message
+        == shredded.value.message
+        == ("bad.json is not valid UTF-8: byte 0x8B at line 1, column 2. Save it as UTF-8.")
     )
 
 
-def test_a_compressed_csv_that_cannot_be_decompressed_is_refused_in_words(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "quotes.csv"
-    path.write_bytes(b"\x1f\x8b\x08\x00")
+def _compressed(kind: str, data: bytes) -> bytes:
+    import gzip
+    import zlib
 
-    with pytest.raises(InputFileError) as refused:
+    import pyarrow as pa
+
+    if kind == "gzip":
+        return gzip.compress(data, mtime=0)
+    if kind == "zlib":
+        return zlib.compress(data)
+    sink = pa.BufferOutputStream()
+    with pa.CompressedOutputStream(sink, "zstd") as stream:
+        stream.write(data)
+    return sink.getvalue().to_pybytes()
+
+
+@pytest.mark.parametrize("kind", ["gzip", "zlib", "zstd"])
+def test_a_compressed_csv_that_cannot_be_decompressed_is_refused_in_words(
+    tmp_path: Path, kind: str
+) -> None:
+    """A small file truncated by its last byte: each decompressor's own failure, said for
+    the file by a read that reaches it (a probe of a large file's first bytes need not)."""
+    path = tmp_path / "quotes.csv"
+    path.write_bytes(_compressed(kind, b"row_id,value\n1,a\n2,b\n")[:-1])
+
+    from haute._input_files import not_utf8_file_error
+
+    said = (
+        f"quotes.csv is a {kind} file that cannot be decompressed: it may be truncated or damaged."
+    )
+    # Read in full (the header check's decode) and only its first bytes (the encoding check).
+    with pytest.raises(InputFileError) as decoded:
+        not_utf8_file_error(path)
+    with pytest.raises(InputFileError) as probed:
         text_encoding_refusal(path)
 
-    assert refused.value.message == (
-        "quotes.csv is a gzip file that cannot be decompressed: it may be truncated or damaged."
+    assert decoded.value.message == probed.value.message == said
+
+
+def test_a_readers_own_refusal_inside_a_compressed_stream_passes_as_it_is(
+    tmp_path: Path,
+) -> None:
+    """Only the decompressor's read is guarded: a header that is not UTF-8 inside a gzip
+    file is refused as not UTF-8, never as a damaged stream."""
+    from haute._input_files import not_utf8_file_error
+
+    path = tmp_path / "quotes.csv"
+    path.write_bytes(_compressed("gzip", "id,r\xe9gion\n1,N\n".encode("latin-1")))
+
+    refused = not_utf8_file_error(path)
+
+    assert refused is not None
+    assert refused.message == (
+        "quotes.csv is not valid UTF-8: byte 0xE9 at line 1, column 5. Save it as UTF-8."
     )

@@ -59,7 +59,8 @@ _ZSTD = b"\x28\xb5\x2f\xfd"
 
 class _InflatingReader(io.RawIOBase):
     """A zlib stream's bytes, inflated a bounded piece at a time, so a small stream that
-    inflates to a great deal is never held whole."""
+    inflates to a great deal is never held whole. A stream that ends before its end
+    marker raises ``EOFError``, as gzip's reader does."""
 
     def __init__(self, raw: BinaryIO) -> None:
         self._raw = raw
@@ -74,6 +75,8 @@ class _InflatingReader(io.RawIOBase):
             source = self._inflate.unconsumed_tail or self._raw.read(_POSITION_CHUNK_BYTES)
             if not source:
                 self._pending = self._inflate.flush()
+                if not self._inflate.eof:
+                    raise EOFError("zlib stream ended before its end marker")
                 if not self._pending:
                     return 0
                 break
@@ -82,6 +85,44 @@ class _InflatingReader(io.RawIOBase):
         buffer[:taken] = self._pending[:taken]
         self._pending = self._pending[taken:]
         return taken
+
+
+class _Decompressed(io.RawIOBase):
+    """A decompressor's bytes, its own failures refused in words where it reads them.
+
+    Only the decompressor's read is guarded, so a reader's own refusal raised while it
+    reads the bytes passes as it is. pyarrow says a truncated zstd stream with a bare
+    ``OSError``, which is its decompressor's word here, nothing else's.
+    """
+
+    def __init__(
+        self,
+        inflated: Any,
+        *,
+        path: str | Path,
+        kind: str,
+        failures: tuple[type[BaseException], ...],
+    ) -> None:
+        self._inflated = inflated
+        self._path = path
+        self._kind = kind
+        self._failures = failures
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        try:
+            data = self._inflated.read(len(buffer))
+        except self._failures as exc:
+            name = display_name(self._path)
+            raise InputFileError(
+                f"{name} is a {self._kind} file that cannot be decompressed: it may be "
+                "truncated or damaged.",
+                file=name,
+            ) from exc
+        buffer[: len(data)] = data
+        return len(data)
 
 
 @contextmanager
@@ -95,35 +136,26 @@ def open_input_bytes(path: str | Path) -> Iterator[BinaryIO]:
         head = raw.read(len(_ZSTD))
         raw.seek(0)
         if head.startswith(_GZIP):
-            with _decompressing(path, "gzip"), gzip.GzipFile(fileobj=raw) as inflated:
-                yield cast(BinaryIO, inflated)
+            with gzip.GzipFile(fileobj=raw) as inflated:
+                yield _guarded(inflated, path, "gzip", (EOFError, zlib.error, gzip.BadGzipFile))
         elif head[:2] in _ZLIB:
-            with _decompressing(path, "zlib"):
-                yield cast(BinaryIO, io.BufferedReader(_InflatingReader(raw)))
+            yield _guarded(_InflatingReader(raw), path, "zlib", (EOFError, zlib.error))
         elif head.startswith(_ZSTD):
             import pyarrow as pa
 
-            with _decompressing(path, "zstd"), pa.input_stream(raw, compression="zstd") as inflated:
-                yield cast(BinaryIO, inflated)
+            with pa.input_stream(raw, compression="zstd") as inflated:
+                yield _guarded(inflated, path, "zstd", (OSError, pa.ArrowException))
         else:
             yield raw
 
 
-@contextmanager
-def _decompressing(path: str | Path, kind: str) -> Iterator[None]:
-    """Refuse, in words, a *kind* stream that fails to decompress: the decompressor's own
-    errors (an end of stream too soon, a damaged block) and nothing else, so a reader's
-    own refusal raised while it reads passes as it is."""
-    import pyarrow as pa
-
-    try:
-        yield
-    except (EOFError, zlib.error, gzip.BadGzipFile, pa.ArrowException) as exc:
-        name = display_name(path)
-        raise InputFileError(
-            f"{name} is a {kind} file that cannot be decompressed: it may be truncated or damaged.",
-            file=name,
-        ) from exc
+def _guarded(
+    inflated: Any, path: str | Path, kind: str, failures: tuple[type[BaseException], ...]
+) -> BinaryIO:
+    return cast(
+        BinaryIO,
+        io.BufferedReader(_Decompressed(inflated, path=path, kind=kind, failures=failures)),
+    )
 
 
 # ---------------------------------------------------------------------------
