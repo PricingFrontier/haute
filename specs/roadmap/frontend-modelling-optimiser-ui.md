@@ -14,6 +14,8 @@ browser and with real t-boost fits.
 
 ## Priorities
 
+**Start with:** `FEM-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FEM-01 | Planned | P3 | A missing objective or constraint value in the optimiser's data preview is reported as missing: not drawn as zero, and not a crashed pane. |

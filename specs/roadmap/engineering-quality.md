@@ -15,6 +15,8 @@ the main session ran the gate of `EQ-05` itself and the two tests of
 
 ## Priorities
 
+**Start with:** `EQ-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | EQ-01 | Planned | P3 | The frontend's lint gate checks that a promise is awaited or deliberately dropped. |

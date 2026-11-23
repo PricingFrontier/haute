@@ -26,6 +26,8 @@ redesigned cards, recorded once their look has been reviewed.
 
 ## Priorities
 
+**Start with:** `PNC-13`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PNC-13 | Planned | P3 | The redesigned step cards are held by a visual baseline. |
