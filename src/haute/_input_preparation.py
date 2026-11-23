@@ -35,13 +35,14 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
 )
+from haute._failure_answers import display_file
 from haute._file_ops import PATH_TOO_LONG_REMEDIATION, path_too_long_error
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
 from haute._node_specs import node_type_table
 from haute._node_type import NodeType
 from haute._pipeline_settings import project_pipeline_settings
-from haute._polars_io_registry import PolarsIoConfigError, data_input_is_direct
+from haute._polars_io_registry import data_input_is_direct
 from haute._source_cache import (
     SourceCacheBuildError,
     SourceCacheCorruptError,
@@ -94,6 +95,9 @@ _REMEDIATION_BY_REASON: Mapping[str, str] = {
         "from the Data Input panel, or raise the preparation timeout, and try again."
     ),
     "path_too_long": PATH_TOO_LONG_REMEDIATION,
+    "source_invalid": (
+        "Correct what the message names in this Data Input's file or settings, then try again."
+    ),
 }
 _API_INPUT_REMEDIATION = (
     "Build this input's tables from its panel, or give the "
@@ -116,6 +120,9 @@ _API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
         "from its panel, or raise the preparation timeout, and try again."
     ),
     "path_too_long": PATH_TOO_LONG_REMEDIATION,
+    "source_invalid": (
+        "Correct what the message names in this input's file or tables, then try again."
+    ),
 }
 
 
@@ -850,10 +857,8 @@ def _prepare_one(target: _DataInputTarget, *, deadline: float | None) -> InputPr
                 node_id=node_id,
                 digest=digest,
                 build_class=build_class,
-                reason_code="build_failed",
-                message=(
-                    "This Data Input's source is unavailable and no published snapshot exists."
-                ),
+                reason_code="source_invalid",
+                message=_missing_source_message(target),
             )
         if (
             status.state == "ready"
@@ -914,6 +919,19 @@ def _prepare_one(target: _DataInputTarget, *, deadline: float | None) -> InputPr
         _release_single_flight(digest, build_error)
 
 
+def _missing_source_message(target: _DataInputTarget) -> str:
+    """A Data Input's refusal when its file is not there and it has no snapshot, naming
+    the path from the project root, as a save and ``haute lint`` name a misspelt one."""
+    from haute._input_providers import local_source_path
+
+    path = local_source_path(target.config, target.base_dir)
+    named = "This Data Input's source" if path is None else display_file(path)
+    return (
+        f"{named} names no file: it may have been moved, renamed or deleted, and this Data "
+        "Input has no published snapshot to run from."
+    )
+
+
 def _failure(
     *,
     node_id: str,
@@ -922,7 +940,16 @@ def _failure(
     reason_code: str,
     message: str,
     kind: InputKind = "data_input",
+    cause: BaseException | None = None,
 ) -> InputPreparationError:
+    """The preparation's refusal. A build that failed (*cause*, with *reason_code*
+    ``build_failed``) for a reason Haute names is ``source_invalid`` and says that
+    reason after *message* (:func:`_named_failure`); one nothing names keeps *message*
+    alone, since its text may hold a provider's locator or secret."""
+    named = None if cause is None or reason_code != "build_failed" else _named_failure(cause)
+    if named is not None:
+        reason_code = "source_invalid"
+        message = f"{message.removesuffix('.')}: {named}"
     remediation = (
         _API_INPUT_REMEDIATION_BY_REASON.get(reason_code, _API_INPUT_REMEDIATION)
         if kind == "api_input"
@@ -974,6 +1001,31 @@ def _wait_for_single_flight(
                 message=f"Preparing this {noun} was cancelled.",
                 kind=kind,
             ) from exc
+
+
+def _named_failure(exc: BaseException) -> str | None:
+    """What every edge says of a build's own failure when Haute names it, else ``None``.
+
+    Named in the words :mod:`haute._failure_answers` gives it, the words the input's
+    panel gives a build it starts: a file whose bytes cannot be read, a value its
+    column's type does not hold, a setting or a reader package Haute refuses, a file the
+    operating system refused. A worker's failure is the one the child named where it
+    was raised. A worker that could not run the build, or was stopped, is not the
+    input's failure, and a failure nothing names is never said: a provider's message
+    can hold a connection string.
+    """
+    from haute._failure_answers import answer_from_remote, classify_failure
+    from haute._worker_failures import WorkerError, WorkerRemoteError
+
+    if isinstance(exc, WorkerRemoteError):
+        answer = answer_from_remote(exc, operation="input_snapshot_build")
+    elif isinstance(exc, WorkerError):
+        return None
+    else:
+        answer = classify_failure(exc)
+    if answer is None or answer.terminal_reason == "memory_limited":
+        return None
+    return answer.message
 
 
 def _classify_local_failure(
@@ -1103,7 +1155,7 @@ def _run_build(
                 execution_context=execution_context,
                 allow_admitted_eager=True,
             )
-        except (SourceCacheCorruptError, PolarsIoConfigError):
+        except SourceCacheCorruptError:
             raise
         except Exception as exc:
             raise _failure(
@@ -1114,6 +1166,7 @@ def _run_build(
                     exc, deadline=deadline, cancelled=token.cancelled
                 ),
                 message="Preparing this Data Input's snapshot failed.",
+                cause=exc,
             ) from exc
         return built(InputPreparationOutcome.of(generation))
 
@@ -1157,6 +1210,7 @@ def _run_build(
             build_class=build_class,
             reason_code=_classify_worker_failure(build.failure),
             message="Preparing this Data Input's snapshot failed.",
+            cause=build.failure,
         ) from build.failure
     return built(published_data_input(store, identity, build))
 
@@ -1236,10 +1290,11 @@ def _prepare_api_input(
                 node_id=node_id,
                 digest=group,
                 build_class="bounded",
-                reason_code="build_failed",
+                reason_code="source_invalid",
                 message=(
-                    "This API Input's source is unavailable and not every table has a "
-                    "published snapshot."
+                    f"{display_file(source.data_path)} is not there: it may have been moved, "
+                    "renamed or deleted, and not every table of this API Input has a published "
+                    "snapshot to run from."
                 ),
                 kind="api_input",
             )
@@ -1319,7 +1374,6 @@ def _run_api_input_build(
     started_at: float,
     deadline: float,
 ) -> list[InputPreparationRecord]:
-    from haute._api_input_schema import ApiInputSchemaError
     from haute._json_shred._snapshots import (
         api_input_table_statuses,
         build_api_input_tables,
@@ -1392,7 +1446,7 @@ def _run_api_input_build(
                 deadline=deadline,
                 execution_context=execution_context,
             )
-        except (SourceCacheCorruptError, PolarsIoConfigError, ApiInputSchemaError):
+        except SourceCacheCorruptError:
             raise
         except Exception as exc:
             raise _failure(
@@ -1404,6 +1458,7 @@ def _run_api_input_build(
                 ),
                 message="Preparing this API Input's tables failed.",
                 kind="api_input",
+                cause=exc,
             ) from exc
     else:
         if budget is None:
@@ -1439,6 +1494,7 @@ def _run_api_input_build(
                 reason_code=reason_code,
                 message="Preparing this API Input's tables failed.",
                 kind="api_input",
+                cause=exc,
             ) from exc
 
     records: list[InputPreparationRecord] = []

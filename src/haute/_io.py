@@ -16,6 +16,12 @@ import polars as pl
 
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
+from haute._input_files import (
+    load_json_file,
+    not_utf8_file_error,
+    open_input_bytes,
+    refuse_text_in_another_encoding,
+)
 from haute._logging import get_logger
 from haute._map_columns import map_column_names
 from haute._polars_dtypes import parse_dtype
@@ -95,18 +101,87 @@ def _normalise_schema_overrides(
     return normalised
 
 
-def _schema_overrides_from_config(config: Mapping[str, Any]) -> dict[str, Any] | None:
-    raw = (
-        config.get("schema_overrides")
-        or config.get("dtypes")
-        or config.get("column_dtypes")
-        or config.get("schema")
-    )
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise SchemaMismatchError("Source schema declaration must be a mapping.")
-    return _normalise_schema_overrides(raw)
+@dataclass(frozen=True, slots=True)
+class _DeclaredColumn:
+    """A column's type as a flat Quote Input's table declares it, and a date's format."""
+
+    type: str
+    date_format: str | None = None
+
+
+_ISO_DATE_FORMAT = "%Y-%m-%d"
+
+
+def _declared_table_columns(config: Mapping[str, Any]) -> dict[str, _DeclaredColumn]:
+    """The type each column of a flat Quote Input's tables declares, by column name.
+
+    A column without a type declares none; a name a later table repeats keeps its
+    first declaration.
+    """
+    declared: dict[str, _DeclaredColumn] = {}
+    for table in config.get("tables") or ():
+        if not isinstance(table, Mapping):
+            continue
+        for column in table.get("columns") or ():
+            if not isinstance(column, Mapping):
+                continue
+            name, kind = column.get("name"), column.get("type")
+            if isinstance(name, str) and name and isinstance(kind, str) and kind:
+                date_format = column.get("format")
+                declared.setdefault(
+                    name,
+                    _DeclaredColumn(kind, date_format if isinstance(date_format, str) else None),
+                )
+    return declared
+
+
+def _read_flat_quote_sample(
+    path: str,
+    *,
+    profile: ExecutionProfile | str | None,
+    columns: tuple[str, ...] | None,
+    declared: Mapping[str, _DeclaredColumn],
+) -> pl.LazyFrame:
+    """A flat Quote Input's sample file, read as the node's table types it.
+
+    A CSV file carries no types of its own, so it is read with the types the node's
+    table declares, on every execution profile: the editor's preview, ``haute run``
+    and a deploy read one frame alike. A column it reads that declares no type is
+    refused, naming it, before anything is read: inferring it would give one type in
+    a preview and refuse it in a bounded run. A date column is read as text and
+    parsed in its declared format (ISO-8601 when it declares none), as the shredder
+    reads one. Any other flat file (Parquet) carries its own types.
+    """
+    if _source_format(path) != SourceFormat.CSV:
+        return read_source(path, profile=profile, columns=columns)
+    refuse_text_in_another_encoding(path)
+    header = _csv_header_columns(path)
+    read = [header[0]] if columns == () else list(columns) if columns is not None else header
+    in_file = set(header)
+    untyped = [name for name in read if name in in_file and name not in declared]
+    if untyped:
+        from haute._api_input_schema import ApiInputSchemaError
+        from haute._input_files import display_name
+
+        named = ", ".join(repr(name) for name in untyped)
+        noun = "Column" if len(untyped) == 1 else "Columns"
+        verb = "has" if len(untyped) == 1 else "have"
+        raise ApiInputSchemaError(
+            f"{noun} {named} of {display_name(path)} {verb} no type in this Quote Input's "
+            "table: confirm each column's type in the node's table."
+        )
+    schema = {
+        name: "str" if declared[name].type == "date" else declared[name].type
+        for name in header
+        if name in declared
+    }
+    frame = read_source(path, profile=profile, columns=columns, schema_overrides=schema)
+    dates = [
+        pl.col(name).str.to_date(declared[name].date_format or _ISO_DATE_FORMAT, strict=True)
+        for name in frame.collect_schema().names()
+        if name in declared and declared[name].type == "date"
+    ]
+    return frame.with_columns(dates) if dates else frame
 
 
 def _validate_source_path(path: str | Path) -> str:
@@ -153,9 +228,18 @@ def _select_columns(
 
 
 def _csv_header_columns(path: str) -> list[str]:
-    with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
+    """A CSV file's header, decoded strictly from the bytes Polars reads (a compressed
+    file's decompressed): a header that is not UTF-8 is refused at its first bad byte,
+    never read as names holding replacement characters."""
+    with (
+        open_input_bytes(path) as raw,
+        io.TextIOWrapper(raw, encoding="utf-8-sig", newline="") as f,
+    ):
         try:
             header = next(csv.reader(f))
+        except UnicodeDecodeError as exc:
+            # The strict decode failed, so the file has a byte that is not UTF-8 to name.
+            raise (not_utf8_file_error(path) or exc) from None
         except StopIteration as exc:
             raise SchemaMismatchError(
                 "CSV source is empty and has no header row.",
@@ -329,9 +413,10 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
     """Build a strict data-source adaptor from a node config mapping.
 
     This is the shared source I/O boundary for runtime callers that need to
-    turn a data-source config into a LazyFrame reader without duplicating
+    turn a flat Quote Input's config into a LazyFrame reader without duplicating
     ``source_type`` branching. It validates source-specific required fields
-    up front and rejects unknown source types.
+    up front and rejects unknown source types. A CSV sample is read with the
+    types the node's table declares (:func:`_read_flat_quote_sample`).
     """
     raw_source_type = config.get("source_type", "flat_file")
     if not isinstance(raw_source_type, str) or not raw_source_type.strip():
@@ -340,19 +425,16 @@ def build_data_source_adapter(config: Mapping[str, Any]) -> DataSourceAdapter:
 
     if source_type == "flat_file":
         path = _required_config_string(config, "path", source_type=source_type)
-        schema_overrides = _schema_overrides_from_config(config)
+        declared = _declared_table_columns(config)
 
         def _read_flat_file(
             _profile: ExecutionProfile | str | None,
             _columns: tuple[str, ...] | None,
             _path: str = path,
-            _schema_overrides: Mapping[str, Any] | None = schema_overrides,
+            _declared: Mapping[str, _DeclaredColumn] = declared,
         ) -> pl.LazyFrame:
-            return read_source(
-                _path,
-                profile=_profile,
-                columns=_columns,
-                schema_overrides=_schema_overrides,
+            return _read_flat_quote_sample(
+                _path, profile=_profile, columns=_columns, declared=_declared
             )
 
         return DataSourceAdapter(source_type=source_type, location=path, _reader=_read_flat_file)
@@ -487,6 +569,7 @@ def read_source(
     fmt = _source_format(path_string)
 
     if fmt == SourceFormat.CSV:
+        refuse_text_in_another_encoding(path_string)
         _validate_csv_declared_schema_for_profile(
             path=path_string,
             profile=normalised_profile,
@@ -577,10 +660,7 @@ def load_external_object(path: str, file_type: str) -> object:
 def _load_external_object_uncached(path: str, file_type: str) -> object:
     """Deserialize an external file from disk without caching."""
     if file_type == "json":
-        import json as _json
-
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return _json.load(f)
+        return load_json_file(path)
     if file_type == "joblib":
         from haute._sandbox import safe_joblib_load
 

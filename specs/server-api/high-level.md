@@ -411,8 +411,8 @@ public-error adapter is a closed set mapped to synchronous HTTP 422 and backgrou
 `GroupByExecutionUnsupportedError`,
 `TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
 `RatingFactorMissingError`, `RatingFactorDtypeContractError`,
-`LiveSwitchScenarioError`, `NodeConfigError`, `OutputNestingKeyError`, and
-`InputPreparationError`. The one
+`LiveSwitchScenarioError`, `NodeConfigError`, `OutputNestingKeyError`,
+`InputPreparationError`, and `InputFileError`. The one
 exception to the uniform mapping is `InputPreparationError` with reason code
 `memory_limited`: automatic input preparation is the single public contract error that can
 report memory exhaustion, so it maps to background-job `memory_limited` with error code

@@ -36,8 +36,11 @@ from haute._project_context import current_project
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 from tests._project import project_app, use_project
+from tests.conftest import flat_quote_table
 
 _CSV = "customer_id,premium\n1,100.0\n2,200.0\n"
+#: The table that types the CSV sample's columns (IOL-03).
+_TYPES = flat_quote_table(customer_id="int", premium="float")
 _EXPECTED_DOCUMENT = [
     {"customer_id": 1, "premium": 100.0},
     {"customer_id": 2, "premium": 200.0},
@@ -85,7 +88,7 @@ def _flat_api_node(csv_path: Path) -> GraphNode:
         data=NodeData(
             label="src",
             nodeType=NodeType.API_INPUT,
-            config={"path": str(csv_path)},
+            config={"path": str(csv_path), **_TYPES},
         ),
     )
 
@@ -155,7 +158,7 @@ def test_flat_apiinput_to_output_dry_run_route(nested_project: Path) -> None:
                 "data": {
                     "label": "src",
                     "nodeType": NodeType.API_INPUT.value,
-                    "config": {"path": str(csv_path)},
+                    "config": {"path": str(csv_path), **_TYPES},
                 },
             },
             {

@@ -18,13 +18,13 @@ from haute._node_apply import _apply_selected_columns
 from haute._output_assembler import OutputMappingSchemaError
 from haute._types import NodeType
 from haute.errors import (
-    BoundedMemoryUnsupportedError,
     ConfigError,
     LiveSwitchScenarioError,
     NodeConfigError,
 )
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import (
+    flat_quote_table,
     make_file_input_config,
     make_ready_file_input_config,
 )
@@ -652,18 +652,19 @@ class TestBuildApiInput:
 
         _, fn, is_source = _build(
             "apiInput",
-            {"path": str(data_file)},
+            {"path": str(data_file), **flat_quote_table(x="int")},
             label="CSV_Input",
         )
         assert is_source is True
         result = fn().collect()
         assert result.shape == (2, 1)
 
-    def test_bounded_csv_source_requires_declared_dtypes(
+    def test_a_bounded_csv_source_is_read_with_its_tables_types(
         self,
         tmp_path: Path,
         _widen_sandbox_root,
     ) -> None:
+        """IOL-03: the node's table is the schema a bounded profile needs."""
         data_file = tmp_path / "input.csv"
         data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
         node = _n(
@@ -672,7 +673,10 @@ class TestBuildApiInput:
                 "data": {
                     "label": "CSV_Input",
                     "nodeType": "apiInput",
-                    "config": {"path": str(data_file)},
+                    "config": {
+                        "path": str(data_file),
+                        **flat_quote_table(quote_id="str", premium="float"),
+                    },
                 },
             }
         )
@@ -681,30 +685,9 @@ class TestBuildApiInput:
             execution_profile=ExecutionProfile.OPTIMISER_SOLVE.value,
         )
 
-        with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
-            fn()
+        result = fn().collect()
 
-    def test_bounded_csv_source_uses_declared_dtypes(
-        self,
-        tmp_path: Path,
-        _widen_sandbox_root,
-    ) -> None:
-        """A flat-file source read through the public reader declares its CSV's dtypes."""
-        from haute._io import read_data_source
-
-        data_file = tmp_path / "input.csv"
-        data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
-
-        result = read_data_source(
-            {
-                "source_type": "flat_file",
-                "path": str(data_file),
-                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
-            },
-            profile=ExecutionProfile.OPTIMISER_SOLVE.value,
-        ).collect()
-
-        assert result.schema["quote_id"] == pl.String
+        assert result.schema == pl.Schema({"quote_id": pl.String, "premium": pl.Float64})
         assert result["quote_id"].to_list() == ["001"]
 
     def test_func_name_sanitized(self) -> None:

@@ -43,7 +43,7 @@
           "type": "array"
         },
         "tables": {
-          "description": "For a structured request file, the tables read from it: each a path into the document, a\nlabel, and its columns.",
+          "description": "For a structured request file, the tables read from it: each a path into the document, a\nlabel, and its columns. A CSV sample's table types its columns, which it reads by name.",
           "items": {
             "$ref": "#/$defs/TableV2"
           },

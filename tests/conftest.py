@@ -714,6 +714,19 @@ def project() -> ProjectContext:
 # ---------------------------------------------------------------------------
 
 
+def flat_quote_table(**types: str | tuple[str, str]) -> dict[str, Any]:
+    """A flat Quote Input's ``tables``, declaring each named column's type (and a date's
+    format): the types a CSV sample is read with (``haute._io``)."""
+    columns = []
+    for name, declared in types.items():
+        kind, date_format = declared if isinstance(declared, tuple) else (declared, None)
+        column: dict[str, Any] = {"name": name, "path": f"$[:].{name}", "type": kind}
+        if date_format is not None:
+            column["format"] = date_format
+        columns.append(column)
+    return {"tables": [{"label": "quotes", "path": "$[:]", "emit": True, "columns": columns}]}
+
+
 def make_file_input_config(path: object, **extra: object) -> dict[str, object]:
     """Build a persisted canonical file ``dataInput`` config for tests."""
     path_text = str(path)

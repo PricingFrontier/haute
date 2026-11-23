@@ -113,7 +113,7 @@ class ApiInputConfig(NodeConfigBase, total=False):
     file)."""
     tables: list[TableV2]
     """For a structured request file, the tables read from it: each a path into the document, a
-    label, and its columns."""
+    label, and its columns. A CSV sample's table types its columns, which it reads by name."""
 
 
 @closed

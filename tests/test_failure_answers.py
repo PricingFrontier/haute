@@ -121,6 +121,44 @@ class TestNamedFailures:
         assert answer.status == 422
         assert answer.detail["error_code"] == "node_config_invalid"  # type: ignore[index]
 
+    def test_an_io_setting_haute_cannot_read_with_is_said_as_written(self) -> None:
+        """IOL-01: a reader package the install lacks reaches every edge, a worker's parent
+        included, in the words Haute wrote."""
+        from haute._polars_io_registry import PolarsIoConfigError
+
+        refused = PolarsIoConfigError(
+            "Format 'excel' needs an engine package to read: install one of ['fastexcel']."
+        )
+
+        answer = classify_failure(refused)
+        sent = failure_payload(refused)
+
+        assert answer is not None
+        assert (answer.status, answer.code, answer.message) == (422, "config_invalid", str(refused))
+        assert sent is not None and answer_from_payload(sent["failure_answer"]) == answer
+
+    def test_an_input_file_that_cannot_be_read_keeps_its_file_and_place(self) -> None:
+        from haute.errors import InputFileError
+
+        refused = InputFileError(
+            "data/quote.json is not valid JSON: unexpected end of data at line 2, column 9.",
+            file="data/quote.json",
+            line=2,
+            column=9,
+        )
+
+        answer = classify_failure(refused)
+
+        assert answer is not None
+        assert (answer.status, answer.terminal_reason) == (422, "contract_error")
+        assert answer.detail == {
+            "error_code": "input_file_unreadable",
+            "message": refused.message,
+            "file": "data/quote.json",
+            "line": 2,
+            "column": 9,
+        }
+
     def test_a_nodes_own_failure_names_the_node(self) -> None:
         exc = ZeroDivisionError("division by zero")
         mark_failing_node(exc, "rate_step")

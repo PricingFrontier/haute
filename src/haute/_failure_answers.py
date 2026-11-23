@@ -208,6 +208,12 @@ def classify_failure(exc: BaseException) -> FailureAnswer | None:
     if isinstance(exc, ConfigError):
         # The message names the setting and what is wrong; its context (a path) is logged.
         return _plain(422, "config_invalid", exc.message or str(exc))
+    if isinstance(exc, _loaded("haute._polars_io_registry", "PolarsIoConfigError")):
+        # A Data Input's or Data Output's settings Haute cannot read with: a format whose
+        # reader package this install lacks, arguments the format does not take. The
+        # message names the setting; a route that must not echo posted settings refuses
+        # them before they reach a reader.
+        return _plain(422, "config_invalid", str(exc))
     if isinstance(exc, HauteValidationError):
         # A message Haute wrote about what was sent: the request is refused, never failed.
         return _plain(400, "validation_refused", str(exc))
