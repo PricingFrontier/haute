@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from haute._polars_dtypes import TEXT_KINDS, ColumnKind, base_type_kind, column_kind
+from haute._temporal_text import exact_rows
 from haute.errors import InvalidRequestError, RequestRefusedError, ServiceFailedError
 from haute.routes._optimiser_limits import APPLY_PREVIEW_ROW_LIMIT, QUOTE_PAGE_DEPTH_LIMIT
 from haute.routes._optimiser_outcomes import (
@@ -450,7 +451,8 @@ class QuoteQueries:
             total_objective = float(selected["total_objective"])
             constraints = selected["constraints"]
             from_artifact = ticket.from_artifact
-        rows = result.rows.to_dicts()
+        # An analysis column's datetime, time or duration is its exact text, as a preview's.
+        rows = exact_rows(result.rows)
         return OptimiserApplyResponse(
             status="ok",
             total_objective=total_objective,

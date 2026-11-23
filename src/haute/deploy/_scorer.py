@@ -37,6 +37,7 @@ from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
 from haute._polars_utils import streaming_collect
 from haute._ram_estimate import RuntimeSourceFiles
+from haute._temporal_text import exact_rows
 from haute._types import GraphNode, PipelineGraph, _Frame
 from haute._workbench_input import workbench_request_frames
 from haute._workbench_output import as_response
@@ -138,7 +139,8 @@ def reads_records(graph: PipelineGraph, input_node_ids: Sequence[str]) -> bool:
 
 def request_records(input_df: DeployInput) -> tuple[Mapping[str, Any], ...]:
     """The request's quotes as records, whichever form the request came in."""
-    return input_df.records if isinstance(input_df, QuoteRequest) else tuple(input_df.to_dicts())
+    # A frame's date-times as a request carries them: their exact text.
+    return input_df.records if isinstance(input_df, QuoteRequest) else tuple(exact_rows(input_df))
 
 
 @dataclass(slots=True)

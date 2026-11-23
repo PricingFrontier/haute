@@ -2803,7 +2803,7 @@ class TestEvaluationPreviewPayload:
 
         # What the preview could not order never reaches it: the plan refuses it first.
         for unorderable, error in (
-            (["2024/01/15", "2024/02/15"], "Invalid isoformat string"),
+            (["2024/01/15", "2024/02/15"], "is not a date-time"),
             (["2024-01-01", "2024-02-01T00:00:00+00:00"], "must not mix timezone awareness"),
         ):
             with pytest.raises(ValueError, match=error):

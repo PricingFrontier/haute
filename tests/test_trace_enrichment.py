@@ -2868,6 +2868,34 @@ class TestEnrichBandingRealConfig:
         assert result["matched_band"] == "July+"
         assert result["status"] == "matched"
 
+    @pytest.mark.parametrize(
+        ("at", "band"),
+        [
+            ("2024-03-01T09:00:00", "Until 9"),
+            # 100 ns past the bound is past it, though a Python datetime cannot say so.
+            ("2024-03-01T09:00:00.000000100", "After 9"),
+            ("2024-03-01T09:00:00.000000100+01:00", "After 9"),
+        ],
+    )
+    def test_a_date_time_band_is_credited_to_the_nanosecond(self, at, band):
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "at",
+                    "output_column": "at_band",
+                    "banding": "breakpoints",
+                    "rules": {"2024-03-01T09:00:00": "Until 9", "": "After 9"},
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"at": at}, {"at_band": band})
+
+        assert result["matched_band"] == band
+        assert result["status"] == "matched"
+
     def test_compact_categorical_banding_trace_matches_rule(self):
         """Trace enrichment accepts the compact sidecar rule map."""
         from haute._trace_enrichment import enrich_banding

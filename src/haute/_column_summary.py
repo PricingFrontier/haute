@@ -11,6 +11,7 @@ them as production failures.
 from __future__ import annotations
 
 import math
+from datetime import datetime, time, timedelta
 
 import polars as pl
 
@@ -43,23 +44,30 @@ def json_safe_scalar(value: object) -> object:
 
     A summary that reaches a provider is serialised with the standard library
     encoder under ``allow_nan=False``, which accepts only null, bool, int,
-    finite float and str. Polars returns native Python objects for temporal and
-    decimal columns — ``date``, ``datetime``, ``time``, ``timedelta``,
-    ``Decimal`` — and any of them raises ``TypeError`` at encode time, far from
-    the column that produced it. Numbers and strings keep their JSON type so a
-    numeric bound stays a number; everything else becomes its ``str()`` form,
-    which is the ISO-8601 spelling for temporals and the exact digits for a
-    decimal. ``NaN`` and ``Infinity`` are not JSON either, and dropping the bound
-    would hide that the column holds them, so a non-finite float becomes the
-    tagged sentinel every Haute payload uses for one
-    (:func:`haute._json_safe.non_finite_float_sentinel`) — never the bare text
-    ``"inf"``, which a string column could hold too.
+    finite float and str. Polars returns native Python objects for date and
+    decimal columns — ``date``, ``Decimal`` — and either raises ``TypeError`` at
+    encode time, far from the column that produced it. Numbers and strings keep
+    their JSON type so a numeric bound stays a number; a date or a decimal
+    becomes its ``str()`` form, the ISO-8601 spelling and the exact digits.
+    A ``datetime``, ``time`` or ``timedelta`` is refused: Python holds it to the
+    microsecond, so a nanosecond value read into one has lost three digits, and
+    a summariser writes such a value's exact text in Polars instead
+    (:func:`haute._temporal_text.temporal_text`). ``NaN`` and ``Infinity`` are
+    not JSON either, and dropping the bound would hide that the column holds
+    them, so a non-finite float becomes the tagged sentinel every Haute payload
+    uses for one (:func:`haute._json_safe.non_finite_float_sentinel`) — never
+    the bare text ``"inf"``, which a string column could hold too.
     """
 
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else non_finite_float_sentinel(value)
+    if isinstance(value, (datetime, time, timedelta)):
+        raise TypeError(
+            f"A {type(value).__name__} reaches a summary only as its exact text, written in "
+            "Polars by haute._temporal_text.temporal_text: Python holds it to the microsecond."
+        )
     return str(value)
 
 

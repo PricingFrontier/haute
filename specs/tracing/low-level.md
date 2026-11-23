@@ -5,7 +5,9 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), the `_TABLE_TRACE_TARGETS` node-type table (a Workbench Output target is traced through one of its tables), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
-| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), the `_TRACE_ROW_RULES` node-type table (each type's edge alignment, carried values, unique-row transfer and chosen-row rule), `joins_by_role` (an Edge Join: a type whose specification declares input roles), and the backward-walk driver `_correlate_rows_posthoc`. |
+| `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter, and reads every row
+it holds through `_json_row`, which writes each datetime, time and duration value as its exact
+text first (`exact_row`, owned by [io-layer](../io-layer/low-level.md)); the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, used for every head frame and every frame of a multi-frame parent), the limited-preview resolver (`RowScopeResolver`, which resolves every port of a parent one physical edge at a time), the `_TRACE_ROW_RULES` node-type table (each type's edge alignment, carried values, unique-row transfer and chosen-row rule), `joins_by_role` (an Edge Join: a type whose specification declares input roles), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type through the `_ROW_LINEAGE_BY_NODE_TYPE` table and operation alone), the per-step dispatch walk (`enrich_steps`, whose node-type enrichment is the `_STEP_ENRICHMENT` table) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, rename detection, and node-type dispatch for every `TraceStep`, and the input-source entry (`input_source_entry`: how one node computed a value a formula read). |
 | `src/haute/_trace_lineage.py` | The traced value's lineage. `trace_value_lineage()` walks a column trace's demand back from the target over the enriched steps and returns a `ValueLineage`: the nodes it reaches (step relevance and omission relevance), the columns each step contributes, and what each column a step computes for the value read (`reads`: per column, a helper the step dropped included, `ColumnRead` entries naming every node, as a `ColumnSource`, that computed the value read). Its per-type rules are the `_COMPUTES_NOTHING` (pure routers) and `_GENERATED_COLUMNS` (columns a type writes from its settings) node-type tables. |
@@ -506,8 +508,10 @@ the limited preview shows rather than independent source samples.
      (`pl.len()` unaliased) fails the proof if a named input is joined after it; a literal boolean
      `maintain_order` keyword is allowed, and any other keyword (a named computed key)
      fails the proof. The proof reports `whole_groups` when it is the program's only
-     grouping and nothing before it filters, slices, deduplicates, selects, or joins rows,
-     so each group holds exactly the input rows sharing its keys;
+     grouping, nothing before it filters, slices, deduplicates, selects, or joins rows,
+     and the finished proof still `carries` each of its keys from the root input (none
+     selected away, dropped, assigned or renamed after it), so each output row holds exactly
+     the input rows sharing its key values;
    - an output whose name the syntax cannot fix — a regex or wildcard column outside a
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
@@ -688,7 +692,8 @@ its public facade.
    `result_value` prefers the fed-forward `combined_values` entry and falls back
    to `step.output_values` only if that is also absent.
    **Execution values** (`_with_execution_value`): when a formula that assigns a step's column is
-   `not_row_local`, the calculation shows that column's `output_values` entry with
+   `not_row_local`, or the column is `branch_dependent` (written inside a block, so no one formula
+   gave it its value), the calculation shows that column's `output_values` entry with
    `result_source: "trace_execution"` and keeps `not_computable_reason`. This applies to the
    step's own assignment, a borrowed one, an input source's derivation, and a chain entry whose
    target the chain assigns once. `execute_trace` passes enrichment the compiled preamble
@@ -837,12 +842,18 @@ snapshot deterministically.
   match only its exact canonical decimal string. A carried column with a cast (an
   online optimiser apply's chosen-row identity) is compared as
   `cast(column, dtype, strict=False)` under the same contract for that dtype.
-- **Temporal, decimal, categorical, and nested matching stays typed.** Date,
-  Time, Datetime, and Duration compare through checked integer temporal
-  representations with timezone-awareness preserved; Decimal uses exact
-  lossless rescaling and never floats; Categorical/Enum compares normalised
-  string values; compatible List/Array/Struct uses a typed one-row Polars
-  literal. Object and incompatible nested schemas are unsupported, refused by
+- **Temporal, decimal, categorical, and nested matching stays typed.** A
+  traced row holds each datetime, time and duration value as its exact text, to
+  the nanosecond, and the trace matches the rows it holds by that text: Time,
+  Datetime and Duration compare the column's physical integer with the one
+  `temporal_physical` reads from the text, never through a Python `datetime`,
+  `time` or `timedelta`, which hold microseconds, so rows 100 ns apart are told
+  apart; an aware value names its instant by its offset, a naive one against an
+  aware column (or the reverse) is `datetime_timezone_mismatch`, and a value
+  finer than the column's unit matches no row. Date compares its date;
+  Decimal uses exact lossless rescaling and never floats; Categorical/Enum
+  compares normalised string values; compatible List/Array/Struct uses a typed
+  one-row Polars literal, a temporal value inside compared as its exact text. Object and incompatible nested schemas are unsupported, refused by
   the typed expression before the predicate runs; a Polars failure evaluating
   the strict predicate is therefore a defect and propagates.
 - **Ambiguity and relaxation are explicit.** Multiple candidates never select

@@ -61,6 +61,8 @@ def _framed(dtype: pl.DataType, value: object) -> Any:
         # A pandas Timestamp for a date column: midnight, without a zone.
         (pl.Date(), datetime(2024, 5, 1), date(2024, 5, 1)),
         (pl.Datetime("us"), "2024-05-01T10:30:00", datetime(2024, 5, 1, 10, 30)),
+        # A fraction after the minutes is a fraction of a second, as Python reads it.
+        (pl.Datetime("us"), "2024-05-01T10:30.5", datetime(2024, 5, 1, 10, 30, 0, 500_000)),
         (pl.Null(), None, None),
     ],
 )
@@ -99,6 +101,8 @@ def test_a_value_its_type_holds_exactly_is_accepted(
         (pl.Datetime("us"), "yesterday"),
         (pl.Datetime("us"), "2024-05-01T10:30:00+01:00"),
         (pl.Datetime("us", "UTC"), "2024-05-01T10:30:00"),
+        (pl.Datetime("us"), "2024-05-01T10:30.0000001"),
+        (pl.Datetime("us"), "2024-05-01t10:30:00.000000100"),
         (pl.Null(), 1),
     ],
 )
@@ -114,6 +118,38 @@ def test_a_value_its_type_does_not_hold_is_refused_naming_the_column(
 def test_a_zoned_date_time_keeps_its_instant() -> None:
     framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00")
     assert framed.isoformat() == "2024-05-01T09:30:00+00:00"
+    # An offset's own fraction moves the instant, never the clock's fraction.
+    framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00:00.5")
+    assert framed.isoformat() == "2024-05-01T09:29:59.500000+00:00"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2024-05-01T10:30:00.000000100",
+        # Any one character may separate the date from the clock, as Python reads it.
+        "2024-05-01t10:30:00.000000100",
+        # A pandas Timestamp carries its nanoseconds, and writes them.
+        pd.Timestamp("2024-05-01T10:30:00.000000100"),
+    ],
+    ids=["text", "lowercase-separator", "pandas"],
+)
+def test_a_date_time_reaches_the_pipeline_with_all_nine_digits(value: object) -> None:
+    frame = frame_rows([{"x": value}], {"x": pl.Datetime("ns")}, omittable=frozenset())
+
+    assert frame.schema["x"] == pl.Datetime("ns")
+    expected = pl.datetime(2024, 5, 1, 10, 30, time_unit="ns") + pl.duration(nanoseconds=100)
+    assert frame.select(pl.col("x") == expected).item()
+
+
+def test_a_date_time_finer_than_its_column_is_refused_naming_the_field() -> None:
+    with pytest.raises(QuoteInputError) as refused:
+        _framed(pl.Datetime("us"), "2024-05-01T10:30:00.000000100")
+
+    assert (refused.value.column, refused.value.quote) == ("x", 0)
+    assert "finer than its Datetime(time_unit='us', time_zone=None) column holds" in str(
+        refused.value
+    )
 
 
 def test_explicit_nulls_keep_the_declared_type_and_unknown_keys_are_ignored() -> None:

@@ -36,6 +36,8 @@ from typing import Any, ClassVar
 import numpy as np
 import polars as pl
 
+from haute._polars_dtypes import column_kind
+from haute._temporal_text import temporal_text
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._algorithm_base import (
     BaseAlgorithm,
@@ -425,6 +427,23 @@ def _native_estimator(text: str, document: dict[str, Any], name: str) -> Any:
         ) from exc
 
 
+def _group_labels(column: pl.Series) -> np.ndarray:
+    """Each row's group as text, one label for each group.
+
+    Polars' own cast writes a datetime, a number or text exactly, but drops a time's
+    fraction and refuses a duration, so those two are written by ``temporal_text``.
+    """
+    dtype = column.dtype
+    if column_kind(dtype) in ("time", "duration"):
+        return (
+            column.to_frame()
+            .select(temporal_text(pl.col(column.name), dtype))
+            .to_series()
+            .to_numpy()
+        )
+    return column.cast(pl.String).to_numpy()
+
+
 def _rows_kwargs(
     model: TBoostModel, frame: pl.DataFrame, target: str, weight: str | None, task: str
 ) -> dict[str, Any]:
@@ -605,7 +624,7 @@ class TBoostAlgorithm(BaseAlgorithm):
             fit_kwargs.update({f"eval_{key}": value for key, value in eval_kwargs.items()})
         groups = kwargs.get("groups")
         if groups is not None:
-            fit_kwargs["groups"] = train_df.get_column(str(groups)).cast(pl.String).to_numpy()
+            fit_kwargs["groups"] = _group_labels(train_df.get_column(str(groups)))
         features_frame, label = fit_kwargs.pop("X"), fit_kwargs.pop("y")
         progress = _RoundProgress(on_iteration, n_trees)
         with _float32_features_accepted():

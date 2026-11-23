@@ -240,12 +240,13 @@ const SECONDS_PER_DAY = 86_400
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const DATETIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?$/
 /**
- * A preview value: Python's `isoformat` of a date or a datetime, the latter
- * ending in its UTC offset when its column has a time zone. The groups are the
- * wall-clock value before that offset.
+ * A preview value: a date's ISO text, or a datetime's exact text (its fraction
+ * six digits, or nine below a microsecond), the latter ending in its UTC offset
+ * when its column has a time zone. The groups are the wall-clock value before
+ * that offset.
  */
 const PREVIEW_PATTERN =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(?:Z|[+-]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?)?$/
+  /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:Z|[+-]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?)?$/
 
 type CalendarDate = { year: number; month: number; day: number }
 

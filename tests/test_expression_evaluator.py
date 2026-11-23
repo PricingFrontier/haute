@@ -2071,3 +2071,101 @@ def test_substitution_does_not_corrupt_inserted_string_value() -> None:
     assert "banana" in result.substituted_text
     # The inserted "banana" must be intact (its inner letters not replaced by X).
     assert "bXnXnX" not in result.substituted_text
+
+
+# ---------------------------------------------------------------------------
+# A column written inside a block has no one formula
+# ---------------------------------------------------------------------------
+
+# Node code whose ``premium`` a call inside a block writes, each with one write
+# that copies ``base`` unchanged, which no reader may take as the formula.
+_BLOCK_WRITES = {
+    "if": (
+        "df = src\n"
+        "if APPLY_DISCOUNT:\n"
+        '    df = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+        "else:\n"
+        '    df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    "elif": (
+        "df = src\n"
+        "if APPLY_DISCOUNT:\n"
+        '    df = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+        "elif not APPLY_DISCOUNT:\n"
+        '    df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    "for": (
+        "df = src\n"
+        "for _ in range(int(APPLY_DISCOUNT)):\n"
+        '    df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    "while": (
+        'df = src\nwhile False:\n    df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    "try": (
+        "df = src\n"
+        "try:\n"
+        '    df = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+        "except Exception:\n"
+        '    df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    "with": (
+        "df = src\n"
+        "import contextlib\n"
+        "with contextlib.nullcontext():\n"
+        '    df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    "match": (
+        "df = src\n"
+        "match APPLY_DISCOUNT:\n"
+        "    case True:\n"
+        '        df = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+        "    case _:\n"
+        '        df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+    # A later write outside the block reads the column the block may have written.
+    "if, then outside": (
+        "df = src\n"
+        "if APPLY_DISCOUNT:\n"
+        '    df = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+        'df = df.with_columns(pl.col("base").alias("premium"))\n'
+    ),
+}
+_KEYWORDS = {"elif": "if", "if, then outside": "if"}
+
+
+@pytest.mark.parametrize("flag", [True, False], ids=["flag on", "flag off"])
+@pytest.mark.parametrize("case", list(_BLOCK_WRITES))
+def test_no_reader_takes_a_formula_from_a_block(case: str, flag: bool) -> None:
+    """Every reader of a column's formula holds a block's write to no one formula: the
+    parse is opaque, the evaluation computes nothing and says which block, the chain's
+    entry is opaque and no copy is followed through one branch's ``pl.col``."""
+    from haute._expression_parser import copied_from, parse_expression_chain
+
+    code = _BLOCK_WRITES[case]
+    keyword = _KEYWORDS.get(case, case)
+
+    parsed = parse_expression(code, "premium")
+    assert parsed.expression_type == "opaque"
+    assert parsed.expression_text == code
+
+    evaluated = evaluate_expression(
+        code, "premium", {"base": 100.0}, preamble_ns={"APPLY_DISCOUNT": flag}
+    )
+    assert evaluated.result_value is None
+    assert evaluated.not_computable_reason == f"branch_dependent: {keyword}"
+    assert evaluated.substituted_text == code
+    assert evaluated.input_values == {}
+    assert evaluated.taken_branch is None
+
+    assert copied_from(code, "premium") is None
+    chain = parse_expression_chain(code, "premium")
+    assert [entry.expression_type for entry in chain] == ["opaque"]
+
+
+def test_a_column_written_once_outside_any_block_is_computed() -> None:
+    code = 'df = src\ndf = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+    evaluated = evaluate_expression(code, "premium", {"base": 100.0})
+    assert evaluated.result_value == 90.0
+    assert evaluated.not_computable_reason is None
+    assert evaluated.substituted_text == "100.0 * 0.9"

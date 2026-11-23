@@ -624,6 +624,156 @@ class TestRatingStepSingleTable:
         assert serialized_detail["combined_outputs"][0]["value"] == 108.0
 
 
+class TestNanosecondTimestamps:
+    """Rows told apart only below a microsecond are traced by their own values.
+
+    Python's datetime holds microseconds; a pandas-written Parquet timestamp holds
+    nanoseconds. Each row of a three-node pipeline keyed by such a timestamp is traced to
+    its own source row, shows all nine digits, and its Rating Step's level is the one the
+    run matched.
+    """
+
+    BASE = 10**18  # 2001-09-09 01:46:40 UTC
+    TEXTS = (
+        "2001-09-09T01:46:40",
+        "2001-09-09T01:46:40.000000100",
+        "2001-09-09T01:46:40.000000200",
+    )
+
+    def _graph(self, tmp_path):
+        p = tmp_path / "events.parquet"
+        pl.DataFrame(
+            {
+                "at": pl.Series([self.BASE, self.BASE + 100, self.BASE + 200], dtype=pl.Int64).cast(
+                    pl.Datetime("ns")
+                ),
+                "amount": [10, 10, 10],
+            }
+        ).write_parquet(p)
+        rating = {
+            "tables": [
+                {
+                    "factors": ["at"],
+                    "output_column": "at_factor",
+                    "default_value": "9.0",
+                    "entries": [
+                        {"at": text, "value": value}
+                        for text, value in zip(self.TEXTS, (1.1, 1.2, 1.3), strict=True)
+                    ],
+                }
+            ],
+            "combined_outputs": [],
+        }
+        return _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "priced", "df = src.with_columns(premium=pl.col('amount') * 2)"
+                    ),
+                    GraphNode(
+                        id="rating",
+                        data=NodeData(label="rating", nodeType=NodeType.RATING_STEP, config=rating),
+                    ),
+                ],
+                "edges": [_edge("src", "priced"), _edge("priced", "rating")],
+            }
+        )
+
+    @pytest.mark.parametrize("row", [0, 1, 2])
+    def test_each_row_is_traced_to_its_own_rows_and_level(self, tmp_path, row):
+        graph = self._graph(tmp_path)
+        text = self.TEXTS[row]
+
+        result = execute_trace(
+            graph,
+            row_index=row,
+            target_node_id="rating",
+            column="at_factor",
+            row_values={"at": text, "amount": 10, "premium": 20},
+        )
+
+        assert _step_ids(result) == ["src", "priced", "rating"]
+        for step in result.steps:
+            assert step.output_values["at"] == text, step.node_id
+        assert result.output_value == (1.1, 1.2, 1.3)[row]
+        table = _step_by_id(result, "rating").node_detail["tables"][0]
+        assert table["factors"] == [{"column": "at", "value": text}]
+        assert table["status"] == "matched"
+        assert table["selected_value"] == (1.1, 1.2, 1.3)[row]
+
+    @pytest.mark.parametrize(
+        ("dtype", "texts"),
+        [
+            (pl.Time(), ("00:00:01", "00:00:01.000000100", "00:00:01.000000200")),
+            (pl.Duration("ns"), ("0:00:01", "0:00:01.000000100", "0:00:01.000000200")),
+        ],
+        ids=["time", "duration"],
+    )
+    @pytest.mark.parametrize("row", [0, 1, 2])
+    def test_rows_told_apart_by_a_time_or_a_duration_are_traced_apart(
+        self, tmp_path, dtype, texts, row
+    ):
+        p = tmp_path / "spans.parquet"
+        second = 10**9
+        pl.DataFrame(
+            {
+                "at": pl.Series([second, second + 100, second + 200], dtype=pl.Int64).cast(dtype),
+                "amount": [10, 10, 10],
+            }
+        ).write_parquet(p)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "priced", "df = src.with_columns(premium=pl.col('amount') * 2)"
+                    ),
+                    _transform_node("kept", "df = priced"),
+                ],
+                "edges": [_edge("src", "priced"), _edge("priced", "kept")],
+            }
+        )
+
+        result = execute_trace(
+            graph,
+            row_index=row,
+            target_node_id="kept",
+            column="premium",
+            row_values={"at": texts[row], "amount": 10, "premium": 20},
+        )
+
+        assert _step_ids(result) == ["src", "priced", "kept"]
+        for step in result.steps:
+            assert step.output_values["at"] == texts[row], step.node_id
+
+    def test_a_chain_reads_a_nested_nanosecond_intermediate_exactly(self, tmp_path):
+        p = tmp_path / "events.parquet"
+        pl.DataFrame(
+            {"at": pl.Series([self.BASE + 100], dtype=pl.Int64).cast(pl.Datetime("ns"))}
+        ).write_parquet(p)
+        code = (
+            "df = src\n"
+            "df = df.with_columns(event=pl.struct("
+            "later=pl.col('at') + pl.duration(nanoseconds=100)))\n"
+            "df = df.with_columns(last=pl.col('event').struct.field('later'))\n"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="last")
+
+        # Polars builds no struct from text: the intermediate is read back from it exactly.
+        event, last = _step_by_id(result, "t").calculation["expression_chain"]
+        assert event["result_value"] == {"later": self.TEXTS[2]}
+        assert event.get("error") is None, event
+        assert last["result_value"] == self.TEXTS[2]
+
+
 class TestRatingStepMultiplyTables:
     """C.2: data_source -> rating_step(multiple tables, multiply) -> output
 
@@ -1515,6 +1665,52 @@ class TestRowCorrelationAggregation:
         assert diagnostic["child_node_id"] == "agg"
         assert set(diagnostic["match_columns"]) == {"region"}
         assert diagnostic["matched_row_count"] == 2
+
+    @pytest.mark.parametrize(
+        ("after", "rows"),
+        [
+            # Every grouping column kept: the row's two source rows are named.
+            (".select(['cover', 'policy_id', 'premium'])", 2),
+            # A grouping column dropped afterwards: the rows behind the group can no
+            # longer be told from the columns left, so no count is claimed.
+            (".select(['policy_id', 'premium'])", None),
+            (".drop('cover')", None),
+            (".with_columns(cover=pl.lit('any'))", None),
+            (".rename({'cover': 'peril'})", None),
+        ],
+        ids=["kept", "selected-away", "dropped", "overwritten", "renamed"],
+    )
+    def test_a_grouping_column_lost_afterwards_claims_no_group(self, tmp_path, after, rows):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {
+                "policy_id": [1, 1, 1, 1],
+                "cover": ["fire", "fire", "theft", "theft"],
+                "premium": [10, 20, 100, 200],
+            }
+        ).write_parquet(p)
+        code = (
+            "df = src.group_by(['policy_id', 'cover'], maintain_order=True)"
+            f".agg(pl.col('premium').sum()){after}"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("summed", code)],
+                "edges": [_edge("src", "summed")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="summed", column="premium")
+
+        assert _step_by_id(result, "summed").output_values["premium"] == 30
+        assert "src" not in _step_ids(result)
+        codes = [diagnostic["code"] for diagnostic in result.correlation_diagnostics]
+        if rows is None:
+            assert "aggregated_rows" not in codes, result.correlation_diagnostics
+            assert codes, "the correlation that cannot be proven is still reported"
+        else:
+            assert codes == ["aggregated_rows"]
+            assert result.correlation_diagnostics[0]["matched_row_count"] == rows
 
 
 class TestRowCorrelationSortChangesOrder:
