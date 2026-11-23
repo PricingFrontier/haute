@@ -156,6 +156,31 @@ def test_a_quote_held_by_one_editor_takes_no_save_or_change_from_anyone_else(pag
     assert _edit(page, quote, JO).status_code == 200
 
 
+def test_a_save_being_priced_holds_the_quote_against_anyone_taking_it(
+    page: Page, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route's own exclusion: between a save's check and its write, while it is priced,
+    no one else takes the quote, and they may once it has landed."""
+    import haute._workbench_app_quotes as routes
+
+    quote = page.create().json()["quote"]
+    taken: list[Any] = []
+    checked = routes.input_rows
+
+    def while_priced(*args: Any, **kwargs: Any) -> Any:
+        # Jo presses Edit while Ana's save is on its way to being priced.
+        taken.append(_edit(page, quote, JO).status_code)
+        return checked(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "input_rows", while_priced)
+
+    saved = page.save(quote)
+
+    assert saved.status_code == 200, saved.text
+    assert taken == [409]
+    assert _edit(page, quote, JO).status_code == 200
+
+
 def test_the_release_names_the_environment_its_quotes_are_kept_in(page: Page) -> None:
     assert page.client.get("/api/app/release", headers=ANA).json()["environment"] == "test"
 

@@ -528,9 +528,31 @@ describe("QuoteView", () => {
       // Renewed and let go under the session it was taken under: this page's own.
       const sessions = vi.mocked(editAppQuote).mock.calls.map((call) => call[2])
       expect(new Set(sessions).size).toBe(1)
-      view.unmount()
 
-      expect(releaseAppQuote).toHaveBeenCalledWith("Q-000001", 1, sessions[0], {})
+      // Hidden, the page lets the quote go; shown again as it was, it takes it again under
+      // the same session, and goes on renewing it.
+      act(() => void window.dispatchEvent(new Event("pagehide")))
+      expect(releaseAppQuote).toHaveBeenLastCalledWith("Q-000001", 1, sessions[0], { keepalive: true })
+      await act(async () => {
+        window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }))
+      })
+      expect(vi.mocked(editAppQuote).mock.calls.map((call) => call[2])).toEqual([sessions[0], sessions[0], sessions[0]])
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
+      })
+      expect(editAppQuote).toHaveBeenCalledTimes(4)
+
+      // A renewal answered once the page has left lets the session go again, and arms nothing.
+      let renewed!: (value: { editor: string; lease_seconds: number }) => void
+      vi.mocked(editAppQuote).mockReturnValueOnce(new Promise((resolve) => { renewed = resolve }))
+      const renewing = useOpenQuoteStore.getState().keepEditing()
+      view.unmount()
+      expect(releaseAppQuote).toHaveBeenLastCalledWith("Q-000001", 1, sessions[0], {})
+      const released = vi.mocked(releaseAppQuote).mock.calls.length
+      renewed({ editor: "ana@example.com", lease_seconds: 180 })
+      await renewing
+      expect(vi.mocked(releaseAppQuote).mock.calls.length).toBe(released + 1)
+      expect(vi.mocked(releaseAppQuote).mock.calls.at(-1)?.slice(0, 3)).toEqual(["Q-000001", 1, sessions[0]])
     } finally {
       vi.useRealTimers()
     }

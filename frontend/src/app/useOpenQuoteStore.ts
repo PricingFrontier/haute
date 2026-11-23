@@ -639,23 +639,38 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
     keepEditing: async () => {
       const { lease, editedBy, status } = get()
       if (lease === null || editedBy !== null || status !== "ready" || !canEdit()) return
+      // Renewed for a page that has since let the session go, it is let go again: the server
+      // may have taken the renewal after the release. A reopening of the quote under the
+      // same session still holds it.
+      const settled = (): void => {
+        if (get().lease?.session !== lease.session) releaseAppQuote(lease.reference, lease.option, lease.session).catch(() => undefined)
+      }
       // This opening's own answer: one for a quote since left or opened again says nothing of
-      // the quote open now.
+      // the quote open now, and arms no renewal of it.
       await answer([under(loads)], editAppQuote(lease.reference, lease.option, lease.session), {
+        ok: () => {
+          settled()
+          set((state) => ({ renewals: state.renewals + 1 }))
+        },
         failed: (error) => {
           // Taken by someone else once its lease lapsed: read only now, what was typed kept.
           // No answer, or a server failure, says nothing of who holds it: the next renewal asks.
           const editor = beingEditedBy(error)
-          if (editor !== null) heldBy(editor)
+          if (editor !== null && get().lease?.session === lease.session) heldBy(editor)
+          set((state) => ({ renewals: state.renewals + 1 }))
+        },
+        stale: (answered) => {
+          if ("value" in answered) settled()
         },
       })
-      set((state) => ({ renewals: state.renewals + 1 }))
     },
 
     stopEditing: (options = {}) => {
       const { lease, editedBy } = get()
       if (lease === null || editedBy !== null) return
-      set({ lease: null })
+      // A page hidden may be shown again as it was (the browser's back/forward cache): it
+      // keeps its session, to take the quote again with (`keepEditing`). One left is done.
+      if (!options.keepalive) set({ lease: null })
       // Let go as the page leaves; one never let go lapses with its lease.
       releaseAppQuote(lease.reference, lease.option, lease.session, options).catch(() => undefined)
     },

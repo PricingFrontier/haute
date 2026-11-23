@@ -85,9 +85,17 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
   useEffect(() => {
     if (route.mode !== "edit") return
     const closing = () => useOpenQuoteStore.getState().stopEditing({ keepalive: true })
+    // Shown again as it was, from the browser's back/forward cache, the page takes the quote
+    // again under its session, what was typed still on its sheets: read only, saying who,
+    // when someone else took it meanwhile.
+    const shownAgain = (event: PageTransitionEvent) => {
+      if (event.persisted) void useOpenQuoteStore.getState().keepEditing()
+    }
     window.addEventListener("pagehide", closing)
+    window.addEventListener("pageshow", shownAgain)
     return () => {
       window.removeEventListener("pagehide", closing)
+      window.removeEventListener("pageshow", shownAgain)
       useOpenQuoteStore.getState().stopEditing()
     }
     // The route's key says all of it.
