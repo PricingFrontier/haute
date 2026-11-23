@@ -117,6 +117,20 @@ describe("SchemaTableCard", () => {
     expect(screen.queryByTestId("explore-schema-inventory-summary")).not.toBeInTheDocument()
   })
 
+  it("shows every column of a schema refreshed from long to short, whatever was searched before", () => {
+    const columns = (count: number) => Array.from({ length: count }, (_, index) => makeColumn({ name: `col_${index}` }))
+    const wide = makeReport({ column_count: 60, columns: columns(60) })
+    const { rerender } = render(<SchemaTableCard report={wide} />)
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search schema columns" }), { target: { value: "col_59" } })
+    expect(screen.getAllByTestId(/^explore-schema-row-/)).toHaveLength(1)
+
+    // The data under the card is replaced by a short one: the search box goes.
+    rerender(<SchemaTableCard report={makeReport({ data_version: "data-v2", column_count: 10, columns: columns(10) })} />)
+
+    expect(screen.queryByRole("searchbox", { name: "Search schema columns" })).not.toBeInTheDocument()
+    expect(screen.getAllByTestId(/^explore-schema-row-/)).toHaveLength(10)
+  })
+
   it("limits the initial rendered rows for wide schemas", () => {
     const columns = Array.from({ length: 125 }, (_, index) =>
       makeColumn({ name: `col_${String(index).padStart(3, "0")}` }),

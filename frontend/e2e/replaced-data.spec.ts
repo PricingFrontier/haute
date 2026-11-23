@@ -157,6 +157,15 @@ function refreshButton(page: Page, frame: "preview-panel-frame-header" | "explor
   return page.getByTestId(frame).getByRole("button", { name: "Refresh", exact: true })
 }
 
+/** The preview frame's Overview tab; the node's editor has one of its own. */
+function overviewTab(page: Page): Locator {
+  return page.getByTestId("explore-preview-frame").getByRole("tab", { name: "Overview", exact: true })
+}
+
+function datasetRows(page: Page): Locator {
+  return page.getByTestId("explore-dataset-snapshot-card")
+}
+
 test.describe.configure({ mode: "serial" })
 
 test.describe("a data file replaced under an open editor", () => {
@@ -201,5 +210,57 @@ test.describe("a data file replaced under an open editor", () => {
         await expect(page.getByText(/not found on target|Eager projection/)).toHaveCount(0)
       })
     }
+  })
+
+  test("one Refresh brings Explore's Overview to a Parquet file replaced by a new extract", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+    await openNode(page, "extract_explore")
+    await overviewTab(page).click()
+    await expect(datasetRows(page)).toContainText(/Rows\s*30(?!\d)/, { timeout: 60_000 })
+    await expect(page.getByTestId("explore-schema-row-mileage")).toBeVisible()
+
+    const replaced = firstExtract()
+    for (const name of Object.keys(replaced)) replaced[name] = replaced[name].slice(0, 12)
+    delete replaced.mileage
+    writeParquet(replaced)
+    await refreshButton(page, "explore-preview-frame-header").click()
+
+    await expect(datasetRows(page)).toContainText(/Rows\s*12(?!\d)/, { timeout: 60_000 })
+    await expect(page.getByTestId("explore-schema-row-mileage")).toHaveCount(0)
+    await expect(page.getByTestId("explore-schema-row-premium")).toBeVisible()
+  })
+
+  test("one Refresh brings Explore's Overview to a CSV file Haute snapshots, replaced by a new extract", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+    await openNode(page, "csv_explore")
+    await overviewTab(page).click()
+    // Nothing is cached yet: Refresh snapshots the file.
+    await refreshButton(page, "explore-preview-frame-header").click()
+    await expect(datasetRows(page)).toContainText(/Rows\s*30(?!\d)/, { timeout: 60_000 })
+
+    writeCsv(12, 500)
+    await refreshButton(page, "explore-preview-frame-header").click()
+
+    await expect(datasetRows(page)).toContainText(/Rows\s*12(?!\d)/, { timeout: 60_000 })
+  })
+
+  test("one Refresh brings the Banding editor's count and values to a replaced file", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+    await openNode(page, "extract_banding")
+    const basis = page.getByTestId("banding-data-basis")
+    await expect(basis).toHaveText("All rows · 30", { timeout: 60_000 })
+
+    const replaced = firstExtract()
+    for (const name of Object.keys(replaced)) replaced[name] = replaced[name].slice(0, 12)
+    replaced.region = replaced.region.map((region, index) => (index < 4 ? "east" : region))
+    writeParquet(replaced)
+    await refreshButton(page, "preview-panel-frame-header").click()
+
+    await expect(basis).toHaveText("All rows · 12", { timeout: 60_000 })
+    // Counted over the whole new file, not the preview's rows.
+    await expect(page.getByRole("button", { name: "east (4)", exact: true })).toBeVisible()
   })
 })

@@ -512,9 +512,50 @@ describe("useNodeDataCache", () => {
       refreshNodeDataCache("explore")
     })
 
-    // A Refresh pressed to re-read this node's generated fields must not
-    // recompute a dataset that has not changed.
+    // The point is asked again, and a Refresh pressed to re-read this node's
+    // generated fields must not recompute a dataset that has not changed.
+    await waitFor(() => expect(mockGetPoint).toHaveBeenCalledTimes(2))
+    expect(result.current.dataVersion).toBe("gen-1")
     expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  // The data under a point can change with nothing on the page hearing of it (a
+  // file replaced on disk), so Refresh decides from the server's answer now,
+  // never from what the consumer last heard.
+  it("shows the data version the server holds now after one Refresh of data believed current", async () => {
+    mockGetPoint.mockResolvedValue(point({ reads_directly: true }))
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.dataVersion).toBe("gen-1"))
+    mockGetPoint.mockResolvedValue(point({ reads_directly: true, data_version: "gen-2", row_count: 12 }))
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(result.current.dataVersion).toBe("gen-2"))
+    expect(result.current.availability).toBe("current")
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  it("re-caches on the same Refresh when data believed current has gone out of date", async () => {
+    mockGetPoint.mockResolvedValue(point())
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-moved",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building" }),
+    })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("current"))
+    mockGetPoint.mockResolvedValue(point({ state: "stale", generation: { ...point().generation!, fresh: false } }))
+
+    await act(async () => {
+      refreshNodeDataCache("explore")
+    })
+
+    await waitFor(() => expect(mockRun).toHaveBeenCalledTimes(1))
+    expect(mockRun.mock.calls[0][0]).toMatchObject({ target: { occurrence: null, node_id: "explore" }, refresh: true })
   })
 
   it("ignores a refresh request aimed at a different node", async () => {

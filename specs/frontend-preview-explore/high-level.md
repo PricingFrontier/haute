@@ -62,8 +62,11 @@ Modelling and optimiser result presentation belongs to
 - Explore shows no cache state of its own; a progress bar runs while its data is built or
   profiled. Caching is what the node's own Refresh button does about data that is missing, stale,
   partial or unreadable; data that is already current is left alone, because the same button is
-  pressed to re-read a node's generated fields. Refresh is also the recovery path from an
-  unreadable snapshot.
+  pressed to re-read a node's generated fields. Refresh asks the server what the data is before
+  deciding, never trusting what the page last heard: after the file under a node is replaced,
+  one Refresh brings the Overview's cards, the Pivots, Charts and Relationships panes, and the
+  Banding and Rating Step editors' whole-data answers to the new data, as the Preview tab is.
+  Refresh is also the recovery path from an unreadable snapshot.
 - The Explore preview's Relationships pane relates chosen features to a target and checks chosen
   key columns over the whole cached data; its choices are pane state, not config.
 - Overview cards have a fixed order and are individually enabled from config. They display

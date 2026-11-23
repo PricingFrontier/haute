@@ -77,8 +77,7 @@ export interface NodeDataCache {
   /**
    * Why the last inspection or build got nothing, for the current identity
    * only: the next answer clears it, and connecting the input changes the
-   * identity. The node's Refresh asks for the point again while it is set and
-   * there is no point.
+   * identity. The node's Refresh asks for the point again, as it always does.
    */
   problem: NodeDataProblem | null
   /** True when this consumer has no build action: the point is read directly. */
@@ -225,13 +224,11 @@ export default function useNodeDataCache({
   // Why the last inspection or build for this identity got nothing. It is the
   // node's state, not an event, so it is shown with the node rather than raised
   // as a toast.
-  // `during` says which failed: a read is asked again on Refresh, whatever point
-  // is kept from before; a build is retried by building.
-  const [problem, setProblem] = useState<
-    ({ askedFor: string; during: "read" | "build" } & NodeDataProblem) | null
-  >(null)
-  // Raised by the node's Refresh to ask for the point again after a failure.
+  const [problem, setProblem] = useState<({ askedFor: string } & NodeDataProblem) | null>(null)
+  // Raised by the node's Refresh to ask for the point again.
   const [readAttempt, setReadAttempt] = useState(0)
+  // The identity whose next answer decides what a Refresh pressed for it does.
+  const refreshAwaitsAnswer = useRef<string | null>(null)
   // A build's state until the server answers it is kept under the node key the
   // build was started for: the consumer can stay mounted while its node moves
   // to another occurrence, whose Stop and Refresh must not reach that build.
@@ -362,40 +359,6 @@ export default function useNodeDataCache({
     },
     [activeSource, configHash, pointFor, publish, requestTarget],
   )
-
-  useEffect(() => {
-    if (!enabled || !nodeId || !configHash || !askedFor) return
-    const fence = captureDocumentExecutionFence()
-    if (!isDocumentExecutionFenceCurrent(fence)) return
-    // The read belongs to this run of the effect, under the fence it began with: a new
-    // identity, epoch or attempt lets it go, and aborts it. Built in the request, so one that
-    // cannot be built fails with the rest.
-    const asked = ask([executionPart(fence)])
-    void asked.answer((signal) => fetchPoint(signal), {
-      ok: (fresh) => {
-        if (fresh) publishIfAsked(fresh.point, configHash, fence, fresh.consumerKey)
-      },
-      failed: (err) => {
-        // A 400 is the backend refusing to name a point for this graph.
-        const refused = (err as { status?: unknown } | null)?.status === 400
-        setProblem({
-          askedFor,
-          during: "read",
-          kind: refused ? "refused" : "failed",
-          reason: apiErrorMessage(err),
-        })
-      },
-    })
-    return () => asked.release()
-    // Re-asks on what the consumer asks about (its identity under its node's
-    // key), on the node-data epoch, which the store raises whenever any
-    // consumer observes a published, widened, evicted, or cleared generation,
-    // and when the node's Refresh asks again after a failure. The graph objects
-    // themselves are excluded deliberately: a render that keeps the same
-    // identity hash would otherwise re-fire the request on unrelated edits such
-    // as a node drag.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [askedFor, enabled, epoch, nodeId, readAttempt])
 
   const clearDelegatedData = useCallback(
     async (target: NodeDataPointResponse) => {
@@ -551,7 +514,7 @@ export default function useNodeDataCache({
         // Cancelling is otherwise the outcome the user asked for, not a
         // failure. The abort arrives as a DOMException, not an Error instance.
         if (name === "AbortError") return
-        setProblem({ askedFor: askedOf(key, configHash), during: "build", kind: "failed", reason: detail })
+        setProblem({ askedFor: askedOf(key, configHash), kind: "failed", reason: detail })
         addToast("error", `Data caching failed: ${detail}`)
       }
       try {
@@ -634,38 +597,82 @@ export default function useNodeDataCache({
 
   const canBuild = point !== null && !point.reads_directly
 
-  /**
-   * What the node's Refresh button does about this node's cached data. The
-   * cost is decided here rather than at the button: data the consumer can
-   * already use is left alone, so a Refresh pressed to re-read a node's
-   * generated fields does not recompute a dataset that has not changed.
-   * `missing` has nothing to replace, so it builds; `stale`, `partial` and
-   * `corrupt` hold something unusable as it stands, so they rebuild.
-   */
-  // Read when Refresh is pressed rather than captured when the handler was
-  // registered, so a handler registered on an early render still decides
-  // against what the consumer holds now. It settles one commit after the
-  // render it describes, which a user's click is never inside.
+  // Read when Refresh is pressed, or its answer arrives, rather than captured
+  // when the handler was registered, so a handler registered on an early render
+  // still acts on what the consumer holds now.
   const currentProblem = problem && problem.askedFor === askedFor ? problem : null
-  const latest = useRef({ availability, busy, canBuild, enabled, run, refresh, currentProblem })
+  const latest = useRef({ askedFor, busy, enabled, run, refresh })
   useEffect(() => {
-    latest.current = { availability, busy, canBuild, enabled, run, refresh, currentProblem }
+    latest.current = { askedFor, busy, enabled, run, refresh }
   })
 
+  /**
+   * What the node's Refresh button does about this node's cached data, decided
+   * from the point the server names when Refresh asks for it again: the data
+   * under a point can change with nothing on the page hearing of it (a file
+   * replaced on disk), so what the consumer last heard decides nothing. A moved
+   * data version is published like any answer, so every pane, profile and
+   * whole-data answer of the point follows it. The cost is decided here rather
+   * than at the button: data the consumer can already use is left alone, so a
+   * Refresh pressed to re-read a node's generated fields does not recompute a
+   * dataset that has not changed. `missing` has nothing to replace, so it
+   * builds; `stale`, `partial` and `corrupt` hold something unusable as it
+   * stands, so they rebuild.
+   */
+  const decideRefresh = useCallback((fresh: NodeDataPointResponse) => {
+    const { busy, run, refresh } = latest.current
+    if (fresh.reads_directly || busy) return
+    const slot = useNodeDataStore.getState().slots[fresh.slot_key]
+    const answered = deriveAvailability(fresh, Boolean(slot?.job) || Boolean(slot?.delegatedBuild))
+    if (answered === "missing") void run()
+    else if (answered === "stale" || answered === "partial" || answered === "corrupt") void refresh()
+  }, [])
+
+  useEffect(() => {
+    if (!enabled || !nodeId || !configHash || !askedFor) return
+    const fence = captureDocumentExecutionFence()
+    if (!isDocumentExecutionFenceCurrent(fence)) return
+    // The read belongs to this run of the effect, under the fence it began with: a new
+    // identity, epoch or attempt lets it go, and aborts it. Built in the request, so one that
+    // cannot be built fails with the rest.
+    const asked = ask([executionPart(fence)])
+    void asked.answer((signal) => fetchPoint(signal), {
+      ok: (fresh) => {
+        if (!fresh) return
+        publishIfAsked(fresh.point, configHash, fence, fresh.consumerKey)
+        if (refreshAwaitsAnswer.current === askedFor && askedOf(fresh.consumerKey, configHash) === askedFor) {
+          refreshAwaitsAnswer.current = null
+          decideRefresh(fresh.point)
+        }
+      },
+      failed: (err) => {
+        if (refreshAwaitsAnswer.current === askedFor) refreshAwaitsAnswer.current = null
+        // A 400 is the backend refusing to name a point for this graph.
+        const refused = (err as { status?: unknown } | null)?.status === 400
+        setProblem({
+          askedFor,
+          kind: refused ? "refused" : "failed",
+          reason: apiErrorMessage(err),
+        })
+      },
+    })
+    return () => asked.release()
+    // Re-asks on what the consumer asks about (its identity under its node's
+    // key), on the node-data epoch, which the store raises whenever any
+    // consumer observes a published, widened, evicted, or cleared generation,
+    // and when the node's Refresh asks again. The graph objects
+    // themselves are excluded deliberately: a render that keeps the same
+    // identity hash would otherwise re-fire the request on unrelated edits such
+    // as a node drag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askedFor, enabled, epoch, nodeId, readAttempt])
+
   const bringUpToDate = useCallback(() => {
-    const { availability, busy, canBuild, enabled, run, refresh, currentProblem } = latest.current
-    if (!enabled) return
-    // A failed or refused inspection is asked again, whatever point is kept
-    // from an earlier answer; the new answer decides what Refresh does next.
-    if (currentProblem?.during === "read") {
-      setReadAttempt((attempt) => attempt + 1)
-      return
-    }
-    // `checking` has no answer yet, so there is nothing to decide against.
-    if (availability === "checking") return
-    if (!canBuild || busy) return
-    if (availability === "current" || availability === "building") return
-    void (availability === "missing" ? run() : refresh())
+    const { askedFor, busy, enabled } = latest.current
+    // A build under way reads the point again when it ends.
+    if (!enabled || !askedFor || busy) return
+    refreshAwaitsAnswer.current = askedFor
+    setReadAttempt((attempt) => attempt + 1)
   }, [])
 
   useEffect(() => {

@@ -804,9 +804,11 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    columns, as `_data_points._banding_demand` / `_rating_step_demand`): editing its rules or
    table entries neither re-asks nor drops the answer it holds, while choosing another column
    does.
-2. `hooks/useNodeDataCache.ts` asks for the point on mount, whenever that identity changes, and
-   whenever the store's node-data epoch changes; a rerender that keeps the identity (a canvas
-   drag) does not re-ask. Every request, build, cancel, and clear captures the document
+2. `hooks/useNodeDataCache.ts` asks for the point on mount, whenever that identity changes,
+   whenever the store's node-data epoch changes, and whenever the node's Refresh asks it to
+   bring the data up to date, whose decision that answer makes
+   ([frontend-preview-explore](../frontend-preview-explore/low-level.md) Control flow, Explore
+   and overview 4); a rerender that keeps the identity (a canvas drag) does not re-ask. Every request, build, cancel, and clear captures the document
    execution fence, and no answer — from an inspection or from an action — is published unless
    that fence is still current *and* the identity it answers for is still the one the consumer is
    asking about, so neither another document's answer nor an action started before an edit can
@@ -1191,7 +1193,9 @@ same Vitest config.
   raises it once, and a reset making the next announcement count again — a refused point held
   as the node's `refused` problem and a failed lookup as its `failed` problem, neither toasting,
   the node's Refresh asking for the point again after either, including a failed recheck of
-  data it still shows as current, a failed build kept with the stale
+  data it still shows as current, and asking for it again when it believes the data current,
+  then showing the version the server holds now or caching again data that has gone out of
+  date, on that one Refresh, a failed build kept with the stale
   point it could not refresh, a build adopted from
   another client, two consumers deriving `current` and `partial` from one narrow generation,
   progress

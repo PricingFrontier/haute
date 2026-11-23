@@ -55,7 +55,7 @@
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 | `frontend/src/panels/explore/exploreTableStyles.ts`, `frontend/src/panels/explore/ExploreTableHead.tsx` | What the Explore report tables share: the cell padding, uppercase label style, text-colour styles and row border, and `ExploreTableHead`, the header row (column headers with `scope="col"`, a blank label rendered as an `aria-hidden` spacer, an optional dense variant for nested tables and a sticky variant for scrolling ones). |
 | `frontend/e2e/input-import.spec.ts` | Import browser journey: a CSV Data Input previews its rows, the file grows, and Import re-reads it and previews the new rows. |
-| `frontend/e2e/replaced-data.spec.ts` | Browser journeys over data files replaced on disk while the editor is open: one Refresh previews a Parquet file that lost, gained or renamed a column on the input and on a pass-through node below it, and coming back shows the same table. |
+| `frontend/e2e/replaced-data.spec.ts` | Browser journeys over data files replaced on disk while the editor is open: one Refresh previews a Parquet file that lost, gained or renamed a column on the input and on a pass-through node below it, and coming back shows the same table; one Refresh brings Explore's Overview to a replaced Parquet file and a replaced snapshotted CSV file, and the Banding editor's count and categorical values to a replaced file. |
 | `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
 
 ## Key types and data structures
@@ -138,13 +138,18 @@
    tabpanel until that module is ready.
 4. Explore shows no cache state of its own. The node's Refresh button brings its data up to date
    through `refreshNodeDataCache(nodeId)`, which asks every consumer registered for that node to
-   do so: when the consumer's last inspection failed or was refused, it asks for the point again,
-   whatever point it keeps from an earlier answer, and the new answer decides the next Refresh;
-   otherwise `missing` sends a plain build; `stale`, `partial` and `corrupt` send a refresh, which
-   is also the recovery path from an unreadable snapshot; and `current`, `building` and
-   `checking` do nothing, so a Refresh pressed to re-read a node's generated fields never
-   recomputes a dataset that has not changed. While the data is built or profiled, a progress bar runs under the
-   frame's header. The subtitle names the source and, while the profile runs or after it fails,
+   do so. A consumer whose build is under way does nothing (the build reads the point when it
+   ends); every other asks for the point again, whatever it last heard, because the data under a
+   point can change with nothing on the page hearing of it: a file replaced on disk under a
+   direct read moves its data version, and one under a snapshot or a built output makes it
+   stale. That answer is published like any other, so a moved data version reaches every pane,
+   profile and whole-data answer of the point (the Overview, Pivots, Charts and Relationships
+   panes, and the Banding and Rating Step editors), and it decides the Refresh: `missing` sends a
+   plain build; `stale`, `partial` and `corrupt` send a refresh, which is also the recovery path
+   from an unreadable snapshot; and `current` and `building` do nothing more, so a Refresh
+   pressed to re-read a node's generated fields never recomputes a dataset that has not
+   changed. A failed or refused answer is held as the consumer's problem, as any inspection's is.
+   While the data is built or profiled, a progress bar runs under the frame's header. The subtitle names the source and, while the profile runs or after it fails,
    the profile's progress or failure.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
@@ -154,7 +159,9 @@
 6. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
    display fields they render and pass it to `ExploreTableActions`. Copy serialises the header
    and every exported row as TSV; download uses the shared CSV escaping helper. Schema supplies
-   every column matching its current search query, not only the current 50-row page. Numeric and
+   every column matching its current search query, not only the current 50-row page. The
+   search box shows only for a schema of more than 50 columns, and the query applies only while
+   it shows: a schema refreshed too short for the box is shown and exported whole. Numeric and
    categorical summaries export their complete profile lists. The actions do not offer JSON
    sharing or paste-in because Explore reports are read-only analysis artifacts. The shared
    serializers remain click-loaded from the already-lazy Overview code.
@@ -561,6 +568,11 @@ module map). In `frontend/src/hooks/__tests__/usePipelineAPI.test.ts`, a selecte
 Refresh and a Refresh that previews an upstream node first each ask for none of the columns the
 node last previewed with, against a server that refuses the remembered one, and a node whose
 Refresh failed is asked again when it is shown again rather than showing its earlier rows.
+`frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
+`frontend/src/__tests__/editors/BandingEditorStats.test.tsx` show
+the Overview and the Banding editor's count following a point whose data version moved, after
+one Refresh with no build, and `frontend/src/panels/explore/__tests__/SchemaTableCard.test.tsx` a
+searched long schema refreshed to a short one showing every column.
 Explore owns a dedicated browser journey in `frontend/e2e/explore.spec.ts`: it authors and
 connects an Explore node, caches the whole dataset, reloads the application, opens Pivots,
 asserts that the profile's post-code schema populates the field palette, commits a Pivot

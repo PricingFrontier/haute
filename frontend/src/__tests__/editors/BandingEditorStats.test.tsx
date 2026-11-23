@@ -448,6 +448,36 @@ describe("BandingEditor statistics", () => {
     expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 
+  it("counts the data as it is after one Refresh when the file under a current point was replaced", async () => {
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
+
+    // A new extract replaces the file: nothing on the page has heard of it, and
+    // the server's point now holds another version, read as it is.
+    mockGetNodeDataPoint.mockResolvedValue(point("current", "gen-2"))
+    mockGetBandingStats.mockResolvedValue(stats({
+      point: point("current", "gen-2"),
+      data_version: "gen-2",
+      total_rows: 12,
+      bins: [{ lower: 0, upper: 100, count: 12 }],
+      rule_counts: [5, 7],
+    }))
+
+    await act(async () => {
+      refreshNodeDataCache("banding_1")
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    expect(await screen.findByText("All rows · 12")).toBeInTheDocument()
+    expect(mockGetBandingStats.mock.calls.at(-1)?.[0]).toMatchObject({ factor: { column: "premium" } })
+    expect(runNodeData).not.toHaveBeenCalled()
+  })
+
   it("never shows full-data counts for data that has moved on", async () => {
     mockGetNodeDataPoint.mockResolvedValue(point("stale", DATA_VERSION))
 

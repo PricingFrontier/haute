@@ -670,6 +670,40 @@ describe("ExplorePreview", () => {
     expect(await screen.findByText("4,321")).toBeInTheDocument()
   })
 
+  it("shows the data as it is after one Refresh when the data under a current point has changed", async () => {
+    seedCachedExplore({ report: makeReport({ row_count: 30 }) })
+    renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
+    expect(await screen.findByText("30", undefined, { timeout: LAZY_PANE_TIMEOUT_MS })).toBeInTheDocument()
+
+    // The file under the node is replaced by another extract: the server's point
+    // now holds another version, which nothing on the page has heard of.
+    const replaced = makeReport({ row_count: 7, data_version: "gen-2" })
+    const replacedPoint = point("current", "gen-2")
+    mockGetNodeDataPoint.mockResolvedValue(replacedPoint)
+    mockGetNodeDataProfile.mockResolvedValue({
+      status: "completed",
+      message: "Profile is ready",
+      result: {
+        row_count: replaced.row_count,
+        column_count: replaced.column_count,
+        columns: replaced.columns,
+        overview_summary: replaced.overview_summary,
+        data_version: replaced.data_version,
+        generated_at: replaced.generated_at,
+      },
+      point: replacedPoint,
+    })
+
+    await act(async () => {
+      refreshNodeDataCache("explore_1")
+    })
+
+    expect(await screen.findByText("7")).toBeInTheDocument()
+    expect(screen.queryByText("30")).not.toBeInTheDocument()
+    expect(mockRunNodeData).not.toHaveBeenCalled()
+  })
+
   it("re-asks for a cached profile after the shared node-data store resets", async () => {
     const { profile } = seedCachedExplore({ report: makeReport({ row_count: 4321 }) })
     useNodeDataStore.setState({ profiles: {} })
