@@ -6,10 +6,7 @@ The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
 edit costs, what the undo history holds, which connections the canvas
 takes, and what a tab with unsaved work does when the file changes under
-it. `FEG-03` comes from the plan's browser sweep
-of the editors' fields on 11 November and was re-run by the main session
-in a browser and through the save route. `FEG-05`
-comes from the plan's browser sweep of what happens around an open editor,
+it. `FEG-05` comes from the plan's browser sweep of what happens around an open editor,
 also on 11 November; the main session ran it again with a slip in a code
 editor and with a branch checked out and back. `FEG-06` and `FEG-07` come
 from the plan's phase 5, a reader from a second model family (Codex) over
@@ -23,62 +20,16 @@ November 2026.
 
 ## Priorities
 
-**Start with:** `FEG-03`
+**Start with:** `FEG-05`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
 | FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
 | FEG-06 | Planned | P3 | Nodes pasted together stay connected in their code: a pasted Transform reads the pasted input, not the original under a name it no longer has. |
 | FEG-07 | Planned | P3 | An Edge Join dropped on the edge into an optimiser moves the optimiser's chosen input to the join, and a save's refusal names the node as the canvas does. |
 | FEG-09 | Planned | P2 | Comparing an earlier milestone of a submodel that gained an output shows the comparison; an output with no identity yet never replaces the screen with an error. |
 
 ## Planned improvements
-
-### FEG-03 — A connection that closes a loop is refused at the canvas
-**Why:** Reproduced on 11 November 2026 in a browser by the plan's sweep of
-the editors' fields, and again by the main session. With Transforms in a
-chain, `enriched` to `loop_a` to `loop_b`, the analyst drags `loop_b`'s
-output onto `loop_a`'s input. The canvas takes the edge without a word. A
-node connected to itself is refused ("Self-connections are not allowed"),
-and the Edge Join gesture refuses a loop ("Edge join rejected: that
-connection would create a cycle"), but an ordinary connection is not
-checked. Save then answers 500 and the screen reads "Failed to save
-pipeline: Operation failed. Check the server logs for details." The server
-log holds the sentence the analyst needs, in the form "Cycle detected in
-pipeline graph involving nodes: a, b. Remove one of the edges to break the
-cycle."
-
-From then on nothing can be saved. Another node was renamed and Save
-pressed: 500 again, the same text, and the pipeline file without the new
-name. The editor does not try again by itself. After two presses of Undo,
-the first for the rename and the second for the edge, the next save
-succeeds. The sweep saw a loop of three behave the same, and the preview's
-request for a node's inputs answer the same 500 for the nodes in the loop.
-A request whose edge names a node that is not there gets the same generic
-answer through the route ("Edges reference unknown node IDs: ghost." in the
-log); no way to make one on the canvas was found.
-
-**Plan:** Refuse a connection that would close a loop in the canvas's
-connection rule, with the Edge Join's check and its words. Answer the graph
-errors that the save and the preview routes can meet, a loop and an edge
-without its node, as refusals that carry the error's own sentence, which
-already names the nodes and the remedy.
-
-**Acceptance:** Dragging a connection that closes a loop of two or of three
-is refused at the canvas with a message, and the number of edges does not
-change. A save or a preview request whose graph holds a loop answers 4xx
-naming the nodes. Neither answers "Operation failed." A browser test drags
-the loop.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useEdgeHandlers.ts`;
-`frontend/src/utils/connectionValidation.ts::validatePipelineConnection`;
-`frontend/src/utils/edgeJoinGraph.ts::hasDirectedCycle`;
-`src/haute/_topo.py::CycleError`;
-`src/haute/_topo.py::UnknownEdgeEndpointError`;
-`src/haute/routes/pipeline.py::save_pipeline`.
 
 ### FEG-05 — A tab locked by a change on disk unlocks when the change is gone
 **Why:** Reproduced in a browser on 11 November 2026, by the review plan's

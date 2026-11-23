@@ -1053,3 +1053,61 @@ class TestRequiredFieldValidation:
     def test_utility_create_requires_name(self):
         with pytest.raises(ValidationError):
             UtilityCreateRequest()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# A graph whose edges close a loop, or name a node it does not hold
+# Real failure (FEG-03): the save and the preview answered an incident, and the
+# sentence naming the nodes and the remedy was in the server's log alone.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _transform(node_id: str) -> dict[str, object]:
+    return {
+        "id": node_id,
+        "data": {"label": node_id, "nodeType": "polars", "config": {"code": "df = df"}},
+    }
+
+
+def _loop_graph(*, closing_target: str = "loop_a") -> dict[str, object]:
+    """``src`` into ``loop_a`` into ``loop_b``, and ``loop_b`` back into *closing_target*."""
+    graph = _minimal_graph_dict()
+    graph["nodes"] = [*graph["nodes"], _transform("loop_a"), _transform("loop_b")]
+    graph["edges"] = [
+        {"id": "e1", "source": "src", "target": "loop_a"},
+        {"id": "e2", "source": "loop_a", "target": "loop_b"},
+        {"id": "e3", "source": "loop_b", "target": closing_target},
+    ]
+    return graph
+
+
+class TestGraphsThatCannotRun:
+    """A loop or an edge to a missing node is refused with its own sentence, never an incident."""
+
+    @pytest.mark.parametrize(
+        ("endpoint", "extra"),
+        [
+            (
+                "/api/pipeline/save",
+                {"name": "main", "source_file": "main.py", "base_revision": None},
+            ),
+            ("/api/pipeline/preview", {"target": node_target("loop_b")}),
+            ("/api/pipeline/preview/inputs", {"target": node_target("loop_b")}),
+        ],
+    )
+    def test_a_loop_is_refused_naming_its_nodes(self, client, endpoint, extra):
+        resp = client.post(endpoint, json={"graph": _loop_graph(), **extra})
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        assert "loop_a, loop_b" in detail, detail
+        assert "Remove one of the edges to break the cycle." in detail
+        assert "incident" not in detail.lower()
+
+    def test_an_edge_to_a_missing_node_is_refused_naming_it(self, client):
+        graph = _loop_graph(closing_target="ghost")
+        resp = client.post(
+            "/api/pipeline/save",
+            json={"graph": graph, "name": "main", "source_file": "main.py", "base_revision": None},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "ghost" in resp.json()["detail"], resp.text

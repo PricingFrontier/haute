@@ -7,6 +7,7 @@ import { appEdge, appNode, freshNodeLabel, nodeLabels, selectOnlyNode } from "./
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
 import { isPlainObject } from "../types/guards"
+import { hasDirectedCycle } from "./directedCycle"
 
 export type EdgeJoinFailureReason =
   | "target-edge-not-found"
@@ -563,31 +564,4 @@ function assertSameOrderedIds(
   ) {
     throw new Error(`identity resolver returned an invalid ${kind} sequence`)
   }
-}
-
-function hasDirectedCycle(nodes: Node[], edges: Edge[]): boolean {
-  const adjacency = new Map<string, string[]>()
-  for (const node of nodes) adjacency.set(node.id, [])
-  for (const edge of edges) {
-    const children = adjacency.get(edge.source)
-    if (!children) continue
-    children.push(edge.target)
-  }
-
-  const visiting = new Set<string>()
-  const visited = new Set<string>()
-
-  const visit = (nodeId: string): boolean => {
-    if (visiting.has(nodeId)) return true
-    if (visited.has(nodeId)) return false
-    visiting.add(nodeId)
-    for (const child of adjacency.get(nodeId) ?? []) {
-      if (visit(child)) return true
-    }
-    visiting.delete(nodeId)
-    visited.add(nodeId)
-    return false
-  }
-
-  return nodes.some((node) => visit(node.id))
 }

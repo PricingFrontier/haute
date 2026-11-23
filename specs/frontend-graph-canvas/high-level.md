@@ -408,7 +408,13 @@ toast.
   tick past the graph mutation so no component reads a torn state in the same
   render.
 - **Connecting nodes.** Dragging from a handle and releasing on a compatible
-  handle commits a normal edge; releasing on an *existing edge* inserts an
+  handle commits a normal edge. An edge that would close a loop (a node
+  reaching itself, as `loop_b` back into `loop_a` after `loop_a` into
+  `loop_b`) is refused with "Connection rejected: that connection would create
+  a cycle" and the edges stay as they were: the pipeline runs each node after
+  its inputs, and a save or a preview of a graph holding a loop is refused by
+  the server with the nodes it involves, never answered as an incident.
+  Releasing on an *existing edge* inserts an
   edge-join node at the drop point and rewires that edge through it;
   releasing one source handle on another source handle also inserts an
   edge-join (base + join inputs), including via a synthesized touch-event
