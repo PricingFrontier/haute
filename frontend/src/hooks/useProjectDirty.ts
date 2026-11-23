@@ -54,6 +54,16 @@ export async function discardFormEdits(): Promise<void> {
  */
 export function discardCanvasEdits(): void {
   if (!useGraphStore.getState().dirty) return
+  reloadPipelineFile()
+}
+
+/**
+ * The sync banner's Reload file: drop the canvas's unsaved edits and read the pipeline
+ * file again, which the banner's sentence offers when a change on disk holds the canvas
+ * back (FEG-05). Also when no edit is left (they were undone), since the canvas is still
+ * out of step with the file.
+ */
+export function reloadPipelineFile(): void {
   useGraphStore.getState().markSaved()
   useUIStore.getState().setSyncBanner(null)
   // The canvas still holds the edits, not the document it last accepted: the

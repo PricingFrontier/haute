@@ -40,6 +40,11 @@ function triggerResize(width: number, height: number) {
 // selection-class effect (setNodes) is observable.
 vi.mock("@xyflow/react", async () => {
   const { useState } = await import("react")
+  const { useSubmodelDefinitions } = await import("../../nodes/submodelDefinitions")
+  /** The definitions a canvas's occurrences are drawn from, as the canvas would read them. */
+  const Definitions = () => (
+    <div data-testid="cmp-definitions" data-ids={Object.keys(useSubmodelDefinitions()).join(",")} />
+  )
   return {
     ReactFlow: ({
       children,
@@ -61,6 +66,7 @@ vi.mock("@xyflow/react", async () => {
           if (e.target === e.currentTarget) onPaneClick?.()
         }}
       >
+        <Definitions />
         {(nodes ?? []).map((n) => (
           <div
             key={n.id}
@@ -123,6 +129,7 @@ vi.mock("../../utils/editorIdentities", () => ({
 import ComparisonView from "../ComparisonView"
 import useGitStore from "../../stores/useGitStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useGraphStore from "../../stores/useGraphStore"
 
 const comparison = { sha: "abc1234def567890", label: "v1.2" }
 
@@ -197,6 +204,24 @@ describe("ComparisonView", () => {
       edges: rawHistorical.edges,
       submodels: rawHistorical.submodels,
     }))
+  })
+
+  it("draws each side's occurrences from its own version's definitions, not the live document's", async () => {
+    useGraphStore.setState({ submodels: { live_definition: { definitionId: "live_definition" } } })
+    mockGetCommitPipeline.mockResolvedValue({
+      nodes: [node("quotes")],
+      edges: [],
+      submodels: { old_definition: { definitionId: "old_definition" } },
+    })
+    renderView()
+    await waitFor(() => expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument())
+    // The live document moves on while comparing: the current side keeps the one it froze.
+    act(() => { useGraphStore.setState({ submodels: { edited: { definitionId: "edited" } } }) })
+
+    const definitionsOf = (canvas: string) => within(screen.getByTestId(canvas)).getByTestId("cmp-definitions").dataset.ids
+    expect(definitionsOf("comparison-canvas-historical")).toBe("old_definition")
+    expect(definitionsOf("comparison-canvas-current")).toBe("live_definition")
+    useGraphStore.setState({ submodels: {} })
   })
 
   it("shows a loading state, then both canvases once the historical version loads", async () => {

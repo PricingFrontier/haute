@@ -194,6 +194,21 @@ describe("useNameViolationRevalidation", () => {
     await waitFor(() => expect(useDocumentStatusStore.getState().nameViolations).toEqual([]))
   })
 
+  it("checks again when the canvas comes back in step with a file carrying the violations it was loaded with", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(fencedDocument([RESERVED]), true, "fingerprint-loaded")
+    resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [] })
+    const nodes = [node("pl", "polars rows")]
+    renderHook(() => useNameViolationRevalidation({ nodes, edges, submodels: {}, preamble, buildContextGraph }))
+    await waitFor(() => expect(useDocumentStatusStore.getState().capabilities?.can_save).toBe(true))
+    expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(1)
+
+    // A slip on disk taken out again: the returning document names the violation the rename cleared.
+    act(() => useDocumentStatusStore.getState().returnInStep(fencedDocument([RESERVED]), "fingerprint-loaded"))
+    await waitFor(() => expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(useDocumentStatusStore.getState().capabilities?.can_save).toBe(true))
+    expect(useDocumentStatusStore.getState().nameViolations).toEqual([])
+  })
+
   it("asks nothing of a document loaded without violations", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
     renderHook(() => useNameViolationRevalidation({

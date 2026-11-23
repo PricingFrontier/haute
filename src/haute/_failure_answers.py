@@ -36,6 +36,7 @@ from haute._memory_errors import memory_error_in
 from haute.errors import (
     ConfigError,
     ContractMismatchError,
+    GraphStructureError,
     HauteValidationError,
     InvalidPathError,
     NodeFailedError,
@@ -200,9 +201,9 @@ def classify_failure(exc: BaseException) -> FailureAnswer | None:
     node = _node_answer(exc)
     if node is not None:
         return node
-    if isinstance(exc, ParseError):
-        # A graph the user can fix (a name collision, an undeclared handle): the message says
-        # what to change and its context which element it is.
+    if isinstance(exc, ParseError | GraphStructureError):
+        # A graph the user can fix (a name collision, an undeclared handle, edges closing a
+        # loop): the message says what to change and its context which element it is.
         return _plain(400, "graph_refused", str(exc))
     if isinstance(exc, ConfigError):
         # The message names the setting and what is wrong; its context (a path) is logged.

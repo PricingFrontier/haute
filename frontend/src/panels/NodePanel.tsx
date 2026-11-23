@@ -1122,7 +1122,7 @@ function NodeEditorBody({
       {documentReadOnly ? (
         <div className="space-y-3 p-3" data-testid="node-document-readonly-inspector">
           <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-            This node is valid and available for inspection. Resolve the pipeline load diagnostics before editing or running it.
+            {documentReadOnlyReason()}
           </p>
           <pre
             aria-label="Read-only node configuration"

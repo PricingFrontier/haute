@@ -307,11 +307,25 @@ toast.
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
-  Both undo and redo stacks retain at most 100 entries.
+  Both undo and redo stacks retain at most 100 entries. An entry shares every
+  node, edge and definition its step did not change, and every unchanged
+  child of a changed definition, with the entries beside it and with the
+  canvas, so its size follows what the step changed: one hundred edits beside
+  a 100,000-row rating table hold the table once, whether it is in the
+  pipeline or in a submodel. The graph replaces a node or edge it changes and
+  never writes into one in place; everything the graph store holds is frozen
+  as it is committed, so a write into a node, its settings or the lists
+  holding them fails loudly instead of going round the dirty flag, history and
+  the saved baseline.
 - **Dirty state** is derived, not imperatively toggled: it's a fingerprint
   comparison over persisted nodes, edges, preamble, and submodels against the
   last-saved snapshot, recomputed on every persisted mutation. Undoing back
-  to exactly the saved state always reports clean.
+  to exactly the saved state always reports clean. Every fingerprint is made of
+  one digest per node, edge, definition and definition child, kept for as long
+  as that object lives, so an edit costs what it changed: typing into a code
+  node beside a 100,000-row rating table takes well under 5 ms, not the size of
+  the table, in the pipeline or inside a submodel, and so does any edit the
+  editor's update plan makes beside a submodel holding one.
 - **Graph context.** `GraphProvider`/`useGraph()` exposes a render-stable
   `{allNodes, edges, submodels, preamble}` snapshot to the node inspector's
   subtree. Calling `useGraph()` outside a provider throws immediately.
@@ -368,18 +382,19 @@ toast.
   copies presentation defaults, and starts with no boundary bindings as one undo
   step. Deleting a submodel occurrence is owner-aware: an instance copy (valid
   `instance_of`) deletes exactly like an ordinary node — together with its
-  incident edges, as one undo step — from the context menu, the delete handler,
-  the window keyboard shortcut, and React Flow's native delete. The definition
+  incident edges, as one undo step — from the context menu, the delete handler
+  and the window keyboard shortcut. The definition
   owner (or an occurrence with malformed identity) is refused on every one of
   those surfaces with a visible explanation, because it anchors the shared
   definition; "Dissolve Submodel" is its only removal path. A mixed keyboard
   selection of nodes and edges removes the eligible selected nodes, their
   incident edges, and any separately selected edges in one undoable graph
   transaction while preserving unrelated unselected edges, and spares owners
-  with an explanatory toast while the rest of the selection still deletes; canvas-native deletion never includes an owner
-  because owners are stamped non-deletable, and React Flow preserves the
-  edges of nodes it does not delete. An explicitly selected boundary edge
-  remains deletable — removing a binding is an ordinary edit.
+  with an explanatory toast while the rest of the selection still deletes. An
+  explicitly selected boundary edge remains deletable — removing a binding is
+  an ordinary edit. Delete and Backspace both reach that one keyboard handler:
+  React Flow's own delete key is off, so a deletion made with either key is
+  one undo step, and one Undo brings back the nodes with every edge.
   Auto-layout runs ELK asynchronously, guards against
   overlapping runs from repeated clicks, and re-fits the view once positions
   land. It arranges the graph left-to-right with crossing reduction and straight
@@ -398,7 +413,13 @@ toast.
   tick past the graph mutation so no component reads a torn state in the same
   render.
 - **Connecting nodes.** Dragging from a handle and releasing on a compatible
-  handle commits a normal edge; releasing on an *existing edge* inserts an
+  handle commits a normal edge. An edge that would close a loop (a node
+  reaching itself, as `loop_b` back into `loop_a` after `loop_a` into
+  `loop_b`) is refused with "Connection rejected: that connection would create
+  a cycle" and the edges stay as they were: the pipeline runs each node after
+  its inputs, and a save or a preview of a graph holding a loop is refused by
+  the server with the nodes it involves, never answered as an incident.
+  Releasing on an *existing edge* inserts an
   edge-join node at the drop point and rewires that edge through it;
   releasing one source handle on another source handle also inserts an
   edge-join (base + join inputs), including via a synthesized touch-event
@@ -546,7 +567,18 @@ toast.
   identity so it remains correct while the state update is still settling.
 - **Live code sync.** External edits to a pipeline's `.py` file arrive over
   WebSocket and replace the in-memory graph — but never while the user has
-  unsaved local edits, where a banner asks them to reload or discard first.
+  unsaved local edits, where a banner asks them to reload or discard first
+  and the tab is read-only. The banner's Reload file drops the local edits and
+  reads the file again. A change on disk that is taken back (a slip in a code
+  editor that saves as it goes, undone; a branch checked out and back) leaves
+  the file as the edits found it: the tab remembers which document its edits
+  were made on, and when that document arrives again the banner goes, the
+  editor is editable and Save writes the edits on that revision. A rewrite
+  that changes only the file's bytes (other line ends, a byte-order mark) is a
+  different document and still locks: the server's fingerprint is the one
+  identity of a document, and no second, looser one is kept beside it. While
+  the tab is held back the node panel says so, never that load diagnostics
+  are the cause.
   Once either side supplies a source identity, both sides must resolve to the
   same file; one-sided or foreign updates are ignored. Each accepted
   update advances a generation before asynchronous layout, so a later graph

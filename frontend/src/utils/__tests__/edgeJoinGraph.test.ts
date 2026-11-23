@@ -27,6 +27,12 @@ function node(id: string): Node {
   }
 }
 
+/** A Transform whose code names its inputs, which a binding keeps reading by their old names. */
+function coded(id: string): Node {
+  const plain = node(id)
+  return { ...plain, data: { ...plain.data, config: { code: "df = df" } } }
+}
+
 function edge(id: string, source: string, target: string, extra: Partial<Edge> = {}): Edge {
   return { id, source, target, ...extra }
 }
@@ -132,7 +138,7 @@ describe("rebaseEdgeJoinInsertion", () => {
 
 describe("insertEdgeJoinNode", () => {
   it("splits the target edge and creates a compact edgeJoin node", () => {
-    const nodes = [node("a"), node("b"), node("c")]
+    const nodes = [node("a"), coded("b"), node("c")]
     const edges = [
       edge("e-a-b", "a", "b", { sourceHandle: "policies", targetHandle: "input" }),
     ]
@@ -185,7 +191,7 @@ describe("insertEdgeJoinNode", () => {
     ])
     expect(nodes).toHaveLength(3)
     expect(edges).toHaveLength(1)
-    expect(result.nodes.find((n) => n.id === "b")?.data.config).toEqual({})
+    expect(result.nodes.find((n) => n.id === "b")?.data.config).toEqual(coded("b").data.config)
     expect(finalized.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
       input_mapping: { a: "server_assigned_join" },
     })
@@ -223,9 +229,48 @@ describe("insertEdgeJoinNode", () => {
     ])
   })
 
+  it("moves an Optimiser's chosen input to the join, as a rename of that input does", () => {
+    const optimiser = {
+      ...node("optimiser"),
+      type: NODE_TYPES.OPTIMISER,
+      data: {
+        ...node("optimiser").data,
+        label: "browser_ratebook",
+        nodeType: NODE_TYPES.OPTIMISER,
+        config: { data_input: "rows", analysis_input: "rows" },
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [node("rows"), optimiser, node("rates")],
+      edges: [edge("e-rows-optimiser", "rows", "optimiser")],
+      targetEdgeId: "e-rows-optimiser",
+      connection: { source: "rates" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(finalizeInsertion(result, "edge_join").nodes.find((n) => n.id === "optimiser")?.data.config)
+      .toEqual({ data_input: "edge_join", analysis_input: "edge_join" })
+  })
+
+  it("leaves an uncoded Transform's names to its edges, as a rename does", () => {
+    const result = insertEdgeJoinNode({
+      nodes: [node("a"), node("b"), node("c")],
+      edges: [edge("e-a-b", "a", "b")],
+      targetEdgeId: "e-a-b",
+      connection: { source: "c" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(finalizeInsertion(result, "edge_join").nodes.find((n) => n.id === "b")?.data.config).toEqual({})
+  })
+
   it("supports repeated joins on already split segments", () => {
     const first = insertEdgeJoinNode({
-      nodes: [node("a"), node("b"), node("c"), node("d")],
+      nodes: [node("a"), coded("b"), node("c"), node("d")],
       edges: [edge("e-a-b", "a", "b")],
       targetEdgeId: "e-a-b",
       connection: { source: "c" },
@@ -280,7 +325,7 @@ describe("insertEdgeJoinNode", () => {
       },
     }
     const result = insertEdgeJoinNode({
-      nodes: [request, node("enriched"), node("lookup")],
+      nodes: [request, coded("enriched"), node("lookup")],
       edges: [edge("e-request-enriched", "request", "enriched", {
         sourceHandle: "raw_rows",
       })],
@@ -317,7 +362,7 @@ describe("insertEdgeJoinNode", () => {
       },
     }
     const result = insertEdgeJoinNode({
-      nodes: [occurrence, node("enriched"), node("lookup")],
+      nodes: [occurrence, coded("enriched"), node("lookup")],
       edges: [edge("e-pricing-enriched", occurrence.id, "enriched", {
         sourceHandle: "out__written_premium",
       })],

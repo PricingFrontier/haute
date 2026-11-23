@@ -15,10 +15,10 @@ from collections.abc import Iterable, Mapping
 
 from haute._graph_utils import build_parents_of, upstream_node_ids
 from haute._types import GraphEdge
-from haute.errors import HauteError
+from haute.errors import GraphStructureError
 
 
-class CycleError(HauteError):
+class CycleError(GraphStructureError):
     """Raised when a cycle is detected in the pipeline graph."""
 
     def __init__(self, cycle_nodes: list[str]) -> None:
@@ -30,7 +30,7 @@ class CycleError(HauteError):
         )
 
 
-class UnknownEdgeEndpointError(HauteError):
+class UnknownEdgeEndpointError(GraphStructureError):
     """Raised when an edge refers to a node outside the supplied graph."""
 
     def __init__(

@@ -12,6 +12,7 @@ import { SUBMODEL_INPUT_HANDLE } from "../utils/flowHandles"
 import FramePortRows, { DefaultInputPortRow } from "./FramePortRows"
 import { deriveNodeCanvasFlags, NodeTraceValuePill } from "./nodeCanvasStyle"
 import useGraphStore from "../stores/useGraphStore"
+import { useSubmodelDefinitions } from "./submodelDefinitions"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
 const headerInset = {
@@ -36,7 +37,7 @@ function SubmodelNode({
   const config = nodeData.config
   const canonicalIdentityValid = isSubmodelInstanceConfig(config)
   const definitionId = canonicalIdentityValid ? config.definition_id : ""
-  const definition = useGraphStore((state) => state.submodels[definitionId])
+  const definition = useSubmodelDefinitions()[definitionId]
   const canonicalDefinition = canonicalIdentityValid && isSubmodelDefinition(definition, definitionId)
     ? definition
     : undefined
@@ -45,11 +46,12 @@ function SubmodelNode({
   const inputAnchorIds = canonicalDefinition?.inputPorts.map(
     (port) => `in__${port.name}`,
   ) ?? []
-  const outputFrames = canonicalDefinition?.outputPorts.map((port) => {
+  // An output the server has not named yet (one just connected) has no handle until it is:
+  // the card is drawn without it, never by throwing, which would take down the whole view.
+  const outputFrames = canonicalDefinition?.outputPorts.flatMap((port) => {
     const handle = `out__${port.name}`
     const label = nodeData._sourceHandleInputNames?.[handle]
-    if (typeof label !== "string" || !label) throw new Error(`Submodel ${id} output ${port.name} has no authoritative identity`)
-    return { id: handle, label }
+    return typeof label === "string" && label ? [{ id: handle, label }] : []
   }) ?? []
   const loadAvailability = nodeData._loadAvailability ?? "ready"
   const showRecoveryHandles = definitionInvalid && loadAvailability !== "ready"

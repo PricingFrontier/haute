@@ -58,6 +58,7 @@ import { withEdgeJoinInsertionCandidate } from "./utils/edgeJoinInsertionFeedbac
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
+import { reloadPipelineFile } from "./hooks/useProjectDirty"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing, { type TraceRequestState } from "./hooks/useTracing"
 import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
@@ -109,7 +110,6 @@ import InitialViewFit from "./components/InitialViewFit"
 import TraceViewFit from "./components/TraceViewFit"
 import ChangeFocusFit from "./components/ChangeFocusFit"
 import AssistantWorkingPill from "./components/AssistantWorkingPill"
-import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { resolveEditorGraphIdentities } from "./utils/editorIdentities"
 import { serial } from "./utils/serial"
@@ -1141,10 +1141,6 @@ function FlowEditor() {
     }
     previousDocumentRevisionRef.current = documentSourceRevision
   }, [cancelPreview, cancelTrace, clearTrace, documentSourceRevision, setPreviewData])
-  const canvasNodes = useMemo(
-    () => withNativeDeletePolicy(nodesWithStatus),
-    [nodesWithStatus],
-  )
 
   const {
     viewStack,
@@ -2214,7 +2210,13 @@ function FlowEditor() {
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
               style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>
               <span className="flex-1 truncate">{syncBanner}</span>
-              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">✕</button>
+              <button
+                onClick={reloadPipelineFile}
+                className="px-2 py-0.5 rounded border border-current opacity-90 hover:opacity-100"
+              >
+                Reload file
+              </button>
+              <button onClick={() => setSyncBanner(null)} aria-label="Close" className="opacity-60 hover:opacity-100">✕</button>
             </div>
           )}
           <ErrorBoundary name="Canvas">
@@ -2228,7 +2230,7 @@ function FlowEditor() {
               <EdgeJoinInsertionFeedback candidateEdgeId={presentedEdgeJoinCandidateEdgeId} />
               <ReactFlow
                 className={useLiteGraphEffects ? "graph-effects-lite" : undefined}
-                nodes={canvasNodes}
+                nodes={nodesWithStatus}
                 edges={edgesWithEdgeJoinCandidate}
                 onNodesChange={handleNodesChange}
                 onEdgesChange={handleEdgesChange}
@@ -2260,9 +2262,11 @@ function FlowEditor() {
                 selectNodesOnDrag
                 selectionMode={SelectionMode.Partial}
                 selectionKeyCode={null}
-                // React Flow listens on the document, so a hidden canvas would
-                // still delete its selection on Backspace from another view.
-                deleteKeyCode={pipelineActive ? undefined : null}
+                // The app's Delete/Backspace handler (useKeyboardShortcuts) is the one
+                // delete: it removes a selection as one undo step and forgets the
+                // removed nodes' results. React Flow's own reports the edges and the
+                // node as two changes, so two undo steps (FEG-02).
+                deleteKeyCode={null}
                 panActivationKeyCode={pipelineActive ? undefined : null}
                 minZoom={0.1}
                 proOptions={proOptions}

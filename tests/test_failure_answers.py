@@ -30,6 +30,7 @@ from haute._failure_answers import (
 )
 from haute._file_ops import PathTooLongError
 from haute._memory_errors import memory_error_in
+from haute._topo import CycleError, UnknownEdgeEndpointError
 from haute._worker_failures import WorkerRemoteError
 from haute.errors import (
     ContractMismatchError,
@@ -252,6 +253,22 @@ class TestQuoteStore:
 
 
 class TestUnexpected:
+    @pytest.mark.parametrize(
+        ("failure", "named"),
+        [
+            (CycleError(["loop_b", "loop_a"]), "loop_a, loop_b"),
+            (UnknownEdgeEndpointError(("ghost",), ()), "ghost"),
+        ],
+        ids=["a loop", "an edge to a missing node"],
+    )
+    def test_a_graph_that_cannot_run_is_refused_in_its_own_words(
+        self, failure: Exception, named: str
+    ) -> None:
+        answer = answer_failure(failure, operation="save")
+        assert (answer.status, answer.code) == (400, "graph_refused")
+        assert named in answer.message
+        assert answer.incident is None
+
     def test_a_failure_nothing_names_is_words_and_an_incident(self) -> None:
         try:
             raise KeyError("internal_slot")

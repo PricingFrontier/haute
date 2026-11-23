@@ -54,6 +54,7 @@ import { createAfterIdentity } from "./createAfterIdentity"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SimpleNode } from "../panels/editors/_shared"
 import { resultKey } from "../utils/requestGateway"
+import { CLOSES_A_LOOP } from "../utils/directedCycle"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 const JSON_API_INPUT_SUFFIXES = [".json", ".jsonl", ".ndjson"] as const
@@ -161,7 +162,7 @@ const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
   "source-node-not-found": "Edge join rejected: source node is no longer available",
   "target-edge-node-not-found": "Edge join rejected: target edge is missing an endpoint",
   "self-join": "Edge join rejected: choose a different dataframe to join",
-  cycle: "Edge join rejected: that connection would create a cycle",
+  cycle: `Edge join rejected: ${CLOSES_A_LOOP}`,
 }
 
 export default function useEdgeHandlers({

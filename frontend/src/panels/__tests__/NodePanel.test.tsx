@@ -1022,6 +1022,20 @@ describe("NodePanel", () => {
     expect(screen.queryByTestId("DataInputEditor")).not.toBeInTheDocument()
   })
 
+  it("names the change on disk, not load diagnostics, when that is what holds the document", () => {
+    // A ready document the canvas is out of step with: its file changed under unsaved edits.
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument(), false)
+    renderPanel({
+      readOnly: true,
+      documentReadOnly: true,
+      node: makeNode({ id: "enriched", data: { label: "enriched", description: "", nodeType: "polars", config: {} } }),
+    })
+
+    const inspector = screen.getByTestId("node-document-readonly-inspector")
+    expect(inspector).toHaveTextContent("Pipeline changed on disk while you have unsaved changes.")
+    expect(inspector).not.toHaveTextContent("diagnostics")
+  })
+
   it("close button, the side panels' shared red Close, calls onClose", () => {
     const { props } = renderPanel()
     const closeBtn = screen.getByTitle("Close")
