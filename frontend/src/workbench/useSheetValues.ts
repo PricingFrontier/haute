@@ -13,7 +13,8 @@
  */
 import { createContext, useContext, useMemo, useState } from "react"
 import type { FormSchema, FormSpec, Page } from "../api/types"
-import { exportWorkbenchFile, importWorkbenchRows, type CellsExporter, type RowsImporter } from "../api/workbench"
+import { exportWorkbenchFile, type CellsExporter } from "../api/workbench"
+import { importWorkbenchRows, type RowsImporter } from "../api/workbenchImport"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
 import useWorkbenchPreviewStore, { NOTHING_LOCKED } from "../stores/useWorkbenchPreviewStore"
 import useWorkbenchPricingStore, { previewBasis, usePricingContext, type SamplePrice } from "../stores/useWorkbenchPricingStore"

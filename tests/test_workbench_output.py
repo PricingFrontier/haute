@@ -1236,6 +1236,34 @@ def test_the_quotes_identity_and_a_tables_one_row_read_the_same_on_either_engine
             execution_collect(refused["pricing_output"], engine=engine)
 
 
+def test_the_identity_is_read_from_its_one_row_and_given_to_tables_leading_with_it() -> None:
+    from haute._workbench_output import _one_identity_row, with_quote_identity
+
+    one = pl.LazyFrame({"quote_reference": ["Q-1"], "quote_option": [2]})
+    assert _one_identity_row(one).to_dicts() == [{"quote_reference": "Q-1", "quote_option": 2}]
+    with pytest.raises(WorkbenchOutputError, match="quote_details has 0 rows"):
+        _one_identity_row(one.clear())
+    tables = assemble_workbench_output_from_config(
+        pl.LazyFrame({"premium": [1.0]}),
+        pl.LazyFrame({"total": [3.0]}),
+        config={
+            "tables": [
+                _table("pricing", *_IDENTITY, ("premium", "float")),
+                _table("summary", ("total", "float")),
+            ]
+        },
+        ports=["pricing_output", "summary_output"],
+    )
+
+    given = with_quote_identity(tables, {"quote_details_input": one})
+
+    assert given["pricing_output"].collect().to_dicts() == [
+        {"quote_reference": "Q-1", "quote_option": 2, "premium": 1.0}
+    ]
+    assert given["summary_output"].collect().to_dicts() == [{"total": 3.0}]
+    assert with_quote_identity(tables, {}) is tables
+
+
 # -- An input table's outputs on its rows --------------------------------------------------
 
 

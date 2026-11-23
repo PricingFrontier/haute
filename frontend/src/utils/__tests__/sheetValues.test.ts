@@ -14,18 +14,17 @@ import {
   newQuoteValues,
   indexProblemCells,
   KEPT_KEY,
-  landedRows,
   presetRows,
   pricedRows,
   quoteProblems,
   quoteTyped,
-  replacesTyped,
   rowFilled,
   typedIndexProblems,
   valuesBasis,
   valuesIndex,
   withPresetRows,
 } from "../sheetValues"
+import { landedRows, replacesTyped } from "../../workbench/sheet/landedRows"
 import { columnKey, quotedSchema } from "../sheetVisibility"
 import { answeredOutputs, BLANK_THEME, linedUpOutputs, pricingBasis, type SampleRow } from "../workbenchForm"
 import presetCases from "./fixtures/presetRows.json"

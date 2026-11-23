@@ -219,19 +219,23 @@ def with_quote_identity(filled: WorkbenchOutputTables, quote: object) -> Workben
 
 
 def _one_row_identity(identity: pl.LazyFrame) -> pl.LazyFrame:
-    """*identity*, the quote's reference and option, failing when it is read with other
-    than one row: a quote's ``quote_details`` holds one."""
+    """*identity*, the quote's reference and option, read as :func:`_one_identity_row`
+    reads it when the scan is read."""
+    return limited_python_scan(
+        lambda _row_limit: _one_identity_row(identity), schema=identity.collect_schema()
+    )
 
-    def produce(_row_limit: int | None) -> pl.DataFrame:
-        held = execution_collect(identity, engine="streaming")
-        if held.height != 1:
-            raise WorkbenchOutputError(
-                f"The quote's {QUOTE_DETAILS_NAME} has {held.height} rows; its reference and "
-                "option are read from its one row."
-            )
-        return held
 
-    return limited_python_scan(produce, schema=identity.collect_schema())
+def _one_identity_row(identity: pl.LazyFrame) -> pl.DataFrame:
+    """*identity* collected, failing when it holds other than one row: a quote's
+    ``quote_details`` holds one."""
+    held = execution_collect(identity, engine="streaming")
+    if held.height != 1:
+        raise WorkbenchOutputError(
+            f"The quote's {QUOTE_DETAILS_NAME} has {held.height} rows; its reference and "
+            "option are read from its one row."
+        )
+    return held
 
 
 def workbench_response(

@@ -312,17 +312,6 @@ class WorkbenchExportRequest(BaseModel):
 MAX_IMPORT_FILE_TEXT = 14 * 1024 * 1024
 
 
-class WorkbenchImportRequest(BaseModel):
-    """An Import of a form the Workbench view holds, saved or not, run in Preview on the
-    sample: the Import by its id (``component``), the sample's values (``values``), which its
-    parameters read, and, for a file, the file the underwriter picked, as base64 (``file``)."""
-
-    form: FormSpec
-    component: BoundedName
-    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
-    file: str | None = Field(default=None, max_length=MAX_IMPORT_FILE_TEXT)
-
-
 class WorkbenchImportResponse(BaseModel):
     """What an Import gives its table: the table, how its rows land (``replace``, ``append`` or
     ``update``), and its rows, each the cells the sheets hold by column name."""
@@ -729,6 +718,17 @@ class WorkbenchAppFormResponse(BaseModel):
 
     form: FormSpec
     revision: str
+
+
+class WorkbenchImportRequest(BaseModel):
+    """An Import of a form the Workbench view holds, saved or not, run in Preview on the
+    sample: the Import by its id (``component``), the sample's values (``values``), which its
+    parameters read, and, for a file, the file the underwriter picked, as base64 (``file``)."""
+
+    form: FormSpec
+    component: BoundedName
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    file: str | None = Field(default=None, max_length=MAX_IMPORT_FILE_TEXT)
 
 
 class WorkbenchAppImportRequest(BaseModel):

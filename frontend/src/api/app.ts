@@ -12,7 +12,8 @@
 import type { SampleRow } from "../utils/workbenchForm"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 import { post, postRawStream, request, sendKeyed } from "./client"
-import { exportedFile, fileText, importedRows, IMPORT_TIMEOUT_MS, type ExportedFile } from "./workbench"
+import { exportedFile, type ExportedFile } from "./workbench"
+import { fileText, importedRows, IMPORT_TIMEOUT_MS } from "./workbenchImport"
 import type { KeyedTicket } from "./keyedWrites"
 import type {
   WorkbenchAppFormResponse,

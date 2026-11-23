@@ -9,7 +9,8 @@
  */
 import { create } from "zustand"
 import { apiErrorMessage } from "../api/errors"
-import type { CellsExporter, RowsImporter } from "../api/workbench"
+import type { CellsExporter } from "../api/workbench"
+import type { RowsImporter } from "../api/workbenchImport"
 import { basisOf, columnKey, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import { withCell, type SampleRow, type SampleValue } from "../utils/workbenchForm"
 import useWorkbenchFormStore from "./useWorkbenchFormStore"
