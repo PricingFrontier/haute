@@ -1244,7 +1244,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
   })
 
-  it("keeps in-place graph mutations dirty when they happen while a save is in flight", async () => {
+  it("keeps edits made while a save is in flight dirty, and clean again once undone by hand", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" }))
     let resolveSave!: (value: SavePipelineResponse) => void
     const savePromise = new Promise<SavePipelineResponse>((resolve) => {
@@ -1252,9 +1252,11 @@ describe("usePipelineAPI", () => {
     })
     mockSave.mockReturnValue(savePromise)
 
-    const config = { code: "df = input_df" }
-    const savedNode = makeNode("n1", "polars", { data: { label: "Transform", config } })
+    const savedNode = makeNode("n1", "polars", { data: { label: "Transform", config: { code: "df = input_df" } } })
     const savedEdge = makeEdge("n1", "n2", { id: "e1", sourceHandle: "before" })
+    // The graph replaces what it changes: an edit is a new node, never a write into the old one.
+    const withCode = (code: string) => ({ ...savedNode, data: { ...savedNode.data, config: { code } } })
+    const withHandle = (sourceHandle: string) => ({ ...savedEdge, sourceHandle })
     const params = makeParams()
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -1265,11 +1267,9 @@ describe("usePipelineAPI", () => {
       result.current.handleSave()
     })
 
-    config.code = "df = input_df.with_columns(pl.lit(1).alias('later'))"
-    savedEdge.sourceHandle = "after"
     act(() => {
-      useGraphStore.getState().setNodes([savedNode])
-      useGraphStore.getState().setEdges([savedEdge])
+      useGraphStore.getState().setNodes([withCode("df = input_df.with_columns(pl.lit(1).alias('later'))")])
+      useGraphStore.getState().setEdges([withHandle("after")])
     })
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
@@ -1281,10 +1281,8 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     act(() => {
-      config.code = "df = input_df"
-      savedEdge.sourceHandle = "before"
-      useGraphStore.getState().setNodes([savedNode])
-      useGraphStore.getState().setEdges([savedEdge])
+      useGraphStore.getState().setNodes([withCode("df = input_df")])
+      useGraphStore.getState().setEdges([withHandle("before")])
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
   })

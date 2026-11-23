@@ -37,7 +37,10 @@
  *     removed again at once).
  *
  * The 100-entry MAX_HISTORY cap prevents unbounded growth on long editing
- * sessions.
+ * sessions. Entries share every node a change did not touch (frozen history
+ * forms, `utils/graphSnapshot.historyGraphSnapshot`), and every fingerprint is
+ * composed of digests kept for each node's identity, so an edit costs what it
+ * changed, not the size of every node's settings (FEG-01).
  *
  * An open submodel (`enterSubmodelView` / `exitSubmodelView`) is a view of the
  * one document: `focus` names the occurrence and keeps the pipeline's own nodes
@@ -63,12 +66,12 @@
 import { create } from "zustand"
 import type { Node } from "@xyflow/react"
 import {
-  EMPTY_SNAPSHOT,
   holdsCanvasState,
-  serializeSnapshot,
+  persistedFingerprint,
   selectIsDirty,
-  cloneGraphSnapshot,
+  historyGraphSnapshot,
 } from "../utils/graphSnapshot"
+import { cachedDigest, contentDigest } from "../utils/contentDigest"
 import { withoutSavedForms } from "../utils/documentRequest"
 import { inputOrderedEdges } from "../utils/inputOrderedEdges"
 import { shallowNodeDataHash } from "../utils/shallowNodeHash"
@@ -295,15 +298,16 @@ type StructuralEdge = {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Snapshot of the current graph-shaped state. Deep-clones nodes and edges
- * so in-place mutations by React Flow or editor code cannot retroactively
- * corrupt history or saved baselines.
+ * Snapshot of the current graph-shaped state, in the frozen history forms every
+ * snapshot of the same nodes shares (`historyGraphSnapshot`): an entry costs what
+ * its change touched, and a write into a committed node in place throws instead of
+ * rewriting history or the saved baseline.
  */
 export function captureGraphSnapshot(
   state: Pick<GraphStore, "nodes" | "edges" | "preamble" | "submodels">
     & { globalConstants?: GlobalConstantDraft[] },
 ): GraphSnapshot {
-  return cloneGraphSnapshot(state)
+  return historyGraphSnapshot(state)
 }
 
 /** The document's own nodes: the pipeline's, also while a submodel is open. */
@@ -576,7 +580,7 @@ function submodelsStructuralHash(submodels: Record<string, unknown>): string {
     const other = nodes.filter((node) => !hashable.includes(node as StructuralNode)).map((node) => JSON.stringify(node)).sort()
     return `${id}=${JSON.stringify(rest)}{${structuralGraphParts(hashable, edges)}||${other.join("|")}}`
   })
-  const hash = parts.join("|")
+  const hash = contentDigest(parts.join("|"))
   submodelsStructuralCache.set(submodels, hash)
   return hash
 }
@@ -638,13 +642,19 @@ const PANEL_CONTEXT_NODE_DATA_KEYS = [
   "ports",
 ] as const
 
-function panelContextNodeDataHash(data: Record<string, unknown>): string {
-  const parts: string[] = []
-  for (const key of PANEL_CONTEXT_NODE_DATA_KEYS) {
-    const value = data[key]
-    parts.push(value === undefined ? "" : JSON.stringify(value) ?? String(value))
+// A value's digest for its identity: a node's settings are read once, not on every edit.
+const panelContextValueDigests = new WeakMap<object, string>()
+
+function panelContextValueHash(value: unknown): string {
+  if (value === undefined) return ""
+  if (value !== null && typeof value === "object") {
+    return cachedDigest(panelContextValueDigests, value, (object) => JSON.stringify(object))
   }
-  return parts.join("\u0001")
+  return JSON.stringify(value) ?? String(value)
+}
+
+function panelContextNodeDataHash(data: Record<string, unknown>): string {
+  return PANEL_CONTEXT_NODE_DATA_KEYS.map((key) => panelContextValueHash(data[key])).join("\u0001")
 }
 
 export function computePanelContextFingerprint(
@@ -674,7 +684,7 @@ function computePersistedFingerprint(
   submodels: Record<string, unknown>,
   globalConstants: readonly GlobalConstantDraft[],
 ): string {
-  return serializeSnapshot({ nodes, edges, preamble, submodels, globalConstants })
+  return persistedFingerprint({ nodes, edges, preamble, submodels, globalConstants })
 }
 
 /** The constants a history entry restores; every entry is captured from the full store state. */
@@ -1365,9 +1375,8 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       endGesture()
       let notice: string | null = null
       set((state) => {
-        // Keep live state and the saved baseline independently cloned. Some
-        // React Flow/editor paths mutate node objects in place; sharing
-        // references here would let those mutations rewrite the baseline.
+        // Keep live state and the saved baseline independently cloned: the baseline
+        // keeps each node's saved forms, which the live graph leaves out.
         // The live graph may legitimately carry runtime-only column/status
         // metadata supplied by the load response. Preserve it in live state;
         // only the saved/history clone below crosses the persisted boundary
@@ -1536,17 +1545,10 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     isDirty: () => {
       const state = get()
-      const current = serializeSnapshot({
-        nodes: documentNodes(state),
-        edges: documentEdges(state),
-        preamble: state.preamble,
-        submodels: state.submodels,
-        globalConstants: state.globalConstants,
-      })
-      if (state.lastSavedSnapshot === null) {
-        return current !== EMPTY_SNAPSHOT
-      }
-      return current !== serializeSnapshot(state.lastSavedSnapshot)
+      return selectIsDirty(
+        { lastSavedSnapshot: state.lastSavedSnapshot === null ? null : persistedFingerprint(state.lastSavedSnapshot) },
+        persistedFingerprintOf(state),
+      )
     },
 
     canUndo: () => get().undoStack.length > 0 && !get().vcBusy,

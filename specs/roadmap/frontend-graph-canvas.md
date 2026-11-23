@@ -6,9 +6,7 @@ The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
 edit costs, what the undo history holds, which connections the canvas
 takes, and what a tab with unsaved work does when the file changes under
-it. `FEG-01` comes from the
-9 November 2026 codebase review and was measured against `HEAD` on that day
-by bundling the store and driving it under Node. `FEG-02` comes from the
+it. `FEG-02` comes from the
 review plan's sweep of the frontend's logic on 10 November 2026 and was
 confirmed in a real browser. `FEG-03` comes from the plan's browser sweep
 of the editors' fields on 11 November and was re-run by the main session
@@ -27,11 +25,10 @@ November 2026.
 
 ## Priorities
 
-**Start with:** `FEG-01`
+**Start with:** `FEG-02`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FEG-01 | Planned | P2 | An edit's cost and the undo history's size follow what changed, not the size of every table in the graph. |
 | FEG-02 | Planned | P2 | Deleting a node with Backspace is one undo step, as with Delete: one Undo brings back the node and its edges. |
 | FEG-03 | Planned | P2 | A connection that closes a loop is refused at the canvas, and a save that meets a loop names its nodes instead of failing every later save with "Check the server logs". |
 | FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
@@ -40,50 +37,6 @@ November 2026.
 | FEG-09 | Planned | P2 | Comparing an earlier milestone of a submodel that gained an output shows the comparison; an output with no identity yet never replaces the screen with an error. |
 
 ## Planned improvements
-
-### FEG-01 — An edit no longer serialises and clones the whole graph
-**Why:** Measured. Every history-aware change to the graph serialises the
-whole graph for the new fingerprint, serialises the state before it a second
-time to decide whether history moves, computes the structural and
-panel-context fingerprints, and deep-clones every node into the undo stack,
-which keeps one hundred such clones. The node editors commit through this on
-each edit. A Rating Step's tables live in its node's settings with no cap on
-their rows, so their size is in every one of these passes, for an edit to any
-node. One-character edits to one code node, one hundred times:
-
-| Graph | Per edit | Undo stack after 100 edits |
-|---|---:|---:|
-| 100 code nodes | 2.4 ms | 3 MiB |
-| 300 code nodes | 6.1 ms | 9 MiB |
-| 100 code nodes and one 20,000-row table | 47.8 ms | 158 MiB |
-| 100 code nodes and one 100,000-row table | 276.1 ms | 776 MiB |
-
-With a large rating table in the pipeline, typing into any node's editor
-stalls for a quarter of a second per keystroke and the tab's memory grows
-towards a gigabyte.
-
-**Plan:** Nodes are replaced, never mutated, on a commit, so history can hold
-references: an undo entry shares every node the change did not touch.
-Fingerprint per node, cached by the node object's identity, and combine the
-cached parts; compare the changed nodes only to decide whether history
-moves. Keep the saved-baseline and dirty semantics exactly as they are.
-
-**Acceptance:** On the last graph above, a one-character edit to a code node
-takes under 5 ms and one hundred edits grow the heap by under 10 MiB, held by
-a store-level test with a generous bound. Undo and redo restore the same
-graph as today across the existing history tests, and `dirty` returns to
-false when an undo reaches the saved state.
-
-**Dependencies:** A check that no caller mutates a node object in place
-after a commit; the store's tests are where that is asserted.
-
-**Evidence:** `frontend/src/stores/useGraphStore.ts::commitGraphChange`;
-`frontend/src/stores/useGraphStore.ts::derivedPatch`;
-`frontend/src/stores/useGraphStore.ts::MAX_HISTORY`;
-`frontend/src/utils/graphSnapshot.ts::cloneGraphSnapshot`;
-`frontend/src/utils/graphSnapshot.ts::serializeSnapshot`;
-`frontend/src/hooks/useGraphCommitController.ts::onUpdateNode`;
-`src/haute/_node_config_models.py:490` holds the uncapped `entries` list.
 
 ### FEG-02 — Backspace deletes a node and its edges as one undo step
 **Why:** Reproduced on 10 November 2026 in the editor, after the sweep of
@@ -307,4 +260,3 @@ the old side. Neither journey shows the error screen.
 
 **Evidence:** `frontend/src/nodes/SubmodelNode.tsx`;
 `specs/frontend-graph-canvas/high-level.md`.
-

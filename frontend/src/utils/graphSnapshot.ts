@@ -14,6 +14,7 @@
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../types/node"
 import { canonicalJson } from "./canonicalJson"
+import { cachedDigest, contentDigest } from "./contentDigest"
 import type { GlobalConstant, GlobalConstantDraft } from "./globalConstants"
 import { authoredPolarsConfig, isSteppedConfig } from "./polarsStepInputs"
 
@@ -310,14 +311,105 @@ export function serializeSnapshot(input: {
   })
 }
 
+// ---------------------------------------------------------------------------
+// The persisted fingerprint
+//
+// What `serializeSnapshot` reads, as one digest per node, edge, preamble,
+// definition set and constant list, each kept for its object's identity. The
+// graph replaces what it changes, so an edit to one node digests that node
+// alone, and two fingerprints compare in time that follows the node count,
+// never the size of a node's settings (FEG-01).
+// ---------------------------------------------------------------------------
+
+const persistedNodeDigests = new WeakMap<Node, string>()
+const persistedEdgeDigests = new WeakMap<PipelineEdge, string>()
+const persistedSubmodelsDigests = new WeakMap<Record<string, unknown>, string>()
+const persistedConstantsDigests = new WeakMap<readonly GlobalConstantDraft[], string>()
+const NO_CONSTANTS: readonly GlobalConstantDraft[] = Object.freeze([])
+
+function persistedNodeDigest(node: Node): string {
+  return cachedDigest(persistedNodeDigests, node, (value) => canonicalJson(stripNodeUiFields(value, true)))
+}
+
+function persistedEdgeDigest(edge: PipelineEdge): string {
+  return cachedDigest(persistedEdgeDigests, edge, (value) => canonicalJson(stripEdgeUiFields(value)))
+}
+
 /**
- * Clone a live history snapshot. React Flow presentation and volatile runtime
+ * The fingerprint of the document `serializeSnapshot` writes: equal for two documents
+ * exactly when their serialisations are equal, and cheap to recompute after an edit.
+ * The dirty flag and whether a change moves history are decided on it.
+ */
+export function persistedFingerprint(input: {
+  nodes: readonly Node[]
+  edges: readonly PipelineEdge[]
+  preamble: string
+  submodels: Record<string, unknown>
+  globalConstants?: readonly GlobalConstantDraft[]
+}): string {
+  const submodels = cachedDigest(
+    persistedSubmodelsDigests,
+    input.submodels,
+    (value) => canonicalJson(stripGraphMetadataTransientFields(value, true)),
+  )
+  const constants = cachedDigest(persistedConstantsDigests, input.globalConstants ?? NO_CONSTANTS, canonicalJson)
+  return `nodes:${input.nodes.map(persistedNodeDigest).join(",")}`
+    + `|edges:${input.edges.map(persistedEdgeDigest).join(",")}`
+    + `|preamble:${contentDigest(input.preamble)}|submodels:${submodels}|constants:${constants}`
+}
+
+// ---------------------------------------------------------------------------
+// History forms
+//
+// A history entry holds each node and edge in its history form, kept for the
+// object it is the form of and frozen: the entries share every node a change
+// did not touch, so one hundred edits beside a large table hold the table once
+// (FEG-01). Freezing is the check that nothing writes into a committed node in
+// place: such a write would reach every entry sharing it, and it throws instead.
+// ---------------------------------------------------------------------------
+
+const historyForms = new WeakMap<object, object>()
+const deepFrozen = new WeakSet<object>()
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || deepFrozen.has(value)) return value
+  deepFrozen.add(value)
+  for (const child of Object.values(value)) deepFreeze(child)
+  return Object.freeze(value)
+}
+
+/** `value`'s history form, made once and shared by every entry that holds it. */
+function historyForm<T extends object>(value: T, strip: (value: T) => object): T {
+  const known = historyForms.get(value)
+  if (known !== undefined) return known as T
+  const form = deepFreeze(strip(value)) as T
+  historyForms.set(value, form)
+  historyForms.set(form, form)
+  return form
+}
+
+function nodeHistoryForm(node: Node): Node {
+  const form = historyForm(node, stripNodeHistoryFields)
+  // The form leaves out only what the persisted fingerprint leaves out too.
+  if (form !== node && !persistedNodeDigests.has(form)) persistedNodeDigests.set(form, persistedNodeDigest(node))
+  return form
+}
+
+function edgeHistoryForm(edge: PipelineEdge): PipelineEdge {
+  const form = historyForm(edge, stripEdgeHistoryFields)
+  if (form !== edge && !persistedEdgeDigests.has(form)) persistedEdgeDigests.set(form, persistedEdgeDigest(edge))
+  return form
+}
+
+/**
+ * A live history snapshot. React Flow presentation and volatile runtime
  * fields are omitted, but server-owned editor identities are retained:
  * undo/redo restores a live executable graph, not a persisted document.
  * `serializeSnapshot` remains the separate boundary that strips identity
- * metadata too.
+ * metadata too. Its parts are frozen history forms shared with every other
+ * snapshot of the same objects.
  */
-export function cloneGraphSnapshot(input: {
+export function historyGraphSnapshot(input: {
   nodes: readonly Node[]
   edges: readonly PipelineEdge[]
   preamble: string
@@ -333,17 +425,11 @@ export function cloneGraphSnapshot(input: {
   return {
     ...(input.globalConstants === undefined
       ? {}
-      : { globalConstants: structuredClone([...input.globalConstants]) }),
-    nodes: input.nodes.map(
-      (node) => cloneGraphValue(stripNodeHistoryFields(node)) as Node,
-    ),
-    edges: input.edges.map(
-      (edge) => cloneGraphValue(stripEdgeHistoryFields(edge)) as PipelineEdge,
-    ),
+      : { globalConstants: historyForm(input.globalConstants, (constants) => [...constants]) as GlobalConstantDraft[] }),
+    nodes: input.nodes.map(nodeHistoryForm),
+    edges: input.edges.map(edgeHistoryForm),
     preamble: input.preamble,
-    submodels: cloneGraphValue(
-      stripGraphHistoryTransientFields(input.submodels),
-    ) as Record<string, unknown>,
+    submodels: historyForm(input.submodels, (submodels) => stripGraphHistoryTransientFields(submodels) as object),
   }
 }
 
@@ -382,8 +468,8 @@ export function holdsCanvasState(node: Node): boolean {
     || Object.keys(nodeExecutionAnnotations(node)).length > 0
 }
 
-/** Pre-computed empty-workspace sentinel (fast path for fresh sessions). */
-export const EMPTY_SNAPSHOT = serializeSnapshot({
+/** The fingerprint of the empty workspace, which a never-saved document is clean at. */
+export const EMPTY_PERSISTED_FINGERPRINT = persistedFingerprint({
   nodes: [],
   edges: [],
   preamble: "",
@@ -391,7 +477,8 @@ export const EMPTY_SNAPSHOT = serializeSnapshot({
 })
 
 /**
- * Pure selector: is the current graph different from the last saved snapshot?
+ * Pure selector: is the current graph different from the last saved one? Both
+ * are `persistedFingerprint`s.
  *
  * Semantics:
  *   - `lastSavedSnapshot === null` (never saved) + empty current graph
@@ -405,7 +492,7 @@ export function selectIsDirty(
   currentSnapshot: string,
 ): boolean {
   if (state.lastSavedSnapshot === null) {
-    return currentSnapshot !== EMPTY_SNAPSHOT
+    return currentSnapshot !== EMPTY_PERSISTED_FINGERPRINT
   }
   return currentSnapshot !== state.lastSavedSnapshot
 }
