@@ -427,6 +427,48 @@ describe("useKeyboardShortcuts", () => {
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: "Pasted 2 nodes" })
   })
 
+  it.each([
+    ["coded", { code: "df = raw_rows.with_columns(value_doubled=pl.col('value') * 2)" }, {
+      code: "df = raw_rows.with_columns(value_doubled=pl.col('value') * 2)",
+      input_mapping: { raw_rows: "server_input_pipelineNode_1" },
+    }],
+    ["stepped", { steps: [{ id: "s", kind: "source", input: "raw_rows" }], code: "df = raw_rows" }, {
+      steps: [{ id: "s", kind: "source", input: "server_input_pipelineNode_1" }], code: "df = raw_rows",
+    }],
+  ])("Ctrl+V gives a pasted %s Transform the pasted input, as a rename of the input would", async (_kind, config, pasted) => {
+    params.clipboard.current = {
+      nodes: [
+        {
+          id: "raw_rows", position: { x: 0, y: 0 }, type: "pipelineNode",
+          data: { label: "raw_rows", nodeType: "dataInput", config: {}, _defaultInputName: "raw_rows" },
+        } as Node,
+        {
+          id: "enriched", position: { x: 200, y: 0 }, type: "pipelineNode",
+          data: { label: "enriched", nodeType: "polars", config, _defaultInputName: "enriched" },
+        } as Node,
+      ],
+      edges: [{ id: "e-raw_rows-enriched", source: "raw_rows", target: "enriched", data: { _inputName: "raw_rows" } } as Edge],
+    }
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    const [nodes] = committedPaste(params)
+    expect(nodes.find((node) => node.id === "pipelineNode_2")?.data.config).toEqual(pasted)
+  })
+
+  it("Ctrl+V leaves a Transform pasted without its input reading the input it names", async () => {
+    const config = { code: "df = raw_rows" }
+    params.clipboard.current = {
+      nodes: [{
+        id: "enriched", position: { x: 200, y: 0 }, type: "pipelineNode",
+        data: { label: "enriched", nodeType: "polars", config, _defaultInputName: "enriched" },
+      } as Node],
+      edges: [],
+    }
+    fireKey("v", { ctrlKey: true })
+    await waitFor(() => expect(params.setNodesAndEdges).toHaveBeenCalledOnce())
+    expect(committedPaste(params)[0].at(-1)?.data.config).toEqual(config)
+  })
+
   it("Ctrl+V filters out singleton nodes that already exist in the graph", async () => {
     showCanvas({ nodes: [
       { id: "api1", position: { x: 0, y: 0 }, data: { label: "Quote Input", nodeType: "apiInput" } } as unknown as Node,
@@ -1095,6 +1137,8 @@ describe("useKeyboardShortcuts paste on the graph store", () => {
       data: {
         label: "Quote Input",
         config: { tables: [{ label: "policy", emit: true }, { label: "risks", emit: true }] },
+        // On the canvas a Quote Input carries the server's name for each frame.
+        _sourceHandleInputNames: { policy: "policy", risks: "risks" },
       },
       selected: true,
     })
@@ -1109,6 +1153,11 @@ describe("useKeyboardShortcuts paste on the graph store", () => {
     })
     const params = makeParams({
       setNodesAndEdges: canvas.current.setNodesAndEdges,
+      // The server names each of a Quote Input's frames by its table.
+      resolveGraphIdentities: vi.fn(async (nodes: readonly Node[], edges: readonly Edge[]) => {
+        const resolved = resolvedIdentityGraph(nodes, edges)
+        return { ...resolved, edges: resolved.edges.map((edge) => ({ ...edge, data: { _inputName: String(edge.sourceHandle) } })) }
+      }),
     })
     renderHook(() => useKeyboardShortcuts(params))
 

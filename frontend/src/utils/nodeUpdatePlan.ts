@@ -507,7 +507,13 @@ function findInputCollision(affectedByScope: AffectedTargets): NodeUpdatePlanFai
   return null
 }
 
-/** Preserve authored consumer bindings when a graph-wide identity refresh renames edges. */
+/**
+ * Preserve authored consumer bindings when an identity refresh renames edges: each edge of
+ * *next* that *previous* holds under the same id and endpoints, read under another input
+ * name, moves what its target names that input by (a code's `input_mapping`, step
+ * references, input selectors), as a rename of the input does. Boundary edits and paste
+ * (whose *previous* is the copied nodes under their new ids, FEG-06) go through it.
+ */
 export function reconcileGraphInputBindings(
   previous: RenameGraphScope,
   next: RenameGraphScope,
@@ -520,7 +526,8 @@ export function reconcileGraphInputBindings(
     const before = previousEdges.get(edge.id)
     if (
       !before || before.source !== edge.source || before.target !== edge.target
-      || before.sourceHandle !== edge.sourceHandle || before.targetHandle !== edge.targetHandle
+      || (before.sourceHandle ?? null) !== (edge.sourceHandle ?? null)
+      || (before.targetHandle ?? null) !== (edge.targetHandle ?? null)
     ) continue
     const from = edgeInputName(
       before as unknown as SimpleEdge,

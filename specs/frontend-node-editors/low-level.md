@@ -710,6 +710,15 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   are identical. Uncoded transforms and other node kinds keep their edge-derived names. The same transaction rewrites scalar
   exact-input selectors on downstream Optimiser (`data_input`, `banding_source`) and Optimiser
   Apply (`ratebook_input`) nodes when their selected edge is renamed.
+- A paste is such a rename of every pasted input a pasted node reads: each pasted edge is
+  read under its input's new name (`raw_rows copy`'s `raw_rows_copy`), so the pasted nodes
+  go through the same transaction (`reconcileGraphInputBindings`, the copied nodes under
+  their new ids before and the resolved paste after) and a pasted coded Transform reads the
+  pasted input through `input_mapping`, a stepped one through its rewritten step
+  references (FEG-06). A paste brings only the edges between the nodes copied together, so a
+  node pasted without its input arrives unconnected, its code still naming the original
+  input; connecting that input to it makes it read the original again, with no change to
+  its code.
 - `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
   matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id` (which
   equals the public port name), then sanitising that port's `id`. A missing handle, non-Input

@@ -1,4 +1,4 @@
-import { canvasGraph } from "../stores/useGraphStore"
+import useGraphStore, { canvasGraph } from "../stores/useGraphStore"
 import { useEffect, useRef } from "react"
 import type { Node, Edge, EdgeChange, NodeChange } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
@@ -12,6 +12,7 @@ import { hasModifier, inModalDialog, isTypingTarget, saveCommittingField } from 
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 import { authoredNodeData, createAfterIdentity } from "./createAfterIdentity"
 import { resultKeysOf } from "../utils/requestGateway"
+import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 
 export interface KeyboardShortcutBinding {
   id:
@@ -302,7 +303,16 @@ export default function useKeyboardShortcuts({
           resolve: async () => {
             const resolved = await resolveGraphIdentities(newNodes, newEdges)
             assertResolvedPasteMatchesCandidate(newNodes, newEdges, resolved)
-            return resolved
+            // A pasted edge carries its pasted input's new name, so a pasted node that reads
+            // that input is given the record a rename of the input gives it (FEG-06).
+            const { submodels } = useGraphStore.getState()
+            const copied = pasteable.map((node) => ({ ...node, id: idMap.get(node.id) as string }))
+            const rebound = reconcileGraphInputBindings(
+              { nodes: copied, edges: newEdges, submodels },
+              { nodes: resolved.nodes, edges: resolved.edges, submodels },
+            )
+            if (!rebound.ok) throw new Error(rebound.error)
+            return { nodes: rebound.nodes, edges: rebound.edges }
           },
           apply: (resolved) => {
             // Pasted nodes + their internal edges land in ONE undo step, so a
