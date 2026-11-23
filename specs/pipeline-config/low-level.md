@@ -378,9 +378,10 @@
   constraint names (`RESERVED_OPTIMISER_CONSTRAINT_NAMES`, which moves here from the optimiser
   service) and positive solver controls, the registered-model alias rule,
   `_model_source.parse_model_source` once a source's identifying field is set, Optimiser
-  Apply's `source_type` for an `artifact_path`, and a Source Switch's non-empty scenario names), `check_inputs(config, input_names)` (the rules
+  Apply's `source_type` for an `artifact_path`, and a Source Switch's non-empty scenario names), `check_inputs(config, input_names, node_label)` (the rules
   that need the node's connected input names: the Optimiser's and Optimiser Apply's exact input
-  selectors) and `completeness(config, input_names)` (what an unfinished but valid config lacks
+  selectors, whose refusal names the node by `node_label`, its name on the canvas: save passes
+  each node's label, never its type) and `completeness(config, input_names)` (what an unfinished but valid config lacks
   before the node can run: a Data Input/Output provider's locator, a Model Score's or Optimiser
   Apply's model for its chosen source, a Load File's path or `file_type`, a Quote Input's tables
   that `_api_input_schema.validate_v2_schema` refuses (a run applies it in full before it reads a

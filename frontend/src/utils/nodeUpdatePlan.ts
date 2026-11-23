@@ -546,7 +546,16 @@ export function reconcileGraphInputBindings(
   return failure ?? { ok: true, ...scope }
 }
 
-function reconcileConsumerBindings(
+/**
+ * The one rename transaction of a consumer's inputs: each rebound edge's target now reads
+ * the input `from` named under `to`, so what the target calls it moves (a Quote Response's
+ * `output_mapping`, a Source Switch's scenario map, an `input_mapping`, a coded Transform's
+ * logical binding, stepped references, the Optimiser's and Optimiser Apply's input
+ * selectors), every target checked for a name two inputs would share. A rename, an identity
+ * refresh, a paste and an Edge Join insertion all go through it. *scope*'s nodes are
+ * replaced in place; a failure names the target and the colliding name.
+ */
+export function reconcileConsumerBindings(
   scope: RenameGraphScope,
   rebound: readonly { edge: Edge; from: string; to: string }[],
 ): NodeUpdatePlanFailure | null {

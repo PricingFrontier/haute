@@ -1,5 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
-import { codeStepReadsInputMessage, freeCodeInputRead, isSteppedTransformConfig, renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
+import { isSteppedTransformConfig, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES, isRequestInputType } from "./nodeTypes"
 import { withEdgeIdentity } from "./edgeIds"
@@ -8,6 +8,7 @@ import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
 import { isPlainObject } from "../types/guards"
 import { hasDirectedCycle } from "./directedCycle"
+import { reconcileConsumerBindings } from "./nodeUpdatePlan"
 
 export type EdgeJoinFailureReason =
   | "target-edge-not-found"
@@ -19,6 +20,7 @@ export type EdgeJoinFailureReason =
 type DeferredInputMappingRewrite = {
   targetEdge: Edge
   oldCurrentInputName: string
+  submodels: Record<string, unknown> | undefined
 }
 
 export type EdgeJoinInsertSuccess = {
@@ -202,7 +204,7 @@ export function insertEdgeJoinNode({
     ], newNodeId),
     edges: nextEdges,
     newNodeId,
-    deferredInputMappingRewrite: { targetEdge, oldCurrentInputName },
+    deferredInputMappingRewrite: { targetEdge, oldCurrentInputName, submodels },
   }
 }
 
@@ -289,8 +291,11 @@ export function insertEdgeJoinNodeFromSources({
 /**
  * Complete an Edge Join insertion after the server has attached executable
  * identities to the whole candidate graph. Structural changes are safe to
- * prepare locally, but the downstream input_mapping cannot be rewritten until
- * the new join's server-owned default input name is known.
+ * prepare locally, but the downstream node cannot be told the input's new name
+ * until the new join's server-owned default input name is known. It is then told
+ * through the rename transaction (`reconcileConsumerBindings`), as a rename of its
+ * input would tell it: its step references, its code's binding and its input
+ * selectors (an Optimiser's `data_input`) follow the join (FEG-07).
  */
 export function finalizeResolvedEdgeJoinInsertion(
   insertion: EdgeJoinInsertSuccess,
@@ -310,16 +315,16 @@ export function finalizeResolvedEdgeJoinInsertion(
     )
   }
 
-  return {
-    nodes: resolved.nodes.map((node) => rewriteDownstreamInputMapping(
-      node,
-      rewrite.targetEdge,
-      rewrite.oldCurrentInputName,
-      newCurrentInputName,
-    )),
-    edges: resolved.edges,
-    newNodeId: insertion.newNodeId,
-  }
+  const joinEdge = resolved.edges.find(
+    (edge) => edge.source === insertion.newNodeId && edge.target === rewrite.targetEdge.target,
+  )
+  if (!joinEdge) throw new Error(`identity resolver dropped the edge from ${insertion.newNodeId}`)
+  const scope = { nodes: [...resolved.nodes], edges: resolved.edges, submodels: rewrite.submodels ?? {} }
+  const failure = reconcileConsumerBindings(scope, [
+    { edge: joinEdge, from: rewrite.oldCurrentInputName, to: newCurrentInputName },
+  ])
+  if (failure) throw new Error(failure.error)
+  return { nodes: scope.nodes, edges: resolved.edges, newNodeId: insertion.newNodeId }
 }
 
 /** The nodes whose data an insertion rewrites: the split edge's downstream node. */
@@ -450,72 +455,6 @@ function assertDownstreamInputMappingCanBeRewritten(
     throw new Error(
       `Cannot preserve input name "${oldCurrentInputName}" because input_mapping already uses it`,
     )
-  }
-}
-
-function rewriteDownstreamInputMapping(
-  node: Node,
-  targetEdge: Edge,
-  oldCurrentInputName: string,
-  newCurrentInputName: string,
-): Node {
-  if (node.id !== targetEdge.target) return node
-
-  const config = { ...(node.data.config as Record<string, unknown> | undefined) }
-  if (isSteppedTransformConfig(config)) {
-    // A code step reading the input by name would keep the old name, which the join's
-    // name cannot replace inside its code, so the insertion is refused.
-    if (freeCodeInputRead(config.steps, [oldCurrentInputName]) !== null) {
-      throw new Error(codeStepReadsInputMessage(String(node.data.label ?? node.id), oldCurrentInputName))
-    }
-    // A stepped transform addresses inputs by edge name inside its steps and
-    // never carries input_mapping, so the join name replaces the old input
-    // reference directly.
-    const renamed = renameStepInputs(config.steps, new Map([[oldCurrentInputName, newCurrentInputName]]))
-    if (!renamed.ok) throw new Error(`Cannot rewrite stepped transform inputs: "${renamed.duplicate}" would be referenced by more than one input`)
-    if (!renamed.changed) return node
-    return { ...node, data: { ...node.data, config: { ...config, steps: renamed.steps } } }
-  }
-  const rawInputMapping = config.input_mapping
-  if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
-    throw new Error("Cannot rewrite a malformed input_mapping; expected an object")
-  }
-  const hasInputMapping = isPlainObject(rawInputMapping)
-  const shouldCreateMapping = steppedSurfaceAllowsInputReferences(String(node.data.nodeType))
-  if (!hasInputMapping && !shouldCreateMapping) return node
-
-  const inputMapping = hasInputMapping ? rawInputMapping : {}
-  let matchedOldCurrentInput = false
-  const nextInputMapping: Record<string, unknown> = {}
-  for (const [inputName, currentName] of Object.entries(inputMapping)) {
-    if (typeof currentName !== "string") {
-      throw new Error("Cannot rewrite a malformed input_mapping; values must be strings")
-    }
-    if (currentName === oldCurrentInputName) {
-      nextInputMapping[inputName] = newCurrentInputName
-      matchedOldCurrentInput = true
-    } else {
-      nextInputMapping[inputName] = currentName
-    }
-  }
-  if (shouldCreateMapping && !matchedOldCurrentInput) {
-    if (Object.prototype.hasOwnProperty.call(nextInputMapping, oldCurrentInputName)) {
-      throw new Error(
-        `Cannot preserve input name "${oldCurrentInputName}" because input_mapping already uses it`,
-      )
-    }
-    nextInputMapping[oldCurrentInputName] = newCurrentInputName
-  }
-
-  return {
-    ...node,
-    data: {
-      ...node.data,
-      config: {
-        ...config,
-        input_mapping: nextInputMapping,
-      },
-    },
   }
 }
 

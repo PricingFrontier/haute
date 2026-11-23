@@ -750,7 +750,7 @@ def validate_node_config(
     if model.check is not None and not (at_run and model.builder_checks):
         model.check(config)
     if input_names is not None and model.check_inputs is not None:
-        model.check_inputs(config, input_names)
+        model.check_inputs(config, input_names, label)
     if require_complete and model.completeness is not None:
         gaps = model.completeness(config, input_names)
         if gaps:
