@@ -40,7 +40,9 @@ A [workbench project](../../building-models/workbench.md) hosts no API: what it 
 the [underwriter app](../../building-models/workbench.md#the-underwriter-app). Its
 `azure-pipelines.yml` has three stages instead: **Validate**, which lints, type-checks and
 runs tests, then builds the app's release, which checks your pipeline and schema and scores
-your test quotes, on every pull request and on main; **Publish**, on main only, a deployment
+your test quotes, and tests the packaged app (`haute app test`) on SQLite and, in a job of
+its own, on your production store's database engine in a throwaway container, on every pull
+request and on main; **Publish**, on main only, a deployment
 to the `staging` environment that builds the app's image once, pushes it to the registry
 `[deploy.container]` names, rolls the staging app out to it and compares staging with
 production on saved quotes, publishing `impact_report.md` as the `impact-report`

@@ -660,7 +660,7 @@ def test_the_workflows_haute_init_generates_pin_every_action(tmp_path):
     from haute.cli._init_cmd import HOST_CHOICES, TARGET_CHOICES
 
     generated = [ci_files(target, "github") for target in TARGET_CHOICES]
-    generated += [workbench_ci_files(host, "github") for host in HOST_CHOICES]
+    generated += [workbench_ci_files(host, "github", store="sqlserver") for host in HOST_CHOICES]
     for index, files in enumerate(generated):
         project = tmp_path / str(index)
         for relative, text in files.items():

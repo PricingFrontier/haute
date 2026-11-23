@@ -296,7 +296,7 @@ Invariants that hold across every command:
   | none | `init`, `gpu-setup` | the shell's folder; no project is looked for |
   | the pipeline file's project | `run`, `lint` | the project holding the pipeline file, found from the file's folder; the file's folder when no `haute.toml` is above it |
   | a project if there is one | `status`, `deploy`, `train` | the project holding the shell's folder, from any folder inside it; the shell's folder when no `haute.toml` is above it (`status` and `deploy` then need the model named on the command line) |
-  | a project | `serve`, `smoke`, `impact`, `ci secrets`, `ci update`, `ci registry-host`, `app build`, `app rollout`, `app impact`, `app serve` | the project holding the shell's folder, from any folder inside it; refused without one |
+  | a project | `serve`, `smoke`, `impact`, `ci secrets`, `ci update`, `ci registry-host`, `app build`, `app rollout`, `app impact`, `app serve`, `app test` | the project holding the shell's folder, from any folder inside it; refused without one |
 
   A command that needs a project and finds none is refused in one sentence, the same for
   each: no `haute.toml` in the folder or above it, run inside a Haute project or make one

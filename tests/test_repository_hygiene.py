@@ -776,6 +776,11 @@ _BACKEND_MINT_ALLOWLIST = {
     # download in the browser; Haute writes it nowhere, so it has no collision
     # space.
     "src/haute/_workbench_export.py",
+    # hosted_stem: the start of the variables a hosted app reads an Import's connection
+    # from, the name in capitals with "-" as "_", which a variable's name cannot hold;
+    # read_connections refuses two names making one stem, so no two connections share
+    # a hosted app's variables.
+    "src/haute/_connections.py",
     # NOTE (not an entry): _scaffold.py's clean_columns mint lives inside the
     # starter-pipeline TEMPLATE STRING that `haute init` writes into the
     # user's project — string constants are invisible to the AST walk, and

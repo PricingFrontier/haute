@@ -52,6 +52,7 @@ COMMANDS: dict[tuple[str, ...], tuple[str, tuple[str, ...]]] = {
     ("app", "rollout"): ("project", ("dev",)),
     ("app", "impact"): ("project", ()),
     ("app", "serve"): ("project", ()),
+    ("app", "test"): ("project", ()),
 }
 
 _PIPELINE = '''\

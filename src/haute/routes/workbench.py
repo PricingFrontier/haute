@@ -24,7 +24,6 @@ import contextvars
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
-from urllib.parse import quote as url_quoted
 
 from fastapi import APIRouter, Response
 from fastapi.concurrency import run_in_threadpool
@@ -41,6 +40,7 @@ from haute._workbench_export import (
     XLSX_MEDIA_TYPE,
     ExportRefusedError,
     StaleExportError,
+    attachment,
     preview_export,
 )
 from haute._workbench_folder import (
@@ -107,6 +107,8 @@ from haute.schemas import (
     WorkbenchFormSaveRequest,
     WorkbenchFormSaveResponse,
     WorkbenchFormTablesRequest,
+    WorkbenchImportRequest,
+    WorkbenchImportResponse,
     WorkbenchParamFileResponse,
     WorkbenchStatusResponse,
     WorkbenchStoreCatalogueRequest,
@@ -392,14 +394,6 @@ async def store_sql(body: WorkbenchStoreSqlRequest) -> WorkbenchStoreSqlResponse
     return await run_in_threadpool(_store_sql, config, body)
 
 
-def _attachment(file_name: str) -> str:
-    """A ``Content-Disposition`` naming *file_name*: whole in ``filename*``, and in
-    ``filename`` with each character outside printable ASCII written ``_``, for a client
-    that reads only that."""
-    plain = "".join(char if " " <= char <= "~" else "_" for char in file_name)
-    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{url_quoted(file_name, safe='')}"
-
-
 @router.post(
     "/export",
     response_class=Response,
@@ -423,7 +417,59 @@ async def export_workbench_file(body: WorkbenchExportRequest) -> Response:
     return Response(
         content=data,
         media_type=XLSX_MEDIA_TYPE,
-        headers={"Content-Disposition": _attachment(file_name)},
+        headers={"Content-Disposition": attachment(file_name)},
+    )
+
+
+def file_sent(text: str | None) -> bytes | None:
+    """The file an Import was sent, as base64 text, as its bytes; refused (422) as text that
+    is not base64."""
+    if text is None:
+        return None
+    import base64
+    import binascii
+
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        raise UnprocessableError("The file sent is not base64.") from None
+
+
+@router.post("/import", response_model=WorkbenchImportResponse)
+async def import_workbench_rows(body: WorkbenchImportRequest) -> WorkbenchImportResponse:
+    """An Import of a form the view holds, saved or not, run on Preview's sample: the rows it
+    gives its table as the sheets hold them, which the view lands as typing does. Its
+    connections are the project's ``connections.toml``, signed in from ``.env``; a source's
+    own failure is said in its words, the analyst's to read."""
+    from haute._connections import project_environ
+    from haute._workbench_import import (
+        ImportRefusedError,
+        ImportSourceError,
+        project_source,
+        run_import,
+    )
+
+    config = await _enabled_config()
+    environ = await run_in_threadpool(project_environ, config.project_root)
+    upload = file_sent(body.file)
+    try:
+        imported = await run_in_threadpool(
+            lambda: run_import(
+                body.form,
+                body.component,
+                body.values,
+                source=lambda name: project_source(config.project_root, name, environ),
+                upload=upload,
+            )
+        )
+    except (ImportRefusedError, ImportSourceError) as exc:
+        raise UnprocessableError(exc.message) from None
+    except WorkbenchTablesError as exc:
+        raise contract_error_refusal(exc) from exc
+    return WorkbenchImportResponse(
+        table=imported.table,
+        mode=imported.mode,
+        rows=imported.rows,
     )
 
 

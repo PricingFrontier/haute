@@ -1,4 +1,5 @@
 /** An Import's and an Export's panes, and their Format (specs/workbench). */
+import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 import type { FormSpec } from "../../api/types"
 import { CommittedTextField, FIELD_CLASS, INPUT_STYLE } from "../../components/form"
@@ -13,22 +14,19 @@ import { ComponentNameField } from "./ComponentNameField"
 import { WIDGET_PANES } from "./FieldsSettings"
 import { Section } from "./Section"
 
-const FORMATS: ReadonlyArray<{ key: ImportFormat; label: string }> = [
-  { key: "csv", label: "CSV" },
-  { key: "excel", label: "Excel" },
-  { key: "sql", label: "SQL" },
-]
+const FORMAT_LABELS: Record<ImportFormat, string> = { csv: "CSV", excel: "Excel", sql: "SQL", http: "API" }
 
-/** A button's Format, CSV, Excel or SQL, each with its mark, in the kind's colour; choosing the one it has records nothing. */
-export function FormatToggle({ widget, format, onChange }: { widget: ButtonWidget; format: ImportFormat; onChange: (format: ImportFormat) => void }) {
+/** A button's Format, among `formats`, each with its mark, in the kind's colour; choosing the one it has records nothing. */
+export function FormatToggle<F extends ImportFormat>({ widget, formats, format, onChange }: { widget: ButtonWidget; formats: readonly F[]; format: F; onChange: (format: F) => void }) {
   return (
     <Section title="Format">
       <ToggleButtonGroup
         ariaLabel="Format"
         value={format}
         accentColor={WIDGET_KINDS[widget.type].color}
-        options={FORMATS.map(({ key, label }) => {
-          const Mark = FORMAT_MARKS[key]
+        options={formats.map((key) => {
+          const label = FORMAT_LABELS[key]
+          const Mark: LucideIcon = FORMAT_MARKS[key]
           return { key, label, icon: <Mark size={13} aria-hidden="true" /> }
         })}
         onChange={(next) => {

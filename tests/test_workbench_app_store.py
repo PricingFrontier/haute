@@ -171,6 +171,33 @@ def test_a_recheck_closes_a_store_whose_tables_no_longer_fit() -> None:
     assert _refusal(gate).code == "quote_store_mismatch"
 
 
+def test_a_recheck_for_a_book_opened_again_since_keeps_the_newer_book() -> None:
+    first, second, third = Book(), Book(), Book()
+    opener = Opener(first, second, third)
+    gate = StoreGate(opener)
+    assert gate.book() is first
+    # Two requests saw the tables change under the first book; the first to check opens the
+    # second, and the other's check keeps it rather than opening a third.
+    assert gate.recheck(first) is None
+    assert gate.recheck(first) is None
+    assert gate.book() is second and not second.closed and opener.checks == 2
+    assert gate.recheck(second) is None
+    assert gate.book() is third
+
+
+def test_a_recheck_for_a_book_another_check_closed_answers_that_checks_refusal() -> None:
+    first = Book()
+    opener = Opener(first, MISMATCH)
+    gate = StoreGate(opener)
+    assert gate.book() is first
+    refusal = gate.recheck(first)
+    assert refusal is not None and refusal.code == "quote_store_mismatch"
+    # A second request refused on the first book is answered with that check's refusal,
+    # rather than waiting on a check of its own.
+    assert gate.recheck(first) is refusal
+    assert opener.checks == 2
+
+
 def test_an_unreachable_store_stays_closed_until_the_next_check() -> None:
     clock = Clock()
     first, second = Book(), Book()

@@ -11,10 +11,13 @@
 
 import type { SampleRow } from "../utils/workbenchForm"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
-import { post, request, sendKeyed } from "./client"
+import { post, postRawStream, request, sendKeyed } from "./client"
+import { exportedFile, type ExportedFile } from "./workbench"
+import { fileText, importedRows, IMPORT_TIMEOUT_MS } from "./workbenchImport"
 import type { KeyedTicket } from "./keyedWrites"
 import type {
   WorkbenchAppFormResponse,
+  WorkbenchAppImportRequest,
   WorkbenchAppPeopleResponse,
   WorkbenchAppPriceRequest,
   WorkbenchAppPriceResponse,
@@ -30,6 +33,7 @@ import type {
   WorkbenchAppQuoteSource,
   WorkbenchAppQuotesResponse,
   WorkbenchAppReleaseResponse,
+  WorkbenchImportResponse,
 } from "./types"
 
 const workbenchValidators = () => import("../generated/api-contracts.workbench-app.validators.mjs")
@@ -74,6 +78,18 @@ export async function fetchAppForm(): Promise<WorkbenchAppFormResponse> {
 }
 
 /** The quote typed into the sheets drawn from form revision `revision` of release `release`, priced. */
+/** The rows the Import `componentId` gives its table, run on the quote typed, `values`, drawn for that revision of release `release`. */
+export async function importAppRows(
+  revision: string,
+  release: string,
+  componentId: string,
+  values: Record<string, SampleRow[]>,
+  file: File | null,
+): Promise<WorkbenchImportResponse> {
+  const body: WorkbenchAppImportRequest = { form_revision: revision, release, component: componentId, values, file: file === null ? null : await fileText(file) }
+  return importedRows(await heard(post<unknown>("/api/app/import", body, { timeout: IMPORT_TIMEOUT_MS })))
+}
+
 export async function priceAppQuote(
   revision: string,
   release: string,
@@ -147,6 +163,15 @@ async function quoteResponse(data: unknown): Promise<WorkbenchAppQuoteResponse> 
 export async function createAppQuote(creation: QuoteCreation, source: QuoteSource | null, reference: string | null, ticket: KeyedTicket): Promise<WorkbenchAppQuoteResponse> {
   const body: WorkbenchAppQuoteCreateRequest = { ...creation, source, reference }
   return quoteResponse(await heard(sendKeyed<unknown>("/api/app/quotes", body, ticket, { timeout: PRICE_TIMEOUT_MS })))
+}
+
+/**
+ * The workbook the Export `componentId` writes of the final quote `reference`/`option` at
+ * `version`, from its values and prices as the store keeps them, recorded in its activity
+ * (POST /api/app/quotes/{reference}/{option}/export): a refusal throws with its reason.
+ */
+export async function exportAppQuote(reference: string, option: number, componentId: string, version: number): Promise<ExportedFile> {
+  return exportedFile(await postRawStream(`${quoteRoute(reference, option)}/export`, { component: componentId, version }))
 }
 
 /** The quote `reference`/`option`, with what it holds. */

@@ -1086,7 +1086,7 @@ def handle_init(config: InitConfig) -> None:
         else env_example(credentials, variables)
     )
     generated_ci = (
-        workbench_ci_files(credentials, ci, python_version=python_version)
+        workbench_ci_files(credentials, ci, store=answers.store, python_version=python_version)
         if workbench
         else ci_files(credentials, ci, python_version=python_version)
     )

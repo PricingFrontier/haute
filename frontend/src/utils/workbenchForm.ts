@@ -26,7 +26,7 @@ import type {
   SchemaTable,
   Section,
   ShowWhen,
-  SqlExport,
+  HttpImport,
   SqlImport,
   Theme,
 } from "../api/types"
@@ -446,10 +446,10 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
     }
     if (widget.type === "import") {
       if (widget.table !== null) widget.table = renamed(widget.table)
-      if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map((given) => ({ ...given, table: renamed(given.table) }))
+      if (widget.source.format === "sql" || widget.source.format === "http") widget.source.parameters = widget.source.parameters.map((given) => ({ ...given, table: renamed(given.table) }))
+      if (widget.lookup !== null) widget.lookup = { ...widget.lookup, table: renamed(widget.lookup.table) }
     } else if (widget.type === "export") {
       widget.tables = widget.tables.map(renamed)
-      if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.map((named) => ({ ...named, table: renamed(named.table) }))
       if (widget.target.format === "excel_cells") {
         widget.target.cells = widget.target.cells.map((cell) => ({ ...cell, table: renamed(cell.table) }))
         widget.target.blocks = widget.target.blocks.map((block) => ({ ...block, table: renamed(block.table) }))
@@ -470,7 +470,7 @@ function renameTableUses(draft: FormSpec, from: string, to: string): void {
 /**
  * Each use of the column `from` of the table `tableName` made a use of `to`, its new name
  * (READ-23): where it is shown, labels a Chart's rows or has a look, what the conditions
- * test of it, what Imports read of it or give a parameter, the Exports' cells it is
+ * test of it, what Imports read of it, give a parameter or look up beside, the Exports' cells it is
  * written into, and its sample values.
  */
 function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: string): void {
@@ -482,7 +482,8 @@ function renameColumnUses(draft: FormSpec, tableName: string, from: string, to: 
     if (widget.type === "tableInput" || widget.type === "collection") widget.column_looks = widget.column_looks.map(field)
     if (widget.type === "import") {
       if (widget.table === tableName) widget.column_names = widget.column_names.map((named) => ({ ...named, column: own(named.column) }))
-      if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.map(field)
+      if (widget.source.format === "sql" || widget.source.format === "http") widget.source.parameters = widget.source.parameters.map(field)
+      if (widget.lookup !== null) widget.lookup = field(widget.lookup)
     }
     if (widget.type === "export" && widget.target.format === "excel_cells") {
       widget.target.cells = widget.target.cells.map(field)
@@ -560,10 +561,10 @@ const dropButtonUses = (widget: Widget, table: (id: string) => boolean, column: 
     } else if (filled !== null) {
       widget.column_names = widget.column_names.filter((named) => !column({ table: filled, column: named.column }))
     }
-    if (widget.source.format === "sql") widget.source.parameters = widget.source.parameters.filter((given) => !table(given.table) && !column(given))
+    if (widget.source.format === "sql" || widget.source.format === "http") widget.source.parameters = widget.source.parameters.filter((given) => !table(given.table) && !column(given))
+    if (widget.lookup !== null && (table(widget.lookup.table) || column(widget.lookup))) widget.lookup = null
   } else if (widget.type === "export") {
     widget.tables = widget.tables.filter((id) => !table(id))
-    if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => !table(named.table))
     // An Export of cells keeps them, each named as a problem (`cellsProblems`).
   }
 }
@@ -854,8 +855,10 @@ const buttonUsesColumn = (widget: ButtonWidget, tableId: string, columnId: strin
   const reads =
     widget.table === tableId && (columnId === undefined || read.has(columnId) || widget.column_names.some((named) => named.column === columnId))
   const gives =
-    widget.source.format === "sql" && widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
-  return reads || gives
+    (widget.source.format === "sql" || widget.source.format === "http") &&
+    widget.source.parameters.some((given) => given.table === tableId && (columnId === undefined || given.column === columnId))
+  const looks = widget.lookup !== null && widget.lookup.table === tableId && (columnId === undefined || widget.lookup.column === columnId)
+  return reads || gives || looks
 }
 
 /** The Imports and Exports using a schema table, or one of its columns (`buttonUsesColumn`). */
@@ -1354,7 +1357,7 @@ export function createWidget(type: WidgetType, rect: Rect, spec: FormSpec): Widg
     case "heading":
       return { ...placed, type, text: "", description: "", show_when: alwaysShown(), ...HEADING_OPTIONS }
     case "import":
-      return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [] }
+      return { ...placed, type, label: "Import", show_when: alwaysShown(), source: structuredClone(IMPORT_SOURCES.csv), table: null, mode: "replace", column_names: [], lookup: null }
     case "export":
       return { ...placed, type, label: "Export", show_when: alwaysShown(), target: structuredClone(EXPORT_TARGETS.csv), tables: [] }
   }
@@ -1794,11 +1797,16 @@ export const removeSpacer = (spec: FormSpec, widgetId: string, at: number): Form
 export type ImportFormat = ImportWidget["source"]["format"]
 /** Where an Export writes to: a CSV, an Excel workbook of a sheet per table or of cells, or a database. */
 export type ExportFormat = ExportWidget["target"]["format"]
+/** The kinds of file an Export writes, as its Format offers them: a workbook of either layout is Excel. */
+export type ExportFileFormat = Exclude<ExportFormat, "excel_cells">
+/** The formats each kind of button offers: an Import reads a file or a database, an Export writes a file, a saved quote being in the store's database already. */
+export const IMPORT_FORMATS: readonly ImportFormat[] = ["csv", "excel", "sql", "http"]
+export const EXPORT_FORMATS: readonly ExportFileFormat[] = ["csv", "excel"]
 /** How an Export's Excel workbook is laid out: a sheet per table, or chosen fields in cells. */
 export type ExcelLayout = "tables" | "cells"
 
 /** The format an Export's Format shows for its target: either Excel workbook is Excel. */
-export const exportFormatShown = (format: ExportFormat): ImportFormat => (format === "excel_cells" ? "excel" : format)
+export const exportFormatShown = (format: ExportFormat): ExportFileFormat => (format === "excel_cells" ? "excel" : format)
 
 /**
  * The furthest down a workbook's sheet an Import's header row can be, as the server's form
@@ -1814,6 +1822,7 @@ export const IMPORT_SOURCES: { readonly [F in ImportFormat]: Readonly<Extract<Im
   csv: { format: "csv", delimiter: "auto" },
   excel: { format: "excel", sheet: "", header_row: 1 },
   sql: { format: "sql", connection: "", query: "", parameters: [] },
+  http: { format: "http", connection: "", method: "GET", path: "", parameters: [], rows: "" },
 }
 
 /** Each format's settings as a new Export starts them, in the file's order: a file named by the quote's reference and option, headed by names, its values raw, a CSV's split by commas; a workbook of cells holding none; no connection. */
@@ -1821,7 +1830,6 @@ export const EXPORT_TARGETS: { readonly [F in ExportFormat]: Readonly<Extract<Ex
   csv: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "csv", delimiter: "comma" },
   excel: { file_name: EXPORT_FILE_NAME, headers: "names", values: "raw", format: "excel" },
   excel_cells: { format: "excel_cells", file_name: EXPORT_FILE_NAME, cells: [], blocks: [] },
-  sql: { format: "sql", connection: "", table_names: [] },
 }
 
 /** The sheet a workbook's first cell is written to, as Excel names a new workbook's first sheet. */
@@ -1848,11 +1856,16 @@ export const setImportFormat = (spec: FormSpec, id: string, format: ImportFormat
       })
 
 /** The settings a format of an Import has of its own, beside the query and its parameters. */
-export type ImportSourcePatch = Partial<Pick<CsvImport, "delimiter"> & Pick<ExcelImport, "sheet" | "header_row"> & Pick<SqlImport, "connection">>
+export type ImportSourcePatch = Partial<Pick<CsvImport, "delimiter"> & Pick<ExcelImport, "sheet" | "header_row"> & Pick<SqlImport, "connection"> & Pick<HttpImport, "method" | "rows">>
 
-const SOURCE_KEYS: Record<ImportFormat, readonly string[]> = { csv: ["delimiter"], excel: ["sheet", "header_row"], sql: ["connection"] }
+const SOURCE_KEYS: Record<ImportFormat, readonly string[]> = {
+  csv: ["delimiter"],
+  excel: ["sheet", "header_row"],
+  sql: ["connection"],
+  http: ["connection", "method", "rows"],
+}
 
-/** Change the settings of an Import's format: a CSV's delimiter, a workbook's sheet or header row, a database's connection. */
+/** Change the settings of an Import's format: a CSV's delimiter, a workbook's sheet or header row, a database's or an API's connection, an API's method and where its rows are. */
 export function updateImportSource(spec: FormSpec, id: string, patch: ImportSourcePatch): FormSpec {
   const { source } = importOf(spec, id)
   const foreign = Object.keys(patch).find((key) => !SOURCE_KEYS[source.format].includes(key))
@@ -1910,6 +1923,51 @@ function sqlImportOf(spec: FormSpec, id: string): SqlImport {
   return source
 }
 
+/** A path's parameters, each `{name}` it holds, once each in order. */
+export const pathParameters = (path: string): string[] => [...new Set(Array.from(path.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g), (found) => found[1]))]
+
+/** The parameters an Import's source holds: a query's `:name`s, a path's `{name}`s and, for a POST, every parameter it sends. */
+export function heldParameters(source: SqlImport | HttpImport): string[] {
+  if (source.format === "sql") return queryParameters(source.query)
+  const inPath = pathParameters(source.path)
+  return source.method === "POST" ? [...new Set([...inPath, ...source.parameters.map((given) => given.name)])] : inPath
+}
+
+function parameterisedOf(spec: FormSpec, id: string): SqlImport | HttpImport {
+  const { source } = importOf(spec, id)
+  if (source.format !== "sql" && source.format !== "http") throw new Error(`Component ${id} imports from ${source.format}, which takes no parameters`)
+  return source
+}
+
+function httpImportOf(spec: FormSpec, id: string): HttpImport {
+  const { source } = importOf(spec, id)
+  if (source.format !== "http") throw new Error(`Component ${id} imports from ${source.format}, which has no path`)
+  return source
+}
+
+/** An API Import's path, each parameter it no longer holds losing its column, but for a POST, which sends them all. */
+export const setImportPath = (spec: FormSpec, id: string, path: string): FormSpec =>
+  httpImportOf(spec, id).path === path
+    ? spec
+    : edit(spec, (draft) => {
+        const source = httpImportOf(draft, id)
+        source.path = path
+        if (source.method === "GET") {
+          const held = new Set(pathParameters(path))
+          source.parameters = source.parameters.filter((given) => held.has(given.name))
+        }
+      })
+
+/** The column of a one-row table beside whose cell an Import is also offered, or none. */
+export const setImportLookup = (spec: FormSpec, id: string, lookup: FieldRef | null): FormSpec =>
+  sameField(importOf(spec, id).lookup, lookup)
+    ? spec
+    : edit(spec, (draft) => {
+        importOf(draft, id).lookup = lookup
+      })
+
+const sameField = (a: FieldRef | null, b: FieldRef | null): boolean => (a === null || b === null ? a === b : a.table === b.table && a.column === b.column)
+
 /** An Import's query, each parameter it no longer holds losing its column. */
 export const setImportQuery = (spec: FormSpec, id: string, query: string): FormSpec =>
   sqlImportOf(spec, id).query === query
@@ -1923,10 +1981,10 @@ export const setImportQuery = (spec: FormSpec, id: string, query: string): FormS
 
 /** Give a parameter of an Import's query the value of a column, or none. */
 export function bindParameter(spec: FormSpec, id: string, name: string, field: FieldRef | null): FormSpec {
-  const given = sqlImportOf(spec, id).parameters.find((parameter) => parameter.name === name)
+  const given = parameterisedOf(spec, id).parameters.find((parameter) => parameter.name === name)
   if (field === null ? given === undefined : given?.table === field.table && given.column === field.column) return spec
   return edit(spec, (draft) => {
-    const source = sqlImportOf(draft, id)
+    const source = parameterisedOf(draft, id)
     if (field === null) source.parameters = source.parameters.filter((parameter) => parameter.name !== name)
     else if (given !== undefined) source.parameters = source.parameters.map((parameter) => (parameter.name === name ? { name, ...field } : parameter))
     else source.parameters.push({ name, ...field })
@@ -1944,9 +2002,6 @@ export const importColumns = (table: SchemaTable): SchemaColumn[] =>
 /** The columns a query's parameter can be given: a one-row table's inputs. */
 export const parameterColumns = (table: SchemaTable): SchemaColumn[] => (table.rows === "one" ? typedInputs(table) : [])
 
-/** Whether an Export writes a file: a CSV or an Excel workbook, of either layout. */
-const isFile = (target: ExportWidget["target"]): target is CsvExport | ExcelExport | ExcelCellsExport => target.format !== "sql"
-
 /** Whether an Export's file heads its tables' columns and fills them: a CSV or a workbook of a sheet per table. */
 const headsColumns = (target: ExportWidget["target"]): target is CsvExport | ExcelExport => target.format === "csv" || target.format === "excel"
 
@@ -1956,12 +2011,11 @@ const headsColumns = (target: ExportWidget["target"]): target is CsvExport | Exc
  * headers and values between a CSV and a workbook of a sheet per table. Choosing Excel for a
  * workbook of cells changes nothing.
  */
-export function setExportFormat(spec: FormSpec, id: string, format: ImportFormat): FormSpec {
+export function setExportFormat(spec: FormSpec, id: string, format: ExportFileFormat): FormSpec {
   const { target } = exportOf(spec, id)
   if (exportFormatShown(target.format) === format) return spec
   return edit(spec, (draft) => {
-    const next = structuredClone(EXPORT_TARGETS[format])
-    if (isFile(next) && isFile(target)) next.file_name = target.file_name
+    const next: ExportWidget["target"] = { ...structuredClone(EXPORT_TARGETS[format]), file_name: target.file_name }
     if (headsColumns(next) && headsColumns(target)) Object.assign(next, { headers: target.headers, values: target.values })
     exportOf(draft, id).target = next
   })
@@ -1986,16 +2040,15 @@ export function setExcelLayout(spec: FormSpec, id: string, layout: ExcelLayout):
 }
 
 /** The settings a format of an Export has of its own, beside the names of the tables it writes to and the cells it writes. */
-export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" | "values" | "delimiter"> & Pick<SqlExport, "connection">>
+export type ExportTargetPatch = Partial<Pick<CsvExport, "file_name" | "headers" | "values" | "delimiter">>
 
 const TARGET_KEYS: Record<ExportFormat, readonly string[]> = {
   csv: ["file_name", "headers", "values", "delimiter"],
   excel: ["file_name", "headers", "values"],
   excel_cells: ["file_name"],
-  sql: ["connection"],
 }
 
-/** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter, a database's connection. */
+/** Change the settings of an Export's format: a file's name, headers and values, a CSV's delimiter. */
 export function updateExportTarget(spec: FormSpec, id: string, patch: ExportTargetPatch): FormSpec {
   const { target } = exportOf(spec, id)
   const foreign = Object.keys(patch).find((key) => !TARGET_KEYS[target.format].includes(key))
@@ -2007,7 +2060,7 @@ export function updateExportTarget(spec: FormSpec, id: string, patch: ExportTarg
   })
 }
 
-/** Export a table, after those it exports, or stop exporting it, the name it was written to going too. */
+/** Export a table, after those it exports, or stop exporting it. */
 export const toggleExportTable = (spec: FormSpec, id: string, table: string): FormSpec =>
   edit(spec, (draft) => {
     const widget = exportOf(draft, id)
@@ -2016,28 +2069,7 @@ export const toggleExportTable = (spec: FormSpec, id: string, table: string): Fo
       return
     }
     widget.tables = widget.tables.filter((exported) => exported !== table)
-    if (widget.target.format === "sql") widget.target.table_names = widget.target.table_names.filter((named) => named.table !== table)
   })
-
-function sqlExportOf(spec: FormSpec, id: string): SqlExport {
-  const { target } = exportOf(spec, id)
-  if (target.format !== "sql") throw new Error(`Component ${id} exports to ${target.format}, which names no tables`)
-  return target
-}
-
-/** The name of the database table an Export writes one of its tables to; blank takes it away, the table then written to the table of its own name. */
-export function setTableName(spec: FormSpec, id: string, table: string, name: string): FormSpec {
-  if (!exportOf(spec, id).tables.includes(table)) throw new Error(`Component ${id} does not export ${table}`)
-  const named = sqlExportOf(spec, id).table_names.find((entry) => entry.table === table)
-  const blank = name.trim() === ""
-  if (blank ? named === undefined : named?.name === name) return spec
-  return edit(spec, (draft) => {
-    const target = sqlExportOf(draft, id)
-    if (blank) target.table_names = target.table_names.filter((entry) => entry.table !== table)
-    else if (named !== undefined) target.table_names = target.table_names.map((entry) => (entry.table === table ? { table, name } : entry))
-    else target.table_names.push({ table, name })
-  })
-}
 
 /** The `{name}`s a file name holds, in order. */
 export const fileNameTokens = (fileName: string): string[] => Array.from(fileName.matchAll(/\{([^{}]*)\}/g), (found) => found[1])
@@ -2503,11 +2535,12 @@ function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
       problems.push(`${widget.mode === "replace" ? "replaces" : "adds to"} the rows of ${table.name}, which has a row for each allowed value; only Update by key keeps them`)
     }
   }
-  if (widget.source.format === "sql") {
-    const { connection, query, parameters } = widget.source
+  if (widget.source.format === "sql" || widget.source.format === "http") {
+    const { source } = widget
+    const { connection, parameters } = source
     if (connection.trim() === "") problems.push("names no connection")
-    if (query.trim() === "") problems.push("has no query")
-    const held = queryParameters(query)
+    if (source.format === "sql" && source.query.trim() === "") problems.push("has no query")
+    const held = heldParameters(source)
     for (const name of held) {
       const given = parameters.find((parameter) => parameter.name === name)
       const found = given === undefined ? undefined : fieldColumn(spec, given)
@@ -2517,8 +2550,14 @@ function importProblems(spec: FormSpec, widget: ImportWidget): string[] {
       else if (found.table.rows === "many") problems.push(`gives :${name} a column of a many-row table`)
     }
     for (const given of parameters) {
-      if (!held.includes(given.name)) problems.push(`gives a column to :${given.name}, which its query does not hold`)
+      if (!held.includes(given.name)) problems.push(`gives a column to :${given.name}, which its ${source.format === "sql" ? "query" : "path"} does not hold`)
     }
+  }
+  if (widget.lookup !== null) {
+    const { lookup } = widget
+    const given = widget.source.format === "sql" || widget.source.format === "http" ? widget.source.parameters : []
+    if (fieldColumn(spec, lookup) === null) problems.push("looks up beside a column that is no longer in the schema")
+    else if (!given.some((parameter) => parameter.table === lookup.table && parameter.column === lookup.column)) problems.push("looks up beside a column that is none of its parameters")
   }
   return problems
 }
@@ -2629,8 +2668,8 @@ export function cellsProblems(spec: FormSpec, target: ExcelCellsExport): string[
 
 /**
  * What stops an Export doing what its settings say: no tables, one gone, more than one to
- * a CSV, a file with no name or naming a column quote_details does not have, to a database
- * no connection, and to a workbook of cells its own (`cellsProblems`).
+ * a CSV, a file with no name or naming a column quote_details does not have, and to a
+ * workbook of cells its own (`cellsProblems`).
  */
 function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
   const { target, tables } = widget
@@ -2638,10 +2677,6 @@ function exportProblems(spec: FormSpec, widget: ExportWidget): string[] {
   const problems: string[] = []
   if (tables.length === 0) problems.push("exports no tables")
   if (tables.some((id) => !spec.schema.tables.some((table) => table.name === id))) problems.push("exports a table that is no longer in the schema")
-  if (target.format === "sql") {
-    if (target.connection.trim() === "") problems.push("names no connection")
-    return problems
-  }
   if (target.format === "csv" && tables.length > 1) problems.push("exports more than one table to a CSV, which holds one")
   return [...problems, ...fileNameProblems(spec, target.file_name)]
 }

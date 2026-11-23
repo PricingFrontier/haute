@@ -3,7 +3,10 @@
 The editor's server, the underwriter app, a job's outcome and the command line each answer a
 failure through ``haute._failure_answers``: a failure no list names is answered in words with
 an incident number, never "Internal Server Error" or a traceback, and each failure Haute names
-is answered with the same message, and the same code wherever the edge carries one.
+is answered with the same message, and the same code wherever the edge carries one. The
+underwriter app's pricing is the one edge that says less (specs/workbench, WB-53's decision):
+beyond a refusal, memory and a public contract, its underwriter is told only that the
+pipeline failed, under an incident, as a failure's words can hold paths and a node's text.
 """
 
 from __future__ import annotations
@@ -80,6 +83,11 @@ def _node_failure() -> BaseException:
     return exc
 
 
+#: The underwriter app's pricing words its own failure for these, an incident naming none of
+#: their words (``answer_app_pricing_failure``).
+APP_PRICING_INCIDENT = "The pipeline failed on this quote (incident "
+APP_HIDES = frozenset({"held_file", "node_failure"})
+
 NAMED: dict[str, Failure] = {
     "held_file": _held_file,
     "out_of_memory": MemoryError,
@@ -149,7 +157,8 @@ def test_a_failure_no_list_names_is_words_and_an_incident_at_every_edge(
     assert "incident" in message
 
     app_status, app_message, app_code, app_body = _underwriter_app(monkeypatch, release, _unnamed)
-    assert (app_status, app_code) == (500, None)
+    assert (app_status, app_code) == (500, "pricing_failed")
+    assert APP_PRICING_INCIDENT in app_message
 
     job_message, job_code, _fields = _job(_unnamed)
     assert job_code == "unexpected_failure"
@@ -162,6 +171,7 @@ def test_a_failure_no_list_names_is_words_and_an_incident_at_every_edge(
         assert "Traceback" not in said
         assert "internal_slot" not in said
         assert "server log" not in said
+    for said in (body, job_message, output):
         assert "does not recognise (incident " in said
     [record] = list((tmp_path / ".haute" / "incidents").iterdir())
     assert record.stem in output
@@ -179,9 +189,16 @@ def test_a_failure_haute_names_is_said_in_the_same_words_at_every_edge(
     job_message, job_code, _fields = _job(failure)
     exit_code, output = _command(failure)
 
-    assert editor_message == app_message == job_message
+    assert editor_message == job_message
     assert output == f"Error: {editor_message}\n"
     assert exit_code == 1
+    if named in APP_HIDES:
+        assert app_code == "pricing_failed"
+        assert APP_PRICING_INCIDENT in app_message
+        assert editor_message not in app_message
+        app_code = None
+    else:
+        assert app_message == editor_message
     codes = {code for code in (editor_code, app_code, job_code) if code is not None}
     assert len(codes) == 1, codes
 

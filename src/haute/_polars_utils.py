@@ -413,8 +413,6 @@ def row_local_python_scan(
             frame = transform(batch) if transform_needed else batch
             if output_predicate is not None:
                 frame = frame.filter(output_predicate)
-            if with_columns is not None:
-                frame = frame.select(with_columns)
             yield frame
 
     return _register_python_scan(frames, schema=schema, caller_context=caller_context)
@@ -495,8 +493,6 @@ def fanout_python_scan(
                 remaining -= frame.height
             if predicate is not None:
                 frame = frame.filter(predicate)
-            if with_columns is not None:
-                frame = frame.select(with_columns)
             yield frame
             if remaining is not None and remaining <= 0:
                 return
@@ -519,7 +515,9 @@ def _register_python_scan(
     """Register *frames* as a Polars IO source run in the caller's context.
 
     An exception the source raises reaches the caller as itself: Polars hands
-    it to every collect, batch and sink seam unchanged.
+    it to every collect, batch and sink seam unchanged. Each frame is cut to the
+    columns Polars asks for here (:func:`_projected`), the one place a scan's
+    projection is applied.
     """
 
     def io_source(
@@ -537,9 +535,20 @@ def _register_python_scan(
                 frame = run_context.run(next, iterator)
             except StopIteration:
                 return
-            yield frame
+            yield _projected(frame, with_columns)
 
     return register_io_source(io_source, schema=schema)
+
+
+def _projected(frame: pl.DataFrame, with_columns: list[str] | None) -> pl.DataFrame:
+    """*frame* cut to *with_columns*, the columns Polars asked a scan for, all of them for
+    None. Asked for none, as a cross join or a count reading the scan's rows alone asks, it
+    keeps its rows with no columns: a frame selected down to no columns has no rows either."""
+    if with_columns is None:
+        return frame
+    if not with_columns:
+        return pl.DataFrame(height=frame.height)
+    return frame.select(with_columns)
 
 
 def limited_python_scan(
@@ -569,8 +578,6 @@ def limited_python_scan(
             frame = frame.head(n_rows)
         if predicate is not None:
             frame = frame.filter(predicate)
-        if with_columns is not None:
-            frame = frame.select(with_columns)
         yield frame
 
     return _register_python_scan(frames, schema=schema, caller_context=caller_context)

@@ -1352,7 +1352,9 @@ class TestInitWorkbench:
         result = runner.invoke(cli, ["init", *WORKBENCH, "--ci", ci], catch_exceptions=False)
         assert result.exit_code == 0, result.output
 
-        generated = workbench_ci_files("azure-container-apps", ci, python_version="3.11")
+        generated = workbench_ci_files(
+            "azure-container-apps", ci, store="sqlserver", python_version="3.11"
+        )
         text = ""
         for relative, content in generated.items():
             written = (tmp_path / relative).read_text(encoding="utf-8")

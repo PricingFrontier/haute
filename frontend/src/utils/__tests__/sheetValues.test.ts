@@ -13,6 +13,7 @@ import {
   formattedNumber,
   newQuoteValues,
   indexProblemCells,
+  KEPT_KEY,
   presetRows,
   pricedRows,
   quoteProblems,
@@ -23,6 +24,7 @@ import {
   valuesIndex,
   withPresetRows,
 } from "../sheetValues"
+import { landedRows, replacesTyped } from "../../workbench/sheet/landedRows"
 import { columnKey, quotedSchema } from "../sheetVisibility"
 import { answeredOutputs, BLANK_THEME, linedUpOutputs, pricingBasis, type SampleRow } from "../workbenchForm"
 import presetCases from "./fixtures/presetRows.json"
@@ -551,6 +553,63 @@ describe("reading through a quoted schema", () => {
     expect(pricedRows(input, { typed: "row_number", answer: "row_number" }, [{ value: "100" }, { item: "Crane" }], [{ row_number: 2, item: "Crane" }], [{ row_number: 2, premium: 20 }])).toEqual([
       undefined,
       { row_number: 2, premium: 20 },
+    ])
+  })
+})
+
+describe("an Import's rows landing", () => {
+  it("gives a one-row table the first row's values, keeping its others", () => {
+    const landed = landedRows(policy, [{ state: "CA", years: "3" }], { mode: "replace", rows: [{ years: "5" }, { years: "9" }] })
+    expect(landed).toEqual([{ state: "CA", years: "5" }])
+    expect(landedRows(policy, [{ state: "CA" }], { mode: "replace", rows: [] })).toEqual([{ state: "CA" }])
+    // A one-row table's row is never replaced whole: nothing asks first.
+    expect(replacesTyped(policy, [{ state: "CA" }], { mode: "replace", rows: [] })).toBe(false)
+  })
+
+  it("replaces a many-row table's rows, asking first over filled ones, or adds them after its filled rows", () => {
+    const held: SampleRow[] = [{ site_name: "Leeds", site_value: "1" }, {}]
+    expect(landedRows(sites, held, { mode: "replace", rows: [{ site_name: "York" }] })).toEqual([{ site_name: "York" }])
+    expect(replacesTyped(sites, held, { mode: "replace", rows: [] })).toBe(true)
+    expect(replacesTyped(sites, [{}], { mode: "replace", rows: [] })).toBe(false)
+    expect(replacesTyped(sites, held, { mode: "append", rows: [] })).toBe(false)
+    expect(landedRows(sites, held, { mode: "append", rows: [{ site_name: "York" }] })).toEqual([{ site_name: "Leeds", site_value: "1" }, { site_name: "York" }])
+  })
+
+  it("updates by a typed index the row each value names, adding a row none names", () => {
+    const held = [{ site_name: "Leeds", site_value: "1", site_note: "kept" }]
+    const landed = landedRows(sites, held, { mode: "update", rows: [{ site_name: " Leeds ", site_value: "2" }, { site_name: "York", site_value: "3" }] })
+    expect(landed).toEqual([
+      { site_name: " Leeds ", site_value: "2", site_note: "kept" },
+      { site_name: "York", site_value: "3" },
+    ])
+  })
+
+  it("updates by an index of values its fixed rows, leaving out a row none names", () => {
+    const landed = landedRows(coverage, [{ peril: "EQ", limit: "5" }], { mode: "update", rows: [{ peril: "AOP", limit: "1" }, { peril: "FL", limit: "9" }] })
+    expect(landed).toEqual([
+      { peril: "AOP", limit: "1" },
+      { peril: "EQ", limit: "5" },
+    ])
+  })
+
+  it("updates by a numbered index the row of each number on the sheet, the number itself the sheets' to give", () => {
+    // Row 2 is blank: row 3 is still row 3.
+    const held: SampleRow[] = [{ item: "Crane", value: "1" }, {}, { item: "Truck", value: "2" }, {}]
+    const landed = landedRows(equipment, held, { mode: "update", rows: [{ row_number: "3", value: "20" }, { row_number: "9", item: "Van" }] })
+    expect(landed).toEqual([{ item: "Crane", value: "1" }, {}, { item: "Truck", value: "20" }, { item: "Van" }])
+  })
+
+  it("keeps a row holding kept values alone, and asks before replacing it", () => {
+    const kept = { [KEPT_KEY]: { gone: "x" } } as unknown as SampleRow
+    const held: SampleRow[] = [{ item: "Crane" }, kept]
+    expect(landedRows(equipment, held, { mode: "append", rows: [{ item: "Van" }] })).toEqual([{ item: "Crane" }, kept, { item: "Van" }])
+    expect(replacesTyped(equipment, [kept], { mode: "replace", rows: [] })).toBe(true)
+  })
+
+  it("clears a cell with an empty one, in a one-row table and an update", () => {
+    expect(landedRows(policy, [{ state: "CA", years: "3" }], { mode: "replace", rows: [{ years: "" }] })).toEqual([{ state: "CA", years: "" }])
+    expect(landedRows(sites, [{ site_name: "Leeds", site_note: "old" }], { mode: "update", rows: [{ site_name: "Leeds", site_note: "" }] })).toEqual([
+      { site_name: "Leeds", site_note: "" },
     ])
   })
 })

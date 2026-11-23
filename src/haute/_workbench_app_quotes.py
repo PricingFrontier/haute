@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -46,6 +46,7 @@ from haute._quote_store import (
     QuoteLockedError,
     QuoteNotFoundError,
     QuoteNotReadyError,
+    QuoteStoreChangedError,
     QuoteStoreError,
     QuoteValuesError,
     ReferenceTakenError,
@@ -60,6 +61,12 @@ from haute._quote_store import (
 from haute._quote_store._book import MAX_PAGE_SIZE, PAGE_SIZE
 from haute._workbench_app import Pricing
 from haute._workbench_app_store import QuoteStoreClosedError, StoreGate
+from haute._workbench_export import (
+    XLSX_MEDIA_TYPE,
+    ExportRefusedError,
+    attachment,
+    quote_export,
+)
 from haute._workbench_form import QUOTE_DETAILS_MANAGED, QUOTE_DETAILS_NAME, FormSpec
 from haute._workbench_tables import (
     IDENTITY_SHAPE,
@@ -92,6 +99,7 @@ from haute.schemas import (
     WorkbenchAppQuoteChange,
     WorkbenchAppQuoteChangeResponse,
     WorkbenchAppQuoteCreateRequest,
+    WorkbenchAppQuoteExport,
     WorkbenchAppQuoteNote,
     WorkbenchAppQuoteResponse,
     WorkbenchAppQuoteSaveRequest,
@@ -184,18 +192,43 @@ async def _book(app: QuoteApp) -> QuoteBook:
         raise RequestRefusedError(refusal.detail, status_code=503) from None
 
 
-async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] | None = None) -> T:
-    """*work* on a worker thread, the store's refusals answered as the app's; a quote moved on
-    with the quote *identity* names as it is now."""
+async def _call(
+    app: QuoteApp, work: Callable[[QuoteBook], T], identity: tuple[str, int] | None = None
+) -> T:
+    """*work* on the open book (:func:`_answered`). A store whose tables changed under the
+    running app is checked again at once and, while they fit, *work* done once more on the
+    store as it opens now, as nothing was written; answered 503 when they no longer fit, or
+    changed again meanwhile."""
+    book = await _book(app)
     try:
-        return await run_in_threadpool(work)
+        return await _answered(app, work, book, identity)
+    except QuoteStoreChangedError:
+        refusal = await run_in_threadpool(app.gate.recheck, book)
+        if refusal is not None:
+            raise RequestRefusedError(refusal.detail, status_code=503) from None
+    try:
+        return await _answered(app, work, await _book(app), identity)
+    except QuoteStoreChangedError as exc:
+        raise _refusal(503, exc) from None
+
+
+async def _answered(
+    app: QuoteApp, work: Callable[[QuoteBook], T], book: QuoteBook, identity: tuple[str, int] | None
+) -> T:
+    """*work* on *book*, on a worker thread, the store's refusals answered as the app's; a
+    quote moved on with the quote *identity* names as it is now; a
+    :class:`QuoteStoreChangedError` raised on, for :func:`_call` to check the store again."""
+    try:
+        return await run_in_threadpool(work, book)
+    except QuoteStoreChangedError:
+        raise
     except QuoteNotFoundError as exc:
         raise _refusal(404, exc) from None
     except StaleQuoteError as exc:
         current = None
         if identity is not None:
-            book = await _book(app)
-            current = quote_model(await run_in_threadpool(book.get, *identity)).model_dump()
+            now = await _book(app)
+            current = quote_model(await run_in_threadpool(now.get, *identity)).model_dump()
         raise _refusal(409, exc, quote=current) from None
     except QuoteNotReadyError as exc:
         raise _refusal(409, exc, missing=exc.missing) from None
@@ -228,8 +261,9 @@ async def _call(app: QuoteApp, work: Callable[[], T], identity: tuple[str, int] 
             # the gate's lock may be held by a check still waiting.
             await run_in_threadpool(app.gate.unreachable)
         elif answer.code == "quote_store_refused":
-            # A statement refused: the tables may have changed under the running app.
-            refusal = await run_in_threadpool(app.gate.recheck)
+            # A statement refused: the tables may have changed under the running app. The
+            # book it was refused on is named, so a check another request made since stands.
+            refusal = await run_in_threadpool(app.gate.recheck, book)
             if refusal is not None:
                 raise RequestRefusedError(refusal.detail, status_code=503) from None
         raise answer.refusal() from None
@@ -248,13 +282,23 @@ def _editor(http: Request) -> str:
     return principal
 
 
-async def _body(http: Request, model: type[M]) -> M:
-    """The request's body, read within the deployed quote route's limit, as *model*."""
+async def app_body(
+    http: Request,
+    model: type[M],
+    *,
+    operation: str = "workbench_app_quote",
+    limit_bytes: int | None = None,
+) -> M:
+    """The request's body as *model*, read within *limit_bytes*, else the deployed quote
+    route's limit, before it is parsed: 413 past it, 400 for a malformed length, 422 for a
+    body that is not JSON or not *model*."""
     try:
         raw = await read_limited_json_body(
             http,
-            operation="workbench_app_quote",
-            limit_bytes=deploy_quote_request_body_limit_bytes(),
+            operation=operation,
+            limit_bytes=deploy_quote_request_body_limit_bytes()
+            if limit_bytes is None
+            else limit_bytes,
         )
     except RequestBodyLimitError as exc:
         raise RequestRefusedError(exc.to_payload(), status_code=413) from None
@@ -348,10 +392,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
         limit: int = Query(default=PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     ) -> WorkbenchAppQuotesResponse:
         actor: str = http.state.principal
-        book = await _book(app)
         page = await _call(
             app,
-            lambda: book.page(
+            lambda book: book.page(
                 actor=actor,
                 view=view,
                 stage=stage,
@@ -371,11 +414,10 @@ def quote_router(app: QuoteApp) -> APIRouter:
     @router.post("/quotes", response_model=WorkbenchAppQuoteResponse)
     async def create_quote(http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteCreateRequest)
-        book = await _book(app)
+        body = await app_body(http, WorkbenchAppQuoteCreateRequest)
         # A creation repeated with its key answers the quote it made, whichever release the
         # page was drawn for.
-        replay = await _call(app, lambda: book.replayed(body.operation, actor, "created"))
+        replay = await _call(app, lambda book: book.replayed(body.operation, actor, "created"))
         if replay is not None:
             return answer(replay)
         _drawn_for(app, body)
@@ -386,7 +428,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         )
         made = await _call(
             app,
-            lambda: book.create(
+            lambda book: book.create(
                 operation=body.operation,
                 actor=actor,
                 values=body.values,
@@ -399,24 +441,25 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/quotes/{reference}/{option}", response_model=WorkbenchAppQuoteResponse)
     async def open_quote(reference: str, option: int) -> WorkbenchAppQuoteResponse:
-        book = await _book(app)
-        return answer(await _call(app, lambda: book.read(reference, option)))
+        return answer(await _call(app, lambda book: book.read(reference, option)))
 
     @router.post("/quotes/{reference}/{option}/save", response_model=WorkbenchAppQuoteResponse)
     async def save_quote(reference: str, option: int, http: Request) -> WorkbenchAppQuoteResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteSaveRequest)
+        body = await app_body(http, WorkbenchAppQuoteSaveRequest)
         book = await _book(app)
         identity = (reference, option)
         # A save repeated with its key after its answer was lost is answered with what that key
         # wrote, nothing priced or written again, whichever release the page was drawn for.
         replay = await _call(
-            app, lambda: book.replayed(body.operation, actor, "saved", reference, option), identity
+            app,
+            lambda book: book.replayed(body.operation, actor, "saved", reference, option),
+            identity,
         )
         if replay is not None:
             return answer(replay, body.shown)
         _drawn_for(app, body)
-        current = await _call(app, lambda: book.get(reference, option))
+        current = await _call(app, lambda book: book.get(reference, option))
         # One instant stamps the save: the request priced and the rows written.
         at = book.now()
         values = as_written(body.values, book.managed(current, at=at, actor=actor))
@@ -426,12 +469,12 @@ def quote_router(app: QuoteApp) -> APIRouter:
         priced = None
         if body.shown is not None:
             # A value not of its column's type refuses the save before it is priced, naming each.
-            await _call(app, lambda: input_rows(app.form, values, identity))
+            await _call(app, lambda _book: input_rows(app.form, values, identity))
             pricing = await app.price(values)
             priced = PricedOutputs(app.release_id, pricing.document)
         saved = await _call(
             app,
-            lambda: book.save(
+            lambda book: book.save(
                 reference,
                 option,
                 operation=body.operation,
@@ -454,10 +497,9 @@ def quote_router(app: QuoteApp) -> APIRouter:
             reference: str, option: int, http: Request
         ) -> WorkbenchAppQuoteChangeResponse:
             actor = _editor(http)
-            body = await _body(http, model)
-            book = await _book(app)
+            body = await app_body(http, model)
             quote = await _call(
-                app, lambda: apply(book, reference, option, body, actor), (reference, option)
+                app, lambda book: apply(book, reference, option, body, actor), (reference, option)
             )
             return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
@@ -498,14 +540,53 @@ def quote_router(app: QuoteApp) -> APIRouter:
     )
 
     @router.post(
+        "/quotes/{reference}/{option}/export",
+        response_class=Response,
+        responses={200: {"content": {XLSX_MEDIA_TYPE: {}}, "description": "The workbook."}},
+    )
+    async def export(reference: str, option: int, http: Request) -> Response:
+        """A final quote's Export to an Excel workbook of cells, run on its values and prices
+        as the store keeps them and recorded in its activity: the workbook, named by the
+        Export's file name. Anyone signed in may export, as anyone may read the quote."""
+        actor: str = http.state.principal
+        body = await app_body(http, WorkbenchAppQuoteExport)
+        identity = (reference, option)
+        opened = await _call(app, lambda book: book.read(reference, option), identity)
+        quote = opened.quote
+        if quote.stage != "final" or quote.priced_release is None:
+            raise RequestRefusedError(
+                {
+                    "message": f"Mark {quote.label} final before exporting it.",
+                    "error_code": "quote_not_ready",
+                },
+                status_code=409,
+            )
+        release = quote.priced_release
+        try:
+            file_name, data = await run_in_threadpool(
+                quote_export, app.form, body.component, opened.values, opened.outputs or {}, release
+            )
+        except ExportRefusedError as exc:
+            raise UnprocessableError(exc.message) from None
+        await _call(
+            app,
+            lambda book: book.record_export(reference, option, version=body.version, actor=actor),
+            identity,
+        )
+        return Response(
+            content=data,
+            media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition": attachment(file_name)},
+        )
+
+    @router.post(
         "/quotes/{reference}/{option}/note", response_model=WorkbenchAppQuoteChangeResponse
     )
     async def note(reference: str, option: int, http: Request) -> WorkbenchAppQuoteChangeResponse:
         actor = _editor(http)
-        body = await _body(http, WorkbenchAppQuoteNote)
-        book = await _book(app)
+        body = await app_body(http, WorkbenchAppQuoteNote)
         quote = await _call(
-            app, lambda: book.set_note(reference, option, actor=actor, note=body.note)
+            app, lambda book: book.set_note(reference, option, actor=actor, note=body.note)
         )
         return WorkbenchAppQuoteChangeResponse(quote=quote_model(quote))
 
@@ -513,8 +594,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
         "/quotes/{reference}/{option}/activity", response_model=WorkbenchAppQuoteActivityResponse
     )
     async def activity(reference: str, option: int) -> WorkbenchAppQuoteActivityResponse:
-        book = await _book(app)
-        done = await _call(app, lambda: book.activity(reference, option))
+        done = await _call(app, lambda book: book.activity(reference, option))
         return WorkbenchAppQuoteActivityResponse(
             entries=[
                 WorkbenchAppQuoteActivityEntry(
@@ -535,7 +615,6 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/people", response_model=WorkbenchAppPeopleResponse)
     async def people() -> WorkbenchAppPeopleResponse:
-        book = await _book(app)
-        return WorkbenchAppPeopleResponse(people=await _call(app, book.people))
+        return WorkbenchAppPeopleResponse(people=await _call(app, lambda book: book.people()))
 
     return router

@@ -87,10 +87,8 @@ Out of scope:
   ([WB-07](../roadmap/workbench.md#wb-07--the-underwriter-app-on-other-hosts)).
 - The underwriter app's host-side delivery: rolling a host to a release and checking it
   there ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
-- Running an Import or an Export: reading a file or a database into a table
-  ([WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)) and writing the
-  quote's tables out ([WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)), but
-  for an Export to an Excel workbook of cells in Preview.
+- Running an Export but to an Excel workbook of cells, in Preview and on a final quote
+  in the underwriter app ([WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)).
 - `haute init`'s other scaffolding ([cli](../cli/high-level.md),
   [pipeline-config](../pipeline-config/high-level.md)).
 
@@ -166,7 +164,14 @@ Out of scope:
   type-checks and tests the project, lints the pipeline and runs `haute app build`, which
   resolves, validates and bundles the pipeline as a deploy does, with the form, its test
   quotes priced and compared (Test quotes, below) and their report kept as the job's
-  artifact whether it passes or fails. On that push, and on a manual run of the default branch alone, the publish job,
+  artifact whether it passes or fails, then `haute app test`, which tests the packaged app
+  on SQLite (Testing the packaged app, below); and a second job builds the release again
+  and tests it on the server engine production's store runs, else staging's (none when
+  both are files), in a throwaway service container of that engine, given its login in
+  `HAUTE_APP_TEST_URL`, `HAUTE_APP_TEST_USER` and `HAUTE_APP_TEST_PASSWORD`, the system
+  libraries SQL Server's driver loads installed first. No step changes a hosted database's
+  tables or a saved quote, and no migration is rehearsed: its SQL is the analysts' to
+  write and run. On that push, and on a manual run of the default branch alone, the publish job,
   given the host's credentials, logs in to the
   registry `[deploy.container] registry` names (the host `haute ci registry-host` prints)
   and runs `haute app build --push`, which builds the release's image once, pushes it and
@@ -183,8 +188,25 @@ Out of scope:
   the publish job, forty-five minutes for production), and the jobs that roll one environment out never
   run at once (GitHub's concurrency group, GitLab's resource group, Azure DevOps' one
   pipeline run at a time on the environment's exclusive lock, which IT sets on it).
-  The packaged app's tests are still to come
+  An export template's change starting the release waits on templates
   ([WB-08](../roadmap/workbench.md#wb-08--the-workbench-projects-cicd)).
+- **Testing the packaged app.** `haute app test [RELEASE]` (`.haute/app/release` unless
+  another is named) serves the release `haute app build` wrote, through the app it ships
+  as its `app.py` serves it, on loopback, signed in as the run, on a quote store made for
+  the run alone: the tables of the release's form made by the SQL Haute writes for that
+  engine, on a SQLite file in a folder of the run's own, or, with `--server-url`
+  (`HAUTE_APP_TEST_URL`), on a database the run makes on that server (its `master` or
+  `postgres` database, signed in with `HAUTE_APP_TEST_USER` and `HAUTE_APP_TEST_PASSWORD`,
+  a login that may make and drop databases) and drops after. Its store must open as a
+  hosted app's does (the store's check). Then, through the app's own routes, each of the
+  project's test quotes (`[test_quotes] dir`) is put on the sheets as opening it in
+  Preview puts it there, made a quote, priced under the identity the app gave it, saved
+  priced, opened again and checked to hold what was saved, then marked final and
+  exported by each Export to an Excel workbook of cells the form holds, the answer a
+  workbook. Each step is printed; one that fails, a quote that cannot be put on the sheets
+  among them, fails the command after them all, and a quote that cannot be marked final
+  is said and left unexported. A project with no test quotes opens its store and saves
+  nothing. Nothing of a hosted environment is reached.
 - **Rolling the hosted app out.** `haute app rollout ENVIRONMENT` rolls the Container App
   that `[workbench.app.<ENVIRONMENT>]` names to one image and checks the release there, for
   the workbench's CI. It creates nothing and changes no database's tables. Before it changes
@@ -484,12 +506,18 @@ Out of scope:
   first, and its `header_row`, 1 to 100, the row naming its columns) or a database (`sql`,
   its `connection`, a named connection whose credentials the environment holds, `""` for
   none chosen, its `query`, and its `parameters`, each a `:name` in the query, by `name`,
-  an identifier, given the value of a column by `table` and `column`, no name twice); the
+  an identifier, given the value of a column by `table` and `column`, no name twice) or an
+  API (`http`, its `connection`, a named connection of `provider = "http"`, its `method`,
+  `GET` or `POST`, its `path` after the connection's base URL, each `{name}` in it a
+  parameter's value, its `parameters` as a query's, each a `{name}` of the path or, for
+  `POST`, a key of the body, and `rows`, where the answer's rows are, a dotted path of
+  keys, empty for the answer itself); the
   input table it fills, `table` by name, or null for none; how it fills a many-row table,
-  `mode`, `replace`, `append` or `update` (its rows matched by the table's key); and
+  `mode`, `replace`, `append` or `update` (its rows matched by the table's key);
   `column_names`, the columns of that table read from a column named otherwise, each by
   `column` with that `name`, never blank, one each at most and none while it fills no
-  table) or an Export (`export`, a button an underwriter presses to take the quote's tables
+  table; and `lookup`, a column of a one-row table by `table` and `column` beside whose
+  cell it is also offered, one of its parameters' columns, or null for none) or an Export (`export`, a button an underwriter presses to take the quote's tables
   out: its `label`; the `tables` it exports, by name, in the order chosen, none twice; and its
   `target`, by `format`, a CSV (`csv`) or an Excel workbook of a sheet per table (`excel`),
   each with its
@@ -506,9 +534,8 @@ Out of scope:
   the `table` by name, its `columns` by name in the order chosen, the cell `cell` of the
   sheet named `sheet` at the block's top-left corner, and its `header`, its columns headed
   by their `labels`, their `names` or, with `none`, not at all; and no `tables`, since its
-  cells and blocks say what it writes; or a database (`sql`,
-  its `connection` and its `table_names`, the tables written to a table named otherwise,
-  each by `table`, one it exports, with that `name`, never blank, one each at most)),
+  cells and blocks say what it writes), an Export writing a file alone, since a saved quote
+  is in the store's database already (decided 22 November 2026),
   each placed in its section by its `x`, `y`, `w`, `h`, measured from the section's top-left
   corner and inside it, its `y` plus its `h` at most the section's `height` and its `x` plus
   its `w` at most the sheet's `width`, and with a
@@ -1468,9 +1495,7 @@ Out of scope:
   index among them) that it does not hold yet. Under them Add a table, a select of the
   schema's tables, a table chosen adding a block of it with no columns, headed by labels,
   at `A1` of a sheet named by the table. Otherwise Tables, a
-  checkbox per schema table, ticked in order, and, to a database, beside
-  each one ticked the name of the table it is written to, showing the table's own while
-  it has none; unticking a table drops its name; and a table it exports that is no longer
+  checkbox per schema table, ticked in order; and a table it exports that is no longer
   in the schema a row of its own, "Missing table", with a cross. Each change is one undo
   step. While building, the showing sheet's tab has a settings
   mark, and no delete of its own, that opens the sheet's own panel in the same place, with its
@@ -1766,18 +1791,28 @@ Out of scope:
   right", its description not drawn; in Preview it shows no text, only the dashed frame
   any component with a problem has.
 - **Imports and Exports.** An Import and an Export are buttons on a sheet: each fills its
-  box, its label centred beside its format's mark (a CSV's, a workbook's or a
-  database's), with no label its mark alone, in a frame of the sheets' border colour on the
+  box, its label centred beside its format's mark (a CSV's, a workbook's or, for an
+  Import, a database's or an API's, a globe), with no label its mark alone, in a frame of the sheets' border colour on the
   components' background, in their font, and is a button to a screen reader, named by its
-  label. Neither shows schema columns nor takes anything typed. They are laid out and
-  their settings chosen before anything runs them: reading a file or a database into a
-  table is [WB-09](../roadmap/workbench.md#wb-09--actions-that-fill-the-sheets)'s and
-  writing the quote's tables out [WB-11](../roadmap/workbench.md#wb-11--exports-from-the-app)'s,
-  so in Preview and in the underwriter app each is drawn disabled, faded, and a press does
-  nothing, but for an Export to an Excel workbook of cells in Preview, which runs. It can
+  label. Neither shows schema columns nor takes anything typed. While building each is
+  inert, as every component's picture is. In Preview and in the underwriter app an Import
+  runs (Running an Import, below), pressable while it has no problems and nothing it
+  fills is read only, and an Export to an Excel workbook of cells runs, in Preview and on a
+  final quote in the app; any other Export is drawn disabled, faded, and a press does
+  nothing ([WB-11](../roadmap/workbench.md#wb-11--exports-from-templates)). An Export in
+  Preview can
   be pressed while it has no problems and the sample's price is the price of the sample as
-  it stands, not out of date; otherwise, and while a
-  press is answered, it is drawn disabled. A press sends the form as the view holds it,
+  it stands, not out of date; in the app while it has no problems and the quote open is
+  final, so the workbook is of a quote that does not change; otherwise, and while a
+  press is answered, it is drawn disabled. In the app a press sends the Export and the
+  quote's version: the server writes the workbook from the quote's values and prices as
+  the store keeps them, as Preview's from its sample, the quote's own reference and option
+  among them, names the release that priced it in the workbook's `Haute release` custom
+  property, and records the export in the quote's activity, by who pressed it, moving no
+  version (anyone signed in may export, as anyone may read the quote); a draft is refused
+  (409, `quote_not_ready`, "Mark Q-000001/1 final before exporting it.") and a quote
+  changed since it was opened refused as a stale change is, nothing recorded. Preview's
+  run: a press sends the form as the view holds it,
   the Export and what that pricing gave (the sample as the server typed it and the priced
   tables), and the browser downloads the workbook the server writes, named by its file
   name with `.xlsx`; a refusal shows as an error naming why, as when the sample changed
@@ -1826,13 +1861,16 @@ Out of scope:
   component's: no label; no table, a table no longer in the schema or a table with no
   inputs, which pricing fills; a column named that is no longer in the schema or that an
   underwriter does not type, an output among them; replacing or adding to the rows of a table with a row for
-  each allowed value, which only Update by key keeps; and, from a database, no
+  each allowed value, which only Update by key keeps; from a database, no
   connection, no query, a parameter given no column, a column no longer in the schema or
-  not an input of a one-row table, or a column given to a parameter its query does not hold.
+  not an input of a one-row table, or a column given to a parameter its query does not hold;
+  from an API the same of its path's `{name}`s and, for `POST`, of the parameters it sends,
+  and no connection; and a lookup on a column that is no longer in the schema or that is
+  none of its parameters' columns.
   And an Export's: no label; no tables, but to a workbook of cells; a table no longer in
   the schema; more than one
   table to a CSV, which holds one; a file with no name or naming a column `quote_details`
-  does not have; to a database, no connection; and to a workbook of cells, no cells and no
+  does not have; and to a workbook of cells, no cells and no
   blocks, a cell's column no longer in the schema or of a many-row table, which holds a
   value per row (a block writes its rows), a block's table or one of its columns no longer
   in the schema, a block with no columns or with one twice, a sheet name Excel refuses
@@ -1847,6 +1885,93 @@ Out of scope:
   checked against all before it. None is refused: the form is saved as it is. The server
   refuses an export whose file name, cells or blocks have any of these problems, naming
   each.
+- **Running an Import.** Decided with the owner on 22 November 2026: an Import is declared,
+  never Python; it runs in Preview and in the underwriter app, never while building; it
+  runs on the server, under the identity of whoever runs the server (the analyst in the
+  editor and `haute app serve`, the hosted app's own identity), never the signed-in
+  underwriter's, so a database's row-level permissions are the server's; and no
+  credential reaches the browser, the form, `haute.toml`, an answer or a log. Its sources:
+  - **A file.** A CSV or an Excel workbook the underwriter picks as they press it, sent to
+    the server whole (at most the request body limit), read there: a CSV in UTF-8 (a byte
+    order mark dropped), split by its delimiter, found from its first line while Auto (the
+    one of comma, semicolon and tab it holds most of), its first row its columns' names; a
+    workbook's sheet named, else its first, its columns named by its header row, the table
+    as wide as the header names (at most 1,024 columns), and its rows those under it, a row
+    empty across the header's columns ending them; a workbook holding more than 64 MiB once
+    unzipped, counted as it unzips, one whose files unzip to more than they state, and one
+    compressed otherwise than Excel compresses one, are refused before it is read, as its
+    text is read whole.
+  - **A database.** Its query run on the named connection (below), on Databricks SQL, SQL
+    Server, PostgreSQL or a SQLite file: one statement, starting `SELECT` or `WITH`, with no
+    `;`, no comment and none of the words that change a database (`INSERT`, `UPDATE`,
+    `DELETE`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `EXEC`,
+    `EXECUTE`, `CALL`, `INTO`), its quotes closing and its parentheses balancing, each
+    refused naming why before anything is sent. SQL Server runs a batch of statements with
+    no `;` between them, so there the query is first compiled as the body of a derived
+    table (`SELECT TOP (0) * FROM (...) AS haute_import_check`, its list of named queries,
+    `WITH ... AS (...)`, kept before it and `OFFSET 0 ROWS` after an `ORDER BY` ending it
+    unless the query has `TOP`),
+    which SQL Server compiles only around one query, and a batch that does not compile runs
+    none of it: the query runs only once that has compiled. It is run
+    read-only where the engine allows (a PostgreSQL transaction `READ ONLY`, a SQLite file
+    opened read-only, so nothing of it is written and a file not there is not made), within
+    the statement deadline the quote store's connections keep, each `:name` bound to its
+    parameter's value, never written into the text, a `:name` in a string or a quoted name
+    being none.
+  - **An API.** A request to a named connection of `provider = "http"`, whose `base_url`
+    is the only host it reaches (an allow-list of one): its `method`, `GET` or `POST`, its
+    `path` after the base URL, each `{name}` in it the URL-encoded value of that parameter,
+    and for `POST` a JSON body of the parameters by name; answered within 30 seconds and
+    in at most 32 MiB, a redirect never followed, the answer JSON, its rows found at `rows`, a dotted path of
+    keys (`data.items`), empty for the answer itself: a list of objects, or one object as
+    one row.
+
+  A parameter is given the value its column, an input of a one-row table, holds as the
+  quote is typed, read as pricing reads it; one holding nothing is refused, naming the
+  field to fill. The rows read are at most 10,000, more refused naming the count. Each
+  column of the table the Import fills, an input an underwriter types, is read from the
+  column of the source named for it, else of its name or its label, whatever its case;
+  a column the source does not hold is left as it is, and one the table does not have is
+  never read, and a source holding none of the columns the Import reads is refused, since
+  it would fill nothing and a Replace would empty the table; only the columns read are
+  kept. Each value becomes the cell text the sheets hold it as: a file's text as written,
+  trimmed; a database's or an API's value as a saved quote's comes back (`1000.00` for one
+  of a column's allowed values, else a number as its shortest text, a date as ISO text,
+  true a tick), a date and time going into a Date column its day (as a workbook's date
+  cells are read) and 0 or 1 into a True/false column false or true; and a value that is
+  empty, null or false an empty cell, unticked in a True/false column, so an update clears
+  the cell it lands on, while a key an API's object does not hold leaves its cell as it is. Nothing is priced on the server for the Import: its rows
+  land on the sheets as typing does, priced as typing is, each cell marked where it breaks
+  its column's rules. A one-row table takes the first row's values, its other values
+  kept; a many-row table's rows are replaced, added after those typed, or updated by its
+  index (each source row's index value naming the row it updates, a row none names added
+  after them, but in a table with a row for each allowed value, whose rows are fixed,
+  where it is left out), each row in its place on the sheet, a numbered index's number its
+  row there, blank rows and a row holding only values the store keeps outside the form
+  kept. Replacing rows holding anything asks first. In Preview the rows land
+  in the sample, one undo step; in the app, in the quote open, which the underwriter then
+  saves. A refusal (no connection of that name, a query or a host refused, a source that
+  does not answer, more rows than the cap, a parameter with no value, a column of the
+  Import no longer in the schema) is said as an error naming why; a database's or an API's
+  own failure is said in the editor and `haute app serve`, where the analyst reads it, and
+  in a hosted app as an incident, its words in the app's log, as a failed pricing is.
+  - **Its connections.** In the editor and `haute app serve` a connection is a table of
+    `connections.toml` under the name the Import gives (Connections, below), which gains a
+    `databricks` provider (its `http_path`; the workspace's host and sign-in from the
+    `DATABRICKS_*` variables, as a Databricks Data Input reads them; a hosted app's,
+    without its own token, refused while those variables are another workspace's) and an `http` one (its
+    `base_url`, and `headers`, each header's name and the variable holding its value). A
+    hosted app reads a connection from the host's variables named for it alone,
+    `HAUTE_CONNECTION_<NAME>_URL` (a database's credential-free URL, a Databricks
+    `databricks://<host>/<http_path>`, an API's base URL), with `_USERNAME` and `_PASSWORD` for a
+    password sign-in, `_TOKEN` for a Databricks token or an API's bearer token: no file a
+    release carries says where a source is or how to sign in to it. `<NAME>` is the
+    connection's name in capitals, each `-` an `_`, so `connections.toml` refuses two names
+    making one, as `policy-db` and `policy_db` would.
+  - **A lookup.** An Import that names a column of a one-row table as its `lookup`, one
+    of its parameters, is also offered beside that column's cell wherever the sheets show
+    it, a search button that runs the same Import, so an underwriter keys a reference and
+    looks it up where they keyed it.
 - **Preview.** The toolbar's Build over Preview switches the view between building and
   the sheets as an underwriter uses them: the same sheets, their sections that show stacked
   one under the next and each component where it sits in its section, read and
@@ -1911,9 +2036,11 @@ Out of scope:
     sample's place, one undo step, onto the form as the view holds it, unless the sample
     was typed into or another quote opened while it was being read, by table and column name as the sheets hold values
     (true and false as ticks, a number as plain text, a date as ISO text, a column's
-    preset rows placed by their values); each value whose table or column the form no
-    longer has, or that its column's type or allowed values no longer take, is listed as
-    not opened. What is opened can be changed and saved as a new test quote, or replace
+    preset rows placed by their values, wherever the allowed values now put them); each
+    value whose table or column the form no longer has, or that its column's type or
+    allowed values no longer take, compared as the column's type reads both, is listed as
+    not opened, and a row whose index value is no longer allowed is listed and left out
+    whole. What is opened can be changed and saved as a new test quote, or replace
     the one opened, after asking.
   - **Run.** Run prices every test quote, or those ticked, one at a time, showing how far
     it has come and able to be stopped, each from its stored request (never rebuilt from
@@ -2007,7 +2134,12 @@ Out of scope:
   as Preview's pricing builds it and priced through the deployed
   pipeline's engine, one quote per request, off the server's event loop, under the deploy's
   admission limit and a timeout, and answered whole: each output table's rows, with the
-  request priced. The app prices at most a bounded number of quotes at once, four unless
+  request priced. A pricing the pipeline fails on is answered as the deployed pricing API
+  answers one: 500 with a fixed sentence naming an incident, under which the app's log holds
+  what failed, never what the node raised, whose text can hold paths, internal names and
+  secrets; `haute app impact` names that incident and the app whose log holds it. A quote a
+  public contract refuses (values the Workbench Input does not take, a rating factor
+  missing) is answered 422 in its words, and one past the app's memory 507. The app prices at most a bounded number of quotes at once, four unless
   `HAUTE_APP_PRICING_WORKERS` says otherwise, a save's pricing among them: a pricing past
   its timeout is answered 504 but cannot be stopped, so it holds its place until it ends,
   and a pricing asked for while every place is held is refused at once (503, `Retry-After`
@@ -2043,9 +2175,16 @@ Out of scope:
   check (below) finds nothing wrong. Until then they are closed: every quote route and
   `POST /api/app/price` answer 503 naming why, `quote_store_mismatch` with each way the
   database's tables differ from the release's form and each privilege its sign-in lacks,
+  `quote_store_read_only` for a SQLite store whose file, or the folder it is in, the app
+  cannot write to, naming the file, since no save could land,
   `quote_store_unreachable` for a server database the app cannot reach or that refuses its
   sign-in, said naming the variables that place it and sign in to it, never what the driver
-  said, which names the server, its port and the user, and logged without it, and
+  said, which names the server, its port and the user, and logged without it, and the same
+  for one that stopped answering: a connection is made and signed in within 10 seconds, a
+  statement runs within 30 before it is cancelled, and a request waits 10 for a connection
+  while every one is taken, so a database that never answers is refused in seconds, every
+  request waiting on the one check under way, rather than when the operating system gives
+  up; and
   `quote_store_environment` for an app started with no environment named, naming
   `HAUTE_ENVIRONMENT`, or one whose environment or database cannot be resolved, naming the
   variable to set. `GET /api/app/release` says whether the quotes are open (`quotes`) and,
@@ -2585,10 +2724,16 @@ Out of scope:
     whose type does not fit its declared type (below) and every column of a table nothing is
     connected to are filled with nulls, and the panel flags each, so the pipeline runs while
     it is being built: a one-row table nothing is connected to holds one row of nulls and a
-    many-row one no rows. None of them stops a run; an index filled with nulls fails pricing
-    a quote instead (Each output row on its input row, below). A table leading with the quote's
-    reference and option holds them null in the node's tables whatever its frame holds, and
-    the panel never flags them; the response fills them.
+    many-row one no rows. None of them stops a run, nor a release: `haute app build` builds
+    one, and the app answers that field null and every other priced (decided 22 November
+    2026: a renamed or retyped column upstream blanks its own field, not the quote); an index
+    filled with nulls fails pricing a quote instead (Each output row on its input row,
+    below). A table leading with the quote's
+    reference and option holds the quote's on every row whatever its frame holds, read from
+    the `quote_details` of the Workbench Input the node reads from: in the editor, `haute run`
+    and a trace the sample's, under the stand-in identity, `PREVIEW` and 1, and where it is
+    given a request the request's; null when the node reads from no Workbench Input. The
+    panel never flags them, and a pipeline need not carry them through.
   - **Its tables are its result.** When the node runs, its result is its tables, one frame per
     table with a column, under its port's name, each holding the table's columns in the tables' order with
     their declared types, and nothing else of the frames it was given. A column fits its
@@ -2601,8 +2746,8 @@ Out of scope:
     when there are several, the first table first. Clicking a value in them traces it from
     the node connected to its table: the same row of that node's frame, and its column of the
     value's column's name. A value filled with nulls, its column missing from the frame or of
-    a type that does not fit, its table not connected, or the quote's reference and option
-    the table holds blank, has no value to trace, and tracing it says so.
+    a type that does not fit, its table not connected, or the quote's reference and option,
+    which the quote gives, has no value to trace, and tracing it says so.
   - **The response.** The tables are what a priced quote's outputs are filled with. Where
     the pipeline answers a request, its tables become the response for one quote: a list of one
     object holding each one-row table as an object under its schema table's name, not its
@@ -2612,7 +2757,8 @@ Out of scope:
     of a table leading with the quote's reference and option takes the quote's, read from
     the run's `quote_details` frame where the response is built (the request's in deployed
     scoring, the source's in `Pipeline.run`, the frame given to `Pipeline.score`, null
-    without one), so a pipeline need not carry them through; where it is rendered as JSON a
+    without one), by the one rule the node's tables follow, so every way of running the
+    pipeline answers one quote under one identity; where it is rendered as JSON a
     null value or an empty list is left out, as a Quote Response's are.
   - **Each output row on its input row.** A many-row table with inputs and outputs is one
     table, so each row pricing gives it belongs to one of the quote's rows of it: the row
@@ -2795,8 +2941,10 @@ Out of scope:
   creation the quote it made as it stands, a save the quote while that save is still its
   newest change, and otherwise a refusal of its own (`write_superseded`) saying when the
   save landed and who changed the quote after it, which the page takes as done; two sent at
-  once under one key are one write. The key of another person, another quote or another
-  kind of write is refused.
+  once under one key are one write, both answered with it, a creation finding its
+  reference taken looking its key up again before it says so, since the copy that took
+  it may be its own. The key of another person, another quote or another kind of write is
+  refused.
 
   A new quote, a duplicate and a renewal take the reference the underwriter keys, and option
   1; an alternative takes its source's reference and the next option, its source's option 1
@@ -2808,9 +2956,10 @@ Out of scope:
   opens.
 
   A quote opens from its rows, read together and read again when the quote moved on while
-  they were read: each typed value as the cell text it reads as (an Integer its digits, a
-  Decimal the shortest text that reads back as it, a Date its ISO text, True/false a tick or
-  none, and null a blank), a many-row table's rows in their places by its index (numbered,
+  they were read: each typed value as the cell text it reads as (one of its column's allowed
+  values as that value is written, so a Decimal chosen as `1000.00` shows chosen, else an
+  Integer its digits, a Decimal the shortest text that reads back as it, a Date its ISO
+  text, True/false a tick or none, and null a blank), a many-row table's rows in their places by its index (numbered,
   each in its numbered place, a gap a blank row, and a row whose index is not a number as
   Haute writes one (digits with no sign or leading zero, so `"01"` is none), as one saved
   before the index was numbered holds, after them in the order it was stored, so no row
@@ -2914,7 +3063,8 @@ Out of scope:
   the swap moved is retyped, and in a plan from the database with a column added under the
   name the refused rename keeps, the database's other column kept as an extra; a type
   change as the
-  engine's ALTER in place, with a note that a value which does not convert stops it, and on
+  engine's ALTER in place, the column taking a null or none as it did, with a note that a
+  value which does not convert stops it, and on
   SQLite, which cannot change a column's type, a note alone; a change of a table's rows or
   of its index's type as a note of what the table needs, since either changes the key its
   rows are held by; a change of how its index gets its values (numbered, typed or a row
@@ -2928,7 +3078,11 @@ Out of scope:
   not hold, as JSON text no sheet shows and no pricing reads; the row keeps it through
   inserts, deletes, edits made while a save is pending and the answer to a save replayed, and
   a save writes it back, refusing it, by name, for a column the form holds, one the store
-  does not hold, or a value its column's kind does not hold. A new row has none; a deleted row
+  does not hold, or a value its column's kind does not hold. Such a column added, renamed or
+  dropped while an app runs is seen before the app next reads a quote's rows or writes them:
+  the store opens again on the tables as they are, as after a statement the database refused,
+  and the read or save is made once more, nothing written before, so an app opened before a
+  column was added keeps the values another release wrote there. A new row has none; a deleted row
   takes its values with it, and only deleting it does: a row whose cells are all emptied
   keeps its `$kept` values and is saved as a row with empty cells. An index of values moves
   each row, with its `$kept` field, to its value's place.
@@ -3084,9 +3238,6 @@ Out of scope:
   form is saved only when there is something to save, unsaved edits, so a save from the
   pipeline editor costs the form no request and no toast while it is as saved; a form
   file left uncaptured is captured as it is, never written again.
-- **The blank form is a form.** A project whose workbench was enabled by hand has no file
-  yet, and the view is where its first form is made, so an absent file reads as the blank
-  form with no revision rather than as an error, and the first save creates it.
 - **Commit on blur.** The schema editor's fields commit as Haute's editors commit, once
   per edit, so an undo step is an edit rather than a keystroke and no timer decides where
   one edit ends and the next begins.
@@ -3184,7 +3335,11 @@ Out of scope:
   Leaving hidden values out makes a quote what its sheets show, whatever order it was
   typed in; keeping them, rather than clearing them, means hiding a section and showing it
   again loses nothing: in the sample, and in the app's quote while it stays open, saved or
-  not. The store keeps only what was priced, so a quote opened again starts a hidden cell
+  not, each kept value on the row it was typed on, which a table keyed by an index typed or
+  of values knows by its index, since a save answers such rows in the index's order, and
+  any other table by its place, a row holding hidden values alone staying in its place
+  though the save answers no row for it. The
+  store keeps only what was priced, so a quote opened again starts a hidden cell
   at its default (decided 2026-11-05: what was typed is kept for the session, not in the
   database). The server leaves them out where it makes the quote, the one place
   the sample priced in Preview, the Workbench Input's sample and the app's quote all come
@@ -3484,13 +3639,29 @@ Out of scope:
   and which tables and columns it touches are the sheets' design, decided with them and
   kept in the form beside the schema whose names they hold, so a rename changes them and a
   removal takes them away as it takes a field; how they run (the route, the drivers and
-  the credentials) is WB-09's and WB-11's to decide, building on that shape. They are two
+  the credentials) is decided on that shape (An Import run on the server, and An Excel
+  workbook of cells, below). They are two
   kinds rather than one Button with an action, or one per format: an Import names one
   input table and where its inputs come from, an Export the tables it writes, and a
   format is a choice within either, changed without laying the button out again. A
   connection is a name the environment resolves, never a credential, as a Data Input's
-  is. Until they run, a press does nothing and the button is drawn disabled, rather than
-  hidden, so a sheet is laid out as it will be used.
+  is. A button that cannot run is drawn disabled, rather than hidden, so a sheet is laid
+  out as it will be used.
+- **An Import run on the server, declared, its rows landing as typing.** An Import is
+  settings, never code, so the form a release carries runs nothing an analyst wrote in
+  the underwriter's session, and its query is held to one read. It runs on the server
+  under the server's identity, never the underwriter's: no credential reaches the browser,
+  and the hosted app reaches a source as a service does, one variable set per connection
+  by whoever hosts it, rather than through each underwriter's own permissions, which a
+  pricing session cannot hold or delegate. Its rows land on the sheets as typed values do,
+  priced as typing is and marked where they break a rule, rather than priced on the
+  server: pricing stays the pure function of the sheets' values it is, so a quote priced
+  again from its kept values gives the same price whether or not a source has changed
+  since. It runs in Preview and the app, never while building, since building holds no
+  quote to fill. A source's own failure is the analyst's to read in the editor and an
+  incident in the hosted app, as a failed pricing is, since an underwriter can do nothing
+  with a driver's words and they may name a server. The cap of 10,000 rows is the
+  request's own limit on a table, so an Import never fills a quote that cannot be saved.
 - **An Excel workbook of cells, made by Haute, run in Preview first.** A workbook a
   system reads, or a person checks, at fixed cells is the first export WB-11 takes on:
   each field written where its reader looks for it. Haute makes the workbook, so nothing

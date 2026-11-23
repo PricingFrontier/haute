@@ -55,11 +55,10 @@ export const valuesIndex = (table: SchemaTable): SchemaColumn | null => {
 export function presetRows(table: SchemaTable, rows: readonly SampleRow[]): readonly SampleRow[] {
   const column = valuesIndex(table)
   if (column === null) return rows
-  const identity = (value: string): string => indexIdentity(typedIndexValue(column.type, trimTyped(value)))
   const places = new Map<string, number>()
   column.options.forEach((value, place) => {
-    const key = identity(value)
-    if (!places.has(key)) places.set(key, place)
+    const key = indexKey(column, value)
+    if (key !== null && !places.has(key)) places.set(key, place)
   })
   const placed: (SampleRow | undefined)[] = column.options.map(() => undefined)
   const loose: SampleRow[] = []
@@ -69,7 +68,8 @@ export function presetRows(table: SchemaTable, rows: readonly SampleRow[]): read
       loose.push(row)
       continue
     }
-    const place = typeof value === "string" ? places.get(identity(value)) : undefined
+    const key = indexKey(column, value)
+    const place = key === null ? undefined : places.get(key)
     if (place !== undefined && placed[place] === undefined) placed[place] = row
   }
   let next = 0
@@ -290,6 +290,15 @@ export function typedIndexValue(type: SchemaColumn["type"], text: string): strin
 export const indexIdentity = (value: string | number | bigint | boolean): string =>
   typeof value === "string" ? `text:${value}` : typeof value === "boolean" ? `tick:${String(value)}` : `number:${String(value)}`
 
+/**
+ * Which row a cell of an index typed or of values names, as the server tells its rows apart:
+ * its text typed for the index's column and compared as `indexIdentity` compares it, so
+ * `03` and `3` name one row of an Integer index; null for a cell holding none. The rows of a
+ * table so keyed are known by it wherever the server answers them in another order.
+ */
+export const indexKey = (column: SchemaColumn, value: SampleValue | undefined): string | null =>
+  typeof value === "string" && filled(value) ? indexIdentity(typedIndexValue(column.type, trimTyped(value))) : null
+
 /** A typed index's problem on a quote's rows: its table, the index, the rows as the sheet numbers them, from 1, and what is wrong, said whole. */
 export interface IndexProblem {
   table: string
@@ -400,3 +409,13 @@ export function pricedRows(
     return outputRows.find((candidate) => keyed(candidate, keys.answer) && String(candidate[keys.answer]) === String(typed[keys.typed]))
   })
 }
+
+/**
+ * The field of a row holding its values in store columns the form no longer holds, as the
+ * quote store opened them (specs/workbench). No sheet shows it: it stays on its row, through
+ * inserts, deletes and edits, and the save writes it back.
+ */
+export const KEPT_KEY = "$kept"
+
+/** Whether a row holds anything a save keeps: a value typed (`rowFilled`), or values in its kept field. */
+export const rowHolds = (table: SchemaTable, row: SampleRow | undefined): boolean => rowFilled(table, row) || (row !== undefined && KEPT_KEY in row)

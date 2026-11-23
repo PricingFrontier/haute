@@ -49,9 +49,40 @@ jobs:
         run: uv run haute lint
       - name: Build the app's release (score test quotes)
         run: uv run haute app build
+      - name: Test the packaged app on SQLite
+        run: uv run haute app test
       - name: Upload test quotes report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-quotes-report
           path: test_quotes_report.md
+
+  app-test-sqlserver:
+    name: App test on SQL Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      store:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Haute-app-test-1!"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Haute-app-test-1!' -Q 'SELECT 1'"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - name: Libraries for SQL Server's driver
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libltdl7 libkrb5-3 libgssapi-krb5-2
+      - name: Build the app's release
+        run: uv run haute app build
+      - name: Test the packaged app on SQL Server
+        env:
+          HAUTE_APP_TEST_URL: mssql+mssqlpython://localhost:1433/master?TrustServerCertificate=yes
+          HAUTE_APP_TEST_USER: sa
+          HAUTE_APP_TEST_PASSWORD: "Haute-app-test-1!"
+        run: uv run haute app test

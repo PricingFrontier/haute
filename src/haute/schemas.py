@@ -308,6 +308,19 @@ class WorkbenchExportRequest(BaseModel):
     ] = Field(max_length=MAX_REQUEST_ITEMS)
 
 
+#: The most of a file an Import is sent, as base64 text: 10 MiB of the file's bytes.
+MAX_IMPORT_FILE_TEXT = 14 * 1024 * 1024
+
+
+class WorkbenchImportResponse(BaseModel):
+    """What an Import gives its table: the table, how its rows land (``replace``, ``append`` or
+    ``update``), and its rows, each the cells the sheets hold by column name."""
+
+    table: str
+    mode: Literal["replace", "append", "update"]
+    rows: list[dict[str, Cell]]
+
+
 class WorkbenchStoreSqlRequest(BaseModel):
     """A form the Workbench view holds, saved or not, and where the SQL that brings an
     environment's tables to it starts: the form as the project's default branch holds it, or
@@ -707,6 +720,28 @@ class WorkbenchAppFormResponse(BaseModel):
     revision: str
 
 
+class WorkbenchImportRequest(BaseModel):
+    """An Import of a form the Workbench view holds, saved or not, run in Preview on the
+    sample: the Import by its id (``component``), the sample's values (``values``), which its
+    parameters read, and, for a file, the file the underwriter picked, as base64 (``file``)."""
+
+    form: FormSpec
+    component: BoundedName
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    file: str | None = Field(default=None, max_length=MAX_IMPORT_FILE_TEXT)
+
+
+class WorkbenchAppImportRequest(BaseModel):
+    """An Import run in the app on the quote typed: as :class:`WorkbenchImportRequest`, named
+    by the form revision and the release the page was drawn from in place of a form."""
+
+    form_revision: BoundedName
+    release: BoundedName
+    component: BoundedName
+    values: RequestWorkbenchValues = Field(max_length=MAX_REQUEST_ITEMS)
+    file: str | None = Field(default=None, max_length=MAX_IMPORT_FILE_TEXT)
+
+
 class WorkbenchAppPriceRequest(BaseModel):
     """A quote typed into the app's sheets, with the form revision and the release the page
     was drawn from."""
@@ -840,6 +875,13 @@ class WorkbenchAppQuoteAmend(WorkbenchAppQuoteChange):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class WorkbenchAppQuoteExport(WorkbenchAppQuoteChange):
+    """A final quote exported, at ``version`` of it, by its Export to an Excel workbook of
+    cells, by the Export's id (``component``)."""
+
+    component: BoundedName
+
+
 class WorkbenchAppQuoteNote(BaseModel):
     """The quote's handover note; blank clears it. A note moves no version, so it names none."""
 
@@ -854,10 +896,18 @@ class WorkbenchAppQuoteChangeResponse(BaseModel):
 
 class WorkbenchAppQuoteActivityEntry(BaseModel):
     """One thing done to a quote: what, by whom and when, the version it left the quote at
-    (none for a note), and what it carried."""
+    (none for a note or an export), and what it carried."""
 
     action: Literal[
-        "created", "saved", "assigned", "archived", "restored", "finalised", "amended", "noted"
+        "created",
+        "saved",
+        "assigned",
+        "archived",
+        "restored",
+        "finalised",
+        "amended",
+        "noted",
+        "exported",
     ]
     actor: str
     at: str

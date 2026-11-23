@@ -50,6 +50,7 @@ from haute._workbench_tables import (
     request_key_problem,
     request_schema,
     sample_quote,
+    sheet_cell,
     typed_index_problems,
     workbench_tables,
 )
@@ -1790,3 +1791,39 @@ def test_workbench_tables_gathers_the_three_as_the_route_serves_them() -> None:
     assert gathered.tables == input_tables(spec)
     assert gathered.sample == {"policy_details": {"state": "NY"}}
     assert gathered.response_tables == output_tables(spec)
+
+
+_CODES = {"file": "codes.csv", "column": "code"}
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "cell"),
+    [
+        ({"name": "x", "type": "bool"}, None, None),
+        ({"name": "x", "type": "bool"}, False, None),
+        ({"name": "x", "type": "bool"}, True, True),
+        ({"name": "x", "type": "int"}, 12, "12"),
+        ({"name": "x", "type": "float"}, 1000.0, "1000"),
+        ({"name": "x", "type": "float"}, 0.1, "0.1"),
+        ({"name": "x", "type": "date"}, date(2026, 11, 22), "2026-11-22"),
+        ({"name": "x", "type": "str"}, "Leeds", "Leeds"),
+        # One of the allowed values, as its choices write it.
+        (
+            {
+                "name": "x",
+                "type": "float",
+                "options": ["500.00", "1000.00"],
+                "options_source": _CODES,
+            },
+            1000.0,
+            "1000.00",
+        ),
+        ({"name": "x", "type": "int", "options": ["01", "02"], "options_source": _CODES}, 2, "02"),
+        # A value no longer allowed keeps its own text.
+        ({"name": "x", "type": "int", "options": ["01", "02"], "options_source": _CODES}, 3, "3"),
+    ],
+)
+def test_a_value_goes_back_on_the_sheets_as_its_column_holds_it(
+    column: dict[str, Any], value: Any, cell: Any
+) -> None:
+    assert sheet_cell(SchemaColumn.model_validate(column), value) == cell

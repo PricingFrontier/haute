@@ -395,12 +395,41 @@ def _output_side(table: SchemaTable) -> WorkbenchTable:
     )
 
 
+def allowed_values(column: SchemaColumn) -> list[KeyValue]:
+    """*column*'s allowed values typed as the column, in their order, as a value of it is
+    compared with them: ``01`` and ``1`` one Integer, ``1000.00`` the Decimal 1000."""
+    return [_typed(column.type, value) for value in column.options]
+
+
+def sheet_cell(column: SchemaColumn, value: Any) -> str | bool | None:
+    """*value*, a stored or requested value of *column*, as the cell the sheets hold it in:
+    one of the column's allowed values as that value is written (:func:`allowed_values`, so
+    a Decimal 1000.0 the ``1000.00`` its choices offer), else an Integer its digits, a
+    Decimal the shortest text that reads back as it (``1000`` for 1000.0), a Date its ISO
+    text, a tick for true and anything else its text; None, no cell, for false and null.
+    The one rule a saved quote and a test quote are put back on the sheets by."""
+    if value is None or value is False:
+        return None
+    if value is True:
+        return True
+    for written, typed in zip(column.options, allowed_values(column), strict=True):
+        if typed == value and not isinstance(typed, bool):
+            return written
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value).removesuffix(".0")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
 def index_values(column: SchemaColumn) -> list[KeyValue]:
     """An index of values' allowed values typed as the index, in their order; none for any
     other column."""
     if column.index != "values":
         return []
-    return [_typed(column.type, value) for value in column.options]
+    return allowed_values(column)
 
 
 def null_index(column: SchemaColumn) -> KeyValue:

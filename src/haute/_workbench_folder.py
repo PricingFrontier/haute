@@ -78,10 +78,10 @@ from haute._workbench_form import (
     ExportWidget,
     FormDocument,
     FormSpec,
+    HttpImport,
     ImportWidget,
     SchemaColumn,
     SchemaTable,
-    SqlExport,
     SqlImport,
     WorkbenchFormError,
     _condition_kind,
@@ -367,17 +367,16 @@ def _component_file(widget: Any) -> BaseModel:
             data["column_names"] = [
                 {"column": named.column, "name": named.name} for named in widget.column_names
             ]
-        if widget.source.format == "sql":
+        if widget.source.format in ("sql", "http"):
             data["source"]["parameters"] = [
                 {"name": given.name, "column": f"{given.table}.{given.column}"}
                 for given in widget.source.parameters
             ]
+        data["lookup"] = (
+            None if widget.lookup is None else f"{widget.lookup.table}.{widget.lookup.column}"
+        )
     if widget.type == "export":
         data["tables"] = list(widget.tables)
-        if widget.target.format == "sql":
-            data["target"]["table_names"] = [
-                {"table": named.table, "name": named.name} for named in widget.target.table_names
-            ]
         if widget.target.format == "excel_cells":
             data["target"]["cells"] = [
                 {
@@ -820,16 +819,13 @@ def _component(component: Any, placed: PlacementFile) -> dict[str, Any]:
             data["column_names"] = [
                 {"column": named.column, "name": named.name} for named in component.column_names
             ]
-        if component.source.format == "sql":
+        if component.source.format in ("sql", "http"):
             data["source"]["parameters"] = [
                 {"name": given.name, **_ref(given.column)} for given in component.source.parameters
             ]
+        data["lookup"] = None if component.lookup is None else _ref(component.lookup)
     if kind == "export":
         data["tables"] = list(component.tables)
-        if component.target.format == "sql":
-            data["target"]["table_names"] = [
-                {"table": named.table, "name": named.name} for named in component.target.table_names
-            ]
         if component.target.format == "excel_cells":
             data["target"]["cells"] = [
                 {
@@ -1286,12 +1282,14 @@ def unresolved_references(spec: FormSpec) -> list[str]:
                 if isinstance(widget, ImportWidget) and widget.table is not None:
                     refs.append((widget.table, None))
                     refs += [(widget.table, named.column) for named in widget.column_names]
-                if isinstance(widget, ImportWidget) and isinstance(widget.source, SqlImport):
+                if isinstance(widget, ImportWidget) and isinstance(
+                    widget.source, SqlImport | HttpImport
+                ):
                     refs += [(given.table, given.column) for given in widget.source.parameters]
+                if isinstance(widget, ImportWidget) and widget.lookup is not None:
+                    refs.append((widget.lookup.table, widget.lookup.column))
                 if isinstance(widget, ExportWidget):
                     refs += [(table_id, None) for table_id in widget.tables]
-                    if isinstance(widget.target, SqlExport):
-                        refs += [(named.table, None) for named in widget.target.table_names]
                     if isinstance(widget.target, ExcelCellsExport):
                         refs += [(cell.table, cell.column) for cell in widget.target.cells]
                         for block in widget.target.blocks:

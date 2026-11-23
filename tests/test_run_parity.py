@@ -1483,48 +1483,25 @@ def test_a_workbench_project_is_released_as_its_app(
     assert {key: table[key] for key in ("premium", "state")} == {"premium": 100.0, "state": "NY"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="WB-76: the walker prices a workbench's sample under no quote identity, where "
-    "pipeline.run() gives it the stand-in",
-)
 def test_a_workbench_sample_is_priced_under_one_identity_every_way(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The sample is priced under the stand-in identity (specs/workbench) in the walker's
+    preview, from ``haute run`` and from ``pipeline.run()``, from the quote its Workbench Input
+    read, whatever the Workbench Output is connected to."""
     project = _workbench_project(tmp_path)
     (target,) = project.targets
     preview = _preview(project, target)
+    run = _haute_run(project, target, capsys)
     # Run as Python, the pipeline answers with its response document, a table a column.
     document = _python(project, target)
+    python = [json.loads(row)["pricing"] for row in document.rows]
 
-    tables = [
-        json.dumps(json.loads(row)["pricing"], separators=(",", ":")) for row in document.rows
-    ]
-    answers = {Way.PREVIEW: preview, Way.PYTHON: Answer(rows=tuple(tables))}
-    identity = ("quote_reference", "quote_option")
-
-    def without_identity(answer: Answer) -> list[dict[str, Any]]:
-        rows = [json.loads(row) for row in answer.rows]
-        return [{key: value for key, value in row.items() if key not in identity} for row in rows]
-
-    def stands_in(answer: Answer) -> bool:
-        # The file run as Python gives the stand-in; the walker leaves the identity out (null)
-        # and agrees with it on every other value.
-        rows = [json.loads(row) for row in answer.rows]
-        walked = [json.loads(row) for row in preview.rows]
-        return (
-            answer.refusal is None
-            and preview.refusal is None
-            and all(
-                (row.get("quote_reference"), row.get("quote_option")) == ("PREVIEW", 1)
-                for row in rows
-            )
-            and not any(key in row for row in walked for key in identity)
-            and without_identity(answer) == without_identity(preview)
-        )
-
-    _owned("WB-76", answers, {Way.PYTHON: stands_in})
+    expected = {"quote_reference": "PREVIEW", "quote_option": 1, "premium": 100.0, "state": "NY"}
+    for answer in (preview, run):
+        assert answer.refusal is None, answer.show()
+        assert [json.loads(row) for row in answer.rows] == [expected], answer.show()
+    assert python == [expected]
 
 
 def _workbench_project(tmp_path: Path) -> Project:

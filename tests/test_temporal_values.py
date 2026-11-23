@@ -398,6 +398,10 @@ _NOT_DRIVEN: dict[str, str] = {
     "src/haute/_polars_utils.py": (
         "reads row counts and quote ids cast to text (key_prefix_python_scan)"
     ),
+    "src/haute/_workbench_import.py": (
+        "reads a workbook's cells through openpyxl's worksheet, never a frame: a date cell is "
+        "a datetime of milliseconds, which a Date column takes the day of (_native)"
+    ),
     "src/haute/_workbench_input.py": _WORKBENCH,
     "src/haute/_workbench_output.py": _WORKBENCH,
     "src/haute/_workbench_params.py": "reads a params file's allowed values as stripped text",
@@ -495,12 +499,14 @@ _READING_CALLS: dict[str, dict[str, int]] = {
         "_identical_candidate_count:row": 1,
         "_match_rows_vectorized:item": 1,
     },
+    "src/haute/_workbench_import.py": {
+        "_excel_rows:iter_rows": 2,
+    },
     "src/haute/_workbench_input.py": {
         "check_request_keys:to_list": 1,
     },
     "src/haute/_workbench_output.py": {
         "_fitted:to_list": 1,
-        "workbench_response.produce:row": 1,
         "workbench_response.produce:to_dicts": 1,
     },
     "src/haute/_workbench_params.py": {
