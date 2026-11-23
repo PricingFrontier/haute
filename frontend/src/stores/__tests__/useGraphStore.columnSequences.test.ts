@@ -156,12 +156,14 @@ describe("useGraphStore column configuration state sequences", () => {
     ])
   })
 
-  it("does not alias history or saved snapshots after nested config mutation", () => {
+  it("refuses a nested config mutation in place, which would rewrite history and the saved snapshot", () => {
     useGraphStore.getState().loadGraphSnapshot({ nodes: [nodeFor(initialModel().config)], edges: [], preamble: "", submodels: {} })
     updateStore("rename")
     useGraphStore.getState().markSaved()
     const saved = useGraphStore.getState().lastSavedSnapshot!
-    ;((useGraphStore.getState().nodes[0].data.config as ColumnConfig).selected_columns!).push("Aliased")
+    // History and the baseline share the committed node's settings, frozen (FEG-01).
+    expect(() => ((useGraphStore.getState().nodes[0].data.config as ColumnConfig).selected_columns!).push("Aliased"))
+      .toThrow(TypeError)
     expect((saved.nodes[0].data.config as ColumnConfig).selected_columns).toEqual(["id", "city"])
     useGraphStore.getState().undo()
     expect(configOf()).toEqual(initialModel().config)

@@ -382,7 +382,11 @@ def _validator_issues(
         issues.extend(_engine_issues(node_type, config, lambda: check(config)))
     if not issues and input_names is not None and model.check_inputs is not None:
         check_inputs = model.check_inputs
-        issues.extend(_engine_issues(node_type, config, lambda: check_inputs(config, input_names)))
+        issues.extend(
+            _engine_issues(
+                node_type, config, lambda: check_inputs(config, input_names, node_type.value)
+            )
+        )
     if issues or model.completeness is None:
         # A refused value leaves nothing for completeness to judge.
         return issues

@@ -575,6 +575,74 @@ describe("useWebSocketSync - WS sync must not corrupt undo history (#8)", () => 
     ])
   })
 
+  it("puts a dirty canvas back in step when the file returns to the document its edits were made on", async () => {
+    const params = makeHookParams()
+    const graphStore = useGraphStore.getState()
+    const loaded = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-loaded",
+      nodes: [{ ...baseNode, id: "n1", data: { label: "As loaded", nodeType: "polars", config: {} } }],
+    })
+    const changed = makePipelineEditorDocument({
+      source_file: SOURCE_FILE,
+      source_revision: "revision-slip",
+      nodes: [{ ...baseNode, id: "n1", data: { label: "As loaded", nodeType: "polars", config: { code: "x" } } }],
+    })
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const frame = (document: typeof loaded, fingerprint: string) => (
+      new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(document, fingerprint)) })
+    )
+    await act(async () => { latestWS().onmessage?.(frame(loaded, "fingerprint-loaded")) })
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(1)
+
+    // An unsaved rename, then a slip in a code editor that saves as it goes: locked.
+    graphStore.dirty = true
+    await act(async () => { latestWS().onmessage?.(frame(changed, "fingerprint-slip")) })
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
+    expect(params.sourceRevisionRef.current).toBe("revision-slip")
+
+    // The slip taken out again: the file is the one the rename was made on.
+    vi.mocked(useUIStore.getState().setSyncBanner as Mock).mockClear()
+    const rechecks = useDocumentStatusStore.getState().nameRechecks
+    await act(async () => { latestWS().onmessage?.(frame(loaded, "fingerprint-loaded")) })
+    const status = useDocumentStatusStore.getState()
+    // Its names are checked again against the canvas, which the rename may have cleared.
+    expect(status.nameRechecks).toBe(rechecks + 1)
+    expect(status.graphSynchronized).toBe(true)
+    expect(status.documentFingerprint).toBe("fingerprint-loaded")
+    expect(status.sourceRevision).toBe("revision-loaded")
+    expect(params.sourceRevisionRef.current).toBe("revision-loaded")
+    expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(null)
+    // The rename stays: the document from disk is not loaded over it.
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(1)
+    expect(graphStore.dirty).toBe(true)
+
+    // A different change on disk still locks it.
+    await act(async () => { latestWS().onmessage?.(frame(changed, "fingerprint-slip")) })
+    expect(useDocumentStatusStore.getState().graphSynchronized).toBe(false)
+  })
+
+  it("asks for the document whatever its fingerprint on reconnect once edits were dropped while it was locked", async () => {
+    const params = makeHookParams()
+    const graphStore = useGraphStore.getState()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const changed = makePipelineEditorDocument({ source_file: SOURCE_FILE, source_revision: "revision-changed" })
+    graphStore.dirty = true
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", { data: JSON.stringify(pipelineDocumentFrame(changed, "fingerprint-changed")) }))
+    })
+    // The banner's Reload while the socket is down: its request cannot be sent.
+    act(() => { latestWS().onclose?.(new CloseEvent("close", { code: 1000 })) })
+    act(() => { discardCanvasEdits() })
+    act(() => { vi.runOnlyPendingTimers() })
+    act(() => { latestWS().onopen?.(new Event("open")) })
+    const request = JSON.parse(latestWS().send.mock.calls.at(-1)![0] as string)
+    expect(request).toMatchObject({ type: "resync", source_file: SOURCE_FILE })
+    expect(request).not.toHaveProperty("document_fingerprint")
+  })
+
   it("retains an exact dirty column configuration and its history when a watcher update arrives", async () => {
     const params = makeHookParams()
     const graphStore = useGraphStore.getState()

@@ -302,6 +302,12 @@ class ParseError(HauteError):
     """Pipeline source parsing failure."""
 
 
+class GraphStructureError(HauteError):
+    """A graph whose edges cannot be run as they are: they close a loop, or name a node the
+    graph does not hold. Its message names the nodes and what to change, so every edge
+    answers it as a refusal of the graph it was sent (``graph_refused``), never an incident."""
+
+
 class ExecutionError(HauteError):
     """Runtime execution failure."""
 

@@ -14,6 +14,7 @@
  * result-only keys here; do NOT remove input keys.
  */
 
+import { contentDigest } from "./contentDigest"
 import { exportConfigKeysFor } from "./modellingExportConfig"
 import { authoredPolarsConfig, steppedSurfaceFor } from "./polarsStepInputs"
 
@@ -23,7 +24,9 @@ type InputKey = (typeof INPUT_KEYS)[number]
 const EXPLORE_NODE_TYPE = "explore"
 
 // Structural edits replace data/config objects; WeakMaps keep visual churn cheap
-// without retaining old graph payloads after React releases them.
+// without retaining old graph payloads after React releases them. An object-valued
+// input is kept as its digest (`contentDigest`), so a fingerprint built from these
+// hashes stays short however large a node's settings are (FEG-01).
 const objectInputHashCache = new WeakMap<object, string>()
 const exploreConfigInputHashCache = new WeakMap<object, string>()
 const publishConfigInputHashCache = new WeakMap<object, string>()
@@ -40,8 +43,9 @@ function stringifyInputValue(key: InputKey, value: unknown): string {
     if (serialized === undefined) {
       throw new TypeError(`Cannot hash object-valued node input "${key}"`)
     }
-    objectInputHashCache.set(value, serialized)
-    return serialized
+    const digest = contentDigest(serialized)
+    objectInputHashCache.set(value, digest)
+    return digest
   }
   return String(value)
 }
@@ -74,8 +78,9 @@ function stringifyExploreConfig(value: unknown): string {
   if (serialized === undefined) {
     throw new TypeError(`Cannot hash object-valued node input "config"`)
   }
-  exploreConfigInputHashCache.set(value, serialized)
-  return serialized
+  const digest = contentDigest(serialized)
+  exploreConfigInputHashCache.set(value, digest)
+  return digest
 }
 
 function stringifyConfigWithoutExportKeys(value: unknown, exportKeys: readonly string[]): string {
@@ -93,8 +98,9 @@ function stringifyConfigWithoutExportKeys(value: unknown, exportKeys: readonly s
   if (serialized === undefined) {
     throw new TypeError(`Cannot hash object-valued node input "config"`)
   }
-  publishConfigInputHashCache.set(value, serialized)
-  return serialized
+  const digest = contentDigest(serialized)
+  publishConfigInputHashCache.set(value, digest)
+  return digest
 }
 
 function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): string {
@@ -125,8 +131,8 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
  *
  * Primitive-valued keys (label, nodeType, code, func_name, description)
  * are String()-coerced; the ``config`` object (nested rules / code /
- * scoring parameters) is JSON.stringify()'d because its content genuinely
- * matters. Explore ``config.overview``, ``config.pivot_formulas``,
+ * scoring parameters) is JSON.stringify()'d and digested because its content
+ * genuinely matters. Explore ``config.overview``, ``config.pivot_formulas``,
  * ``config.pivots``, and ``config.charts`` do not affect the materialised
  * dataframe and are ignored so changing pivot calculations or presentation
  * does not invalidate cached Explore data. Modelling and optimiser export settings

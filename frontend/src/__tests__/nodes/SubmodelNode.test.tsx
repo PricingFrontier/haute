@@ -18,6 +18,7 @@ import {
   SUBMODEL_INPUT_HANDLE,
 } from "../../utils/flowHandles"
 import useGraphStore from "../../stores/useGraphStore"
+import { SubmodelDefinitionsProvider } from "../../nodes/submodelDefinitions"
 
 const DEFINITION_ID = "definition_pricing"
 
@@ -233,6 +234,47 @@ describe("SubmodelNode", () => {
 
     renderNode({ label: "Owner" }, { isConnectable: false })
     expect(screen.getByTestId("submodel-input-handle")).toBeTruthy()
+  })
+
+  it("draws an output whose identity is still being resolved without its handle, never throwing", () => {
+    setDefinition({
+      outputPorts: [
+        { name: "premium", source: { nodeId: "premium", handleId: null } },
+        { name: "audit", source: { nodeId: "audit", handleId: null } },
+      ],
+    })
+    // The second output was just connected: the server has named only the first.
+    renderNode({ label: "pricing", _sourceHandleInputNames: { out__premium: "pricing_premium" } })
+    expect(screen.getByText("pricing_premium")).toBeTruthy()
+    expect(screen.queryByText("audit")).toBeNull()
+    expect(screen.getAllByTestId(/^submodel-output-frame-row-/)).toHaveLength(1)
+  })
+
+  it("draws an occurrence from the definitions of the graph it belongs to, as a comparison's old version", () => {
+    // The live definition has gained an output the old version's occurrence never had.
+    setDefinition({
+      outputPorts: [
+        { name: "premium", source: { nodeId: "premium", handleId: null } },
+        { name: "audit", source: { nodeId: "audit", handleId: null } },
+      ],
+    })
+    const old: SubmodelDefinition = {
+      definitionId: DEFINITION_ID,
+      file: "submodels/pricing.py",
+      graph: { nodes: [graphNode("premium")], edges: [] },
+      inputPorts: [],
+      outputPorts: [{ name: "premium", source: { nodeId: "premium", handleId: null } }],
+    }
+    const props = makeProps({ label: "pricing", _sourceHandleInputNames: { out__premium: "pricing" } })
+    render(
+      <ReactFlowProvider>
+        <SubmodelDefinitionsProvider value={{ [DEFINITION_ID]: old }}>
+          <SubmodelNode {...(props as unknown as NodeProps<SubmodelFlowNode>)} />
+        </SubmodelDefinitionsProvider>
+      </ReactFlowProvider>,
+    )
+    expect(screen.getAllByTestId(/^submodel-output-frame-row-/)).toHaveLength(1)
+    expect(screen.getByLabelText(/Submodel node: pricing, 1 child nodes/)).toBeTruthy()
   })
 
   it("renders definition-owned output port labels", () => {

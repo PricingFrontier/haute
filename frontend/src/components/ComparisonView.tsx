@@ -30,6 +30,8 @@ import { getCommitPipeline, getCommitContext } from "../api/client"
 import { apiErrorMessage, apiErrorStatus } from "../api/errors"
 import { useRequestKind } from "../hooks/useRequestKind"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import useGraphStore from "../stores/useGraphStore"
+import { SubmodelDefinitionsProvider } from "../nodes/submodelDefinitions"
 import { ask, newest } from "../utils/answers"
 import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
@@ -311,7 +313,13 @@ export default function ComparisonView({
   // diff, and the legend all stay mutually consistent even if the live pipeline
   // is edited (toolbar/websocket) while comparing. Re-snapshots on remount, which
   // is keyed by comparison.sha at the call site.
-  const [current] = useState(() => ({ nodes: currentNodes, edges: currentEdges }))
+  // The definitions are frozen with it: each canvas draws its occurrences from its own
+  // version's, never the live document's (FEG-09).
+  const [current] = useState(() => ({
+    nodes: currentNodes,
+    edges: currentEdges,
+    submodels: useGraphStore.getState().submodels,
+  }))
   const sourceFile = useDocumentStatusStore((state) => state.sourceFile)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
     (state) => state.capabilities?.reserved_api_input_frame_labels
@@ -321,7 +329,9 @@ export default function ComparisonView({
     () => new Set(reservedApiInputFrameLabels),
     [reservedApiInputFrameLabels],
   )
-  const [historical, setHistorical] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null)
+  const [historical, setHistorical] = useState<
+    { nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null
+  >(null)
   const [error, setError] = useState<string | null>(null)
   // The focused node id, highlighted on BOTH canvases (its counterpart too).
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -370,12 +380,14 @@ export default function ComparisonView({
     const asked = ask([newest(pipelineReads)])
     void asked.answer(async (signal) => {
       const graph = await getCommitPipeline(comparison.sha, sourceFile, { signal })
-      return resolveEditorGraphIdentities({
+      const submodels = graph.submodels ?? {}
+      const resolved = await resolveEditorGraphIdentities({
         nodes: graph.nodes,
         edges: graph.edges,
-        submodels: graph.submodels ?? {},
+        submodels,
         reservedApiInputFrameLabels: reservedApiInputFrameLabelSet,
       })
+      return { ...resolved, submodels }
     }, {
       ok: (resolved) => setHistorical(resolved),
       failed: (err) => setError(apiErrorMessage(err, "Could not load this version.")),
@@ -516,15 +528,17 @@ export default function ComparisonView({
             />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
-                <ReadonlyCanvas
-                  initialNodes={leftNodes}
-                  initialEdges={historical.edges}
-                  testId="comparison-canvas-historical"
-                  selectedId={selectedId}
-                  onNodeSelect={selectNode}
-                  onPaneClick={clearSelection}
-                  refitKey={orientation}
-                />
+                <SubmodelDefinitionsProvider value={historical.submodels}>
+                  <ReadonlyCanvas
+                    initialNodes={leftNodes}
+                    initialEdges={historical.edges}
+                    testId="comparison-canvas-historical"
+                    selectedId={selectedId}
+                    onNodeSelect={selectNode}
+                    onPaneClick={clearSelection}
+                    refitKey={orientation}
+                  />
+                </SubmodelDefinitionsProvider>
               </ReactFlowProvider>
               {orientation === "horizontal" && delta != null && delta > 0 && (
                 <div data-testid="comparison-distance-historical" className="absolute bottom-3 left-3 z-10">
@@ -576,15 +590,17 @@ export default function ComparisonView({
             <CanvasHeader kicker="Current" context={currentCtx} fallbackLabel="Working pipeline" />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
-                <ReadonlyCanvas
-                  initialNodes={rightNodes}
-                  initialEdges={current.edges}
-                  testId="comparison-canvas-current"
-                  selectedId={selectedId}
-                  onNodeSelect={selectNode}
-                  onPaneClick={clearSelection}
-                  refitKey={orientation}
-                />
+                <SubmodelDefinitionsProvider value={current.submodels}>
+                  <ReadonlyCanvas
+                    initialNodes={rightNodes}
+                    initialEdges={current.edges}
+                    testId="comparison-canvas-current"
+                    selectedId={selectedId}
+                    onNodeSelect={selectNode}
+                    onPaneClick={clearSelection}
+                    refitKey={orientation}
+                  />
+                </SubmodelDefinitionsProvider>
               </ReactFlowProvider>
             </div>
           </section>

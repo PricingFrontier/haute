@@ -46,6 +46,12 @@ interface DocumentStatusState {
   systemFailure: string | null
   /** Server fingerprint of the accepted document, or null when the accepting response named none. */
   documentFingerprint: string | null
+  /**
+   * The fingerprint of the document the canvas was last in step with: the one its unsaved
+   * edits were made on. A change on disk does not move it, so live sync knows the file is
+   * back as the edits found it when a document with this fingerprint arrives (FEG-05).
+   */
+  inStepFingerprint: string | null
 }
 
 /**
@@ -62,6 +68,11 @@ export interface DocumentExecutionFence {
 export interface DocumentStatusStore extends DocumentStatusState {
   /** Bumped by `requestResync`: the socket asks for the document whatever its fingerprint. */
   resyncRequests: number
+  /**
+   * Bumped by `returnInStep`: the document's names are checked again against the canvas,
+   * whose edits the returning document's own name check never saw.
+   */
+  nameRechecks: number
   /** Ask `/ws/sync` for the document on disk, as after a git action replaced it. */
   requestResync: () => void
   loadDocumentStatus: (
@@ -74,6 +85,12 @@ export interface DocumentStatusStore extends DocumentStatusState {
     graphSynchronized: boolean,
     documentFingerprint: string,
   ) => void
+  /**
+   * The file is back as the canvas's unsaved edits found it (FEG-05): adopt its status as
+   * in step, and have its names checked again against the edited canvas, since its own
+   * name violations are the ones it was loaded with.
+   */
+  returnInStep: (document: PipelineEditorDocument, documentFingerprint: string) => void
   /** The remaining name violations the server reported for the current graph. */
   setNameViolations: (nameViolations: PipelineNameViolation[]) => void
   /** Keep, of the violations the server reported for the current graph, those with a binding. */
@@ -107,6 +124,7 @@ function initialState(): DocumentStatusState {
     graphSynchronized: false,
     systemFailure: null,
     documentFingerprint: null,
+    inStepFingerprint: null,
   }
 }
 
@@ -132,6 +150,7 @@ function documentState(
   graphSynchronized: boolean,
   executionGeneration: number,
   documentFingerprint: string | null,
+  inStepFingerprint: string | null,
 ): DocumentStatusState {
   return {
     loadStatus: document.load_status,
@@ -157,6 +176,8 @@ function documentState(
     graphSynchronized,
     systemFailure: null,
     documentFingerprint,
+    // A document the canvas is not in step with leaves the one its edits were made on.
+    inStepFingerprint: graphSynchronized ? documentFingerprint : inStepFingerprint,
   }
 }
 
@@ -166,15 +187,20 @@ const SAVE_INTERRUPTED = "save_interrupted"
 const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   ...initialState(),
   resyncRequests: 0,
+  nameRechecks: 0,
   requestResync: () => set((state) => ({ resyncRequests: state.resyncRequests + 1 })),
   loadDocumentStatus: (document, graphSynchronized = true, documentFingerprint = null) =>
     set((state) => documentState(
-      document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
+      document, graphSynchronized, state.executionGeneration + 1, documentFingerprint, state.inStepFingerprint,
     )),
   loadLiveDocumentStatus: (document, graphSynchronized, documentFingerprint) =>
     set((state) => documentState(
-      document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
+      document, graphSynchronized, state.executionGeneration + 1, documentFingerprint, state.inStepFingerprint,
     )),
+  returnInStep: (document, documentFingerprint) => set((state) => ({
+    ...documentState(document, true, state.executionGeneration + 1, documentFingerprint, state.inStepFingerprint),
+    nameRechecks: state.nameRechecks + 1,
+  })),
   setNameViolations: (nameViolations) => set((state) => {
     // Only a document loaded with violations is fenced by them; any other
     // document's names are checked as they are edited.
@@ -183,9 +209,14 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
     return { nameViolations, capabilities: { ...capabilities } }
   }),
   setInputBindingViolations: (nameViolations) => set({ inputBindingViolations: withBinding(nameViolations) }),
-  setGraphSynchronized: (graphSynchronized) => set({ graphSynchronized }),
+  // In step, the canvas holds the document last accepted.
+  setGraphSynchronized: (graphSynchronized) => set((state) => (graphSynchronized
+    ? { graphSynchronized, inStepFingerprint: state.documentFingerprint }
+    : { graphSynchronized })),
   // No document was accepted, so the next resync must ask for the current one.
-  setSystemFailure: (systemFailure) => set({ systemFailure, graphSynchronized: false, documentFingerprint: null }),
+  setSystemFailure: (systemFailure) => set({
+    systemFailure, graphSynchronized: false, documentFingerprint: null, inStepFingerprint: null,
+  }),
   // Persisting this canvas doesn't replace the document that owns running jobs.
   // Keep their original config/version stamps so edited results still read stale.
   // The canvas now holds the saved document: a resync naming its fingerprint is
@@ -195,6 +226,7 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   acknowledgeSave: (sourceRevision, documentFingerprint) => set((state) => ({
     sourceRevision,
     documentFingerprint,
+    inStepFingerprint: documentFingerprint,
     diagnostics: state.diagnostics.filter((diagnostic) => diagnostic.code !== SAVE_INTERRUPTED),
   })),
   reset: () => set((state) => ({ ...initialState(), executionGeneration: state.executionGeneration + 1 })),
@@ -210,7 +242,10 @@ export function documentReadOnlyReason(): string {
   if (state.systemFailure !== null) {
     return "The pipeline document could not be loaded. Resolve the failure and reload before editing."
   }
-  if (state.capabilities?.can_mutate === true && !state.graphSynchronized) {
+  // Held back from a document on disk that is not the one the canvas's edits were made on,
+  // whatever that document's own capabilities (a slip can leave the file unparseable).
+  const changedOnDisk = state.documentFingerprint !== state.inStepFingerprint
+  if (!state.graphSynchronized && (state.capabilities?.can_mutate === true || changedOnDisk)) {
     return "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first."
   }
   if (state.nameViolations.length > 0) {

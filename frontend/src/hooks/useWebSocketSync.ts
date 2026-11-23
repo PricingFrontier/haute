@@ -362,7 +362,10 @@ export default function useWebSocketSync({
         formMayHaveChanged()
         if (connectedBefore) void gitBranchMayHaveChanged()
         connectedBefore = true
-        sendResync(true)
+        // A canvas that dropped its edits while out of step waits for the document on
+        // disk, whatever it is; one with unsaved edits needs only a change from it.
+        const status = useDocumentStatusStore.getState()
+        sendResync(status.graphSynchronized || useGraphStore.getState().dirty)
       }
 
       ws.onmessage = async (event) => {
@@ -417,6 +420,19 @@ export default function useWebSocketSync({
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
           const dirty = graphState.dirty
+          // The file is back as the canvas's unsaved edits found it (a slip taken out again,
+          // a branch checked out and back): the canvas is in step with it again and keeps
+          // its edits, which a save writes on the revision they were made on.
+          if (
+            dirty
+            && frame.document.load_status !== "source_only"
+            && frame.documentFingerprint === useDocumentStatusStore.getState().inStepFingerprint
+          ) {
+            useDocumentStatusStore.getState().returnInStep(frame.document, frame.documentFingerprint)
+            sourceRevisionRef.current = frame.document.source_revision ?? ""
+            setSyncBanner(null)
+            return
+          }
 
           // The document fence is authoritative independently of whether the
           // renderable graph can be replaced. Mirror its revision first so

@@ -95,6 +95,21 @@ describe("connection validation", () => {
     }, [item], [])).toBe(false)
   })
 
+  it.each([
+    ["two", ["loop_a", "loop_b"]],
+    ["three", ["loop_a", "loop_b", "loop_c"]],
+  ])("refuses an edge that closes a loop of %s", (_size, chain) => {
+    const nodes = ["enriched", ...chain].map((id) => node(id, id))
+    const edges = nodes.slice(1).map((item, index) => ({ id: `e${index}`, source: nodes[index].id, target: item.id }))
+    const last = chain[chain.length - 1]
+    const closing = { source: last, target: "loop_a", sourceHandle: null, targetHandle: null }
+    expect(validatePipelineConnection(closing, nodes, edges)).toEqual(
+      { ok: false, reason: { kind: "invalid-connection", message: "that connection would create a cycle" } },
+    )
+    // An edge between the same nodes that runs with the chain makes no loop.
+    expect(validatePipelineConnection({ ...closing, source: "enriched", target: last }, nodes, edges).ok).toBe(true)
+  })
+
   it("allows a canonical public input", () => {
     const api = apiInput("api")
     const submodel = occurrence()

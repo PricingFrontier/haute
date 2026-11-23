@@ -1,13 +1,12 @@
 /**
- * Format pin for the serialized persisted-fingerprint produced by the graph
- * snapshot path (`serializeSnapshot`, which the graph store uses to derive
- * `persistedFingerprint` on every mutation).
+ * Format pin for the serialized persisted document (`serializeSnapshot`), whose
+ * parts the graph store digests into `persistedFingerprint` on every mutation
+ * (`persistedFingerprint`, one digest per node kept for its identity, FEG-01).
  *
- * The fingerprint string is compared verbatim against `savedPersistedFingerprint`
- * to derive the dirty flag, and any change to its serialized shape (key order,
- * stripped fields, scope) invalidates every previously captured baseline. Today
- * that surfaces only as spurious dirty flags / cache misses downstream — these
- * tests make a format drift fail loudly here instead.
+ * The fingerprint is compared verbatim against `savedPersistedFingerprint`
+ * to derive the dirty flag, and any change to the serialized shape (key order,
+ * stripped fields, scope) changes what counts as an edit — these tests make a
+ * format drift fail loudly here instead.
  *
  * If a change to this format is intentional, update the literals below and
  * audit every holder of a previously serialized fingerprint.
@@ -17,9 +16,10 @@ import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../../types/node"
 import {
   serializeSnapshot,
-  cloneGraphSnapshot,
+  historyGraphSnapshot,
+  persistedFingerprint,
   toCanonicalGraphPayload,
-  EMPTY_SNAPSHOT,
+  EMPTY_PERSISTED_FINGERPRINT,
 } from "../graphSnapshot"
 import useGraphStore from "../../stores/useGraphStore"
 
@@ -49,7 +49,8 @@ describe("stepped node derived code", () => {
     ;(node.data as Record<string, unknown>).editor = { steps_error: null, steps_discarded: null }
     expect(serializeSnapshot(graph)).toBe(before)
     expect(JSON.stringify(toCanonicalGraphPayload(graph))).toContain('"code":"df = quotes"')
-    expect(JSON.stringify(cloneGraphSnapshot(graph))).toContain('"code":"df = quotes"')
+    // A history snapshot freezes what it holds, so it is taken of a copy the test goes on to edit.
+    expect(JSON.stringify(historyGraphSnapshot(structuredClone(graph)))).toContain('"code":"df = quotes"')
     expect(config.code).toBe("df = quotes")
     config._authored = "changed"
     expect(serializeSnapshot(graph)).not.toBe(before)
@@ -146,7 +147,8 @@ describe("persisted-fingerprint serialized format", () => {
     }
     const copies = [
       toCanonicalGraphPayload(graph),
-      cloneGraphSnapshot(graph),
+      // A history snapshot shares and freezes what it holds: it is taken of a copy.
+      historyGraphSnapshot(JSON.parse(JSON.stringify(graph))),
       JSON.parse(serializeSnapshot(graph)),
     ]
     for (const copy of copies) {
@@ -161,7 +163,9 @@ describe("persisted-fingerprint serialized format", () => {
   })
 
   it("pins the empty-workspace sentinel byte-for-byte", () => {
-    expect(EMPTY_SNAPSHOT).toBe(EXPECTED_EMPTY)
+    const empty = { nodes: [], edges: [], preamble: "", submodels: {} }
+    expect(serializeSnapshot(empty)).toBe(EXPECTED_EMPTY)
+    expect(EMPTY_PERSISTED_FINGERPRINT).toBe(persistedFingerprint(empty))
   })
 
   it("pins the full serialized shape byte-for-byte", () => {
@@ -342,41 +346,35 @@ describe("graph store produces the pinned format", () => {
     })
   })
 
-  it("every mutation recomputes the fingerprint in the pinned format", () => {
+  it("every mutation recomputes the fingerprint of the pinned format", () => {
     const store = useGraphStore.getState()
     const fingerprint = () => useGraphStore.getState().persistedFingerprint
+    // Fresh copies: the fingerprint is computed from them, not read back from a cache of the store's own.
+    const document = (part: Partial<Parameters<typeof persistedFingerprint>[0]>) => persistedFingerprint(structuredClone({
+      nodes: [NODE, NODE2], edges: [], preamble: "", submodels: {}, ...part,
+    }))
 
     store.setNodes([NODE, NODE2])
-    expect(fingerprint()).toBe(
-      serializeSnapshot({ nodes: [NODE, NODE2], edges: [], preamble: "", submodels: {} }),
-    )
+    expect(fingerprint()).toBe(document({}))
 
     store.setEdges([EDGE])
-    expect(fingerprint()).toBe(
-      serializeSnapshot({ nodes: [NODE, NODE2], edges: [EDGE], preamble: "", submodels: {} }),
-    )
+    expect(fingerprint()).toBe(document({ edges: [EDGE] }))
 
     store.setPreamble(PREAMBLE)
-    expect(fingerprint()).toBe(
-      serializeSnapshot({
-        nodes: [NODE, NODE2],
-        edges: [EDGE],
-        preamble: PREAMBLE,
-        submodels: {},
-      }),
-    )
+    expect(fingerprint()).toBe(document({ edges: [EDGE], preamble: PREAMBLE }))
 
     store.setSubmodelsRaw(SUBMODELS)
-    expect(fingerprint()).toBe(EXPECTED_FINGERPRINT)
+    const pinned = document({ edges: [EDGE], preamble: PREAMBLE, submodels: SUBMODELS })
+    expect(fingerprint()).toBe(pinned)
+    expect(serializeSnapshot(structuredClone({ nodes: [NODE, NODE2], edges: [EDGE], preamble: PREAMBLE, submodels: SUBMODELS })))
+      .toBe(EXPECTED_FINGERPRINT)
 
     const constants = [
       { name: "rate", type: "float" as const, split: false, value: "1.5", bySource: {} },
     ]
     store.setGlobalConstantsRaw(constants)
-    expect(fingerprint()).toBe(EXPECTED_FINGERPRINT.replace(
-      '"globalConstants":[]',
-      '"globalConstants":[{"bySource":{},"name":"rate","split":false,"type":"float","value":"1.5"}]',
-    ))
+    expect(fingerprint()).toBe(document({ edges: [EDGE], preamble: PREAMBLE, submodels: SUBMODELS, globalConstants: constants }))
+    expect(fingerprint()).not.toBe(pinned)
   })
 
   it("retains server identities in live undo snapshots", () => {

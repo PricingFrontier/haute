@@ -4,7 +4,7 @@ import useGraphStore, {
   computeStructuralFingerprint,
   type GraphSnapshot,
 } from "../useGraphStore"
-import { serializeSnapshot } from "../../utils/graphSnapshot"
+import { persistedFingerprint } from "../../utils/graphSnapshot"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 
 function snapshot(
@@ -66,7 +66,7 @@ describe("useGraphStore loadGraphSnapshot", () => {
     expect(state.undoStack).toEqual([])
     expect(state.redoStack).toEqual([])
     expect(state.dirty).toBe(false)
-    expect(state.persistedFingerprint).toBe(serializeSnapshot(loaded))
+    expect(state.persistedFingerprint).toBe(persistedFingerprint(loaded))
     expect(state.savedPersistedFingerprint).toBe(state.persistedFingerprint)
     expect(state.structuralFingerprint).toBe(
       computeStructuralFingerprint(loaded.nodes, loaded.edges, loaded.preamble, [], loaded.submodels),
