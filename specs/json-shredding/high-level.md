@@ -119,6 +119,18 @@ are parsed and released one direct child at a time. Standalone LazyFrames scan
 leased runtime files; a build publishes a table only after its whole shred has
 completed and the source is proven unchanged.
 
+A request file is read by the rules every input's file is read by
+([IO layer](../io-layer/high-level.md), "Reading an input's bytes"), so no file a feed
+writes is refused for its form alone. A leading UTF-8 byte-order mark, which Windows
+PowerShell 5.1 and some exports write, is read through: the file gives the tables the file
+without it gives. A JSON object that repeats a key keeps its last value, as orjson, Python
+and JavaScript read it, in the editor and when served alike; nothing is refused for it. A `.json` file that holds nothing, or only whitespace, is not JSON and
+is refused naming the file, as a truncated one is: `[]` is how a JSON file holds no
+quotes, so a failed export never looks like a day with none. An empty JSON Lines file,
+which has no `[]`, holds no quotes. A file that is not JSON, or whose bytes are not UTF-8,
+is refused as `InputFileError`, naming the file from the project root and the line and
+column of the fault, in every build, preview and run.
+
 The configured structured-input record limit is a hard bound, not merely a flush
 hint. A JSON root object, JSONL line, JSON array element, repeated XML child, or XML
 document whose semantics make the complete root one logical record must fit within
@@ -150,7 +162,11 @@ with a bounded first pass, then streams and releases each child during the emitt
 pass. Otherwise the complete root is one logical record and is admitted only when
 the document fits the hard record limit. DTD/entity declarations, mixed child/text
 content, and field-name collisions between namespace-stripped attributes, children,
-or the synthetic `value` field are rejected rather than interpreted ambiguously.
+or the synthetic `value` field are rejected rather than interpreted ambiguously. Two
+children in different namespaces that share a name once the namespaces are removed
+(`<a:code>` and `<b:code>`) are refused naming the element, the name and both full
+names, as two such attributes are: they are two fields a feed mixing vocabularies keeps
+apart, never one repeated element. One element repeated in one namespace is a list.
 
 Every array element the shred sees is accounted for: it either becomes a row in some
 table, or is counted as a skip against that table (its shape didn't match — an
@@ -430,6 +446,10 @@ without Haute guessing which of day and month comes first.
 - A hand-edited config that mixes the scalar-array sentinel column with a real
   sibling column on the same table is rejected at shred time, not allowed to build a
   table whose rows would all silently vanish as shape mismatches.
+- A request file that is not JSON (truncated, malformed), a `.json` file holding
+  nothing, and bytes that are not UTF-8 fail the build with `InputFileError` naming the
+  file and, for a fault in it, its line and column; automatic preparation carries the
+  same words (`source_invalid`, [IO layer](../io-layer/high-level.md)).
 - A value that doesn't fit its declared column type — including the silent-coercion
   shapes Polars would otherwise accept — fails the build with an error naming the
   offending column and declared type; a date column's string that is not a date in

@@ -96,13 +96,30 @@ Submodel graph expansion and boundary rewiring are owned by
   escape and depth state is carried across chunks, and the element is sliced out of the
   chunks it spans, its trailing whitespace stripped, then parsed. The limit counts the
   element's bytes up to its delimiter and is checked before more than one chunk past it
-  is held; decode errors (`unexpected end of data`, `trailing comma in array`,
-  `unexpected '}'`, `unexpected trailing data`) carry the number of bytes read. On a
+  is held; its own decode errors (`unexpected end of data`, `trailing comma in array`,
+  `unexpected '}'`, `unexpected trailing data`) are raised at the fault's byte offset in
+  the file (a trailing comma at the comma, as orjson places one), and an element orjson
+  refuses is placed by `_loads_at`. On a
   42–53 MB, 167,103-record nested array it reads in about 2.5 times the JSONL time,
   against 41 times for the byte-at-a-time reader it replaced.
-- `_jsonl_record(raw_line, stats)` — the one JSONL line decode (strip, skip a blank
-  line, parse, keep an object or count the line), shared by the serial and range
-  readers and parallel inference.
+- `_jsonl_record(raw_line, stats, *, offset)` — the one JSONL line decode (strip, skip a
+  blank line, parse, keep an object or count the line), shared by the serial and range
+  readers and parallel inference; *offset* is where the line starts in its file.
+  `_iter_range_lines(path, start, end)` yields each line of a byte range with its
+  offset (to the file's end when `end` is `None`), reading through the file's leading
+  byte-order mark in the range that starts at 0; the serial JSONL arm of `_iter_records`
+  is `_iter_range_records(path, 0, None, stats)`.
+- `_loads_at(raw, start)` — every record parse: orjson (a repeated key keeps its last
+  value), a fault re-raised as
+  `orjson.JSONDecodeError(msg, "", offset)` at its byte offset in the file
+  (`decode_error_offset`: orjson's character position in the slice, or the first byte
+  that is not UTF-8). Every reader in the module raises its faults so, and
+  `_iter_records`, the sampled reader, the parallel inference prefix and
+  `_raise_worker_failure(failure, data_path)` turn one into the file's
+  `InputFileError` (`file_json_error`), naming the file from the project root and the
+  fault's line and column. A `.json` file that holds nothing, or only whitespace, is
+  refused as empty (`empty_json_error`, saying a file of no quotes is `[]`); an empty
+  JSON Lines file holds no records.
 - `_iter_xml_records(data_path)` — rejects DTD/entity declarations with a bounded
   chunk scan, then uses `XMLPullParser` rather than a complete-document byte buffer.
   A parallel event-only Expat tracker records each direct child's encoded start offset
@@ -113,7 +130,11 @@ Submodel graph expansion and boundary rewiring are owned by
   child. Other XML shapes retain their one-root-record semantics only when the file
   fits `HAUTE_STRUCTURED_INPUT_MAX_RECORD_BYTES`; larger ones fail before a complete
   tree is retained. Element/attribute namespaces are stripped. Mixed content and
-  field-name collisions raise `ApiInputSchemaError`.
+  field-name collisions raise `ApiInputSchemaError`: an attribute and a child of one
+  name, the text and a `value` attribute, and two attributes or two children whose full
+  names differ but are one name without their namespaces (`_xml_name_collision`, naming
+  the element, the name and both full names). Children are grouped by their full names,
+  and the root's children are records only when they share one full name.
 
 **`_jsonpath.py`**
 
@@ -302,7 +323,7 @@ v2 config and returns the source file (resolved) with its emitting tables in
 schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
 provider `api_input`) has the descriptor
 `{path: <resolved source file>, table: {path: <table path>, columns: [[name,
-column path, type], ...selected columns in config order]}, shred_version: 3}`, a
+column path, type], ...selected columns in config order]}, shred_version: 4}`, a
 date column that sets a `format` appending it to its entry, so a changed format is
 a new table.
 Sibling tables and the port label are not part of it: editing one table moves only
@@ -315,7 +336,10 @@ at a declared array as one-element lists and counted a skip for every table at o
 below a non-list there. Version 3 also holds a null or an empty string as absent
 wherever an object or an array is expected, counts the misshapen elements and object
 steps above an emitting table, and reads date columns in their declared format (ISO
-unless set) rather than by Polars' format guess.
+unless set) rather than by Polars' format guess. Version 4 reads a request file through a
+leading byte-order mark, refuses a `.json` file holding nothing (which version 3 published
+as a table of no rows) and two XML children of one name in different namespaces (which it
+merged into one list), so a table published from such a file is built again and refused.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
 `source_signature`: `xxh64:<digest>:<size>` from the shared
@@ -418,7 +442,9 @@ the skip/conservation accounting.
 - `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
   pickling arbitrary exception objects. The envelope carries an
   `ApiInputSchemaError`'s raw `message` plus complete `context`, an
-  `orjson.JSONDecodeError`'s `msg`/`doc`/`pos`, and the constructor evidence for
+  `orjson.JSONDecodeError`'s `msg`/`doc`/`pos` (its `pos` the fault's byte offset in the
+  file, which the parent turns into the file's `InputFileError`), and the constructor
+  evidence for
   documented builtin failures (`OSError` subclasses, `RuntimeError`,
   `MemoryError`, and `ValueError`). Those failures surface with the same type,
   message, and structured context as the serial path. The worker catches

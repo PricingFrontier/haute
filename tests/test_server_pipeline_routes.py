@@ -297,6 +297,44 @@ class TestPreviewNode:
             "remediation": "Build this Data Input's snapshot and try again.",
         }
 
+    def test_preview_of_a_request_file_with_a_wrong_value_names_the_column(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """IOL-01: the input's panel says what ``haute run`` says of the file, unmocked."""
+        import shutil
+
+        from haute.parser import parse_pipeline_file
+        from tests._process_state import reset_input_cache_route
+
+        examples = Path(__file__).resolve().parents[1] / "src/haute/assistant/assets/examples"
+        project = tmp_path / "project"
+        shutil.copytree(examples / "minimal_live_quote", project)
+        (project / "data" / "quote.json").write_text(
+            '[{"quote_id": "q1", "fixture_value": "ten"}]', encoding="utf-8"
+        )
+        use_project(project)
+        graph = parse_pipeline_file(project / "pipeline.py")
+        reset_input_cache_route(monkeypatch)
+
+        with TestClient(project_app()) as client:
+            resp = client.post(
+                "/api/pipeline/preview",
+                json={
+                    "graph": graph.model_dump(mode="json"),
+                    "target": node_target("quote_input"),
+                    "row_limit": 10,
+                },
+            )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail["reason_code"] == "source_invalid"
+        assert detail["message"] == (
+            "Preparing this API Input's tables failed: column 'fixture_value' has values that "
+            "don't match its declared type 'int'; re-infer the schema or change the column's "
+            "type to match the data"
+        )
+
     def test_preview_reports_a_rejected_node_config_as_a_contract_error(
         self,
         client: TestClient,

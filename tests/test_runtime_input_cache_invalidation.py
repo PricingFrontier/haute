@@ -44,6 +44,9 @@ from haute.trace import execute_trace
 from tests._process_state import clear_source_signatures
 from tests._project import use_project
 from tests.conftest import (
+    flat_quote_table,
+)
+from tests.conftest import (
     make_edge as _edge,
 )
 from tests.conftest import (
@@ -128,7 +131,12 @@ def _flat_api_input_node(nid: str, path: Path):
     return _n(
         {
             "id": nid,
-            "data": {"label": nid, "nodeType": "apiInput", "config": {"path": str(path)}},
+            "data": {
+                "label": nid,
+                "nodeType": "apiInput",
+                # A CSV sample is read with the types its table declares (IOL-03).
+                "config": {"path": str(path), **flat_quote_table(x="int")},
+            },
         }
     )
 

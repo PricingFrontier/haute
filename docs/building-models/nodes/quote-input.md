@@ -82,6 +82,14 @@ Then shape the tables in the editor:
 - **Confirm what you've checked.** Inferred columns stay marked as inferred until you confirm them, one at a time or with **Confirm all**. Running **Infer Tables** again asks before it replaces anything (**Replace tables**): tables at the same path keep your labels and emit choices and your confirmed columns, and pick up newly found columns.
 - **Build a table by hand** with **Add Table**.
 
+## How the preview file is read
+
+- A file that starts with a byte-order mark, as Windows PowerShell 5.1 and some exports write one, is read as the same file without it.
+- A record that repeats a key, such as `{"region": "north", "region": "south"}`, keeps the last value, `south`, in the preview and in a deployed pipeline alike.
+- A `.json` file that holds nothing is refused, naming the file: write `[]` for a file with no quotes. An empty `.jsonl` or `.ndjson` file holds no quotes.
+- A file that is not valid JSON, or whose bytes are not UTF-8, is refused naming the file and the line and column of the fault, in the preview, the node's data preview and `haute run` alike.
+- In two namespaces, two XML elements of one name, such as `<a:code>` and `<b:code>`, are refused naming both: their fields cannot be told apart.
+
 A null, or an empty element in XML (`<drivers/>`), where a list or a nested object is expected means there is none: it adds no row and is never an error. A value of the wrong shape, such as a number where a driver object is expected, is counted as a skipped row when the tables are built, and a deployed pipeline refuses a request holding one, naming the quote and the place.
 
 ## In the data preview
@@ -139,6 +147,7 @@ A preview file might look like this:
 
     - `tables[].row_id_column` names the column that identifies each record in execution traces; renaming that column in the editor carries the setting along.
     - `tables[].display_path` and `tables[].columns[].levels` are kept as they are.
+    - A flat sample is read without the shredder: a CSV file's columns by name, each typed by the column of the same `name` in `tables[].columns` (its `type`, and a `date` column's `format`). Every column the pipeline reads needs a typed entry: a column without one is refused, naming it and the file, in the preview and from `haute run` alike. A Parquet file carries its own types.
 
     <!-- config-keys:start -->
 
@@ -147,7 +156,7 @@ A preview file might look like this:
     | Key | Type | Description |
     |---|---|---|
     | `path` | text | The sample request file, relative to the project root (a JSON, JSONL, NDJSON, XML or flat file). |
-    | `tables` | list of object | For a structured request file, the tables read from it: each a path into the document, a label, and its columns. |
+    | `tables` | list of object | For a structured request file, the tables read from it: each a path into the document, a label, and its columns. A CSV sample's table types its columns, which it reads by name. |
     | `tables[].path` | text | The JSONPath of the table's rows in the request document, such as `$[:]`. |
     | `tables[].label` | text | The table's name, which a connection's `source_port` names it by. |
     | `tables[].display_path` | text or `null` | The path the editor shows for the table, or `null` to show `path`. |

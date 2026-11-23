@@ -30,7 +30,7 @@ from haute._polars_io_registry import (
     write_polars_output,
 )
 from haute._polars_io_schema import io_functions_by_key
-from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.errors import BoundedMemoryUnsupportedError, InputFileError, SchemaMismatchError
 from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from tests.conftest import make_graph
@@ -974,3 +974,188 @@ class TestColumnsAreNamedByTheHeaderOrTheConfig:
 
         for name in ("excel", "ods"):
             assert "new_columns" in formats[name]["input"]["arguments"]["read"]
+
+
+class TestACsvIsReadAsUtf8Text:
+    """IOL-04: a CSV saved in another encoding is refused, never read as columns."""
+
+    _TEXT = "row_id,value\n1,a\n2,b\n"
+
+    @pytest.mark.parametrize("mode", ["scan", "read"])
+    @pytest.mark.parametrize(
+        ("encoding", "found"),
+        [("utf-16", "UTF-16 (little-endian)"), ("utf-16-le", "UTF-16 (little-endian)")],
+        ids=["with-mark", "without-mark"],
+    )
+    def test_a_utf16_csv_is_refused_naming_its_encoding(
+        self, haute_scratch: Path, mode: str, encoding: str, found: str
+    ) -> None:
+        path = haute_scratch / "quotes.csv"
+        path.write_bytes(self._TEXT.encode(encoding))
+
+        with pytest.raises(InputFileError) as refused:
+            read_polars_input({"format": "csv", "mode": mode, "path": str(path)}).collect()
+
+        assert refused.value.message.endswith(
+            f"quotes.csv is saved as {found}, not UTF-8. Save it as UTF-8."
+        )
+
+    @pytest.mark.parametrize("mode", ["scan", "read"])
+    @pytest.mark.parametrize("mark", [b"", b"\xef\xbb\xbf"], ids=["plain", "byte-order-mark"])
+    def test_a_utf8_csv_reads_its_rows_with_or_without_a_mark(
+        self, haute_scratch: Path, mode: str, mark: bytes
+    ) -> None:
+        path = haute_scratch / "quotes.csv"
+        path.write_bytes(mark + self._TEXT.encode())
+
+        frame = read_polars_input({"format": "csv", "mode": mode, "path": str(path)}).collect()
+
+        assert frame.columns == ["row_id", "value"]
+        assert frame.rows() == [(1, "a"), (2, "b")]
+
+    @staticmethod
+    def _compressed(kind: str, data: bytes) -> bytes:
+        import gzip
+        import zlib
+
+        import pyarrow as pa
+
+        if kind == "gzip":
+            return gzip.compress(data, mtime=0)
+        if kind == "zlib":
+            return zlib.compress(data)
+        sink = pa.BufferOutputStream()
+        with pa.CompressedOutputStream(sink, "zstd") as stream:
+            stream.write(data)
+        return sink.getvalue().to_pybytes()
+
+    @pytest.mark.parametrize("kind", ["gzip", "zlib", "zstd"])
+    def test_a_compressed_csv_is_judged_by_the_text_polars_decompresses(
+        self, haute_scratch: Path, kind: str
+    ) -> None:
+        """A compressed stream's header holds null bytes; the text inside it is judged."""
+        utf8 = haute_scratch / "utf8.csv"
+        utf8.write_bytes(self._compressed(kind, self._TEXT.encode()))
+        utf16 = haute_scratch / "utf16.csv"
+        utf16.write_bytes(self._compressed(kind, self._TEXT.encode("utf-16")))
+
+        frame = read_polars_input({"format": "csv", "mode": "scan", "path": str(utf8)}).collect()
+        with pytest.raises(InputFileError) as refused:
+            read_polars_input({"format": "csv", "mode": "read", "path": str(utf16)}).collect()
+
+        assert frame.rows() == [(1, "a"), (2, "b")]
+        assert refused.value.message.endswith(
+            "utf16.csv is saved as UTF-16 (little-endian), not UTF-8. Save it as UTF-8."
+        )
+
+    def test_a_read_naming_its_encoding_decodes_the_file_itself(self, haute_scratch: Path) -> None:
+        path = haute_scratch / "quotes.csv"
+        path.write_bytes(self._TEXT.encode("utf-16"))
+
+        frame = read_polars_input(
+            {
+                "format": "csv",
+                "mode": "read",
+                "path": str(path),
+                "arguments": {"encoding": "utf-16"},
+            }
+        ).collect()
+
+        assert frame.rows() == [(1, "a"), (2, "b")]
+
+
+def test_a_json_lines_file_with_a_byte_order_mark_is_refused_in_words(haute_scratch: Path) -> None:
+    """IOL-02: Polars cannot read through the mark; the refusal names the file and it,
+    never ``InternalError(TapeError)``."""
+    path = haute_scratch / "rows.jsonl"
+    path.write_bytes(b'\xef\xbb\xbf{"a": 1}\n')
+
+    with pytest.raises(InputFileError) as refused:
+        read_polars_input({"format": "ndjson", "mode": "scan", "path": str(path)}).collect()
+
+    assert refused.value.message.endswith(
+        "rows.jsonl starts with a byte-order mark, which a Data Input cannot read a JSON Lines "
+        "file through. Save it as UTF-8 without one."
+    )
+
+
+def test_an_engine_that_fails_to_import_is_named_without_the_installs_paths(
+    haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every edge says a ``PolarsIoConfigError`` (IOL-01): an import's own message, which
+    can hold the install's absolute paths, is logged and never said."""
+    path = haute_scratch / "rows.csv"
+    path.write_bytes(b"a\n1\n")
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise ImportError(
+            "cannot import name 'reader' from 'fastexcel' "
+            "(/opt/venv/lib/python3.11/site-packages/fastexcel/__init__.py)",
+            name="fastexcel",
+        )
+
+    monkeypatch.setattr(pl, "scan_csv", refuse)
+
+    with pytest.raises(PolarsIoConfigError) as refused:
+        read_polars_input({"format": "csv", "mode": "scan", "path": str(path)})
+
+    assert str(refused.value) == (
+        "Format 'csv' needs an engine package to read that this haute install cannot import "
+        "('fastexcel'): install one of []."
+    )
+
+
+@pytest.mark.meta
+def test_no_io_config_message_says_an_exception_or_an_unnamed_path() -> None:
+    """A ``PolarsIoConfigError``'s message reaches every edge as written, so it never holds a
+    caught exception's text (which can hold a locator or a secret) nor a configured path
+    other than as ``display_file`` names it."""
+    import ast
+
+    from tests._source_files import REPO_ROOT, source_files
+
+    offences: list[str] = []
+    for file in source_files(REPO_ROOT / "src" / "haute"):
+        tree = ast.parse(file.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            caught = {
+                handler.name
+                for handler in ast.walk(function)
+                if isinstance(handler, ast.ExceptHandler) and handler.name
+            }
+            for node in ast.walk(function):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "PolarsIoConfigError"
+                    and node.args
+                ):
+                    continue
+                for value in ast.walk(node.args[0]):
+                    if not isinstance(value, ast.FormattedValue):
+                        continue
+                    said = value.value
+                    named = (
+                        isinstance(said, ast.Call)
+                        and isinstance(said.func, ast.Name)
+                        and said.func.id == "display_file"
+                    )
+                    text = ast.unparse(said)
+                    if not named and (
+                        (isinstance(said, ast.Name) and said.id in caught) or "path" in text
+                    ):
+                        relative = file.relative_to(REPO_ROOT)
+                        offences.append(f"{relative}::{function.name}: {{{text}}}")
+
+    assert offences == list(_IO_CONFIG_MESSAGES_SAYING_AN_EXCEPTION)
+
+
+#: The places a ``PolarsIoConfigError`` says a caught exception's text, each with why it may.
+_IO_CONFIG_MESSAGES_SAYING_AN_EXCEPTION: dict[str, str] = {
+    "src/haute/routes/files.py::_scan_with_reader: {exc}": (
+        "Polars' own refusal of a scanner argument's type as the editor detects a schema: it "
+        "names the argument and the types, never a path or a value, and is what to fix"
+    ),
+}

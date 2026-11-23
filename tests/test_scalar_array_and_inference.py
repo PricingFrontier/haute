@@ -25,10 +25,12 @@ import orjson
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._input_files import UTF8_BOM
 from haute._json_shred import _inference, _inference_filter
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._inference_filter import InferenceFilter
+from haute.errors import InputFileError
 from tests._project import use_project
 from tests.conftest import build_test_api_input_snapshots
 
@@ -150,8 +152,13 @@ def test_infer_sample_size_bounds_root_json_array_reads(tmp_path: Path) -> None:
     cols = {col["name"]: col["type"] for col in root["columns"]}
     assert cols == {"policy_id": "int"}
 
-    with pytest.raises(orjson.JSONDecodeError):
+    # The whole file is read, and refused at its end (51 bytes).
+    with pytest.raises(InputFileError) as refused:
         infer_v2_schema_from_data(p)
+    assert refused.value.message == (
+        "data.json is not valid JSON: unexpected end of data at line 1, column 52."
+    )
+    assert (refused.value.file, refused.value.line, refused.value.column) == ("data.json", 1, 52)
 
 
 def test_infer_sampled_root_json_array_handles_nested_delimiters(tmp_path: Path) -> None:
@@ -177,22 +184,35 @@ def test_infer_sampled_root_json_array_handles_nested_delimiters(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "words", "column"),
     [
-        '[{"policy_id": 1},]',
-        '[{"policy_id": 1}] trailing',
-        '[{"policy_id": 1}]\x0b',
+        # The comma, where orjson places a trailing comma too.
+        ('[{"policy_id": 1},]', "trailing comma in array", 18),
+        ('[{"policy_id": 1}] trailing', "unexpected trailing data", 20),
+        # A vertical tab is not JSON whitespace.
+        ('[{"policy_id": 1}]\x0b', "unexpected trailing data", 19),
     ],
+    ids=["trailing-comma", "trailing-data", "vertical-tab"],
 )
 def test_infer_sampled_root_json_array_rejects_invalid_tail(
     tmp_path: Path,
     payload: str,
+    words: str,
+    column: int,
 ) -> None:
     p = tmp_path / "data.json"
     p.write_text(payload, encoding="utf-8")
 
-    with pytest.raises(orjson.JSONDecodeError):
+    with pytest.raises(InputFileError) as refused:
         infer_v2_schema_from_data(p, sample_size=99)
+    assert refused.value.message == (
+        f"data.json is not valid JSON: {words} at line 1, column {column}."
+    )
+    assert (refused.value.file, refused.value.line, refused.value.column) == (
+        "data.json",
+        1,
+        column,
+    )
 
 
 def test_infer_then_build_scalar_array_no_crash(tmp_path: Path) -> None:
@@ -626,17 +646,17 @@ def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
 
 
 @pytest.mark.parametrize(
-    ("raw", "seed_record"),
+    ("raw", "seed_record", "words", "at"),
     [
-        (b'{"id":"\xff"}', {"id": "seed"}),
-        (b'{"\xff":1}', {"id": 1}),
-        (b'{"id":"\\ud800"}', {"id": "seed"}),
-        (b'{"id":1e400}', {"id": 1}),
-        (b'{"id":NaN}', {"id": 1}),
-        (b'{"id":1', {"id": 1}),
-        (b'{"id":1,}', {"id": 1}),
-        (b'{"id":1} trailing', {"id": 1}),
-        (b'\xef\xbb\xbf{"id":1}', {"id": 1}),
+        # orjson gives bytes that are not UTF-8 no position: the fault is the first bad byte.
+        (b'{"id":"\xff"}', {"id": "seed"}, "str is not valid UTF-8", 7),
+        (b'{"\xff":1}', {"id": 1}, "str is not valid UTF-8", 2),
+        (b'{"id":"\\ud800"}', {"id": "seed"}, "no low surrogate in string", 13),
+        (b'{"id":1e400}', {"id": 1}, "number is infinity when parsed as double", 6),
+        (b'{"id":NaN}', {"id": 1}, "unexpected character", 6),
+        (b'{"id":1', {"id": 1}, "unexpected end of data", 7),
+        (b'{"id":1,}', {"id": 1}, "trailing comma is not allowed", 7),
+        (b'{"id":1} trailing', {"id": 1}, "unexpected content after document", 9),
     ],
     ids=[
         "invalid-utf8-value",
@@ -647,28 +667,55 @@ def test_fused_json_range_matches_orjson_for_integer_bounds_and_numbers(
         "missing-close",
         "trailing-comma",
         "trailing-junk",
-        "utf8-bom",
     ],
 )
 def test_fused_json_range_preserves_orjson_error_evidence_for_known_shapes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: bytes, seed_record: dict[str, Any]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: bytes,
+    seed_record: dict[str, Any],
+    words: str,
+    at: int,
 ) -> None:
+    """A line of a known shape that is not JSON raises orjson's words at the fault's byte
+    offset in the file, *at* bytes into the line after a known line the filter admits."""
     monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
     learned = InferenceFilter(json_mode=True)
     for _ in range(100):
         learned.observe(seed_record)
+    known_line = orjson.dumps(seed_record) + b"\n"
     source = tmp_path / "bad-known.jsonl"
-    source.write_bytes(raw + b"\n")
+    source.write_bytes(known_line + raw + b"\n")
 
-    with pytest.raises(orjson.JSONDecodeError) as expected:
-        orjson.loads(raw.strip())
     with pytest.raises(orjson.JSONDecodeError) as actual:
         _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=learned.snapshot())
 
-    assert actual.value.msg == expected.value.msg
-    assert actual.value.doc == expected.value.doc
-    assert actual.value.pos == expected.value.pos
-    assert str(actual.value) == str(expected.value)
+    assert actual.value.msg == words
+    assert actual.value.doc == ""
+    assert actual.value.pos == len(known_line) + at
+
+
+def test_fused_json_range_reads_through_a_leading_byte_order_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file's leading byte-order mark is not content: the line after it reads as its
+    record, and the next line's new evidence is kept."""
+    monkeypatch.setattr(_inference_filter, "_INITIAL_SAMPLE_RECORDS", 100)
+    seed_record = {"id": 1}
+    prefix = _inference._InferenceState()
+    learned = InferenceFilter(json_mode=True)
+    for _ in range(100):
+        prefix.walk(seed_record)
+        learned.observe(seed_record)
+    source = tmp_path / "bom.jsonl"
+    source.write_bytes(UTF8_BOM + b'{"id":1}\n{"id":2,"late":"x"}\n')
+
+    delta = _inference._infer_jsonl_range(source, 0, source.stat().st_size, seed=learned.snapshot())
+    prefix.merge(delta)
+
+    assert _inference._assemble_inference_schema(prefix) == _full_walk_schema(
+        [*[seed_record] * 101, {"id": 2, "late": "x"}]
+    )
 
 
 @pytest.mark.parametrize(

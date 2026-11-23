@@ -11,6 +11,7 @@ import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _records, _shred
+from haute.errors import InputFileError
 
 
 class _RecordingBinarySource:
@@ -19,6 +20,7 @@ class _RecordingBinarySource:
     def __init__(self, payload: bytes) -> None:
         self._source = io.BytesIO(payload)
         self.read_sizes: list[int] = []
+        self.readline_sizes: list[int] = []
 
     def __enter__(self) -> _RecordingBinarySource:
         return self
@@ -29,6 +31,16 @@ class _RecordingBinarySource:
     def read(self, size: int = -1) -> bytes:
         self.read_sizes.append(size)
         return self._source.read(size)
+
+    def readline(self, size: int = -1) -> bytes:
+        self.readline_sizes.append(size)
+        return self._source.readline(size)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._source.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._source.tell()
 
 
 @pytest.mark.parametrize("token", [b"<!DOCTYPE", b"<!ENTITY", b"<!doctype", b"<!entity"])
@@ -355,22 +367,7 @@ def test_record_iterator_enforces_exact_jsonl_limit_and_skip_accounting(
 def test_record_iterator_jsonl_requests_one_byte_past_record_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Source:
-        def __init__(self) -> None:
-            self.readline_sizes: list[int] = []
-            self._lines = iter([b'{"a":1}', b""])
-
-        def __enter__(self) -> Source:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def readline(self, size: int) -> bytes:
-            self.readline_sizes.append(size)
-            return next(self._lines)
-
-    source = Source()
+    source = _RecordingBinarySource(b'{"a":1}')
     path = SimpleNamespace(suffix=".jsonl", open=lambda _mode, **_kwargs: source)
     monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 7)
     assert list(_records._iter_records(path)) == [{"a": 1}]
@@ -427,7 +424,8 @@ def test_record_iterator_root_document_reads_one_byte_past_the_odd_record_limit(
     monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 7)
 
     assert list(_records._iter_records(path)) == [{}]
-    assert source.read_sizes == [1, 8, 8]
+    # The byte-order-mark probe, the first byte, then one byte past the limit.
+    assert source.read_sizes == [3, 1, 8, 8]
 
 
 def test_trailing_json_error_reports_the_exact_absolute_byte_offset() -> None:
@@ -530,7 +528,8 @@ def test_root_array_yields_its_first_record_after_reading_one_chunk(
     records = _records._iter_records(path)
 
     assert next(records) == {"i": 0}
-    assert source.read_sizes == [1, 64]
+    # The byte-order-mark probe, the leading byte, then one chunk.
+    assert source.read_sizes == [3, 1, 64]
 
 
 def test_root_array_element_over_the_limit_is_refused_within_one_chunk_of_it(
@@ -543,8 +542,9 @@ def test_root_array_element_over_the_limit_is_refused_within_one_chunk_of_it(
 
     with pytest.raises(ApiInputSchemaError, match="JSON array element exceeds"):
         list(_records._iter_records(path))
-    # The leading byte, then chunks until the held element passes 100 bytes.
-    assert source.read_sizes == [1, 64, 64]
+    # The byte-order-mark probe, the leading byte, then chunks until the held element
+    # passes 100 bytes.
+    assert source.read_sizes == [3, 1, 64, 64]
 
 
 def _root_column_config(type_token: str) -> dict[str, object]:
@@ -586,18 +586,28 @@ def test_normal_string_column_token_uses_value_equality() -> None:
 
 
 @pytest.mark.parametrize(
-    ("payload", "message"),
+    ("payload", "words", "column"),
     [
-        (b"[{}", "unexpected end of data"),
-        (b"[{},]", "trailing comma"),
-        (b"[{}]x", "unexpected trailing data"),
+        # The end of the file, the comma (where orjson places a trailing comma), the `x`.
+        (b"[{}", "unexpected end of data", 4),
+        (b"[{},]", "trailing comma in array", 4),
+        (b"[{}]x", "unexpected trailing data", 5),
     ],
+    ids=["incomplete", "trailing-comma", "trailing-data"],
 )
 def test_record_iterator_rejects_incomplete_or_trailing_array_syntax(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, payload: bytes, message: str
+    tmp_path, monkeypatch: pytest.MonkeyPatch, payload: bytes, words: str, column: int
 ) -> None:
     monkeypatch.setattr(_records, "_structured_input_record_limit", lambda: 128)
     path = tmp_path / "invalid.json"
     path.write_bytes(payload)
-    with pytest.raises(orjson.JSONDecodeError, match=message):
+    with pytest.raises(InputFileError) as raised:
         list(_records._iter_records(path))
+    assert raised.value.message == (
+        f"invalid.json is not valid JSON: {words} at line 1, column {column}."
+    )
+    assert (raised.value.file, raised.value.line, raised.value.column) == (
+        "invalid.json",
+        1,
+        column,
+    )

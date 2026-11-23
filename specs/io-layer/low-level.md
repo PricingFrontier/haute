@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused), external-object loading, and the readers of user text: `read_user_source` and `decode_user_source` for pipeline and submodel sources (strict UTF-8 with a leading byte order mark dropped; a byte that is not UTF-8 is a `ParseError` naming the file and the byte with its line and column, located by `utf8_decode_failure` as a `Utf8DecodeFailure`), and the tolerant `read_user_text` for other user files. |
+| `src/haute/_io.py` | API-input flat-file adapters, source/schema validation, direct CSV/JSON/NDJSON/Parquet reads (a Parquet file with a map column refused, a CSV in another encoding than UTF-8 refused), a flat Quote Input's CSV read with its table's types, external-object loading (a JSON file through `load_json_file`), and the readers of user text: `read_user_source` and `decode_user_source` for pipeline and submodel sources (strict UTF-8 with a leading byte order mark dropped; a byte that is not UTF-8 is a `ParseError` naming the file and the byte with its line and column, located by `utf8_decode_failure` as a `Utf8DecodeFailure`), and the tolerant `read_user_text` for other user files. |
+| `src/haute/_input_files.py` | How Haute reads the bytes of an input's file ("Reading an input's bytes" in the [high-level specification](high-level.md)): `UTF8_BOM`, `bom_length` and `without_bom`; `open_input_bytes` (a file's bytes as Polars' text readers take them, a gzip, zlib or zstd stream decompressed a bounded piece at a time, one that cannot be decompressed refused in words); `file_position` (a byte offset's line and column, in characters, a leading byte-order mark no column, counted in one pass of bounded chunks over the raw bytes a parser read, or over the decompressed bytes a CSV check read); `decode_error_offset` (orjson's character position, or the first byte that is not UTF-8, as a byte offset); the refusals as `InputFileError`: `file_json_error`, `json_syntax_error`, `not_utf8_error`, `not_utf8_file_error` (a file's first byte that is not UTF-8), `empty_json_error` (`NO_QUOTES` for a request file), `text_encoding_refusal` / `refuse_text_in_another_encoding` (a UTF-16 or UTF-32 mark, or null bytes in the first line, of the first 4 KiB) and `refuse_json_lines_with_a_mark`; and `load_json_file`, Load File's strict JSON read. |
 | `src/haute/_polars_io_registry.py` | Canonical Data Input/Output format registry, strict config and argument validation, capability publication, and Polars invocation; `parquet_source_map_columns` finds a Parquet source's map columns in its files' own schema, `refuse_direct_map_columns` refuses a direct Parquet scan whose files hold a map, and `read_parquet_map_entries_for_snapshot` reads such a file for its snapshot through pyarrow and refuses a map in a source of several files (*Map columns* under Edge cases and invariants). |
 | `src/haute/_input_providers.py` | Provider dispatch, source identity/signature construction, explicit snapshot build, and leased snapshot resolution. |
 | `src/haute/_input_preparation.py` | Automatic snapshot preparation planned before execution: freshness check, cap gate, in-process or worker build, per-process single-flight, preparation records, and staging-token cleanup; also the one supervised-build mechanism (`supervise_build`, `run_supervised_data_input_build`, `capped_worker_config`) that preparation, the explicit build route and an API Input's table build share. Which node types execute from input snapshots is `_SNAPSHOT_INPUT_KIND`. |
@@ -294,7 +295,7 @@ and releases the admission, returning the records. Deploy's resolution
    and source signature, and read `SourceCacheStore.status(identity,
    source_signature=...)`. A `missing` source signature with a published generation reuses it with
    `warning_code="source_unavailable"` and never refreshes; without a generation preparation is
-   refused as `build_failed`. Otherwise `ready`/`fresh` and `ready`/`unknown` reuse; `missing` builds;
+   refused as `source_invalid`, naming the path from the project root (`local_source_path`). Otherwise `ready`/`fresh` and `ready`/`unknown` reuse; `missing` builds;
    `ready`/`stale` refreshes; `corrupt` raises `SourceCacheCorruptError`. So a source with no
    signature (a database query, a Databricks table) is never re-read by preparation once
    published: the preview frame's Import (a forced `POST /api/input-cache/build`) is the one
@@ -366,7 +367,13 @@ and releases the admission, returning the records. Deploy's resolution
    nothing names `error` / `unexpected_failure` with an incident, the provider's text
    recorded under it redacted. An in-process build's
    failure is `path_too_long` when `path_too_long_error` finds one behind it, after a
-   cancellation or a `MemoryError`. Each reason code carries
+   cancellation or a `MemoryError`. Automatic preparation answers the rest by the same
+   classification (`_named_failure`): a build's own failure that `classify_failure` names
+   (in-process) or `answer_from_remote` names (the child's), other than a memory outcome, is
+   `source_invalid`, its message the fixed sentence followed by that answer's message; a
+   worker that could not run the build is never the input's failure; anything else is
+   `build_failed` with the fixed sentence alone. Only `SourceCacheCorruptError` leaves an
+   in-process build unwrapped. Each reason code carries
    its own remediation text. After any spawned-build
    failure or abnormal termination the parent calls
    `SourceCacheStore.reconcile_unpublished(identity, generation_id, staging_token)`, which
@@ -384,7 +391,7 @@ and releases the admission, returning the records. Deploy's resolution
    [JSON shredding](../json-shredding/low-level.md)). Every emitting table's status is read
    against the source signature. A `corrupt` table raises `SourceCacheCorruptError`. A
    missing source reuses every table when all are published (`source_unavailable`) and is
-   refused as `build_failed` otherwise. When every table is `ready` and `fresh`/`unknown`
+   refused as `source_invalid` otherwise, naming the file. When every table is `ready` and `fresh`/`unknown`
    they are all `reused`; otherwise one build shreds the source once and writes every
    missing or stale table (tables already fresh are recorded `reused`, the others `built`
    or `refreshed`). Single flight, the cap gate, the in-process/worker choice, the
@@ -838,6 +845,21 @@ Direct mode is not a general compatibility path. It is valid only for a file-bac
 Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
 would duplicate.
 
+A flat Quote Input's reader is `build_data_source_adapter`, the one boundary behind
+`_node_apply.resolve_api_input_from_config` for a sample that is not structured and
+behind the deploy input schema (`deploy/_schema.py::_read_input_source`). It takes the
+types from the node's own table (`_declared_table_columns`: each column's `type` and a
+date's `format`, by name, the first table naming a column deciding it) and
+`_read_flat_quote_sample` reads a CSV with them as `schema_overrides` on every profile, so
+the bounded profiles' declared-dtype requirement (`_validate_csv_declared_schema_for_profile`)
+is met by the table, never by a configuration key a Quote Input cannot hold. The columns
+the read takes are the projection's (the header's first column for an empty projection,
+every header column for none); one the table does not type raises `ApiInputSchemaError`
+"Column 'age' of data/quotes.csv has no type in this Quote Input's table: confirm each
+column's type in the node's table." before the scan. A `date` column is read as `String`
+and parsed with `str.to_date(format, strict=True)`. Any other flat file is read by
+`read_source` with its own types.
+
 Flat-file source projection treats an explicit empty `columns` iterable as a
 row-cardinality-only request. `_select_columns()` retains the source's first
 schema-ordered column as a physical carrier for that empty projection; selecting no
@@ -1212,8 +1234,18 @@ failure. `OSError` subclasses from transient filesystem access are not relabelle
 
 `InputPreparationError` (`error_code="input_preparation_failed"`) wraps automatic
 preparation outcomes with a stable `reason_code` (`cap_unavailable`, `build_failed`,
-`memory_limited`, `cancelled`, `timed_out`, `path_too_long`), the node id, identity
-digest, build class, and a remediation; it never carries a locator or a secret. It is a
+`source_invalid`, `memory_limited`, `cancelled`, `timed_out`, `path_too_long`), the node id,
+identity digest, build class, and a remediation. Its message is a fixed sentence, followed
+for `source_invalid` by the words every edge gives the build's own failure (step 8 of
+automatic preparation); it carries no secret, and a locator only as a file named from the
+project root.
+
+`InputFileError` (`error_code="input_file_unreadable"`, fields `file`, `line`, `column`) is
+an input's file whose bytes cannot be read as its format, raised by the reader that found
+it (`haute._input_files`): JSON that is not JSON or a JSON file holding nothing, bytes that
+are not UTF-8, a CSV file saved in another encoding. `file` is the file as a message names
+it (`display_file`: from the project root, else by its own name), `line` and `column` the
+fault's from one (the column in characters), or absent when the fault is the whole file. It is a
 member of `PUBLIC_CONTRACT_ERROR_TYPES` in `haute.routes._contract_errors`: synchronous
 routes answer HTTP 422 with its payload, and background jobs record the `memory_limited`
 terminal state when `reason_code == "memory_limited"` and the contract-error fields
@@ -1276,6 +1308,8 @@ failure sections above are the maintained answers.
 - `tests/test_external_file_nested_relative_path.py` verifies project-root relative external-file loading, absolute passthrough, and project-escape rejection.
 - `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
 - `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
+- `tests/test_input_files.py` pins the rules for an input's bytes: a fault's line and column (characters, a byte-order mark no column, a fault far into a large file), every UTF-16 and UTF-32 form refused naming it and UTF-8 with or without a mark not, a file's first byte that is not UTF-8 (across the decoder's chunks, unfinished at its end), Load File's strict JSON (a Latin-1 byte named, a mark read through, `NaN` and the last value kept, an empty or malformed file placed), the request shredder, a served request, deploy's test quotes and Load File keeping one repeated key's last value while a Data Input keeps Polars' first, a request file reading alike with and without a mark, and an empty JSON Lines file holding no quotes where an empty `.json` is refused. `tests/test_workbench_test_quotes.py` holds deploy and the Workbench reading one test-quote file alike. `tests/test_polars_io_registry.py` holds both Data Input CSV readers to the encoding refusal (a gzip, zlib and zstd file judged by its text), a read naming its `encoding`, a marked JSON Lines file refused in words, an engine that fails to import named without the install's paths, and every `PolarsIoConfigError` message to saying no caught exception and no path but as `display_file` names it; `tests/test_run_parity.py` holds a UTF-16 CSV refused every way for a Data Input and a Quote Input, and a Quote Input on a CSV, JSON, JSON Lines and Parquet sample answering every way, its untyped column refused every way.
+- `tests/test_input_preparation.py`, `tests/test_api_input_table_snapshots.py`, `tests/test_input_cache_route.py`, `tests/test_server_pipeline_routes.py` and `tests/test_cli.py` hold automatic preparation's words: a build failure Haute names (a value its column's type does not hold, a truncated file at its line and column, a reader package the install lacks) said in-process and from a worker, by the run, the preview and the panel's build; a provider's failure holding a password kept to the fixed sentence; a missing source named from the project root.
 - `tests/test_map_columns.py` pins the map policy: Polars' Parquet reader drops a repeated key (the reason for it); the Arrow cast keeps every entry, shares the map's buffers, reaches maps nested in structs, lists and maps, and keeps metadata; the Parquet read holds one row group at a time (counted reads at each yield), applies `columns` and `n_rows`, and yields an empty file's schema; a provider's batches, a Polars frame and a Parquet snapshot keep every entry, a Parquet snapshot refuses arguments its read cannot apply, a direct scan of a map-bearing file is refused (also when its configured schema names the map a list of key-value structs, which a test shows reads it the same lossy way), so is a flat Quote Input's map-bearing file and a snapshot of a folder or glob of them (a folder without a map is unaffected), schema-only resolution reports the snapshot's shape, and an unknown extension column loads as its storage type on the direct, frame and Arrow paths in a process started with Haute's Polars settings.
 - `tests/test_polars_dtypes.py` pins the one dtype vocabulary: a Polars attribute that is not a dtype is rejected with the column and name, a rating descriptor is the shared codec's spec under rating's key names (and rejects dtypes the codec knows but rating does not support), and the feature-contract view, its MLflow projection and the rendered-dtype MLflow view map representative dtypes exactly, `parse_rendered_dtype` rebuilds scalar, parametric and nested dtypes from their rendering and rejects a name that is not a dtype or an expression that is not a literal; every dtype class Polars exports is covered by one sample at least, each of which round-trips exactly through the spec codec and its rendering, or (`Map`, `Extension`) is refused by `dtype_to_spec`, so a dtype a later Polars adds fails the test until the codec handles it; a categorical in a named pool round-trips with its pool, trains as categorical and is the rating descriptor `{"kind": "Categorical"}`; `tests/test_io.py` pins that declared API-input source dtypes accept the same vocabulary and reject anything else.
 - `tests/test_column_kinds.py` pins the kind vocabulary: every type class Polars defines has a sample column (a class without one fails, so an upgrade adds its types), each sample's kind agrees with Polars' own classifiers (`NUMBER_KINDS` is `is_numeric()`, a float of every width is `float`), a type with no kind is refused by name, `base_type_kind` and `polars_type_kinds` answer by base name, `integer_range` and `numpy_float_type` answer every width, and the shared case file `frontend/src/utils/__tests__/fixtures/columnKindCases.json` (each sample's rendering, its kind and what each rule the browser mirrors answers for it) equals what the server's rules give. It then sends a column of every type through every reader: the pivot (as a row field and as a summed value), the frame profile, the exact text of a temporal value (`temporal_text`), the Banding statistics, a number Banding and a Rating Step, the optimiser's analysis keys and equality filters, the impact report, a deploy request's values and the GLM classes; each handles the column as its kind or refuses it naming the type. The readers are found from the code (every module that asks Polars' classifiers or the kind module), and a module the test neither drives nor exempts with a reason fails it.

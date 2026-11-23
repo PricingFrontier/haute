@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from haute._input_files import without_bom
 from haute._json_files import render_json_bytes
 from haute._output_assembler import render_output_document
 from haute._workbench_compare import (
@@ -159,7 +160,9 @@ def read_test_quote(path: Path) -> TestQuoteFile:
     data = path.read_bytes()
     name, file, revision = path.stem, path.name, revision_of(data)
     try:
-        rows = json.loads(data.decode("utf-8"))
+        # Read as deploy reads it (haute.deploy._validators): through a leading byte-order
+        # mark, a repeated key keeping its last value, so one file is one quote to both.
+        rows = json.loads(without_bom(data).decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return TestQuoteFile(name, file, revision, problem="it is not JSON")
     if not _shaped(rows):

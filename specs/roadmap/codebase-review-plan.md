@@ -69,9 +69,9 @@ Pilot a few representative cases before estimating the rest.
 
 The third and fourth are candidates, with two limits. An outcome the
 specification prescribes is not a new candidate: an unexpected failure's
-words and incident id are the accepted error-detail policy, and `IOL-01`
-already carries the question of whether an input's fixed text should say
-more. An injected failure passes when its classification, what it hides,
+words and incident id are the accepted error-detail policy, and an input
+that cannot be prepared says the cause Haute names, keeping the fixed text
+only for one it does not (the IO layer's `IOL-01`, 23 November 2026). An injected failure passes when its classification, what it hides,
 what it logs and how the operation recovers all match the contract.
 
 Agreement between two callers of one engine proves little. A comparison

@@ -15,11 +15,11 @@ import io
 from pathlib import Path
 from typing import Any
 
-import orjson
 import pytest
 
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._records import _iter_root_array_values, _iter_sampled_json_array_records
+from haute.errors import InputFileError
 
 
 # --------------------------------------------------------------------------- #
@@ -40,38 +40,45 @@ def _elements(body: bytes) -> list[Any]:
     return list(_iter_root_array_values(io.BytesIO(body), 1, 1 << 20))
 
 
+def _assert_not_json(
+    error: InputFileError, words: str, line: int, column: int, name: str = "data.json"
+) -> None:
+    """*error* refuses the file *name* as JSON that is not JSON, in *words*, at the fault's
+    *line* and *column*."""
+    assert error.message == f"{name} is not valid JSON: {words} at line {line}, column {column}."
+    assert (error.file, error.line, error.column) == (name, line, column)
+
+
 # --------------------------------------------------------------------------- #
 # _iter_sampled_json_array_records — top-level loop
 # --------------------------------------------------------------------------- #
 def test_line394_395_402_403_error_position_tracking(tmp_path: Path) -> None:
-    """A truncated array's error position is the number of bytes read: `[{"a":1}`
-    reads all 8 bytes, then raises "unexpected end of data" at 8."""
-    with pytest.raises(orjson.JSONDecodeError) as ei:
+    """A truncated array's fault is at the end of the file: `[{"a":1}` is 8 bytes, so
+    "unexpected end of data" is at byte 8, line 1, column 9."""
+    with pytest.raises(InputFileError) as ei:
         _sample(tmp_path, b'[{"a":1}', 5)
-    assert ei.value.msg == "unexpected end of data"
-    assert ei.value.pos == 8
+    _assert_not_json(ei.value, "unexpected end of data", 1, 9)
 
 
 def test_pos_tracking_inside_value_reader(tmp_path: Path) -> None:
-    """An element cut off mid-object reports the bytes read: `[{"a":1` raises
-    "unexpected end of data" at 7."""
-    with pytest.raises(orjson.JSONDecodeError) as ei:
+    """An element cut off mid-object is refused at the end of the file: `[{"a":1` raises
+    "unexpected end of data" at byte 7, line 1, column 8."""
+    with pytest.raises(InputFileError) as ei:
         _sample(tmp_path, b'[{"a":1', 5)
-    assert ei.value.msg == "unexpected end of data"
-    assert ei.value.pos == 7
+    _assert_not_json(ei.value, "unexpected end of data", 1, 8)
 
 
 def test_pos_tracking_trailing_comma_and_data(tmp_path: Path) -> None:
-    """The trailing-comma and trailing-data errors report the exact byte offsets."""
-    with pytest.raises(orjson.JSONDecodeError) as ei:
-        _sample(tmp_path, b'[{"a":1},]', 5)
-    assert ei.value.msg == "trailing comma in array"
-    assert ei.value.pos == 10
-
-    with pytest.raises(orjson.JSONDecodeError) as ei:
+    """The trailing-data and trailing-comma errors name the line and column of the
+    faulting byte: the `X` (byte 9) and the comma (byte 8, where orjson places a
+    trailing comma too)."""
+    with pytest.raises(InputFileError) as ei:
         _sample(tmp_path, b'[{"a":1}]X', 5)
-    assert ei.value.msg == "unexpected trailing data"
-    assert ei.value.pos == 9
+    _assert_not_json(ei.value, "unexpected trailing data", 1, 10)
+
+    with pytest.raises(InputFileError) as ei:
+        _sample(tmp_path, b'[{"a":1},]', 5)
+    _assert_not_json(ei.value, "trailing comma in array", 1, 9)
 
 
 def test_line395_expect_value_starts_false_empty_array(tmp_path: Path) -> None:
@@ -137,9 +144,9 @@ def test_line428_close_bracket_eq_gt_object_first(tmp_path: Path) -> None:
 
 def test_line439_expect_value_from_comma_delimiter(tmp_path: Path) -> None:
     """A comma before the closing bracket is a trailing comma and is refused."""
-    with pytest.raises(orjson.JSONDecodeError) as ei:
+    with pytest.raises(InputFileError) as ei:
         _sample(tmp_path, b'[{"a":1},]', 5)
-    assert ei.value.msg == "trailing comma in array"
+    _assert_not_json(ei.value, "trailing comma in array", 1, 9)
 
 
 def test_line440_delimiter_close_eq_lt_gt(tmp_path: Path) -> None:
@@ -225,10 +232,19 @@ def test_sampled_non_array_root_falls_back_to_the_full_reader(tmp_path) -> None:
     assert records == [{"id": 1}]
 
 
-def test_sampled_reader_yields_nothing_for_an_empty_file(tmp_path) -> None:
-    assert _sample(tmp_path, b"", 5, name="empty.json") == []
+@pytest.mark.parametrize("content", [b"", b" \r\n\t"], ids=["empty", "whitespace"])
+def test_sampled_reader_refuses_an_empty_file(tmp_path, content: bytes) -> None:
+    """A JSON file holding nothing is not JSON: the sample refuses it as the whole-document
+    reader does, naming the file and no position."""
+    with pytest.raises(InputFileError) as ei:
+        _sample(tmp_path, content, 5, name="empty.json")
+    assert ei.value.message == (
+        "empty.json is empty, so it is not JSON. A JSON file that holds no quotes is []."
+    )
+    assert (ei.value.file, ei.value.line, ei.value.column) == ("empty.json", None, None)
 
 
 def test_sampled_array_rejects_truncated_input_between_records(tmp_path) -> None:
-    with pytest.raises(orjson.JSONDecodeError, match="unexpected end of data"):
+    with pytest.raises(InputFileError) as ei:
         _sample(tmp_path, b'[{"id": 1},', 5, name="truncated.json")
+    _assert_not_json(ei.value, "unexpected end of data", 1, 12, name="truncated.json")
