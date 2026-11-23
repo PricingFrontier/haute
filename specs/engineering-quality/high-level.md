@@ -247,11 +247,13 @@ Out of scope:
   component. Each package records its problem, implementation direction,
   acceptance criteria, dependencies, and current code/test evidence. The
   catalogue remains non-normative: an item must be re-verified against `HEAD`,
-  specified, and regression-tested before implementation. The index points to
-  a non-deferred package only; it shows no starting package when every
-  remaining package is explicitly deferred.
+  specified, and regression-tested before implementation. Each component
+  roadmap names its own starting package, a non-deferred one, or none when every
+  remaining package is explicitly deferred. The README holds the catalogue's
+  protocol, not a list of its files, so a branch that adds, edits or retires one
+  component's roadmap touches no file another component's branch does.
 - Dated supporting findings may sit beside the component roadmaps when explicitly
-  enumerated by the documentation checks and linked from the index. These reports
+  enumerated by the documentation checks and linked from the README. These reports
   preserve snapshot evidence, use repository-relative links, and do not own work
   packages or substitute for current verification. They remain part of the corpus
   inventory; the component roadmap retains delivery status. When the last package

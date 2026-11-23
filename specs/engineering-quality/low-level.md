@@ -487,8 +487,13 @@
 - A component roadmap contains active/deferred/decision/reverify work only.
   Delivered packages are removed once present-tense specs and ordinary tests
   own their outcome. Priority rows and package headings have identical unique
-  package-id multisets; the index's `Start with` cell names an existing
-  non-deferred package, or `—` when no such package exists.
+  package-id multisets; its `**Start with:**` line, under `Priorities`, names an
+  existing non-deferred package of its own, or `—` when no such package exists.
+- The documentation checks find the component roadmaps by listing the folder:
+  every `specs/roadmap/*.md` but the README, the enumerated supporting reports
+  and the root causes (`root-cause-*.md`, one package each, no priorities table).
+  No index or test lists the components, so adding or retiring one edits nothing
+  shared.
 - Generated contract outputs are byte-stable and committed. Check modes never
   rewrite or bless drift; missing, stale, nondeterministic, or unexpectedly shaped
   generator output is a hard failure. Standalone validators contain their runtime
@@ -545,7 +550,7 @@
   and `Evidence`; a package appears in exactly one owning component.
 - Dated supporting reports are explicitly listed separately from active component
   roadmaps in `tests/test_docs_accuracy.py`. The exact file inventory and local
-  link checks include both categories. Reports link from the roadmap index and
+  link checks include both categories. Reports link from the roadmap README and
   contain no package headings; only component queues have package lifecycle rules.
   The enumeration changes in the same commit that adds or retires a report.
 - The normal Ruff configuration excludes `examples/`, `modules/`, `outputs/`, and

@@ -197,8 +197,8 @@ The component specs cover maintained behaviour, not just the importable runtime:
   temporary change contract does not become current ownership until delivery folds it into the
   present-tense specification.
 
-Current delivery intent lives in the flat [engineering roadmap](roadmap/README.md): the index
-links to one self-contained, non-normative improvement file per component that has active packages,
+Current delivery intent lives in the flat [engineering roadmap](roadmap/README.md): its folder
+holds one self-contained, non-normative improvement file per component that has active packages,
 plus explicitly enumerated dated findings reports. Roadmaps do not replace
 code, tests, or behaviour specifications. Generated caches, coverage data, untracked local MLflow
 state, `site/`, and built static assets are outputs, not additional source components. Tracked root

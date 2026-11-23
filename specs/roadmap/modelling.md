@@ -26,6 +26,8 @@ reproduced on 13 November against LightGBM's own `predict`.
 
 ## Priorities
 
+**Start with:** `MDL-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | MDL-01 | Planned | P2 | A temporal split whose date column has rows without a date, or is not a date, is refused naming the column and what to do. |

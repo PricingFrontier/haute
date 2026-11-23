@@ -19,6 +19,8 @@ for the provider, and the main session ran each again on 13 November.
 
 ## Priorities
 
+**Start with:** `AST-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | AST-01 | Planned | P2 | The assistant loads its shipped examples from a copy of Haute that pip installed, the hosted editor's included. |

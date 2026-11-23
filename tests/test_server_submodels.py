@@ -109,6 +109,35 @@ class TestCreateSubmodel:
         assert not (pipeline_dir / "modules" / "my_submodel.py").exists()
         assert (pipeline_dir / "test_pipeline.py").exists()
 
+    def test_a_name_too_long_for_its_module_file_is_refused_when_the_submodel_is_made(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        three_node_graph: dict,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """SRV-04: a submodel named past what its module's file name may hold is refused by
+        the create route, naming the submodel and the limit, not later by the Save."""
+        from haute import _file_ops
+
+        # The file name's limit alone, on every platform.
+        monkeypatch.setattr(_file_ops, "_IS_WINDOWS", False)
+        selected = [n["id"] for n in three_node_graph["nodes"]][:2]
+        payload = {**self._create_payload(three_node_graph, selected), "name": "r" * 240}
+
+        resp = client.post("/api/submodel/create", json=payload)
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail.startswith(f"Submodel {'r' * 240!r} would keep its module in modules/")
+        # Its module, {name}.py, is staged under a longer sibling name: the limit is 255 less
+        # the difference.
+        from haute._file_ops import _temp_path_for
+
+        extra = len(_temp_path_for(Path("x.py")).name) - len("x.py")
+        assert f"would be 243 bytes long, more than the {255 - extra} a saved file's name" in detail
+        assert not (pipeline_dir / "modules").exists()
+
     def test_create_submodel_too_few_nodes_returns_400(
         self,
         client: TestClient,

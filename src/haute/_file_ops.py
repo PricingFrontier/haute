@@ -42,13 +42,18 @@ import errno
 import os
 import re
 import shutil
+import stat
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
+
+from haute._file_lock import FileLock, remove_unheld_lock_file
 
 _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 _WINDOWS_DIRECTORY_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0)
@@ -105,6 +110,96 @@ def windows_long_paths_enabled() -> bool:
     except OSError:
         return False
     return bool(value == 1)
+
+
+#: The longest file name the filesystems Haute writes to hold (NTFS, ext4, APFS); a name
+#: Haute makes from a node's is ASCII, so its characters are its bytes.
+MAX_FILE_NAME_CHARS = 255
+
+
+def literal_path(path: Path) -> Path:
+    """*path*, absolute, in the form the operating system takes literally.
+
+    On Windows the extended-length form (``\\\\?\\C:\\...``, ``\\\\?\\UNC\\server\\...``),
+    which neither drops a name's trailing dot or space nor reads a device name in it: the
+    one way to reach a file that a program outside Haute gave such a name. Elsewhere the
+    path as it is.
+    """
+    text = str(path)
+    if not _IS_WINDOWS or text.startswith(_UNLIMITED_PATH_PREFIXES):
+        return path
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
+def atomic_write_names(target: Path) -> list[Path]:
+    """The sibling names an atomic write of *target* makes before its rename."""
+    return [_temp_path_for(target)]
+
+
+def atomic_copy_names(target: Path) -> list[Path]:
+    """The sibling names :func:`atomic_copy_files` makes for *target*: its staged copy and
+    the backup of the file it replaces."""
+    return [_temp_path_for(target), _backup_path_for(target)]
+
+
+def name_units(name: str) -> int:
+    """*name*'s length as the filesystem counts it: UTF-16 code units on Windows (NTFS),
+    UTF-8 bytes elsewhere (ext4, APFS)."""
+    return len(name.encode("utf-16-le")) // 2 if _IS_WINDOWS else len(name.encode("utf-8"))
+
+
+def name_unit_word() -> str:
+    return "characters" if _IS_WINDOWS else "bytes"
+
+
+def written_file_length_problem(
+    targets: Iterable[Path], *, staged_as: Callable[[Path], Sequence[Path]] = atomic_write_names
+) -> str | None:
+    """Why files written at *targets* cannot be held for their length, or ``None``.
+
+    Counts every name of each path as the filesystem does (:func:`name_units`): each
+    folder's, and the file's as a write of it is made, which stages it under longer
+    sibling names first (*staged_as*: an atomic write's, :func:`_temp_path_for`, unless
+    the caller writes another way), so the limit a target's own name must meet is the
+    platform's less the longest difference. A name may be at most ``MAX_FILE_NAME_CHARS``
+    long everywhere; on Windows without long paths, a path at most
+    ``WINDOWS_MAX_PATH_CHARS``. The words name the first name or path past a limit and
+    that limit, for a caller to say which name made it.
+    """
+    staging_extra = {
+        target: max([0, *(name_units(s.name) - name_units(target.name) for s in staged_as(target))])
+        for target in targets
+    }
+    units = name_unit_word()
+    # A name too long is too long everywhere, so it is told before a path.
+    for target, extra in staging_extra.items():
+        folders = target.parent.parts[1:] if target.anchor else target.parent.parts
+        for folder in folders:
+            if name_units(folder) > MAX_FILE_NAME_CHARS:
+                shown = folder if len(folder) <= 40 else folder[:40] + "…"
+                return (
+                    f"its folder {shown!r} would be {name_units(folder)} {units} "
+                    f"long, more than the {MAX_FILE_NAME_CHARS} a folder's name may be"
+                )
+        name_limit = MAX_FILE_NAME_CHARS - extra
+        if name_units(target.name) > name_limit:
+            return (
+                f"its file name would be {name_units(target.name)} {units} long, more than "
+                f"the {name_limit} a saved file's name may be"
+            )
+    if not _IS_WINDOWS or windows_long_paths_enabled():
+        return None
+    for target, extra in staging_extra.items():
+        path = os.path.abspath(target)
+        path_limit = WINDOWS_MAX_PATH_CHARS - extra
+        if name_units(path) > path_limit:
+            return (
+                f"its path would be {name_units(path)} characters long, more than the "
+                f"{path_limit} Windows allows a saved file's path while long paths are disabled"
+            )
+    return None
 
 
 def path_too_long_error(exc: BaseException) -> PathTooLongError | None:
@@ -171,22 +266,115 @@ def ensure_disk_headroom(directory: Path, additional_bytes: int = 0) -> None:
 def _temp_path_for(target: Path) -> Path:
     """Return a unique sibling temp path for *target*.
 
-    Uniqueness is a random uuid4 fragment, so concurrent writers from
-    different threads or processes do not clobber each other's staging files.
+    The name holds this process's writer token (:func:`_writer_token`), which says whose
+    stage it is, and a random uuid4 fragment, so concurrent writers from different threads
+    or processes do not clobber each other's staging files.
     The name replaces the target's last suffix rather than extending it: a
     staging file sits beside deep store paths, and Windows' traditional
     260-character path limit applies to it too.
     """
-    return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
+    return target.with_name(f"{target.stem}.{_writer_token()}{uuid.uuid4().hex[:4]}.tmp")
 
 
-_STAGING_NAME = re.compile(r"(?P<stem>.+)\.[0-9a-f]{8}\.tmp")
+def _backup_path_for(target: Path) -> Path:
+    """A unique hidden sibling that :func:`atomic_copy_files` moves *target* to while its
+    copy replaces it."""
+    return target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
+
+
+# A stage written by this version names its owner (eight hex digits, then four); one an
+# earlier version wrote has eight random ones and no owner, so it is still a stage, never a
+# project's file, but it is not removed: whose it is cannot be told.
+_STAGING_NAME = re.compile(r"(?P<stem>.+)\.(?:(?P<owner>[0-9a-f]{8})[0-9a-f]{4}|[0-9a-f]{8})\.tmp")
+
+
+#: Where each process keeps the lock that says its atomic writes are live. It is held for
+#: the process's life and the operating system frees it when the process exits, however
+#: it exits, so a stage whose owner's lock can be taken was left by a writer that is gone.
+def _writer_locks() -> Path:
+    """The folder of the writers' locks, read at each use, as the temporary folder is."""
+    return Path(tempfile.gettempdir()) / "haute-writers"
+
+
+_writer: tuple[int, str, FileLock] | None = None
+_writer_guard = threading.Lock()
+
+
+def _writer_token() -> str:
+    """This process's writer token, its lock taken on first use and held until it exits."""
+    global _writer
+    with _writer_guard:
+        if _writer is None or _writer[0] != os.getpid():
+            while True:
+                token = uuid.uuid4().hex[:8]
+                lock = FileLock(_writer_locks() / f"{token}.lock")
+                if lock.acquire(blocking=False):
+                    break
+            _writer = (os.getpid(), token, lock)
+        return _writer[1]
+
+
+def remove_dead_writers_stages(paths: Iterable[Path]) -> list[tuple[Path, OSError]]:
+    """Remove each atomic-write stage of *paths* (:func:`is_staging_name`) whose writer is
+    gone: the lock its name's token names (:func:`_writer_token`) can be taken, which only
+    happens once the process that held it has exited. A live writer's stage, this
+    process's own included, is left, however old.
+
+    Returns the stages that could not be removed, each with its error, for the caller to
+    log; one already gone is no failure. A link is never followed or removed.
+    """
+    own = _writer[1] if _writer is not None and _writer[0] == os.getpid() else None
+    failed: list[tuple[Path, OSError]] = []
+    for path in paths:
+        named = _STAGING_NAME.fullmatch(path.name)
+        if named is None or named["owner"] is None or named["owner"] == own:
+            continue
+        owner = FileLock(_writer_locks() / f"{named['owner']}.lock")
+        if not owner.acquire(blocking=False):
+            continue
+        try:
+            if stat.S_ISREG(path.lstat().st_mode):
+                path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            failed.append((path, exc))
+        finally:
+            owner.release()
+            remove_unheld_lock_file(_writer_locks() / f"{named['owner']}.lock")
+    return failed
 
 
 def is_staging_name(name: str) -> bool:
     """Whether the file name *name* is an atomic write's staging file (:func:`_temp_path_for`):
     never a project's file to version."""
     return _STAGING_NAME.fullmatch(name) is not None
+
+
+def _plain_directory(path: Path) -> bool:
+    """Whether *path* is a directory reached as itself: not a link, junction or other
+    reparse point, which would take a walk outside the folder it was asked to search."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+    )
+    return stat.S_ISDIR(info.st_mode) and not reparse
+
+
+def staging_files_under(folder: Path) -> list[Path]:
+    """Every atomic write's staging file (:func:`is_staging_name`) in *folder* and the
+    folders under it; none when *folder* does not exist. Neither *folder* nor any folder
+    under it is entered through a link or junction, so nothing outside it is listed."""
+    if not _plain_directory(folder):
+        return []
+    found: list[Path] = []
+    for directory, folders, names in os.walk(folder):
+        folders[:] = [name for name in folders if _plain_directory(Path(directory, name))]
+        found.extend(Path(directory, name) for name in names if is_staging_name(name))
+    return found
 
 
 def staging_files_of(targets: Iterable[Path]) -> list[Path]:
@@ -371,8 +559,9 @@ def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
     ``atomic_write_bytes``). If any step fails, every newly published target is
     removed, every backup is restored, and every remaining staged copy is
     deleted before the error is re-raised. Backups are deleted only after every
-    replacement succeeded; a backup that cannot be deleted then is logged and
-    left as a hidden sibling, because the copy has already committed. As with
+    replacement succeeded, a read-only one made writable first; a backup that still
+    cannot be deleted then is logged and left as a hidden sibling, because the copy
+    has already committed. As with
     ``atomic_write_bytes``, the parent directory of each target must already exist.
     """
     staged: list[tuple[Path, Path]] = []
@@ -387,7 +576,7 @@ def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
             shutil.copyfile(source, tmp)
         for tmp, target in staged:
             if target.exists() or target.is_symlink():
-                backup = target.with_name(f".{target.name}.{uuid.uuid4().hex}.backup")
+                backup = _backup_path_for(target)
                 _replace_with_windows_contention_retry(target, backup)
                 backups.append((backup, target))
             _replace_with_windows_contention_retry(tmp, target)
@@ -411,6 +600,11 @@ def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:
         raise
     for backup, _target in backups:
         try:
+            # A read-only target's bytes keep its mode in the backup, and Windows refuses
+            # to delete a read-only file: the backup is made writable first. A link's
+            # target is never touched.
+            if not backup.is_symlink():
+                backup.chmod(backup.stat().st_mode | stat.S_IWRITE)
             backup.unlink()
         except OSError as exc:
             from haute._logging import get_logger

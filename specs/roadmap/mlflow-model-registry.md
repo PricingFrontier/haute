@@ -28,6 +28,8 @@ session ran each again on 15 November 2026.
 
 ## Priorities
 
+**Start with:** `MLR-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | MLR-01 | Planned | P2 | A model load that fails for a reason other than unreadable bytes keeps its error and leaves the local copy alone. |

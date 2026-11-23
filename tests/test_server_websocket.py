@@ -1208,7 +1208,7 @@ def test_a_config_edit_after_haute_toml_is_repaired_reaches_the_canvas(
     monkeypatch.setattr(server, "is_self_write", lambda *_a, **_k: False)
     monkeypatch.setattr(
         server,
-        "_publish_pipeline_document",
+        "_pipeline_document_event",
         lambda path, *, skip_unchanged: published.append(Path(path).resolve()),
     )
 

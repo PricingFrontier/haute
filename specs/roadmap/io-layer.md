@@ -18,6 +18,8 @@ as were the additions that sweep made to `IOL-01` and `IOL-02`.
 
 ## Priorities
 
+**Start with:** `IOL-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | IOL-01 | Planned | P2 | An input whose file is wrong says what is wrong with it, in the run's output and in the input's panel. |

@@ -29,6 +29,7 @@ import { resolveEditorGraphIdentities } from "../utils/editorIdentities"
 import { reconcileGraphInputBindings } from "../utils/nodeUpdatePlan"
 import { answer, newest, watch } from "../utils/answers"
 import { useRequestKind } from "./useRequestKind"
+import { apiErrorMessage } from "../api/errors"
 
 type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((edges: Edge[]) => Edge[]), submodels: Record<string, unknown>) => void
 
@@ -172,7 +173,7 @@ export default function useSubmodelBoundaryEditing({
   const reportBoundaryError = useCallback((error: unknown) => {
     addToast(
       "error",
-      `Submodel edit refused: ${error instanceof Error ? error.message : String(error)}`,
+      `Submodel edit refused: ${apiErrorMessage(error)}`,
     )
   }, [addToast])
   const state = useCallback((): SubmodelBoundaryEditState | null => {

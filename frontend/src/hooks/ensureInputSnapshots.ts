@@ -9,6 +9,7 @@ import { TERMINAL_JOB_STATUSES, type InputCacheJobStatusResponse } from "../api/
 import { inputSnapshotSource, type SnapshotSource } from "../utils/inputSnapshotSource"
 import { ask, signalPart, type Asked, type Part } from "../utils/answers"
 import { JobWaitTimeoutError, waitForJob } from "./jobPollingController"
+import { apiErrorMessage } from "../api/errors"
 
 const POLL_INTERVAL_MS = 800
 // A cancelled build is waited for, because a point reports itself as building
@@ -135,7 +136,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
   } catch (caught) {
     throw new CancellationFailedError(
       `The snapshot build could not be cancelled: ${
-        caught instanceof Error ? caught.message : String(caught)
+        apiErrorMessage(caught)
       }`,
       [jobId],
     )
@@ -160,7 +161,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
     // must keep offering to stop it.
     throw new CancellationFailedError(
       `The snapshot build could not be confirmed as stopped: ${
-        caught instanceof Error ? caught.message : String(caught)
+        apiErrorMessage(caught)
       }`,
       [jobId],
     )

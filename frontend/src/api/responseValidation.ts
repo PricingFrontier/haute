@@ -1,3 +1,5 @@
+import { apiErrorMessage } from "./errors"
+
 /** A response arrived, but its payload does not satisfy the API contract. */
 export class ApiResponseValidationError extends Error {
   constructor(message: string, cause: unknown) {
@@ -11,7 +13,7 @@ export function validateApiResponse<T>(context: string, parse: () => T): T {
   try {
     return parse()
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
+    const detail = apiErrorMessage(error)
     throw new ApiResponseValidationError(`${context}: ${detail}`, error)
   }
 }

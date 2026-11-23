@@ -13,6 +13,8 @@ editor was open. The main session added the Banding editor's case.
 
 ## Priorities
 
+**Start with:** `FEP-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FEP-01 | Planned | P2 | After a data file's columns change, one Refresh previews the file as it is, instead of failing on the columns the editor remembered. |

@@ -127,6 +127,32 @@ The codes are retried only on Windows; every error on another platform and every
 filesystem error fails immediately. This is retry of the same atomic operation, not
 an in-place or non-atomic fallback.
 
+A writer killed before its rename leaves its stage, and nothing else would remove it, so a
+stage says whose it is. Its name is `<stem>.<owner><4 hex>.tmp`, where `<owner>` is the
+writing process's token (`_writer_token`): on its first atomic write a process takes an
+exclusive `FileLock` on `haute-writers/<owner>.lock` under the temporary folder and holds it
+until it exits, and the operating system frees it then, however the process ends.
+`remove_dead_writers_stages(paths)` removes a stage only once its owner's lock can be taken,
+so only when that process is gone (removing the freed lock file too); a stage an earlier version named with eight random hex digits is still a stage (never versioned, still a save's to recover) but is never removed, since whose it is cannot be told; never this process's
+own and never another live process's, however long its write takes; it follows and removes
+no link, and returns the stages it could not remove for the caller to log.
+`staging_files_under(folder)` lists every atomic-write stage in a folder tree, entering
+neither the folder nor any folder under it through a link or junction. The editor's server
+runs both over the project's `.haute` folder when it starts (`server.py::_remove_leftover_staging`,
+after the save records are settled); a `.haute` reached through a link, or outside the project
+(`ordinary_path_problem`), is not searched. So a settings write, an undelete or a branch-away
+killed at its rename leaves nothing there after the next start, a restart straight after the
+crash included.
+
+A Data Output's Write holds its destination's lock from staging its copy to publishing it
+(`executor.data_output_destination_lock`, a `FileLock` under the temporary folder's
+`haute-output-locks/`, keyed by the destination's path): the route's transaction and
+`write_data_output` take it, so a second server or a run writing the same file waits. Holding
+it, the Write removes every staged copy of that destination but its own
+(`remove_leftover_data_output_staging`, which refuses to run without the lock), whatever its
+age, since no other Write of the file can be live. After a Write cut short as it published
+its file, the next Write to that destination leaves the output alone in its folder.
+
 A path Windows refuses for its length is named rather than left a bare "file not found".
 While `LongPathsEnabled` is off, Windows takes a file path of at most `MAX_PATH` less its NUL
 (259 characters) and a folder path of 12 fewer (247): a folder past that fails with

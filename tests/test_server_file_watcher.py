@@ -46,6 +46,34 @@ async def _run_file_watcher_and_drain() -> None:
     await asyncio.sleep(0)
 
 
+class _FinishedBatches:
+    """Counts the watcher's finished batches: a batch is routed and loaded in a worker
+    thread, then ends in one publish of its events (none, when nothing changed)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from haute import server
+
+        self.count = 0
+        publish = server._publish_bus_events
+
+        def _counted(events: list[Any]) -> None:
+            publish(events)
+            self.count += 1
+
+        monkeypatch.setattr(server, "_publish_bus_events", _counted)
+
+    async def reach(self, count: int, *, timeout: float = 10.0) -> None:
+        """Wait until *count* batches have finished, then let their broadcasts run."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while self.count < count:
+            assert asyncio.get_running_loop().time() < deadline, (
+                f"{self.count} of {count} watcher batches finished"
+            )
+            await asyncio.sleep(0.005)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+
 # ---------------------------------------------------------------------------
 # Self-write tracking
 # ---------------------------------------------------------------------------
@@ -598,6 +626,7 @@ def node_b():
 """
 
         broadcast_calls: list[dict] = []
+        batches = _FinishedBatches(monkeypatch)
 
         async def _capture_broadcast(data: dict, **_kw: object) -> None:
             broadcast_calls.append(data)
@@ -606,8 +635,7 @@ def node_b():
             # Batch 1: external write of valid pipeline A (no marker) -> expect a broadcast
             pipeline_file.write_bytes(content_a)
             yield [(Change.modified, str(pipeline_file))]
-            for _ in range(5):
-                await asyncio.sleep(0)
+            await batches.reach(1)
             assert len(broadcast_calls) == 1
 
             # Batch 2: server writes valid pipeline B and marks with content=
@@ -615,16 +643,14 @@ def node_b():
             pipeline_file.write_bytes(content_b)
             mark_self_write(pipeline_file, content=content_b)
             yield [(Change.modified, str(pipeline_file))]
-            for _ in range(5):
-                await asyncio.sleep(0)
+            await batches.reach(2)
             assert len(broadcast_calls) == 1
 
             # Batch 3: external restore of A's exact bytes (no marker) ->
             # expect a broadcast whose document reflects A
             pipeline_file.write_bytes(content_a)
             yield [(Change.modified, str(pipeline_file))]
-            for _ in range(5):
-                await asyncio.sleep(0)
+            await batches.reach(3)
             assert len(broadcast_calls) == 2
 
         with (
@@ -1910,12 +1936,15 @@ class TestFileWatcherRecovery:
 
         asyncio.run(_run())
 
-    def test_cancelled_flush_requeues_snapshotted_batch(
+    def test_a_batch_interrupted_while_its_thread_runs_is_published_once(
         self,
         pipeline_dir: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Cancellation after snapshotting must not discard the interrupted change."""
+        """A newer event restarting the debounce while a batch's thread runs neither drops
+        that batch's events nor processes it again: the thread has taken it."""
+        import threading
+
         from haute.server import _file_watcher
 
         use_project(pipeline_dir)
@@ -1927,6 +1956,10 @@ class TestFileWatcherRecovery:
             str(interrupted_file.resolve()): interrupted_file,
             str(later_file.resolve()): later_file,
         }
+        in_thread = threading.Event()
+        release = threading.Event()
+        loaded: list[Path] = []
+        published: list[str] = []
 
         class _FakeDocument:
             load_status = "ready"
@@ -1935,49 +1968,41 @@ class TestFileWatcherRecovery:
             def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [], "edges": []}
 
+        def _load(path: Path, **_kwargs: object) -> _FakeDocument:
+            loaded.append(path)
+            if path == interrupted_file:
+                in_thread.set()
+                assert release.wait(10)
+            return _FakeDocument()
+
         class _BusStub:
-            def publish(self, event: str, payload: dict[str, object]) -> None:
-                del event, payload
+            def publish(self, event: str, payload: dict[str, Any]) -> None:
+                published.append(Path(payload["source_file"]).name)
 
-        async def _run() -> list[Path]:
-            cancellation_injected = asyncio.Event()
-            original_read_bytes = Path.read_bytes
-            interrupted_reads = 0
+        async def _two_changes(*dirs, **kw):
+            del dirs, kw
+            yield [(Change.modified, str(interrupted_file))]
+            assert await asyncio.to_thread(in_thread.wait, 10)
+            # Cancels the first batch's debounce task while its thread runs.
+            yield [(Change.modified, str(later_file))]
+            release.set()
 
-            def _read_bytes(path: Path) -> bytes:
-                nonlocal interrupted_reads
-                if path.resolve() == interrupted_file.resolve():
-                    interrupted_reads += 1
-                    if interrupted_reads == 1:
-                        cancellation_injected.set()
-                        raise asyncio.CancelledError
-                return original_read_bytes(path)
-
-            async def _two_changes(*dirs, **kw):
-                del dirs, kw
-                yield [(Change.modified, str(interrupted_file))]
-                await cancellation_injected.wait()
-                await asyncio.sleep(0)
-                yield [(Change.modified, str(later_file))]
-
+        async def _run() -> None:
             with (
                 patch("watchfiles.awatch", _two_changes),
-                patch.object(Path, "read_bytes", _read_bytes),
                 patch("haute.server.is_self_write", return_value=False),
                 patch("haute.server._known_pipeline_paths", return_value=known),
                 patch("haute.server._discovered_pipeline_paths", return_value=known),
                 patch("haute.server.invalidate_pipeline_index"),
-                patch(
-                    "haute.server.load_pipeline_editor_document",
-                    return_value=_FakeDocument(),
-                ) as load,
+                patch("haute.server.load_pipeline_editor_document", side_effect=_load),
                 patch("haute.server.default_bus", _BusStub()),
                 patch("haute.server._DEBOUNCE_SECONDS", 0),
             ):
                 await _file_watcher()
-                return [call.args[0] for call in load.call_args_list]
 
-        assert set(asyncio.run(_run())) == {interrupted_file, later_file}
+        asyncio.run(_run())
+        assert loaded == [interrupted_file, later_file]
+        assert published == ["interrupted.py", "later.py"]
 
     def test_persistently_failing_flush_stops_after_bounded_retries(
         self,
@@ -2622,3 +2647,213 @@ class TestModuleWatchingFollowsTheConfiguredPipeline:
         module.write_bytes(content)
 
         assert _watch({(Change.modified, str(module))}) == []
+
+
+class TestLiveSyncWatchesWhatItReads:
+    """SRV-02: the watcher's filter names what live sync reads, and a batch is routed and
+    loaded off the event loop."""
+
+    def test_the_filter_passes_what_live_sync_reads_and_none_of_haute_s_own_files(
+        self, tmp_path: Path
+    ) -> None:
+        from haute.server import _LiveSyncFilter
+
+        form = tmp_path / "rating" / "workbench"
+        watch_filter = _LiveSyncFilter(form)
+        read = [
+            tmp_path / "main.py",
+            tmp_path / "rating" / "modules" / "rates.py",
+            tmp_path / "rating" / "config" / "banding" / "age.json",
+            tmp_path / "main.haute.json",
+            tmp_path / "haute.toml",
+            form / "form.yaml",
+        ]
+        not_read = [
+            tmp_path / ".haute_cache" / "inputs" / "part-00001.parquet",
+            tmp_path / ".haute_cache" / "sources" / "main.py",
+            tmp_path / ".haute_cache" / "json" / "spill.json",
+            tmp_path / ".haute" / "pipeline-settings.3b78e6a0.tmp",
+            tmp_path / ".haute" / "state.json",
+            tmp_path / "outputs" / "result.csv",
+            tmp_path / "data" / "input.parquet",
+            tmp_path / ".git" / "index",
+            tmp_path / "__pycache__" / "main.cpython-311.pyc",
+        ]
+        assert [p.name for p in read if not watch_filter(Change.modified, str(p))] == []
+        assert [p.name for p in not_read if watch_filter(Change.added, str(p))] == []
+        # A disabled workbench has no form folder: its files are read by nothing.
+        assert not _LiveSyncFilter(None)(Change.modified, str(form / "form.yaml"))
+
+    def test_a_cache_write_of_5000_files_starts_no_batch_and_an_edit_is_still_broadcast(
+        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute import server
+
+        use_project(pipeline_dir)
+        cache = pipeline_dir / ".haute_cache" / "inputs" / "source"
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        filters: list[Any] = []
+
+        async def _awatch(*_dirs: object, watch_filter: Any, **_kw: object):  # type: ignore[no-untyped-def]
+            # As watchfiles does: each raw batch is filtered, and one left empty is
+            # never yielded.
+            filters.append(watch_filter)
+            raw_batches = [
+                {(Change.added, str(cache / f"part-{n:05d}.parquet")) for n in range(i, i + 1000)}
+                for i in range(0, 5000, 1000)
+            ]
+            raw_batches.append({(Change.modified, str(pipeline_file))})
+            for raw in raw_batches:
+                changes = {(change, path) for change, path in raw if watch_filter(change, path)}
+                if changes:
+                    yield changes
+                    await asyncio.sleep(0.05)
+
+        routed: list[int] = []
+        batch_events = server._watcher_batch_events
+
+        def _counted(changes: set[tuple[Any, str]], root: Path) -> list[Any]:
+            routed.append(len(changes))
+            return batch_events(changes, root)
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict, **_kw: object) -> None:
+            broadcast_calls.append(data)
+
+        monkeypatch.setattr("watchfiles.awatch", _awatch)
+        monkeypatch.setattr(server, "_watcher_batch_events", _counted)
+        monkeypatch.setattr(server, "broadcast", _capture_broadcast)
+        monkeypatch.setattr(server, "_DEBOUNCE_SECONDS", 0)
+        asyncio.run(_run_file_watcher_and_drain())
+
+        assert len(filters) == 1
+        assert routed == [1]
+        assert [call["type"] for call in broadcast_calls] == ["pipeline_document_update"]
+
+    def test_a_batch_of_20000_changed_paths_leaves_a_concurrent_request_fast(
+        self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        import httpx
+
+        from haute import server
+        from tests._project import project_app
+
+        use_project(pipeline_dir)
+        app = project_app()
+        # 20,000 deleted JSON files outside config/: each is routed (resolved, checked
+        # against the self-writes) and publishes nothing.
+        batch = {
+            (Change.deleted, str(pipeline_dir / "exports" / f"result-{n:05d}.json"))
+            for n in range(20_000)
+        }
+        in_batch = asyncio.Event()
+        batch_done = asyncio.Event()
+        batch_events = server._watcher_batch_events
+        loops: list[asyncio.AbstractEventLoop] = []
+
+        async def _awatch(*_dirs: object, **_kw: object):  # type: ignore[no-untyped-def]
+            yield batch
+            await batch_done.wait()
+
+        def _routed(changes: set[tuple[Any, str]], root: Path) -> list[Any]:
+            loops[0].call_soon_threadsafe(in_batch.set)
+            try:
+                return batch_events(changes, root)
+            finally:
+                loops[0].call_soon_threadsafe(batch_done.set)
+
+        monkeypatch.setattr("watchfiles.awatch", _awatch)
+        monkeypatch.setattr(server, "_watcher_batch_events", _routed)
+        monkeypatch.setattr(server, "_DEBOUNCE_SECONDS", 0)
+
+        async def _run() -> list[float]:
+            loops.append(asyncio.get_running_loop())
+            watcher = asyncio.create_task(server._file_watcher())
+            await in_batch.wait()
+            timings: list[float] = []
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as http:
+                while not batch_done.is_set() and len(timings) < 20:
+                    started = time.perf_counter()
+                    response = await http.get("/api/session")
+                    timings.append(time.perf_counter() - started)
+                    assert response.status_code == 200
+                    await asyncio.sleep(0.01)
+            # Every request above was answered while the batch was still in its thread.
+            assert not batch_done.is_set()
+            await watcher
+            return timings
+
+        timings = asyncio.run(_run())
+        assert len(timings) == 20
+        assert max(timings) < 0.1, timings
+
+
+@pytest.mark.parametrize("settle", [False, True], ids=["at-once", "after-the-restart"])
+def test_a_flush_still_running_when_the_watcher_fails_is_finished_before_it_exits(
+    pipeline_dir: Path, settle: bool
+) -> None:
+    """Codex review: a batch's thread is running, a newer event restarts the debounce, then
+    the watcher fails. The watcher does not exit, nor so restart, before that batch has
+    published: a restarted watcher's batches never overlap it."""
+    import threading
+
+    from haute.server import _file_watcher
+
+    use_project(pipeline_dir)
+    first = pipeline_dir / "first.py"
+    second = pipeline_dir / "second.py"
+    first.write_text("first = True\n")
+    second.write_text("second = True\n")
+    known = {str(first.resolve()): first, str(second.resolve()): second}
+    in_thread = threading.Event()
+    published: list[str] = []
+
+    class _FakeDocument:
+        load_status = "ready"
+        nodes: list[object] = []
+
+        def model_dump(self, **_kwargs: object) -> dict[str, object]:
+            return {"nodes": [], "edges": []}
+
+    def _load(path: Path, **_kwargs: object) -> _FakeDocument:
+        if path == first:
+            in_thread.set()
+            # Still loading when the watcher fails; finishes a moment later.
+            threading.Event().wait(0.3)
+        return _FakeDocument()
+
+    class _BusStub:
+        def publish(self, event: str, payload: dict[str, Any]) -> None:
+            published.append(Path(payload["source_file"]).name)
+
+    async def _changes_then_failure(*dirs, **kw):
+        del dirs, kw
+        yield [(Change.modified, str(first))]
+        assert await asyncio.to_thread(in_thread.wait, 10)
+        yield [(Change.modified, str(second))]
+        if settle:
+            # The first cancellation reaches the flush, which then waits on its thread; the
+            # watcher's own stop cancels it a second time.
+            await asyncio.sleep(0.05)
+        raise RuntimeError("the watcher failed")
+
+    async def _run() -> list[str]:
+        with (
+            patch("watchfiles.awatch", _changes_then_failure),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server._known_pipeline_paths", return_value=known),
+            patch("haute.server._discovered_pipeline_paths", return_value=known),
+            patch("haute.server.invalidate_pipeline_index"),
+            patch("haute.server.load_pipeline_editor_document", side_effect=_load),
+            patch("haute.server.default_bus", _BusStub()),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+            with pytest.raises(RuntimeError, match="the watcher failed"):
+                await _file_watcher()
+            return list(published)
+
+    assert asyncio.run(_run()) == ["first.py"]

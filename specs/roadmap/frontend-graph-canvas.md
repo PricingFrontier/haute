@@ -27,6 +27,8 @@ November 2026.
 
 ## Priorities
 
+**Start with:** `FEG-01`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FEG-01 | Planned | P2 | An edit's cost and the undo history's size follow what changed, not the size of every table in the graph. |

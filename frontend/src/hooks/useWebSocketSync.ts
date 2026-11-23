@@ -25,6 +25,7 @@ import {
   isHauteSessionExpiredReason,
   notifyHauteSessionExpired,
 } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 
 /** Live-sync connection state. `idle`: sync is not enabled (the pipeline is
  *  loading or failed to load). `connecting`: no attempt has failed yet.
@@ -60,7 +61,7 @@ const MAX_REJECTED_EDGE_WARNING_DETAILS = 3
 const MAX_REJECTED_EDGE_WARNING_DETAIL_LENGTH = 120
 
 function formatSyncError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+  return apiErrorMessage(err)
 }
 
 function formatRejectedEdgeWarning(rejectedEdges: RejectedIncomingEdge[]): string {

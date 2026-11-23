@@ -14,10 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 
+from haute._file_ops import atomic_copy_names
 from haute._path_resolution import (
     RuntimePathOutsideProjectError,
     _normalise_path_text,
     _reject_reserved_device_components,
+    reject_unportable_destination,
 )
 from haute._project_layout import default_model_folder
 from haute._sandbox import contained_path
@@ -58,12 +60,21 @@ def resolve_model_export_destination(
     _reject_reserved_device_components(raw_path, relative)
     if PureWindowsPath(text).drive and not relative.is_absolute():
         raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
-    try:
-        target = contained_path(project_root, relative)
-    except PathOutsideProjectError:
-        raise RuntimePathOutsideProjectError(
-            f"Path {raw_path!r} resolves outside the project root"
-        ) from None
+
+    def resolve() -> Path:
+        try:
+            return contained_path(project_root, relative)
+        except PathOutsideProjectError:
+            raise RuntimePathOutsideProjectError(
+                f"Path {raw_path!r} resolves outside the project root"
+            ) from None
+
+    # A name Windows cannot hold is refused by name before anything is written, and before
+    # the path is resolved: the model is copied in past a staged copy and a backup of the
+    # file it replaces. The route holds its contract beside it to the same rule.
+    target = reject_unportable_destination(
+        text, resolve, project_root=project_root, staged_as=atomic_copy_names
+    )
     return ModelExportDestination(
         path=target,
         display_path=text,

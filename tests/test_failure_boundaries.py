@@ -128,7 +128,7 @@ ALLOWED_BROAD_CATCHES: dict[tuple[str, str], tuple[int, str]] = {
         2,
         "the other pipelines are tried first; the first failure is raised once they are",
     ),
-    ("src/haute/routes/pipeline.py", "_output_write_transaction"): (
+    ("src/haute/routes/pipeline.py", "_held_output_write"): (
         1,
         "a staging cleanup that fails is noted on the Write's own failure, which is raised",
     ),

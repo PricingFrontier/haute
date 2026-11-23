@@ -10,6 +10,8 @@ main session's runs of that day in the editor and the underwriter app.
 
 ## Priorities
 
+**Start with:** `FES-03`
+
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FES-03 | Planned | P3 | A call that got no answer, or an answer that is not Haute's, says that the server could not be reached, not the browser's or the JSON parser's own words, and is neither offered to the assistant as a node's error nor reported as a new version of Haute. |

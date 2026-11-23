@@ -30,11 +30,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.routing import Route
 
 from haute import __version__
+from haute._artifact_paths import ordinary_path_problem
 from haute._cpu_performance import configure_process_high_qos
 from haute._dedicated_workers import open_dedicated_workers, shutdown_dedicated_workers
 from haute._event_bus import DocumentUpdateExclusion, default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._failure_answers import answer_failure
+from haute._file_ops import remove_dead_writers_stages, staging_files_under
 from haute._interactive_workers import (
     shutdown_interactive_worker_pool,
     start_interactive_worker_pool,
@@ -470,6 +472,23 @@ def _settle_saves() -> None:
         logger.error("save_records_unsettled_at_startup", error=str(exc), exc_info=True)
 
 
+def _remove_leftover_staging() -> None:
+    """Remove the atomic writer's staging files under the project's ``.haute`` folder whose
+    writer is gone: a settings write, an undelete or a branch-away killed at its rename
+    leaves one, which nothing else would remove. A stage's name says whose it is, and it is
+    removed only once that writer's lock can be taken (``remove_dead_writers_stages``), so
+    another live server's stage is never touched, however long its write takes. A ``.haute``
+    reached through a link or junction, or outside the project, is not searched. One that
+    cannot be removed is logged, and tried again at the next start."""
+    root = current_project().root
+    _folder, problem = ordinary_path_problem(root, ".haute", private=True)
+    if problem is not None:
+        logger.warning("leftover_staging_not_searched", folder=".haute", problem=problem)
+        return
+    for path, exc in remove_dead_writers_stages(staging_files_under(root / ".haute")):
+        logger.warning("leftover_staging_not_removed", file=str(path), error=str(exc))
+
+
 def _follow_pipeline_settings_chunk_rows() -> None:
     """Apply the settings' chunk rows now and follow the file's changes.
 
@@ -501,6 +520,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ``haute.routes._helpers`` for the full contract.
     _ensure_pipeline_index()
     _settle_saves()
+    _remove_leftover_staging()
     global _watcher_task, _artifact_reaper_task, _server_loop
     _watcher_task = None
     _artifact_reaper_task = None
@@ -710,20 +730,24 @@ def _workbench_form_file(project_root: Path) -> tuple[str, Path] | None:
     return (config.form, config.form_folder.resolve()) if config.enabled else None
 
 
-def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
-    """Publish *path*'s editor document as live sync's frame, or its load failure.
+# A bus event as live sync publishes it: its topic and its payload.
+_BusEvent = tuple[str, dict[str, Any]]
 
-    With *skip_unchanged*, a file byte-identical to the one last broadcast is left
-    alone. Raw bytes are hashed so ANY edit counts: the parser normalises code
+
+def _pipeline_document_event(path: Path, *, skip_unchanged: bool) -> _BusEvent | None:
+    """*path*'s editor document as live sync's event, or its load failure.
+
+    With *skip_unchanged*, a file byte-identical to the one last broadcast gives None.
+    Raw bytes are hashed so ANY edit counts: the parser normalises code
     (strips whitespace, docstrings, return statements), which hides real edits
     from a graph-only fingerprint, and checking before the parse skips the
-    expensive AST walk."""
+    expensive AST walk. Safe in a worker thread: it publishes nothing."""
     fp_key = str(path.resolve())
     try:
         fp = hashlib.sha256(path.read_bytes()).hexdigest()
         if skip_unchanged and _last_broadcast_fp.get(fp_key) == fp:
             logger.info("graph_unchanged", file=path.name)
-            return
+            return None
         # The recovery document is the only live-sync payload.  It deliberately
         # remains available in degraded and source-only states, so an authored
         # error still reaches clients as an honest document rather than a parse
@@ -732,7 +756,13 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
         document_payload = document.model_dump(mode="json", by_alias=True)
         document_fingerprint = pipeline_document_fingerprint(document_payload)
         _last_broadcast_fp[fp_key] = fp
-        default_bus.publish(
+        logger.info(
+            "document_loaded_for_broadcast",
+            file=path.name,
+            load_status=document.load_status,
+            nodes=len(document.nodes),
+        )
+        return (
             "pipeline.document.update",
             {
                 "document": document_payload,
@@ -740,26 +770,34 @@ def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
                 "source_file": wire_source_file(path),
             },
         )
-        with ws_clients_lock:
-            client_count = len(ws_clients)
-        logger.info(
-            "document_broadcast",
-            clients=client_count,
-            load_status=document.load_status,
-            nodes=len(document.nodes),
-        )
     except Exception as e:  # noqa: BLE001 — one unreadable pipeline must not silence the rest
         # Only a document-load or serialization defect lands here; authored
         # errors were already representable above.  Send its answer's words, never
         # the raw exception.
         _last_broadcast_fp.pop(fp_key, None)
-        default_bus.publish(
+        return (
             "parse.error",
             {
                 "error": answer_failure(e, operation="pipeline_document_load").message,
                 "source_file": wire_source_file(path),
             },
         )
+
+
+def _publish_bus_events(events: list[_BusEvent]) -> None:
+    for topic, payload in events:
+        default_bus.publish(topic, payload)
+    if events:
+        with ws_clients_lock:
+            client_count = len(ws_clients)
+        logger.info("live_sync_published", events=len(events), clients=client_count)
+
+
+def _publish_pipeline_document(path: Path, *, skip_unchanged: bool) -> None:
+    """Publish *path*'s editor document as live sync's frame, or its load failure."""
+    event = _pipeline_document_event(path, skip_unchanged=skip_unchanged)
+    if event is not None:
+        _publish_bus_events([event])
 
 
 def _broadcast_tree_change(payload: dict[str, Any]) -> None:
@@ -890,6 +928,182 @@ def _watched_pipeline_dir(root: Path) -> Path:
         return root
 
 
+# Haute's own folders: their files are caches and staging, never what live sync reads.
+_HAUTE_OWN_DIRS = (".haute_cache", ".haute")
+
+
+class _LiveSyncFilter:
+    """The watcher's filter: only what live sync reads reaches a batch.
+
+    A ``.py`` or ``.json`` file (pipelines, modules, ``config/*.json``, ``.haute.json``
+    sidecars), ``haute.toml``, and any file in the workbench's form folder; never a path
+    under Haute's own folders or the library's default ignored ones (``.git``, ``.venv``,
+    ``__pycache__``...). A cache write of thousands of part files, an output written as
+    CSV or Parquet and a data folder's files start no batch. The form folder is read at
+    the watcher's start and after each batch, as the batch's routing reads it."""
+
+    def __init__(self, form_folder: Path | None) -> None:
+        from watchfiles import DefaultFilter
+
+        self._default = DefaultFilter(ignore_dirs=(*DefaultFilter.ignore_dirs, *_HAUTE_OWN_DIRS))
+        self.form_folder = form_folder
+
+    def __call__(self, change: Any, path: str) -> bool:
+        if not self._default(change, path):
+            return False
+        p = Path(path)
+        if p.suffix in (".py", ".json") or p.name == "haute.toml":
+            return True
+        # not contained_path: routes the change by its folder
+        return self.form_folder is not None and p.is_relative_to(self.form_folder)
+
+
+def _watcher_batch_events(changes: set[tuple[Any, str]], root: Path) -> list[_BusEvent]:
+    """Route one watcher batch and load its documents: the bus events it publishes, in
+    order. Runs in a worker thread; the event loop publishes what it returns."""
+    from watchfiles import Change
+
+    changed_files: dict[str, tuple[Path, bool]] = {}
+    direct_py_changes: list[Path] = []
+    direct_index_changed = False
+    module_importers: list[Path] = []
+    config_changed = False
+    recovery_artifact_changes: list[Path] = []
+    self_write_keys: set[str] = set()
+    events: list[_BusEvent] = []
+    form_file = _workbench_form_file(root)
+    # Read for each batch, as the form's folder is: an edit to haute.toml, a repair
+    # of one the settings parse refused included, moves the folders a change is
+    # routed by.
+    pipe_dir = _watched_pipeline_dir(root)
+    config_dir = pipe_dir / "config"
+    form_changed = False
+    for change_type, changed_path in changes:
+        p = Path(changed_path)
+        key = str(p.resolve())
+        # not contained_path: routes the change by its folder
+        if form_file is not None and Path(key).is_relative_to(form_file[1]):
+            # Every change to the form's files is announced, the server's own saves
+            # included: another window learns of a save, and the view that made it
+            # finds its own revision.
+            is_self_write(p, consume=True)
+            if change_type in (Change.modified, Change.added, Change.deleted):
+                form_changed = True
+            continue
+        if key in self_write_keys or is_self_write(p, consume=True):
+            self_write_keys.add(key)
+            # The server's own write changed the bytes the last
+            # broadcast described; forget that fingerprint so an
+            # external restore of previously broadcast content is
+            # broadcast again instead of being deduplicated.
+            _last_broadcast_fp.pop(key, None)
+            logger.debug("file_watcher_skipped_self_write", file=str(p))
+            continue
+        if change_type not in (Change.modified, Change.added, Change.deleted):
+            continue
+        # Recovery sidecars are dependencies of their owning document,
+        # not global configuration changes.  This must precede the
+        # config-directory branch because a parent pipeline may live
+        # inside ``config/`` in a user project.
+        if p.name.endswith(".haute.json"):
+            recovery_artifact_changes.append(p)
+            continue
+        # JSON config files in config/ directory
+        # not contained_path: routes the change by its folder
+        if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
+            config_changed = True
+            continue
+        if p.suffix != ".py" or p.name.startswith("__"):
+            continue
+        # Skip utility/ directory — utility scripts don't affect graph structure
+        utility_dir = pipe_dir / "utility"
+        # not contained_path: routes the change by its folder
+        if utility_dir.is_dir() and p.is_relative_to(utility_dir):
+            continue
+        # A submodel module a pipeline imports, found where that pipeline's own
+        # ``modules/`` folder is, however deep the configured pipeline sits.
+        importers = pipelines_importing_module(p)
+        if importers:
+            module_importers.extend(importers)
+        else:
+            # Deletions must invalidate the name→path index but must not
+            # be reparsed. A rename is normally a deleted+added pair:
+            # the added path below is the only one broadcast.
+            direct_index_changed = True
+            if change_type != Change.deleted:
+                direct_py_changes.append(p)
+
+    if form_file is not None and form_changed:
+        events.append(("workbench.form.changed", {"form": form_file[0]}))
+
+    known_pipelines: dict[str, Path] = {}
+    if direct_py_changes:
+        known_pipelines = _known_pipeline_paths()
+    if direct_index_changed:
+        # Direct pipeline-source additions, modifications, deletions,
+        # and renames can change index membership or dependencies.
+        invalidate_pipeline_index()
+
+    discovered_pipelines: dict[str, Path] | None = None
+
+    def _discovered() -> dict[str, Path]:
+        nonlocal discovered_pipelines
+        if discovered_pipelines is None:
+            discovered_pipelines = _discovered_pipeline_paths()
+        return discovered_pipelines
+
+    for p in direct_py_changes:
+        resolved_key = str(p.resolve())
+        pipeline_path = _discovered().get(resolved_key) or known_pipelines.get(resolved_key)
+        if pipeline_path is None:
+            logger.debug("file_watcher_skipped_non_pipeline_python", file=str(p))
+            continue
+        changed_files[str(pipeline_path.resolve())] = (pipeline_path, False)
+
+    # For changed modules, only re-parse pipelines that import them
+    for pipeline_path in module_importers:
+        key = str(pipeline_path.resolve())
+        changed_files[key] = (pipeline_path, True)
+
+    # If config JSON changed, re-parse all discovered pipelines
+    if config_changed:
+        for pipeline_path in _discovered().values():
+            key = str(pipeline_path.resolve())
+            changed_files[key] = (pipeline_path, True)
+
+    # A sidecar (including a registered child sidecar) affects only
+    # documents whose recovery manifest names that exact raw artifact.
+    # Do not turn this into a global config invalidation.
+    if recovery_artifact_changes:
+        for pipeline_path in pipelines_naming_artifacts(
+            recovery_artifact_changes,
+            _discovered().values(),
+            project_root=current_project().root,
+        ):
+            key = str(pipeline_path.resolve())
+            changed_files[key] = (pipeline_path, True)
+
+    # Deduplicate and parse
+    for p, dependency_triggered in changed_files.values():
+        logger.info("file_changed", file=p.name)
+        event = _pipeline_document_event(p, skip_unchanged=not dependency_triggered)
+        if event is not None:
+            events.append(event)
+    return events
+
+
+async def _taken_batch(work: asyncio.Future[list[_BusEvent]]) -> list[_BusEvent]:
+    """The events of a batch whose thread is running, waited for however often the
+    waiting task is cancelled meanwhile: the thread cannot be stopped, and its batch is
+    taken."""
+    while True:
+        try:
+            return await asyncio.shield(work)
+        except asyncio.CancelledError:
+            if work.done():
+                return work.result()
+
+
 async def _file_watcher() -> None:
     """Watch pipeline directories for .py changes and broadcast to GUI.
 
@@ -898,7 +1112,9 @@ async def _file_watcher() -> None:
     its own revision and reads nothing more, and every other view reads the file again.
 
     Uses a 300ms debounce window to batch rapid edits (e.g. IDE auto-save)
-    into a single parse + broadcast cycle.
+    into a single parse + broadcast cycle. A batch is routed, and its documents
+    loaded, in a worker thread (:func:`_watcher_batch_events`), one batch at a
+    time; the event loop publishes its events.
     """
     try:
         from watchfiles import Change, awatch
@@ -914,12 +1130,17 @@ async def _file_watcher() -> None:
     config_dir = pipe_dir / "config"
     if config_dir.is_dir():
         watch_dirs.append(config_dir)
+    form_file = await asyncio.to_thread(_workbench_form_file, root)
+    watch_filter = _LiveSyncFilter(None if form_file is None else form_file[1])
 
     logger.info("file_watcher_started", watch_dirs=[str(d) for d in watch_dirs])
 
     pending_changes: set[tuple[Change, str]] = set()
     debounce_task: asyncio.Task[None] | None = None
+    flushes: set[asyncio.Task[None]] = set()
     completed_normally = False
+    # One batch at a time: a newer batch's thread never races an older one's.
+    flush_lock = asyncio.Lock()
 
     class _FlushBatchError(Exception):
         """One watcher batch failed before it could be processed."""
@@ -933,15 +1154,22 @@ async def _file_watcher() -> None:
             self.cause = cause
             self.changes = changes
 
+    def _batch_events(batch: set[tuple[Change, str]]) -> list[_BusEvent]:
+        events = _watcher_batch_events(batch, root)
+        form = _workbench_form_file(root)
+        watch_filter.form_folder = None if form is None else form[1]
+        return events
+
     async def _flush_once(
         changes: set[tuple[Change, str]] | None = None,
         *,
         requeue_on_error: bool = True,
     ) -> None:
-        """Parse and broadcast one pending watcher batch."""
+        """Route, load and publish one pending watcher batch."""
         to_process = set(pending_changes) if changes is None else set(changes)
         if changes is None:
             pending_changes.clear()
+        taken = False
         try:
             # S30: drop everything that arrived while a haute-initiated git op
             # holds the watcher pause. A move/checkout replaces the tree
@@ -951,133 +1179,20 @@ async def _file_watcher() -> None:
             if watcher_is_paused():
                 logger.debug("file_watcher_skipped_paused", dropped=len(to_process))
                 return
-
-            # Collect changed files from pending set
-            changed_files: dict[str, tuple[Path, bool]] = {}
-            direct_py_changes: list[Path] = []
-            direct_index_changed = False
-            module_importers: list[Path] = []
-            config_changed = False
-            recovery_artifact_changes: list[Path] = []
-            self_write_keys: set[str] = set()
-            form_file = _workbench_form_file(root)
-            # Read for each batch, as the form's folder is: an edit to haute.toml, a repair
-            # of one the settings parse refused included, moves the folders a change is
-            # routed by.
-            pipe_dir = _watched_pipeline_dir(root)
-            config_dir = pipe_dir / "config"
-            form_changed = False
-            for change_type, changed_path in to_process:
-                p = Path(changed_path)
-                key = str(p.resolve())
-                # not contained_path: routes the change by its folder
-                if form_file is not None and Path(key).is_relative_to(form_file[1]):
-                    # Every change to the form's files is announced, the server's own saves
-                    # included: another window learns of a save, and the view that made it
-                    # finds its own revision.
-                    is_self_write(p, consume=True)
-                    if change_type in (Change.modified, Change.added, Change.deleted):
-                        form_changed = True
-                    continue
-                if key in self_write_keys or is_self_write(p, consume=True):
-                    self_write_keys.add(key)
-                    # The server's own write changed the bytes the last
-                    # broadcast described; forget that fingerprint so an
-                    # external restore of previously broadcast content is
-                    # broadcast again instead of being deduplicated.
-                    _last_broadcast_fp.pop(key, None)
-                    logger.debug("file_watcher_skipped_self_write", file=str(p))
-                    continue
-                if change_type not in (Change.modified, Change.added, Change.deleted):
-                    continue
-                # Recovery sidecars are dependencies of their owning document,
-                # not global configuration changes.  This must precede the
-                # config-directory branch because a parent pipeline may live
-                # inside ``config/`` in a user project.
-                if p.name.endswith(".haute.json"):
-                    recovery_artifact_changes.append(p)
-                    continue
-                # JSON config files in config/ directory
-                # not contained_path: routes the change by its folder
-                if p.suffix == ".json" and config_dir.is_dir() and p.is_relative_to(config_dir):
-                    config_changed = True
-                    continue
-                if p.suffix != ".py" or p.name.startswith("__"):
-                    continue
-                # Skip utility/ directory — utility scripts don't affect graph structure
-                utility_dir = pipe_dir / "utility"
-                # not contained_path: routes the change by its folder
-                if utility_dir.is_dir() and p.is_relative_to(utility_dir):
-                    continue
-                # A submodel module a pipeline imports, found where that pipeline's own
-                # ``modules/`` folder is, however deep the configured pipeline sits.
-                importers = pipelines_importing_module(p)
-                if importers:
-                    module_importers.extend(importers)
-                else:
-                    # Deletions must invalidate the name→path index but must not
-                    # be reparsed. A rename is normally a deleted+added pair:
-                    # the added path below is the only one broadcast.
-                    direct_index_changed = True
-                    if change_type != Change.deleted:
-                        direct_py_changes.append(p)
-
-            if form_file is not None and form_changed:
-                default_bus.publish("workbench.form.changed", {"form": form_file[0]})
-
-            known_pipelines: dict[str, Path] = {}
-            if direct_py_changes:
-                known_pipelines = _known_pipeline_paths()
-            if direct_index_changed:
-                # Direct pipeline-source additions, modifications, deletions,
-                # and renames can change index membership or dependencies.
-                invalidate_pipeline_index()
-
-            discovered_pipelines: dict[str, Path] | None = None
-
-            def _discovered() -> dict[str, Path]:
-                nonlocal discovered_pipelines
-                if discovered_pipelines is None:
-                    discovered_pipelines = _discovered_pipeline_paths()
-                return discovered_pipelines
-
-            for p in direct_py_changes:
-                resolved_key = str(p.resolve())
-                pipeline_path = _discovered().get(resolved_key) or known_pipelines.get(resolved_key)
-                if pipeline_path is None:
-                    logger.debug("file_watcher_skipped_non_pipeline_python", file=str(p))
-                    continue
-                changed_files[str(pipeline_path.resolve())] = (pipeline_path, False)
-
-            # For changed modules, only re-parse pipelines that import them
-            for pipeline_path in module_importers:
-                key = str(pipeline_path.resolve())
-                changed_files[key] = (pipeline_path, True)
-
-            # If config JSON changed, re-parse all discovered pipelines
-            if config_changed:
-                for pipeline_path in _discovered().values():
-                    key = str(pipeline_path.resolve())
-                    changed_files[key] = (pipeline_path, True)
-
-            # A sidecar (including a registered child sidecar) affects only
-            # documents whose recovery manifest names that exact raw artifact.
-            # Do not turn this into a global config invalidation.
-            if recovery_artifact_changes:
-                for pipeline_path in pipelines_naming_artifacts(
-                    recovery_artifact_changes,
-                    _discovered().values(),
-                    project_root=current_project().root,
-                ):
-                    key = str(pipeline_path.resolve())
-                    changed_files[key] = (pipeline_path, True)
-
-            # Deduplicate and parse
-            for p, dependency_triggered in changed_files.values():
-                logger.info("file_changed", file=p.name)
-                _publish_pipeline_document(p, skip_unchanged=not dependency_triggered)
+            work = asyncio.ensure_future(asyncio.to_thread(_batch_events, to_process))
+            try:
+                events = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # A newer event restarted the debounce, or the watcher is stopping, while
+                # the thread ran. The thread has taken the batch (consumed its self-write
+                # markers, recorded its fingerprints), so it is waited for through every
+                # further cancellation, its events are published, and it is not requeued.
+                taken = True
+                _publish_bus_events(await _taken_batch(work))
+                raise
+            _publish_bus_events(events)
         except asyncio.CancelledError:
-            if requeue_on_error:
+            if requeue_on_error and not taken:
                 pending_changes.update(to_process)
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1088,6 +1203,10 @@ async def _file_watcher() -> None:
     async def _flush() -> None:
         """Debounce, then retry one batch with a bounded exponential backoff."""
         await asyncio.sleep(_DEBOUNCE_SECONDS)
+        async with flush_lock:
+            await _flush_with_retries()
+
+    async def _flush_with_retries() -> None:
         for attempt in range(_WATCHER_FLUSH_MAX_RETRIES + 1):
             try:
                 await _flush_once()
@@ -1150,22 +1269,26 @@ async def _file_watcher() -> None:
                 await asyncio.sleep(retry_delay)
 
     try:
-        async for changes in awatch(*watch_dirs, recursive=True):
+        async for changes in awatch(*watch_dirs, recursive=True, watch_filter=watch_filter):
             # Accumulate changes and (re)start the debounce timer
             pending_changes.update(changes)
             if debounce_task and not debounce_task.done():
                 debounce_task.cancel()
             debounce_task = asyncio.create_task(_flush())
+            # A cancelled flush whose thread has taken its batch still runs until it has
+            # published, so every flush is kept until done, not only the newest.
+            flushes.add(debounce_task)
+            debounce_task.add_done_callback(flushes.discard)
         completed_normally = True
     finally:
-        if debounce_task is not None:
-            if completed_normally:
-                with suppress(asyncio.CancelledError):
-                    await debounce_task
-            else:
-                debounce_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await debounce_task
+        # Nothing of this watcher outlives it: a restarted watcher has its own lock, so a
+        # flush left running could overlap the next one's batch.
+        if not completed_normally:
+            for flush in flushes:
+                flush.cancel()
+        for outcome in await asyncio.gather(*flushes, return_exceptions=True):
+            if isinstance(outcome, Exception):
+                logger.error("file_watcher_flush_failed_at_exit", error=str(outcome))
 
 
 # ---------------------------------------------------------------------------

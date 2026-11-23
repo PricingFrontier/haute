@@ -456,12 +456,13 @@ class TestFileWatcherBusIntegration:
         """
         tree = _parse_tree(SRC_ROOT / "server.py")
 
-        # Collect all calls inside ``_file_watcher`` (or its nested functions).
+        # Collect all calls inside ``_file_watcher`` (or its nested functions) and the
+        # helper it publishes a batch's events through.
         watcher_calls: list[str] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
                 continue
-            if node.name not in ("_file_watcher", "_flush"):
+            if node.name not in ("_file_watcher", "_flush", "_publish_bus_events"):
                 continue
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Call):
@@ -469,6 +470,7 @@ class TestFileWatcherBusIntegration:
                     if cname is not None:
                         watcher_calls.append(cname)
 
+        assert "broadcast" not in watcher_calls
         assert "publish" in watcher_calls, (
             "The file-watcher never calls ``publish(...)`` — it should route "
             f"events through the EventBus.  Observed calls: {sorted(set(watcher_calls))}"

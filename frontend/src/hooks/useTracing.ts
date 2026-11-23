@@ -19,7 +19,7 @@ import useSettingsStore from "../stores/useSettingsStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
-import { apiErrorCode } from "../api/errors"
+import { apiErrorCode, apiErrorMessage } from "../api/errors"
 import { canonicalJson } from "../utils/canonicalJson"
 import { ask, newest, type Part } from "../utils/answers"
 import { useRequestKind } from "./useRequestKind"
@@ -215,7 +215,7 @@ function technicalDetail(err: unknown): string {
   const detail = (err as { detail?: unknown; rawDetail?: unknown })?.rawDetail ?? (err as { detail?: unknown })?.detail
   if (typeof detail === "string") return detail
   if (detail !== undefined) return canonicalJson(detail)
-  return err instanceof Error ? err.message : String(err)
+  return apiErrorMessage(err)
 }
 
 const IDLE_TRACE_STATE: TraceRequestState = { status: "idle" }

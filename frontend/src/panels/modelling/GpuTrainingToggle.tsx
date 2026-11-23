@@ -3,6 +3,7 @@ import { fetchModellingGpuStatus } from "../../api/client"
 import type { GpuFamilyStatus } from "../../api/types"
 import { useRequestKind } from "../../hooks/useRequestKind"
 import { ask, newest } from "../../utils/answers"
+import { apiErrorMessage } from "../../api/errors"
 
 type Props = {
   checked: boolean
@@ -50,7 +51,7 @@ export function XGBoostGpuToggle({ checked, onToggle }: Props) {
     const asked = ask([newest(probes)])
     void asked.answer((signal) => fetchModellingGpuStatus({ signal }), {
       ok: (response) => setStatus(response.xgboost),
-      failed: (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+      failed: (reason) => setError(apiErrorMessage(reason)),
     })
     return () => asked.release()
   }, [probes])

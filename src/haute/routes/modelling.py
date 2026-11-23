@@ -15,10 +15,10 @@ from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
 
 from haute._failure_answers import failure_refusal
-from haute._file_ops import atomic_copy_files
+from haute._file_ops import atomic_copy_files, atomic_copy_names
 from haute._logging import get_logger
 from haute._node_addresses import labelled, resolved_request
-from haute._path_resolution import RuntimePathError
+from haute._path_resolution import RuntimePathError, reject_unportable_destination
 from haute._project_context import current_project
 from haute.errors import (
     ConflictError,
@@ -540,6 +540,15 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
         contract_display_path = str(
             PurePosixPath(destination.display_path).with_name(contract_name)
         )
+        try:
+            reject_unportable_destination(
+                contract_display_path,
+                lambda: destination_contract,
+                project_root=current_project().root,
+                staged_as=atomic_copy_names,
+            )
+        except RuntimePathError as exc:
+            raise failure_refusal(exc) from None
         with _model_destination_lock(destination_contract):
             if not body.overwrite and (destination.path.exists() or destination_contract.exists()):
                 # A structured detail: the Export pane dispatches on the code, not the status.
