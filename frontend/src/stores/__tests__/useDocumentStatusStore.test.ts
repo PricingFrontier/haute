@@ -112,6 +112,12 @@ describe("useDocumentStatusStore", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(degraded, true)
     expect(documentReadOnlyReason()).toMatch(/load diagnostics/)
 
+    // A canvas with unsaved edits held back from a file a slip left unparseable: the change
+    // on disk is the cause, not the diagnostics of a document the canvas never took.
+    useDocumentStatusStore.getState().loadDocumentStatus(loaded, true, "fingerprint-loaded")
+    useDocumentStatusStore.getState().loadLiveDocumentStatus(degraded, false, "fingerprint-slip")
+    expect(documentReadOnlyReason()).toMatch(/changed on disk/)
+
     // A live document-transport failure names itself, not diagnostics.
     useDocumentStatusStore.getState().loadDocumentStatus(loaded)
     useDocumentStatusStore.getState().setSystemFailure("boom")

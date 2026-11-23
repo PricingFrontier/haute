@@ -56,7 +56,9 @@ function bindingEdited(previousKey: string, nextKey: string): boolean {
  * labels or a definition's public input ports asks the same, and so does any
  * such change or preamble edit while one of their violations is showing or a
  * request is unanswered; the violations with a binding go to the editor that
- * set it. A newer edit supersedes an answer still in flight. Positions are left out of the change key, so dragging a node
+ * set it. A document the canvas comes back in step with (`returnInStep`) asks too: its
+ * violations are the ones it was loaded with, not the edited canvas's. A newer edit
+ * supersedes an answer still in flight. Positions are left out of the change key, so dragging a node
  * asks nothing.
  */
 export function useNameViolationRevalidation({
@@ -75,6 +77,9 @@ export function useNameViolationRevalidation({
   buildContextGraph: () => NonNullable<EditorIdentityBatchRequest["graph"]>
 }): void {
   const fenced = useDocumentStatusStore((state) => state.nameFence !== null)
+  // A document back in step with the canvas carries the names it was loaded with.
+  const rechecks = useDocumentStatusStore((state) => state.nameRechecks)
+  const previousRechecks = useRef(rechecks)
   // The newest check wins: an answer to one a later edit overtook is dropped.
   const checks = useRequestKind()
   // Whether the latest request is unanswered: until it is, any change asks again.
@@ -98,7 +103,9 @@ export function useNameViolationRevalidation({
   useEffect(() => {
     const previous = previousBindings.current
     previousBindings.current = bindingsKey
-    if (!fenced && !pending.current) {
+    const recheck = previousRechecks.current !== rechecks
+    previousRechecks.current = rechecks
+    if (!fenced && !pending.current && !recheck) {
       const showing = useDocumentStatusStore.getState().inputBindingViolations.length > 0
       if (!showing && (previous === null || !bindingEdited(previous, bindingsKey))) return
     }
@@ -119,5 +126,5 @@ export function useNameViolationRevalidation({
         pending.current = waiting
       },
     })
-  }, [changeKey, bindingsKey, fenced, buildContextGraph, checks])
+  }, [changeKey, bindingsKey, fenced, rechecks, buildContextGraph, checks])
 }

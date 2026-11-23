@@ -6,9 +6,7 @@ The graph store behind the canvas, as [the frontend graph canvas
 specification](../frontend-graph-canvas/high-level.md) describes it: what one
 edit costs, what the undo history holds, which connections the canvas
 takes, and what a tab with unsaved work does when the file changes under
-it. `FEG-05` comes from the plan's browser sweep of what happens around an open editor,
-also on 11 November; the main session ran it again with a slip in a code
-editor and with a branch checked out and back. `FEG-06` and `FEG-07` come
+it. `FEG-06` and `FEG-07` come
 from the plan's phase 5, a reader from a second model family (Codex) over
 the code changed since the 31 October audit. A worker ran each in a
 browser, and the main session ran each journey again on 13 November.
@@ -20,78 +18,15 @@ November 2026.
 
 ## Priorities
 
-**Start with:** `FEG-05`
+**Start with:** `FEG-06`
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FEG-05 | Planned | P2 | A tab with unsaved work that a change on disk locked is editable again once the file is back as the tab loaded it, and the banner offers the reload it names. |
 | FEG-06 | Planned | P3 | Nodes pasted together stay connected in their code: a pasted Transform reads the pasted input, not the original under a name it no longer has. |
 | FEG-07 | Planned | P3 | An Edge Join dropped on the edge into an optimiser moves the optimiser's chosen input to the join, and a save's refusal names the node as the canvas does. |
 | FEG-09 | Planned | P2 | Comparing an earlier milestone of a submodel that gained an output shows the comparison; an output with no identity yet never replaces the screen with an error. |
 
 ## Planned improvements
-
-### FEG-05 — A tab locked by a change on disk unlocks when the change is gone
-**Why:** Reproduced in a browser on 11 November 2026, by the review plan's
-sweep of what happens around an open editor and again by the main session.
-A tab with unsaved work is never overwritten by an edit to the pipeline
-file: the specification says "a banner asks them to reload or discard
-first", and the tab turns read-only. Two everyday cases leave it read-only
-when nothing on disk differs from what the tab loaded.
-
-- A slip in a code editor that saves as it goes: a stray character typed
-  into `rating/main.py` and taken out again.
-- A look at a colleague's work: `git checkout colleague` in a terminal,
-  then `git checkout` back.
-
-In both runs the file was byte for byte what the tab had loaded, and the tab
-still showed "Pipeline changed on disk (rating/main.py) while you have
-unsaved changes. Reload the file or discard local edits before applying
-external changes." It read "READ-ONLY", its Save button was off, and Ctrl+S
-answered with the same sentence. It was the same thirty seconds later, and
-nothing in the source lifts it. The banner names two remedies and has one
-control, a close button, which hides the banner and leaves the tab
-read-only. Reloading the page is the only way on, and the page has no
-unload guard: the rename made before the slip was on the canvas, never
-reached the file, and was gone.
-
-The node's panel adds a sentence that points the wrong way: "This node is
-valid and available for inspection. Resolve the pipeline load diagnostics
-before editing or running it." There are no load diagnostics.
-
-The cause is in what the tab remembers. Each document the server sends
-replaces the tab's record of the file's revision and fingerprint before the
-check for unsaved work. Once one changed document has arrived, the tab no
-longer knows which document its edits were made on, and the document that
-arrives when the file comes back is treated as one more change.
-
-The sweep saw the same lock after the file was saved again with Windows
-line ends, and with a byte-order mark, neither of which changes a node (not
-run again). A lost answer to the tab's own save no longer reaches the
-locked tab: the save is held and sent again first by the next Save.
-
-**Plan:** Keep, while a tab has unsaved work, the revision and fingerprint
-of the document it was last in step with. When a document arrives with that
-fingerprint, put the tab back in step: the revision is that one again, the
-banner goes and Save works. Decide with it whether a rewrite that changes
-only the file's bytes should lock at all, since the document it parses to
-is the one the tab holds. Give the banner the control its sentence names, a
-button that reloads the file and drops the local edits. In the node's panel
-use the reason `documentReadOnlyReason` already words for this state.
-
-**Acceptance:** In a browser test, a tab with an unsaved rename sees the
-pipeline file changed and changed back: the banner goes, the editor is
-editable, and Save writes the rename. With the file left changed, the
-banner has a control that reloads the file, and the node's panel names the
-change on disk, not load diagnostics.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/useWebSocketSync.ts`;
-`frontend/src/stores/useDocumentStatusStore.ts::documentReadOnlyReason`;
-`frontend/src/panels/NodePanel.tsx`; `frontend/src/App.tsx`;
-`specs/frontend-graph-canvas/high-level.md`;
-`specs/frontend-shared/high-level.md`.
 
 ### FEG-06 — Pasted nodes read each other, not the nodes they were copied from
 **Why:** Reproduced on 13 November 2026 in a browser. On the starter

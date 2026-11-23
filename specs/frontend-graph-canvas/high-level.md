@@ -562,7 +562,18 @@ toast.
   identity so it remains correct while the state update is still settling.
 - **Live code sync.** External edits to a pipeline's `.py` file arrive over
   WebSocket and replace the in-memory graph — but never while the user has
-  unsaved local edits, where a banner asks them to reload or discard first.
+  unsaved local edits, where a banner asks them to reload or discard first
+  and the tab is read-only. The banner's Reload file drops the local edits and
+  reads the file again. A change on disk that is taken back (a slip in a code
+  editor that saves as it goes, undone; a branch checked out and back) leaves
+  the file as the edits found it: the tab remembers which document its edits
+  were made on, and when that document arrives again the banner goes, the
+  editor is editable and Save writes the edits on that revision. A rewrite
+  that changes only the file's bytes (other line ends, a byte-order mark) is a
+  different document and still locks: the server's fingerprint is the one
+  identity of a document, and no second, looser one is kept beside it. While
+  the tab is held back the node panel says so, never that load diagnostics
+  are the cause.
   Once either side supplies a source identity, both sides must resolve to the
   same file; one-sided or foreign updates are ignored. Each accepted
   update advances a generation before asynchronous layout, so a later graph

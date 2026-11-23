@@ -58,6 +58,7 @@ import { withEdgeJoinInsertionCandidate } from "./utils/edgeJoinInsertionFeedbac
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
+import { reloadPipelineFile } from "./hooks/useProjectDirty"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing, { type TraceRequestState } from "./hooks/useTracing"
 import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
@@ -2209,7 +2210,13 @@ function FlowEditor() {
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
               style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>
               <span className="flex-1 truncate">{syncBanner}</span>
-              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">✕</button>
+              <button
+                onClick={reloadPipelineFile}
+                className="px-2 py-0.5 rounded border border-current opacity-90 hover:opacity-100"
+              >
+                Reload file
+              </button>
+              <button onClick={() => setSyncBanner(null)} aria-label="Close" className="opacity-60 hover:opacity-100">✕</button>
             </div>
           )}
           <ErrorBoundary name="Canvas">
