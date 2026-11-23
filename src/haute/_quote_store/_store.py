@@ -32,6 +32,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from haute._logging import get_logger
 from haute._quote_store._catalogue import (
+    CATALOGUE_MOVED,
     Catalogue,
     CatalogueMovedError,
     column_problems,
@@ -301,17 +302,23 @@ def rerun_asked(exc: BaseException) -> bool:
 def read_store(engine: Engine, read: Callable[[Connection], _Read]) -> _Read:
     """*read*, which writes nothing, on a connection of *engine*: run again on a fresh one
     after each of :data:`RERUN_WAITS` while the database ends it as one to run again
-    (:func:`rerun_asked`) or the catalogue moves under it (:class:`CatalogueMovedError`), the
-    last run's error raised, so DDL run beside a reading app is neither a failed request nor
-    a refusal; any other error raised at once."""
+    (:func:`rerun_asked`) or the catalogue moves under it (:class:`CatalogueMovedError`), so
+    DDL run beside a reading app is neither a failed request nor a refusal. Once the runs
+    again are spent, the tables are still moving: a :class:`CatalogueMovedError` is raised,
+    never the database's last error, which a reader would take for a refusal. Any other
+    error is raised at once."""
     waits = list(RERUN_WAITS)
     while True:
         try:
             with engine.connect() as connection:
                 return read(connection)
         except Exception as exc:
-            if not waits or not (isinstance(exc, CatalogueMovedError) or rerun_asked(exc)):
+            if not (isinstance(exc, CatalogueMovedError) or rerun_asked(exc)):
                 raise
+            if not waits:
+                if isinstance(exc, CatalogueMovedError):
+                    raise
+                raise CatalogueMovedError(CATALOGUE_MOVED) from exc
             logger.info("quote_store_read_rerun", runs_left=len(waits))
         time.sleep(waits.pop(0))
 

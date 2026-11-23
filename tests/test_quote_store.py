@@ -20,6 +20,7 @@ from haute._quote_store import (
     store_url,
 )
 from haute._quote_store import _store as store_module
+from haute._quote_store._catalogue import CatalogueMovedError
 from haute._quote_store._store import RERUN_WAITS, make_engine, read_store, rerun_asked, writing
 from haute._workbench_form import FormSpec, with_quote_details
 from tests._store_servers import Target
@@ -275,7 +276,8 @@ def test_a_read_ended_every_time_or_refused_otherwise_raises(
 
     engine = make_engine(url)
     try:
-        with pytest.raises(OperationalError, match="deadlock victim"):
+        # Ended every time, the tables are still moving: never the database's refusal.
+        with pytest.raises(CatalogueMovedError, match="changed while they were read"):
             read_store(engine, always_a_victim)
         assert runs == ["victim"] * (len(RERUN_WAITS) + 1)
         runs.clear()
