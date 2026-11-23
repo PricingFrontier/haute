@@ -466,8 +466,9 @@ def open_engine(
     """An engine on the database at *url*, signed in as *sign_in* says, with *form*'s store
     schema in the SQL schema *sql_schema*, and each way the database does not fit it: each
     table and column its own catalogue does not hold as the store reads and writes it, then
-    each privilege the sign-in lacks on them, which the app refuses only the uses that need
-    them for (:meth:`QuoteBook.unfit`). A database not reached is refused, naming *named_by*.
+    each privilege the sign-in lacks on the tables it holds, which the app refuses only the
+    uses that need them for (:meth:`QuoteBook.unfit`). A database not reached is refused,
+    naming *named_by*.
     A database is judged by its catalogue alone: nothing in it says which environment it is or
     what made its tables."""
     schema = store_schema(form, sql_schema=sql_schema)
@@ -484,7 +485,9 @@ def open_engine(
                 f"{kind} on {table}",
                 privilege=kind,
             )
-            for table, kind in missing_privileges(connection, schema)
+            for table, kind in missing_privileges(
+                connection, schema, tables={found.name for found in catalogue.tables}
+            )
         )
         return catalogue, misfits
 

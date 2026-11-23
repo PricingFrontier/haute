@@ -40,7 +40,6 @@ from haute._project_context import current_project
 from haute._quote_store import (
     HOST_VARIABLES,
     QuoteStoreEnvironmentError,
-    QuoteStoreMismatchError,
     QuoteStoreUnreachableError,
     SignIn,
     open_book,
@@ -1005,12 +1004,20 @@ def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Targe
         )
 
     try:
-        with pytest.raises(QuoteStoreMismatchError, match="INSERT on policy") as refused:
-            opened()
-        assert "SELECT on" not in str(refused.value)
-        state = StoreGate(opened).state()
-        assert (state.open, state.error_code) == (False, "quote_store_mismatch")
-        assert "INSERT on policy" in state.differences
+        # The book opens, naming the privileges it lacks: the list, which SELECT reads,
+        # fits; a quote, which writes, is refused.
+        with opened() as book:
+            assert book.mismatch("list") is None
+            refused = book.mismatch("quote")
+            assert refused is not None and "INSERT on policy" in refused.differences
+            assert not any(each.startswith("SELECT on") for each in refused.differences)
+        gate = StoreGate(opened)
+        try:
+            state = gate.state()
+            assert (state.open, state.error_code) == (False, "quote_store_mismatch")
+            assert "INSERT on policy" in state.differences
+        finally:
+            gate.close()
     finally:
         if server.backend == "sqlserver":
             server.run(f"DROP USER {reader}")
@@ -1032,6 +1039,25 @@ def test_a_sign_in_lacking_a_privilege_closes_the_quotes_naming_it(server: Targe
             server.run(f"DROP OWNED BY {reader}", f"DROP ROLE {reader}")
 
 
+def test_a_table_the_database_does_not_hold_is_named_and_no_privilege_is_asked_of_it(
+    server: Target,
+) -> None:
+    # PostgreSQL refuses a privilege asked of a table it does not hold, and SQL Server
+    # answers it as not held: the table is what is missing, and nothing else is said of it.
+    server.script(server.sql(form(POLICY)))
+    cover = table("cover", column("excess", "float"))
+
+    with open_book(
+        server.url,
+        form(POLICY, cover),
+        environment=TEST,
+        haute_version="1",
+        sign_in=server.sign_in,
+    ) as book:
+        assert book.mismatch("list") is None
+        assert [misfit.text for misfit in book.unfit("quote")] == ["the table cover is missing"]
+
+
 def test_an_exact_text_under_another_collation_closes_the_quotes(sqlserver: Target) -> None:
     server = sqlserver
     server.script(server.sql(form(POLICY)))
@@ -1040,14 +1066,19 @@ def test_an_exact_text_under_another_collation_closes_the_quotes(sqlserver: Targ
         "COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL"
     )
 
-    with pytest.raises(QuoteStoreMismatchError, match="saved_by compares under SQL_Latin1"):
-        open_book(
-            server.url,
-            form(POLICY),
-            environment=TEST,
-            haute_version="1",
-            sign_in=server.sign_in,
-        )
+    with open_book(
+        server.url,
+        form(POLICY),
+        environment=TEST,
+        haute_version="1",
+        sign_in=server.sign_in,
+    ) as book:
+        # quote_details is what the list reads, so the list is refused as a quote is.
+        listed, quoted = book.mismatch("list"), book.mismatch("quote")
+        assert listed is not None and quoted is not None
+        for refused in (listed, quoted):
+            said = [each for each in refused.differences if "saved_by" in each]
+            assert said and "compares under SQL_Latin1" in said[0]
 
 
 def test_a_release_started_apart_from_its_project_signs_in_as_it_declares(

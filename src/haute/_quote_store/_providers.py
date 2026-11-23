@@ -21,7 +21,7 @@ and no error or log names it.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from typing import TYPE_CHECKING, Any, Protocol
@@ -353,10 +353,14 @@ def _quoted(name: str, open_: str, close: str) -> str:
     return open_ + name.replace(close, close + close) + close
 
 
-def missing_privileges(connection: Connection, schema: StoreSchema) -> list[tuple[str, str]]:
+def missing_privileges(
+    connection: Connection, schema: StoreSchema, tables: Collection[str] | None = None
+) -> list[tuple[str, str]]:
     """Each privilege the sign-in on *connection* lacks that a started app needs on *schema*'s
     tables, as the table and the privilege, ``("policy", "SELECT")``; none on SQLite, a file
-    whose reader may do anything. The
+    whose reader may do anything. With *tables*, the tables the database holds, only theirs are
+    asked: PostgreSQL refuses the question of a table it does not hold, and SQL Server answers
+    it as not held, when the table is what is missing. The
     privileges are asked together, a statement for as many as one may bind
     (``_ASKED_AT_ONCE``), each statement a round trip to the server."""
     dialect = connection.dialect.name
@@ -371,6 +375,8 @@ def missing_privileges(connection: Connection, schema: StoreSchema) -> list[tupl
     owner = schema.metadata.schema
     asked: list[tuple[str, str, str]] = []
     for table, kind in _privileges(schema):
+        if tables is not None and table not in tables:
+            continue
         name = _quoted(table, open_, close)
         if owner:
             name = _quoted(owner, open_, close) + "." + name
