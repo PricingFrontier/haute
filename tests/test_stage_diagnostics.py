@@ -6,7 +6,13 @@ from dataclasses import fields
 import pytest
 
 from haute.errors import HauteValidationError
-from haute.modelling._stage_diagnostics import closure, hydrate, same_staged, split
+from haute.modelling._stage_diagnostics import (
+    StoredNames,
+    closure,
+    hydrate,
+    same_staged,
+    split,
+)
 from haute.modelling._stage_views import compact_response, compact_result
 from haute.modelling._staged_runtime import open_stage_bundle, run_stage_job
 from tests.test_staged_runtime import build
@@ -103,6 +109,32 @@ def test_split_results_hydrate_exactly_and_store_each_object_once(
     response = public[0]
     selected = response["staged"]["stages"][response["staged"]["selected_stage"]]
     assert len(response["loss_history"]) < len(selected["loss_history"])
+
+
+def test_a_split_reuses_the_references_of_hydrated_objects_it_holds(tmp_path, monkeypatch):
+    """A result that shares hydrated diagnostics references them as stored, without
+    encoding or putting them again; the envelope equals the one a full split gives."""
+    artifacts, _ = _results(tmp_path, None, monkeypatch)
+    store = _Store()
+    envelope = split(artifacts[-1], store.put)
+    names = StoredNames()
+    hydrated = hydrate(envelope, store.get, names=names)
+    # A new result that reuses every hydrated snapshot and dense value by identity.
+    reused = {**hydrated, "metrics": {"changed": 1.0}}
+    puts = store.puts
+    with monkeypatch.context() as patch:
+        import haute.modelling._stage_diagnostics as diagnostics
+
+        encoded = []
+        original = diagnostics.canonical_json
+        patch.setattr(diagnostics, "canonical_json", lambda v: encoded.append(v) or original(v))
+        fast = split(reused, store.put, names=names)
+    assert fast == split(reused, _Store().put)
+    assert encoded == [] and store.puts == puts
+    assert hydrate(fast, store.get) == reused
+    # A copy is a different object: it is encoded again, to the same references.
+    copied = json.loads(json.dumps(reused))
+    assert split(copied, store.put, names=names) == fast
 
 
 def test_artifact_metadata_matches_its_public_response_and_detects_changes(tmp_path, monkeypatch):

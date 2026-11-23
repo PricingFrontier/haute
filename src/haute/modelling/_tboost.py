@@ -670,7 +670,10 @@ class TBoostAlgorithm(BaseAlgorithm):
                 model.training_session = session
         progress.finish()
         model.estimator = estimator
-        model.fit_tables = model.table_report(train_df)
+        # The table report needs the training rows, so it is built here, only when the job
+        # reports it (a selection fit does not).
+        if kwargs.get("report_tables", True):
+            model.fit_tables = model.table_report(train_df)
         reason = str(estimator.stopping_reason_)
         if reason not in _STOPPING_REASONS:
             raise HauteValidationError(f"t-boost stopped for an unexpected reason: {reason!r}.")

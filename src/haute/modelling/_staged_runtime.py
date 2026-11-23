@@ -23,7 +23,7 @@ import polars as pl
 from haute.errors import HauteValidationError
 from haute.modelling._candidate_run import training_identity_sha256
 from haute.modelling._evaluation import EvaluationPlan
-from haute.modelling._stage_diagnostics import closure, hydrate, split
+from haute.modelling._stage_diagnostics import StoredNames, closure, hydrate, split
 from haute.modelling._stage_objects import (
     DeltaRevision,
     ObjectRef,
@@ -176,8 +176,11 @@ class StageBundle:
         files: dict[str, Path] | None,
         metadata: dict[str, Any],
         plan: EvaluationPlan,
+        names: StoredNames,
     ) -> None:
         self.root, self.metadata, self.plan = root, metadata, plan
+        # The stored references of the hydrated metadata's diagnostics, for point results.
+        self.names = names
         self.manifest = manifest
         self._opener = opener
         # Extracted copies (a portable bundle only); a store revision has no paths.
@@ -536,7 +539,8 @@ def open_stage_bundle(
 
         if set(manifest.objects) != revision_closure(metadata, manifest.result, read):
             raise HauteValidationError("Unknown or missing stage bundle member")
-        metadata["staged"] = hydrate({"staged": metadata["staged"]}, read)["staged"]
+        names = StoredNames()
+        metadata["staged"] = hydrate({"staged": metadata["staged"]}, read, names=names)["staged"]
         if files is not None:
             # Readers dispatch on the file extension: name the extracted rows as Parquet.
             # Only a private extracted copy is linked, never a store object.
@@ -553,7 +557,7 @@ def open_stage_bundle(
             or kwargs.get("purpose") != "exploration"
         ):
             raise HauteValidationError("Stage bundle fit configuration mismatch")
-        bundle = StageBundle(root, manifest, opener, files, metadata, plan)
+        bundle = StageBundle(root, manifest, opener, files, metadata, plan, names)
         try:
             yield bundle
         finally:

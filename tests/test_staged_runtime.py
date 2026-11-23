@@ -1438,9 +1438,15 @@ def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
         }
         old: dict[str, bytes] = {}
         assert _json(split(strict_json_loads(_json(live)), old.__setitem__)) == envelope
-        assert old == written
+        # Objects written are the old split's; any it skips the bundle already holds,
+        # byte for byte (the parent's reused snapshots and their dense diagnostics).
+        assert all(old[name] == data for name, data in written.items())
+        skipped = set(old) - set(written)
+        assert all(bundle.read_bytes(name) == old[name] for name in skipped)
+        reused.update(skipped)
         compared.append(point_id)
 
+    reused: set[str] = set()
     monkeypatch.setattr(_stage_paths, "_write_point_result", compare)
     _, full = build(tmp_path)
     _, pruning = run_stage_job(
@@ -1451,6 +1457,7 @@ def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
         output_dir=str(tmp_path / "prune"),
     )
     assert compared == [p["id"] for p in pruning.staged["paths"]["pruned"]["points"]]
+    assert any(name.startswith("snapshot/") for name in reused)  # the full snapshot
 
 
 def test_path_points_reuse_the_bundles_evaluation_plan(tmp_path, monkeypatch):

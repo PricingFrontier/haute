@@ -57,6 +57,27 @@ def without_nulls(value: Any) -> Any:
     return value
 
 
+class StoredNames:
+    """The stored references of objects a hydration produced, by object identity.
+
+    A split of a result that reuses hydrated diagnostics (a path point's unchanged parent
+    snapshots, say) reuses their references instead of encoding and hashing the same
+    megabytes again. Valid because hydrated diagnostics are read-only: finalisation and
+    publication share them, never mutate them. Each object is held, so its identity
+    cannot be reused while it is remembered.
+    """
+
+    def __init__(self) -> None:
+        self._known: dict[int, tuple[Any, dict[str, Any]]] = {}
+
+    def remember(self, value: Any, reference: Mapping[str, Any]) -> None:
+        self._known[id(value)] = (value, dict(reference))
+
+    def reference(self, value: Any) -> dict[str, Any] | None:
+        entry = self._known.get(id(value))
+        return dict(entry[1]) if entry is not None and entry[0] is value else None
+
+
 def _reference(kind: str, value: Any, put: Put) -> dict[str, Any]:
     payload = canonical_json(value)
     name = f"{kind}/{hashlib.sha256(payload).hexdigest()}"
@@ -107,22 +128,28 @@ def _valid_summary(summary: Any) -> bool:
     )
 
 
-def _split_dense(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
+def _split_dense(value: Mapping[str, Any], put: Put, names: StoredNames | None) -> dict[str, Any]:
     result = dict(value)
     for field, kind in _DENSE.items():
         if result.get(field):
-            result[field] = _reference(kind, result[field], put)
+            known = names.reference(result[field]) if names is not None else None
+            result[field] = known or _reference(kind, result[field], put)
     return result
 
 
-def _split_body(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
-    result = _split_dense(value, put)
+def _split_snapshot(snapshot: Any, put: Put, names: StoredNames | None) -> dict[str, Any]:
+    known = names.reference(snapshot) if names is not None else None
+    return known or _reference("snapshot", _split_dense(snapshot, put, names), put)
+
+
+def _split_body(value: Mapping[str, Any], put: Put, names: StoredNames | None) -> dict[str, Any]:
+    result = _split_dense(value, put, names)
     staged = result.get("staged")
     if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
         result["staged"] = {
             **staged,
             "stages": {
-                name: _reference("snapshot", _split_dense(snapshot, put), put)
+                name: _split_snapshot(snapshot, put, names)
                 for name, snapshot in staged["stages"].items()
             },
         }
@@ -133,14 +160,22 @@ def _is_store_result(value: Mapping[str, Any]) -> bool:
     return isinstance(value.get("response"), Mapping)
 
 
-def split(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
-    """Move a result's diagnostics into objects via *put*(name, bytes); return the envelope."""
+def split(
+    value: Mapping[str, Any], put: Put, *, names: StoredNames | None = None
+) -> dict[str, Any]:
+    """Move a result's diagnostics into objects via *put*(name, bytes); return the envelope.
+
+    Objects *names* remembers from a hydration of the same store are referenced as they
+    are, without being encoded or put again.
+    """
     if _is_store_result(value):
-        return {**value, "response": _split_body(value["response"], put)}
-    return _split_body(value, put)
+        return {**value, "response": _split_body(value["response"], put, names)}
+    return _split_body(value, put, names)
 
 
-def _hydrate_dense(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[str, Any]:
+def _hydrate_dense(
+    value: Mapping[str, Any], get: Get, *, compact: bool, names: StoredNames | None = None
+) -> dict[str, Any]:
     result = dict(value)
     for field, kind in _DENSE.items():
         item = result.get(field)
@@ -153,11 +188,16 @@ def _hydrate_dense(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict
             result[field] = None
         else:
             result[field] = get(name)
+            if names is not None:
+                names.remember(result[field], item)
     return result
 
 
-def _hydrate_body(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[str, Any]:
-    result = _hydrate_dense(value, get, compact=compact)
+def _hydrate_body(
+    value: Mapping[str, Any], get: Get, *, compact: bool, names: StoredNames | None
+) -> dict[str, Any]:
+    names = None if compact else names  # a compact projection is not the stored object
+    result = _hydrate_dense(value, get, compact=compact, names=names)
     staged = result.get("staged")
     if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
         stages = {}
@@ -165,7 +205,9 @@ def _hydrate_body(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[
             snapshot = get(_name(reference, "snapshot"))
             if not isinstance(snapshot, dict):
                 raise HauteValidationError("Invalid stage snapshot object")
-            stages[name] = _hydrate_dense(snapshot, get, compact=compact)
+            stages[name] = _hydrate_dense(snapshot, get, compact=compact, names=names)
+            if names is not None:
+                names.remember(stages[name], reference)
         result["staged"] = {**staged, "stages": stages}
     return compact_response(result) if compact else result
 
@@ -176,15 +218,23 @@ def _envelope(value: Any) -> Mapping[str, Any]:
     return value
 
 
-def hydrate(envelope: Mapping[str, Any], get: Get, *, compact: bool = False) -> dict[str, Any]:
+def hydrate(
+    envelope: Mapping[str, Any],
+    get: Get,
+    *,
+    compact: bool = False,
+    names: StoredNames | None = None,
+) -> dict[str, Any]:
     """Resolve an envelope's references through *get*(name) -> decoded JSON.
 
     Compact hydration leaves tables unloaded and applies the compact projection.
+    *names* remembers each full object's reference, for a later `split` to reuse.
     """
     envelope = _envelope(envelope)
     if _is_store_result(envelope):
-        return {**envelope, "response": _hydrate_body(envelope["response"], get, compact=compact)}
-    return _hydrate_body(envelope, get, compact=compact)
+        body = _hydrate_body(envelope["response"], get, compact=compact, names=names)
+        return {**envelope, "response": body}
+    return _hydrate_body(envelope, get, compact=compact, names=names)
 
 
 def closure(envelope: Mapping[str, Any], get: Get) -> set[str]:
@@ -212,5 +262,7 @@ def same_staged(
     Both sides are compared hydrated and without nulls: the public schema adds explicit
     nulls for optional fields the artifact omits.
     """
-    hydrated = _hydrate_body({"staged": dict(envelope_staged)}, get, compact=False)["staged"]
+    hydrated = _hydrate_body({"staged": dict(envelope_staged)}, get, compact=False, names=None)[
+        "staged"
+    ]
     return bool(without_nulls(hydrated) == without_nulls(dict(public_staged)))

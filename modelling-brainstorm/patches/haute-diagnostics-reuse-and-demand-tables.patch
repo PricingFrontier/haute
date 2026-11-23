@@ -1,0 +1,408 @@
+diff --git a/specs/modelling/low-level.md b/specs/modelling/low-level.md
+index c8f2d3d64..4485c91cf 100644
+--- a/specs/modelling/low-level.md
++++ b/specs/modelling/low-level.md
+@@ -64,7 +64,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
+ | `src/haute/modelling/_stage_views.py` | Compact diagnostic projections and table shape/count summaries for workspace reads. |
+ | `src/haute/modelling/_stage_store.py` | Durable per-model stage revisions, preview/apply, job markers and artifact leases. |
+ | `src/haute/modelling/_stage_objects.py` | Content-addressed stage objects, revision manifests, digest-bound reader pins, reachability collection, and portable and delta `.hstage` archives ("Stage storage (version 2)"). |
+-| `src/haute/modelling/_stage_diagnostics.py` | Stage diagnostics stored once: splitting results into snapshot, table and history object references, and hydrating them back. |
++| `src/haute/modelling/_stage_diagnostics.py` | Stage diagnostics stored once: splitting results into snapshot, table and history object references, and hydrating them back. `StoredNames` remembers the references of a hydration's objects by identity, so a split of a result that reuses them (a path point's unchanged parent snapshots) references them without encoding or writing them again. |
+ | `src/haute/modelling/_staged_config.py` | `StagedConfig`: stage-specific parameter validation, applied recipe chains and GBM-only parameter ownership. |
+ | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
+ | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
+@@ -2553,7 +2553,9 @@ used for staged input.
+   `base_value` plus the transformed offset; a model with no tables has no columns, and a matrix
+   whose shape is not rows by terms fails. `shapley_values` returns the same matrix with
+   `split_interactions=True`, whose terms must be exactly the contract features in order, which
+-  feed the shared SHAP diagnostics. `table_report(frame)` returns `{link, base_value, tables, factored}`: per dense
++  feed the shared SHAP diagnostics. The adapter builds the fit's own-rows table report only when
++  the job reports it (`report_tables`): a selection fit publishes no diagnostics, so a
++  cross-validated job builds one report, the reported model's. `table_report(frame)` returns `{link, base_value, tables, factored}`: per dense
+   table its term name (features joined by ` × `), features, order, importance (t-boost's
+   `sobol` share), axes, nested link-scale `scores`, nested `relativities` (`exp` of the scores
+   under a log link, else `None`) and nested `support`; `support` is t-boost's training mass per
+diff --git a/src/haute/modelling/_stage_diagnostics.py b/src/haute/modelling/_stage_diagnostics.py
+index 1975ed79d..2ef61d443 100644
+--- a/src/haute/modelling/_stage_diagnostics.py
++++ b/src/haute/modelling/_stage_diagnostics.py
+@@ -57,6 +57,27 @@ def without_nulls(value: Any) -> Any:
+     return value
+ 
+ 
++class StoredNames:
++    """The stored references of objects a hydration produced, by object identity.
++
++    A split of a result that reuses hydrated diagnostics (a path point's unchanged parent
++    snapshots, say) reuses their references instead of encoding and hashing the same
++    megabytes again. Valid because hydrated diagnostics are read-only: finalisation and
++    publication share them, never mutate them. Each object is held, so its identity
++    cannot be reused while it is remembered.
++    """
++
++    def __init__(self) -> None:
++        self._known: dict[int, tuple[Any, dict[str, Any]]] = {}
++
++    def remember(self, value: Any, reference: Mapping[str, Any]) -> None:
++        self._known[id(value)] = (value, dict(reference))
++
++    def reference(self, value: Any) -> dict[str, Any] | None:
++        entry = self._known.get(id(value))
++        return dict(entry[1]) if entry is not None and entry[0] is value else None
++
++
+ def _reference(kind: str, value: Any, put: Put) -> dict[str, Any]:
+     payload = canonical_json(value)
+     name = f"{kind}/{hashlib.sha256(payload).hexdigest()}"
+@@ -107,22 +128,28 @@ def _valid_summary(summary: Any) -> bool:
+     )
+ 
+ 
+-def _split_dense(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
++def _split_dense(value: Mapping[str, Any], put: Put, names: StoredNames | None) -> dict[str, Any]:
+     result = dict(value)
+     for field, kind in _DENSE.items():
+         if result.get(field):
+-            result[field] = _reference(kind, result[field], put)
++            known = names.reference(result[field]) if names is not None else None
++            result[field] = known or _reference(kind, result[field], put)
+     return result
+ 
+ 
+-def _split_body(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
+-    result = _split_dense(value, put)
++def _split_snapshot(snapshot: Any, put: Put, names: StoredNames | None) -> dict[str, Any]:
++    known = names.reference(snapshot) if names is not None else None
++    return known or _reference("snapshot", _split_dense(snapshot, put, names), put)
++
++
++def _split_body(value: Mapping[str, Any], put: Put, names: StoredNames | None) -> dict[str, Any]:
++    result = _split_dense(value, put, names)
+     staged = result.get("staged")
+     if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
+         result["staged"] = {
+             **staged,
+             "stages": {
+-                name: _reference("snapshot", _split_dense(snapshot, put), put)
++                name: _split_snapshot(snapshot, put, names)
+                 for name, snapshot in staged["stages"].items()
+             },
+         }
+@@ -133,14 +160,22 @@ def _is_store_result(value: Mapping[str, Any]) -> bool:
+     return isinstance(value.get("response"), Mapping)
+ 
+ 
+-def split(value: Mapping[str, Any], put: Put) -> dict[str, Any]:
+-    """Move a result's diagnostics into objects via *put*(name, bytes); return the envelope."""
++def split(
++    value: Mapping[str, Any], put: Put, *, names: StoredNames | None = None
++) -> dict[str, Any]:
++    """Move a result's diagnostics into objects via *put*(name, bytes); return the envelope.
++
++    Objects *names* remembers from a hydration of the same store are referenced as they
++    are, without being encoded or put again.
++    """
+     if _is_store_result(value):
+-        return {**value, "response": _split_body(value["response"], put)}
+-    return _split_body(value, put)
++        return {**value, "response": _split_body(value["response"], put, names)}
++    return _split_body(value, put, names)
+ 
+ 
+-def _hydrate_dense(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[str, Any]:
++def _hydrate_dense(
++    value: Mapping[str, Any], get: Get, *, compact: bool, names: StoredNames | None = None
++) -> dict[str, Any]:
+     result = dict(value)
+     for field, kind in _DENSE.items():
+         item = result.get(field)
+@@ -153,11 +188,16 @@ def _hydrate_dense(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict
+             result[field] = None
+         else:
+             result[field] = get(name)
++            if names is not None:
++                names.remember(result[field], item)
+     return result
+ 
+ 
+-def _hydrate_body(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[str, Any]:
+-    result = _hydrate_dense(value, get, compact=compact)
++def _hydrate_body(
++    value: Mapping[str, Any], get: Get, *, compact: bool, names: StoredNames | None
++) -> dict[str, Any]:
++    names = None if compact else names  # a compact projection is not the stored object
++    result = _hydrate_dense(value, get, compact=compact, names=names)
+     staged = result.get("staged")
+     if isinstance(staged, Mapping) and isinstance(staged.get("stages"), Mapping):
+         stages = {}
+@@ -165,7 +205,9 @@ def _hydrate_body(value: Mapping[str, Any], get: Get, *, compact: bool) -> dict[
+             snapshot = get(_name(reference, "snapshot"))
+             if not isinstance(snapshot, dict):
+                 raise HauteValidationError("Invalid stage snapshot object")
+-            stages[name] = _hydrate_dense(snapshot, get, compact=compact)
++            stages[name] = _hydrate_dense(snapshot, get, compact=compact, names=names)
++            if names is not None:
++                names.remember(stages[name], reference)
+         result["staged"] = {**staged, "stages": stages}
+     return compact_response(result) if compact else result
+ 
+@@ -176,15 +218,23 @@ def _envelope(value: Any) -> Mapping[str, Any]:
+     return value
+ 
+ 
+-def hydrate(envelope: Mapping[str, Any], get: Get, *, compact: bool = False) -> dict[str, Any]:
++def hydrate(
++    envelope: Mapping[str, Any],
++    get: Get,
++    *,
++    compact: bool = False,
++    names: StoredNames | None = None,
++) -> dict[str, Any]:
+     """Resolve an envelope's references through *get*(name) -> decoded JSON.
+ 
+     Compact hydration leaves tables unloaded and applies the compact projection.
++    *names* remembers each full object's reference, for a later `split` to reuse.
+     """
+     envelope = _envelope(envelope)
+     if _is_store_result(envelope):
+-        return {**envelope, "response": _hydrate_body(envelope["response"], get, compact=compact)}
+-    return _hydrate_body(envelope, get, compact=compact)
++        body = _hydrate_body(envelope["response"], get, compact=compact, names=names)
++        return {**envelope, "response": body}
++    return _hydrate_body(envelope, get, compact=compact, names=names)
+ 
+ 
+ def closure(envelope: Mapping[str, Any], get: Get) -> set[str]:
+@@ -212,5 +262,7 @@ def same_staged(
+     Both sides are compared hydrated and without nulls: the public schema adds explicit
+     nulls for optional fields the artifact omits.
+     """
+-    hydrated = _hydrate_body({"staged": dict(envelope_staged)}, get, compact=False)["staged"]
++    hydrated = _hydrate_body({"staged": dict(envelope_staged)}, get, compact=False, names=None)[
++        "staged"
++    ]
+     return bool(without_nulls(hydrated) == without_nulls(dict(public_staged)))
+diff --git a/src/haute/modelling/_stage_paths.py b/src/haute/modelling/_stage_paths.py
+index c9b383247..f89ddc2a7 100644
+--- a/src/haute/modelling/_stage_paths.py
++++ b/src/haute/modelling/_stage_paths.py
+@@ -226,7 +226,7 @@ def _write_point_result(bundle: StageBundle, result: Any, path_id: str, point_id
+     # Each object is encoded once, by the same strict canonical JSON that reads decode.
+     # This equals a JSON round trip because producers use string keys and list rows
+     # (tuples encode as lists; non-finite numbers are refused).
+-    envelope = split(stored, bundle.write_member)
++    envelope = split(stored, bundle.write_member, names=bundle.names)
+     bundle.write_member(result_member(path_id, point_id), _json(envelope))
+ 
+ 
+diff --git a/src/haute/modelling/_staged_runtime.py b/src/haute/modelling/_staged_runtime.py
+index 5f99c66b0..b8d32ccbc 100644
+--- a/src/haute/modelling/_staged_runtime.py
++++ b/src/haute/modelling/_staged_runtime.py
+@@ -23,7 +23,7 @@ import polars as pl
+ from haute.errors import HauteValidationError
+ from haute.modelling._candidate_run import training_identity_sha256
+ from haute.modelling._evaluation import EvaluationPlan
+-from haute.modelling._stage_diagnostics import closure, hydrate, split
++from haute.modelling._stage_diagnostics import StoredNames, closure, hydrate, split
+ from haute.modelling._stage_objects import (
+     DeltaRevision,
+     ObjectRef,
+@@ -176,8 +176,11 @@ class StageBundle:
+         files: dict[str, Path] | None,
+         metadata: dict[str, Any],
+         plan: EvaluationPlan,
++        names: StoredNames,
+     ) -> None:
+         self.root, self.metadata, self.plan = root, metadata, plan
++        # The stored references of the hydrated metadata's diagnostics, for point results.
++        self.names = names
+         self.manifest = manifest
+         self._opener = opener
+         # Extracted copies (a portable bundle only); a store revision has no paths.
+@@ -536,7 +539,8 @@ def open_stage_bundle(
+ 
+         if set(manifest.objects) != revision_closure(metadata, manifest.result, read):
+             raise HauteValidationError("Unknown or missing stage bundle member")
+-        metadata["staged"] = hydrate({"staged": metadata["staged"]}, read)["staged"]
++        names = StoredNames()
++        metadata["staged"] = hydrate({"staged": metadata["staged"]}, read, names=names)["staged"]
+         if files is not None:
+             # Readers dispatch on the file extension: name the extracted rows as Parquet.
+             # Only a private extracted copy is linked, never a store object.
+@@ -553,7 +557,7 @@ def open_stage_bundle(
+             or kwargs.get("purpose") != "exploration"
+         ):
+             raise HauteValidationError("Stage bundle fit configuration mismatch")
+-        bundle = StageBundle(root, manifest, opener, files, metadata, plan)
++        bundle = StageBundle(root, manifest, opener, files, metadata, plan, names)
+         try:
+             yield bundle
+         finally:
+diff --git a/src/haute/modelling/_tboost.py b/src/haute/modelling/_tboost.py
+index 973c9a0e1..7b5558985 100644
+--- a/src/haute/modelling/_tboost.py
++++ b/src/haute/modelling/_tboost.py
+@@ -670,7 +670,10 @@ class TBoostAlgorithm(BaseAlgorithm):
+                 model.training_session = session
+         progress.finish()
+         model.estimator = estimator
+-        model.fit_tables = model.table_report(train_df)
++        # The table report needs the training rows, so it is built here, only when the job
++        # reports it (a selection fit does not).
++        if kwargs.get("report_tables", True):
++            model.fit_tables = model.table_report(train_df)
+         reason = str(estimator.stopping_reason_)
+         if reason not in _STOPPING_REASONS:
+             raise HauteValidationError(f"t-boost stopped for an unexpected reason: {reason!r}.")
+diff --git a/src/haute/modelling/_training_job.py b/src/haute/modelling/_training_job.py
+index 9ebbd6050..9bf7d5536 100644
+--- a/src/haute/modelling/_training_job.py
++++ b/src/haute/modelling/_training_job.py
+@@ -1511,6 +1511,8 @@ class TrainingJob:
+                 report,
+                 check_cancelled=check_cancelled,
+                 execution_context=execution_context,
++                # A selection fit publishes no diagnostics, so it reports no tables.
++                report_tables=False,
+             )
+             if rounds is not None:
+                 rounds.finish()
+@@ -2528,8 +2530,13 @@ class TrainingJob:
+         *,
+         check_cancelled: Callable[[], None] | None = None,
+         execution_context: ExecutionContext | None = None,
++        report_tables: bool = True,
+     ) -> _TrainModelResult:
+-        """Build train/eval pools (or DataFrames for GLM), fit the model."""
++        """Build train/eval pools (or DataFrames for GLM), fit the model.
++
++        *report_tables*: whether the job reports the fit's own-rows table report (a
++        family that builds one at fit time skips it otherwise).
++        """
+         from haute.modelling._algorithms import _mem_checkpoint
+ 
+         data_path = split_result.split_path
+@@ -2628,7 +2635,9 @@ class TrainingJob:
+             _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
+             # Every family fits with the job's seed; a GLM's keys target encoding.
+             adapter_kwargs: dict[str, Any] = (
+-                {"seed": self._fit_seed} if is_glm else self._native_adapter_kwargs()
++                {"seed": self._fit_seed}
++                if is_glm
++                else {**self._native_adapter_kwargs(), "report_tables": report_tables}
+             )
+             with _training_stage(execution_context, "training_algorithm_fit"):
+                 fit_result = algo.fit(
+diff --git a/tests/test_stage_diagnostics.py b/tests/test_stage_diagnostics.py
+index aa58d791d..7bbb20590 100644
+--- a/tests/test_stage_diagnostics.py
++++ b/tests/test_stage_diagnostics.py
+@@ -6,7 +6,13 @@ from dataclasses import fields
+ import pytest
+ 
+ from haute.errors import HauteValidationError
+-from haute.modelling._stage_diagnostics import closure, hydrate, same_staged, split
++from haute.modelling._stage_diagnostics import (
++    StoredNames,
++    closure,
++    hydrate,
++    same_staged,
++    split,
++)
+ from haute.modelling._stage_views import compact_response, compact_result
+ from haute.modelling._staged_runtime import open_stage_bundle, run_stage_job
+ from tests.test_staged_runtime import build
+@@ -105,6 +111,32 @@ def test_split_results_hydrate_exactly_and_store_each_object_once(
+     assert len(response["loss_history"]) < len(selected["loss_history"])
+ 
+ 
++def test_a_split_reuses_the_references_of_hydrated_objects_it_holds(tmp_path, monkeypatch):
++    """A result that shares hydrated diagnostics references them as stored, without
++    encoding or putting them again; the envelope equals the one a full split gives."""
++    artifacts, _ = _results(tmp_path, None, monkeypatch)
++    store = _Store()
++    envelope = split(artifacts[-1], store.put)
++    names = StoredNames()
++    hydrated = hydrate(envelope, store.get, names=names)
++    # A new result that reuses every hydrated snapshot and dense value by identity.
++    reused = {**hydrated, "metrics": {"changed": 1.0}}
++    puts = store.puts
++    with monkeypatch.context() as patch:
++        import haute.modelling._stage_diagnostics as diagnostics
++
++        encoded = []
++        original = diagnostics.canonical_json
++        patch.setattr(diagnostics, "canonical_json", lambda v: encoded.append(v) or original(v))
++        fast = split(reused, store.put, names=names)
++    assert fast == split(reused, _Store().put)
++    assert encoded == [] and store.puts == puts
++    assert hydrate(fast, store.get) == reused
++    # A copy is a different object: it is encoded again, to the same references.
++    copied = json.loads(json.dumps(reused))
++    assert split(copied, store.put, names=names) == fast
++
++
+ def test_artifact_metadata_matches_its_public_response_and_detects_changes(tmp_path, monkeypatch):
+     artifacts, public = _results(tmp_path, None, monkeypatch)
+     store = _Store()
+diff --git a/tests/test_staged_runtime.py b/tests/test_staged_runtime.py
+index 988f6435d..323fed9fd 100644
+--- a/tests/test_staged_runtime.py
++++ b/tests/test_staged_runtime.py
+@@ -1438,9 +1438,15 @@ def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
+         }
+         old: dict[str, bytes] = {}
+         assert _json(split(strict_json_loads(_json(live)), old.__setitem__)) == envelope
+-        assert old == written
++        # Objects written are the old split's; any it skips the bundle already holds,
++        # byte for byte (the parent's reused snapshots and their dense diagnostics).
++        assert all(old[name] == data for name, data in written.items())
++        skipped = set(old) - set(written)
++        assert all(bundle.read_bytes(name) == old[name] for name in skipped)
++        reused.update(skipped)
+         compared.append(point_id)
+ 
++    reused: set[str] = set()
+     monkeypatch.setattr(_stage_paths, "_write_point_result", compare)
+     _, full = build(tmp_path)
+     _, pruning = run_stage_job(
+@@ -1451,6 +1457,7 @@ def test_point_results_are_stored_byte_for_byte_as_the_strict_round_trip_would(
+         output_dir=str(tmp_path / "prune"),
+     )
+     assert compared == [p["id"] for p in pruning.staged["paths"]["pruned"]["points"]]
++    assert any(name.startswith("snapshot/") for name in reused)  # the full snapshot
+ 
+ 
+ def test_path_points_reuse_the_bundles_evaluation_plan(tmp_path, monkeypatch):
+diff --git a/tests/test_tboost_family.py b/tests/test_tboost_family.py
+index 1d7f97126..87b0c2771 100644
+--- a/tests/test_tboost_family.py
++++ b/tests/test_tboost_family.py
+@@ -1203,3 +1203,26 @@ def test_tboost_fits_never_load_the_validation_rows(tmp_path: Path, monkeypatch)
+     monkeypatch.setattr(AlgorithmDescriptor, "fit_reads_validation", property(lambda self: True))
+     train(tmp_path / "control", target="claims", loss="Poisson", offset="exposure")
+     assert "training_validation_partition_materialise" in stages
++
++
++def test_only_the_reported_fit_builds_a_table_report(tmp_path: Path, monkeypatch) -> None:
++    """Selection fits publish no diagnostics, so cross-validation builds one table report:
++    the reported model's, on its own training rows."""
++    reports: list[int] = []
++    original = TBoostModel.table_report
++
++    def record(self: Any, frame: pl.DataFrame) -> dict[str, Any]:
++        reports.append(len(frame))
++        return original(self, frame)
++
++    monkeypatch.setattr(TBoostModel, "table_report", record)
++    _job, result = train(
++        tmp_path,
++        target="claims",
++        loss="Poisson",
++        offset="exposure",
++        evaluation={**EVALUATION, "validation": {"method": "cross_validation", "fold_count": 3}},
++    )
++    assert result.evaluation["fit_count"] == 4
++    assert len(reports) == 1
++    assert result.tboost_tables

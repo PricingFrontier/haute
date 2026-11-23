@@ -226,7 +226,7 @@ def _write_point_result(bundle: StageBundle, result: Any, path_id: str, point_id
     # Each object is encoded once, by the same strict canonical JSON that reads decode.
     # This equals a JSON round trip because producers use string keys and list rows
     # (tuples encode as lists; non-finite numbers are refused).
-    envelope = split(stored, bundle.write_member)
+    envelope = split(stored, bundle.write_member, names=bundle.names)
     bundle.write_member(result_member(path_id, point_id), _json(envelope))
 
 

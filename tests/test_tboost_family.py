@@ -1203,3 +1203,26 @@ def test_tboost_fits_never_load_the_validation_rows(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(AlgorithmDescriptor, "fit_reads_validation", property(lambda self: True))
     train(tmp_path / "control", target="claims", loss="Poisson", offset="exposure")
     assert "training_validation_partition_materialise" in stages
+
+
+def test_only_the_reported_fit_builds_a_table_report(tmp_path: Path, monkeypatch) -> None:
+    """Selection fits publish no diagnostics, so cross-validation builds one table report:
+    the reported model's, on its own training rows."""
+    reports: list[int] = []
+    original = TBoostModel.table_report
+
+    def record(self: Any, frame: pl.DataFrame) -> dict[str, Any]:
+        reports.append(len(frame))
+        return original(self, frame)
+
+    monkeypatch.setattr(TBoostModel, "table_report", record)
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        evaluation={**EVALUATION, "validation": {"method": "cross_validation", "fold_count": 3}},
+    )
+    assert result.evaluation["fit_count"] == 4
+    assert len(reports) == 1
+    assert result.tboost_tables

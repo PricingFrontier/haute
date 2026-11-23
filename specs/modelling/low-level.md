@@ -64,7 +64,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_stage_views.py` | Compact diagnostic projections and table shape/count summaries for workspace reads. |
 | `src/haute/modelling/_stage_store.py` | Durable per-model stage revisions, preview/apply, job markers and artifact leases. |
 | `src/haute/modelling/_stage_objects.py` | Content-addressed stage objects, revision manifests, digest-bound reader pins, reachability collection, and portable and delta `.hstage` archives ("Stage storage (version 2)"). |
-| `src/haute/modelling/_stage_diagnostics.py` | Stage diagnostics stored once: splitting results into snapshot, table and history object references, and hydrating them back. |
+| `src/haute/modelling/_stage_diagnostics.py` | Stage diagnostics stored once: splitting results into snapshot, table and history object references, and hydrating them back. `StoredNames` remembers the references of a hydration's objects by identity, so a split of a result that reuses them (a path point's unchanged parent snapshots) references them without encoding or writing them again. |
 | `src/haute/modelling/_staged_config.py` | `StagedConfig`: stage-specific parameter validation, applied recipe chains and GBM-only parameter ownership. |
 | `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
@@ -2553,7 +2553,9 @@ used for staged input.
   `base_value` plus the transformed offset; a model with no tables has no columns, and a matrix
   whose shape is not rows by terms fails. `shapley_values` returns the same matrix with
   `split_interactions=True`, whose terms must be exactly the contract features in order, which
-  feed the shared SHAP diagnostics. `table_report(frame)` returns `{link, base_value, tables, factored}`: per dense
+  feed the shared SHAP diagnostics. The adapter builds the fit's own-rows table report only when
+  the job reports it (`report_tables`): a selection fit publishes no diagnostics, so a
+  cross-validated job builds one report, the reported model's. `table_report(frame)` returns `{link, base_value, tables, factored}`: per dense
   table its term name (features joined by ` × `), features, order, importance (t-boost's
   `sobol` share), axes, nested link-scale `scores`, nested `relativities` (`exp` of the scores
   under a log link, else `None`) and nested `support`; `support` is t-boost's training mass per

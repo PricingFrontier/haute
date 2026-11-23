@@ -1511,6 +1511,8 @@ class TrainingJob:
                 report,
                 check_cancelled=check_cancelled,
                 execution_context=execution_context,
+                # A selection fit publishes no diagnostics, so it reports no tables.
+                report_tables=False,
             )
             if rounds is not None:
                 rounds.finish()
@@ -2528,8 +2530,13 @@ class TrainingJob:
         *,
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
+        report_tables: bool = True,
     ) -> _TrainModelResult:
-        """Build train/eval pools (or DataFrames for GLM), fit the model."""
+        """Build train/eval pools (or DataFrames for GLM), fit the model.
+
+        *report_tables*: whether the job reports the fit's own-rows table report (a
+        family that builds one at fit time skips it otherwise).
+        """
         from haute.modelling._algorithms import _mem_checkpoint
 
         data_path = split_result.split_path
@@ -2628,7 +2635,9 @@ class TrainingJob:
             _report(f"Fitting {algorithm_descriptor(self.algorithm).label}", 0.3)
             # Every family fits with the job's seed; a GLM's keys target encoding.
             adapter_kwargs: dict[str, Any] = (
-                {"seed": self._fit_seed} if is_glm else self._native_adapter_kwargs()
+                {"seed": self._fit_seed}
+                if is_glm
+                else {**self._native_adapter_kwargs(), "report_tables": report_tables}
             )
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
