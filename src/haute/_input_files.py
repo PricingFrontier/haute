@@ -88,23 +88,42 @@ class _InflatingReader(io.RawIOBase):
 def open_input_bytes(path: str | Path) -> Iterator[BinaryIO]:
     """The bytes of the file *path* as Polars' text readers take them: decompressed when
     the file starts as a gzip, zlib or zstd stream, which Polars decompresses whatever the
-    file's name, else as they are. Every judgement of a text file's bytes here reads them
-    so, and a fault's line and column count in them."""
+    file's name, else as they are. A stream that cannot be decompressed (truncated or
+    damaged) is refused in words. The text checks of a CSV or a JSON Lines file read the
+    file so; a parser that reads the raw bytes places its faults in them instead."""
     with Path(path).open("rb") as raw:
         head = raw.read(len(_ZSTD))
         raw.seek(0)
         if head.startswith(_GZIP):
-            with gzip.GzipFile(fileobj=raw) as inflated:
+            with _decompressing(path, "gzip"), gzip.GzipFile(fileobj=raw) as inflated:
                 yield cast(BinaryIO, inflated)
         elif head[:2] in _ZLIB:
-            yield cast(BinaryIO, io.BufferedReader(_InflatingReader(raw)))
+            with _decompressing(path, "zlib"):
+                yield cast(BinaryIO, io.BufferedReader(_InflatingReader(raw)))
         elif head.startswith(_ZSTD):
             import pyarrow as pa
 
-            with pa.input_stream(raw, compression="zstd") as inflated:
+            with _decompressing(path, "zstd"), pa.input_stream(raw, compression="zstd") as inflated:
                 yield cast(BinaryIO, inflated)
         else:
             yield raw
+
+
+@contextmanager
+def _decompressing(path: str | Path, kind: str) -> Iterator[None]:
+    """Refuse, in words, a *kind* stream that fails to decompress: the decompressor's own
+    errors (an end of stream too soon, a damaged block) and nothing else, so a reader's
+    own refusal raised while it reads passes as it is."""
+    import pyarrow as pa
+
+    try:
+        yield
+    except (EOFError, zlib.error, gzip.BadGzipFile, pa.ArrowException) as exc:
+        name = display_name(path)
+        raise InputFileError(
+            f"{name} is a {kind} file that cannot be decompressed: it may be truncated or damaged.",
+            file=name,
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -112,35 +131,42 @@ def open_input_bytes(path: str | Path) -> Iterator[BinaryIO]:
 # ---------------------------------------------------------------------------
 
 
-def _column(line_text: bytes, *, first_line: bool) -> int:
-    """The column, from one and in characters, just past *line_text*: the text of a line
-    up to a byte. A byte-order mark leading the file is no character an editor shows."""
-    if first_line:
-        line_text = without_bom(line_text)
-    return len(line_text.decode("utf-8", errors="replace")) + 1
+# The bytes that continue a UTF-8 character: every other byte begins one.
+_CONTINUATION_BYTES = bytes(range(0x80, 0xC0))
 
 
-def file_position(path: str | Path, offset: int) -> tuple[int, int]:
+def _characters(text: bytes) -> int:
+    """The characters UTF-8 *text* spells, a byte that is not UTF-8 counted as one."""
+    return len(text.translate(None, _CONTINUATION_BYTES))
+
+
+def file_position(path: str | Path, offset: int, *, decompressed: bool = False) -> tuple[int, int]:
     """The line and column of byte *offset* in the file *path*, both from one, the column
-    in characters, so they point an editor at the byte. The file is read a chunk at a
-    time, so a fault far into a large file is placed without holding the file."""
+    in characters, so they point an editor at the byte; a leading byte-order mark is no
+    column. *offset* counts in the file's raw bytes, as a parser that read them gives it,
+    or, *decompressed*, in the bytes :func:`open_input_bytes` gives. The file is read once,
+    a bounded chunk at a time, so a fault far into a large file, or on a long line, is
+    placed without holding either."""
     lines = 0
-    line_start = 0
+    column = 0
     read = 0
-    with open_input_bytes(path) as source:
+    opened = open_input_bytes(path) if decompressed else Path(path).open("rb")
+    with opened as source:
         while read < offset:
             chunk = source.read(min(_POSITION_CHUNK_BYTES, offset - read))
             if not chunk:
                 break
-            newlines = chunk.count(b"\n")
-            if newlines:
-                lines += newlines
-                line_start = read + chunk.rfind(b"\n") + 1
+            if read == 0:
+                # The mark spells one character, which no editor shows.
+                column -= int(chunk.startswith(UTF8_BOM))
+            newline = chunk.rfind(b"\n")
+            if newline < 0:
+                column += _characters(chunk)
+            else:
+                lines += chunk.count(b"\n")
+                column = _characters(chunk[newline + 1 :])
             read += len(chunk)
-    with open_input_bytes(path) as source:
-        source.read(line_start)
-        current_line = source.read(max(0, min(offset, read) - line_start))
-    return lines + 1, _column(current_line, first_line=line_start == 0)
+    return lines + 1, column + 1
 
 
 def display_name(path: str | Path) -> str:
@@ -155,10 +181,13 @@ def display_name(path: str | Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def not_utf8_error(path: str | Path, offset: int, byte: int) -> InputFileError:
-    """The file *path*, whose byte *byte* at *offset* is not UTF-8, refused."""
+def not_utf8_error(
+    path: str | Path, offset: int, byte: int, *, decompressed: bool = False
+) -> InputFileError:
+    """The file *path*, whose byte *byte* at *offset* is not UTF-8, refused; *offset*
+    counts in the bytes :func:`file_position` is told it counts in."""
     name = display_name(path)
-    line, column = file_position(path, offset)
+    line, column = file_position(path, offset, decompressed=decompressed)
     return InputFileError(
         f"{name} is not valid UTF-8: byte 0x{byte:02X} at line {line}, column {column}. "
         "Save it as UTF-8.",
@@ -171,8 +200,8 @@ def not_utf8_error(path: str | Path, offset: int, byte: int) -> InputFileError:
 def not_utf8_file_error(path: str | Path) -> InputFileError | None:
     """The refusal of the file *path* at its first byte that is not UTF-8, else ``None``.
 
-    The file is decoded a chunk at a time, so a fault far into a large file is found
-    without holding the file.
+    The bytes are the ones a CSV reader takes (:func:`open_input_bytes`), decoded a chunk
+    at a time, so a fault far into a large file is found without holding the file.
     """
     decoder = codecs.getincrementaldecoder("utf-8")()
     read = 0
@@ -183,13 +212,17 @@ def not_utf8_file_error(path: str | Path) -> InputFileError | None:
                 decoder.decode(chunk)
             except UnicodeDecodeError as exc:
                 # The error's bytes are the ones held from the last chunk, then this one.
-                return not_utf8_error(path, read - pending + exc.start, exc.object[exc.start])
+                return not_utf8_error(
+                    path, read - pending + exc.start, exc.object[exc.start], decompressed=True
+                )
             read += len(chunk)
         pending = len(decoder.getstate()[0])
         try:
             decoder.decode(b"", final=True)
         except UnicodeDecodeError as exc:
-            return not_utf8_error(path, read - pending + exc.start, exc.object[exc.start])
+            return not_utf8_error(
+                path, read - pending + exc.start, exc.object[exc.start], decompressed=True
+            )
     return None
 
 

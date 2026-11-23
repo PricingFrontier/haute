@@ -323,7 +323,7 @@ v2 config and returns the source file (resolved) with its emitting tables in
 schema order. Each table's store identity (`haute._source_cache.SourceCacheIdentity`,
 provider `api_input`) has the descriptor
 `{path: <resolved source file>, table: {path: <table path>, columns: [[name,
-column path, type], ...selected columns in config order]}, shred_version: 3}`, a
+column path, type], ...selected columns in config order]}, shred_version: 4}`, a
 date column that sets a `format` appending it to its entry, so a changed format is
 a new table.
 Sibling tables and the port label are not part of it: editing one table moves only

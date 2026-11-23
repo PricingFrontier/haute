@@ -280,3 +280,61 @@ def test_a_utf8_file_is_not_refused_as_not_utf8(tmp_path: Path) -> None:
     path.write_bytes("id,région\n1,N\n".encode())
 
     assert not_utf8_file_error(path) is None
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["raw", "gzip"])
+def test_a_fault_is_placed_without_holding_what_comes_before_it(
+    tmp_path: Path, compressed: bool
+) -> None:
+    """A fault 12 MiB into a file, on a line as long, is placed holding a bounded chunk (and,
+    for a gzip file, the decompressor's own bounded buffers), never what comes before it."""
+    import gzip
+    import tracemalloc
+
+    body = b'{"id": 1}\n' + b"x" * (12 * 1024 * 1024)
+    path = tmp_path / "quotes.jsonl"
+    path.write_bytes(gzip.compress(body, mtime=0) if compressed else body)
+
+    tracemalloc.start()
+    try:
+        position = file_position(path, len(body), decompressed=compressed)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert position == (2, 12 * 1024 * 1024 + 1)
+    assert peak < 6 * 1024 * 1024
+
+
+def test_a_raw_file_that_starts_like_a_compressed_stream_is_placed_in_its_own_bytes(
+    tmp_path: Path,
+) -> None:
+    """Load File and the shredder read a file's raw bytes, so their faults are placed in
+    them, never in a decompression of a file that only starts like a gzip stream."""
+    from haute._json_shred._records import _iter_records
+
+    path = tmp_path / "bad.json"
+    path.write_bytes(b"\x1f\x8b")
+
+    with pytest.raises(InputFileError) as loaded:
+        load_json_file(path)
+    with pytest.raises(InputFileError) as shredded:
+        list(_iter_records(path))
+
+    assert loaded.value.message == shredded.value.message == (
+        "bad.json is not valid UTF-8: byte 0x8B at line 1, column 2. Save it as UTF-8."
+    )
+
+
+def test_a_compressed_csv_that_cannot_be_decompressed_is_refused_in_words(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.csv"
+    path.write_bytes(b"\x1f\x8b\x08\x00")
+
+    with pytest.raises(InputFileError) as refused:
+        text_encoding_refusal(path)
+
+    assert refused.value.message == (
+        "quotes.csv is a gzip file that cannot be decompressed: it may be truncated or damaged."
+    )
