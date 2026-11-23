@@ -1057,15 +1057,21 @@ builder on screen. With a quote store it is where they manage their quotes too.
   Field statuses open the corresponding database details. For a field the database lacks,
   **Renamed from** names the database column that held its values under an old name, so
   the comparison checks that column as the field's; it moves no data. **Database changes** lists
-  missing columns grouped by table and labels missing tables **New table**. Its heading
-  counts the additions. **No additions** means all schema names are present; existing
-  types, keys or other details can still differ. The fetch time is in **Refresh**'s tooltip.
+  missing columns and type changes grouped by table, labels missing tables **New table** and
+  type changes **Type change**. Its heading counts them. **No additions** means all schema
+  names are present and no column needs converting; keys, the type of an index or of a
+  quote_details column, or other details can still differ. The fetch time is in **Refresh**'s tooltip.
 - **Export SQL**, beside **Refresh**, opens the query for the selected database and your
   current working schema, including unsaved edits. Use **Copy SQL** or **Download SQL**.
-  The script creates new tables and columns only. A renamed field becomes a new, empty
-  column; the old column and its values stay intact, even if you chose it in
-  **Renamed from**. Existing column types and keys are unchanged. Data transfers, type/key
-  changes and removal of old names are manual work for the database owner.
+  The script creates new tables and columns, and changes a column the database holds under
+  the field's name to the field's type, converting each value as it stands. That works on
+  SQL Server and PostgreSQL. SQLite cannot change a column's type, so there the script says
+  how to rebuild the column instead. The script runs as one transaction: if a value cannot
+  convert (`n/a` in a column becoming Integer), it stops and nothing changes, additions
+  included. A renamed field becomes a new, empty column of its type; the old column and its
+  values stay intact, even if you chose it in **Renamed from**. Keys, quote_details' types
+  and an index's type are unchanged. Data transfers, key and index changes and removal of
+  old names are manual work for the database owner.
   The SQL adds missing columns even when existing keys or row structure differ. If a
   name cannot be added, its specific reason appears in the list and SQL comments;
   other valid additions can still be exported. Have the database owner review and run the script, then

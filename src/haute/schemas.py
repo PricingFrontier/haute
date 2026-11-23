@@ -469,9 +469,10 @@ class WorkbenchStoreExtra(BaseModel):
 
 
 class WorkbenchStoreChange(BaseModel):
-    """An addition from the exported SQL plan; compatibility details are separate."""
+    """An addition or a type change from the exported SQL plan; compatibility details are
+    separate."""
 
-    kind: Literal["create table", "add column"]
+    kind: Literal["create table", "add column", "retype column"]
     table: str
     column: str | None
     disposition: Literal["sql", "manual"]

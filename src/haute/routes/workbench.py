@@ -527,7 +527,7 @@ def _store_compare(
         renames=renames,
     )
     unresolved = rename_problems(renames, comparison.renames, catalogue, spec)
-    additions = additions_plan(spec, catalogue)
+    additions = additions_plan(spec, catalogue, comparison.plan)
     return WorkbenchStoreCompareResponse(
         differences=[
             WorkbenchStoreDifference(

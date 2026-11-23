@@ -12,7 +12,14 @@ from typing import Literal
 
 from haute._quote_store._catalogue import Catalogue
 from haute._quote_store._compare import Rename
-from haute._quote_store._migrate import Plan, Step, StepKind, _structure_column, addition_problem
+from haute._quote_store._migrate import (
+    Plan,
+    Step,
+    StepKind,
+    _structure_column,
+    addition_problem,
+    retype_superseded,
+)
 from haute._quote_store._providers import Provider
 from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
 
@@ -78,13 +85,7 @@ def _describe(
             after = _structure_column(plan.recorded, step)
             old = before.get("sql_type", _TYPES.get(before["type"], before["type"]))
             description = f"Change {old} to {_TYPES[after['type']]}. "
-            if additions_only:
-                disposition = "manual"
-                description += (
-                    "Existing types and values are unchanged by this SQL. "
-                    "Review and convert the data manually before changing the column type."
-                )
-            elif provider.dialect == "sqlite":
+            if provider.dialect == "sqlite":
                 disposition = "manual"
                 description += (
                     "SQLite needs a table/column rebuild and data migration; "
@@ -132,7 +133,11 @@ def review_plan(
     plan: Plan, form: FormSpec, provider: Provider, *, additions_only: bool = False
 ) -> tuple[ReviewChange, ...]:
     changes = [
-        _describe(step, plan, form, provider, additions_only=additions_only) for step in plan.steps
+        _describe(step, plan, form, provider, additions_only=additions_only)
+        for step in plan.steps
+        if not (
+            additions_only and step.kind == "retype column" and retype_superseded(step, plan.steps)
+        )
     ]
     if plan.activity:
         changes.append(

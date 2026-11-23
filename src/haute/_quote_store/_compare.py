@@ -37,7 +37,15 @@ from haute._quote_store._catalogue import (
     table_problems,
 )
 from haute._quote_store._environment import StoreLocation
-from haute._quote_store._migrate import UNCOUNTED, Key, Plan, Step, held, plan
+from haute._quote_store._migrate import (
+    UNCOUNTED,
+    Key,
+    Plan,
+    Step,
+    held,
+    plan,
+    retype_superseded,
+)
 from haute._quote_store._providers import Provider
 from haute._quote_store._schema import ACTIVITY_TABLE, StoreSchema, store_schema, structure
 from haute._quote_store._store import (
@@ -276,9 +284,20 @@ def _dialect(name: str) -> Dialect:
     return dialect
 
 
-def additions_plan(form: FormSpec, catalogue: Catalogue) -> Plan:
-    """Missing schema names only, independent of migration pairings or compatibility repairs."""
+def additions_plan(form: FormSpec, catalogue: Catalogue, compared: Plan) -> Plan:
+    """Missing schema names, independent of migration pairings or other compatibility
+    repairs, and each type change *compared*, the full comparison's plan, makes to a column
+    the database holds under the form's name. A column the analyst paired is added afresh at
+    its type, so its change is none of these (:func:`retype_superseded`); an index's or a
+    reshaped table's is a note there, never a type change. The structure before is every
+    table and column of the catalogue by name, those the comparison matched with its keys,
+    types and nullability, which a type change is written from."""
     wanted = structure(form)
+    retypes = [
+        step
+        for step in compared.steps
+        if step.kind == "retype column" and not retype_superseded(step, compared.steps)
+    ]
     steps: list[Step] = []
     for table in wanted["tables"]:
         found = catalogue.table(table["name"])
@@ -291,16 +310,29 @@ def additions_plan(form: FormSpec, catalogue: Catalogue) -> Plan:
             for column in table["columns"]
             if column["name"].casefold() not in present
         )
+        steps.extend(step for step in retypes if step.table_key == table["key"])
+    live = {table["name"]: table for table in (compared.before or {}).get("tables", [])}
+    before: list[dict[str, Any]] = []
+    for found in catalogue.tables:
+        matched = live.get(found.name, {})
+        columns = {column["name"]: column for column in matched.get("columns", [])}
+        before.append(
+            {
+                "key": matched.get("key", f"{_THE_DATABASE_S}{found.name}"),
+                "name": found.name,
+                "columns": [
+                    columns.get(
+                        column.name, {"key": f"{_THE_DATABASE_S}{column.name}", "name": column.name}
+                    )
+                    for column in found.columns
+                ],
+            }
+        )
     return Plan(
         steps=tuple(steps),
         refusals=(),
         recorded=wanted,
-        before={
-            "tables": [
-                {"name": table.name, "columns": [{"name": column.name} for column in table.columns]}
-                for table in catalogue.tables
-            ]
-        },
+        before={"tables": before},
         activity=not any(table.name.casefold() == ACTIVITY_TABLE for table in catalogue.tables),
     )
 

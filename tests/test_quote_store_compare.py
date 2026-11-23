@@ -25,7 +25,13 @@ from haute._quote_store import (
     render_sql,
 )
 from haute._quote_store._catalogue import IDENTITY, Catalogue, counting_statement, read_catalogue
-from haute._quote_store._compare import Comparison, Rename, compare, read_store_catalogue
+from haute._quote_store._compare import (
+    Comparison,
+    Rename,
+    additions_plan,
+    compare,
+    read_store_catalogue,
+)
 from haute._quote_store._migrate import PROVIDER_DIALECTS
 from haute._quote_store._providers import PROVIDERS
 from haute._quote_store._store import make_engine
@@ -114,6 +120,19 @@ def compared(target: Target, release: FormSpec, **given: Any) -> Comparison:
 
 def sql(target: Target, release: FormSpec, comparison: Comparison) -> str:
     return render_sql(comparison.plan, release, PROVIDER_DIALECTS[target.backend])
+
+
+def exported(target: Target, release: FormSpec, **given: Any) -> str:
+    """The Workbench's Export SQL for *release* on *target*'s tables, as the schema pane's
+    route writes it: the additions and the type changes alone."""
+    read = catalogue(target)
+    comparison = compare(release, read, provider=PROVIDERS[target.backend], **given)
+    return render_sql(
+        additions_plan(release, read, comparison.plan),
+        release,
+        PROVIDER_DIALECTS[target.backend],
+        additions_only=True,
+    )
 
 
 def kinds(comparison: Comparison) -> set[tuple[str | None, str | None, str]]:
@@ -405,6 +424,66 @@ def test_a_retyped_column_that_takes_no_null_keeps_taking_none(server: Target) -
     assert held is not None
     value = held.column("value")
     assert value is not None and value.kind == "float" and value.nullable is False
+
+
+def test_the_export_converts_a_column_of_another_type_keeping_its_values(target: Target) -> None:
+    made_from_sql(target, RELEASED)
+    quote(target, RELEASED, "A-1", drivers="2")
+    retyped = form(
+        table("policy", column("region"), column("drivers", "int"), column("value", "float"))
+    )
+
+    written = exported(target, retyped)
+
+    if target.backend == "sqlite":
+        # SQLite cannot change a column's type in place: a note says how, and nothing tries.
+        assert "which SQLite cannot do\n-- in place" in written
+        assert "ALTER COLUMN" not in written
+        return
+    assert "ALTER COLUMN drivers" in written
+    target.script(written)
+    opens(target, retyped)
+    assert target.read("SELECT drivers FROM policy") == [(2,)]
+
+
+def test_a_value_the_export_cannot_convert_stops_it_changing_nothing(server: Target) -> None:
+    made_from_sql(server, RELEASED)
+    quote(server, RELEASED, "A-1", drivers="n/a")
+    retyped = form(
+        table("policy", column("region"), column("drivers", "int"), column("value", "float")),
+        table("cover", column("excess", "float")),
+    )
+    written = exported(server, retyped)
+    assert "CREATE TABLE cover" in written and "ALTER COLUMN drivers" in written
+
+    with pytest.raises(Exception, match=r"(?i)invalid input syntax|error converting"):
+        server.script(written)
+
+    held = catalogue(server)
+    assert held.table("cover") is None
+    policy = held.table("policy")
+    assert policy is not None
+    drivers = policy.column("drivers")
+    assert drivers is not None and drivers.kind == "string"
+    assert server.read("SELECT drivers FROM policy") == [("n/a",)]
+
+
+def test_the_export_converts_no_column_the_analyst_pairs(target: Target) -> None:
+    made_from_sql(target, RELEASED)
+    quote(target, RELEASED, "A-1", drivers="2")
+    paired = form(
+        table("policy", column("region"), column("seats", "int"), column("value", "float"))
+    )
+    pairing = Rename("policy", "seats", "drivers")
+    comparison = compared(target, paired, renames=[pairing])
+    assert {("policy", "seats", "renamed"), ("policy", "seats", "type")} <= kinds(comparison)
+
+    written = exported(target, paired, renames=[pairing])
+
+    # seats is added afresh at its type, drivers left as it is with its values.
+    assert "ALTER COLUMN" not in written and "changes from" not in written
+    target.script(written)
+    assert target.read("SELECT drivers, seats FROM policy") == [("2", None)]
 
 
 def test_a_column_the_analyst_pairs_is_renamed_keeping_its_values(target: Target) -> None:

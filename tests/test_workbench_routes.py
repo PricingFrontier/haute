@@ -1704,6 +1704,38 @@ def test_the_form_compared_with_dev_s_tables_writes_the_sql_that_makes_them_matc
     assert "ADD COLUMN" not in again["sql"]
 
 
+def test_store_compare_lists_a_column_of_another_type_and_its_sql_converts_it(
+    project: Path,
+) -> None:
+    """A column the database holds under the field's name, of another type, is a type change
+    in the changes and the SQL; one the analyst pairs is added afresh at its type instead."""
+    enable(project, "[workbench]\nenabled = true\n" + DEV_STORES)
+    write_form(project, form(POLICY))
+    _dev_database(project, form(POLICY))
+    tables = _catalogue().json()["tables"]
+    retyped = form({**POLICY, "inputs": [POLICY["inputs"][0], column("exposure", "int")]})
+
+    body = _compare(retyped, tables).json()
+
+    change = next(each for each in body["changes"] if each["column"] == "exposure")
+    assert change["kind"] == "retype column" and change["table"] == "policy_details"
+    # SQLite cannot change a column's type in place: the change is manual and the SQL says so.
+    assert change["disposition"] == "manual"
+    assert change["description"].startswith("Change DOUBLE to Integer.")
+    assert "policy_details.exposure changes from DOUBLE to BIGINT" in body["sql"]
+    assert "ALTER COLUMN" not in body["sql"]
+
+    renamed = form({**POLICY, "inputs": [POLICY["inputs"][0], column("amount", "int")]})
+    pairing = {"table": "policy_details", "column": "amount", "was": "exposure"}
+    paired = _compare(renamed, tables, [pairing]).json()
+    assert paired["renames"] == [pairing]
+    assert [each["kind"] for each in paired["changes"] if each["column"] == "amount"] == [
+        "add column"
+    ]
+    assert "ADD COLUMN amount BIGINT" in paired["sql"]
+    assert "changes from" not in paired["sql"]
+
+
 def test_store_export_adds_new_names_without_moving_or_removing_old_values(
     project: Path,
 ) -> None:

@@ -914,25 +914,33 @@ Out of scope:
     only its content scrolls, keeping Close and Download SQL visible on short screens.
     Secondary actions use the existing quiet icon actions and all controls use theme tokens.
 
-    The schema pane's collapsed Database changes section lists only missing columns,
-    grouped by table, and missing tables labelled New table. Its heading counts columns
-    and tables to add instead of saying Needs attention. With no additions it says No
-    additions, not that the database is compatible. It has no migration-review prose,
+    The schema pane's collapsed Database changes section lists only missing columns and
+    type changes, grouped by table, missing tables labelled New table and type changes Type
+    change. Its heading counts columns and tables to add and type changes instead of saying
+    Needs attention. With none it says No additions, not that the database is compatible. It has no migration-review prose,
     retained-field lists, rename decisions, provider/revision metadata or Check environments
     action. The original snapshot time is available in Refresh's tooltip. It uses only the
     current comparison, hiding stale additions during a refresh or schema edit.
 
     Live SQL export and this list use the same name-based additions plan: each Haute schema
     column absent from its database table is added, and each missing table is created.
-    Existing columns are never changed, renamed or removed, regardless of type, key, row
-    structure or explicit rename choices. Renaming a field adds its new name empty if absent.
+    An existing column held under the field's name and of another type (or holding less, a
+    REAL for a Decimal) is changed to the field's type in place, each value converted as it
+    stands, on SQL Server and PostgreSQL; SQLite, which cannot, gets a note and the change is
+    manual (2026-11-23, reversing 2026-11-07's additions only for types). The script is one
+    transaction, so a value that does not convert stops it and nothing changes, additions
+    included. quote_details' and the identity's types, an index's type (it keys the rows)
+    and a table of other rows are never changed. Existing columns are never renamed or
+    removed, regardless of key, row structure or explicit rename choices, and a column the
+    analyst pairs is not converted: renaming a field adds its new name empty, at its type,
+    if absent.
     Index/row conflicts cannot suppress unrelated additions within the same table. Matching
     ignores column-name case when deciding whether adding another would duplicate a name.
     New columns on existing tables are nullable; existing data and keys remain intact.
     SQL omits migration, retention and unresolved-rename commentary. Only a problem that
     prevents an addition, such as an invalid provider name, is shown beside that addition
     and in SQL comments. Valid additions remain exportable. The shared renderer still writes
-    the script, and the offline API keeps its additions-only policy.
+    the script, and the offline API keeps the same policy: additions and type changes.
     Full compatibility checks, saved fields, schema editing and field/table difference
     details remain separate from this additions list; no additions does not imply the
     current app can use the database. Operational guidance belongs in documentation.

@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -434,8 +434,9 @@ def _emit(
     """The DDL of *plan* through *operations*, as offline SQL: every rename in two phases
     through temporary names (tables, then columns), then what is made, each in the store's
     SQL schema; the notes and the DROPs it keeps commented out written where their steps
-    fall. In additions-only exports, renames become creations and all other alterations
-    become manual-work notes."""
+    fall. In additions-only exports, renames become creations, a type change is still the
+    engine's change in place (none for a column a rename adds afresh, :func:`retype_superseded`),
+    and all other alterations become manual-work notes."""
     steps = plan.steps
     owner = schema.metadata.schema
     renames = [
@@ -496,7 +497,9 @@ def _emit(
         elif step.kind == "add column":
             operations.add_column(step.table, _column(schema, step), schema=owner)
         elif step.kind == "retype column":
-            _retype_in_place(operations, plan, schema, step, additions_only=additions_only)
+            if additions_only and retype_superseded(step, steps):
+                continue
+            _retype_in_place(operations, plan, schema, step)
         elif step.kind == "reshape table":
             _reshape_note(operations, plan, step)
         elif step.kind in ("keep table", "keep column"):
@@ -567,13 +570,24 @@ def _structure_column(structure: Mapping[str, Any] | None, step: Step) -> dict[s
     raise KeyError((step.table_key, step.column_key))
 
 
+def retype_superseded(step: Step, steps: Sequence[Step]) -> bool:
+    """Whether *step*, a type change, writes nothing in an additions-only export: its column,
+    renamed or in a renamed table, is added under its new name at its new type instead."""
+    return any(
+        other.table_key == step.table_key
+        and (
+            other.kind == "rename table"
+            or (other.kind == "rename column" and other.column_key == step.column_key)
+        )
+        for other in steps
+    )
+
+
 def _retype_in_place(
     operations: Operations,
     plan: Plan,
     schema: StoreSchema,
     step: Step,
-    *,
-    additions_only: bool = False,
 ) -> None:
     """A change of *step*'s column to the store's type for it, in place, the engine converting
     each value the column holds, PostgreSQL through a USING cast, after a note that a value
@@ -588,14 +602,6 @@ def _retype_in_place(
     old = str(before["sql_type"]) if was is None else str(was.compile(dialect=dialect))
     new = fresh.type.compile(dialect=dialect)
     where = f"{step.table}.{step.column}"
-    if additions_only:
-        _note(
-            operations,
-            f"{where}{held(step.quotes)} needs {new} instead of {old}.\n"
-            "Existing column types and values are unchanged. Review and convert the data\n"
-            "manually before changing its type; this SQL does not perform the conversion.",
-        )
-        return
     if dialect.name == "sqlite":
         _note(
             operations,
@@ -721,8 +727,9 @@ def render_sql(
     heads it, and each change of a type or rows and each table or column the form does
     not have is noted where it falls, the latter's DROP commented out. Nothing of Haute's is in
     it beyond the tables, and nothing reads it back. Workbench exports use *additions_only*:
-    newly named columns/tables are added empty; conversion, transfer, keys and cleanup
-    remain manual, with no rename, drop or type-conversion statements."""
+    newly named columns/tables are added empty and an existing column of another type is
+    converted in place (on SQLite, a note); transfer, keys, row structure and cleanup remain
+    manual, with no rename or drop statements."""
     buffer = io.StringIO()
     for refusal in plan.refusals:
         buffer.write(_commented(f"Not written: {refusal}.") + "\n")

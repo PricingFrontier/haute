@@ -222,7 +222,7 @@ test.describe("the underwriter app's quotes", () => {
       await page.setViewportSize(viewport)
 
       await page.getByText(/^Database changes/).click()
-      await expect(page.getByRole("region", { name: "Additions for policy" })).toContainText("excess")
+      await expect(page.getByRole("region", { name: "Changes for policy" })).toContainText("excess")
       await page.screenshot({ path: testInfo.outputPath("schema-sql-options.png") })
       await page.getByText(/^Database changes/).click()
       await page.getByRole("button", { name: "Export SQL", exact: true }).click()

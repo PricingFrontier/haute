@@ -68,8 +68,12 @@ Names and readable types identify both sides. A valid new-column step groups old
 type and collation differences into one addition with manual value-transfer guidance;
 row keys also require filling every row, NOT NULL and a primary-key update. A missing
 table directs the user to the create-table query. Manual additions retain their exact
-blocking reason. Existing-column type, nullability and collation issues explain the
-manual repair and do not promise it in Export SQL. Unknown database kinds display their
+blocking reason. An existing-column type issue with a `retype column` change in the
+additions plan says Export SQL converts (or, holding less, widens) the column, a value
+that cannot convert stopping it, or, the change manual (SQLite), that the column needs
+rebuilding by hand; without one (an index, quote_details, the identity) it explains the
+manual repair, saying Export SQL leaves the type unchanged. Nullability and collation
+issues explain the manual repair and do not promise it in Export SQL. Unknown database kinds display their
 SQL type; a comparison referring to an absent matched column is an explicit error.
 Field tests cover the renamed Integer row key becoming Text, consolidated addition
 guidance, existing-column repairs, blocked additions, hidden/expandable SQL diagnostics,
@@ -77,25 +81,37 @@ and pending/failed comparisons hiding stale guidance. No database writes or comp
 semantics change.
 
 Workbench SQL export uses `render_sql(..., additions_only=True)` for both catalogue and
-offline routes. The shared renderer emits CREATE/ADD only in this mode: column rename
-steps add a nullable destination and retain the source; table rename steps create the
-new table without copying rows. Existing names (case-insensitive) are never added twice,
-and column steps under a renamed table are covered by creating that table. Index renames
-leave the old primary key intact and explain the remaining population/key work. Retypes,
-reshapes and cleanup are manual comments without executable or commented-out destructive
-commands. `review_plan(..., additions_only=True)` describes these same outcomes, marking
-rename/data migration and every type conversion as manual work. Default renderer/planner
-behavior remains available to existing library callers; comparison and schema editing
-semantics are unchanged. Tests execute the exported SQL on populated SQLite stores and
-assert old values/types/keys remain, new columns are empty, no rename/drop/conversion SQL
-appears for any provider, and occupied or case-only destinations are left manual.
-Live `store-compare` uses `_compare.additions_plan(form, catalogue)` for its `changes`
-and SQL, independently of the full compatibility comparison. It returns a `Plan` of only
-create-table/add-column steps from the form's structure and actual catalogue names;
-existing column names are compared case-insensitively to avoid duplicate additions. The
-plan retains catalogue names in `before` for the shared `addition_problem` checks and the
-form in `recorded` for column definitions. Existing row/key/type differences and explicit
-rename choices never suppress additions. Missing activity-table creation is retained.
+offline routes. The shared renderer emits CREATE/ADD and type changes only in this mode:
+column rename steps add a nullable destination and retain the source; table rename steps
+create the new table without copying rows. Existing names (case-insensitive) are never
+added twice, and column steps under a renamed table are covered by creating that table.
+Index renames leave the old primary key intact and explain the remaining population/key
+work. A `retype column` step is the engine's ALTER in place through `_retype_in_place`
+(PostgreSQL's USING cast, SQL Server's ALTER COLUMN restating the nullability; SQLite a
+note), except one `_migrate.retype_superseded` names: its column renamed, or in a renamed
+table, is added under its new name at its new type, so nothing converts it. Reshapes and
+cleanup are manual comments without executable or commented-out destructive commands.
+`review_plan(..., additions_only=True)` describes these same outcomes, leaving superseded
+retypes out, marking rename/data migration as manual and a type change as SQL except on
+SQLite. Default renderer/planner behavior remains available to existing library callers;
+comparison and schema editing semantics are unchanged. Tests execute the exported SQL on
+populated SQLite stores and assert old values/keys remain, new columns are empty, no
+rename/drop SQL appears for any provider, a retype is the engine's ALTER (a note on
+SQLite), a renamed and retyped column is only added, and occupied or case-only
+destinations are left manual; on the store servers (`store_servers`) the live export
+converts a column keeping its values and a value that does not convert stops the script
+with nothing changed.
+Live `store-compare` uses `_compare.additions_plan(form, catalogue, comparison.plan)`
+for its `changes` and SQL. It returns a `Plan` of create-table/add-column steps from the
+form's structure and actual catalogue names, and the full comparison's `retype column`
+steps not superseded (a column the analyst pairs is added afresh, so it is never
+converted); existing column names are compared case-insensitively to avoid duplicate
+additions. Its `before` holds every catalogue table and column by name, those the
+comparison matched under their plan keys with the type, `sql_type` and `nullable` a
+retype is written from, others under `database:` keys, for the shared `addition_problem`
+checks; `recorded` holds the form for column definitions. Existing row/key differences
+and explicit rename choices never suppress additions. Missing activity-table creation is
+retained.
 `review_plan` and `render_sql(..., additions_only=True)` consume this same plan. Full
 comparison differences, accepted renames, manual notes and blockers remain available for
 compatibility/field details but are not rendered in the additions list or exported SQL.
@@ -252,7 +268,7 @@ single-chunk 650 KiB and chart-vendor 205 KiB limits stay unchanged. The 1 KiB a
 | `frontend/src/workbench/DatabaseChecks.tsx` | `DatabaseChecks` shows current global differences, blocked diagnostics, unused-table retention and removable orphaned rename choices in a collapsed disclosure. Preview disables removal; pending/failed comparisons hide stale diagnostics. |
 | `frontend/src/workbench/StorePlanReview.tsx` | `DatabaseChanges` reads the current comparison and shows a collapsed additions count. `StorePlanReview` groups create-table/add-column changes by table, with plain column names and a New table label, without nested review disclosures, migration/retention prose, orphaned rename controls or provider/revision/check-all metadata. Only failed additions show their specific reason. Empty plans say No missing tables or columns without claiming compatibility. |
 | `frontend/src/workbench/DatabaseDisclosure.tsx` | `DatabaseDisclosure` shares native details/summary semantics across the field/table details and SQL review. Its Lucide chevron, rounded hover/focus treatment and indented content match the schema table controls. Only the directly owned chevron rotates on open, including nested disclosures. It holds no separate open state and keeps native summary keyboard behavior. |
-| `src/haute/_quote_store/_review.py` | `review_plan` describes the existing `Plan` as typed `ReviewChange` items (`kind`, `table`, `column`, `was`, `disposition`, `description`, `quotes`) grouped by disposition (`sql`, `manual`, `retained`). SQLite retyping and reshaping are manual; rename/retype/reshape and any manual repair notes require release coordination, including key-only repairs without a plan step; activity-table creation is included. Retention descriptions use the form table's input role, with quote_details updated in place. `rename_problems` reports explicit mappings neither accepted nor already satisfied by destination-present/source-absent; it does not infer migration history. The compare response uses the name-based additions plan for changes and SQL, while provider, manual notes, blockers and maintenance status describe the full compatibility comparison. |
+| `src/haute/_quote_store/_review.py` | `review_plan` describes the existing `Plan` as typed `ReviewChange` items (`kind`, `table`, `column`, `was`, `disposition`, `description`, `quotes`) grouped by disposition (`sql`, `manual`, `retained`). SQLite retyping and reshaping are manual; rename/retype/reshape and any manual repair notes require release coordination, including key-only repairs without a plan step; activity-table creation is included. Retention descriptions use the form table's input role, with quote_details updated in place. `rename_problems` reports explicit mappings neither accepted nor already satisfied by destination-present/source-absent; it does not infer migration history. The compare response uses the name-based additions plan, with the comparison's type changes no rename supersedes, for changes and SQL, while provider, manual notes, blockers and maintenance status describe the full compatibility comparison. |
 | `frontend/src/workbench/columnTypes.ts` | `COLUMN_TYPES`, each column type's label, icon (the step editor's for the kind) and colour (`getDtypeColor` of its dtype), `COLUMN_TYPE_OPTIONS` for the marker, and `isNumeric`. |
 | `frontend/src/workbench/useWorkbenchShortcuts.ts` | `useWorkbenchShortcuts`, the view's window-level shortcuts through `hooks/keyboardTargets.ts`: Ctrl/Cmd+S runs the host's save, `onSave` (a focused field blurred first), Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redoes outside a text field; outside a control (`isFormControl`) and outside the schema's pane (the view store's `schemaPane`), whose keys are its own, Ctrl/Cmd+1 fits the sheet, Escape closes the sheet's panel or the section's and, with a component selected, Escape deselects, Delete or Backspace removes, Ctrl/Cmd+D duplicates (`duplicateWidget`, the copy selected), Ctrl/Cmd+C copies it into the view store's `copied`, as it is, with its section, a toast naming it (`widgetName`), the browser's own copy of any text selected left to happen, as the pipeline editor's Ctrl/Cmd+C leaves it, and the arrows nudge by `GRID` or, with Shift, a pixel, kept inside its section (`moveWidget`), with Ctrl/Cmd resize by as much from the bottom-right corner (`grownRect` through `updateWidget`, never under its kind's least size in `WIDGET_KINDS`, its section and sheet growing to hold it, as the handle there does), a burst of either within 800ms one undo step through `pushSnapshot` and `setFormRaw`, a drag under way finished first (`endGesture`) inside a burst too, and a nudge or resize that changes nothing (held at its section's top or bottom, the sheet's left or right edge, or its least size) recording nothing, Delete, Backspace, Ctrl/Cmd+D, Ctrl/Cmd+C and the arrows only from the sheet (inside the view store's `viewport`) or with nothing focused (`onSheet`), never from a panel, the toolbar or a tab; selected or not, with a component `copied`, Ctrl/Cmd+V pastes it (`pasteWidget`, one `change`) into the selected section, else the selected component's, else the section it was copied from while that is on the sheet showing (`activePage`), else the sheet's first, the copy selected; a section header's own keys are the gutter's; in Preview, Ctrl/Cmd+S, the undo and redo keys and Ctrl/Cmd+1 alone apply; keys in a modal dialog are left to it. |
 | `frontend/src/workbench/useSheetValues.ts` | `SheetValues`, what a sheet's cells hold and show (`exportCells`, what runs an Export to an Excel workbook of cells on them: Preview's `exportWorkbenchFile` on the sample's price while it is current, the app's quote's exporter from the preview store, none while building; `importRows`, what runs an Import on them: Preview's `importWorkbenchRows` on the form and its sample, the app's the preview store's `importer` on the quote while it may change, none while building or read only; `rows`, `setCell`, `setRows`, `price`, `basis`, `problems` by cell key, `visibility`, the values' `sheetVisibility`, `quoted`, the schema as the values' quote reads it, `quotedSchema`, `readOnly`, and `locked`, the columns whose cells take no typing), given to the components through `SheetValuesContext` and read with `useSheetValues`; each of the three made only while `active` (the sheet uses one at a time) and kept the same object through a change that leaves what it holds and shows alone, as a drag makes (its rows on the schema and the values alone, its `visibility` kept while it shows and hides the same things), so the components on the sheet are not drawn again; `useNewQuoteValues`, a new quote's while building: `newQuoteValues` of the schema, read through `withPresetRows` as each source's values are, no price, no problems, setters that type nothing, the visibility of those values with the conditions of the sheet being built (`activePage` of the view store's `pageId`) set aside, so its own conditions fade nothing on it, and not read only, so its cells are drawn as a new quote's; `useSampleValues`, the sample in Preview, edited through `change` with `withSampleCell` and `withSampleRows`, the pricing store's `price`, `previewBasis` with the context `usePricingContext` gives, and `quoteProblems` of the quoted schema and the sample once anything is typed (`quoteEligible`); `useQuoteValues`, the underwriter app's, the preview store's `quote`, `setCell`, `setRows`, `readOnly` and `locked`, its `price`, `basisOf` the quote with the columns its visibility hides, and `quoteProblems` once anything but the locked columns and the defaults is typed (`quoteTyped`) while it may change; `NO_VISIBILITY`, nothing shown, the visibility of values not yet read and of the New quote window, which draws a quote's details apart from any sheet, and the preview store's `NOTHING_LOCKED` for values whose cells all take typing; `useSheetVisibility(previewing)`, for what draws outside the sheet, the tabs: a new quote's (`newQuoteValues`) while building, in Preview the sample's, or the quote's while the view store's `underwriterApp` is set. Each one's visibility is the rounds' through `withPrice` with the price it shows: none while building, so every output is empty there, the pricing store's in Preview and the preview store's in the app, the last while a new one is on its way and none after a pricing that failed, `useSheetVisibility`'s too, so a tab follows its sheet. |

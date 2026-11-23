@@ -73,17 +73,20 @@ export function fieldDatabaseIssues(
         break
       case "type": {
         const found = databaseColumn()
-        if (DATABASE_TYPES[found.kind] === expectedType) {
-          // Of the field's type but holding less than Haute keeps there (a REAL for a Decimal).
-          issues.push({ title: "Database type too narrow",
-            description: `Haute: ${column.name} (${expectedType}). Database: ${found.name} (${found.type}), which holds less than ${expectedType} needs.`,
-            action: "Widen the database column as SQL details shows. Export SQL does not convert existing columns." })
-          break
-        }
-        issues.push({ title: "Different data type", description: sides(),
-          action: IDENTITY_NAMES.has(column.name) || table.name === QUOTE_DETAILS_NAME
-            ? `Convert this database column to ${expectedType} manually after checking its values; Haute has a fixed type.`
-            : "Change the type in Haute to match, or convert the data manually. Export SQL does not convert existing columns." })
+        // Of the field's type but holding less than Haute keeps there (a REAL for a Decimal).
+        const narrow = DATABASE_TYPES[found.kind] === expectedType
+        const retype = answer.changes.find((each) => each.kind === "retype column" && each.table === table.name && each.column === column.name)
+        const action = retype?.disposition === "sql"
+          ? `Export SQL ${narrow ? "widens" : "converts"} this column. Run the query on this database; a value that cannot convert stops it, changing nothing.`
+          : retype !== undefined ? "SQLite cannot change a column's type in place: rebuild the column and copy its values manually."
+            : narrow ? "Widen the database column as SQL details shows. Export SQL leaves its type unchanged."
+              : IDENTITY_NAMES.has(column.name) || table.name === QUOTE_DETAILS_NAME
+                ? `Convert this database column to ${expectedType} manually after checking its values; Haute has a fixed type.`
+                : "Change the type in Haute to match, or convert the data manually. Export SQL leaves its type unchanged."
+        issues.push(narrow
+          ? { title: "Database type too narrow", action,
+            description: `Haute: ${column.name} (${expectedType}). Database: ${found.name} (${found.type}), which holds less than ${expectedType} needs.` }
+          : { title: "Different data type", description: sides(), action })
         break
       }
       case "collation":
