@@ -6,16 +6,23 @@ import hashlib
 import json
 import math
 import os
-import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
+import polars as pl
 
+from haute._temporal_text import (
+    TemporalTextError,
+    is_temporal,
+    moment_nanoseconds,
+    temporal_physical,
+    temporal_text,
+)
 from haute.errors import HauteValidationError
 
 EVALUATION_SCHEMA_VERSION = 1
@@ -49,8 +56,8 @@ def _boundary(value: object, name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be an ISO date or datetime")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
+        moment_nanoseconds(value)
+    except TemporalTextError as error:
         raise HauteValidationError(f"{name} must be an ISO date or datetime") from error
     return value
 
@@ -65,20 +72,75 @@ def _sha256(value: object, name: str) -> str:
     return value
 
 
-@dataclass(frozen=True, slots=True)
-class TemporalKey:
-    """A datetime, time or duration group value as its exact text
-    (:func:`haute._temporal_text.with_temporal_text`): keyed as ``<kind>:<text>``, which
-    is what a Python value's ``isoformat()`` wrote for every value a microsecond holds, so
-    two values that differ below a microsecond stay two groups."""
+TemporalKind = Literal["datetime", "time", "duration"]
 
-    kind: str
+
+@dataclass(frozen=True)
+class TemporalKey:
+    """One distinct value of a datetime, time or duration key column, as the planner reads it.
+
+    Python's ``datetime``, ``time`` and ``timedelta`` hold microseconds and a nanosecond
+    column does not, so such a value reaches the planner as this instead: its exact text,
+    which keys it, and its physical integer, which orders it by the column's own values
+    (an aware datetime's instant in UTC). ``dtype`` reads a boundary as a value of the
+    same column.
+    """
+
+    kind: TemporalKind
     text: str
+    physical: int
+    dtype: pl.DataType = field(compare=False)
+
+    def __str__(self) -> str:
+        return self.text
+
+
+def _temporal_kind(dtype: pl.DataType) -> TemporalKind:
+    if isinstance(dtype, pl.Datetime):
+        return "datetime"
+    if isinstance(dtype, pl.Time):
+        return "time"
+    if isinstance(dtype, pl.Duration):
+        return "duration"
+    raise TypeError(f"{dtype} is not a datetime, time or duration type")
+
+
+def evaluation_key_values(column: pl.Series) -> list[object]:
+    """*column*'s values, one per row, as the planner reads a key column.
+
+    A datetime, time or duration column's distinct values are taken and sorted in Polars
+    and each written once (``temporal_text``), never read as Python objects: each row
+    holds its value's :class:`TemporalKey`, a null ``None``. Any other column's values
+    are its Python values.
+    """
+    dtype = column.dtype
+    if not is_temporal(dtype):
+        return column.to_list()
+    kind = _temporal_kind(dtype)
+    distinct = (
+        column.drop_nulls()
+        .unique()
+        .sort()
+        .to_frame("value")
+        .select(
+            temporal_text(pl.col("value"), dtype).alias("text"),
+            pl.col("value").to_physical().alias("physical"),
+        )
+    )
+    keys = [
+        TemporalKey(kind, text, physical, dtype)
+        for text, physical in zip(
+            distinct["text"].to_list(), distinct["physical"].to_list(), strict=True
+        )
+    ]
+    # A row's dense rank, in the same ascending order, is its value's place among them.
+    return [None if rank is None else keys[rank - 1] for rank in column.rank("dense").to_list()]
 
 
 def _json_key(value: object) -> str:
     """Canonicalise a finite JSON value so unhashable group values remain valid keys."""
     if isinstance(value, TemporalKey):
+        # A value Python holds exactly is written as its isoformat() or str(timedelta).
         return f"{value.kind}:{value.text}"
     if isinstance(value, datetime):
         return f"datetime:{value.isoformat()}"
@@ -89,41 +151,27 @@ def _json_key(value: object) -> str:
     return canonical_json_bytes(value).decode("utf-8")
 
 
-#: A date value's part-second past the microsecond, which a Python ``datetime`` cannot hold.
-_PAST_MICROSECONDS = re.compile(r"\.([0-9]{6})([0-9]{1,3})")
-
-#: A date value as the plan compares it: the moment to the microsecond and its nanoseconds
-#: past it, so two dates that differ below a microsecond stay two, in order.
-ExactMoment = tuple[datetime, int]
-
-
-def _parsed_dates(values: Sequence[object]) -> list[ExactMoment]:
+def _parsed_dates(values: Sequence[object]) -> list[int]:
+    """*values*, dates or date-times, as nanoseconds from 1970 that order them exactly: an
+    aware one's instant in UTC, a naive one's wall clock, ISO text read whole to nine
+    digits (``moment_nanoseconds``), so two inside one microsecond order apart."""
     if not values:
         return []
-    parsed: list[ExactMoment] = []
+    parsed: list[int] = []
     aware: bool | None = None
     for value in values:
-        nanoseconds = 0
-        if isinstance(value, datetime):
-            parsed_value = value
-        elif isinstance(value, date):
-            parsed_value = datetime.combine(value, time.min)
+        if isinstance(value, date):
+            text = value.isoformat()
         elif isinstance(value, str):
-            # A datetime column's value is its exact text (with_temporal_text), up to nine
-            # digits: the three past the sixth are kept beside the datetime, not dropped.
-            past = _PAST_MICROSECONDS.search(value)
-            if past is not None:
-                nanoseconds = int(past.group(2).ljust(3, "0"))
-                value = value[: past.start()] + "." + past.group(1) + value[past.end() :]
-            parsed_value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            text = value
         else:
             raise TypeError("date values must be ISO strings or native date/datetime values")
-        this_aware = parsed_value.tzinfo is not None
+        nanoseconds, this_aware = moment_nanoseconds(text)
         if aware is None:
             aware = this_aware
         elif aware != this_aware:
             raise HauteValidationError("date values must not mix timezone awareness")
-        parsed.append((parsed_value, nanoseconds))
+        parsed.append(nanoseconds)
     return parsed
 
 
@@ -837,17 +885,68 @@ def _canonical_positions(
 
 
 def _date_codes(
-    date_values: Sequence[object], boundaries: Sequence[object]
-) -> tuple[np.ndarray, list[ExactMoment], list[ExactMoment]]:
-    """Each row's index among the distinct dates, those dates parsed, and *boundaries* parsed."""
+    date_values: Sequence[object], boundaries: Sequence[tuple[str, str]]
+) -> tuple[np.ndarray, list[Any], list[Any]]:
+    """Each row's index among the distinct dates, and those dates and the named
+    *boundaries* as values one order compares (:func:`_date_order`)."""
     distinct: dict[object, int] = {}
     codes = np.empty(len(date_values), dtype=np.int64)
     for position, value in enumerate(date_values):
-        if not isinstance(value, (str, date)):
+        if not isinstance(value, (str, date, TemporalKey)):
             raise TypeError("date values must be ISO strings or native date/datetime values")
         codes[position] = distinct.setdefault(value, len(distinct))
-    parsed = _parsed_dates([*distinct, *boundaries])
-    return codes, parsed[: len(distinct)], parsed[len(distinct) :]
+    dates, parsed_boundaries = _date_order(list(distinct), boundaries)
+    return codes, dates, parsed_boundaries
+
+
+def _date_order(
+    values: Sequence[object], boundaries: Sequence[tuple[str, str]] = ()
+) -> tuple[list[Any], list[Any]]:
+    """A date column's *values* and the named *boundaries* as values one order compares.
+
+    A datetime column's :class:`TemporalKey` is its physical integer, and a boundary is
+    read as a value of that column (``temporal_physical``), refused naming it when the
+    column cannot hold it; dates and ISO text are read with ``datetime.fromisoformat``.
+    """
+    keys = [value for value in values if isinstance(value, TemporalKey)]
+    if not keys:
+        parsed = _parsed_dates([*values, *(boundary for _name, boundary in boundaries)])
+        return parsed[: len(values)], parsed[len(values) :]
+    if len(keys) != len(values):
+        raise TypeError("date values must be ISO strings or native date/datetime values")
+    if any(key.kind != "datetime" for key in keys):
+        raise TypeError(f"date values must be dates or date-times, not a {keys[0].kind}")
+    dtype = keys[0].dtype
+    parsed_boundaries = []
+    for name, boundary in boundaries:
+        try:
+            parsed_boundaries.append(temporal_physical(boundary, dtype))
+        except TemporalTextError as error:
+            raise HauteValidationError(
+                f"{name} cannot be compared with the {dtype} date column: {error}"
+            ) from error
+    return [key.physical for key in keys], parsed_boundaries
+
+
+def evaluation_date_range(date_values: Sequence[object]) -> dict[str, str] | None:
+    """The earliest and latest of a date column's *date_values*, ordered as a temporal plan
+    orders them, each as its text: a :class:`TemporalKey`'s exact text, a date's ISO text,
+    ISO text as it is. ``None`` when there are none."""
+    if not date_values:
+        return None
+    order, _ = _date_order(date_values)
+    ranked = sorted(range(len(date_values)), key=order.__getitem__)
+    return {"start": _date_text(date_values[ranked[0]]), "end": _date_text(date_values[ranked[-1]])}
+
+
+def _date_text(value: object) -> str:
+    if isinstance(value, TemporalKey):
+        return value.text
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return value
+    raise TypeError("date values must be ISO strings or native date/datetime values")
 
 
 def _roles_for_parts(is_test: np.ndarray, parts: Sequence[np.ndarray]) -> list[np.ndarray]:
@@ -878,7 +977,8 @@ def generate_evaluation_plan(
     A random plan selects positions, so it takes *row_order*, the source positions in
     canonical order (``haute.modelling._row_order``), and draws over that order: the
     same rows are selected whatever order the source holds them in. Group and temporal
-    plans decide by group and date values and take no order.
+    plans decide by group and date values and take no order. A caller reads each key
+    column with :func:`evaluation_key_values`.
     """
     if row_count < 1:
         raise HauteValidationError("invalid source or row count")
@@ -896,9 +996,9 @@ def generate_evaluation_plan(
     if config.strategy == "temporal":
         if date_values is None or len(date_values) != row_count:
             raise HauteValidationError("temporal evaluation requires date values")
-        boundaries = [config.test["start"]] if config.test else []
+        boundaries = [("test.start", config.test["start"])] if config.test else []
         if method == "single":
-            boundaries.append(config.validation["start"])
+            boundaries.append(("validation.start", config.validation["start"]))
         codes, dates, parsed_boundaries = _date_codes(date_values, boundaries)
         if config.test:
             test_start = parsed_boundaries[0]
@@ -932,12 +1032,9 @@ def generate_evaluation_plan(
             k = config.validation["fold_count"]
             if len(ordered) < k + 1:
                 raise HauteValidationError("temporal cross_validation needs enough distinct dates")
-            # Split the dates' positions: a date is a pair, which an array would split apart.
-            blocks = np.array_split(np.arange(len(ordered)), k + 1)
+            blocks = np.array_split(np.asarray(ordered, dtype=object), k + 1)
             block_of_date = {
-                ordered[position]: index
-                for index, block in enumerate(blocks)
-                for position in block.tolist()
+                value: index for index, block in enumerate(blocks) for value in block.tolist()
             }
             # A final-test date belongs to no block.
             row_block = np.array([block_of_date.get(v, -1) for v in dates], dtype=np.int64)[codes]

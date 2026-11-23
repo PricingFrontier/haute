@@ -90,14 +90,13 @@ arguments, raises `ParseError` with the registrations' lines (`nested_lines`),
 preserving the one-level nesting contract.
 
 **`parse_expression`** (`_expression_parser.py`): strip a leading BOM → `_cached_parse(code)` →
-bail to `_opaque(...)` on empty input or `SyntaxError` → `_has_control_flow_wrapping_target`: if
-a `with_columns()`/`select()` inside `if`/`for`/`while`/`try`/`with`/`match` writes
-`target_column`, bail to opaque (the value is branch-dependent and cannot be statically
-resolved). It names each call's outputs exactly as `_find_definition` does (through the
-bindings `_calls_with_bindings` gives the call, and `_infer_auto_name` for an unaliased
-expression), so a block's write is found however it is spelled →
+bail to `_opaque(...)` on empty input or `SyntaxError` →
 `_find_definition` scans every call `_calls_with_bindings` returns, "last alias match wins", an
-unaliased expression named after its leftmost column by `_infer_auto_name` →
+unaliased expression named after its leftmost column by `_infer_auto_name`, and records in the
+definition's `block` the block keyword `_calls_with_bindings` gives the last call inside a block
+that writes `target_column`, its outputs named as every other call's are, so a block's write is
+found however it is spelled → a definition with a `block` is opaque (the value is
+branch-dependent and cannot be statically resolved) →
 `_find_control_flow_assigned_vars` records names assigned *inside* control flow, so an expression
 referencing one of those, or one unprovable where it runs, is opaque even if the same name also
 has a top-level binding → convert the winning expression AST with `_ExprConverter` over the
@@ -109,7 +108,9 @@ ordered by (line, col, end_line, end_col) source span so a chained
 `df.with_columns(A).with_columns(B)` — which `ast.walk`'s breadth-first parent-before-child order
 would otherwise visit outer-call-first — comes back in true execution order) the names bound
 before its own statement (`_statement_index`, by source position, so `a = 1; df = ...` on one line
-counts). `_bind_statement` folds each statement in order: a simple `name = value` or
+counts), and the keyword of the block that statement is (`_block_keyword`: `if`, `for`, `while`,
+`try`, `with` or `match`, an `async` form by its plain keyword; `None` for any other statement),
+so every reader of a call knows whether it ran conditionally. `_bind_statement` folds each statement in order: a simple `name = value` or
 `name: type = value` binds the value with the names it reads resolved as they stand
 (`_substitute_names_in_ast`, every loaded name in any node), so a later rebinding never changes it
 (`expr = pl.col("base"); expr = expr * pl.col("f")` folds as it runs), and a binding that reads an
@@ -128,7 +129,9 @@ statement through `wrap_node_code`, after stripping a leading BOM — the one wr
 parses the same source shape → merge
 `preamble_ns` constants under `row_values` (column values win on key collision) →
 `parse_expression` for the text/columns/type → `_definition_in` locates the expression assigning
-`target_column` as `parse_expression` does → the expression is a window when it contains an
+`target_column` as `parse_expression` does; a definition with a `block` computes nothing:
+`branch_dependent: <keyword>`, with the opaque text as its substituted text and no taken
+branch → the expression is a window when it contains an
 `.over()` call (`_is_window`), and then its string partition arguments (positional or
 `partition_by`, a list spread) join its referenced columns (`_window_partition_columns`) →
 `_ValueRenderer` writes the substituted text (see Edge cases) → the evaluation namespace drops the
@@ -140,7 +143,8 @@ literal preamble constants, reports an unresolved free name, classifies the expr
 with `_sandbox.validate_user_code`, evaluates its source under `safe_globals(pl=pl, <preamble names>)`
 (a non-`Expr` result becomes `pl.lit`), reports a root column missing from the row
 (`column_unavailable: <column>`), and selects it on the one-row frame as a native value
-(`to_list()[0]`, so a List cell is a list, not a Series) → for
+(`exact_rows`, so a List cell is a list, not a Series, and a datetime, time or duration value
+is its exact text, all nine digits of a nanosecond one) → for
 `expression_type == "conditional"`, `_branch_selection` evaluates each condition the same way in
 source order and records the taken arm, recursing into a taken arm that is itself a `when` chain for
 `nested_branches`.
@@ -149,7 +153,9 @@ source order and records the taken arm, recursing into a taken arm that is itsel
 `SyntaxError` is converted to `[parse_expression(...)]` when that opaque result exists (otherwise
 `[]`) → parse every column definition across all
 `with_columns()` calls exactly once into `parsed_by_col`/`refs_by_col` maps (reusing one shared
-tree/converter pass rather than re-invoking `parse_expression` per chain element) → if
+tree/converter pass rather than re-invoking `parse_expression` per chain element), a column a call
+inside a block writes taking the opaque entry `parse_expression` gives it, which reads no column,
+whatever a later call writes → if
 `target_column` was not defined anywhere, return `[]` → depth-first walk backward from
 `target_column` through `refs_by_col`, appending each column post-order (so a dependency is
 appended before the column that depends on it) → return the parsed expressions in that order.
@@ -180,6 +186,10 @@ no alias or migration shim; direct test callers use the same current contract.
   bound again) makes it opaque too, and `evaluate_expression` reports `unresolved_name: <name>`
   for the first such name the expression reads instead of computing with a stale binding or a
   preamble value of the same name.
+- **A block's write leaves no defining expression**: `_locate_defining_expression` gives none
+  for a definition with a `block`, so `copied_from` names no column the value was copied from and
+  no trace follows the column back through one branch's `pl.col(...)`; `assigns_column` still
+  counts the write, through `assignment_phases`, which reads every call however it ran.
 - **A value changed in place makes every value that could change unknown**: a statement can
   change a value without binding its name again, and which other names hold that value is not
   something the table can follow (aliases, containers holding containers, copies, `match`

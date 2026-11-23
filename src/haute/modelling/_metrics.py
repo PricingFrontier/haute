@@ -7,7 +7,6 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from haute._temporal_text import with_temporal_text
 from haute.errors import HauteValidationError
 from haute.modelling._row_order import frame_row_order
 
@@ -604,10 +603,7 @@ def _ave_categorical_bins(
     # Vectorized groupby: no Python row loops
     tmp = pl.DataFrame(
         {
-            # A temporal level as its exact text: a cast drops a Time's fraction.
-            "cat": with_temporal_text(col.to_frame("cat"), separator=" ")["cat"]
-            .cast(pl.Utf8)
-            .fill_null("__MISSING__"),
+            "cat": col.cast(pl.Utf8).fill_null("__MISSING__"),
             "w": weight,
             "wa": y_true * weight,
             "wp": y_pred * weight,

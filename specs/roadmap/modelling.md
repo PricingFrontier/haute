@@ -142,13 +142,14 @@ memory-limited training worker, which the training estimate does not count.
 **Plan:** Key groups and strata in Polars: take the distinct values with
 their row codes from the frame, key only the distinct values in Python, and
 map codes to memberships with arrays. Keep the plan's bytes identical for
-the existing fixtures.
+the existing fixtures. A temporal key is the exact text the shared reader writes
+([io-layer](../io-layer/low-level.md), *Temporal values reaching Python*), as the plan
+keys one today.
 
 **Acceptance:** A group plan over 2 million rows with 50,000 groups builds in
 under a second on the review machine and allocates no per-row Python
 objects, asserted by a peak-allocation bound; every existing plan fixture
-hashes as before. A temporal group value stays keyed by its exact text
-(`TemporalKey`).
+hashes as before.
 
 **Dependencies:** None.
 

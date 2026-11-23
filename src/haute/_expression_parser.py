@@ -27,7 +27,7 @@ from typing import Any, cast
 import polars as pl
 
 from haute._polars_dtypes import column_kind, numpy_float_type
-from haute._temporal_text import with_temporal_text
+from haute._temporal_text import exact_rows
 
 __all__ = [
     "AssignmentPhases",
@@ -160,8 +160,24 @@ _CONTROL_FLOW_STATEMENT_TYPES: tuple[type[ast.stmt], ...] = (
     ast.TryStar,
     ast.With,
 )
-# Statements holding other statements a ``with_columns`` call can sit in.
-_BLOCK_STATEMENT_TYPES = (*_CONTROL_FLOW_STATEMENT_TYPES, ast.Match)
+# Statements holding other statements a ``with_columns`` call can sit in, by the
+# keyword a trace names one with.
+_BLOCK_KEYWORDS: Mapping[type[ast.stmt], str] = {
+    ast.If: "if",
+    ast.For: "for",
+    ast.While: "while",
+    ast.Try: "try",
+    ast.TryStar: "try",
+    ast.With: "with",
+    ast.Match: "match",
+}
+_BLOCK_STATEMENT_TYPES = tuple(_BLOCK_KEYWORDS)
+
+
+def _block_keyword(stmt: ast.stmt) -> str | None:
+    """The keyword of the block *stmt* is (``if`` for its ``elif`` and ``else`` too), or
+    ``None`` for a statement that is no block."""
+    return _BLOCK_KEYWORDS.get(type(stmt))
 
 
 @lru_cache(maxsize=256)
@@ -1709,14 +1725,16 @@ def _bind_statement(
 @lru_cache(maxsize=256)
 def _calls_with_bindings(
     code: str,
-) -> tuple[tuple[ast.Call, int | None, dict[str, ast.AST], frozenset[str], bool], ...]:
+) -> tuple[tuple[ast.Call, int | None, dict[str, ast.AST], frozenset[str], bool, str | None], ...]:
     """Every ``with_columns``/``select`` call of *code* in execution order, with
     the names bound before its statement, those whose value there is unknown,
-    and whether a value was changed in place before it.
+    whether a value was changed in place before it, and the keyword of the block
+    its statement is (:func:`_block_keyword`), ``None`` outside any.
 
     A call inside a block (``if``, ``for``, ...), or in a statement that changes
     a value in place, takes the bindings after that statement, so whatever the
-    statement assigns or changes is unknown to it.
+    statement assigns or changes is unknown to it; whether it ran at all is not
+    known, so no reader takes its expression as a column's formula.
     The tables are shared through the cache: callers read them, never change them.
     """
     tree = _cached_parse(code)
@@ -1741,7 +1759,11 @@ def _calls_with_bindings(
             if changed or isinstance(stmt, _BLOCK_STATEMENT_TYPES):
                 snapshot = (dict(table), frozenset(unprovable), after_change)
             snapshots[index] = snapshot
-    return tuple((call, lineno, *snapshots[index]) for (call, lineno), index in zip(calls, indices))
+    blocks = [_block_keyword(stmts[index]) if index < len(stmts) else None for index in indices]
+    return tuple(
+        (call, lineno, *snapshots[index], block)
+        for (call, lineno), index, block in zip(calls, indices, blocks)
+    )
 
 
 def _is_df_assignment(value: ast.AST) -> bool:
@@ -1785,25 +1807,6 @@ def _collect_assigned_names(node: ast.AST, names: set[str]) -> None:
         elif isinstance(child, ast.AugAssign):
             if isinstance(child.target, ast.Name):
                 names.add(child.target.id)
-
-
-def _has_control_flow_wrapping_target(code: str, target_column: str) -> bool:
-    """Whether a ``with_columns``/``select`` inside a block writes *target_column*.
-
-    The call's outputs are named as :func:`_find_definition` names them, through
-    the bindings in force there and Polars' auto-naming, so a block's write is
-    found whenever the unconditional path would read it as the definition.
-    """
-    stmts = _cached_parse(code).body
-    for call, _lineno, table, _unprovable, _after_change in _calls_with_bindings(code):
-        if not isinstance(stmts[_statement_index(stmts, call)], _BLOCK_STATEMENT_TYPES):
-            continue
-        if any(
-            alias == target_column
-            for _expr, alias, _line, _bound in _extract_expressions_from_with_columns(call, table)
-        ):
-            return True
-    return False
 
 
 # A ``with_columns``/``select`` call takes its expressions one by one or as
@@ -1970,26 +1973,39 @@ def _root_expression(definition: _Definition) -> ast.AST:
     return node
 
 
-def _find_definition(code: str, target_column: str) -> _Definition | None:
-    """The last ``with_columns``/``select`` expression writing *target_column*.
+@dataclass(frozen=True)
+class _BlockWrite:
+    """A column a call inside a block writes: which formula gave it its value depends on
+    what ran, so it has none to show or compute. ``keyword`` names the block."""
+
+    keyword: str
+
+
+def _find_definition(code: str, target_column: str) -> _Definition | _BlockWrite | None:
+    """The last ``with_columns``/``select`` expression writing *target_column*, or the
+    block whose call writes it, the last such, when one does, whatever runs after it.
 
     An unaliased expression is named after its leftmost column, as Polars
     names it. The expression's names resolve through the bindings in force at
-    its own statement. *code* must parse.
+    its own statement. *code* must parse. Every reader of a column's formula
+    takes it from here, so none reads one from a block.
     """
     best: _Definition | None = None
-    for call, _lineno, table, unprovable, after_change in _calls_with_bindings(code):
+    block: str | None = None
+    for call, _lineno, table, unprovable, after_change, keyword in _calls_with_bindings(code):
         for expr_node, alias_name, line, bound in _extract_expressions_from_with_columns(
             call, table
         ):
-            if alias_name == target_column:
-                best = _Definition(
-                    expr_node, line, {} if bound else table, unprovable, bound, after_change
-                )
-    return best
+            if alias_name != target_column:
+                continue
+            best = _Definition(
+                expr_node, line, {} if bound else table, unprovable, bound, after_change
+            )
+            block = keyword or block
+    return _BlockWrite(block) if block is not None else best
 
 
-def _definition_in(code: str, target_column: str) -> _Definition | None:
+def _definition_in(code: str, target_column: str) -> _Definition | _BlockWrite | None:
     code = code.lstrip("\ufeff")
     try:
         _cached_parse(code)
@@ -2014,10 +2030,6 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
     if not stmts:
         return _opaque(target_column, "")
 
-    # Check if the with_columns producing target is inside control flow
-    if _has_control_flow_wrapping_target(code, target_column):
-        return _opaque(target_column, code)
-
     if not _find_with_columns_calls(tree):
         # Check for pipe or other non-with_columns patterns
         return _opaque(target_column, code)
@@ -2025,6 +2037,9 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
     definition = _find_definition(code, target_column)
     if definition is None:
         return _opaque(target_column, "")
+    if isinstance(definition, _BlockWrite):
+        # The value depends on which branch ran.
+        return _opaque(target_column, code)
 
     # A name assigned inside control flow, or rebound before the call in a way
     # the code does not show statically, has no value the trace can prove.
@@ -2218,7 +2233,10 @@ def _evaluate_expression_impl(
     parsed = parse_expression(code, target_column)
     if parsed is None:
         parsed = _opaque(target_column, "")
-    definition = _definition_in(code, target_column)
+    located = _definition_in(code, target_column)
+    # A block's write has no one formula: nothing is rendered or computed from one.
+    block = located.keyword if isinstance(located, _BlockWrite) else None
+    definition = located if isinstance(located, _Definition) else None
     resolved = None if definition is None else _resolve_names(definition)
 
     # A window is the located expression's own: another column's window in the
@@ -2273,7 +2291,9 @@ def _evaluate_expression_impl(
             None,
         )
     computed = (
-        _RowValue(reason="expression_not_located")
+        _RowValue(reason=f"branch_dependent: {block}")
+        if block is not None
+        else _RowValue(reason="expression_not_located")
         if node is None
         else _RowValue(reason=f"unresolved_name: {unknown}")
         if unknown is not None
@@ -2667,9 +2687,10 @@ def assignment_phases(code: str, target_column: str) -> AssignmentPhases | None:
 
 
 def _locate_defining_expression(code: str, target_column: str) -> ast.AST | None:
-    """The expression that last assigns *target_column*, with same-node names resolved."""
+    """The expression that last assigns *target_column*, with same-node names resolved;
+    none for a column a block writes, which has no one expression."""
     definition = _definition_in(code, target_column)
-    return None if definition is None else _resolve_names(definition)
+    return _resolve_names(definition) if isinstance(definition, _Definition) else None
 
 
 def _resolve_names(definition: _Definition) -> ast.AST:
@@ -2827,10 +2848,9 @@ def _row_value(node: ast.AST, row: pl.DataFrame, namespace: Mapping[str, Any]) -
     if missing:
         return _RowValue(reason=f"column_unavailable: {missing[0]}")
     # ``to_list`` gives native values: ``item()`` would return a Series for a
-    # List or Array cell. A datetime, time or duration is read as its exact text, as the
-    # trace carries the row's own values: a Python value would drop its nanoseconds.
-    computed = row.select(expression.alias(_TRACE_VALUE_COLUMN))
-    value = with_temporal_text(computed).to_series().to_list()[0]
+    # List or Array cell.
+    # A datetime, time or duration result is its exact text, all nine digits of it.
+    value = exact_rows(row.select(expression.alias(_TRACE_VALUE_COLUMN)))[0][_TRACE_VALUE_COLUMN]
     return _RowValue(value=value)
 
 
@@ -2927,13 +2947,21 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
     # call reads the names bound before its own statement.
     parsed_by_col: dict[str, ParsedExpression] = {}
     refs_by_col: dict[str, list[str]] = {}
+    # Columns a call inside a block writes: opaque, as parse_expression gives them.
+    in_block: set[str] = set()
 
-    for wc_call, _lineno, symbol_table, *_ in _calls_with_bindings(code_wrapped):
+    for wc_call, _lineno, symbol_table, *_, keyword in _calls_with_bindings(code_wrapped):
         exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
         for expr_node, alias_name, ln, bound in exprs:
             if alias_name is None:
                 alias_name = _infer_auto_name(expr_node)
             if alias_name is None:
+                continue
+            if keyword is not None:
+                in_block.add(alias_name)
+            if alias_name in in_block:
+                parsed_by_col[alias_name] = _opaque(alias_name, code_wrapped)
+                refs_by_col[alias_name] = []
                 continue
             # A variable's binding was resolved where it was bound.
             converter = _ExprConverter({} if bound else symbol_table)

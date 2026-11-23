@@ -20,7 +20,6 @@ from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
 from haute._polars_dtypes import (
     CONTRACT_NUMBER_NAMES,
-    column_kind,
     contract_dtype_name,
     is_string_or_categorical,
     wide_integer_column,
@@ -32,7 +31,6 @@ from haute._polars_utils import (
     release_freed_memory,
     streaming_collect,
 )
-from haute._temporal_text import TEMPORAL_TEXT_KINDS, with_temporal_text
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithm_base import FitMode
 from haute.modelling._algorithms import (
@@ -52,8 +50,8 @@ from haute.modelling._evaluation import (
     EvaluationFitResult,
     EvaluationPlan,
     EvaluationResultsArtifact,
-    TemporalKey,
     aggregate_evaluation_results,
+    evaluation_key_values,
     generate_evaluation_plan,
     load_evaluation_plan,
     load_evaluation_report,
@@ -1105,22 +1103,12 @@ class TrainingJob:
             assert self.evaluation.date_column is not None
             columns.append(self.evaluation.date_column)
         if columns:
-            source = pl.scan_parquet(prepared.data_path).select(columns)
-            kinds = {name: column_kind(dtype) for name, dtype in source.collect_schema().items()}
-            # A temporal value reaches Python only as its exact text: a datetime would hold
-            # microseconds and merge two groups, or two dates, that differ below one.
             frame = _training_streaming_collect(
-                with_temporal_text(source),
+                pl.scan_parquet(prepared.data_path).select(columns),
                 stage_name="evaluation_plan_key_collect",
                 execution_context=execution_context,
             )
-            values = {column: frame[column].to_list() for column in columns}
-            group = self.evaluation.group_column
-            if group is not None and group in values and kinds[group] in TEMPORAL_TEXT_KINDS:
-                values[group] = [
-                    None if text is None else TemporalKey(kinds[group], str(text))
-                    for text in values[group]
-                ]
+            values = {column: evaluation_key_values(frame[column]) for column in columns}
         # A random plan selects positions: it draws over the source's canonical order.
         row_order = (
             _training_row_order(

@@ -396,6 +396,12 @@ consumers = ["caching"]
 reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
 
 [[shared_file]]
+path = "src/haute/_temporal_text.py"
+primary = "io-layer"
+consumers = ["explore-eda"]
+reason = "The IO layer owns how a datetime, time or duration value reaches Python as its exact text and comes back as a value; Explore's pivot and profile write and read temporal values through it."
+
+[[shared_file]]
 path = "src/haute/_types.py"
 primary = "server-api"
 consumers = ["explore-eda", "expression-parsing"]

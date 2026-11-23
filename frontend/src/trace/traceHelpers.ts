@@ -163,6 +163,8 @@ interface EvaluatedValue {
 const NOT_COMPUTABLE_KINDS: Record<string, (detail: string) => string> = {
   not_row_local: (detail) => `can depend on other rows (${detail})`,
   unresolved_name: (detail) => `uses ${detail}, which the trace cannot resolve`,
+  branch_dependent: (detail) =>
+    `is written inside ${detail === "if" ? "an" : "a"} ${detail} block, so its formula depends on what ran`,
   column_unavailable: (detail) => `column ${detail} is not in the traced row`,
 }
 

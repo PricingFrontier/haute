@@ -24,7 +24,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from functools import lru_cache, partial
-from typing import Any, NamedTuple, Protocol, cast
+from typing import Any, NamedTuple, Protocol
 
 import polars as pl
 from polars.datatypes import DataTypeClass
@@ -37,20 +37,20 @@ from haute._edge_join import (
 from haute._json_safe import (
     MAX_SAFE_INTEGER,
     non_finite_float_token,
-    row_to_json_safe,
 )
+from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._logging import get_logger
 from haute._node_specs import known_node_spec, node_type_table
 from haute._polars_dtypes import TEXT_KINDS, column_kind, integer_range
 from haute._python_syntax import StructuredSyntaxError, method_call_sites
-from haute._rating import normalise_rating_key, rating_key_of
 from haute._temporal_text import (
     TEMPORAL_TEXT_KINDS,
     TemporalTextError,
-    temporal_literal,
+    exact_row,
+    exact_text_dtype,
+    exact_text_expression,
+    holds_temporal,
     temporal_physical,
-    temporal_series,
-    with_temporal_text,
 )
 from haute._types import GraphNode, NodeType
 from haute.errors import ConfigError, TraceRowOutOfRangeError
@@ -275,80 +275,6 @@ def _compute_schema_diff(
 
 
 _CANONICAL_INTEGER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
-_TIME_UNIT_NS = {"ms": 1_000_000, "us": 1_000, "ns": 1}
-_INT64_MIN = -(2**63)
-_INT64_MAX = 2**63 - 1
-
-
-def _traced_row(frame: pl.DataFrame, index: int) -> dict[str, Any]:
-    """Row *index* of *frame* as the trace carries it: JSON-safe, with each datetime,
-    time and duration value as its exact text (``with_temporal_text``).
-
-    The one way a traced or matched row reaches Python: correlation's rows, the typed
-    rows ``trace.py`` keeps, and the optimiser apply explainability's matched ratebook
-    input row all read through it. A Python ``datetime``, ``time`` or
-    ``timedelta`` holds microseconds, so a ``Datetime("ns")`` or ``Time`` value read
-    through one would no longer equal its own row when matched again
-    (:func:`_typed_value_match_expr` builds each match from this text), and two rows
-    that differ below a microsecond would look the same.
-    """
-    return row_to_json_safe(with_temporal_text(frame.slice(index, 1)).row(0, named=True))
-
-
-def traced_rating_key(value: Any, dtype: pl.DataType) -> str | None:
-    """The rating key of a traced *value* of a column of type *dtype*, as the rating join
-    keys the column's own value (``rating_key_of``).
-
-    A datetime, time or duration value is its exact text (:func:`_traced_row`), read
-    back into its column's type before it is keyed; ``normalise_rating_key`` reads a
-    configured level, which is written as an analyst writes it. Malformed text raises
-    ``TemporalTextError``.
-    """
-    if value is None or column_kind(dtype) not in TEMPORAL_TEXT_KINDS:
-        return normalise_rating_key(value, dtype)
-    if not isinstance(value, str):
-        raise TypeError(
-            f"A traced {column_kind(dtype)} value is its exact text, not {type(value).__name__}."
-        )
-    keyed = temporal_series("key", [value], dtype).to_frame()
-    return cast(str, keyed.select(rating_key_of(pl.col("key"), dtype)).item())
-
-
-def _temporal_match_expr(
-    subject: pl.Expr, value: Any, dtype: pl.DataType
-) -> tuple[pl.Expr | None, str | None]:
-    """Compare a datetime, time or duration column with a traced value's exact text.
-
-    The text is read back as a literal of the compared type (``temporal_physical``),
-    never through a Python value, so a value below a microsecond matches its own row.
-    Text finer than the column holds names no value of it and matches no row.
-    """
-    kind = column_kind(dtype)
-    if isinstance(value, (date, time, timedelta)):
-        raise TypeError(
-            f"A traced {kind} value is its exact text, never a Python {type(value).__name__}: "
-            "read the row through _traced_row."
-        )
-    if not isinstance(value, str):
-        return None, f"invalid_{kind}_value"
-    if kind == "datetime":
-        unit = cast(pl.Datetime, dtype).time_unit
-        finest: pl.DataType = pl.Datetime("ns", cast(pl.Datetime, dtype).time_zone)
-    elif kind == "duration":
-        unit = cast(pl.Duration, dtype).time_unit
-        finest = pl.Duration("ns")
-    else:
-        unit, finest = "ns", dtype
-    try:
-        nanoseconds = temporal_physical(value, finest)
-    except TemporalTextError:
-        return None, f"invalid_{kind}_value"
-    factor = _TIME_UNIT_NS[unit]
-    if nanoseconds % factor:
-        return _never_match_expr(subject), None
-    if not _INT64_MIN <= nanoseconds // factor <= _INT64_MAX:
-        return None, f"{kind}_out_of_range"
-    return subject == temporal_literal(value, dtype), None
 
 
 def _never_match_expr(subject: pl.Expr) -> pl.Expr:
@@ -365,6 +291,57 @@ def _finite_numeric_match_expr(subject: pl.Expr, expected: float) -> pl.Expr:
         pl.lit(_TRACE_REL_TOL) * magnitude,
     )
     return actual.is_finite() & (delta <= tolerance)
+
+
+def _json_row(frame: pl.DataFrame, index: int) -> dict[str, Any]:
+    """Row *index* of *frame* as a trace holds it: JSON-safe, each datetime, time and
+    duration value its exact text, so a value below a microsecond is kept and matched."""
+    return _jsonify_row(exact_row(frame, index))
+
+
+#: Why a temporal value cannot be compared with a column, by the shared builder's refusal.
+_TEMPORAL_REFUSALS: dict[str, dict[str, str]] = {
+    "time": {"malformed": "invalid_time_value", "zone": "timezone_time_unsupported"},
+    "datetime": {
+        "malformed": "invalid_datetime_value",
+        "zone": "datetime_timezone_mismatch",
+        "range": "datetime_nanosecond_overflow",
+    },
+    "duration": {"malformed": "invalid_duration_value", "range": "duration_nanosecond_overflow"},
+}
+
+
+def _temporal_text_of(value: Any) -> str | None:
+    """*value*, a temporal value as a trace holds it, as its text: the exact text itself, or
+    a Python value's own text, which holds it exactly to the microsecond."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (datetime, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return str(value)
+    return None
+
+
+def _temporal_match_expr(
+    subject: pl.Expr, value: Any, dtype: pl.DataType, kind: str
+) -> tuple[pl.Expr | None, str | None]:
+    """*subject* compared with *value* by the column's physical value, read from the value's
+    text by the shared builder, never through a Python object, which holds microseconds."""
+    if kind == "datetime" and isinstance(value, date) and not isinstance(value, datetime):
+        return None, "date_datetime_mismatch"
+    text = _temporal_text_of(value)
+    if text is None:
+        return None, _TEMPORAL_REFUSALS[kind]["malformed"]
+    try:
+        physical = temporal_physical(text, dtype)
+    except TemporalTextError as refused:
+        if refused.reason == "finer":
+            # Finer than the column holds: no value of it equals the one named.
+            return _never_match_expr(subject), None
+        reasons = _TEMPORAL_REFUSALS[kind]
+        return None, reasons.get(refused.reason, reasons["malformed"])
+    return subject.to_physical() == physical, None
 
 
 def _typed_value_match_expr(
@@ -476,17 +453,24 @@ def _typed_value_match_expr(
             return None, "invalid_date_value"
         return subject == pl.lit(date_value), None
 
-    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
-        return _temporal_match_expr(subject, value, dtype)
+    kind = column_kind(dtype)
+    if kind in TEMPORAL_TEXT_KINDS:
+        return _temporal_match_expr(subject, value, dtype, kind)
 
     if dtype.is_nested():
         if not isinstance(value, (list, tuple, dict)):
             return None, "incompatible_nested_value"
+        # A temporal value inside is held as its exact text, so compare the column so.
+        compared, literal_dtype = (
+            (exact_text_expression(subject, dtype), exact_text_dtype(dtype))
+            if holds_temporal(dtype)
+            else (subject, dtype)
+        )
         try:
-            literal = pl.lit(value, dtype=dtype)
+            literal = pl.lit(value, dtype=literal_dtype)
         except (TypeError, ValueError, pl.exceptions.PolarsError):
             return None, "incompatible_nested_schema"
-        return subject == literal, None
+        return compared == literal, None
 
     return None, "unsupported_dtype"
 
@@ -842,7 +826,7 @@ def _find_matching_row(
     """Find the row in *df* that matches *child_row* on shared columns.
 
     Returns ``(row_dict, positional_index)`` — the row dict is already
-    run through ``_jsonify_row``.  Returns ``(None, -1)`` when no match
+    run through ``_json_row``.  Returns ``(None, -1)`` when no match
     can be found — callers must handle the unresolved case rather than
     silently showing incorrect data.
 
@@ -902,7 +886,7 @@ def _find_matching_row(
                     "candidate_indices_state": match.candidate_indices_state.value,
                 }
             )
-        return _traced_row(df, idx), idx
+        return _json_row(df, idx), idx
 
     if match.status is _RowMatchStatus.AMBIGUOUS:
         relaxed = match.relaxation_reason is not None
@@ -918,7 +902,7 @@ def _find_matching_row(
                 )
             )
             if identical_count is not None:
-                candidate = _traced_row(df, match.candidate_indices[0])
+                candidate = _json_row(df, match.candidate_indices[0])
                 _record_identical_row_match(
                     diagnostics,
                     node_id=node_id,
@@ -1348,13 +1332,13 @@ def _match_parent_row(
                 and positional_match.candidate_indices == (expected_index,)
             ):
                 return (
-                    _traced_row(parent_df, child_row_idx),
+                    _json_row(parent_df, child_row_idx),
                     child_row_idx,
                     len(match_row),
                 )
         elif len(parent_df) == 1 or not child_may_reorder:
             return (
-                _traced_row(parent_df, child_row_idx),
+                _json_row(parent_df, child_row_idx),
                 child_row_idx,
                 len(match_row),
             )
@@ -1453,11 +1437,12 @@ def _correlate_rows_posthoc(
             f"row_index {row_index} is out of range (target node has {len(target_df)} rows)"
         )
 
+    # Step 1: extract the target row — this is exactly what the user clicked
+
     result: dict[str, dict[str, Any] | None] = {}
     row_indices: dict[str, int] = {}  # track positional index per node
 
-    # Step 1: extract the target row — this is exactly what the user clicked
-    result[target_node_id] = _traced_row(target_df, row_index)
+    result[target_node_id] = _json_row(target_df, row_index)
     row_indices[target_node_id] = row_index
 
     # Step 2: build children_of (reverse of parents_of)
@@ -2314,8 +2299,9 @@ class RowScopeResolver:
                 for name, value in carried.items()
                 if value is not None and (name not in other_columns or name in input_join_keys)
             }
-        # A grouping that reads every input row aggregates exactly the rows
-        # sharing all its keys — provided every key is carried unchanged.
+        # A grouping that reads every input row and carries its keys to the
+        # output aggregates exactly the rows sharing all its keys, so the row
+        # names its group when it holds every key's value.
         aggregated = (
             proof.whole_groups
             and proof.restricted_to.get(proof_input) is not None
@@ -2443,7 +2429,7 @@ class RowScopeResolver:
             )
             if transferred is not None:
                 self._record_frame(parent_id, source_handle, transferred)
-                row = _traced_row(transferred, 0)
+                row = _json_row(transferred, 0)
                 matches.append((source_handle, row, 0, transferred.width, transferred, False, ()))
                 continue
             carried = self._carried_values(

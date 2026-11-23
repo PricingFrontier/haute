@@ -522,6 +522,94 @@ def test_final_test_positions_never_enter_any_selection_fit(tmp_path: Path) -> N
         assert final_test.isdisjoint(fit.validation_positions)
 
 
+#: 2024-01-01 in nanoseconds from 1970.
+_NS_2024 = 1_704_067_200_000_000_000
+_NS_PER_DAY = 86_400_000_000_000
+
+
+def _planned_source(
+    tmp_path: Path, key: pl.Series, evaluation: dict[str, object]
+) -> EvaluationPlan:
+    """The plan a training run builds over a source whose evaluation key is *key*."""
+    source = tmp_path / "source.parquet"
+    rows = len(key)
+    pl.DataFrame({"y": list(range(rows)), "feature": list(range(rows)), "key": key}).write_parquet(
+        source
+    )
+    job = TrainingJob(
+        name="model",
+        data=str(source),
+        target="y",
+        metrics=["rmse"],
+        output_dir=str(tmp_path),
+        evaluation=evaluation,
+    )
+    return job._build_evaluation_plan(_PreparedData(str(source), False, ["feature"], [], rows))
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [pl.Datetime("ns"), pl.Datetime("ns", "Europe/London"), pl.Time(), pl.Duration("ns")],
+    ids=str,
+)
+def test_group_values_apart_below_a_microsecond_stay_separate_groups(
+    tmp_path: Path, dtype: pl.DataType
+) -> None:
+    # Four groups of two rows, each pair 100 ns apart: Python's microseconds would merge
+    # them into two, and a duration would not key at all.
+    base = 3_600_000_000_000 if dtype == pl.Time() else _NS_2024
+    physical = [base + offset for offset in (0, 100, 1_000_000_000, 1_000_000_100) for _ in "ab"]
+    key = pl.Series("key", physical, dtype=pl.Int64).cast(dtype)
+
+    plan = _planned_source(
+        tmp_path,
+        key,
+        {
+            "schema_version": 1,
+            "strategy": "group",
+            "group_column": "key",
+            "seed": 3,
+            "validation": {"method": "cross_validation", "fold_count": 2},
+        },
+    )
+
+    assert plan.summary["development_group_count"] == 4
+    for fit in plan.validation_fits:
+        validated = {physical[position] for position in fit.validation_positions}
+        trained = {physical[position] for position in fit.train_positions}
+        assert validated.isdisjoint(trained)
+
+
+def test_dates_apart_below_a_microsecond_stay_separate_dates(tmp_path: Path) -> None:
+    # Three days, each with a second value 100 ns later; the final test is the last day.
+    physical = [_NS_2024 + day * _NS_PER_DAY + offset for day in range(3) for offset in (0, 100)]
+    key = pl.Series("key", physical, dtype=pl.Int64).cast(pl.Datetime("ns"))
+    temporal = {"schema_version": 1, "strategy": "temporal", "date_column": "key"}
+
+    folds = _planned_source(
+        tmp_path,
+        key,
+        {
+            **temporal,
+            "test": {"start": "2024-01-03"},
+            "validation": {"method": "cross_validation", "fold_count": 3, "window": "expanding"},
+        },
+    )
+    assert folds.summary["development_date_count"] == 4
+    assert folds.summary["test_date_count"] == 2
+    assert folds.validation_fits[0].train_positions == (0,)
+    assert folds.validation_fits[0].validation_positions == (1,)
+
+    # A boundary 100 ns after midnight puts midnight alone before it.
+    holdout = _planned_source(
+        tmp_path,
+        key,
+        {**temporal, "validation": {"method": "single", "start": "2024-01-01T00:00:00.000000100"}},
+    )
+    assert holdout.validation_fits[0].train_positions == (0,)
+    assert holdout.validation_fits[0].validation_positions == (1, 2, 3, 4, 5)
+
+
 def test_failure_cleans_all_staged_evaluation_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -734,78 +822,3 @@ def test_real_holdout_fit_can_be_saved_without_refit(
         response_refit_on_development=False,
     )
     assert validated["fit_count"] == 1
-
-
-@pytest.mark.parametrize("dtype", [pl.Datetime("ns"), pl.Time, pl.Duration("ns")])
-def test_group_values_that_differ_below_a_microsecond_stay_separate_groups(
-    tmp_path: Path, dtype: pl.DataType
-) -> None:
-    """MDL-04 (IOL-08): a group column's values are keyed by their exact text, so two
-    values 100 ns apart are two groups, and a duration groups at all."""
-    source = tmp_path / "source.parquet"
-    physical = [100, 100, 200, 200, 300, 300, 400, 400]
-    pl.DataFrame(
-        {
-            "y": [float(n) for n in range(8)],
-            "feature": list(range(8)),
-            "at": pl.Series(physical, dtype=pl.Int64).cast(dtype),
-        }
-    ).write_parquet(source)
-    config = {
-        "schema_version": 1,
-        "strategy": "group",
-        "group_column": "at",
-        "seed": 9,
-        "validation": {"method": "cross_validation", "fold_count": 2},
-    }
-    job = TrainingJob(
-        name="model",
-        data=str(source),
-        target="y",
-        metrics=["rmse"],
-        output_dir=str(tmp_path),
-        evaluation=config,
-    )
-
-    plan = job._build_evaluation_plan(_PreparedData(str(source), False, ["feature"], [], 8))
-
-    assert plan.summary["development_group_count"] == 4
-    for fit in plan.validation_fits:
-        # A group is never split: each pair of equal values lands together.
-        for first in range(0, 8, 2):
-            assert (first in fit.validation_positions) == (first + 1 in fit.validation_positions)
-
-
-def test_dates_that_differ_below_a_microsecond_stay_separate_dates(tmp_path: Path) -> None:
-    """MDL-04 (IOL-08): a temporal plan counts distinct dates by their exact text."""
-    source = tmp_path / "source.parquet"
-    base = 1_700_000_000_000_000_000
-    pl.DataFrame(
-        {
-            "y": [float(n) for n in range(6)],
-            "feature": list(range(6)),
-            "at": pl.Series([base + 100 * n for n in range(6)], dtype=pl.Int64).cast(
-                pl.Datetime("ns")
-            ),
-        }
-    ).write_parquet(source)
-    job = TrainingJob(
-        name="model",
-        data=str(source),
-        target="y",
-        metrics=["rmse"],
-        output_dir=str(tmp_path),
-        evaluation={
-            "schema_version": 1,
-            "strategy": "temporal",
-            "date_column": "at",
-            "validation": {"method": "cross_validation", "fold_count": 2, "window": "expanding"},
-        },
-    )
-
-    plan = job._build_evaluation_plan(_PreparedData(str(source), False, ["feature"], [], 6))
-
-    # Six distinct dates in three blocks: two expanding fits.
-    assert plan.validation_fits[0].train_positions == (0, 1)
-    assert plan.validation_fits[0].validation_positions == (2, 3)
-    assert plan.validation_fits[1].validation_positions == (4, 5)

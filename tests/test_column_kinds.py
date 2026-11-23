@@ -562,11 +562,9 @@ def test_a_traced_value_is_shown_at_its_columns_own_width(dtype: pl.DataType) ->
 def test_a_traced_value_matches_its_row_in_a_column_of_every_kind_or_says_why_not(
     dtype: pl.DataType,
 ) -> None:
-    from haute._temporal_text import with_temporal_text
     from haute._trace_correlation import _typed_value_match_expr
 
-    # A traced row carries a datetime, time or duration as its exact text.
-    values = with_temporal_text(pl.DataFrame([sample_column(dtype)]))["x"].to_list()
+    values = _python_values(dtype)
     expression, reason = _typed_value_match_expr("x", values[0], dtype)
     # A trace matches a value of every kind but an object's and an extension's, which
     # Haute reads as its storage type before a pipeline sees it.
@@ -719,13 +717,7 @@ _NOT_DRIVEN: dict[str, str] = {
     ),
     "src/haute/_trace_enrichment.py": (
         "rounds a traced comparison through a float narrower than the Float64 trace boundary, "
-        "by Polars' is_float(), and reads a traced Datetime value back into its column's type "
-        "before a date breakpoint compares it (tests/test_trace_temporal_values.py)"
-    ),
-    "src/haute/_optimiser_apply_explainability.py": (
-        "compares a clicked datetime, time or duration value through the trace's typed match, "
-        "which test_a_traced_value_matches_its_row_in_a_column_of_every_kind_or_says_why_not "
-        "drives with every kind"
+        "by Polars' is_float()"
     ),
     "src/haute/assistant/_application.py": (
         "refuses an assistant edit that bands a float or temporal column categorically, by "
@@ -748,6 +740,10 @@ _NOT_DRIVEN: dict[str, str] = {
     "src/haute/_workbench_test_quotes.py": _PYTHON_NUMBER,
     "src/haute/modelling/_training_job.py": _PYTHON_NUMBER,
     "src/haute/modelling/_tuning.py": _PYTHON_NUMBER,
+    "src/haute/modelling/_tboost.py": (
+        "writes a time or duration group column's labels with temporal_text, as Polars' String "
+        "cast drops a time's fraction and refuses a duration (tests/test_tboost_family.py)"
+    ),
 }
 
 

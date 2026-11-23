@@ -353,6 +353,94 @@ class TestWindowFunctionFallback:
 
 
 # ===========================================================================
+# CATEGORY 4b: A column written inside a block
+# ===========================================================================
+
+_DISCOUNT_BRANCHES = (
+    "df = src\n"
+    "if APPLY_DISCOUNT:\n"
+    '    df = df.with_columns((pl.col("base") * 0.9).alias("premium"))\n'
+    "else:\n"
+    '    df = df.with_columns(pl.col("base").alias("premium"))\n'
+)
+
+
+def _three_nodes(tmp_path, code: str):
+    p = tmp_path / "data.parquet"
+    pl.DataFrame({"base": [100.0]}).write_parquet(p)
+    return _g(
+        {
+            "nodes": [
+                _source_node("src", str(p)),
+                _transform_node("t", code),
+                _transform_node("u", "df = t"),
+            ],
+            "edges": [_edge("src", "t"), _edge("t", "u")],
+        }
+    )
+
+
+class TestBlockWrite:
+    """A column one of two branches writes is explained by the value the run gave it,
+    never by the formula of a branch, the one that did not run included."""
+
+    @pytest.mark.parametrize(("flag", "premium"), [(True, 90.0), (False, 100.0)])
+    def test_the_value_comes_from_the_run_and_no_branch_is_shown(self, tmp_path, flag, premium):
+        graph = _three_nodes(tmp_path, _DISCOUNT_BRANCHES)
+
+        result = execute_trace(
+            graph,
+            row_index=0,
+            target_node_id="u",
+            column="premium",
+            preamble_ns={"APPLY_DISCOUNT": flag},
+        )
+
+        assert result.output_value == premium
+        for node_id in ("t", "u"):
+            calculation = _step_by_id(result, node_id).calculation
+            assert calculation is not None
+            assert calculation["not_computable_reason"] == "branch_dependent: if"
+            assert calculation["result_value"] == premium
+            assert calculation["result_source"] == "trace_execution"
+            assert calculation["substituted_text"] == _DISCOUNT_BRANCHES
+            assert calculation["input_values"] == {}
+            # The else branch copies base; the value is not followed back through it.
+            assert "rename_chain" not in calculation
+
+    @pytest.mark.parametrize(("flag", "rate"), [(True, 0.9), (False, 1.0)])
+    def test_a_chain_reads_a_block_written_column_from_the_run(self, tmp_path, flag, rate):
+        code = (
+            "df = src\n"
+            "if APPLY_DISCOUNT:\n"
+            "    df = df.with_columns(rate=pl.lit(0.9))\n"
+            "else:\n"
+            "    df = df.with_columns(rate=pl.lit(1.0))\n"
+            'df = df.with_columns(premium=pl.col("base") * pl.col("rate"))\n'
+        )
+        graph = _three_nodes(tmp_path, code)
+
+        result = execute_trace(
+            graph,
+            row_index=0,
+            target_node_id="t",
+            column="premium",
+            preamble_ns={"APPLY_DISCOUNT": flag},
+        )
+
+        calculation = _step_by_id(result, "t").calculation
+        assert calculation is not None
+        assert calculation["result_value"] == pytest.approx(100.0 * rate)
+        rate_entry, premium_entry = calculation["expression_chain"]
+        assert rate_entry["target_column"] == "rate"
+        assert rate_entry["expression_type"] == "opaque"
+        assert rate_entry["not_computable_reason"] == "branch_dependent: if"
+        assert rate_entry["result_value"] == rate
+        assert rate_entry["result_source"] == "trace_execution"
+        assert premium_entry["result_value"] == pytest.approx(100.0 * rate)
+
+
+# ===========================================================================
 # CATEGORY 5: Intra-Node Dependency Chain (5 tests)
 # ===========================================================================
 

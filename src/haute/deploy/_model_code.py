@@ -21,11 +21,15 @@ if TYPE_CHECKING:
 
 def _plain(value: Any) -> Any:
     """*value* as JSON holds it: numpy's scalars and arrays, which a pandas frame built
-    by hand may carry inside a table, as Python's own."""
+    by hand may carry inside a table, as Python's own, and a ``datetime64`` as its ISO
+    text at its own precision (``item()`` would give a nanosecond one as a bare integer,
+    and a Python ``datetime`` holds only microseconds), a missing one as null."""
     if isinstance(value, dict):
         return {key: _plain(item) for key, item in value.items()}
     if isinstance(value, list | tuple | np.ndarray):
         return [_plain(item) for item in value]
+    if isinstance(value, np.datetime64):
+        return None if np.isnat(value) else str(np.datetime_as_string(value))
     if isinstance(value, np.generic):
         return value.item()
     return value

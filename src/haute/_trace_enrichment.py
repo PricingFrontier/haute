@@ -29,8 +29,8 @@ import dataclasses
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -50,20 +50,21 @@ from haute._graph_utils import edge_input_name, select_edge_source_output
 from haute._logging import get_logger
 from haute._node_specs import node_type_table
 from haute._node_type import NodeType
-from haute._polars_dtypes import column_kind
 from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
     _breakpoints_to_rules,
     banding_categorical_claims,
-    banding_comparison_expr,
-    banding_threshold,
     normalise_combined_outputs,
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
-from haute._temporal_text import temporal_series
-from haute._trace_correlation import traced_rating_key
+from haute._temporal_text import (
+    TemporalTextError,
+    frame_from_exact_rows,
+    holds_temporal,
+    wall_clock_nanoseconds,
+)
 
 if TYPE_CHECKING:
     from haute._types import GraphEdge, GraphNode
@@ -107,12 +108,11 @@ def _enrich_single_table(
         default_val = None
 
     # Try to find the matched entry in the table.  Keys are compared in
-    # the engine's canonical form (shared ``normalise_rating_key`` for an
-    # entry, ``traced_rating_key`` for the traced value, whose temporal text
-    # is keyed exactly), so the matched/default flags here cannot diverge
-    # from what the rating lookup join actually did (e.g. int-like float
-    # 25.0 matching the string key "25").  Null keys never match the join,
-    # so a null input key skips entry matching entirely.
+    # the engine's canonical form (shared ``normalise_rating_key``), so
+    # the matched/default flags here cannot diverge from what the
+    # rating lookup join actually did (e.g. int-like float 25.0 matching
+    # the string key "25").  Null keys never match the join, so a null
+    # input key skips entry matching entirely.
     matched_entry: dict[str, Any] | None = None
     if entries:
         resolved_dtypes = factor_input_dtypes or {}
@@ -123,7 +123,10 @@ def _enrich_single_table(
                 f"factor(s) {missing_dtypes!r}"
             )
         input_keys = {
-            factor: traced_rating_key(input_row.get(factor), resolved_dtypes[factor])
+            factor: normalise_rating_key(
+                input_row.get(factor),
+                resolved_dtypes[factor],
+            )
             for factor in factors
         }
         if all(key is not None for key in input_keys.values()):
@@ -295,7 +298,8 @@ def _match_interval_rule(
     for op, threshold in comparators:
         fn = SUPPORTED_BANDING_OPERATORS[op]
         if isinstance(threshold, date):
-            if not _temporal_rule_holds(input_value, op, threshold, input_dtype):
+            pair = _temporal_trace_pair(input_value, threshold)
+            if pair is None or not fn(*pair):
                 return False
             continue
         try:
@@ -308,29 +312,37 @@ def _match_interval_rule(
     return True
 
 
-def _temporal_rule_holds(value: Any, op: str, threshold: date, dtype: pl.DataType | None) -> bool:
-    """Whether a traced Date or Datetime *value* meets one date or date-and-time boundary,
-    compared in Polars as the runtime compares its column (``banding_comparison_expr``).
+_EPOCH_DAY = date(1970, 1, 1)
+_NANOSECONDS_PER_DAY = 86_400 * 1_000_000_000
+
+
+def _temporal_trace_pair(value: Any, threshold: date) -> tuple[Any, Any] | None:
+    """*value* and *threshold* as a date or date-and-time boundary compares them, as the
+    runtime does.
 
     A date boundary compares the calendar date and a date-and-time boundary the
-    wall-clock time, both in the column's own time zone. The traced value is its exact
-    text, read back into the column's own type and compared by the runtime's own
-    expression and operator, so the trace makes the comparison the run made rather
-    than one through a Python ``datetime``, which holds microseconds. A pairing the
-    runtime refuses (a date-and-time boundary on a Date column) is refused here too.
+    wall-clock time, both in the column's own time zone, which is the zone a
+    traced time-zoned value already carries. The wall-clock time is compared in
+    nanoseconds, read from the value's exact text (``wall_clock_nanoseconds``), so a
+    value inside a boundary's microsecond falls on its own side of it. A value of the
+    wrong kind (a plain date against a time) is one the runtime refuses, so it matches
+    nothing.
     """
-    if dtype is None:
-        raise ValueError("Cannot match a date breakpoint without the banded column's dtype.")
-    kind: Literal["date", "datetime"] = "datetime" if isinstance(threshold, datetime) else "date"
-    if column_kind(dtype) == "datetime":
-        values = temporal_series("value", [value], dtype)
-    else:
-        values = pl.Series("value", [date.fromisoformat(value)], dtype=dtype)
-    compared = banding_comparison_expr(pl.col("value"), dtype, kind)
-    holds = values.to_frame().select(
-        SUPPORTED_BANDING_OPERATORS[op](compared, banding_threshold(threshold, dtype))
-    )
-    return bool(holds.item())
+    if isinstance(value, date) and not isinstance(value, datetime):
+        if isinstance(threshold, datetime):
+            return None
+        value = value.isoformat()
+    elif isinstance(value, datetime):
+        value = value.isoformat()
+    if not isinstance(value, str):
+        return None
+    try:
+        observed = wall_clock_nanoseconds(value)
+    except TemporalTextError:
+        return None
+    if isinstance(threshold, datetime):
+        return observed, wall_clock_nanoseconds(threshold.replace(tzinfo=None).isoformat())
+    return _EPOCH_DAY + timedelta(days=observed // _NANOSECONDS_PER_DAY), threshold
 
 
 def _values_equivalent(left: Any, right: Any) -> bool:
@@ -543,7 +555,7 @@ def enrich_banding(
                     claims = banding_categorical_claims(
                         raw_rules, input_dtype, output_column=out_col, column=col
                     )
-                    input_key = traced_rating_key(input_value, input_dtype)
+                    input_key = normalise_rating_key(input_value, input_dtype)
                     claim = None if input_key is None else claims.get(input_key)
                     if claim is not None and _values_equivalent(claim[1], selected_band):
                         rule_index = claim[0]
@@ -1415,7 +1427,13 @@ def _chain_feed(
     ):
         return row.drop(target, strict=False)
     dtype = step.output_row.schema.get(target) if step.output_row is not None else None
-    return row.with_columns(pl.Series(target, [shown["result_value"]], dtype=dtype))
+    value = shown["result_value"]
+    if dtype is not None and holds_temporal(dtype):
+        # A datetime, time or duration result, nested ones included, is its exact text:
+        # read back exactly, through the one way exact rows become a frame again.
+        fed = frame_from_exact_rows([{target: value}], {target: dtype})
+        return row.with_columns(fed.get_column(target))
+    return row.with_columns(pl.Series(target, [value], dtype=dtype))
 
 
 def _typed_values(step: TraceStep) -> pl.DataFrame | None:
@@ -1445,13 +1463,18 @@ def _assignment_row(step: TraceStep, column: str, parsed: Any, code: str) -> pl.
     return row if phases is None else _row_before_call(row, step, phases)
 
 
+#: The reasons one row cannot compute a column whose value the trace's own execution gives.
+_EXECUTION_VALUE_REASONS = ("not_row_local:", "branch_dependent:")
+
+
 def _with_execution_value(
     calculation: dict[str, Any], step: TraceStep, column: str
 ) -> dict[str, Any]:
     """Show a formula's full-context value where one row cannot compute it.
 
     A formula that needs other rows (a window, aggregation, shift, or an
-    operation not known to be row-local) is not evaluated on the traced row.
+    operation not known to be row-local) is not evaluated on the traced row,
+    and a column written inside a block has no one formula to evaluate.
     Its value there is the one the trace's own execution computed: the step's
     output for *column*. ``result_source`` marks it as coming from that
     execution, and ``not_computable_reason`` still says why one row could not.
@@ -1459,7 +1482,7 @@ def _with_execution_value(
     reason = calculation.get("not_computable_reason")
     if (
         isinstance(reason, str)
-        and reason.startswith("not_row_local")
+        and reason.startswith(_EXECUTION_VALUE_REASONS)
         and column in step.output_values
     ):
         calculation["result_value"] = step.output_values[column]

@@ -29,7 +29,7 @@ from haute._polars_dtypes import (
     column_kind,
     numpy_float_type,
 )
-from haute._temporal_text import with_temporal_text
+from haute._temporal_text import is_temporal, temporal_text
 from haute.errors import RequestRefusedError, UnprocessableError
 from haute.routes._optimiser_adjustments import (
     BASE_PRICE,
@@ -354,7 +354,8 @@ def _categorical_levels(
 ) -> list[dict[str, Any]]:
     """Level rows of a top-15 grouping: the values, Other, then Missing."""
     levels = []
-    for row, label in zip(rows.iter_rows(named=True), labels, strict=True):
+    figures = rows.select(_BUCKET, _MERGED, *_sum_columns(spec))
+    for row, label in zip(figures.iter_rows(named=True), labels, strict=True):
         bucket = int(row[_BUCKET])
         if bucket < MAX_CATEGORICAL_LEVELS:
             kind, merged = "value", None
@@ -410,11 +411,17 @@ class AnalysisSegments:
         if self.binning == "numeric":
             rows, n_levels = self._numeric(frames, joined, missing, dtype, spec)
         else:
-            level = pl.when(missing).then(None).otherwise(_level_text(value, dtype)).alias(_LEVEL)
+            # A datetime or time is grouped and ordered by its own values, and only the
+            # levels listed are written as text.
+            temporal = is_temporal(dtype)
+            key = value if temporal else value.cast(pl.String)
+            level = pl.when(missing).then(None).otherwise(key).alias(_LEVEL)
             grouped = frames.collect(
                 _top_levels(joined.with_columns(level), [_LEVEL], spec, has_missing=True)
             )
             n_levels = _require_level_limit(self.column, grouped)
+            if temporal:
+                grouped = grouped.with_columns(_level_text(pl.col(_LEVEL), dtype).alias(_LEVEL))
             rows = _categorical_levels(grouped, [str(v) for v in grouped[_LEVEL]], spec)
         frame = pl.DataFrame(rows, infer_schema_length=None)
         _require_every_quote(frame, row_count)
@@ -508,7 +515,7 @@ class FactorLevelSegments:
     def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
         import polars as pl
 
-        from haute.routes._optimiser_solver import _ratebook_factor_level_keys
+        from haute.routes._optimiser_solver import ratebook_factor_level_labels
 
         if frames.factors is None:
             raise RuntimeError("Factor segments need the leased ratebook factor rows.")
@@ -521,23 +528,20 @@ class FactorLevelSegments:
             )
         )
         n_levels = _require_level_limit(self.factor, grouped)
-        labels = _ratebook_factor_level_keys(grouped, columns, dtypes)
+        labels = ratebook_factor_level_labels(grouped, columns, dtypes)
         frame = pl.DataFrame(_categorical_levels(grouped, labels, spec), infer_schema_length=None)
         _require_every_quote(frame, row_count)
         return ChoiceQueryResult(rows=frame, total=n_levels, quotes=row_count)
 
 
-def _level_text(value: pl.Expr, dtype: pl.DataType) -> pl.Expr:
-    """A categorical level's label, written in the query: a datetime, time or duration as
-    its exact text (``cast(pl.String)`` drops a Time's fraction and Python a value's
-    nanoseconds, so levels that differ only there would be one level)."""
+def _level_text(level: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """A datetime or time level's label: a time's exact text (``cast(pl.String)`` drops its
+    whole fraction), a datetime as Polars writes it, with its unit's digits (nine for ``ns``)."""
     import polars as pl
 
-    from haute._temporal_text import TEMPORAL_TEXT_KINDS, temporal_text
-
-    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
-        return temporal_text(value, dtype)
-    return value.cast(pl.String)
+    if column_kind(dtype) == "time":
+        return temporal_text(level, dtype)
+    return level.cast(pl.String)
 
 
 def _format_bound(value: Any, dtype: pl.DataType) -> str:
@@ -585,8 +589,7 @@ def segments_response(
     otherwise a level whose weight totals 0 has no weighted figures. Each refusal
     is a ``diagnostics_errors`` entry.
     """
-    # An analysis column's temporal value as its exact text, every digit kept.
-    rows = with_temporal_text(result.rows).to_dicts()
+    rows = result.rows.to_dicts()
     label = weight_label(spec, weight)
     if label is None:
         raise ValueError(f"{weight!r} is not a weighting of this target.")

@@ -104,15 +104,19 @@ class TestJsonSafe:
 
     @pytest.mark.parametrize(
         "value",
-        [datetime(2026, 4, 23, 10, 5, 3), time(10, 5, 3), timedelta(seconds=30)],
+        [datetime(2026, 4, 23, 10, 5, 3), time(10, 5, 3), timedelta(seconds=2)],
         ids=type,
     )
-    def test_provider_scalar_renderer_refuses_a_python_temporal_value(self, value) -> None:
-        # A Python datetime, time or timedelta holds microseconds, so a nanosecond
-        # value has already lost digits by the time it is one: such a column reaches
-        # the renderer as its exact text, and a site that went round that fails here.
-        with pytest.raises(TypeError, match="with_temporal_text"):
+    def test_provider_scalar_renderer_refuses_a_value_python_holds_to_the_microsecond(
+        self, value: object
+    ) -> None:
+        # A nanosecond column's value read into Python has lost three digits already:
+        # the summariser writes its exact text in Polars before it reaches the renderer.
+        with pytest.raises(TypeError, match="exact text"):
             json_safe_scalar(value)
+
+    def test_provider_scalar_renderer_writes_a_date_as_its_iso_text(self) -> None:
+        assert json_safe_scalar(date(2026, 4, 23)) == "2026-04-23"
 
 
 class TestContracts:

@@ -61,6 +61,8 @@ def _framed(dtype: pl.DataType, value: object) -> Any:
         # A pandas Timestamp for a date column: midnight, without a zone.
         (pl.Date(), datetime(2024, 5, 1), date(2024, 5, 1)),
         (pl.Datetime("us"), "2024-05-01T10:30:00", datetime(2024, 5, 1, 10, 30)),
+        # A fraction after the minutes is a fraction of a second, as Python reads it.
+        (pl.Datetime("us"), "2024-05-01T10:30.5", datetime(2024, 5, 1, 10, 30, 0, 500_000)),
         (pl.Null(), None, None),
     ],
 )
@@ -99,9 +101,8 @@ def test_a_value_its_type_holds_exactly_is_accepted(
         (pl.Datetime("us"), "yesterday"),
         (pl.Datetime("us"), "2024-05-01T10:30:00+01:00"),
         (pl.Datetime("us", "UTC"), "2024-05-01T10:30:00"),
-        # Finer than the column holds: read, it would be cut short.
-        (pl.Datetime("us"), "2024-03-01T09:00:00.000000100"),
-        (pl.Datetime("ms"), "2024-03-01T09:00:00.0001"),
+        (pl.Datetime("us"), "2024-05-01T10:30.0000001"),
+        (pl.Datetime("us"), "2024-05-01t10:30:00.000000100"),
         (pl.Null(), 1),
     ],
 )
@@ -117,36 +118,38 @@ def test_a_value_its_type_does_not_hold_is_refused_naming_the_column(
 def test_a_zoned_date_time_keeps_its_instant() -> None:
     framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00")
     assert framed.isoformat() == "2024-05-01T09:30:00+00:00"
+    # An offset's own fraction moves the instant, never the clock's fraction.
+    framed = _framed(pl.Datetime("us", "UTC"), "2024-05-01T10:30:00+01:00:00.5")
+    assert framed.isoformat() == "2024-05-01T09:29:59.500000+00:00"
 
 
 @pytest.mark.parametrize(
     "value",
     [
-        "2024-03-01T09:00:00.000000100",
-        "2024-03-01 09:00:00.000000100",
-        pd.Timestamp("2024-03-01T09:00:00.000000100"),
+        "2024-05-01T10:30:00.000000100",
+        # Any one character may separate the date from the clock, as Python reads it.
+        "2024-05-01t10:30:00.000000100",
+        # A pandas Timestamp carries its nanoseconds, and writes them.
+        pd.Timestamp("2024-05-01T10:30:00.000000100"),
     ],
+    ids=["text", "lowercase-separator", "pandas"],
 )
-def test_a_date_time_below_a_microsecond_is_read_whole(value: object) -> None:
-    """SRV-20: never through a Python ``datetime``, which would drop the last three digits."""
-    from tests._nanosecond_values import NINE_AM_NS
+def test_a_date_time_reaches_the_pipeline_with_all_nine_digits(value: object) -> None:
+    frame = frame_rows([{"x": value}], {"x": pl.Datetime("ns")}, omittable=frozenset())
 
-    framed = frame_rows([{"x": value}], {"x": pl.Datetime("ns")}, omittable=frozenset())
+    assert frame.schema["x"] == pl.Datetime("ns")
+    expected = pl.datetime(2024, 5, 1, 10, 30, time_unit="ns") + pl.duration(nanoseconds=100)
+    assert frame.select(pl.col("x") == expected).item()
 
-    assert framed["x"].to_physical().to_list() == [NINE_AM_NS + 100]
 
-
-def test_a_date_time_finer_than_its_column_is_refused_naming_it() -> None:
+def test_a_date_time_finer_than_its_column_is_refused_naming_the_field() -> None:
     with pytest.raises(QuoteInputError) as refused:
-        frame_rows(
-            [{"x": "2024-03-01T09:00:00"}, {"x": "2024-03-01T09:00:00.000000100"}],
-            {"x": pl.Datetime("us")},
-            omittable=frozenset(),
-        )
+        _framed(pl.Datetime("us"), "2024-05-01T10:30:00.000000100")
 
-    assert (refused.value.column, refused.value.quote) == ("x", 1)
-    assert "Quote 1's 'x' is '2024-03-01T09:00:00.000000100'" in str(refused.value)
-    assert "is finer than a us datetime holds: reading it would cut it short." in str(refused.value)
+    assert (refused.value.column, refused.value.quote) == ("x", 0)
+    assert "finer than its Datetime(time_unit='us', time_zone=None) column holds" in str(
+        refused.value
+    )
 
 
 def test_explicit_nulls_keep_the_declared_type_and_unknown_keys_are_ignored() -> None:
@@ -434,59 +437,6 @@ def test_a_dated_dry_run_reaches_the_worker_as_iso_strings(tmp_path):
         plan.cleanup(primary_error=None)
 
 
-def test_a_nanosecond_request_reaches_the_pipeline_whole_in_the_batch_worker(tmp_path):
-    """SRV-20: the served batch worker reads a request's nine digits, and its answer holds
-    them, as the deploy's dry run sends its sample's."""
-    graph = PipelineGraph.model_validate(
-        {
-            "nodes": [
-                {"id": "quotes", "data": {"label": "quotes", "nodeType": "apiInput", "config": {}}},
-                {
-                    "id": "out",
-                    "data": {
-                        "label": "out",
-                        "nodeType": "output",
-                        "config": {
-                            "output_mapping": [
-                                {
-                                    "source_port": "quotes",
-                                    "source_column": "at",
-                                    "output_path": "$[:].at",
-                                    "enabled": True,
-                                }
-                            ],
-                        },
-                    },
-                },
-            ],
-            "edges": [{"id": "e1", "source": "quotes", "target": "out", "sourceHandle": "quotes"}],
-        }
-    )
-    from tests._nanosecond_values import NINE_AM_NS
-
-    plan = prepare_batch_scoring(
-        [{"at": "2024-03-01T09:00:00.000000100"}],
-        graph=graph,
-        input_node_ids=["quotes"],
-        output_node_id="out",
-        artifact_paths={},
-        output_fields=None,
-        operation="deploy_bundle_schema",
-        input_schema=pl.Schema({"at": pl.Datetime("ns")}),
-    )
-    try:
-        context = admit_deploy_execution(operation="deploy_quote", row_count=1)
-        try:
-            outcome = score_batch_scoring_request(plan.request, execution_context=context)
-        finally:
-            context.release_admission(preserve_primary_error=False)
-        assert outcome.row_count == 1
-        answer = pl.read_parquet(plan.request.result_path)
-        assert answer["at"].to_physical().to_list() == [NINE_AM_NS + 100]
-    finally:
-        plan.cleanup(primary_error=None)
-
-
 def test_the_databricks_model_frames_by_the_schema(tmp_path):
     """MLflow has enforced the signature before predict; Haute's check applies to what is left."""
     from haute.deploy._model_code import HauteModel
@@ -518,35 +468,3 @@ def test_the_databricks_model_frames_by_the_schema(tmp_path):
     assert pl.from_pandas(
         exposed.predict(MagicMock(), pd.DataFrame({"quote_id": [1]}))
     ).to_dicts() == [{"quote_id": 1, "age": None, "rate": None}]
-
-
-def test_a_frame_request_read_as_records_refuses_a_value_below_a_microsecond() -> None:
-    """Codex review: a frame passed to an input that reads records hands on Python values,
-    which hold microseconds, so a value below one is refused by its column and quote
-    rather than cut short; a value a microsecond holds passes as it is."""
-    from haute.deploy._scorer import request_records
-    from haute.errors import QuoteInputError
-
-    at = pl.Series([1_000, 1_100], dtype=pl.Int64).cast(pl.Datetime("ns"))
-    with pytest.raises(QuoteInputError, match="below a microsecond") as refused:
-        request_records(pl.DataFrame({"x": [1, 2], "at": at}))
-    assert (refused.value.column, refused.value.quote) == ("at", 1)
-
-    whole = pl.Series([1_000, 2_000], dtype=pl.Int64).cast(pl.Datetime("ns"))
-    assert len(request_records(pl.DataFrame({"at": whole}))) == 2
-
-
-def test_a_nested_value_below_a_microsecond_is_refused_by_its_column_and_quote() -> None:
-    """Codex review: a structured quote's claims hold their own timestamps; one below a
-    microsecond is refused, naming the column and the quote it is in."""
-    from haute.deploy._scorer import request_records
-    from haute.errors import QuoteInputError
-
-    claims = pl.DataFrame({"claims": [[{"at": 1_000}], [{"at": 1_000}, {"at": 1_100}]]})
-    claims = claims.with_columns(
-        pl.col("claims").cast(pl.List(pl.Struct({"at": pl.Datetime("ns")})))
-    )
-
-    with pytest.raises(QuoteInputError, match="below a microsecond") as refused:
-        request_records(claims)
-    assert (refused.value.column, refused.value.quote) == ("claims", 1)

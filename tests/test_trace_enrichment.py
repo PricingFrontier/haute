@@ -2845,6 +2845,9 @@ class TestEnrichBandingRealConfig:
 
     def test_a_date_band_is_credited_by_calendar_day_in_the_values_zone(self):
         """A date band compares a traced time-zoned value by its own calendar day."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2857,15 +2860,40 @@ class TestEnrichBandingRealConfig:
                 }
             ]
         }
-        # 00:30 on 1 July in London is still 30 June in UTC. A traced value is its text.
-        result = enrich_banding(
-            config,
-            {"start": "2024-07-01T00:30:00+01:00"},
-            {"start_band": "July+"},
-            factor_input_dtypes={"start": pl.Datetime("us", "Europe/London")},
-        )
+        # 00:30 on 1 July in London is still 30 June in UTC.
+        start = datetime(2024, 7, 1, 0, 30, tzinfo=ZoneInfo("Europe/London"))
+
+        result = enrich_banding(config, {"start": start}, {"start_band": "July+"})
 
         assert result["matched_band"] == "July+"
+        assert result["status"] == "matched"
+
+    @pytest.mark.parametrize(
+        ("at", "band"),
+        [
+            ("2024-03-01T09:00:00", "Until 9"),
+            # 100 ns past the bound is past it, though a Python datetime cannot say so.
+            ("2024-03-01T09:00:00.000000100", "After 9"),
+            ("2024-03-01T09:00:00.000000100+01:00", "After 9"),
+        ],
+    )
+    def test_a_date_time_band_is_credited_to_the_nanosecond(self, at, band):
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "at",
+                    "output_column": "at_band",
+                    "banding": "breakpoints",
+                    "rules": {"2024-03-01T09:00:00": "Until 9", "": "After 9"},
+                }
+            ]
+        }
+
+        result = enrich_banding(config, {"at": at}, {"at_band": band})
+
+        assert result["matched_band"] == band
         assert result["status"] == "matched"
 
     def test_compact_categorical_banding_trace_matches_rule(self):

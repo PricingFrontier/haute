@@ -14,10 +14,9 @@ from haute._builders import (
     has_ratio_constraint,
     online_apply_read_columns,
 )
-from haute._json_safe import row_to_json_safe, to_json_safe
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._node_apply import load_configured_optimiser_artifact
-from haute._polars_dtypes import column_kind
 from haute._price_contour import price_contour
 from haute._project_context import current_project
 from haute._ratebook_collar import (
@@ -29,13 +28,14 @@ from haute._rating import (
     is_rating_dtype_descriptor,
     normalise_rating_key,
     rating_dtype_descriptor,
+    rating_key_of,
 )
-from haute._temporal_text import TEMPORAL_TEXT_KINDS, with_temporal_text
+from haute._temporal_text import exact_rows, holds_temporal
 from haute._trace_correlation import (
+    _json_row,
+    _jsonify_row,
     _trace_values_match,
-    _traced_row,
     _typed_value_match_expr,
-    traced_rating_key,
 )
 
 logger = get_logger(component="optimiser_apply_explainability")
@@ -192,7 +192,7 @@ def _explain_online(
 
     candidates = [
         _online_candidate_payload(row, constraints, objective_col, step_col, value_col)
-        for row in with_temporal_text(quote_rows).iter_rows(named=True)
+        for row in exact_rows(quote_rows)
     ]
     selected = [row for row in candidates if row.get("selected") is True]
     baseline = [row for row in candidates if row.get("is_baseline") is True]
@@ -300,7 +300,7 @@ def _online_candidate_payload(
     step_col: str,
     value_col: str,
 ) -> dict[str, Any]:
-    raw = row_to_json_safe(dict(row))
+    raw = _jsonify_row(dict(row))
     payload = dict(raw)
     constraint_values: dict[str, Any] = {}
     linearised: dict[str, Any] = {}
@@ -339,7 +339,8 @@ def _explain_ratebook(
         )
     except CombinedFactorBoundsError as exc:
         raise OptimiserApplyTraceError(f"ratebook artifact {exc}") from exc
-    matched_input = _match_ratebook_input_row(parent_frame, output_row)
+    matched_frame = _match_ratebook_input_row(parent_frame, output_row)
+    matched_input = _json_row(matched_frame, 0)
     factor_tables = artifact.get("factor_tables", {}) or {}
     factor_dtypes = artifact.get("factor_dtypes")
     parent_schema = parent_frame.collect_schema()
@@ -417,11 +418,19 @@ def _explain_ratebook(
                     f"{saved_descriptor!r}, input {input_descriptor!r}"
                 )
             input_dtypes.append(input_dtype)
-        input_values = [matched_input.get(column) for column in join_columns]
+        # Each factor's key as the engine's join writes it from the frame, never from a
+        # Python value (which holds microseconds); a key is a value of its own column, so
+        # the entry match reads it back unchanged.
+        input_keys = list(
+            matched_frame.select(
+                rating_key_of(pl.col(column), dtype).alias(column)
+                for column, dtype in zip(join_columns, input_dtypes)
+            ).row(0)
+        )
         matched_entry = _match_ratebook_entry(
             valid_entries,
             join_columns,
-            input_values,
+            input_keys,
             factor_name,
             input_dtypes=input_dtypes,
         )
@@ -446,9 +455,9 @@ def _explain_ratebook(
             )
 
         if len(join_columns) == 1:
-            input_value_payload = to_json_safe(input_values[0])
+            input_value_payload = matched_input[join_columns[0]]
         else:
-            input_value_payload = to_json_safe(dict(zip(join_columns, input_values)))
+            input_value_payload = {column: matched_input[column] for column in join_columns}
 
         before = running_product
         running_product *= numeric_factor
@@ -563,21 +572,26 @@ def _required_config_column(config: dict[str, Any], key: str, *, default: str) -
 def _match_ratebook_input_row(
     parent_frame: pl.LazyFrame,
     output_row: dict[str, Any],
-) -> dict[str, Any]:
-    """Locate the ratebook input row that produced the clicked output row.
+) -> pl.DataFrame:
+    """Locate the ratebook input row that produced the clicked output row, as a one-row frame.
 
     Pushes the equality predicate into Polars (``.filter(...)``) and only
     materialises the matching row, so a ratebook trace on a large input frame
-    no longer collects the whole DataFrame and walks it in Python.
+    no longer collects the whole DataFrame and walks it in Python. A column
+    holding a datetime, time or duration value is compared exactly, in Polars,
+    on both paths (:func:`_temporal_predicate`).
     """
-    schema_names = parent_frame.collect_schema().names()
-    shared = [column for column in schema_names if column in output_row]
+    schema = parent_frame.collect_schema()
+    shared = [column for column in schema.names() if column in output_row]
     if not shared:
         raise OptimiserApplyTraceError(
             "selected ratebook input frame shares no columns with clicked output row"
         )
+    temporal = [column for column in shared if holds_temporal(schema[column])]
+    exact = _temporal_predicate(temporal, output_row, schema)
+    tolerant = [column for column in shared if column not in temporal]
 
-    predicate = _build_polars_equality_predicate(shared, output_row, parent_frame.collect_schema())
+    predicate = _build_polars_equality_predicate(tolerant, output_row, exact)
 
     # The Polars predicate is the fast path — it only materialises the
     # matching row.  Two ways the fast path can miss:
@@ -594,58 +608,76 @@ def _match_ratebook_input_row(
 
         matched = streaming_collect(parent_frame.filter(predicate).head(1))
     except pl.exceptions.PolarsError:
-        return _python_match_ratebook_input_row(parent_frame, output_row, shared)
+        return _python_match_ratebook_input_row(parent_frame, output_row, tolerant, exact)
     if matched.is_empty():
-        return _python_match_ratebook_input_row(parent_frame, output_row, shared)
-    return _traced_row(matched, 0)
+        return _python_match_ratebook_input_row(parent_frame, output_row, tolerant, exact)
+    return matched
+
+
+def _temporal_predicate(
+    columns: list[str], output_row: dict[str, Any], schema: pl.Schema
+) -> pl.Expr | None:
+    """Every column of *columns*, each holding a datetime, time or duration value, equal to
+    the clicked row's value, compared by the trace's own typed match: the column's physical
+    value against the one the value's exact text names, never a Python value, which holds
+    microseconds. ``None`` without such a column; a value it cannot compare is refused."""
+    parts: list[pl.Expr] = []
+    for column in columns:
+        value = output_row[column]
+        expression, reason = _typed_value_match_expr(column, value, schema[column])
+        if expression is None:
+            raise OptimiserApplyTraceError(
+                f"clicked ratebook output value {value!r} of {column!r} ({schema[column]}) "
+                f"cannot be compared with the input frame ({reason})"
+            )
+        parts.append(expression)
+    return pl.all_horizontal(parts) if parts else None
 
 
 def _build_polars_equality_predicate(
-    shared: list[str],
+    tolerant: list[str],
     output_row: dict[str, Any],
-    schema: pl.Schema,
+    exact: pl.Expr | None,
 ) -> pl.Expr:
-    """And-combine per-column equality predicates for the shared columns.
+    """And-combine per-column equality predicates for the *tolerant* columns and *exact*.
 
-    ``shared`` is guaranteed non-empty by the caller, so the result is always
-    a real predicate (no ``None`` to handle downstream).
+    The caller's shared columns are non-empty, so *tolerant* or *exact* holds
+    one and the result is always a real predicate.
     """
-    predicate = _polars_equality_predicate(shared[0], output_row.get(shared[0]), schema)
-    for column in shared[1:]:
-        predicate = predicate & _polars_equality_predicate(column, output_row.get(column), schema)
+    parts = [_polars_equality_predicate(column, output_row.get(column)) for column in tolerant]
+    if exact is not None:
+        parts.append(exact)
+    predicate = parts[0]
+    for part in parts[1:]:
+        predicate = predicate & part
     return predicate
 
 
-def _polars_equality_predicate(column: str, value: Any, schema: pl.Schema) -> pl.Expr:
+def _polars_equality_predicate(column: str, value: Any) -> pl.Expr:
     """Build the strictest Polars equality predicate we can for *value*.
 
     Nulls and NaN need explicit handling because Polars ``==`` propagates them.
     Floats use ``==`` for the fast path; NaN/tolerance comparisons fall through
-    to :func:`_python_match_ratebook_input_row`. A datetime, time or duration value
-    is the clicked row's exact text, compared with the column's own value by the
-    trace's typed match (a Python value would drop its nanoseconds).
+    to :func:`_python_match_ratebook_input_row`.
     """
     if value is None:
         return pl.col(column).is_null()
     if isinstance(value, float) and math.isnan(value):
         return pl.col(column).is_nan()
-    if column_kind(schema[column]) in TEMPORAL_TEXT_KINDS:
-        expression, reason = _typed_value_match_expr(column, value, schema[column])
-        if expression is None:
-            raise OptimiserApplyTraceError(
-                f"clicked ratebook output value {value!r} of column {column!r} is not a "
-                f"{schema[column]} value ({reason})"
-            )
-        return expression
     return cast(pl.Expr, pl.col(column) == value)
 
 
 def _python_match_ratebook_input_row(
     parent_frame: pl.LazyFrame,
     output_row: dict[str, Any],
-    shared: list[str],
-) -> dict[str, Any]:
-    """Fallback: scan bounded batches in Python for tolerance-aware matches."""
+    tolerant: list[str],
+    exact: pl.Expr | None,
+) -> pl.DataFrame:
+    """Fallback: scan bounded batches in Python for tolerance-aware matches.
+
+    Only *tolerant*, the columns holding no datetime, time or duration value, are read
+    into Python; the others are matched in Polars first by *exact*.
+    """
     from haute._polars_utils import bounded_collect_batches
 
     saw_row = False
@@ -658,9 +690,12 @@ def _python_match_ratebook_input_row(
         if batch.is_empty():
             continue
         saw_row = True
-        for row in with_temporal_text(batch).iter_rows(named=True):
-            if all(_values_match(row.get(column), output_row.get(column)) for column in shared):
-                return row_to_json_safe(dict(row))
+        candidates = batch if exact is None else batch.filter(exact)
+        if not tolerant and candidates.height:
+            return candidates.slice(0, 1)
+        for index, row in enumerate(candidates.select(tolerant).iter_rows(named=True)):
+            if all(_values_match(row[column], output_row.get(column)) for column in tolerant):
+                return candidates.slice(index, 1)
     if not saw_row:
         raise OptimiserApplyTraceError("selected ratebook input frame is empty")
     raise OptimiserApplyTraceError(
@@ -684,7 +719,10 @@ def _match_ratebook_entry(
     match here exactly when the engine join matched.  Composite levels are
     split into component values BEFORE normalisation, mirroring
     ``_ratebook_lookup_table``.  Null input keys never match (the engine
-    join is ``join_nulls=False``).
+    join is ``join_nulls=False``).  A trace passes each input's key as the
+    engine's join writes it from the frame (``rating_key_of``), which reads
+    back as itself, so a duration or a value below a microsecond is never
+    read through a Python value.
 
     ``_apply_rating_table`` refuses two entries for one level
     (``RatingDuplicateEntriesError``), so an applied row was rated by its
@@ -697,7 +735,7 @@ def _match_ratebook_entry(
             f"ratebook factor table {table_name!r} has misaligned dtype metadata"
         )
     input_keys = [
-        traced_rating_key(value, input_dtypes[index]) for index, value in enumerate(input_values)
+        normalise_rating_key(value, input_dtypes[index]) for index, value in enumerate(input_values)
     ]
     if any(key is None for key in input_keys):
         return None

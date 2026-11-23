@@ -30,7 +30,6 @@ from haute._execution_context import ExecutionCancellationToken, ExecutionContex
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
 from haute._project_context import current_project
-from haute._temporal_text import with_temporal_text
 from haute.errors import InvalidRequestError, UnprocessableError
 from haute.routes._node_data_service import NodeDataService
 from haute.routes._synchronous_analysis import run_synchronous_analysis
@@ -99,10 +98,8 @@ def most_common_values(
         values.select(pl.col("value").n_unique().alias("distinct")),
         execution_context=context,
     )
-    # A temporal value is shown as its exact text, as str() spells it, every digit kept.
-    rows = with_temporal_text(top, separator=" ").iter_rows(named=True)
     return (
-        [(str(row["value"]), int(row["count"])) for row in rows],
+        [(str(row["value"]), int(row["count"])) for row in top.iter_rows(named=True)],
         int(distinct.item(0, "distinct")),
     )
 

@@ -225,15 +225,11 @@ as two kinds, two frames at one level, or a frame missing a relation key), and
 collects each emitting frame exactly once, ancestors first. It never joins frames.
 The prefix-tree builder nests child arrays by ancestor values without
 joining siblings, attaching each child level's objects at its `_child_hop` below
-the parent object. Each collected level's rows are read into Python through
-`haute._temporal_text.with_temporal_text` (`_rows_from_dataframe`): every datetime,
-time and duration value, a nested one inside a `Struct`, `List` or `Array` included,
-arrives as its exact text, ISO 8601 with a `T`, nine digits for a part below a
-microsecond. A Python `datetime`, `time` or `timedelta` holds microseconds, so two
-events 100 ns apart would otherwise be one object and every timestamp the document
-carries would be cut to six digits. The document's temporal leaves are that text,
-and every identity, ancestor index and nesting match below compares it, so two
-values that differ below a microsecond stay two objects. An object's identity at a level is the tuple of its own leaf
+the parent object. Each emitting frame's rows are read through `exact_text`
+([io-layer](../io-layer/low-level.md)), so a datetime, time or duration leaf is its
+exact text, to the nanosecond: two objects whose values differ below a microsecond
+stay two, and the document carries all nine digits. An object's identity at a level
+is the tuple of its own leaf
 values, canonicalised by `_identity`: scalars (including `None`) pass through
 unchanged, while container-valued leaves (`List`, `Struct`, `Array`) are
 canonicalised into hashable tuples — recursively, with struct fields kept in
@@ -244,8 +240,8 @@ validator guarantees it), so the null guards mark the key in each frame that car
 it. A present null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
 values from objects, and removes empty-object elements from arrays; null or
 empty-list elements already present inside arrays are retained.
-`render_output_document` reads the collected Polars shape's rows the same way, each
-temporal leaf as its exact text, applies that same pruning inside each row and keeps every row, a row that prunes to nothing as `{}`, so a response holds one
+`render_output_document` applies that same pruning inside each row of the collected Polars
+shape and keeps every row, a row that prunes to nothing as `{}`, so a response holds one
 document per row of the frame (one per quote of a Workbench request) and stays aligned
 with what was asked. `pruned_document` is that pruning of one document, which every
 comparison of a whole response applies to both sides (`response_changes`).
@@ -264,23 +260,20 @@ A missing source port or column, and one output path mapped from source columns
 of different dtypes, are `OutputMappingSchemaError` rejections.
 
 `assemble_output_from_config` uses the same assembler and constructs the final
-document frame under that derived schema rather than by Python inference, which
-makes the derivation the single schema authority for both OUTPUT paths. The frame is
-built by `output_document_frame(document, schema)`, which reads each temporal leaf's
-text back as its column's own value through `haute._temporal_text.temporal_physical`
-(`temporal_frame`), so the frame holds every digit the source held; text the column's
-type does not name raises `TemporalTextError` rather than being read short. Under a
+document frame under that derived schema rather than by Python inference, its
+temporal leaves read back from their exact text through `frame_from_exact_rows`
+(each the column's physical integer, cast to the leaf's own type), which
+makes the derivation the single schema authority for both OUTPUT paths. Under a
 schema-only execution (`schema_only=True`) it returns an empty frame under the
 derived schema and never assembles; otherwise it returns a `limited_python_scan`
 (execution engine) under the same schema. A limit `n` that Polars pushes to the
 scan reaches `assemble_output_from_mapping(..., row_limit=n)` and
 `_assemble_document`: an emitting root level reads only its first `n` rows, and
 every deeper emitting level reads only the rows whose keys match its nearest
-collected ancestor level (`is_in` of the ancestor's distinct key values as a Polars
-`Series` for one key, which the scan below reads only the matching rows with, a semi
-join for several, ordered `maintain_order="left"` so the level keeps its rows' order;
-the keys are never read into Python, so a key with digits below a microsecond still
-matches its children), so each
+collected ancestor level (`is_in` of the ancestor's keys as a Series of their own
+type, so a datetime key is compared exactly and the filter still reaches the scan,
+for one key; a semi join for several, ordered
+`maintain_order="left"` so the level keeps its rows' order), so each
 returned top-level object equals the unlimited assembly's object for the same
 root rows. Root rows sharing their own-field values collapse, so fewer than `n`
 objects may return, unless the OUTPUT node's config carries the deploy scorer's private
@@ -1043,11 +1036,7 @@ V2 schema codec and OUTPUT shape:
   their own children's rows, a synthesised root is complete, duplicate root rows collapse, and a limited level
   filters on its nearest collected ancestor's own key with `is_in`, semi-joins on
   several in the level's own order, and reads every row when it carries none; a level
-  nested by two keys over 240,000 rows equals the unlimited assembly's), and
-  nanosecond values (two events 100 ns apart under one policy stay two objects whose
-  `at` carries nine digits, through the assembler and through the OUTPUT node's
-  frame and its rendering; a preview limited to one parent whose key has
-  nanoseconds keeps both its children);
+  nested by two keys over 240,000 rows equals the unlimited assembly's);
   `tests/test_output_nest_example_contract.py`
   pins the fixture-level nested-document contract, while
   `tests/test_executor_builders.py` and `tests/test_codegen_builders.py` own the

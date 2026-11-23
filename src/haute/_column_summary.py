@@ -47,17 +47,16 @@ def json_safe_scalar(value: object) -> object:
     finite float and str. Polars returns native Python objects for date and
     decimal columns — ``date``, ``Decimal`` — and either raises ``TypeError`` at
     encode time, far from the column that produced it. Numbers and strings keep
-    their JSON type so a numeric bound stays a number; everything else becomes
-    its ``str()`` form, the ISO-8601 spelling for a date and the exact digits for
-    a decimal. A ``datetime``, ``time`` or ``timedelta`` is refused: it holds
-    microseconds, so a ``Datetime("ns")``, ``Time`` or ``Duration("ns")`` value
-    has already lost digits by the time it is one. Such a column reaches this
-    as the exact text ``haute._temporal_text.with_temporal_text`` writes.
-    ``NaN`` and ``Infinity`` are not JSON either, and dropping the bound
-    would hide that the column holds them, so a non-finite float becomes the
-    tagged sentinel every Haute payload uses for one
-    (:func:`haute._json_safe.non_finite_float_sentinel`) — never the bare text
-    ``"inf"``, which a string column could hold too.
+    their JSON type so a numeric bound stays a number; a date or a decimal
+    becomes its ``str()`` form, the ISO-8601 spelling and the exact digits.
+    A ``datetime``, ``time`` or ``timedelta`` is refused: Python holds it to the
+    microsecond, so a nanosecond value read into one has lost three digits, and
+    a summariser writes such a value's exact text in Polars instead
+    (:func:`haute._temporal_text.temporal_text`). ``NaN`` and ``Infinity`` are
+    not JSON either, and dropping the bound would hide that the column holds
+    them, so a non-finite float becomes the tagged sentinel every Haute payload
+    uses for one (:func:`haute._json_safe.non_finite_float_sentinel`) — never
+    the bare text ``"inf"``, which a string column could hold too.
     """
 
     if value is None or isinstance(value, (bool, int, str)):
@@ -66,8 +65,8 @@ def json_safe_scalar(value: object) -> object:
         return value if math.isfinite(value) else non_finite_float_sentinel(value)
     if isinstance(value, (datetime, time, timedelta)):
         raise TypeError(
-            f"A {type(value).__name__} holds microseconds: write the column's values "
-            "through with_temporal_text before summarising them."
+            f"A {type(value).__name__} reaches a summary only as its exact text, written in "
+            "Polars by haute._temporal_text.temporal_text: Python holds it to the microsecond."
         )
     return str(value)
 

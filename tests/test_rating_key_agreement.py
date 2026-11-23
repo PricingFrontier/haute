@@ -50,7 +50,7 @@ from haute._rating import (
 from haute._rating_step_config import (
     normalise_rating_step_config,
 )
-from haute._trace_correlation import _traced_row
+from haute._trace_correlation import _jsonify_row
 from haute._trace_enrichment import _enrich_single_table
 from haute.errors import ConfigSettingError
 
@@ -722,8 +722,8 @@ def assert_engine_and_enrichment_agree(
 
     details: list[dict[str, Any]] = []
     for index in range(out.height):
-        input_row = _traced_row(frame, index)
-        output_row = _traced_row(out, index)
+        input_row = _jsonify_row(frame.row(index, named=True))
+        output_row = _jsonify_row(out.row(index, named=True))
         detail = _enrich_single_table(
             table,
             input_row,

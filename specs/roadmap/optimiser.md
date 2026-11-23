@@ -13,7 +13,6 @@ every assignment enumerated. The main session ran each finding again
 through the routes, the solver ones on books of 3,000 and 5,000 quotes with
 the node's default settings.
 
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -203,4 +202,3 @@ their Quotes pages answers as it does after the retention window.
 
 **Evidence:** `src/haute/routes/_optimiser_session.py::SolverSession`;
 `src/haute/routes/_job_store.py`; `specs/optimiser/high-level.md`.
-

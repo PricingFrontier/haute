@@ -25,7 +25,7 @@ import polars as pl
 from haute._execution_context import ExecutionContext, current_execution_context
 from haute._jsonpath import _ParsedPath, _Seg, make_output_path, parse_path
 from haute._polars_utils import execution_collect
-from haute._temporal_text import temporal_frame, with_temporal_text
+from haute._temporal_text import exact_text
 from haute.errors import HauteError
 
 #: A level of the document: the segments of a path through its last ``[:]``.
@@ -328,14 +328,12 @@ def _rows_from_dataframe(
 ) -> list[dict[str, Any]]:
     """Convert once to the retained row form while checking internal null markers.
 
-    Every datetime, time and duration value, nested ones included, is read as its exact
-    text (:func:`~haute._temporal_text.with_temporal_text`): a Python value holds
-    microseconds, so two values apart below one would become one object's identity and the
-    document would carry six of a nanosecond value's nine digits.
+    Each datetime, time and duration value is read as its exact text (``exact_text``), so an
+    object's identity and a leaf keep what lies below a microsecond.
     """
     progress.checkpoint(label)
     rows: list[dict[str, Any]] = []
-    for row in with_temporal_text(frame).iter_rows(named=True):
+    for row in exact_text(frame).iter_rows(named=True):
         for marker, (port, key) in marker_errors.items():
             if row.pop(marker):
                 raise OutputNestingKeyError(
@@ -600,13 +598,12 @@ def _limit_level_plan(
     keys = sorted(ancestor_own & level_paths)
     if not keys:
         return plan
-    # The keys stay Polars values, never read into Python, so a key below a microsecond
-    # still matches its children.
     ancestor_keys = collected_by_prefix[ancestor].select(keys).unique()
     first, *others = keys
     if not others:
-        # One key is a predicate the scan below can read only the matching rows with.
-        return plan.filter(pl.col(first).is_in(ancestor_keys[first].implode()))
+        # The keys stay a Series of the column's own type, compared exactly (a Python list
+        # holds a datetime to the microsecond), and the filter still reaches the scan.
+        return plan.filter(pl.col(first).is_in(ancestor_keys.get_column(first)))
     # The level's objects are its rows in first-occurrence order, so the join keeps them.
     return plan.join(ancestor_keys.lazy(), on=keys, how="semi", maintain_order="left")
 
@@ -825,14 +822,6 @@ def assemble_output_from_mapping(
     return _assemble_document(
         field_frames, row_limit=row_limit, top_level_per_row=top_level_per_row
     )
-
-
-def output_document_frame(document: list[Any], schema: pl.Schema) -> pl.DataFrame:
-    """*document*, as :func:`assemble_output_from_mapping` assembles it, as a frame of
-    *schema* (:func:`output_document_schema`): each temporal leaf read from its exact text
-    as its column's own value, every digit kept
-    (:func:`~haute._temporal_text.temporal_frame`)."""
-    return temporal_frame(document, schema)
 
 
 def _document_dtype(node: Any) -> pl.DataType:

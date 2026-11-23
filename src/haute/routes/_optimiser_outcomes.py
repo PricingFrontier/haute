@@ -758,7 +758,7 @@ class FactorSegments:
     def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
         import polars as pl
 
-        from haute.routes._optimiser_solver import _ratebook_factor_level_keys
+        from haute.routes._optimiser_solver import ratebook_factor_level_labels
 
         columns = list(spec.factor_columns[spec.factor_names.index(self.factor)])
         if frames.factors is None:
@@ -767,7 +767,7 @@ class FactorSegments:
         dtypes = [factor_schema[column] for column in columns]
         grouped = frames.collect(_largest_groups(frames.with_factors(), columns, spec, self.limit))
         total = int(grouped[_TOTAL_COLUMN][0]) if grouped.height else 0
-        levels = _ratebook_factor_level_keys(grouped, columns, dtypes)
+        levels = ratebook_factor_level_labels(grouped, columns, dtypes)
         rows = grouped.drop(_TOTAL_COLUMN, *columns).insert_column(
             0, pl.Series("level", levels, dtype=pl.String)
         )

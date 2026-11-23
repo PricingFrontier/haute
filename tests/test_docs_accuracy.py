@@ -162,7 +162,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "polars-2",
     "polars-node-clarity",
     "sandbox-security",
-    "tracing",
     "workbench",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (

@@ -76,11 +76,7 @@ def test_lookup_coerces_entries_through_input_dtype_and_preserves_source(
 
 @pytest.mark.parametrize("case", RATING_KEY_CASES, ids=lambda case: case.name)
 def test_trace_uses_the_same_originating_dtype(case: RatingKeyCase) -> None:
-    from haute._temporal_text import with_temporal_text
-
-    # The traced row carries a temporal value as its exact text, as _traced_row reads it.
-    traced = with_temporal_text(pl.DataFrame([pl.Series("factor", [case.value], dtype=case.dtype)]))
-    typed_value = traced["factor"].item()
+    typed_value = pl.Series("factor", [case.value], dtype=case.dtype).item()
     table = {
         "name": case.name,
         "factors": ["factor"],

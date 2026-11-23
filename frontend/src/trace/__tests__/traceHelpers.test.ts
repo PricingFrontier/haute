@@ -269,6 +269,12 @@ describe("values the evaluator could not compute from the traced row", () => {
     expect(describeNotComputable("unresolved_name: RATE")).toBe(
       "uses RATE, which the trace cannot resolve",
     )
+    expect(describeNotComputable("branch_dependent: if")).toBe(
+      "is written inside an if block, so its formula depends on what ran",
+    )
+    expect(describeNotComputable("branch_dependent: match")).toBe(
+      "is written inside a match block, so its formula depends on what ran",
+    )
     expect(describeNotComputable("column_unavailable: premium")).toBe(
       "column premium is not in the traced row",
     )

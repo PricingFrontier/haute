@@ -565,10 +565,7 @@ each column: `null_count` always; `distinct_count` whenever the dtype can be cou
 string, categorical, enum and boolean columns with at most `_MAX_PROFILE_LEVELS` distinct
 values, those values with their counts, most frequent first and equal counts in value
 order, so the profile reads the same on every run; for numeric and temporal columns,
-`min` and `max` (a datetime, time or duration bound written as its exact text inside the
-query, `with_temporal_text`, so a `Datetime("ns")`, `Time` or `Duration("ns")` bound shows
-all nine digits a Python value would cut to six; `json_safe_scalar` refuses a Python
-`datetime`, `time` or `timedelta`, which only a site going round that would hand it);
+`min` and `max`;
 otherwise `values_withheld`. The cardinality bound reduces disclosure for high-cardinality
 strings, while low-cardinality strings — including repeated names, addresses, dates of
 birth, or registrations — can be emitted. The explicit `allow_row_samples` grant is the
@@ -611,10 +608,16 @@ a column already called `count`, which is an ordinary name in an aggregated fram
 Every emitted value passes through `json_safe_scalar`. The result is JSON-encoded twice
 before the model reads it — once to bound it against `_MAX_TOOL_CONTEXT_BYTES`, once by
 the provider adapter — and both encoders take only JSON scalars under `allow_nan=False`.
-Polars returns native `date`, `datetime`, `time`, `timedelta` and `Decimal` objects for
-exactly the temporal and money columns this tool exists to describe, and a non-finite
-float is a real value a numeric column can hold. Temporals and decimals become their
-written form (ISO-8601, exact digits), and a non-finite float becomes the shared tagged
+Polars returns native `date` and `Decimal` objects for exactly the date and money columns
+this tool exists to describe, and a non-finite float is a real value a numeric column can
+hold. A datetime, time or duration bound never reaches Python as a `datetime`, `time` or
+`timedelta`, which hold microseconds while a `Datetime("ns")`, a `Duration("ns")` and
+every `Time` hold nanoseconds: `_column_profile` takes the column's min and max in Polars
+and writes them with `temporal_text` (separator `" "`), so a value keeps all nine digits
+and one Python holds exactly reads as its `str()` does. `json_safe_scalar` refuses a
+`datetime`, `time` or `timedelta` with a `TypeError`, so a summariser that reads one into
+Python fails rather than show six digits. Dates and decimals become their written form
+(ISO-8601, exact digits), and a non-finite float becomes the shared tagged
 sentinel `{"__haute_type__": "non_finite_float", "value": "inf"}` built by
 `_json_safe.non_finite_float_sentinel` — the one non-finite encoding every Haute payload
 uses, which also keeps an infinity distinct from a string column holding the text `inf`.
@@ -2445,7 +2448,10 @@ fixture for route tests). The implemented coverage is:
   fixture — dates, datetimes, decimals, a non-finite float, and a column named `count` —
   is profiled *through the source-bound executor*, because the bounding encoder is what
   rejects a value the direct call happily returns; alongside it, the rendered form of each
-  bound, and an unsummarisable column withholding only itself. Executable-config
+  bound, a `Datetime("ns")` (naive and zoned), `Time` and `Duration("ns")` column's bounds
+  100 ns apart showing all nine digits, `json_safe_scalar` refusing a `datetime`, `time`
+  or `timedelta` (`tests/test_small_module_contracts.py`), and an unsummarisable column
+  withholding only itself. Executable-config
   coverage pins `code` visible or redacted strictly by `allow_executable_source`.
   Actionable-error coverage runs through the source-bound executor: the August
   two-input failure (a Transform fed by two claim sources indexing

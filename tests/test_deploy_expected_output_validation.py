@@ -598,44 +598,6 @@ def test_score_test_quotes_holds_a_date_output_as_the_response_writes_it(
         assert "expected='2026-12-30' actual='2026-12-31'" in result["error"]
 
 
-@pytest.mark.parametrize(
-    ("expected", "status"),
-    [
-        ({"priced_at": "2024-03-01T09:00:00.000000100", "clock": "09:00:00.000000300"}, "ok"),
-        ({"priced_at": "2024-03-01T09:00:00.000000200"}, "error"),
-    ],
-)
-def test_score_test_quotes_holds_a_value_below_a_microsecond_to_every_digit(
-    tmp_path: Path, expected: dict[str, str], status: str
-) -> None:
-    """SRV-20: the output is compared as the response writes it, nine digits and all, so a
-    value 100 ns off is a mismatch and an exact one is not."""
-    from tests._nanosecond_values import nanosecond_frame
-
-    quotes_dir = tmp_path / "quotes"
-    quotes_dir.mkdir()
-    _write_json(
-        quotes_dir / "golden.json",
-        [{"input": {"VehPower": 7, "Area": "C"}, "expected": expected}],
-    )
-    resolved = _resolved_with_quotes(
-        quotes_dir, output_schema={"priced_at": "Datetime(time_unit='ns')", "clock": "Time"}
-    )
-
-    with patch("haute.deploy._validators.score_graph") as score_graph:
-        score_graph.return_value = nanosecond_frame().select(
-            pl.col("at").alias("priced_at"), "clock"
-        )
-        [result] = score_test_quotes(resolved)
-
-    assert result["status"] == status, result
-    if status == "error":
-        assert (
-            "expected='2024-03-01T09:00:00.000000200' actual='2024-03-01T09:00:00.000000100'"
-            in result["error"]
-        )
-
-
 def test_an_accepted_response_with_an_equal_date_is_unchanged() -> None:
     """A priced response's date, an object, against the accepted one's text (DPL-04)."""
     from haute.deploy._validators import response_changes

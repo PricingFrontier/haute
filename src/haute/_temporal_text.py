@@ -1,4 +1,4 @@
-"""The exact text of a datetime, time or duration value, written by Polars.
+"""The exact text of a datetime, time or duration value, written by Polars, and back.
 
 Python's ``datetime``, ``time`` and ``timedelta`` hold microseconds, while a Polars
 ``Datetime("ns")``, a ``Duration("ns")`` and every ``Time`` hold nanoseconds, so a
@@ -9,6 +9,11 @@ the text inside the query instead, at the column's own precision, in Python's
 spelling extended to nanoseconds: no fraction for a whole second, six digits for a
 whole microsecond and nine otherwise; an aware datetime carries its offset, and a
 duration reads as ``str(timedelta)`` does.
+
+This module is the one way such a value reaches Haute's own Python code
+(:func:`exact_text`, :func:`exact_rows`, :func:`exact_row`) and the one way its text
+becomes a value of its column again (:func:`temporal_physical`,
+:func:`temporal_literal`), refused when the column cannot hold it (specs/io-layer).
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, time, timedelta
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 import polars as pl
 from polars.datatypes import DataTypeClass
@@ -30,6 +35,13 @@ TEMPORAL_TEXT_KINDS: frozenset[ColumnKind] = frozenset({"datetime", "time", "dur
 _MICROSECONDS_PER_DAY = 86_400_000_000
 _MICROSECONDS_PER_SECOND = 1_000_000
 _NANOSECONDS_PER_MICROSECOND = 1_000
+_NANOSECONDS_PER_SECOND = 1_000_000_000
+_NANOSECONDS_PER_DAY = 86_400 * _NANOSECONDS_PER_SECOND
+_UNITS_PER_SECOND = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
+_NAIVE_EPOCH = datetime(1970, 1, 1)
+_AWARE_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+FrameT = TypeVar("FrameT", pl.DataFrame, pl.LazyFrame)
 
 
 def temporal_text(expression: pl.Expr, dtype: pl.DataType, *, separator: str = "T") -> pl.Expr:
@@ -125,312 +137,379 @@ def _duration_text(expression: pl.Expr, unit: str) -> pl.Expr:
     )
 
 
-FrameT = TypeVar("FrameT", pl.DataFrame, pl.LazyFrame)
+# ---------------------------------------------------------------------------
+# Reading a frame's values into Python
+# ---------------------------------------------------------------------------
 
 
-def with_temporal_text(frame: FrameT, *, separator: str = "T") -> FrameT:
-    """*frame* with each datetime, time and duration column written as its exact text
-    (:func:`temporal_text`), for a caller about to read its rows into Python: the one way
-    Haute's own code collects a temporal column. A struct, list or array holding one is
-    written field by field and element by element, a null struct staying null. Other
-    columns are left as they are."""
-    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
-    texts = [
-        _nested_text(pl.col(name), dtype, separator).alias(name)
-        for name, dtype in schema.items()
-        if _holds_temporal(dtype)
-    ]
-    return frame.with_columns(texts) if texts else frame
+def is_temporal(dtype: pl.DataType) -> bool:
+    """Whether a column of *dtype* is a datetime, time or duration, whose values reach Python
+    only as their exact text."""
+    return column_kind(dtype) in TEMPORAL_TEXT_KINDS
 
 
-def _instance(dtype: pl.DataType | DataTypeClass) -> pl.DataType:
-    """*dtype* as an instance: a nested type may hold its inner type as a class."""
-    return dtype() if isinstance(dtype, DataTypeClass) else dtype
+def holds_temporal(dtype: pl.DataType) -> bool:
+    """Whether a column of *dtype* holds a datetime, time or duration value, at its top level
+    or inside a struct, list or array."""
+    return _exact_expression(pl.col("_"), dtype) is not None
 
 
-def _holds_temporal(dtype: pl.DataType) -> bool:
-    """Whether *dtype* is, or holds at any depth, a datetime, time or duration."""
+def _exact_expression(expression: pl.Expr, held: pl.DataType | DataTypeClass) -> pl.Expr | None:
+    """*expression*, of type *held*, with every temporal value in it written as its exact
+    text; ``None`` when it holds none, so it is left as it is."""
+    # A nested type's inner types may be classes: ``pl.List(pl.Time)`` holds ``Time``.
+    dtype = held() if isinstance(held, type) else held
     if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
-        return True
-    if isinstance(dtype, pl.Struct):
-        return any(_holds_temporal(_instance(field.dtype)) for field in dtype.fields)
-    if isinstance(dtype, pl.List | pl.Array):
-        return _holds_temporal(_instance(dtype.inner))
-    return False
-
-
-def _nested_text(expression: pl.Expr, dtype: pl.DataType, separator: str) -> pl.Expr:
-    """*expression* with every temporal value it holds written as its exact text."""
-    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
-        return temporal_text(expression, dtype, separator=separator)
+        return temporal_text(expression, dtype)
     if isinstance(dtype, pl.Struct):
         fields = [
-            _nested_text(
-                expression.struct.field(field.name), _instance(field.dtype), separator
-            ).alias(field.name)
-            if _holds_temporal(_instance(field.dtype))
-            else expression.struct.field(field.name)
+            (field.name, _exact_expression(expression.struct.field(field.name), field.dtype))
             for field in dtype.fields
         ]
-        # A struct built from a null struct's fields is a struct of nulls: keep it null.
-        return pl.when(expression.is_null()).then(None).otherwise(pl.struct(fields))
+        if all(written is None for _name, written in fields):
+            return None
+        rebuilt = pl.struct(
+            [
+                (expression.struct.field(name) if written is None else written).alias(name)
+                for name, written in fields
+            ]
+        )
+        # A null struct stays null rather than becoming a struct of nulls.
+        return pl.when(expression.is_null()).then(None).otherwise(rebuilt)
     if isinstance(dtype, pl.List):
-        return expression.list.eval(_nested_text(pl.element(), _instance(dtype.inner), separator))
+        inner = _exact_expression(pl.element(), dtype.inner)
+        return None if inner is None else expression.list.eval(inner)
     if isinstance(dtype, pl.Array):
-        return expression.arr.eval(_nested_text(pl.element(), _instance(dtype.inner), separator))
-    return expression
-
-
-def first_value_finer_than_microseconds(frame: pl.DataFrame) -> tuple[str, int] | None:
-    """The first column of *frame* holding a datetime, time or duration value below a
-    microsecond, at any depth of a struct, list or array, with the row it is in, or
-    ``None``: what a Python value, which holds microseconds, would cut short. A caller that
-    must hand rows on as Python values refuses them rather than lose the digits."""
-    for name, dtype in frame.schema.items():
-        if not _can_be_finer(dtype):
-            continue
-        row = frame.select(_finer_than_microseconds(pl.col(name), dtype).arg_true().first())
-        if row.item() is not None:
-            return name, int(row.item())
+        inner = _exact_expression(pl.element(), dtype.inner)
+        return None if inner is None else expression.arr.eval(inner)
     return None
 
 
-def _can_be_finer(dtype: pl.DataType) -> bool:
-    """Whether *dtype* is, or holds at any depth, a type whose values can lie below a
-    microsecond: a nanosecond datetime or duration, or any time."""
-    kind = column_kind(dtype)
-    if kind in TEMPORAL_TEXT_KINDS:
-        return kind == "time" or getattr(dtype, "time_unit", None) == "ns"
-    if isinstance(dtype, pl.Struct):
-        return any(_can_be_finer(_instance(field.dtype)) for field in dtype.fields)
-    if isinstance(dtype, pl.List | pl.Array):
-        return _can_be_finer(_instance(dtype.inner))
-    return False
+def exact_text_expression(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """*expression*, of *dtype*, with every temporal value in it written as its exact text,
+    nested ones included; *expression* itself when it holds none."""
+    written = _exact_expression(expression, dtype)
+    return expression if written is None else written
 
 
-def _finer_than_microseconds(expression: pl.Expr, dtype: pl.DataType) -> pl.Expr:
-    """Whether *expression*, of *dtype*, which :func:`_can_be_finer`, holds a value below a
-    microsecond, as a Boolean that is never null and has one value for each of
-    *expression*'s (so it can stand inside a list's or an array's ``eval``)."""
-    if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
-        finer = expression.to_physical() % _NANOSECONDS_PER_MICROSECOND != 0
-    elif isinstance(dtype, pl.Struct):
-        finer = pl.any_horizontal(
-            [
-                _finer_than_microseconds(expression.struct.field(field.name), inner)
-                for field in dtype.fields
-                if _can_be_finer(inner := _instance(field.dtype))
-            ]
-        )
-    elif isinstance(dtype, pl.List):
-        inner = _instance(dtype.inner)
-        finer = expression.list.eval(_finer_than_microseconds(pl.element(), inner)).list.any()
-    elif isinstance(dtype, pl.Array):
-        inner = _instance(dtype.inner)
-        finer = expression.arr.eval(_finer_than_microseconds(pl.element(), inner)).arr.any()
-    else:
-        raise AssertionError(f"{dtype} holds no value below a microsecond")
-    return finer.fill_null(False)
-
-
-class TemporalTextError(ValueError):
-    """Text that names no value of its column's type, or one finer than the column holds."""
-
-
-# A datetime's or time's text, ISO 8601's shape and nothing else: a day ("2024-03-01" or
-# "20240301") with an optional clock after "T" or a space, or a clock alone; a part-second
-# only straight after a clock's seconds, after a full stop or a comma; then an optional
-# offset ("Z", "+05", "+0530", "+05:30", "+05:21:10"), which holds no part-second. Text of
-# any other shape matches nothing and is refused: a part-second never reaches
-# fromisoformat, which would cut it to six digits, and an offset never takes one.
-_DAY = r"[0-9]{4}-?[0-9]{2}-?[0-9]{2}"
-_CLOCK = r"[0-9]{2}:?[0-9]{2}(?::?(?P<seconds>[0-9]{2}))?"
-_TEMPORAL_PARTS = re.compile(
-    rf"(?P<whole>{_DAY}(?:[T ]{_CLOCK})?|{_CLOCK.replace('seconds', 'clock_seconds')})"
-    r"(?:[.,](?P<fraction>[0-9]+))?"
-    r"(?P<offset>Z|[+-][0-9]{2}(?::?[0-9]{2}(?::?[0-9]{2})?)?)?"
-)
-# A duration's text as temporal_text writes it, str(timedelta)'s layout to nanoseconds.
-_DURATION_PARTS = re.compile(
-    r"(?:(?P<days>-?[0-9]+) days?, )?(?P<hours>[0-9]+):(?P<minutes>[0-9]{2}):"
-    r"(?P<seconds>[0-9]{2})(?:\.(?P<fraction>[0-9]+))?"
-)
-_NAIVE_EPOCH = datetime(1970, 1, 1)
-_AWARE_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-_UNITS_PER_SECOND = {"ms": 1_000, "us": 1_000_000, "ns": 1_000_000_000}
-_NANOSECONDS_PER_SECOND = 1_000_000_000
-
-
-def temporal_physical(text: str, dtype: pl.DataType) -> int:
-    """The physical integer of the value *text* names in a column of type *dtype*, a
-    datetime, time or duration: exactly, never through a Python ``datetime``, ``time`` or
-    ``timedelta``, which hold microseconds.
-
-    *text* is the column's value as :func:`temporal_text` writes it, or as ISO 8601 writes
-    a datetime or time (``T`` or a space between day and time; seconds and a part-second of
-    up to nine digits optional). An aware column's value names its instant through its
-    offset, so it needs one, and a naive column's has none. Raises
-    :class:`TemporalTextError` for text that names no such value, and for a part-second
-    finer than the column holds (``Datetime("us")`` holds six digits), which reading it
-    would cut short.
-    """
-    kind = column_kind(dtype)
-    if kind == "duration":
-        return _duration_physical(text, cast(pl.Duration, dtype).time_unit)
-    if kind not in ("datetime", "time"):
-        raise TemporalTextError(f"{dtype} is not a datetime, time or duration type.")
-    parts = _TEMPORAL_PARTS.fullmatch(text.strip())
-    seconds_given = parts is not None and (parts["seconds"] or parts["clock_seconds"])
-    clock_given = parts is not None and (
-        parts["clock_seconds"] is not None or re.search(r"[T ]", parts["whole"]) is not None
+def exact_text_dtype(dtype: pl.DataType) -> pl.DataType:
+    """The type :func:`exact_text_expression` gives a column of *dtype*: each temporal type
+    in it a ``String``."""
+    written = pl.LazyFrame(schema={"value": dtype}).select(
+        exact_text_expression(pl.col("value"), dtype)
     )
-    if (
-        parts is None
-        or (parts["fraction"] is not None and not seconds_given)
-        or (parts["offset"] is not None and not clock_given)
-    ):
-        # A part-second belongs to a clock's seconds ("2024-03-01.5" names nothing), and an
-        # offset to a clock ("2024-03-01+05:30" would be read as 05:30).
-        raise TemporalTextError(f"{text!r} is not a {kind}.")
-    digits = parts["fraction"] or ""
-    unit = "ns" if kind == "time" else cast(pl.Datetime, dtype).time_unit
-    per_second = _UNITS_PER_SECOND[unit]
-    if len(digits.rstrip("0")) > len(str(per_second)) - 1:
-        raise TemporalTextError(
-            f"{text!r} is finer than a {unit} {kind} holds: reading it would cut it short."
-        )
-    fraction = _fraction_units(digits, per_second)
-    try:
-        if kind == "time":
-            if parts["offset"]:
-                raise TemporalTextError(f"{text!r} has a time zone, which a time has not.")
-            clock = time.fromisoformat(parts["whole"])
-            seconds = (clock.hour * 60 + clock.minute) * 60 + clock.second
-            return seconds * per_second + fraction
-        moment = datetime.fromisoformat(parts["whole"] + (parts["offset"] or ""))
-    except ValueError as exc:
-        if isinstance(exc, TemporalTextError):
-            raise
-        raise TemporalTextError(f"{text!r} is not a {kind}: {exc}.") from None
-    aware_column = cast(pl.Datetime, dtype).time_zone is not None
-    if (moment.tzinfo is not None) != aware_column:
-        raise TemporalTextError(
-            f"{text!r} {'has no' if aware_column else 'has a'} time zone, which the column "
-            f"{'has' if aware_column else 'has not'}."
-        )
-    # An aware value names its instant through its offset, so both occurrences of a local
-    # time the clocks repeat keep their own: the physical value is UTC.
-    epoch = _AWARE_EPOCH if aware_column else _NAIVE_EPOCH
-    return ((moment - epoch) // timedelta(seconds=1)) * per_second + fraction
+    return written.collect_schema()["value"]
 
 
-def _duration_physical(text: str, unit: str) -> int:
-    parts = _DURATION_PARTS.fullmatch(text.strip())
-    if parts is None:
-        raise TemporalTextError(f"{text!r} is not a duration.")
-    per_second = _UNITS_PER_SECOND[unit]
-    digits = parts["fraction"] or ""
-    if len(digits.rstrip("0")) > len(str(per_second)) - 1:
-        raise TemporalTextError(
-            f"{text!r} is finer than a {unit} duration holds: reading it would cut it short."
-        )
-    fraction = _fraction_units(digits, per_second)
-    seconds = (
-        _matched_digits(parts["days"] or "0") * 86_400
-        + _matched_digits(parts["hours"]) * 3_600
-        + _matched_digits(parts["minutes"]) * 60
-        + _matched_digits(parts["seconds"])
-    )
-    return seconds * per_second + fraction
-
-
-def _fraction_units(digits: str, per_second: int) -> int:
-    """A part-second's digits as whole units of a column holding *per_second* a second."""
-    width = len(str(per_second)) - 1
-    return _matched_digits(digits.ljust(width, "0")[:width] or "0")
-
-
-def _matched_digits(digits: str) -> int:
-    """Digits, a sign allowed, that a pattern of this module matched in a value's text."""
-    return int(digits)
-
-
-def temporal_literal(text: str, dtype: pl.DataType) -> pl.Expr:
-    """The value *text* names as a literal of *dtype*, exactly (:func:`temporal_physical`):
-    for a filter or a match on a temporal column."""
-    return pl.lit(temporal_physical(text, dtype), dtype=pl.Int64).cast(dtype)
-
-
-def temporal_series(name: str, texts: Sequence[str | None], dtype: pl.DataType) -> pl.Series:
-    """The values *texts* name as a column of *dtype*, exactly (:func:`temporal_physical`);
-    ``None`` is a null."""
-    physical = [None if text is None else temporal_physical(text, dtype) for text in texts]
-    return pl.Series(name, physical, dtype=pl.Int64).cast(dtype)
-
-
-def temporal_frame(rows: Sequence[Mapping[str, Any]], schema: pl.Schema) -> pl.DataFrame:
-    """*rows* as a frame of *schema*, each datetime, time and duration value, at any depth,
-    read from its exact text (:func:`with_temporal_text`'s) as its column's own value
-    (:func:`temporal_physical`): the way back for rows read as text. A key a row or an object
-    leaves out is a null, as Polars reads such rows; any other value is taken as it is."""
-    temporal = {name: dtype for name, dtype in schema.items() if _holds_temporal(dtype)}
-    if not temporal:
-        return pl.DataFrame(rows, schema=schema)
-    physical_rows = [
-        {
-            name: _physical_value(value, temporal[name]) if name in temporal else value
-            for name, value in row.items()
-        }
-        for row in rows
-    ]
-    physical_schema = {
-        name: _physical_dtype(dtype) if name in temporal else dtype
+def exact_text(frame: FrameT) -> FrameT:
+    """*frame* with every datetime, time and duration value written as its exact text
+    (separator ``"T"``), at its top level or inside a struct, list or array; every other
+    column as it is. Nothing is collected."""
+    schema = frame.collect_schema()
+    written = {
+        name: expression
         for name, dtype in schema.items()
+        if (expression := _exact_expression(pl.col(name), dtype)) is not None
     }
-    return pl.DataFrame(physical_rows, schema=physical_schema).cast(temporal)  # type: ignore[arg-type]
+    if not written:
+        return frame
+    return frame.with_columns(expression.alias(name) for name, expression in written.items())
 
 
-def _physical_dtype(dtype: pl.DataType) -> pl.DataType:
-    """*dtype* with each datetime, time and duration it holds as its physical ``Int64``."""
+def exact_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    """*frame*'s rows by column name, each temporal value its exact text."""
+    return exact_text(frame).to_dicts()
+
+
+def exact_row(frame: pl.DataFrame, index: int) -> dict[str, Any]:
+    """*frame*'s row *index* by column name, each temporal value its exact text."""
+    return exact_text(frame.slice(index, 1)).row(0, named=True)
+
+
+def _physical_dtype(held: pl.DataType | DataTypeClass) -> pl.DataType:
+    """*held* with each temporal type in it, nested ones included, its physical ``Int64``."""
+    dtype = held() if isinstance(held, type) else held
     if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
         return pl.Int64()
     if isinstance(dtype, pl.Struct):
-        return pl.Struct(
-            {field.name: _physical_dtype(_instance(field.dtype)) for field in dtype.fields}
-        )
+        return pl.Struct({field.name: _physical_dtype(field.dtype) for field in dtype.fields})
     if isinstance(dtype, pl.List):
-        return pl.List(_physical_dtype(_instance(dtype.inner)))
+        return pl.List(_physical_dtype(dtype.inner))
     if isinstance(dtype, pl.Array):
-        # The inner type holds the dimensions past the first: give the first alone.
-        return pl.Array(_physical_dtype(_instance(dtype.inner)), dtype.size)
+        # The inner type holds the dimensions past the first, so it takes the outer width.
+        return pl.Array(_physical_dtype(dtype.inner), dtype.size)
     return dtype
 
 
-def _physical_value(value: Any, dtype: pl.DataType) -> Any:
-    """*value*, of *dtype*, with each temporal text it holds as that value's physical integer."""
+def _physical_value(value: Any, held: pl.DataType | DataTypeClass) -> Any:
+    """*value*, of a column of type *held* as :func:`exact_rows` reads it, with each temporal
+    value in it, nested ones included, its physical integer (:func:`temporal_physical`)."""
+    dtype = held() if isinstance(held, type) else held
     if value is None:
         return None
     if column_kind(dtype) in TEMPORAL_TEXT_KINDS:
+        if not isinstance(value, str):
+            raise TypeError(f"A {dtype} value read as exact text is a string, not {value!r}.")
         return temporal_physical(value, dtype)
-    if isinstance(dtype, pl.Struct) and isinstance(value, Mapping):
-        fields = {field.name: _instance(field.dtype) for field in dtype.fields}
+    if isinstance(dtype, pl.Struct):
         return {
-            key: _physical_value(item, fields[key]) if key in fields else item
-            for key, item in value.items()
+            field.name: _physical_value(value.get(field.name), field.dtype)
+            for field in dtype.fields
         }
-    if isinstance(dtype, pl.List | pl.Array) and isinstance(value, list | tuple):
-        return [_physical_value(item, _instance(dtype.inner)) for item in value]
+    if isinstance(dtype, pl.List):
+        return [_physical_value(item, dtype.inner) for item in value]
+    if isinstance(dtype, pl.Array):
+        return [_physical_value(item, dtype.inner) for item in value]
     return value
+
+
+def frame_from_exact_rows(
+    rows: Sequence[Mapping[str, Any]], schema: Mapping[str, pl.DataType]
+) -> pl.DataFrame:
+    """*rows*, read as :func:`exact_rows` reads a frame's (each temporal value its exact text),
+    back into a frame of *schema*, each temporal value exactly the one its text names:
+    through its physical integer, never a Python ``datetime``, ``time`` or ``timedelta``."""
+    temporal = [name for name, dtype in schema.items() if holds_temporal(dtype)]
+    if not temporal:
+        return pl.DataFrame(rows, schema=dict(schema))
+    physical = [
+        {
+            **row,
+            **{name: _physical_value(row.get(name), schema[name]) for name in temporal},
+        }
+        for row in rows
+    ]
+    physical_schema = {name: _physical_dtype(dtype) for name, dtype in schema.items()}
+    # Not strict: every integer temporal_physical gives is a value of its type (a datetime
+    # or duration any Int64, a time one inside its day), so nothing is nulled, and Polars'
+    # strict cast refuses a multidimensional array holding a null row it would cast whole.
+    return pl.DataFrame(physical, schema=physical_schema).cast(
+        pl.Schema(dict(schema)), strict=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Text back to a value of its column
+# ---------------------------------------------------------------------------
+
+Refusal = Literal["malformed", "finer", "zone", "range"]
+
+
+class TemporalTextError(ValueError):
+    """Text that is no value of its column: ``reason`` says why."""
+
+    def __init__(self, message: str, *, reason: Refusal) -> None:
+        super().__init__(message)
+        self.reason: Refusal = reason
+
+
+#: The fraction ending a clock, ``.`` or ``,`` and its digits: Python reads it as a fraction
+#: of a second wherever the clock stops (``09:30.5`` is 09:30:00.5).
+_CLOCK_FRACTION = re.compile(r"[.,](?P<digits>[0-9]+)\Z")
+#: Where a time's offset begins: ``Z`` or a sign, neither of which a clock holds.
+_OFFSET_START = re.compile(r"[Zz+-]")
+#: A duration as :func:`temporal_text` writes one.
+_DURATION = re.compile(
+    r"(?:(?P<days>-?[0-9]+) days?, )?(?P<hours>[0-9]+):(?P<minutes>[0-5][0-9]):"
+    r"(?P<seconds>[0-5][0-9])(?:\.(?P<digits>[0-9]{6}(?:[0-9]{3})?))?"
+)
+
+
+def _below_a_microsecond(text: str, kind: str, *, clock_start: int) -> tuple[str, int]:
+    """*text* with its clock's fraction cut to the six digits Python reads, and the
+    nanoseconds the digits past them add.
+
+    The clock runs from *clock_start* (the character after a date-time's ``T`` or space, the
+    start of a time) to its offset, if any, so a fraction inside an offset
+    (``+01:00:00.5``) is the offset's, read by Python as it stands. A fraction of more than
+    nine digits is finer than any column holds.
+    """
+    if clock_start >= len(text):
+        return text, 0
+    offset = _OFFSET_START.search(text, clock_start)
+    clock_end = len(text) if offset is None else offset.start()
+    fraction = _CLOCK_FRACTION.search(text[clock_start:clock_end])
+    if fraction is None:
+        return text, 0
+    digits = fraction["digits"]
+    if len(digits) > 9:
+        raise TemporalTextError(
+            f"{text!r} is finer than a nanosecond, which no {kind} holds.", reason="malformed"
+        )
+    if len(digits) <= 6:
+        return text, 0
+    cut = clock_start + fraction.start("digits") + 6
+    return text[:cut] + text[clock_end:], int(digits[6:].ljust(3, "0"))
+
+
+_DIGITS = frozenset("0123456789")
+
+
+def _date_length(text: str) -> int:
+    """How many characters of a date-time *text* its date takes, found as
+    ``datetime.fromisoformat`` finds it (CPython's ``_find_isoformat_datetime_separator``):
+    any one character may separate the date from the clock (``T``, ``t``, a space, ``_``),
+    and the date is ``YYYY-MM-DD``, ``YYYYMMDD`` or a week date (``YYYY-Www-D``, ``YYYYWwwD``)."""
+    if len(text) <= 7:
+        return len(text)
+    if text[4] == "-":
+        if text[5] != "W":
+            return 10
+        if len(text) > 8 and text[8] == "-":
+            # YYYY-Www-D, unless a digit at 10 says the hyphen at 8 is the separator.
+            return 8 if len(text) > 10 and text[10] in _DIGITS else 10
+        return 8
+    if text[4] == "W":
+        end = 7
+        while end < len(text) and text[end] in _DIGITS:
+            end += 1
+        if end < 9:
+            return end
+        return 7 if end % 2 == 0 else 8
+    return 8
+
+
+def _date_time_parts(text: str) -> tuple[datetime, int]:
+    """*text*, a date or date-time in any spelling ``datetime.fromisoformat`` accepts, as the
+    moment Python reads to the microsecond and the nanoseconds below it."""
+    whole, below = _below_a_microsecond(text, "date-time", clock_start=_date_length(text) + 1)
+    try:
+        return datetime.fromisoformat(whole), below
+    except ValueError:
+        raise TemporalTextError(f"{text!r} is not a date-time.", reason="malformed") from None
+
+
+def _nanoseconds_from(moment: datetime, below: int) -> int:
+    """*moment*'s nanoseconds from 1970, its instant in UTC when it is aware, its wall clock
+    when it is naive, with *below* added: counted in whole microseconds, exactly."""
+    epoch = _NAIVE_EPOCH if moment.tzinfo is None else _AWARE_EPOCH
+    microseconds = (moment - epoch) // timedelta(microseconds=1)
+    return microseconds * _NANOSECONDS_PER_MICROSECOND + below
+
+
+def _finer(text: str, dtype: pl.DataType, unit: str) -> TemporalTextError:
+    return TemporalTextError(
+        f"{text!r} is finer than a {dtype} column holds ({unit}).", reason="finer"
+    )
+
+
+def temporal_physical(text: str, dtype: pl.DataType) -> int:
+    """The physical integer a column of *dtype*, a datetime, time or duration, holds for
+    *text*; :class:`TemporalTextError` when it holds none.
+
+    A datetime is any spelling ``datetime.fromisoformat`` accepts, and a time any
+    ``time.fromisoformat`` accepts, with the fraction of a second read whole to nine
+    digits; a duration is the text :func:`temporal_text` writes. An aware datetime's
+    physical value is its instant in UTC.
+    """
+    kind = column_kind(dtype)
+    if kind == "datetime":
+        return _datetime_physical(text, cast(pl.Datetime, dtype))
+    if kind == "time":
+        whole, below = _below_a_microsecond(text, "time", clock_start=0)
+        try:
+            clock = time.fromisoformat(whole)
+        except ValueError:
+            raise TemporalTextError(f"{text!r} is not a time.", reason="malformed") from None
+        if clock.tzinfo is not None:
+            raise TemporalTextError(
+                f"{text!r} has a time zone, which a time has not.", reason="zone"
+            )
+        seconds = (clock.hour * 60 + clock.minute) * 60 + clock.second
+        return (
+            seconds * _NANOSECONDS_PER_SECOND
+            + clock.microsecond * _NANOSECONDS_PER_MICROSECOND
+            + below
+        )
+    if kind == "duration":
+        return _duration_physical(text, cast(pl.Duration, dtype))
+    raise SchemaMismatchError(
+        f"{dtype} is not a datetime, time or duration type.", dtype=str(dtype)
+    )
+
+
+def _datetime_physical(text: str, dtype: pl.Datetime) -> int:
+    moment, below = _date_time_parts(text)
+    if moment.tzinfo is None and dtype.time_zone is not None:
+        raise TemporalTextError(
+            f"{text!r} has no time zone, which a {dtype} column has.", reason="zone"
+        )
+    if moment.tzinfo is not None and dtype.time_zone is None:
+        raise TemporalTextError(
+            f"{text!r} has a time zone, which a {dtype} column has not.", reason="zone"
+        )
+    # An aware value names its instant through its offset, so both occurrences of a
+    # local time the clocks repeat keep their own: the physical value is UTC.
+    nanoseconds = _nanoseconds_from(moment, below)
+    step = _NANOSECONDS_PER_SECOND // _UNITS_PER_SECOND[dtype.time_unit]
+    if nanoseconds % step:
+        raise _finer(text, dtype, dtype.time_unit)
+    return _in_range(nanoseconds // step, text, dtype)
+
+
+def _in_range(physical: int, text: str, dtype: pl.DataType) -> int:
+    """*physical*, refused when a column of *dtype*, 64 bits wide, cannot hold it."""
+    if not -(2**63) <= physical < 2**63:
+        raise TemporalTextError(
+            f"{text!r} is outside the range a {dtype} column holds.", reason="range"
+        )
+    return physical
+
+
+def _duration_physical(text: str, dtype: pl.Duration) -> int:
+    match = _DURATION.fullmatch(text)
+    if match is None:
+        raise TemporalTextError(f"{text!r} is not a duration.", reason="malformed")
+    seconds = (int(match["hours"]) * 60 + int(match["minutes"])) * 60 + int(match["seconds"])
+    nanoseconds = (
+        int(match["days"] or 0) * _NANOSECONDS_PER_DAY
+        + seconds * _NANOSECONDS_PER_SECOND
+        + int((match["digits"] or "").ljust(9, "0"))
+    )
+    step = _NANOSECONDS_PER_SECOND // _UNITS_PER_SECOND[dtype.time_unit]
+    if nanoseconds % step:
+        raise _finer(text, dtype, dtype.time_unit)
+    return _in_range(nanoseconds // step, text, dtype)
+
+
+def wall_clock_nanoseconds(text: str) -> int:
+    """The nanoseconds from 1970 to the wall-clock time a date or date-time *text* names,
+    any offset it carries left aside, as a breakpoint compares a zoned column's values;
+    the fraction read whole to nine digits. :class:`TemporalTextError` for other text."""
+    moment, below = _date_time_parts(text)
+    return _nanoseconds_from(moment.replace(tzinfo=None), below)
+
+
+def moment_nanoseconds(text: str) -> tuple[int, bool]:
+    """The moment a date or date-time *text* names, in nanoseconds from 1970, and whether it
+    is aware: an aware one's instant in UTC, a naive one's wall clock, the fraction read
+    whole to nine digits, so two moments inside one microsecond order apart.
+    :class:`TemporalTextError` for other text."""
+    moment, below = _date_time_parts(text)
+    return _nanoseconds_from(moment, below), moment.tzinfo is not None
+
+
+def temporal_literal(text: str, dtype: pl.DataType) -> pl.Expr:
+    """*text* as a literal of *dtype*, a datetime, time or duration, holding exactly the value
+    it names (:func:`temporal_physical`); never through a Python ``datetime``, ``time`` or
+    ``timedelta``, which would drop a nanosecond value's last three digits."""
+    return pl.lit(temporal_physical(text, dtype), dtype=pl.Int64).cast(dtype)
 
 
 __all__ = [
     "TEMPORAL_TEXT_KINDS",
     "TemporalTextError",
-    "first_value_finer_than_microseconds",
-    "temporal_frame",
+    "exact_row",
+    "exact_rows",
+    "exact_text",
+    "exact_text_dtype",
+    "exact_text_expression",
+    "frame_from_exact_rows",
+    "holds_temporal",
+    "is_temporal",
+    "moment_nanoseconds",
     "temporal_literal",
     "temporal_physical",
-    "temporal_series",
     "temporal_text",
-    "with_temporal_text",
+    "wall_clock_nanoseconds",
 ]

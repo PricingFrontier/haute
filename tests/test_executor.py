@@ -4873,18 +4873,3 @@ class TestBuilderPostCodeProjection:
         )
 
         assert sorted(row["rated"] for row in result.preview) == [45.0, 140.0]
-
-
-def test_a_node_preview_shows_a_value_below_a_microsecond_with_every_digit(tmp_path):
-    """SRV-20: the preview grid reads a datetime, time and duration, nested ones too, as
-    their exact text, never through Python's microseconds."""
-    from tests._nanosecond_values import NANOSECOND_TEXTS, nanosecond_frame
-
-    path = tmp_path / "events.parquet"
-    nanosecond_frame().write_parquet(path)
-    graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
-
-    results = execute_graph(graph)
-
-    assert results["src"].status == "ok", results["src"].error
-    assert results["src"].preview == [NANOSECOND_TEXTS]

@@ -55,9 +55,9 @@ from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute._temporal_text import (
     TEMPORAL_TEXT_KINDS,
     TemporalTextError,
+    exact_text,
     temporal_literal,
     temporal_text,
-    with_temporal_text,
 )
 from haute.errors import ConfigError, InvalidRequestError, NotFoundError
 from haute.routes._background_jobs import (
@@ -228,9 +228,10 @@ def _exact_rows(frame: pl.DataFrame) -> Iterator[dict[str, Any]]:
 
     Python's ``datetime``, ``time`` and ``timedelta`` hold microseconds, so a nanosecond
     value read into one would merge with its neighbours: two rows of a pivot would become
-    one key, and a cell would lose digits. Every row a pivot reads goes through here.
+    one key, and a cell would lose digits. Every row a pivot reads goes through here, and
+    here through the shared reader (``haute._temporal_text.exact_text``).
     """
-    return with_temporal_text(frame).iter_rows(named=True)
+    return exact_text(frame).iter_rows(named=True)
 
 
 def _path_tuple(
@@ -397,8 +398,6 @@ def _member_literal(member: ExplorePivotMember) -> Any:
     return value
 
 
-#: A datetime or time member ``validate_explore_pivots`` accepted: its whole seconds, the
-#: fraction's digits, and an offset.
 def _filter_member_refusal(field: str, kind: str, message: str) -> PivotContractError:
     return PivotContractError(
         "invalid_pivot_filter_member",
@@ -409,17 +408,37 @@ def _filter_member_refusal(field: str, kind: str, message: str) -> PivotContract
     )
 
 
+#: What a member's refusal says for each reason the shared builder refuses it.
+_MEMBER_REFUSALS = {
+    "finer": "Filter member {text} is finer than field '{field}' holds ({unit}).",
+    "zone": "Filter member {text} does not match the time zone of field '{field}'.",
+    "range": "Filter member {text} is outside the range field '{field}' holds.",
+}
+
+
 def _temporal_literal(field: str, dtype: pl.DataType, member: ExplorePivotMember) -> pl.Expr:
-    """A datetime or time member as a literal of its column's own type, exactly, through
-    the shared builder (:func:`haute._temporal_text.temporal_literal`): never a Python
-    ``datetime`` or ``time``, which hold microseconds and would drop a nanosecond member's
-    last three digits, matching a neighbour or nothing."""
+    """A datetime or time member as a literal of its column's own type, exactly.
+
+    The shared builder (``haute._temporal_text.temporal_literal``) reads the member's text as
+    the column's physical integer, never a Python ``datetime`` or ``time``: those hold
+    microseconds and would drop a nanosecond member's last three digits, matching a
+    neighbour or nothing.
+    """
+    kind = member["kind"]
+    text = cast(str, member["value"])
     try:
-        return temporal_literal(cast(str, member["value"]), dtype)
-    except TemporalTextError as exc:
-        raise _filter_member_refusal(
-            field, member["kind"], f"Filter member for field '{field}': {exc}"
-        ) from None
+        return temporal_literal(text, dtype)
+    except TemporalTextError as refused:
+        if refused.reason == "malformed":
+            raise AssertionError(
+                f"validate_explore_pivots accepted {kind} member {text!r}"
+            ) from None
+        if refused.reason == "zone" and kind == "time":
+            message = f"Filter member {text} has a time zone, which field '{field}' has not."
+        else:
+            unit = getattr(dtype, "time_unit", "")
+            message = _MEMBER_REFUSALS[refused.reason].format(text=text, field=field, unit=unit)
+        raise _filter_member_refusal(field, kind, message) from None
 
 
 def _filter_member_expression(

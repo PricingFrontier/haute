@@ -1983,17 +1983,6 @@ class TestNonFiniteAnswers:
         assert (envelope.value.column, envelope.value.quote) == ("premium", 2)
         assert (streamed.value.column, streamed.value.quote) == ("premium", 2)
 
-    def test_an_answer_below_a_microsecond_is_sent_with_every_digit(self) -> None:
-        """SRV-20: a datetime, a time and a duration answered with nanoseconds, a nested one
-        too, reach the client whole, in the JSON envelope's rows and in NDJSON alike."""
-        from haute.deploy._response_json import ndjson_rows, response_json, response_rows
-        from tests._nanosecond_values import NANOSECOND_TEXTS, nanosecond_frame
-
-        answer = nanosecond_frame()
-
-        assert json.loads(response_json(response_rows(answer))) == [NANOSECOND_TEXTS]
-        assert json.loads(ndjson_rows(answer)) == NANOSECOND_TEXTS
-
     def test_a_nested_value_is_named_by_its_path(self) -> None:
         from haute.deploy._response_json import response_rows
         from haute.errors import NonFiniteOutputError

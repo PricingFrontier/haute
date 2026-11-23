@@ -738,7 +738,6 @@ def assemble_output_from_config(
         OutputMappingSchemaError,
         assemble_output_from_mapping,
         is_active_mapping_entry,
-        output_document_frame,
         output_document_schema,
     )
 
@@ -771,6 +770,7 @@ def assemble_output_from_config(
         return pl.LazyFrame(schema=schema)
 
     from haute._polars_utils import limited_python_scan
+    from haute._temporal_text import frame_from_exact_rows
 
     lazy_frames = {port: frame.lazy() for port, frame in frames.items()}
     # Set only on the deploy scorer's own graph copy, for a batch answered as one frame.
@@ -780,7 +780,8 @@ def assemble_output_from_config(
         document = assemble_output_from_mapping(
             lazy_frames, mapping, row_limit=row_limit, top_level_per_row=top_level_per_row
         )
-        return output_document_frame(document, schema)
+        # The document holds each temporal value as its exact text: read back exactly.
+        return frame_from_exact_rows(document, schema)
 
     return limited_python_scan(produce, schema=schema)
 
