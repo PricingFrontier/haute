@@ -1,8 +1,8 @@
 /**
- * The quote open in the underwriter app (specs/workbench): a quote as the store keeps it, or
- * an alternative made, as the underwriter asks for it, from another quote under its reference
- * and the next option; its values on the sheets through Preview's store, read only while the
- * quote may not change; its saves and changes, each over the version the values were opened
+ * The quote open in the underwriter app (specs/workbench): a quote as the store keeps it,
+ * opened to read or to edit, held by its editor while it is edited (`editAppQuote`, renewed by
+ * `keepEditing`, let go by `stopEditing`), read only while someone else is; its values on the
+ * sheets through Preview's store, read only while the quote may not change; its saves and changes, each over the version the values were opened
  * or saved at (`base`), a change's details taken onto the sheets, and each answer the open
  * quote's alone, dropped when another was opened meanwhile; the values kept in this browser
  * while they are not saved; and what a save or change that could not be made offers instead.
@@ -11,15 +11,14 @@
 import { create } from "zustand"
 import {
   changeAppQuote,
-  createAppQuote,
+  editAppQuote,
   exportAppQuote,
   fetchAppQuoteActivity,
   openAppQuote,
+  releaseAppQuote,
   saveAppQuote,
   type QuoteChange,
-  type QuoteCreation,
   type QuoteChangeFields,
-  type QuoteSource,
 } from "../api/app"
 import { keyedWriteSettled, sendHeld, type KeyedHold, type KeyedTicket } from "../api/keyedWrites"
 import type { CellsExporter } from "../api/workbench"
@@ -34,24 +33,20 @@ import {
   appErrorMessage,
   cellPlaces,
   clearDraft,
-  creationKey,
+  beingEditedBy,
   draftKey,
-  heldOperation,
-  holdOperation,
   lostPlaces,
   onSheets,
   operationKey,
   readDraft,
   refusalOf,
   releaseMoved,
-  releaseOperation,
   sameQuote,
   savedPrice,
   storeRefused,
   valuesKey,
   withAppDetails,
   withHiddenCells,
-  withoutAppDetails,
   writeDraft,
   writeSuperseded,
   type Draft,
@@ -60,10 +55,15 @@ import {
   type Refusal,
   type Values,
 } from "./quoteValues"
+import { editPath, navigate, type QuoteMode } from "./route"
 import useAppStore from "./useAppStore"
+import useToastStore from "../stores/useToastStore"
 
-/** Why the quote's values may not change, or null when they may. */
-export type ReadOnlyReason = "final" | "archived" | "reader" | null
+/**
+ * Why the quote's values may not change, or null when they may: one who may only read quotes,
+ * opened to read, someone else editing it, archived, or final.
+ */
+export type ReadOnlyReason = "reader" | "read" | "editing" | "archived" | "final" | null
 
 interface OpenQuoteState {
   status: "idle" | "loading" | "ready" | "error"
@@ -114,16 +114,20 @@ interface OpenQuoteState {
   /** What was done to the quote, and the quotes it came from and that were made from it; null until read. */
   activity: WorkbenchAppQuoteActivityResponse | null
   historyOpen: boolean
-  /** The alternative `openNew` just made and opened, by its label: on the sheets already, its address opens nothing again. */
-  adopted: string | null
-  /**
-   * Make an alternative of `from`, as the underwriter asks for it, and open it: the quote it
-   * made, or null when it made none.
-   */
-  openNew: (from: QuoteSource) => Promise<WorkbenchAppQuote | null>
-  /** Open the quote a route names, unless it is the alternative just made, which it forgets either way. */
-  openRouted: (reference: string, option: number) => Promise<void>
-  openQuote: (reference: string, option: number) => Promise<void>
+  /** How the quote open was opened: to read it, or to edit it. */
+  mode: QuoteMode
+  /** Who else is editing the quote opened to edit, which holds it read only; null when no one is. */
+  editedBy: string | null
+  /** The lease's renewals answered, each the page's cue to renew it again: no two at once. */
+  renewals: number
+  /** The quote held by someone else had values typed and not saved, kept in this browser. */
+  keptTyping: boolean
+  /** Open the quote `reference`/`option` to read it, or to edit it, held as it opens unless someone else is editing it. */
+  openQuote: (reference: string, option: number, mode?: QuoteMode) => Promise<void>
+  /** Renew the lease of the quote open to edit; one someone else took holds it read only, what was typed kept. */
+  keepEditing: () => Promise<void>
+  /** Let the quote open to edit go, as the page leaves it; `keepalive` as the page closes. */
+  stopEditing: (options?: { keepalive?: boolean }) => void
   /** Save the values on the sheets, once their pricing settles, over the version they are edited over. */
   save: () => Promise<WorkbenchAppQuote | null>
   /**
@@ -165,15 +169,39 @@ const CLOSED: Closed = {
   recovered: null,
   pending: null,
   activity: null,
-  adopted: null,
+  mode: "read",
+  editedBy: null,
+  renewals: 0,
+  keptTyping: false,
 }
 
 /** Why `quote` may not change. */
-export function readOnlyReason(state: Pick<OpenQuoteState, "quote">): ReadOnlyReason {
+export function readOnlyReason(state: Pick<OpenQuoteState, "quote" | "mode" | "editedBy">): ReadOnlyReason {
+  if (!canEdit()) return "reader"
+  if (state.mode === "read") return "read"
+  if (state.editedBy !== null) return "editing"
   if (state.quote?.archived) return "archived"
   if (state.quote?.stage === "final") return "final"
-  if (!canEdit()) return "reader"
   return null
+}
+
+/** Whether a quote read only for `reason` still takes changes of its details: one open to edit, final included. */
+export const takesChanges = (reason: ReadOnlyReason): boolean => reason === null || reason === "final"
+
+/**
+ * Open `quote` to edit when no one else is editing it, held as the asker's; else say who is,
+ * the page staying where it is.
+ */
+export async function editQuote(quote: Pick<WorkbenchAppQuote, "reference" | "option" | "label">): Promise<void> {
+  try {
+    await editAppQuote(quote.reference, quote.option)
+  } catch (error: unknown) {
+    const editor = beingEditedBy(error)
+    const said = editor !== null ? `${editor} is editing ${quote.label}` : appErrorMessage(error, useAppStore.getState().form, { oneLine: true })
+    useToastStore.getState().addToast("error", said)
+    return
+  }
+  await navigate(editPath(quote.reference, quote.option))
 }
 
 /** A save or a change is being made: no other is started, and the controls that make one are off. */
@@ -181,9 +209,6 @@ export const busy = (state: Pick<OpenQuoteState, "saving" | "changing">): boolea
 
 /** Whoever is signed in may change quotes: false for one who may only read them. */
 export const canEdit = (): boolean => useAppStore.getState().release?.can_edit ?? true
-
-/** What a quote asked for is: one made from a quote, so the key held for one is not taken for another's. */
-const askedFor = (from: QuoteSource): string => `new-from-${from.reference}/${from.option}-${from.relation}`
 
 /** The open quote's draft key in this browser; null with no quote open. */
 export function openDraftKey(state: Pick<OpenQuoteState, "quote">): string | null {
@@ -239,10 +264,24 @@ const activityAsked = requestKind()
 export const openQuotePart = (): Part => under(loads)
 
 const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
+  /**
+   * The quote open to edit held by `editor` now: what was typed kept in this browser first,
+   * then the quote read only, saying who is editing it.
+   */
+  const heldBy = (editor: string): void => {
+    const typed = get().status === "ready" && get().editedBy === null && valuesKey(useWorkbenchPreviewStore.getState().quote) !== get().baseline
+    keepDraft()
+    set({ editedBy: editor, keptTyping: typed })
+    useWorkbenchPreviewStore.getState().setReadOnly(true)
+  }
+
   /** Read what failed into the notice it calls for. */
   const failed = (error: unknown): void => {
     const refusal = refusalOf(error)
-    if (isStaleRevision(error) || writeSuperseded(error)) {
+    const editor = beingEditedBy(error)
+    if (editor !== null) {
+      heldBy(editor)
+    } else if (isStaleRevision(error) || writeSuperseded(error)) {
       set({ conflict: { message: apiErrorMessage(error), quote: conflictQuote(error) } })
     } else if (refusal !== null) {
       set({ refusal })
@@ -258,7 +297,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
     const { form, release } = useAppStore.getState()
     if (form === null) return
     const values = answer.values as Values
-    const readOnly = readOnlyReason({ quote: answer.quote }) !== null
+    const readOnly = readOnlyReason({ ...get(), quote: answer.quote }) !== null
     // A quote that may change shows this release's price: one priced on another release is
     // priced again as it opens, as an unpriced one is.
     const ownPrice = readOnly || answer.quote.priced_release === release?.id
@@ -521,71 +560,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
     historyOpen: false,
     ...CLOSED,
 
-    openNew: async (from) => {
-      const belongsTo = [newest(loads)] as const
-      const { form, revision, release } = useAppStore.getState()
-      if (form === null || release === null) return null
-      // Until it is made, the sheets hold nothing and take no typing.
-      useWorkbenchPreviewStore.getState().open({}, null, true)
-      if (!canEdit()) {
-        set({ ...CLOSED, status: "error", loadError: "Making a quote needs the app's edit role." })
-        return null
-      }
-      set({ ...CLOSED, status: "loading", loadError: null })
-      // Held in this tab until the answer comes, so a reload asks with it again and the
-      // quote is made once.
-      const held = creationKey(release.pipeline_name || "app", release.principal, askedFor(from))
-      // Refused, it was not made and never will be: the next asks anew. Unanswered, it may
-      // have been: the key stays held.
-      // The key is held under what was asked for (`creationKey`), so each creation under it
-      // is that one: made from the source as the server holds it, and answered with the quote
-      // made once the key landed. Only the key is kept, from the moment it is sent: a creation
-      // under a key held is being sent again.
-      const creationHold = (creation: QuoteCreation, resent: boolean): KeyedHold<QuoteCreation> => ({
-        held: () => (resent ? creation : null),
-        hold: (holding) => {
-          if (holding === null) releaseOperation(held)
-          else holdOperation(held, holding.operation)
-        },
-        key: (holding) => holding.operation,
-        content: () => held,
-      })
-      let made: WorkbenchAppQuote | null = null
-      const failedToOpen = (error: unknown) => set({ status: "error", loadError: appErrorMessage(error, useAppStore.getState().form) })
-      // Made from its source's values, without the details the app set for the source,
-      // under its reference: it names none of its own.
-      await answer(belongsTo, openAppQuote(from.reference, from.option), {
-        ok: async (read, asked) => {
-          const kept = heldOperation(held)
-          const creation = { operation: kept ?? operationKey(), form_revision: revision, release: release.id, values: withoutAppDetails(read.values as Values) }
-          const source = { reference: from.reference, option: from.option, relation: from.relation }
-          await asked.answer(sendHeld(creationHold(creation, kept !== null), creation, (sent, ticket) => createAppQuote(sent, source, null, ticket)), {
-            ok: (answer) => {
-              made = answer.quote
-              show(answer)
-              // What of its source has no place on the sheets was not made part of it: named.
-              set({ status: "ready", dropped: [...new Set([...read.dropped, ...answer.dropped])], adopted: answer.quote.label })
-            },
-            failed: failedToOpen,
-            // Made after another quote was opened, it is made all the same.
-            stale: (settled) => {
-              if ("value" in settled) made = settled.value.quote
-            },
-          })
-        },
-        failed: failedToOpen,
-      })
-      return made
-    },
-
-    openRouted: async (reference, option) => {
-      const { adopted, quote } = get()
-      set({ adopted: null })
-      if (quote !== null && adopted === quote.label && sameQuote(quote, { reference, option })) return
-      await get().openQuote(reference, option)
-    },
-
-    openQuote: async (reference, option) => {
+    openQuote: async (reference, option, mode = "read") => {
       const belongsTo = [newest(loads)] as const
       // The quote the store refused keeps saying why while it is asked for again; any other is
       // read afresh: until it is read, the sheets hold nothing of the quote before and take no
@@ -594,6 +569,16 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       if (!(status === "error" && refusedOpen !== null && sameQuote(refusedOpen, { reference, option }))) {
         useWorkbenchPreviewStore.getState().open({}, null, true)
         set({ ...CLOSED, status: "loading", loadError: null, refusedOpen: null })
+      }
+      set({ mode, editedBy: null, keptTyping: false })
+      // Opened to edit, it is held before it is shown: someone else editing it holds it read
+      // only. Any other failure is the open's to say, and the next renewal takes it.
+      if (mode === "edit" && canEdit()) {
+        try {
+          await editAppQuote(reference, option)
+        } catch (error: unknown) {
+          set({ editedBy: beingEditedBy(error) })
+        }
       }
       await answer(belongsTo, openAppQuote(reference, option), {
         ok: (answer) => {
@@ -609,6 +594,29 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
             refusedOpen: storeRefused(error) ? { reference, option } : null,
           }),
       })
+    },
+
+    keepEditing: async () => {
+      const { mode, editedBy, quote } = get()
+      if (mode !== "edit" || editedBy !== null || quote === null || !canEdit()) return
+      try {
+        await editAppQuote(quote.reference, quote.option)
+      } catch (error: unknown) {
+        // Taken by someone else once its lease lapsed: read only now, what was typed kept. No
+        // answer, or a server failure, says nothing of who holds it: the next renewal asks.
+        const editor = beingEditedBy(error)
+        const open = get().quote
+        if (editor !== null && open !== null && sameQuote(open, quote)) heldBy(editor)
+      } finally {
+        set((state) => ({ renewals: state.renewals + 1 }))
+      }
+    },
+
+    stopEditing: (options = {}) => {
+      const { mode, editedBy, quote } = get()
+      if (mode !== "edit" || editedBy !== null || quote === null) return
+      // Let go as the page leaves; one never let go lapses with its lease.
+      releaseAppQuote(quote.reference, quote.option, options).catch(() => undefined)
     },
 
     save: async () => {

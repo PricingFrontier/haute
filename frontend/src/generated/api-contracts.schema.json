@@ -27799,6 +27799,32 @@
       "title": "WarehouseListResponse",
       "type": "object"
     },
+    "WorkbenchAppEditingResponse": {
+      "description": "Who holds the quote to edit after the request: the one asking once taken or renewed,\nnone once let go; a lease lapses *lease_seconds* after it was taken unless renewed.",
+      "properties": {
+        "editor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Editor"
+        },
+        "lease_seconds": {
+          "title": "Lease Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "editor",
+        "lease_seconds"
+      ],
+      "title": "WorkbenchAppEditingResponse",
+      "type": "object"
+    },
     "WorkbenchAppFormResponse": {
       "description": "The release's form, without its sample, with the revision a price quotes.",
       "properties": {
@@ -28880,6 +28906,18 @@
           "default": null,
           "title": "Edit Role"
         },
+        "environment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environment"
+        },
         "form_revision": {
           "title": "Form Revision",
           "type": "string"
@@ -28926,7 +28964,8 @@
         "principal",
         "quotes",
         "edit_role",
-        "can_edit"
+        "can_edit",
+        "environment"
       ],
       "title": "WorkbenchAppReleaseResponse",
       "type": "object"
@@ -30965,6 +31004,9 @@
     "WarehouseListResponse": {
       "$ref": "#/$defs/WarehouseListResponse"
     },
+    "WorkbenchAppEditingResponse": {
+      "$ref": "#/$defs/WorkbenchAppEditingResponse"
+    },
     "WorkbenchAppFormResponse": {
       "$ref": "#/$defs/WorkbenchAppFormResponse"
     },
@@ -31214,6 +31256,7 @@
     "WorkbenchAppQuoteChangeResponse",
     "WorkbenchAppQuoteActivityResponse",
     "WorkbenchAppPeopleResponse",
+    "WorkbenchAppEditingResponse",
     "WorkbenchImportResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
@@ -31537,7 +31580,8 @@
       "WorkbenchAppQuoteResponse",
       "WorkbenchAppQuoteChangeResponse",
       "WorkbenchAppQuoteActivityResponse",
-      "WorkbenchAppPeopleResponse"
+      "WorkbenchAppPeopleResponse",
+      "WorkbenchAppEditingResponse"
     ],
     "workbench-import": [
       "WorkbenchImportResponse"

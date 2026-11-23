@@ -673,8 +673,13 @@ def test_a_quote_is_made_untyped_as_a_draft_and_an_empty_save_is_refused(page: P
     assert untyped.status_code == 200, untyped.text
     made = untyped.json()["quote"]
     assert (made["label"], made["stage"]) == ("Q-000002/1", "draft")
-    # The details the app sets are not typing, whatever the page sends of them.
-    for values in ({}, {"quote_details": [{"quote_reference": "Q-9", "stage": "final"}]}):
+    # The details the app sets are not typing, whatever the page sends of them, and nor is a
+    # name, which the quote keeps as it was made.
+    for values in (
+        {},
+        {"quote_details": [{"quote_reference": "Q-9", "stage": "final"}]},
+        {"quote_details": [{"quote_name": "Fleet"}]},
+    ):
         refused = page.save(made, shown=None, values=values)
         assert refused.status_code == 422
         assert refused.json()["detail"] == "Type the quote first"
@@ -684,12 +689,25 @@ def test_a_quote_name_past_its_length_is_refused_naming_the_limit(page: Page) ->
     named = {**VALUES, "quote_details": [{**DETAILS, "quote_name": "x" * 240}]}
 
     refused = page.create(values=named)
-    quote = page.create().json()["quote"]
-    resaved = page.save(quote, values=named, shown=None)
 
-    for each in (refused, resaved):
-        assert each.status_code == 422
-        assert "at most 200 characters" in each.json()["detail"]["message"]
+    assert refused.status_code == 422
+    assert "at most 200 characters" in refused.json()["detail"]["message"]
+
+
+def test_a_save_keeps_the_name_the_quote_was_made_with_whatever_the_page_sends(
+    page: Page,
+) -> None:
+    quote = page.create().json()["quote"]
+
+    for name in ("Fleet renewal", "x" * 240, None):
+        details = {**DETAILS, "quote_name": name}
+        sent = {**VALUES, "quote_details": [{k: v for k, v in details.items() if v is not None}]}
+        saved = page.save(quote, values=sent, shown=None)
+        assert saved.status_code == 200, saved.text
+        quote = saved.json()["quote"]
+        assert (quote["details"]["quote_name"], quote["title"]) == ("Fleet", "Fleet")
+    opened = page.client.get(address(quote), headers=ANA).json()
+    assert opened["values"]["quote_details"][0]["quote_name"] == "Fleet"
 
 
 def test_a_write_from_a_page_of_another_release_is_refused(page: Page) -> None:

@@ -2289,18 +2289,21 @@ Out of scope:
   the list are its name, a search box (`/` focuses it) matching every word typed in the
   reference, quote name, insured or broker (`ABC-1/2` matching that option alone, a
   reference matched whatever the case of its letters), in Team an assignee to
-  narrow it to, the order (newest saved, Reference, A to Z with each reference's options in
-  order, or insured) and New quote (`N`), which opens the new quote's window over the list;
+  narrow it to, the order (newest saved, quote reference, A to Z with each reference's
+  options in order, or insured) and New quote (`N`), which opens the new quote's window over the list;
   neither key acts from a control it is typed or picked in, so `N` in a select picks its
   option. The list is a table at Haute's
   density, 50 quotes at a time with Load more, read from the quotes' `quote_details`: each
   quote's reference and option, `ABC-1/2`, its title (its quote name, else its insured,
-  else its reference and option), its insured, broker and inception date under their columns'
+  else its reference and option), each under its column's name as the schema names
+  quote_details' columns (its label, else its name read as words: Quote reference, Quote
+  name), as the order names them too, its insured, broker and inception date under their columns'
   labels on the sheets, the date as a day, its stage, who it is with and when it was saved,
   relative, with the time on hover. Relative times in the app read as everywhere in Haute:
   "just now" under a minute, then minutes, hours and days ago ("5m ago", "3h ago", "2d
-  ago") below a week, then the day and month, with the year when it is not this year. A row opens its quote, its reference a link of its
-  own; on hover or focus it offers Open and a menu of what is done to the quote as a whole:
+  ago") below a week, then the day and month, with the year when it is not this year. A row opens nothing, its reference included, and
+  always shows Read, Edit for one who may change quotes, a filled button in the accent blue,
+  and a menu of what is done to the quote as a whole:
   Duplicate, Renew, Create alternative, Archive or Restore, and Copy link, Copy link alone
   for one who may only read quotes. Archive and Restore reload, once answered, the list
   showing then, whichever list the underwriter has moved to. These are the list's, not the
@@ -2309,10 +2312,29 @@ Out of scope:
   list as it was. Loading shows placeholder rows, a failure says why with Retry, and an
   empty list says why: no quotes yet, with New quote; none matching, with Clear search;
   none archived.
-- **A quote in the app.** A quote opens at `/quotes/{reference}/{option}` on the sheets,
+- **A quote in the app.** A quote opens to read at `/quotes/{reference}/{option}`, the
+  address Copy link copies, and to edit at `/quotes/{reference}/{option}/edit`, a new quote
+  opening to edit once it is made. Read shows the quote as saved, its price as saved, taking
+  no typing and no change, with Edit in its bar. One person edits a quote at a time, the same
+  person from any tab: Edit holds the quote for its editor, and pressed on a quote someone
+  else is editing it says who and opens nothing. The hold is a lease the page renews every 30
+  seconds while the quote is open to edit, let go as the page leaves the quote or the tab
+  closes, and lapsing three minutes after the page stops renewing it, so a closed laptop
+  frees the quote; it is kept in the app's memory, right for an app running as one replica,
+  and a restart frees every quote. While it is held every save and change from anyone else is
+  refused naming its editor, and a page whose lease someone else took once it lapsed holds
+  the quote read only, saying who is editing it, what was typed kept in the browser. Nothing
+  is lost when a lease lapses early: a save over a version the quote moved past is refused
+  as ever. A quote read only says so beside its stage, its Save, Mark final and Amend saying
+  to press Edit, and shows that it is final or archived however it was opened; the notice
+  naming who is editing it offers Try again, which takes the quote once it is free, and says
+  what was typed is kept only when something was. Back to Quotes returns to the list as it
+  was last shown, its list, stage, search and order. The bar names the environment the app
+  keeps its quotes in beside the release. Mark final on a quote saved without a price says
+  the quote has no price yet. The quote is on the sheets,
   under its bar: back to Quotes, its reference and option, its name (its
-  `quote_details.quote_name`, typed in the bar as on the sheets and saved with the next
-  Save), its stage, Draft or Final, and, when archived, Archived, who it is with (reassigned
+  `quote_details.quote_name`, given in the New quote window as the quote is made and
+  never changed after), its stage, Draft or Final, and, when archived, Archived (restored from the Quotes page's menu alone, as its notice says), who it is with (reassigned
   from the people quotes are with, or a name typed), Save, Mark final or, for a final quote,
   Amend, which asks why, History, and why the quote has no price. Beneath are who saved it
   and when and the quote it came from. The quote is priced as it is
@@ -2347,39 +2369,40 @@ Out of scope:
   saving anything typed since; only a refusal (a status below 500) lets it go, and a repeat
   that landed and was changed since by someone else is let go as done, the page offering
   the newest. While a save or a change is being made, Save and every control that changes
-  the quote are off. The cells of the columns the app sets take no typing; assigning,
+  the quote are off. The cells of the columns the app sets take no typing, nor, once the quote is made,
+  does its name's, which every save keeps as it was made; assigning,
   restoring, marking final and amending each change the quote's details, its
   values and prices kept, which the sheets take on, what was typed kept. A new quote is
   keyed in a window before it is made. New quote opens it over the Quotes page, its list as
-  it was; Duplicate and Renew over the Quotes page they are pressed on; and
-  Save as new, after a save conflict, over the quote, its unsaved values kept. The window
+  it was; Duplicate, Renew and Create alternative over the Quotes page they are pressed
+  on; and Save as new, after a save conflict, over the quote, its unsaved values kept. The window
   holds the quote's reference and the other columns of `quote_details` the underwriter types
   (`quote_name`, `insured`, `broker`, `inception_date`, `expiry_date` and `is_renewal`) in
   the table's order, each drawn as a Collection draws its column, every one shown and
   checked whatever the sheets show or hide: the reference required and fitting its rules,
-  and every value fitting its column, a required one left empty for Mark final to ask for;
+  the quote's name required, as it is never changed after, and every value fitting its
+  column, a required one left empty for Mark final to ask for;
   Create waits on them, and Cancel or `Escape` closes a window that has sent nothing,
   leaving the page behind it as it was. New quote's starts as a new quote's defaults;
-  Duplicate's and Renew's are filled from the source as it is kept, without the details the
-  app set for it, its reference blank, a renewal with `is_renewal` ticked, which the
+  Duplicate's, Renew's and Create alternative's are filled from the source as it is kept,
+  without the details the app set for it, its name kept, its reference blank, but
+  for an alternative, whose reference is the source's and takes no typing, a renewal with `is_renewal` ticked, which the
   underwriter can untick, as one not made by Renew can be ticked by hand; Save as new's from
   the values on the sheets. A reference is trimmed and kept as keyed, in Unicode's composed
   form, 1 to 40 characters, no `/`, which the app puts before the option, no control
   character, and not `.` or `..`; two are one reference only when they are the same, case
   included, so `ABC-1` and `abc-1` are two. Create makes the quote from what the window holds
   over a new quote's defaults, the source's values or the sheets' values, under the reference
-  keyed as option 1, and moves to its own address; a reference in use is refused naming the
+  keyed as option 1, an alternative under its source's reference as its next option, and
+  moves to its own address; a reference in use is refused naming the
   quote holding it, with Open it. The whole creation is kept in the tab before it is sent:
   while unanswered the window takes no typing; a refusal lets it go and opens the window for
   typing again; an answer lost, or a failure of the server, offers Try again, which sends
   the creation as it was, and Close, which keeps it, and a kept creation is offered back
   with Try again and Discard the next time the app opens in the tab, so a quote is made once
   and nothing typed is lost. `/quotes/new` is the Quotes page with the window open,
-  `/quotes/new?from=…&option=…&as=` `duplicate` or `renewal` the Quotes page with the window
-  filled from that quote. Create alternative is made at once from the source's values under
-  the source's reference as its next option (`as=alternative`), its creation's operation key
-  held in the tab until the answer comes, so a reload before then asks with it again and it
-  is made once. A quote made from another names what it was made from and any row of it that
+  `/quotes/new?from=…&option=…&as=` `duplicate`, `renewal` or `alternative` the Quotes page
+  with the window filled from that quote. A quote made from another names what it was made from and any row of it that
   no longer fits. Made, it is clean: left as it opened it keeps no draft and asks nothing on
   leaving, and one left with nothing typed stays a draft; an answer arriving once the page
   moved on does not move it, nor does leaving a quote whose unsaved values the leave guard
@@ -3359,8 +3382,7 @@ Out of scope:
   values settle on. A column's rules mark the cells that break them but never stop a
   pricing or a save: refusing a quote is for validations, to come. The one exception is the
   new quote's window, whose required columns of `quote_details` are an entry requirement
-  of the quote's making alone: an alternative made at once, and every save after, keep a
-  quote its rules mark. Clear is gone: it emptied a quote
+  of the quote's making alone: every save after keeps a quote its rules mark. Clear is gone: it emptied a quote
   at one press, after asking, and could not be undone. Preview's quote is the saved
   sample, so Reset starts it again as a new quote through the form's history instead:
   one undo step, so it asks nothing, and a new quote's defaults rather than nothing, as

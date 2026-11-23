@@ -145,7 +145,7 @@ describe("UnderwriterApp's quote store refusals", () => {
   })
 
   it("keeps a quote whose save the store refuses open, its values kept, naming what does not fit", async () => {
-    await navigate("/quotes/Q-000001/1", { force: true })
+    await navigate("/quotes/Q-000001/1/edit", { force: true })
     render(<UnderwriterApp />)
     await screen.findByTestId("quote-line")
     act(() => useWorkbenchPreviewStore.getState().setCell("equipment", 0, "item", "Excavator"))
@@ -166,7 +166,7 @@ describe("UnderwriterApp's quote store refusals", () => {
   })
 
   it("says a pricing the store refuses in the bar, on one line", async () => {
-    await navigate("/quotes/Q-000001/1", { force: true })
+    await navigate("/quotes/Q-000001/1/edit", { force: true })
     render(<UnderwriterApp />)
     await screen.findByTestId("quote-line")
 

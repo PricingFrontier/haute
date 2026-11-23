@@ -11,6 +11,9 @@ import { useMenuKeyboard } from "../hooks/useMenuKeyboard"
 import { STAGE_LABEL } from "./quoteValues"
 
 export const BUTTON = "toolbar-btn inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50"
+/** A text button in a list's row, and the filled one beside it, of one size. */
+export const ROW_BUTTON = "toolbar-btn inline-flex items-center rounded-md px-2 py-px text-[11px] font-medium"
+export const ROW_FILL_BUTTON = "toolbar-fill toolbar-fill-save toolbar-fill-compact inline-flex items-center"
 export const ICON_BUTTON = "toolbar-btn inline-flex items-center rounded-md p-1 disabled:opacity-50"
 export const FILL_BUTTON = "toolbar-fill toolbar-fill-save inline-flex items-center gap-1 px-2.5"
 /** The toolbar's fill shares its row equally; a fill button outside the toolbar is as wide as its label. */

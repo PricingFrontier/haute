@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { followLink } from "./route"
+import { followLink, listPath } from "./route"
 import useAppStore from "./useAppStore"
 
 const BRAND_STYLE = { width: "auto", minWidth: 165, maxWidth: 360, paddingRight: 8 } as const
@@ -17,12 +17,13 @@ export default function AppHeader({ children, label }: { children?: ReactNode; l
       <div className="toolbar-brand" style={BRAND_STYLE} data-testid="app-release">
         <div className="toolbar-brand-mark min-w-0">
           <h1 className="toolbar-brand-name max-w-full truncate" style={{ lineHeight: 1.2 }} title={release.pipeline_name}>
-            <a href="/" onClick={(event) => followLink(event, "/")} style={{ color: "inherit" }}>
+            <a href={listPath()} onClick={(event) => followLink(event, listPath())} style={{ color: "inherit" }}>
               {release.pipeline_name || "Quotes"}
             </a>
           </h1>
           <span className="toolbar-brand-version" title={`Built ${release.created_at} by Haute ${release.haute_version}`}>
             release {release.id}
+            {release.environment != null && <span data-testid="app-environment"> · {release.environment}</span>}
           </span>
         </div>
       </div>

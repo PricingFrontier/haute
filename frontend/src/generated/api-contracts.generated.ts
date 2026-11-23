@@ -6522,6 +6522,7 @@ export interface WorkbenchAppReleaseResponse {
   can_edit: boolean;
   created_at: string;
   edit_role: string | null;
+  environment: string | null;
   form_revision: string;
   haute_version: string;
   host: string | null;
@@ -6671,6 +6672,14 @@ export interface WorkbenchAppQuoteActivityEntry {
  */
 export interface WorkbenchAppPeopleResponse {
   people: string[];
+}
+/**
+ * Who holds the quote to edit after the request: the one asking once taken or renewed,
+ * none once let go; a lease lapses *lease_seconds* after it was taken unless renewed.
+ */
+export interface WorkbenchAppEditingResponse {
+  editor: string | null;
+  lease_seconds: number;
 }
 /**
  * What an Import gives its table: the table, how its rows land (``replace``, ``append`` or

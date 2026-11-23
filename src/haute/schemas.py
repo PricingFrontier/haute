@@ -712,6 +712,9 @@ class WorkbenchAppReleaseResponse(BaseModel):
     edit_role: str | None = None
     #: Whoever is signed in may change quotes; one who may not reads them.
     can_edit: bool = True
+    #: The environment whose quote store the app keeps quotes in (dev, test, prod), when one
+    #: is named.
+    environment: str | None = None
 
 
 class WorkbenchAppFormResponse(BaseModel):
@@ -943,6 +946,14 @@ class WorkbenchAppPeopleResponse(BaseModel):
     assigned to without typing a name."""
 
     people: list[str]
+
+
+class WorkbenchAppEditingResponse(BaseModel):
+    """Who holds the quote to edit after the request: the one asking once taken or renewed,
+    none once let go; a lease lapses *lease_seconds* after it was taken unless renewed."""
+
+    editor: str | None
+    lease_seconds: float
 
 
 # ---------------------------------------------------------------------------

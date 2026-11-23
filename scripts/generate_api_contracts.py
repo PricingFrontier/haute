@@ -157,6 +157,7 @@ from haute.schemas import (
     UtilityReadResponse,
     UtilityWriteResponse,
     WarehouseListResponse,
+    WorkbenchAppEditingResponse,
     WorkbenchAppFormResponse,
     WorkbenchAppImportRequest,
     WorkbenchAppPeopleResponse,
@@ -405,6 +406,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[_ContractModel, ...]] = {
         WorkbenchAppQuoteChangeResponse,
         WorkbenchAppQuoteActivityResponse,
         WorkbenchAppPeopleResponse,
+        WorkbenchAppEditingResponse,
     ),
     # An Import's rows, which the builder's Preview and the app's page both read: a module of
     # its own, so neither loads the other's.

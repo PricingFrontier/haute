@@ -1174,18 +1174,24 @@ its insured, broker and inception date under the labels the sheets give them, re
 quote details. Search matches every word you type against the reference, however its
 letters are cased, the quote name, insured and broker, and `ABC-1/2` finds that option
 alone; in Team you can narrow the list to who a quote is with, and order it by when it was
-saved, by **Reference** (A to Z, each reference's options in order) or by its insured. The
+saved, by **Quote reference** (A to Z, each reference's options in order) or by its
+insured. The list names the quote details' columns as the schema does, by their labels. The
 list, the search and the order are in the page's address, so a link or Back returns to the
-same list. A row opens its quote. Hover over it, or move to it with `Tab`, and its **⋯**
-menu holds what you do to the quote as a whole:
+same list. Each row has **Read**, which opens the quote to look at it, changing nothing,
+**Edit**, which opens it to work on it, and a **⋯** menu holding what you do to the quote as
+a whole; clicking the row itself opens nothing. One person edits a quote at a time: **Edit**
+on a quote someone else is editing says who, and **Read** still opens it. A quote is free
+again as its editor leaves it, or a few minutes after their page closes:
 
 - **Duplicate** and **Renew** open the New quote window over the list, filled from the
-  quote as it is saved, with the reference blank and, for a renewal, **is_renewal** ticked:
-  key the new reference and **Create**.
-- **Create alternative** makes a new option under the same reference at once
-  (`ABC-1/2` from `ABC-1/1`) and opens it.
+  quote as it is saved, its name included, with the reference blank and, for a renewal,
+  **is_renewal** ticked: key the new reference and **Create**.
+- **Create alternative** opens the window too, filled from the quote with its reference
+  already in place: **Create** makes a new option under that reference (`ABC-1/2` from
+  `ABC-1/1`) and opens it.
 - **Archive** takes the quote out of the lists (it opens read only until restored), and can
-  be undone from the message it shows; in **Archived**, **Restore** brings it back.
+  be undone from the message it shows; in **Archived**, **Restore** brings it back. An archived quote opened says so, and is
+  restored from this menu only.
 - **Copy link** copies the quote's address.
 
 A quote made from another is linked to it. `/` jumps to the search.
@@ -1196,7 +1202,8 @@ dates and whether it is a renewal, labelled and checked as on the sheets, starti
 columns' defaults. The reference is up to 40 characters, without `/`, which the app puts
 before the option, and is not `.` or `..`. It is kept as you key it, so `ABC-1` and `abc-1`
 are two references; a reference already in use is refused, naming the quote that holds it,
-with **Open it**. A detail the analyst made required can be left empty here: the quote asks
+with **Open it**. The quote's name must be keyed too, as it can't be changed once the quote
+is made. Any other detail the analyst made required can be left empty here: the quote asks
 for it as it is marked final. **Create** makes the quote, a **Draft** holding what you
 keyed, and opens it; one left with nothing more typed stays a
 **Draft** until archived. **Cancel** or `Escape` closes the window and makes nothing. If the
@@ -1205,8 +1212,15 @@ exactly what it sent, and keeps it if you close it: the app offers it back, with
 again** or **Discard**, the next time it opens in that tab, so a quote is never made twice.
 
 ### A quote
-A quote opens at its own address, under a bar holding its reference and option
-(`ABC-1/2`), its name (its `quote_name`, saved with the next **Save**), its stage, and:
+A quote opens at its own address, read only from **Read** (with **Edit** in its bar) or
+held as yours from **Edit**; a new quote opens to edit. While you edit it, nobody else can
+save or change it; if your page stops renewing its hold, say after the laptop slept, and
+someone else starts editing, your page turns read only, naming them, and keeps what you
+typed in the browser. The app keeps these holds in its memory, so a restart frees every
+quote. If someone else is editing it, **Try again** takes it once they have left.
+**← Quotes** returns to the list as you left it. The bar holds its reference and option
+(`ABC-1/2`), its name (its `quote_name`, given in the New quote window and never changed
+after: a `quote_name` cell on the sheets is read only), its stage, and:
 
 - **Save**. The quote is priced as you enter it, as Preview prices the sample, with no
   **Price** to press and no **Clear**, and a quote opened that can change is priced again
