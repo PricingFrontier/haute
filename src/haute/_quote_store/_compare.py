@@ -316,6 +316,9 @@ def additions_plan(form: FormSpec, catalogue: Catalogue, comparison: Comparison)
         if key is not None:
             steps.append(key)
             present.add(str(key.column).casefold())
+            if key.kind == "rename key":
+                # Renamed for the index, the key column's name is free for a column of it.
+                present.discard(str(key.was).casefold())
         steps.extend(
             Step("add column", table["name"], table["key"], column["name"], column["key"])
             for column in table["columns"]

@@ -466,11 +466,20 @@ def test_a_value_the_export_cannot_convert_stops_it_changing_nothing(server: Tar
     made_from_sql(server, RELEASED)
     quote(server, RELEASED, "A-1", drivers="n/a")
     retyped = form(
-        table("policy", column("region"), column("drivers", "int"), column("value", "float")),
         table("cover", column("excess", "float")),
+        table(
+            "policy",
+            column("region"),
+            column("seats", "int"),
+            column("drivers", "int"),
+            column("value", "float"),
+        ),
     )
     written = exported(server, retyped)
-    assert "CREATE TABLE cover" in written and "ALTER COLUMN drivers" in written
+    # A table and a column are made before the conversion that fails, and undone with it.
+    converted = written.index("ALTER COLUMN drivers")
+    assert written.index("CREATE TABLE cover") < converted
+    assert written.index("ALTER TABLE policy ADD") < converted
 
     with pytest.raises(Exception, match=r"(?i)invalid input syntax|error converting"):
         server.script(written)
@@ -479,9 +488,39 @@ def test_a_value_the_export_cannot_convert_stops_it_changing_nothing(server: Tar
     assert held.table("cover") is None
     policy = held.table("policy")
     assert policy is not None
+    assert policy.column("seats") is None
     drivers = policy.column("drivers")
     assert drivers is not None and drivers.kind == "string"
     assert server.read("SELECT drivers FROM policy") == [("n/a",)]
+
+
+def test_the_export_converts_no_identity_column(server: Target) -> None:
+    """The identity keeps the store's type, whatever the database holds it as: the SQL says
+    it takes no change, and changes nothing of it."""
+    made_from_sql(server, RELEASED)
+    if server.backend == "postgresql":
+        server.run("ALTER TABLE policy ALTER COLUMN quote_option TYPE INTEGER")
+    else:
+        # SQL Server changes no column of a key or a reference: those go first.
+        (refers,) = server.read(
+            "SELECT name FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID('policy')"
+        )
+        (keyed,) = server.read(
+            "SELECT name FROM sys.key_constraints WHERE type = 'PK' "
+            "AND parent_object_id = OBJECT_ID('policy')"
+        )
+        server.run(
+            f"ALTER TABLE policy DROP CONSTRAINT {refers[0]}",
+            f"ALTER TABLE policy DROP CONSTRAINT {keyed[0]}",
+            "ALTER TABLE policy ALTER COLUMN quote_option INT NOT NULL",
+        )
+    comparison = compared(server, RELEASED)
+    assert ("policy", "quote_option", "type") in kinds(comparison)
+    assert "policy.quote_option takes no change of its type" in comparison.plan.refusals
+
+    written = exported(server, RELEASED)
+
+    assert "ALTER COLUMN quote_option" not in written
 
 
 def test_the_export_converts_no_column_the_analyst_pairs(target: Target) -> None:
@@ -715,6 +754,24 @@ def test_an_index_value_missing_stops_the_export_changing_nothing(server: Target
     assert server.read("SELECT peril, excess, quote_row FROM perils") == [(None, 1.5, 1)]
 
 
+def test_an_index_value_too_long_for_the_index_stops_the_export_changing_nothing(
+    server: Target,
+) -> None:
+    # Longer than either server's index holds (VARCHAR(255), NVARCHAR(366)): PostgreSQL's cast
+    # to VARCHAR(255) would cut it short and key the table by what was left.
+    long = "x" * 400
+    _kept_by_row_number(server, {"perils": [f"'{long}', 1.5, 1"]})
+    written = exported(server, KEYED)
+    assert "DROP CONSTRAINT" in written
+
+    with pytest.raises(Exception, match=r"(?i)too long|truncated"):
+        server.script(written)
+
+    made = catalogue(server).table("perils")
+    assert made is not None and made.primary_key == (*IDENTITY, "quote_row")
+    assert server.read("SELECT peril, quote_row FROM perils") == [(long, 1)]
+
+
 def _vehicles_of(index: str, other: str) -> dict[str, Any]:
     """A many-row input table keyed by its index *index*, with an Integer *other*."""
     return table(
@@ -770,6 +827,28 @@ def test_an_index_paired_first_frees_its_old_name_for_a_new_column(target: Targe
     }
     assert comparison.plan.refusals == ()
     target.script(sql(target, reused, comparison))
+    opens(target, reused)
+
+
+def test_the_export_frees_a_renamed_keys_name_for_a_new_column(target: Target) -> None:
+    before = form(_vehicles_of("row_number", "seats"))
+    made_from_sql(target, before)
+    reused = form(
+        table(
+            "vehicles",
+            {"name": "vehicle_no", "type": "int", "index": "numbered"},
+            column("seats", "int"),
+            column("row_number"),
+            rows="many",
+        )
+    )
+
+    written = exported(target, reused)
+
+    # The key column is renamed for the index, then row_number added under the name it freed.
+    assert "already exists" not in written
+    assert written.lower().index("rename") < written.index("ALTER TABLE vehicles ADD")
+    target.script(written)
     opens(target, reused)
 
 

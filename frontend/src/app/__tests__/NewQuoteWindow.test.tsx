@@ -330,6 +330,25 @@ describe("NewQuoteWindow", () => {
     expect(readKeptCreation(KEPT)).toBeNull()
   })
 
+  it("keeps a creation sent again that the store refuses, as its first send may have made it", async () => {
+    vi.mocked(createAppQuote)
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(storeRefusal(MISFIT))
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+    fireEvent.click(create())
+    expect(await screen.findByTestId("new-quote-unknown")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("new-quote-try-again"))
+
+    await vi.waitFor(() => expect(createAppQuote).toHaveBeenCalledTimes(2))
+    // The refusal says nothing of the send before it: ABC-1 may have been made, so it stays.
+    expect(await screen.findByTestId("new-quote-unknown")).toHaveTextContent("The dev database doesn't match the form")
+    expect(screen.queryByTestId("new-quote-refused")).toBeNull()
+    expect(readKeptCreation(KEPT)?.reference).toBe("ABC-1")
+  })
+
   it("lets a kept creation go on Discard, and the next New quote starts afresh", async () => {
     vi.mocked(createAppQuote).mockRejectedValue(new TypeError("Failed to fetch"))
     shown()

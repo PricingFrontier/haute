@@ -37,6 +37,7 @@ import {
   creationKey,
   draftKey,
   heldOperation,
+  holdOperation,
   lostPlaces,
   onSheets,
   operationKey,
@@ -538,24 +539,27 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       // have been: the key stays held.
       // The key is held under what was asked for (`creationKey`), so each creation under it
       // is that one: made from the source as the server holds it, and answered with the quote
-      // made once the key landed. Only the key is kept, so nothing else is held.
-      const creationHold: KeyedHold<QuoteCreation> = {
-        held: () => null,
-        hold: (creation) => {
-          if (creation === null) releaseOperation(held)
+      // made once the key landed. Only the key is kept, from the moment it is sent: a creation
+      // under a key held is being sent again.
+      const creationHold = (creation: QuoteCreation, resent: boolean): KeyedHold<QuoteCreation> => ({
+        held: () => (resent ? creation : null),
+        hold: (holding) => {
+          if (holding === null) releaseOperation(held)
+          else holdOperation(held, holding.operation)
         },
-        key: (creation) => creation.operation,
+        key: (holding) => holding.operation,
         content: () => held,
-      }
+      })
       let made: WorkbenchAppQuote | null = null
       const failedToOpen = (error: unknown) => set({ status: "error", loadError: appErrorMessage(error, useAppStore.getState().form) })
       // Made from its source's values, without the details the app set for the source,
       // under its reference: it names none of its own.
       await answer(belongsTo, openAppQuote(from.reference, from.option), {
         ok: async (read, asked) => {
-          const creation = { operation: heldOperation(held), form_revision: revision, release: release.id, values: withoutAppDetails(read.values as Values) }
+          const kept = heldOperation(held)
+          const creation = { operation: kept ?? operationKey(), form_revision: revision, release: release.id, values: withoutAppDetails(read.values as Values) }
           const source = { reference: from.reference, option: from.option, relation: from.relation }
-          await asked.answer(sendHeld(creationHold, creation, (sent, ticket) => createAppQuote(sent, source, null, ticket)), {
+          await asked.answer(sendHeld(creationHold(creation, kept !== null), creation, (sent, ticket) => createAppQuote(sent, source, null, ticket)), {
             ok: (answer) => {
               made = answer.quote
               show(answer)

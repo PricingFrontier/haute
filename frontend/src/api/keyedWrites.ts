@@ -13,7 +13,8 @@ import { apiErrorCode } from "./errors"
  * Where one kind of keyed write is held while its fate is unknown: in memory, or in
  * browser storage so a reload sends it again. `key` is the operation key a write is
  * sent under, and `content` what that key is bound to: a write whose content changes takes
- * a new key.
+ * a new key. `held` is a write sent before that no answer settled, and only that: one
+ * never sent is not held, so a write `sendHeld` finds held is being sent again.
  */
 export interface KeyedHold<W> {
   held(): W | null
@@ -60,13 +61,22 @@ export function ticketIsLive(ticket: KeyedTicket): boolean {
 const REFUSED_UNWRITTEN: ReadonlySet<string> = new Set(["quote_store_mismatch", "quote_store_environment"])
 
 /**
+ * The failures that answered a held write sent again: the server refuses a store that does
+ * not fit before it reads what an earlier send of the key wrote, so such a refusal says
+ * nothing of that send, which may have landed.
+ */
+const answeredResends = new WeakSet<ApiError>()
+
+/**
  * Whether a keyed write's failure settles it: an answer the server gave, below 500, or a 503
- * that refused it before anything was written. No answer, a timeout, any other answer of 500
- * or more, or one that could not be read leaves its fate unknown, so it stays held.
+ * that refused it before anything was written, on the write's first send. No answer, a
+ * timeout, any other answer of 500 or more, or one that could not be read leaves its fate
+ * unknown, so it stays held.
  */
 export function keyedWriteSettled(error: unknown): boolean {
   if (!(error instanceof ApiError) || error.status <= 0) return false
-  return error.status < 500 || (error.status === 503 && REFUSED_UNWRITTEN.has(apiErrorCode(error) ?? ""))
+  if (error.status < 500) return true
+  return error.status === 503 && REFUSED_UNWRITTEN.has(apiErrorCode(error) ?? "") && !answeredResends.has(error)
 }
 
 /**
@@ -96,6 +106,8 @@ export async function sendHeld<W, T>(
     hold.hold(null)
     return answer
   } catch (error: unknown) {
+    // Sent again, the write was held with its fate unknown (`answeredResends`).
+    if (held !== null && error instanceof ApiError) answeredResends.add(error)
     if (keyedWriteSettled(error)) hold.hold(null)
     throw error
   } finally {

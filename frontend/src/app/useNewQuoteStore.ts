@@ -341,7 +341,8 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         update({ checked: true })
         return
       }
-      // Made once and kept before it is sent: tried again, after a reload too, it is sent as it was.
+      // Made once and kept in the tab as it is sent (`sendHeld`), never before: tried again,
+      // after a reload too, it is sent as it was. A tab that keeps nothing sends it all the same.
       const creation: KeptCreation = {
         operation: operationKey(),
         form_revision: revision,
@@ -351,9 +352,6 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
         source: shown.source,
         title: shown.title,
       }
-      const key = keptKey()
-      // A tab that keeps nothing sends it all the same.
-      if (key !== null) keepCreation(key, creation)
       await send(creation)
     },
 

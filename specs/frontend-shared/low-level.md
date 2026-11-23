@@ -173,7 +173,9 @@
   ticket, options)`, which refuses a ticket that is not that call's own; and lets the
   write go once `keyedWriteSettled` says its answer settles it: an answer, an
   `ApiError` below 500, or a 503 whose code says it was refused before anything was
-  written (`REFUSED_UNWRITTEN`: quote_store_mismatch, quote_store_environment). No
+  written (`REFUSED_UNWRITTEN`: quote_store_mismatch, quote_store_environment), on the write's first send:
+  answering a held write sent again (`answeredResends`), the server's refusal of a store that does not fit,
+  made before it reads what the key wrote, says nothing of the earlier send, so it stays held. No
   answer, a timeout, any other answer of 500 or more, or one that does not parse keeps
   it held. A caller whose content changes asks for a new key
   (`operationKey`); the same content is sent again under the held key.

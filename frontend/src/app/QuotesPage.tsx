@@ -96,6 +96,7 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
   const status = useQuoteListStore((s) => s.status)
   const error = useQuoteListStore((s) => s.error)
   const storeRefused = useQuoteListStore((s) => s.storeRefused)
+  const refusals = useQuoteListStore((s) => s.refusals)
   const next = useQuoteListStore((s) => s.next)
   const loadingMore = useQuoteListStore((s) => s.loadingMore)
   const load = useQuoteListStore((s) => s.load)
@@ -120,12 +121,12 @@ export default function QuotesPage({ query }: { query: QuotesQuery }) {
 
   // A list the quote store refused is asked for again on the store's own bound, so tables
   // put right in SQL list the quotes with no reload; each answer that refuses it again
-  // arms the next.
+  // arms the next (`refusals`), the same refusal as the last among them.
   useEffect(() => {
     if (status !== "error" || !storeRefused) return
     const timer = window.setTimeout(() => void useQuoteListStore.getState().reload(), QUOTES_RECHECK_MS)
     return () => window.clearTimeout(timer)
-  }, [status, storeRefused, error])
+  }, [status, storeRefused, refusals])
 
   // A search reached from the address, by Back or a link, replaces what was typed.
   const [searched, setSearched] = useState(query.search)

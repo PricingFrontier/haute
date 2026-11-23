@@ -26,6 +26,7 @@ import { draftKey, QUOTES_RECHECK_MS } from "../quoteValues"
 import { navigate, setLeaveGuard } from "../route"
 import UnderwriterApp from "../UnderwriterApp"
 import useOpenQuoteStore from "../useOpenQuoteStore"
+import useQuoteListStore from "../useQuoteListStore"
 import { answer, MISFIT, release, storeRefusal } from "./fixtures"
 
 const KEPT = draftKey("motor", "ana@example.com", "Q-000001/1")
@@ -61,6 +62,7 @@ describe("UnderwriterApp's quote store refusals", () => {
     useWorkbenchPreviewStore.setState({ quote: {}, price: null, error: null, pricing: false })
     useWorkbenchPricingStore.setState({ pricer: null, quotePricer: null })
     useOpenQuoteStore.setState({ status: "idle", quote: null, base: null, pending: null, conflict: null, refusal: null, error: null, historyOpen: false, activity: null, recovered: null })
+    useQuoteListStore.setState({ query: null, quotes: [], counts: {}, next: null, status: "idle", error: null, storeRefused: false, refusals: 0, loadingMore: false })
   })
 
   afterEach(async () => {
@@ -108,6 +110,35 @@ describe("UnderwriterApp's quote store refusals", () => {
       })
       expect(await screen.findByTestId("quote-line")).toBeInTheDocument()
       expect(screen.queryByTestId("quote-load-error")).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("asks for a list the store refused again after each refusal, the same one twice, until it lists", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      refused = storeRefusal(MISFIT)
+      await navigate("/", { force: true })
+      render(<UnderwriterApp />)
+      expect(await screen.findByTestId("quotes-error")).toBeInTheDocument()
+      const listed = () => vi.mocked(request).mock.calls.filter(([path]) => String(path).startsWith("/api/app/quotes?")).length
+      const first = listed()
+
+      // Refused alike each time, saying why, every answer asks again on the store's bound.
+      for (const asked of [1, 2]) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(QUOTES_RECHECK_MS)
+        })
+        expect(listed()).toBe(first + asked)
+        expect(screen.getByTestId("quotes-error")).toBeInTheDocument()
+      }
+      refused = null
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(QUOTES_RECHECK_MS)
+      })
+      expect(listed()).toBe(first + 3)
+      expect(screen.queryByTestId("quotes-error")).toBeNull()
     } finally {
       vi.useRealTimers()
     }

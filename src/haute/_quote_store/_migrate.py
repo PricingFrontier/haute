@@ -28,13 +28,14 @@ from typing import Any, Literal
 from alembic.ddl.impl import DefaultImpl
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import Column, MetaData, Table
+from sqlalchemy import Column, MetaData, String, Table
+from sqlalchemy.engine import Dialect
 from sqlalchemy.schema import CreateIndex
 from sqlalchemy.types import TypeEngine
 
 from haute._quote_store._providers import PROVIDERS, Provider, name_problems
 from haute._quote_store._schema import StoreSchema, column_type, store_schema, structure
-from haute._workbench_form import QUOTE_DETAILS_NAME, FormSpec
+from haute._workbench_form import IDENTITY_NAMES, QUOTE_DETAILS_NAME, FormSpec
 
 StepKind = Literal[
     "create table",
@@ -372,6 +373,10 @@ def _plan_columns(
             quotes = _count(counts, key)
             if table["key"] == QUOTE_DETAILS_NAME:
                 refusals.append(f"quote_details.{column['name']} takes no change of its type")
+            elif column["name"] in IDENTITY_NAMES:
+                # The identity keys the table's rows and refers to quote_details: its type is
+                # the store's, never changed in place.
+                refusals.append(f"{name}.{column['name']} takes no change of its type")
             elif column.get("index"):
                 # The index keys the table's rows with the quote's identity: retyping it
                 # changes that key, which the SQL notes rather than altering in place.
@@ -429,8 +434,18 @@ def addition_problem(plan: Plan, step: Step, provider: Provider) -> str | None:
     )
     if table is None:
         return None
-    if step.column is not None and not any(
-        column["name"].casefold() == step.column.casefold() for column in table["columns"]
+    # A key column renamed for the index (``rename key``) frees its name, the rename coming
+    # first.
+    freed = {
+        str(each.was).casefold()
+        for each in plan.steps
+        if each.kind == "rename key" and each.table_key == step.table_key
+    }
+    if step.column is not None and (
+        step.column.casefold() in freed
+        or not any(
+            column["name"].casefold() == step.column.casefold() for column in table["columns"]
+        )
     ):
         return None
     name = step.table if step.column is None else f"{step.table}.{step.column}"
@@ -640,7 +655,7 @@ def _retype_in_place(
     )
     using: dict[str, Any] = {}
     if dialect.name == "postgresql":
-        using["postgresql_using"] = f"{dialect.identifier_preparer.quote(str(step.column))}::{new}"
+        using["postgresql_using"] = _postgresql_using(dialect, str(step.column), fresh.type)
     # SQL Server restates a column's nullability with its new type: the one it has, read from
     # the database, else every column Haute writes takes a null.
     operations.alter_column(
@@ -652,6 +667,16 @@ def _retype_in_place(
         schema=schema.metadata.schema,
         **using,
     )
+
+
+def _postgresql_using(dialect: Dialect, column: str, sql_type: TypeEngine[Any]) -> str:
+    """The USING expression PostgreSQL converts *column* to *sql_type* by: a cast to the type,
+    or, to a text of bounded length, to text of any length, since an explicit cast to
+    VARCHAR(n) cuts a longer value to n characters without a word, where the column's type,
+    which the cast value is then assigned to, refuses it and so stops the script."""
+    bounded = isinstance(sql_type, String) and sql_type.length is not None
+    cast = "VARCHAR" if bounded else sql_type.compile(dialect=dialect)
+    return f"{dialect.identifier_preparer.quote(column)}::{cast}"
 
 
 def _raw(operations: Operations, sql: str) -> None:
@@ -731,8 +756,7 @@ def _rekey(
     fresh = stored.table.c[index].type
     using: dict[str, Any] = {}
     if dialect.name == "postgresql":
-        new = fresh.compile(dialect=dialect)
-        using["postgresql_using"] = f"{preparer.quote(index)}::{new}"
+        using["postgresql_using"] = _postgresql_using(dialect, index, fresh)
     operations.alter_column(step.table, index, type_=fresh, nullable=False, schema=owner, **using)
     key_constraint = stored.table.primary_key
     operations.create_primary_key(

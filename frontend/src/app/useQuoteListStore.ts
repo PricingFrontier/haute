@@ -24,6 +24,11 @@ interface QuoteListState {
   error: string | null
   /** The list's error is the quote store's refusal, which a load past its bound may lift. */
   storeRefused: boolean
+  /**
+   * The refusals answered in a row, each one the page's cue to ask again: a refusal the same
+   * as the last changes nothing else.
+   */
+  refusals: number
   loadingMore: boolean
   /** Load `query`'s first page, unless it is the list already loaded and `again` is not asked. */
   load: (query: QuotesQuery, again?: boolean) => Promise<void>
@@ -42,6 +47,7 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
   status: "idle",
   error: null,
   storeRefused: false,
+  refusals: 0,
   loadingMore: false,
   load: async (query, again = false) => {
     const { status, storeRefused: refused } = get()
@@ -53,8 +59,11 @@ const useQuoteListStore = create<QuoteListState>()((set, get) => ({
     if (same && status === "ready") set({ error: null })
     else if (!(same && status === "error" && refused)) set({ query, status: "loading", error: null, storeRefused: false, quotes: [], next: null })
     await answer(belongsTo, fetchAppQuotes(query), {
-      ok: (page) => set({ query, quotes: page.quotes, counts: page.counts, next: page.next_cursor ?? null, status: "ready", storeRefused: false }),
-      failed: (error) => set({ status: "error", error: appErrorMessage(error, useAppStore.getState().form), storeRefused: storeRefused(error) }),
+      ok: (page) => set({ query, quotes: page.quotes, counts: page.counts, next: page.next_cursor ?? null, status: "ready", storeRefused: false, refusals: 0 }),
+      failed: (error) => {
+        const refused = storeRefused(error)
+        set((s) => ({ status: "error", error: appErrorMessage(error, useAppStore.getState().form), storeRefused: refused, refusals: refused ? s.refusals + 1 : 0 }))
+      },
     })
   },
   reload: async () => {

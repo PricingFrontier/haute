@@ -438,19 +438,23 @@ const CREATING_PREFIX = "haute-app-creating"
 export const creationKey = (app: string, principal: string, asked: string): string => `${CREATING_PREFIX}:${app}:${principal}:${asked}`
 
 /**
- * The operation key held under `key`, or a new one held there: a reload before the answer
- * came asks again with the same key, so the quote is made once. A tab that keeps nothing
- * asks with a new key each time.
+ * The operation key held under `key`, sent and not yet answered, or null: a reload before
+ * the answer came asks again with the same key, so the quote is made once.
  */
-export function heldOperation(key: string): string {
+export function heldOperation(key: string): string | null {
   try {
-    const held = window.sessionStorage.getItem(key)
-    if (held !== null) return held
-    const operation = operationKey()
-    window.sessionStorage.setItem(key, operation)
-    return operation
+    return window.sessionStorage.getItem(key)
   } catch {
-    return operationKey()
+    return null
+  }
+}
+
+/** Hold `operation` under `key` as it is sent; a tab that keeps nothing holds nothing. */
+export function holdOperation(key: string, operation: string): void {
+  try {
+    window.sessionStorage.setItem(key, operation)
+  } catch {
+    // Kept nowhere, it is asked with a new key next time.
   }
 }
 
