@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 
 import haute._trace_correlation as trace_correlation
+from haute._json_safe import row_to_json_safe as _jsonify_row
 from haute._trace_correlation import _find_matching_row, _trace_values_match
 from haute._trace_lineage import ValueLineage
 from haute._trace_waterfall import WaterfallEntry, WaterfallResult
@@ -22,7 +23,6 @@ from haute.trace import (
     _carries_column,
     _compute_schema_diff,
     _find_target_row_index,
-    _jsonify_row,
     _prune_to_column_relevance,
     execute_trace,
     trace_result_to_dict,

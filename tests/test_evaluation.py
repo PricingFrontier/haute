@@ -7,8 +7,10 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 import pytest
 
+from haute.errors import HauteValidationError
 from haute.modelling._evaluation import (
     EVALUATION_SCHEMA_VERSION,
     MAX_VALIDATION_FITS,
@@ -16,9 +18,11 @@ from haute.modelling._evaluation import (
     EvaluationFitResult,
     EvaluationPlan,
     EvaluationResultsArtifact,
+    _json_key,
     _stratified_parts,
     aggregate_evaluation_results,
     canonical_json_bytes,
+    evaluation_key_values,
     file_sha256,
     generate_evaluation_plan,
     load_evaluation_plan,
@@ -142,6 +146,28 @@ def test_evaluation_config_canonicalises_all_validation_modes_and_fit_counts() -
         }
     )
     assert temporal.to_plain_data()["validation"]["window"] == "expanding"
+
+
+def _single_temporal(validation_start: str, test_start: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "strategy": "temporal",
+        "date_column": "date",
+        "test": {"start": test_start},
+        "validation": {"method": "single", "start": validation_start},
+    }
+
+
+def test_temporal_boundaries_inside_one_microsecond_are_ordered_exactly() -> None:
+    earlier, later = "2025-01-01T00:00:00.000000100", "2025-01-01T00:00:00.000000200"
+
+    config = EvaluationConfig.from_plain_data(_single_temporal(earlier, later))
+
+    assert config.to_plain_data()["test"] == {"start": later}
+    with pytest.raises(HauteValidationError, match="validation.start must precede test.start"):
+        EvaluationConfig.from_plain_data(_single_temporal(later, earlier))
+    with pytest.raises(HauteValidationError, match="must be an ISO date or datetime"):
+        EvaluationConfig.from_plain_data(_single_temporal(earlier, later + "1"))
 
 
 def test_random_regression_plan_assigns_test_first_and_never_leaks_it() -> None:
@@ -547,6 +573,149 @@ def test_temporal_plan_accepts_native_polars_date_values(
     assert plan.validation_fits[0].train_positions == (0, 1)
     assert plan.validation_fits[0].validation_positions == (2,)
     assert plan.test_positions == (3,)
+
+
+_MICROSECONDS_PER_DAY = 86_400_000_000
+
+
+def _exactly_held_key(dtype: pl.DataType) -> pl.Series:
+    """Twelve distinct values Python holds exactly, of one to three rows each, and a null.
+
+    The datetimes are 13 days and some microseconds apart, so a zoned column crosses
+    both of the year's clock changes.
+    """
+    if dtype == pl.Time():
+        # Whole microseconds, in the nanoseconds a time holds.
+        physical = [index * 7_200_000_000_000 + index * 1_234_000 for index in range(12)]
+    else:
+        unit = 1_000 if dtype.time_unit == "ms" else 1  # type: ignore[attr-defined]
+        start = 1_704_067_200_000_000 // unit
+        physical = [
+            start + (index * 13 * _MICROSECONDS_PER_DAY + index * 123_457_000) // unit
+            for index in range(12)
+        ]
+    rows = [value for index, value in enumerate(physical) for _ in range(index % 3 + 1)]
+    return pl.Series("key", [*reversed(rows), None], dtype=pl.Int64).cast(dtype)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [pl.Datetime("ms"), pl.Datetime("us"), pl.Datetime("us", "Europe/London"), pl.Time()],
+    ids=str,
+)
+def test_a_key_python_holds_exactly_keys_and_plans_as_its_python_value(
+    dtype: pl.DataType,
+) -> None:
+    key = _exactly_held_key(dtype)
+    exact, python = evaluation_key_values(key), key.to_list()
+
+    assert [_json_key(value) for value in exact] == [_json_key(value) for value in python]
+
+    def plan(config: dict[str, object], values: list[object], role: str) -> dict[str, object]:
+        return generate_evaluation_plan(
+            EvaluationConfig.from_plain_data({"schema_version": 1, **config}),
+            source_sha256="a" * 64,
+            row_count=len(values),
+            task="regression",
+            **{role: values},  # type: ignore[arg-type]
+        ).to_plain_data()
+
+    group = {
+        "strategy": "group",
+        "group_column": "key",
+        "seed": 5,
+        "test": {"size": 0.2},
+        "validation": {"method": "cross_validation", "fold_count": 3},
+    }
+    assert plan(group, exact, "group_values") == plan(group, python, "group_values")
+    if dtype == pl.Time():
+        return
+    dated = key.drop_nulls()
+    distinct = sorted(set(dated.to_list()))
+    temporal = {
+        "strategy": "temporal",
+        "date_column": "key",
+        "test": {"start": distinct[9].isoformat()},
+        "validation": {"method": "cross_validation", "fold_count": 3, "window": "expanding"},
+    }
+    assert plan(temporal, evaluation_key_values(dated), "date_values") == plan(
+        temporal, dated.to_list(), "date_values"
+    )
+
+
+def test_classes_apart_below_a_microsecond_are_stratified_as_two() -> None:
+    # Two classes 100 ns apart, which Python's microseconds would make one.
+    physical = [1_704_067_200_000_000_000 + index % 2 * 100 for index in range(12)]
+    target = pl.Series("target", physical, dtype=pl.Int64).cast(pl.Datetime("ns"))
+
+    plan = generate_evaluation_plan(
+        random_config(test={"size": 0.25}),
+        source_sha256="b" * 64,
+        row_count=len(physical),
+        row_order=range(len(physical)),
+        task="classification",
+        target_values=evaluation_key_values(target),
+    )
+
+    for positions in (
+        plan.test_positions,
+        *(fit.validation_positions for fit in plan.validation_fits),
+        *(fit.train_positions for fit in plan.validation_fits),
+    ):
+        assert {physical[position] for position in positions} == set(physical)
+
+
+@pytest.mark.parametrize("dtype", [pl.Time(), pl.Duration("ns")], ids=str)
+def test_a_time_or_duration_is_no_date_column(dtype: pl.DataType) -> None:
+    config = EvaluationConfig.from_plain_data(
+        {
+            "schema_version": 1,
+            "strategy": "temporal",
+            "date_column": "key",
+            "validation": {"method": "none"},
+        }
+    )
+    key = pl.Series("key", [1, 2], dtype=pl.Int64).cast(dtype)
+
+    with pytest.raises(TypeError, match="date values must be"):
+        generate_evaluation_plan(
+            config,
+            source_sha256="a" * 64,
+            row_count=2,
+            task="regression",
+            date_values=evaluation_key_values(key),
+        )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "start", "refusal"),
+    [
+        (pl.Datetime("us"), "2024-01-02T00:00:00.000000001", "finer than"),
+        (pl.Datetime("us"), "2024-01-02T00:00:00+00:00", "has a time zone"),
+        (pl.Datetime("us", "UTC"), "2024-01-02", "has no time zone"),
+    ],
+)
+def test_a_boundary_its_date_column_cannot_hold_is_refused_by_name(
+    dtype: pl.DataType, start: str, refusal: str
+) -> None:
+    config = EvaluationConfig.from_plain_data(
+        {
+            "schema_version": 1,
+            "strategy": "temporal",
+            "date_column": "key",
+            "validation": {"method": "single", "start": start},
+        }
+    )
+    key = pl.Series("key", [1_704_067_200_000_000, 1_704_240_000_000_000], dtype=pl.Int64)
+
+    with pytest.raises(ValueError, match=rf"validation\.start .*{refusal}"):
+        generate_evaluation_plan(
+            config,
+            source_sha256="a" * 64,
+            row_count=2,
+            task="regression",
+            date_values=evaluation_key_values(key.cast(dtype)),
+        )
 
 
 def test_evaluation_plan_artifact_is_strict_digest_linked_and_byte_stable(

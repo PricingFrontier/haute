@@ -1834,13 +1834,14 @@ class TestValuesChangedInPlace:
                 "alias",
             ),
             (
+                # The formula sits after the block: one inside it has no one formula.
                 "factor = 1.0\nif True:\n    factor = 2.0\n"
-                '    df = df.with_columns(y=pl.col("x") * factor)',
+                'df = df.with_columns(y=pl.col("x") * factor)',
                 "factor",
             ),
             (
                 'factors = {"A": 1.0}\nif True:\n    factors["A"] = 2.0\n'
-                '    df = df.with_columns(y=pl.col("x") * factors["A"])',
+                'df = df.with_columns(y=pl.col("x") * factors["A"])',
                 "factors",
             ),
             (
@@ -2064,8 +2065,8 @@ class TestValuesChangedInPlace:
             "nested",
             "alias-through-a-rebound-name",
             "augmented-list",
-            "rebound-in-the-formula-block",
-            "changed-in-the-formula-block",
+            "rebound-in-a-block-before-the-formula",
+            "changed-in-a-block-before-the-formula",
             "rebound-in-a-block-that-may-not-run",
             "an-alias-made-in-a-block",
             "changed-by-the-formula-statement",
@@ -2134,7 +2135,7 @@ class TestValuesChangedInPlace:
             ),
             (
                 "factor = 2.0\nif True:\n    other = 1\n"
-                '    df = df.with_columns(y=pl.col("x") * factor)',
+                'df = df.with_columns(y=pl.col("x") * factor)',
                 20.0,
             ),
             (

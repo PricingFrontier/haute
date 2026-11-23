@@ -384,6 +384,24 @@ class TestApplyRoute:
             _region(int(q[1:])) for q in apply["quote_id"].to_list()
         ]
 
+    def test_an_analysis_columns_nanosecond_values_keep_all_nine_digits(self, client, tmp_path):
+        scored = _scored(tmp_path)
+        frame = pl.read_parquet(scored)
+        quote = frame["quote_id"].str.slice(1).cast(pl.Int64)
+        frame.with_columns(
+            at=(pl.lit(10**18, dtype=pl.Int64) + quote * 100).cast(pl.Datetime("ns"))
+        ).write_parquet(scored)
+        job_id, _status = _solved(client, _data_graph(scored, analysis_columns=["at"]))
+
+        response = _apply(client, job_id)
+
+        assert response.status_code == 200, response.text
+        preview = response.json()["preview"]
+        assert {row["quote_id"]: row["at"] for row in preview} == {
+            f"q{n:03d}": f"2001-09-09T01:46:40.000000{n * 100:03d}" if n else "2001-09-09T01:46:40"
+            for n in range(9)
+        }
+
     def test_a_search_and_an_analysis_sort_over_every_quote(self, client, tmp_path):
         job_id, _status = _solved(
             client, _data_graph(_scored(tmp_path), analysis_columns=["region"])

@@ -979,6 +979,79 @@ def test_ratebook_execute_trace_float_keyed_levels_agree_with_engine(tmp_path):
         assert ladder_step["factor_value"] == pytest.approx(expected)
 
 
+def test_ratebook_trace_keys_factor_levels_100_ns_apart_by_their_own_values(tmp_path):
+    """A ratebook row whose Datetime("ns") and Duration("ns") factors are 100 ns from
+    another row's is found by its own values and explained by its own levels, as the apply's
+    join rated it; its values are shown with all nine digits."""
+    start = 1_700_000_000_000_000_000
+
+    def rates(levels: dict[str, float]) -> list[dict[str, object]]:
+        return [
+            {"__factor_group__": level, "optimal_scenario_value": rate}
+            for level, rate in levels.items()
+        ]
+
+    artifact = {
+        "version": "v1",
+        "mode": "ratebook",
+        "lambdas": {},
+        "constraints": {},
+        "factor_tables": {
+            "stamp": rates(
+                {"2023-11-14 22:13:20.000000000": 1.05, "2023-11-14 22:13:20.000000100": 0.95}
+            ),
+            "wait": rates({"PT1.5S": 1.10, "PT1.5000001S": 0.90}),
+        },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
+        "factor_dtypes": {
+            "stamp": [
+                {
+                    "column": "stamp",
+                    "dtype": {"kind": "Datetime", "time_unit": "ns", "time_zone": None},
+                }
+            ],
+            "wait": [{"column": "wait", "dtype": {"kind": "Duration", "time_unit": "ns"}}],
+        },
+    }
+    artifact_path = _write_json(tmp_path / "ratebook_ns.json", artifact)
+    banded_path = tmp_path / "banded.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q2"],
+            "stamp": pl.Series([start, start + 100]).cast(pl.Datetime("ns")),
+            "wait": pl.Series([1_500_000_000, 1_500_000_100]).cast(pl.Duration("ns")),
+        }
+    ).write_parquet(banded_path)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("banded", str(banded_path)),
+                _optimiser_apply_node(
+                    {
+                        "source_type": "file",
+                        "artifact_path": artifact_path,
+                        "ratebook_input": "banded",
+                    }
+                ),
+            ],
+            "edges": [_edge("banded", "apply")],
+        }
+    )
+
+    result = execute_trace(graph, row_index=1, target_node_id="apply", column="optimised_factor")
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok", detail.get("error")
+    assert detail["input_row"]["quote_id"] == "q2"
+    stamp, wait = detail["factor_ladder"]
+    assert stamp["input_value"] == "2023-11-14T22:13:20.000000100"
+    assert stamp["factor_value"] == pytest.approx(0.95)
+    assert wait["input_value"] == "0:00:01.500000100"
+    assert wait["factor_value"] == pytest.approx(0.90)
+    assert detail["final_value"] == pytest.approx(0.95 * 0.90)
+
+
 def test_ratebook_enrichment_missing_component_column_errors_clearly(tmp_path):
     """A composite table whose component column is absent from the input row
     must produce a structured error naming the missing column(s)."""

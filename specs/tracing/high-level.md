@@ -146,10 +146,12 @@ Out of scope (owned elsewhere, linked where relevant):
   policy, a quote with no claims) rather than as a correlation failure.
 - **A grouped row is an aggregate, not a gap.** Code whose one grouping reads every
   input row (nothing before it filters, slices, deduplicates, selects, or joins) and
-  keeps every group key unchanged summarises exactly the input rows sharing its keys.
-  When several do, the input is reported as an informational `aggregated_rows` omission
-  naming the keys and how many input rows share them; a group of one input row resolves
-  to that row. Any other grouping leaves the ambiguity a gap.
+  keeps every group key unchanged to its output summarises exactly the input rows sharing
+  its keys. When several do, the input is reported as an informational `aggregated_rows`
+  omission naming the keys and how many input rows share them; a group of one input row
+  resolves to that row. Any other grouping leaves the ambiguity a gap, a key selected away,
+  dropped, rewritten or renamed after the grouping among them: the keys left can be shared
+  by several groups, so the rows behind the group cannot be told from them.
 - **Head frames are matched on carried values too.** A parent matched in its head
   frame is matched on the values its child provably carried through unchanged, as a
   lookup is, so a column the child's code rewrote (`fill_null`) is left out of the
@@ -191,7 +193,10 @@ Out of scope (owned elsewhere, linked where relevant):
   pipeline's own dtypes, and only when the slice is exactly the row the trace shows. Its
   formulas are evaluated on that row with the names the node code ran with (the compiled
   preamble). A formula one row cannot determine (a window, aggregation, shift, or an operation
-  not known to be row-local) is never evaluated on one row. Where it assigns the step's column,
+  not known to be row-local) is never evaluated on one row, and a column written inside a block
+  (`if`, `for`, `while`, `try`, `with` or `match`) has no one formula to evaluate: no branch's
+  formula is shown or computed for it, the one that did not run included. Where either assigns
+  the step's column,
   the step shows that column's value from the trace's own execution, which is the full-context
   value, marked as coming from that execution. Anywhere else the value is shown as not computed
   from this row, with the reason, and never replaced by the row's input value.
@@ -277,7 +282,10 @@ Out of scope (owned elsewhere, linked where relevant):
   Breakpoint banding enrichment uses the rating runtime's shared interval-eligibility
   parser, so a rule with no usable operator/value pair cannot be credited, and
   compares a date or date-and-time band the way the runtime does: by calendar date
-  or wall-clock time in the column's own time zone.
+  or wall-clock time in the column's own time zone, the wall-clock time to the
+  nanosecond. A traced row's datetime, time and duration values are their exact text,
+  to the nanosecond, so a row is found by its own values, shows all nine digits, and a
+  Rating Step keyed by such a column is explained by the level the run matched.
   Enrichment never patches an individual output cell or invents model features.
   A row that cannot be selected atomically remains unresolved.
 - **Relevant correlation gaps remain first-class evidence.** A node on the

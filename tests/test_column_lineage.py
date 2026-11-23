@@ -3728,6 +3728,12 @@ def test_carried_proof_names_the_columns_a_literal_name_list_writes(
         ("df = src.select('k', 'x').group_by('k').agg(pl.len())", False),
         ("df = src.join(other, on='k').group_by('k').agg(pl.len())", False),
         ("df = src.group_by('k').agg(pl.len()).group_by('k').agg(pl.len())", False),
+        # Every key carried to the output names the group; one lost afterwards does not.
+        ("df = src.group_by(['k', 'j']).agg(pl.len()).select(['k', 'j', 'len'])", True),
+        ("df = src.group_by(['k', 'j']).agg(pl.len()).select(['k', 'len'])", False),
+        ("df = src.group_by(['k', 'j']).agg(pl.len()).drop('j')", False),
+        ("df = src.group_by(['k', 'j']).agg(pl.len()).with_columns(j=pl.lit(0))", False),
+        ("df = src.group_by(['k', 'j']).agg(pl.len()).rename({'j': 'peril'})", False),
     ],
 )
 def test_carried_proof_says_whether_its_grouping_reads_every_input_row(

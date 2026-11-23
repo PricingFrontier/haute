@@ -620,7 +620,8 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    derives the final feature set and schema snapshot, and applies GLM term narrowing
    and monotonicity validation once before planning.
 2. **Plan once** — `_build_evaluation_plan` reads only the target or strategy key
-   columns needed for planning (a random plan also reads every column once, one
+   columns needed for planning, each through `evaluation_key_values` ("Edge cases and
+   invariants"; a random plan also reads every column once, one
    collect at a time, for the source's canonical order: `scan_row_order`), computes
    the prepared-source digest, and calls `generate_evaluation_plan`, which takes a
    random plan's positions in that order (`row_order`, refused when missing or not a
@@ -1354,6 +1355,32 @@ potentially large copy on its threadpool.
   keeps equal dates together, requires a single-validation boundary before the
   final-test boundary, and gives every expanding-window fit strictly earlier training
   dates than validation dates.
+- A key column (the target of a stratified plan, the group or the date column) reaches
+  the planner through `evaluation_key_values(column)` in `_evaluation.py`, which the
+  training run and the evaluation preview both call on the column they collected.
+  Python's `datetime`, `time` and `timedelta` hold microseconds, and a `Datetime("ns")`,
+  a `Duration("ns")` and every `Time` hold nanoseconds (IO layer, "Temporal values
+  reaching Python"), so a datetime, time or duration column reaches it as one
+  `TemporalKey` per distinct value, never as those Python objects: the distinct values
+  are taken and sorted in Polars, each written once by `temporal_text` (separator `"T"`)
+  beside its physical integer (an aware datetime's instant in UTC), and each row holds
+  its value's key, a null staying `None`. Any other column reaches it as its Python
+  values. A group or a class keys a `TemporalKey` as `<kind>:<text>` (`datetime:`,
+  `time:`, `duration:`), the key its Python value had wherever Python holds the value
+  exactly, so millisecond, microsecond and date data plan to the same bytes; two values
+  100 ns apart are two groups, a duration column groups like any other, and the keys
+  still sort by their text before the seeded shuffle, a canonical order and not a
+  value order.
+- A temporal plan orders a datetime column's dates by their physical integers and reads
+  each boundary as a value of that column with `temporal_physical`, so a boundary 100 ns
+  after a date falls between it and the next. A boundary the column cannot hold (finer
+  than its unit, a time zone where the column has none, none where it has one) is
+  refused naming the boundary. A time or duration column is no date column and is
+  refused by type. A date column of dates or ISO text, and the configuration's own check
+  that `validation.start` precedes `test.start`, order their values by
+  `moment_nanoseconds` (an aware one's instant, a naive one's wall clock, the fraction
+  read whole to nine digits), so two inside one microsecond order apart; a boundary that
+  is no ISO date or date-time, a fraction past nine digits included, is refused.
 - Random classification planning is target-stratified; random regression remains seeded
   but unstratified. `_development_reserve` gives the rows of every class the development
   set keeps for what follows the test: `fold_count` for cross-validation, 2 for a single
@@ -1780,11 +1807,17 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `tests/test_evaluation.py` and `tests/test_train_evaluation_config.py` — strict
   canonical config parsing, deterministic random/group/temporal plans,
   stratification and failure counts, membership/order invariants, digest-linked
-  artifact round trips, and validation-row-weighted aggregation.
+  artifact round trips, and validation-row-weighted aggregation; a millisecond,
+  microsecond, zoned or time key planning to the same bytes through
+  `evaluation_key_values` as through its Python values, a time or duration date column
+  and a boundary its date column cannot hold refused.
 - `tests/test_training_evaluation.py` and
   `tests/test_training_response_evaluation.py` — selection-only execution, one final
   deployable fit, final-test exclusion/evaluation, public response invariants,
-  cancellation checkpoints and cleanup.
+  cancellation checkpoints and cleanup; a training run's group values (datetime, zoned,
+  time, duration) and dates 100 ns apart kept apart, and a boundary 100 ns after a date
+  falling between them. `tests/test_modelling_estimate_routes.py` holds the preview to
+  the same dates and shows their nine digits.
 - `tests/test_tuning.py` and `tests/test_training_tuning.py` — static search-space
   validation, seeded conditional sampling, deterministic baseline/winner/tree-count
   selection, fit bounds, exact plan reuse, progress, artifact trust, and candidate
@@ -2002,8 +2035,11 @@ The implementation seams are:
   structure. The frontend store retains the canonical objects, while `SummaryTab` labels selection estimates,
   final-test metrics, baseline/winner comparison, exact fit counts and the completed
   job's total elapsed time separately.
-- `POST /api/modelling/estimate` calls the same planner over the same eligible rows and
-  returns only bounded counts/ranges. The editor shows this neutral exact preview once
+- `POST /api/modelling/estimate` calls the same planner over the same eligible rows, with
+  the same key values (`evaluation_key_values`), and returns only bounded counts/ranges. A
+  temporal preview's date range gives the earliest and latest date of each membership as
+  the plan orders them, each as its text (`evaluation_date_range`): a `TemporalKey`'s
+  exact text, a date's ISO text, a text column's own text. The editor shows this neutral exact preview once
   enough fields are valid; malformed or incomplete configuration is reported inline
   and in the Train readiness summary. `TrainService.evaluation_preview`
   materialises only the target and evaluation key in process, under its own seed plan
@@ -2415,7 +2451,9 @@ used for staged input.
   `n_jobs` set to the thread allotment, `monotone_constraints` as a feature-name dict, `eval_set`
   (with `eval_sample_weight` and the evaluation offset) built from `eval_df` when the fit has
   validation rows, and, for a `group` evaluation
-  strategy, `groups` as the training rows' group values cast to strings (an evaluation key is
+  strategy, `groups` as the training rows' group values cast to strings, a time or duration
+  group written by `temporal_text` because Polars' cast drops a time's fraction and refuses a
+  duration (an evaluation key is
   never a feature, which `TrainingJob` already refuses, so the column reaches t-boost only as
   `groups`). `TrainingJob._plan_group_column()` names the
   plan's group column; the frame-family projection (`_catboost_select_columns`, which every

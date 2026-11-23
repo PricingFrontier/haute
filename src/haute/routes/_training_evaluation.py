@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import datetime
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from haute._logging import get_logger
 from haute.errors import HauteValidationError, InvalidRequestError
 from haute.modelling._evaluation import (
     EvaluationPlan,
+    evaluation_date_range,
 )
 from haute.modelling._train_config import build_train_params, validate_glm_params
 
@@ -41,9 +41,13 @@ def _validate_glm_config_values(config: Mapping[str, Any]) -> None:
 def _evaluation_preview_payload(
     plan: EvaluationPlan,
     *,
-    date_values: list[str] | None = None,
+    date_values: Sequence[object] | None = None,
 ) -> dict[str, Any]:
-    """Project an exact plan into the bounded public preflight summary."""
+    """Project an exact plan into the bounded public preflight summary.
+
+    *date_values* are the date column's values as the planner read them
+    (``evaluation_key_values``).
+    """
     payload: dict[str, Any] = {
         "schema_version": 1,
         "strategy": plan.config.strategy,
@@ -75,14 +79,7 @@ def _evaluation_preview_payload(
             raise HauteValidationError("temporal evaluation preview requires exact date values")
 
         def date_range(positions: tuple[int, ...]) -> dict[str, str] | None:
-            if not positions:
-                return None
-            values = [date_values[position] for position in positions]
-            ordered = sorted(
-                values,
-                key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")),
-            )
-            return {"start": ordered[0], "end": ordered[-1]}
+            return evaluation_date_range([date_values[position] for position in positions])
 
         payload["development_date_range"] = date_range(plan.development_positions)
         final_test_range = date_range(plan.test_positions)

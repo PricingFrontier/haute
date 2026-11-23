@@ -629,6 +629,42 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
         assert by_name["settled_at"]["min"] == "2024-01-01 00:00:00"
         assert (by_name["paid"]["min"], by_name["paid"]["max"]) == ("0.50", "5.50")
 
+    @pytest.mark.parametrize(
+        ("dtype", "start", "low", "high"),
+        [
+            (
+                pl.Datetime("ns"),
+                1_704_067_200_000_000_000,
+                "2024-01-01 00:00:00.000000001",
+                "2024-01-01 00:00:00.000000101",
+            ),
+            (
+                pl.Datetime("ns", "UTC"),
+                1_704_067_200_000_000_000,
+                "2024-01-01 00:00:00.000000001+00:00",
+                "2024-01-01 00:00:00.000000101+00:00",
+            ),
+            (pl.Time(), 3_600_000_000_000, "01:00:00.000000001", "01:00:00.000000101"),
+            (pl.Duration("ns"), 0, "0:00:00.000000001", "0:00:00.000000101"),
+        ],
+        ids=str,
+    )
+    def test_a_temporal_bound_shows_all_nine_digits_of_a_nanosecond_value(
+        self, dtype: pl.DataType, start: int, low: str, high: str
+    ):
+        """Python's datetime, time and timedelta hold microseconds, so a bound read
+        into Python would show these two values, 100 ns apart, as one."""
+
+        from haute.assistant._tools import _column_profile
+
+        frame = pl.DataFrame(
+            {"at": pl.Series([start + 101, None, start + 1], dtype=pl.Int64).cast(dtype)}
+        )
+
+        profile = _column_profile(frame, "at", dtype)
+
+        assert (profile["min"], profile["max"]) == (low, high)
+
     def test_numeric_bounds_keep_their_json_type(self, dtype_matrix_project: Path):
         """A bound the model compares against must stay a number."""
 

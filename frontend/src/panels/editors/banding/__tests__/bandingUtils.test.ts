@@ -250,6 +250,11 @@ describe("day numbers", () => {
       JAN_1_2024 + (36000 + 0.123456) / 86400,
       9,
     )
+    // A nanosecond column's preview carries nine digits.
+    expect(previewValueDayNumber("2024-01-01T10:00:00.000000100")).toBeCloseTo(
+      JAN_1_2024 + 36000 / 86400,
+      9,
+    )
   })
 
   it("gives no day number for a preview value that is not a date", () => {

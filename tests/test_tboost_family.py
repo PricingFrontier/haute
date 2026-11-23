@@ -595,6 +595,38 @@ def test_a_group_plan_passes_its_column_to_every_fit_as_groups(
     assert len(calls[-1][1]) == result.evaluation["selection_fits"][0]["train_rows"]
 
 
+@pytest.mark.parametrize("dtype", [pl.Time(), pl.Duration("ns")], ids=str)
+def test_a_time_or_duration_group_reaches_the_fit_with_each_group_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dtype: pl.DataType
+) -> None:
+    # Polars' own text cast drops a time's fraction and refuses a duration.
+    calls: list[Any] = []
+    original = TBoostRegressor.fit
+
+    def spy(self: Any, X: Any, y: Any, **kwargs: Any) -> Any:  # noqa: N803 - sklearn's name
+        calls.append(kwargs.get("groups"))
+        return original(self, X, y, **kwargs)
+
+    monkeypatch.setattr(TBoostRegressor, "fit", spy)
+    data = frame()
+    # Three rows a policy, each policy 100 ns after the last, all within one second.
+    policy = pl.Series([index // 3 * 100 for index in range(data.height)], dtype=pl.Int64)
+    data = data.with_columns(policy.cast(dtype).alias("policy"))
+    evaluation = {
+        "schema_version": 1,
+        "strategy": "group",
+        "group_column": "policy",
+        "seed": 3,
+        "validation": {"method": "single", "size": 0.2},
+    }
+
+    train(tmp_path, target="severity", loss="RMSE", data=data, evaluation=evaluation)
+
+    (groups,) = calls
+    # A group plan never divides a policy, so the training rows hold whole policies.
+    assert len(set(groups)) * 3 == len(groups)
+
+
 def _cell(axis: dict[str, Any], value: Any) -> int:
     """The displayed cell a feature value falls in, read from the report axis."""
     if axis["type"] == "nominal":

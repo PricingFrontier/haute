@@ -25,6 +25,7 @@ import polars as pl
 from haute._execution_context import ExecutionContext, current_execution_context
 from haute._jsonpath import _ParsedPath, _Seg, make_output_path, parse_path
 from haute._polars_utils import execution_collect
+from haute._temporal_text import exact_text
 from haute.errors import HauteError
 
 #: A level of the document: the segments of a path through its last ``[:]``.
@@ -325,10 +326,14 @@ def _rows_from_dataframe(
     marker_errors: dict[str, tuple[str, str]],
     label: str = "output_assembly_rows",
 ) -> list[dict[str, Any]]:
-    """Convert once to the retained row form while checking internal null markers."""
+    """Convert once to the retained row form while checking internal null markers.
+
+    Each datetime, time and duration value is read as its exact text (``exact_text``), so an
+    object's identity and a leaf keep what lies below a microsecond.
+    """
     progress.checkpoint(label)
     rows: list[dict[str, Any]] = []
-    for row in frame.iter_rows(named=True):
+    for row in exact_text(frame).iter_rows(named=True):
         for marker, (port, key) in marker_errors.items():
             if row.pop(marker):
                 raise OutputNestingKeyError(
@@ -596,7 +601,9 @@ def _limit_level_plan(
     ancestor_keys = collected_by_prefix[ancestor].select(keys).unique()
     first, *others = keys
     if not others:
-        return plan.filter(pl.col(first).is_in(ancestor_keys[first].to_list()))
+        # The keys stay a Series of the column's own type, compared exactly (a Python list
+        # holds a datetime to the microsecond), and the filter still reaches the scan.
+        return plan.filter(pl.col(first).is_in(ancestor_keys.get_column(first)))
     # The level's objects are its rows in first-occurrence order, so the join keeps them.
     return plan.join(ancestor_keys.lazy(), on=keys, how="semi", maintain_order="left")
 

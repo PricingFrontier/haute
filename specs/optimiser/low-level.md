@@ -973,7 +973,7 @@ Four artifact families, all rooted under the versioned marker-aware OS-temp hier
   inspected/removed/failed/reclaimed-byte counts. One tracked worker-thread reap is scheduled
   without delaying readiness; shutdown observes the task.
 
-### Ratebook factor-table canonicalisation (`src/haute/routes/_optimiser_service.py`)
+### Ratebook factor-table canonicalisation (`src/haute/routes/_optimiser_solver.py`)
 
 `price-contour` emits factor-table level labels from the verbatim string form of the source
 value (e.g. a Float64 `25.0` becomes the label `"25.0"`), while the runtime rating join this
@@ -991,9 +991,20 @@ or apply a minimum-collapse tie-break. A level with the wrong component count or
 counted key raises `ValueError` rather than guessing.
 
 `_ratebook_factor_level_counts` computes the per-level quote-exposure counts this
-canonicalisation is checked against, and deliberately raises rather than merging if two distinct
-raw level tuples canonicalise to the same key — a last-writer-wins merge here would silently
-drop a solved rate.
+canonicalisation is checked against. It groups the factor rows by the factor's columns in
+Polars and writes each distinct level's key there, on the grouped rows
+(`ratebook_factor_level_key_expr`): each component's `rating_key_of`, the key the apply-side
+rating join matches the frame on, joined with the unit separator. No level is read into Python
+to be keyed: a Python `datetime`, `time` or `timedelta` holds microseconds, so two levels of a
+`Datetime("ns")`, `Time` or `Duration("ns")` factor 100 ns apart would become one. A null level
+is refused (`ValueError`), and so are two distinct level tuples whose keys collide, named by
+their values with each temporal one its exact text (`_temporal_text`), rather than merged — a
+last-writer-wins merge here would silently drop a solved rate. A column's values key one to
+one, so only a composite level whose text value holds the unit separator collides, and the
+refusal says so. A solver label is text, so
+reading its components through `normalise_rating_key` keeps a nanosecond level's digits. The
+segment and outcome breakdowns label a factor's grouped levels with the same keys
+(`ratebook_factor_level_labels`).
 
 `_ratebook_factor_dtypes_from_artifact` reads the solved factor parquet schema and stores
 `factor_dtypes[table]` as an ordered list of
@@ -1119,7 +1130,8 @@ the `ValueError` price-contour raises for it. `with_explainer_columns` is the
 clicked quote's rows, asserts exactly one `selected` and exactly one `is_baseline` candidate, and
 checks the selected candidate's `scenario_value` against the actual output column (tolerant
 numeric match, see `_values_match`) before returning the full candidate ladder plus the
-selected/baseline rows.
+selected/baseline rows. Each candidate row is read with every datetime, time and duration value
+its exact text (`exact_rows`).
 
 #### with_explainer_columns contract
 
@@ -1167,11 +1179,21 @@ all raise rather than silently omitting explainer columns or falling back to an 
 `_explain_ratebook` locates the matching input row for the clicked output row
 (`_match_ratebook_input_row` — Polars-pushed-down equality filter first, falling back to a
 bounded Python batch scan for cross-dtype/NaN-tolerant matching if the fast predicate errors or
-finds nothing), then walks the artifact's `factor_tables` in order, for each factor: resolves
+finds nothing). A column holding a datetime, time or duration value (at its top level or
+nested) is compared on both paths in Polars by the trace's typed match
+(`_trace_correlation._typed_value_match_expr`: the physical value `temporal_physical` reads from
+the clicked row's exact text), never as a Python value, and a value it cannot compare fails the
+explanation naming the column; the Python scan reads only the other columns. The matched row is
+read through `_json_row`, each temporal value its exact text, which the ladder's `input_value`
+and the detail's `input_row` show. It then walks the artifact's `factor_tables` in order, for
+each factor: resolves
 whether the table is a composite (joins on multiple columns, split via
 `_split_ratebook_level`) or single-column table, looks up the matching entry via
 `_match_ratebook_entry` (keys normalised through the same dtype descriptor and
-`normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
+`normalise_rating_key` used at runtime, the input side being each factor column's key written
+from the matched row in Polars by `rating_key_of`, as the engine's join writes it, so a duration
+and a value below a microsecond key as they were rated; ties resolved by walking entries in
+*reverse* to mirror the engine's
 `unique(keep="last")` deduplication; each ladder entry names the input columns the table
 joined on as `input_columns`), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
@@ -1423,7 +1445,11 @@ whose message already names every problem and the remedy.
   availability (the named 410), the adjustment spread against a hand calculation and its cache;
   the admission refusal of `k0`…`k2000` (HyperLogLog estimate 1,980) by the margin, and, with an
   admitted estimate injected, the exact check refusing 2,001 levels before truncation and
-  accepting 2,000.
+  accepting 2,000. A `Time` analysis column keeps 1.5 s, 1.7 s and 1.5 s + 100 ns as
+  three levels labelled with their exact text, a zoned datetime column's two 01:30s on the night
+  the clocks go back are listed by instant, and a real ratebook solve over a `Datetime("ns")`
+  factor whose levels are 100 ns apart counts two levels, solves, and its segment breakdown and
+  `FactorSegments` show both under the Rates tab's labels.
 - `tests/test_optimiser_quotes.py` covers OPT-V12: over hand-built choice frames, a sort with
   ties paged in quote-id order in both directions (and nulls last), each filter (the
   scenario-value range at grid values, at-range-edge from the recorded grid, analysis equality
@@ -1527,7 +1553,9 @@ tests.
 - **`tests/test_optimiser_apply_trace_enrichment.py`** — the explainability module directly:
   online candidate-explanation attachment, ratio-constraint linearisation via the real library,
   unconstrained-artifact handling, ratebook factor-ladder explanation (plain, composite,
-  unseen-level-as-neutral, float-keyed-level agreement with the engine), missing-component-column
+  unseen-level-as-neutral, float-keyed-level agreement with the engine, a row whose
+  `Datetime("ns")` and `Duration("ns")` factors are 100 ns from another row's found and rated by
+  its own levels with all nine digits shown), missing-component-column
   errors, reconciliation-mismatch and missing-output-column error surfacing, explicit-empty
   config-value rejection (`optimised_value_column`, artifact `quote_id`, artifact `mode`),
   Polars-type-mismatch fallback to the Python match path, the last entry of a hand-built
@@ -2325,9 +2353,9 @@ chosen rows, and asserts the 1:1 correspondence with the same streamed key finge
 analysis table (the quote id cast to String, as price-contour keys its frame), raising
 `ChoiceJoinError` on any difference, before the reducer runs. `ChoiceFrames.with_factors()` is then
 the inner 1:1 join on the quote id (`validate="1:1"`, `maintain_order="left"`). Each row is one
-level: `level`, the label the Rates tab shows for it (`__factor_group__`: each component
-canonicalised by `normalise_rating_key` under the factor column's dtype and joined with the
-unit separator, `_ratebook_factor_level_key`), `quotes`, `mean_scenario_value`, the Float64 sums
+level: `level`, the label the Rates tab shows for it (`__factor_group__`: the key
+`_ratebook_factor_level_counts` counts it under, written from the grouped rows in Polars,
+`ratebook_factor_level_labels`), `quotes`, `mean_scenario_value`, the Float64 sums
 and `deployed_factor_differs`, ordered by `quotes` descending and then the constituent values
 ascending, the first `limit` levels; `total` is the number of levels. The segments need no
 analysis columns: their quote counts sum to `n_quotes`, and each level's count equals that
@@ -2393,11 +2421,16 @@ target falls in exactly one level:
   integer as an integer, a Float32 by its shortest Float32 form). Bins are listed in ascending
   order. A column with no non-missing value has only the Missing level.
 - *Categorical keys*: every distinct non-missing value (as a String; a factor by all its
-  constituent columns) is grouped, ordered by quotes descending and then by value ascending. The
+  constituent columns) is grouped, ordered by quotes descending and then by value ascending. A
+  datetime or time analysis column is grouped and ordered by its own values (a zoned value by
+  its instant), and only the levels listed are written as text: a time as its exact text
+  (`temporal_text`, `00:00:01.500000`, nine digits below a microsecond; `cast(pl.String)` would
+  drop its whole fraction), a datetime as Polars writes it (`cast(pl.String)`, its unit's
+  digits, nine for `ns`). Values 100 ns apart are two levels. The
   **exact post-group-by check** runs on that grouping before any truncation: more than
   `MAX_SEGMENT_LEVELS = 2000` levels is refused (`SegmentKeyUnavailableError`, a 422) whatever
   the estimate admitted. Then the first `MAX_CATEGORICAL_LEVELS = 15` are listed (`kind:
-  "value"`; a factor level labelled as the Rates tab labels it, `_ratebook_factor_level_key`)
+  "value"`; a factor level labelled as the Rates tab labels it, `ratebook_factor_level_labels`)
   and the rest are summed into one `"Other"` level (`kind: "other"`, `merged_levels` the number
   it merges, at least 1: exactly 16 levels list 15 and an Other of one; 15 or fewer have no
   Other), listed after them. The re-aggregation is in the lazy plan: only at most 17 rows
@@ -2517,7 +2550,10 @@ single-flight, point materialisation, the named 409 and 410 and availability are
 OPT-V09B specifies: an over-budget page is the 507 memory-limit payload.
 
 **The response** (`OptimiserApplyResponse`). `status`, `total_objective` and `constraints` (the
-target's totals), `from_artifact`, `columns`, `preview` (the page's rows), `row_count` (the
+target's totals), `from_artifact`, `columns`, `preview` (the page's rows, read through
+`exact_rows` ([io-layer](../io-layer/low-level.md)), so an analysis column's datetime, time or
+duration is its exact text, all nine digits of a nanosecond one, as a node preview's is),
+`row_count` (the
 target's quotes), `matched_row_count` (the quotes matching the search and filters),
 `offset` (the request's), `preview_row_count` (the rows returned) and `preview_row_limit` (the
 request's limit), and `error`. `columns` lists every key of every row, in order, each

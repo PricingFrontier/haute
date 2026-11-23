@@ -423,6 +423,49 @@ class TestEstimateEndpoint:
             "end": "2024-06-01",
         }
 
+    def test_estimate_preview_keeps_dates_apart_below_a_microsecond(self, client, tmp_path):
+        # Three days, each with a second value 100 ns later.
+        midnight = 1_704_067_200_000_000_000
+        day = 86_400_000_000_000
+        path = tmp_path / "nanosecond-preview.parquet"
+        pl.DataFrame(
+            {
+                "at": pl.Series(
+                    [midnight + index * day + offset for index in range(3) for offset in (0, 100)],
+                    dtype=pl.Int64,
+                ).cast(pl.Datetime("ns")),
+                "x": list(range(6)),
+                "y": [float(value) for value in range(6)],
+            }
+        ).write_parquet(path)
+        graph = _make_modelling_graph(
+            str(path),
+            feature_columns=["x"],
+            evaluation={
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "at",
+                "test": {"start": "2024-01-03"},
+                "validation": {"method": "single", "start": "2024-01-01T00:00:00.000000100"},
+            },
+        )
+
+        resp = client.post(
+            "/api/modelling/estimate", json={"graph": graph, "target": _TRAIN_TARGET}
+        )
+
+        assert resp.status_code == 200, resp.text
+        preview = resp.json()["evaluation_preview"]
+        assert preview["min_selection_train_rows"] == 1
+        assert preview["development_date_range"] == {
+            "start": "2024-01-01T00:00:00",
+            "end": "2024-01-02T00:00:00.000000100",
+        }
+        assert preview["final_test_date_range"] == {
+            "start": "2024-01-03T00:00:00",
+            "end": "2024-01-03T00:00:00.000000100",
+        }
+
     def test_estimate_gpu_vram_path(self, client, training_data):
         graph = _make_modelling_graph(
             training_data,

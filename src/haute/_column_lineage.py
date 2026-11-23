@@ -3405,8 +3405,11 @@ class CarriedColumnProof:
     join_keys: Mapping[str, frozenset[str]]
     restricted_to: Mapping[str, frozenset[str]] = field(default_factory=dict)
     whole_groups: bool = False
-    """The program's one grouping reads every root-input row: each output row
-    aggregates exactly the input rows sharing all its keys."""
+    """The program's one grouping reads every root-input row and carries each of
+    its keys to the output unchanged: each output row aggregates exactly the input
+    rows sharing all its key values. A key lost after the grouping (selected away,
+    dropped, rewritten or renamed) makes it false, as the rows sharing the keys
+    left are then those of every group that shares them."""
     dropped_from: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     @property
@@ -3805,6 +3808,8 @@ def carried_column_proof(
     rows_intact = True
     grouped = False
     whole_groups = False
+    # The keys of the grouping that reads every root-input row.
+    whole_group_keys: frozenset[str] = frozenset()
     for statement in tree.body:
         if isinstance(statement, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
@@ -4039,6 +4044,7 @@ def carried_column_proof(
                     else:
                         assigned.add(output[0])
                 whole_groups = rows_intact and not grouped
+                whole_group_keys = frozenset(group_keys)
                 grouped = True
                 rows_intact = False
                 frame_changed = True
@@ -4050,7 +4056,7 @@ def carried_column_proof(
         if len(input_set) != 1:
             return None
         root_input = next(iter(input_set))
-    return CarriedColumnProof(
+    proof = CarriedColumnProof(
         root_input,
         frozenset(assigned),
         MappingProxyType(
@@ -4060,6 +4066,11 @@ def carried_column_proof(
         whole_groups,
         MappingProxyType(dropped_from),
     )
+    # A key selected away, dropped, rewritten or renamed after the grouping leaves
+    # the output's keys shared by several groups, so no row names its group.
+    if whole_groups and not all(proof.carries(key, root_input) for key in whole_group_keys):
+        return replace(proof, whole_groups=False)
+    return proof
 
 
 __all__ = [

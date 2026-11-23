@@ -66,6 +66,7 @@ from haute._submodel_instances import (
     qualified_runtime_node_id,
     resolve_submodel_instances,
 )
+from haute._temporal_text import is_temporal, temporal_text
 from haute._types import GraphNode, PipelineGraph
 from haute._user_exec import user_code_line
 from haute._validation_error import HauteValidationError
@@ -1689,7 +1690,17 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
             profile["values_withheld"] = "high_cardinality"
         return profile
 
-    if dtype.is_numeric() or dtype.is_temporal():
+    if is_temporal(dtype):
+        # Python's datetime, time and timedelta hold microseconds: a bound is written in
+        # Polars, all nine digits of a nanosecond value kept, as str() writes the rest.
+        low, high = frame.select(
+            temporal_text(pl.col(name).min(), dtype, separator=" ").alias("min"),
+            temporal_text(pl.col(name).max(), dtype, separator=" ").alias("max"),
+        ).row(0)
+        profile["min"] = _profile_value(low)
+        profile["max"] = _profile_value(high)
+    elif dtype.is_numeric() or dtype.is_temporal():
+        # A number or a date, which Python holds exactly.
         profile["min"] = _profile_value(column.min())
         profile["max"] = _profile_value(column.max())
     else:

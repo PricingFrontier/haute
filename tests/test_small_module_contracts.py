@@ -102,6 +102,22 @@ class TestJsonSafe:
         assert json_safe_scalar(value) == to_json_safe(value)
         assert json_safe_scalar(value) == {"__haute_type__": "non_finite_float", "value": token}
 
+    @pytest.mark.parametrize(
+        "value",
+        [datetime(2026, 4, 23, 10, 5, 3), time(10, 5, 3), timedelta(seconds=2)],
+        ids=type,
+    )
+    def test_provider_scalar_renderer_refuses_a_value_python_holds_to_the_microsecond(
+        self, value: object
+    ) -> None:
+        # A nanosecond column's value read into Python has lost three digits already:
+        # the summariser writes its exact text in Polars before it reaches the renderer.
+        with pytest.raises(TypeError, match="exact text"):
+            json_safe_scalar(value)
+
+    def test_provider_scalar_renderer_writes_a_date_as_its_iso_text(self) -> None:
+        assert json_safe_scalar(date(2026, 4, 23)) == "2026-04-23"
+
 
 class TestContracts:
     def test_contract_round_trips_between_tuple_and_dataclass(self) -> None:

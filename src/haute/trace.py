@@ -89,7 +89,7 @@ from haute._trace_correlation import (
     TraceEdgeKey,
     _compute_schema_diff,
     _correlate_rows_posthoc,
-    _jsonify_row,
+    _json_row,
     _match_rows_vectorized,
     _RowMatchStatus,
     edge_join_role_edges,
@@ -1850,7 +1850,7 @@ class _TypedRows:
         if not 0 <= position < frame.height:
             return None
         row = frame.slice(position, 1)
-        return row if _jsonify_row(row.row(0, named=True)) == shown else None
+        return row if _json_row(row, 0) == shown else None
 
 
 def _typed_input_row(

@@ -44,7 +44,9 @@ from haute._rating import (
     normalise_rating_key,
     rating_dtype_descriptor,
     rating_dtype_from_descriptor,
+    rating_key_of,
 )
+from haute._temporal_text import exact_rows
 from haute._types import (
     GraphNode,
     OnlineSolveResultLike,
@@ -515,16 +517,61 @@ def _ratebook_factor_table_name(columns: list[str]) -> str:
     return ":".join(columns)
 
 
+#: The column a factor's grouped rows carry their level key in.
+_LEVEL_KEY_COLUMN = "__haute_factor_level_key"
+
+_NULL_FACTOR_LEVEL = "Ratebook factor counts cannot be computed with null factor levels."
+
+
+def ratebook_factor_level_key_expr(
+    columns: Sequence[str], dtypes: Sequence[pl.DataType]
+) -> pl.Expr:
+    """The canonical level key of each row's factor level (3b.10), written in Polars.
+
+    Each component is :func:`haute._rating.rating_key_of`, the key the apply-side
+    rating join matches the frame on (Float64 ``25.0`` -> ``"25"``; strings stay
+    verbatim), joined with the unit separator; null when a component is null. A
+    factor's levels are keyed so, on its grouped rows, and never from Python values:
+    a ``datetime``, ``time`` or ``timedelta`` holds microseconds, so two levels
+    100 ns apart would share one key. An unsupported dtype is refused here, before
+    anything is read.
+    """
+    import polars as pl
+
+    if len(columns) != len(dtypes):
+        raise ValueError("Ratebook factor columns and dtypes must have the same length.")
+    return pl.concat_str(
+        [rating_key_of(pl.col(column), dtype) for column, dtype in zip(columns, dtypes)],
+        separator=_RATEBOOK_FACTOR_LEVEL_SEPARATOR,
+    )
+
+
+def ratebook_factor_level_labels(
+    levels: pl.DataFrame, columns: Sequence[str], dtypes: Sequence[pl.DataType]
+) -> list[str]:
+    """The level key of each row of *levels*, a factor's grouped rows, in row order.
+
+    The label the Rates tab shows for the level (``__factor_group__``); a null level
+    is refused.
+    """
+    keys = levels.select(
+        ratebook_factor_level_key_expr(columns, dtypes).alias(_LEVEL_KEY_COLUMN)
+    ).get_column(_LEVEL_KEY_COLUMN)
+    if keys.null_count():
+        raise ValueError(_NULL_FACTOR_LEVEL)
+    return cast(list[str], keys.to_list())
+
+
 def _ratebook_factor_level_key(
     values: list[Any],
     dtypes: list[pl.DataType],
 ) -> str:
-    """Canonical level key for one observed factor-level tuple (3b.10).
+    """Canonical level key for one solver-emitted level's components (3b.10).
 
-    Components are canonicalised through the shared
-    :func:`haute._rating.normalise_rating_key`, so save-time level keys agree
-    with the keys the apply-side rating join derives from frame values
-    (Float64 ``25.0`` -> ``"25"``; strings stay verbatim).
+    The components are price-contour's label text, each read through its column's
+    dtype by the shared :func:`haute._rating.normalise_rating_key`, so the key is
+    the one :func:`ratebook_factor_level_key_expr` writes for that level. A frame's
+    levels are keyed by that expression, never through here.
     """
     parts: list[str] = []
     if len(dtypes) != len(values):
@@ -532,7 +579,7 @@ def _ratebook_factor_level_key(
     for value, dtype in zip(values, dtypes):
         canonical = normalise_rating_key(value, dtype)
         if canonical is None:
-            raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
+            raise ValueError(_NULL_FACTOR_LEVEL)
         parts.append(canonical)
     return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(parts)
 
@@ -690,11 +737,11 @@ def _ratebook_factor_level_counts(
 
     Table keys mirror price-contour's factor table output: single-column
     groups use the column name, composite groups join column names with
-    ":".  Level keys are CANONICAL (3b.10): each component goes through the
-    shared ``normalise_rating_key`` (joined with the unit separator), so the
+    ":".  Level keys are CANONICAL (3b.10): each distinct level is keyed in
+    Polars on the grouped rows (:func:`ratebook_factor_level_key_expr`), so the
     saved keys agree with what the apply-side rating join derives from frame
-    values.  Two raw levels collapsing to one canonical key — possible only
-    when a source column mixes value types — fail loudly, never merge.
+    values, to the nanosecond.  Two raw levels collapsing to one canonical key
+    fail loudly, never merge.
     """
     import polars as pl
 
@@ -715,27 +762,46 @@ def _ratebook_factor_level_counts(
                 f"{missing}"
             )
         table_name = _ratebook_factor_table_name(columns)
-        grouped = factors_df.group_by(columns).agg(pl.len().alias("quote_count"))
-        if is_lazy:
-            count_rows = streaming_collect(grouped).to_dicts()
-        else:
-            count_rows = grouped.to_dicts()
-        table_counts: dict[str, int] = {}
-        level_sources: dict[str, list[Any]] = {}
-        column_dtypes = [schema[column] for column in columns]
-        for row in count_rows:
-            values = [row[column] for column in columns]
-            level_key = _ratebook_factor_level_key(values, column_dtypes)
-            if level_key in table_counts:
-                raise ValueError(
-                    f"Ratebook factor levels {level_sources[level_key]!r} and {values!r} in "
-                    f"factor table {table_name!r} both canonicalise to {level_key!r}; the "
-                    "source column mixes value types. Cast it to a single type upstream."
-                )
-            table_counts[level_key] = int(row["quote_count"])
-            level_sources[level_key] = values
-        counts[table_name] = table_counts
+        level_key = ratebook_factor_level_key_expr(columns, [schema[column] for column in columns])
+        grouped = (
+            factors_df.group_by(columns)
+            .agg(pl.len().alias("quote_count"))
+            .with_columns(level_key.alias(_LEVEL_KEY_COLUMN))
+        )
+        levels = streaming_collect(grouped) if is_lazy else grouped
+        counts[table_name] = _counted_level_keys(levels, columns, table_name)
     return counts
+
+
+def _counted_level_keys(
+    levels: pl.DataFrame, columns: list[str], table_name: str
+) -> dict[str, int]:
+    """Each grouped level's quote count by its key; a null level or two levels sharing a key
+    are refused, the two named by their values (each temporal one its exact text).
+
+    A column's own values key one to one, so two levels share a key only when a
+    composite level's text value holds the unit separator that joins its values.
+    """
+    import polars as pl
+
+    keys = levels.get_column(_LEVEL_KEY_COLUMN)
+    if keys.null_count():
+        raise ValueError(_NULL_FACTOR_LEVEL)
+    shared = levels.filter(pl.col(_LEVEL_KEY_COLUMN).is_duplicated())
+    if shared.height:
+        key = shared.get_column(_LEVEL_KEY_COLUMN).sort()[0]
+        colliding = shared.filter(pl.col(_LEVEL_KEY_COLUMN) == key).sort(columns)
+        first, second = (list(row.values()) for row in exact_rows(colliding.select(columns)[:2]))
+        raise ValueError(
+            f"Ratebook factor levels {first!r} and {second!r} in factor table {table_name!r} "
+            f"both canonicalise to {key!r}, so their rates could not be told apart: a value "
+            "holds the unit separator (\\x1f) that joins a composite level's values. Remove "
+            "it upstream."
+        )
+    return {
+        str(key): int(count)
+        for key, count in zip(keys.to_list(), levels.get_column("quote_count").to_list())
+    }
 
 
 def _ratebook_factor_dtypes(
