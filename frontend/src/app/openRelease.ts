@@ -8,7 +8,7 @@ import { answer, watch } from "../utils/answers"
 import { newQuoteValues } from "../utils/sheetValues"
 import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow } from "../utils/workbenchForm"
-import { releaseMoved } from "./quoteValues"
+import { appErrorMessage, releaseMoved, storeMisfits } from "./quoteValues"
 import useAppStore from "./useAppStore"
 
 /** The quote_details columns the app sets itself, which take no typing on its sheets. */
@@ -19,9 +19,9 @@ export const APP_SET_COLUMNS: ReadonlySet<string> = new Set([...QUOTE_DETAILS_MA
  * the form read as at `revision`, Preview showing the app's quote rather than a sample, the
  * columns the app sets locked, the quote priced through the app's own route on that
  * revision of release `release` rather than on a pipeline in an editor, its Imports run
- * through the app's route on that revision too, a refusal of closed
- * quotes closing them (the app's routes' listener, `watchQuotesClosed`), and a new quote,
- * holding its columns' defaults, until a quote opens.
+ * through the app's route on that revision too, a pricing the quote store's tables refuse
+ * said in the bar naming each table and column that does not fit, and a new quote, holding
+ * its columns' defaults, until a quote opens.
  */
 export function openRelease(form: FormSpec, revision: string, release: string): void {
   useWorkbenchFormStore.getState().install(form, revision)
@@ -37,7 +37,14 @@ export function openRelease(form: FormSpec, revision: string, release: string): 
         if (releaseMoved(error)) useAppStore.getState().noteReleaseChanged()
       },
     })
-    return priced.then(({ tables, request }) => ({ tables, sample: request }))
+    return priced.then(
+      ({ tables, request }) => ({ tables, sample: request }),
+      (error: unknown) => {
+        // Tables that do not fit are named in the bar's own words, on one line.
+        if (storeMisfits(error) !== null) throw new Error(appErrorMessage(error, form, { oneLine: true }))
+        throw error
+      },
+    )
   })
   useWorkbenchPreviewStore.getState().setImporter((componentId, values, file) => importAppRows(revision, release, componentId, values, file))
   useWorkbenchPreviewStore.getState().open(structuredClone(newQuoteValues(form.schema)) as Record<string, SampleRow[]>, null, false)

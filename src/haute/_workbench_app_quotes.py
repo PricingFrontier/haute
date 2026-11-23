@@ -53,6 +53,7 @@ from haute._quote_store import (
     RelatedQuote,
     Source,
     StaleQuoteError,
+    StoreUse,
     WriteSupersededError,
     as_written,
     identity_label,
@@ -183,37 +184,44 @@ def _refusal(status: int, exc: QuoteStoreError, **extra: Any) -> RequestRefusedE
     )
 
 
-async def _book(app: QuoteApp) -> QuoteBook:
-    """The open book, from the gate on a worker thread, as it may check the store; a closed
-    gate answered 503 with its refusal."""
+async def _book(app: QuoteApp, use: StoreUse = "quote") -> QuoteBook:
+    """The open book for *use*, from the gate on a worker thread, as it may check the store;
+    a store that cannot be used for it answered 503 with the gate's refusal."""
     try:
-        return await run_in_threadpool(app.gate.book)
+        return await run_in_threadpool(app.gate.book, use)
     except QuoteStoreClosedError as refusal:
         raise RequestRefusedError(refusal.detail, status_code=503) from None
 
 
 async def _call(
-    app: QuoteApp, work: Callable[[QuoteBook], T], identity: tuple[str, int] | None = None
+    app: QuoteApp,
+    work: Callable[[QuoteBook], T],
+    identity: tuple[str, int] | None = None,
+    use: StoreUse = "quote",
 ) -> T:
-    """*work* on the open book (:func:`_answered`). A store whose tables changed under the
-    running app is checked again at once and, while they fit, *work* done once more on the
-    store as it opens now, as nothing was written; answered 503 when they no longer fit, or
-    changed again meanwhile."""
-    book = await _book(app)
+    """*work* on the book open for *use* (:func:`_answered`): the Quotes page's list, or one
+    quote. A store whose tables changed under the running app is checked again at once and,
+    while the tables *use* needs fit, *work* done once more on the store as it opens now, as
+    nothing was written; answered 503 when they no longer fit, or changed again meanwhile."""
+    book = await _book(app, use)
     try:
-        return await _answered(app, work, book, identity)
+        return await _answered(app, work, book, identity, use)
     except QuoteStoreChangedError:
-        refusal = await run_in_threadpool(app.gate.recheck, book)
+        refusal = await run_in_threadpool(app.gate.recheck, book, use)
         if refusal is not None:
             raise RequestRefusedError(refusal.detail, status_code=503) from None
     try:
-        return await _answered(app, work, await _book(app), identity)
+        return await _answered(app, work, await _book(app, use), identity, use)
     except QuoteStoreChangedError as exc:
         raise _refusal(503, exc) from None
 
 
 async def _answered(
-    app: QuoteApp, work: Callable[[QuoteBook], T], book: QuoteBook, identity: tuple[str, int] | None
+    app: QuoteApp,
+    work: Callable[[QuoteBook], T],
+    book: QuoteBook,
+    identity: tuple[str, int] | None,
+    use: StoreUse,
 ) -> T:
     """*work* on *book*, on a worker thread, the store's refusals answered as the app's; a
     quote moved on with the quote *identity* names as it is now; a
@@ -263,7 +271,7 @@ async def _answered(
         elif answer.code == "quote_store_refused":
             # A statement refused: the tables may have changed under the running app. The
             # book it was refused on is named, so a check another request made since stands.
-            refusal = await run_in_threadpool(app.gate.recheck, book)
+            refusal = await run_in_threadpool(app.gate.recheck, book, use)
             if refusal is not None:
                 raise RequestRefusedError(refusal.detail, status_code=503) from None
         raise answer.refusal() from None
@@ -404,6 +412,7 @@ def quote_router(app: QuoteApp) -> APIRouter:
                 cursor=cursor,
                 limit=limit,
             ),
+            use="list",
         )
         return WorkbenchAppQuotesResponse(
             quotes=[quote_model(quote) for quote in page.quotes],
@@ -615,6 +624,8 @@ def quote_router(app: QuoteApp) -> APIRouter:
 
     @router.get("/people", response_model=WorkbenchAppPeopleResponse)
     async def people() -> WorkbenchAppPeopleResponse:
-        return WorkbenchAppPeopleResponse(people=await _call(app, lambda book: book.people()))
+        return WorkbenchAppPeopleResponse(
+            people=await _call(app, lambda book: book.people(), use="list")
+        )
 
     return router

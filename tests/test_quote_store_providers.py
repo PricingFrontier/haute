@@ -526,7 +526,7 @@ def test_a_started_app_names_each_privilege_its_sign_in_lacks(
         return SimpleNamespace(one=lambda: tuple(1 if each else 0 for each in held))
 
     connection = SimpleNamespace(dialect=SimpleNamespace(name="mssql"), execute=execute)
-    assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
+    assert missing_privileges(connection, schema) == [("policy", "DELETE")]  # type: ignore[arg-type]
     # Every privilege asked in one statement, a round trip to the server.
     assert len(asked) == 1
     asked_at_once = asked[0]
@@ -536,7 +536,7 @@ def test_a_started_app_names_each_privilege_its_sign_in_lacks(
     # More than a statement may bind are asked a few to a statement, answering the same.
     monkeypatch.setattr(providers_module, "_ASKED_AT_ONCE", 2)
     asked.clear()
-    assert missing_privileges(connection, schema) == ["DELETE on policy"]  # type: ignore[arg-type]
+    assert missing_privileges(connection, schema) == [("policy", "DELETE")]  # type: ignore[arg-type]
     assert len(asked) > 1
     assert all(len(each) <= 2 for each in asked)
     assert [pair for each in asked for pair in each] == asked_at_once

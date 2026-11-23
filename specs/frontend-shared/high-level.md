@@ -151,7 +151,9 @@ answer can be lost after it landed and a repeat would name a revision that is go
 keyed write, whose body names an operation key the server keeps an answer for, is sent
 through one call (`sendHeld`) that keeps it with its key while its answer has not come,
 or came as a server failure or could not be read, and repeats it before anything newer
-under that hold is sent, until an answer below 500 lets it go. A keyed write's content
+under that hold is sent, until an answer below 500, or a 503 that refused it before
+anything was written (the underwriter app's quote store whose tables do not fit, or none
+named), lets it go. A keyed write's content
 that changes takes a new key. Concrete JSON
 endpoint functions pass successful responses through a runtime parser before
 returning, so backend contract drift raises a descriptive `Error` at the call

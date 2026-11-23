@@ -31,6 +31,7 @@ import { answer, ask, newest, requestKind, under, watch, type Part } from "../ut
 import { basisOf, quoteEligible, quoteIndexProblems } from "../utils/sheetVisibility"
 import {
   appDetails,
+  appErrorMessage,
   cellPlaces,
   clearDraft,
   creationKey,
@@ -45,6 +46,7 @@ import {
   releaseOperation,
   sameQuote,
   savedPrice,
+  storeRefused,
   valuesKey,
   withAppDetails,
   withHiddenCells,
@@ -65,6 +67,8 @@ export type ReadOnlyReason = "final" | "archived" | "reader" | null
 interface OpenQuoteState {
   status: "idle" | "loading" | "ready" | "error"
   loadError: string | null
+  /** The quote whose opening the quote store refused, which a check past its bound may lift; asked for again quietly. */
+  refusedOpen: { reference: string; option: number } | null
   /** The quote; null until it is read or made. */
   quote: WorkbenchAppQuote | null
   /**
@@ -141,7 +145,7 @@ interface OpenQuoteState {
   dismiss: (notice: "error" | "conflict" | "refusal" | "moved" | "dropped") => void
 }
 
-type Closed = Omit<OpenQuoteState, "status" | "loadError" | "historyOpen" | { [K in keyof OpenQuoteState]: OpenQuoteState[K] extends (...args: never[]) => unknown ? K : never }[keyof OpenQuoteState]>
+type Closed = Omit<OpenQuoteState, "status" | "loadError" | "refusedOpen" | "historyOpen" | { [K in keyof OpenQuoteState]: OpenQuoteState[K] extends (...args: never[]) => unknown ? K : never }[keyof OpenQuoteState]>
 
 /** Nothing open: what each open starts from. */
 const CLOSED: Closed = {
@@ -244,7 +248,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
     } else if (releaseMoved(error)) {
       useAppStore.getState().noteReleaseChanged()
     } else {
-      set({ error: apiErrorMessage(error) })
+      set({ error: appErrorMessage(error, useAppStore.getState().form) })
     }
   }
 
@@ -512,6 +516,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
   return {
     status: "idle",
     loadError: null,
+    refusedOpen: null,
     historyOpen: false,
     ...CLOSED,
 
@@ -543,7 +548,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
         content: () => held,
       }
       let made: WorkbenchAppQuote | null = null
-      const failedToOpen = (error: unknown) => set({ status: "error", loadError: apiErrorMessage(error) })
+      const failedToOpen = (error: unknown) => set({ status: "error", loadError: appErrorMessage(error, useAppStore.getState().form) })
       // Made from its source's values, without the details the app set for the source,
       // under its reference: it names none of its own.
       await answer(belongsTo, openAppQuote(from.reference, from.option), {
@@ -578,17 +583,27 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
 
     openQuote: async (reference, option) => {
       const belongsTo = [newest(loads)] as const
-      // Until it is read, the sheets hold nothing of the quote before and take no typing.
-      useWorkbenchPreviewStore.getState().open({}, null, true)
-      set({ ...CLOSED, status: "loading", loadError: null })
+      // The quote the store refused keeps saying why while it is asked for again; any other is
+      // read afresh: until it is read, the sheets hold nothing of the quote before and take no
+      // typing.
+      const { status, refusedOpen } = get()
+      if (!(status === "error" && refusedOpen !== null && sameQuote(refusedOpen, { reference, option }))) {
+        useWorkbenchPreviewStore.getState().open({}, null, true)
+        set({ ...CLOSED, status: "loading", loadError: null, refusedOpen: null })
+      }
       await answer(belongsTo, openAppQuote(reference, option), {
         ok: (answer) => {
           show(answer)
-          set({ status: "ready" })
+          set({ status: "ready", loadError: null, refusedOpen: null })
           offerDraft()
           if (get().historyOpen) void get().loadActivity()
         },
-        failed: (error) => set({ status: "error", loadError: apiErrorMessage(error) }),
+        failed: (error) =>
+          set({
+            status: "error",
+            loadError: appErrorMessage(error, useAppStore.getState().form),
+            refusedOpen: storeRefused(error) ? { reference, option } : null,
+          }),
       })
     },
 
@@ -685,7 +700,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       ] as const
       await answer(belongsTo, fetchAppQuoteActivity(quote.reference, quote.option), {
         ok: (activity) => set({ activity }),
-        failed: (error) => set({ error: `The quote's history could not be read: ${apiErrorMessage(error)}` }),
+        failed: (error) => set({ error: `The quote's history could not be read: ${appErrorMessage(error, useAppStore.getState().form)}` }),
       })
     },
 

@@ -418,7 +418,10 @@ class TestResolveConfigEdgeCases:
         ):
             resolve_config(config)
 
-    def test_resolve_config_projects_output_schema_in_configured_order(self):
+    @pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "no dry run asked"])
+    def test_resolve_config_projects_output_schema_in_configured_order(self, dry_run):
+        """A Quote Response's schema is the dry run's alone, so it runs whether or not one is
+        asked for: only a Workbench Output's tables give a schema without it."""
         from haute.deploy._config import DeployConfig, resolve_config
 
         config = DeployConfig(
@@ -444,9 +447,10 @@ class TestResolveConfigEdgeCases:
             patch(
                 "haute.deploy._schema.infer_output_schema",
                 return_value={"premium": "Float64", "age": "Int64"},
-            ),
+            ) as dry_ran,
         ):
-            resolved = resolve_config(config)
+            resolved = resolve_config(config, dry_run=dry_run)
 
         assert list(resolved.output_schema) == ["age", "premium"]
+        assert dry_ran.call_count == 1
         resolved.close()

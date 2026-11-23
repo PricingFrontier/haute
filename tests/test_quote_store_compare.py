@@ -121,10 +121,14 @@ def kinds(comparison: Comparison) -> set[tuple[str | None, str | None, str]]:
 
 
 def opens(target: Target, release: FormSpec) -> None:
-    """The app's check finds nothing: the book opens."""
-    open_book(
+    """The app's check finds nothing: the book opens, a quote's use refused naming what does
+    not fit otherwise (:class:`QuoteStoreMismatchError`)."""
+    with open_book(
         target.url, release, environment=ENVIRONMENT, haute_version="1", sign_in=target.sign_in
-    ).close()
+    ) as book:
+        refused = book.mismatch("quote")
+    if refused is not None:
+        raise refused
 
 
 def test_a_database_made_from_the_form_s_sql_matches_it(target: Target) -> None:

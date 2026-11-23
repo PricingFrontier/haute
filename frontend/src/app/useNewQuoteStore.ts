@@ -14,7 +14,7 @@
 import { create } from "zustand"
 import { createAppQuote, openAppQuote, type QuoteSource } from "../api/app"
 import { contentWithout, keyedWriteSettled, sendHeld, type KeyedHold } from "../api/keyedWrites"
-import { apiErrorCode, apiErrorMessage, apiErrorRawDetail } from "../api/errors"
+import { apiErrorCode, apiErrorRawDetail } from "../api/errors"
 import type { FormSpec } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useWorkbenchPreviewStore from "../stores/useWorkbenchPreviewStore"
@@ -23,6 +23,7 @@ import { columnKey } from "../utils/sheetVisibility"
 import { QUOTE_DETAILS, QUOTE_DETAILS_NAME, QUOTE_DETAILS_MANAGED, type SampleRow, type SampleValue, type ShownField } from "../utils/workbenchForm"
 import { answer, newest, requestKind, under } from "../utils/answers"
 import {
+  appErrorMessage,
   asRenewal,
   clearDraft,
   forgetCreation,
@@ -242,13 +243,13 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           update({
             status: "editing",
             kept: null,
-            error: apiErrorMessage(error),
+            error: appErrorMessage(error, useAppStore.getState().form),
             taken: apiErrorCode(error) === "reference_taken" ? takenBy(error) : null,
             releaseMoved: moved,
           })
         } else {
           // No answer, or a server failure: it may have been made, so it stays kept.
-          update({ status: "unknown", error: apiErrorMessage(error) })
+          update({ status: "unknown", error: appErrorMessage(error, useAppStore.getState().form, { oneLine: true }) })
         }
       },
     })
@@ -305,7 +306,7 @@ const useNewQuoteStore = create<NewQuoteState>()((set, get) => {
           const base = from.relation === "renewal" ? asRenewal(values) : values
           update({ status: "editing", base, details: typedDetails(base), dropped: read.dropped })
         },
-        failed: (error) => update({ status: "failed", error: apiErrorMessage(error) }),
+        failed: (error) => update({ status: "failed", error: appErrorMessage(error, useAppStore.getState().form) }),
       })
     },
 

@@ -827,12 +827,16 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
 - `haute app serve` builds the app from the project as it is saved and serves it at
   `http://127.0.0.1:8001/`, signed in as your git identity, so you can see the sheets and
-  the Quotes page as underwriters will before you merge. Only your machine can reach it, at
+  the Quotes page as underwriters will before you merge. It doesn't price your test quotes
+  or check the pipeline as `haute app build` does, so it opens even while those checks would
+  fail; CI's build still runs them. Only your machine can reach it, at
   `127.0.0.1` or `localhost`: the app refuses any other name for your machine. The
   quotes you save there are kept in the `dev` environment's database (below), reached through
   its connection in `connections.toml`; the app checks its tables as the hosted app checks
-  its own, so after a change to your schema its quotes stay closed, naming what differs,
-  until you run the schema's SQL on `dev`. `haute app serve --reader` signs you in as an
+  its own. The app always opens, but after a change to your schema a quote can't be opened,
+  made, priced or saved until you run the schema's SQL on `dev`: it lists each field the
+  database is missing or holds wrongly, by its label and column, under its table. The Quotes
+  page lists your quotes as long as `quote_details` fits. `haute app serve --reader` signs you in as an
   underwriter who may only read quotes.
 - `haute app build` writes a **release** to `.haute/app/release` (or the folder you name):
   the pipeline, checked and bundled
@@ -981,7 +985,7 @@ builder on screen. With a quote store it is where they manage their quotes too.
 
   | What | Why |
   |---|---|
-  | A database user for the app's sign-in, allowed to read, insert and change `quote_details`, to read, insert and delete in the form's other tables, and to read and insert in `haute_activity` | the app checks each as it starts, and keeps its quotes closed, naming each it lacks, until it has them |
+  | A database user for the app's sign-in, allowed to read, insert and change `quote_details`, to read, insert and delete in the form's other tables, and to read and insert in `haute_activity` | the app checks each as it starts, and refuses whatever needs one it lacks, naming each, until it has them |
   | A way through from the app to the server: on Azure SQL, a private endpoint the Container Apps environment's network reaches, or a firewall rule for the environment's outbound address | the server refuses an address it has not been told of |
 
   On Azure SQL, the user for a Container App's system-assigned managed identity takes the
@@ -1076,8 +1080,10 @@ builder on screen. With a quote store it is where they manage their quotes too.
   primary key, unique key or foreign key other than the one the schema's SQL makes, a
   permission the app's identity lacks, a database it cannot reach, or no environment named.
   A column holding more than the schema's SQL makes, a key or index named otherwise and a
-  missing index that is not unique are fine. It checks again at most every 10
-  seconds, so once the tables are put right the quotes open with no restart. The app's
+  missing index that is not unique are fine. Each part of the app checks only the tables it
+  uses: the Quotes page's list needs `quote_details`, and a quote needs every table. It
+  checks again at most every 10 seconds, so once the tables are put right quotes open with
+  no restart. The app's
   identity needs to read, insert, update and delete in the form's tables and to read and
   insert in haute_activity.
 - The app prices four quotes at once; set `HAUTE_APP_PRICING_WORKERS` to change that. A

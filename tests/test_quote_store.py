@@ -88,13 +88,35 @@ def test_a_database_opens_from_its_catalogue_alone_in_any_environment(url: str) 
         open_book(url, form(POLICY, VEHICLES), environment=environment, haute_version="1").close()
 
 
-def test_a_database_that_does_not_hold_the_forms_tables_is_not_opened(url: str) -> None:
-    with pytest.raises(QuoteStoreMismatchError, match="the table quote_details is missing"):
-        open_book(url, form(POLICY), environment="test", haute_version="1.0")
+def test_a_database_that_does_not_hold_the_forms_tables_refuses_the_uses_that_need_them(
+    url: str,
+) -> None:
+    with open_book(url, form(POLICY), environment="test", haute_version="1.0") as empty:
+        listed = empty.mismatch("list")
+        assert listed is not None and "the table quote_details is missing" in listed.message
 
     _hosted(url, form(POLICY))
-    with pytest.raises(QuoteStoreMismatchError, match="the table vehicles is missing"):
-        open_book(url, form(POLICY, VEHICLES), environment="test", haute_version="1.0")
+    with open_book(url, form(POLICY, VEHICLES), environment="test", haute_version="1.0") as book:
+        # The list reads quote_details alone, which fits; a quote reads every table.
+        assert book.mismatch("list") is None
+        quoted = book.mismatch("quote")
+        assert quoted is not None and quoted.differences == ["the table vehicles is missing"]
+        assert [(m.table, m.column, m.problem) for m in quoted.misfits] == [
+            ("vehicles", None, "is missing")
+        ]
+
+
+def test_the_list_and_the_people_are_read_while_a_table_only_a_quote_reads_misfits(
+    url: str,
+) -> None:
+    _hosted(url, form(POLICY, VEHICLES))
+    _raw(url, "ALTER TABLE vehicles DROP COLUMN value")
+
+    with open_book(url, form(POLICY, VEHICLES), environment="test", haute_version="1") as book:
+        assert book.unfit("list") == ()
+        assert book.page(actor="uw@example.com").quotes == []
+        assert book.people() == []
+        assert [m.text for m in book.unfit("quote")] == ["vehicles.value is missing"]
 
 
 def _raw(url: str, *statements: str) -> None:
@@ -106,9 +128,11 @@ def _raw(url: str, *statements: str) -> None:
 
 
 def _refusal(url: str, environment: str = "test") -> QuoteStoreMismatchError:
-    with pytest.raises(QuoteStoreMismatchError) as refused:
-        open_book(url, form(POLICY, VEHICLES), environment=environment, haute_version="1")
-    return refused.value
+    """The refusal of a quote's use of the store at *url*, which must not fit."""
+    with open_book(url, form(POLICY, VEHICLES), environment=environment, haute_version="1") as book:
+        refused = book.mismatch("quote")
+    assert refused is not None
+    return refused
 
 
 def test_the_check_refuses_a_database_whose_catalogue_does_not_fit(url: str) -> None:

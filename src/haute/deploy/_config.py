@@ -790,13 +790,21 @@ def check_deploy_settings(config: DeployConfig) -> None:
         )
 
 
-def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) -> ResolvedDeploy:
+def resolve_config(
+    config: DeployConfig, *, form: FormDocument | None = None, dry_run: bool = True
+) -> ResolvedDeploy:
     """Parse pipeline, prune graph, detect I/O nodes, collect artifacts, infer schemas.
 
     This is the main resolution function that converts user-provided
     ``DeployConfig`` into a fully resolved ``ResolvedDeploy`` ready for
     deployment. The pipeline's workbench nodes take their tables from *form* when the caller
     read it (a release, which ships the form it read), else from the form folder, read here.
+
+    A Workbench Output's schema is its tables' (:func:`workbench_output_schema`), so its
+    pipeline is dry-run on the sample only as deploy's check that it prices, which *dry_run*
+    false leaves out where nothing is deployed (``haute app serve``, the Preview's test
+    quotes). Any other output's schema is learned only by the dry run, which runs whatever
+    *dry_run* says.
     """
     from haute._project import resolve_pipeline_file
     from haute._project_context import ProjectContext, project_scope
@@ -814,6 +822,7 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
         infer_deploy_execution_policy,
         infer_input_schema,
         infer_output_schema,
+        workbench_output_schema,
     )
     from haute.parser import parse_pipeline_file
 
@@ -973,13 +982,19 @@ def resolve_config(config: DeployConfig, *, form: FormDocument | None = None) ->
                 artifact_paths=artifact_paths,
                 batch_runtime=batch_runtime,
             )
-            output_schema = infer_output_schema(
-                pruned_graph,
-                output_node_id,
-                deploy_inputs,
-                artifact_paths=artifact_paths,
-                project_root=project_root,
-            )
+            # A Workbench Output's schema is declared by its tables, so the dry run is a check
+            # alone there; any other output's is what the dry run gives.
+            output_schema = workbench_output_schema(pruned_graph, output_node_id)
+            if output_schema is None or dry_run:
+                inferred = infer_output_schema(
+                    pruned_graph,
+                    output_node_id,
+                    deploy_inputs,
+                    artifact_paths=artifact_paths,
+                    project_root=project_root,
+                )
+                if output_schema is None:
+                    output_schema = inferred
             if config.output_fields is not None:
                 fields = config.output_fields
                 available = list(output_schema)

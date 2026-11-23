@@ -13,6 +13,7 @@ import { addTo, column, coverForm, detailsTable, fieldsWidget, indexColumn, shee
 import {
   activityText,
   appDetails,
+  appErrorMessage,
   asRenewal,
   clearDraft,
   draftKey,
@@ -31,6 +32,7 @@ import {
   refusalOf,
   sameQuote,
   savedPrice,
+  storeRefused,
   valuesKey,
   withHiddenCells,
   withoutAppDetails,
@@ -39,6 +41,7 @@ import {
   type KeptCreation,
   type Values,
 } from "../quoteValues"
+import { MISFIT, storeRefusal, UNREACHED } from "./fixtures"
 
 describe("values", () => {
   it("are the same quote however blank cells and trailing empty rows were left", () => {
@@ -206,6 +209,47 @@ describe("the quote store's refusals", () => {
     expect(refusalOf(refused({ error_code: "quote_not_ready", message: "Priced on release rel-0" }))).toBeNull()
     expect(refusalOf(refused({ error_code: "quote_locked", message: "Final" }))).toBeNull()
     expect(refusalOf(new Error("down"))).toBeNull()
+  })
+
+  it("say tables that do not fit under each table, each column by its label on the sheets and its name", () => {
+    const form = sheetForm()
+    form.schema.tables[0].inputs[1].label = "Year built"
+    const misfits = [
+      { table: "policy", column: "state", problem: "is missing" },
+      { table: "policy", column: "year", problem: "holds string, not integer" },
+      { table: "equipment", column: null, problem: "is missing" },
+      { table: "haute_activity", column: "actor", problem: "is missing" },
+    ]
+    const refused = storeRefusal({ ...MISFIT, misfits })
+
+    expect(appErrorMessage(refused, form)).toBe(
+      [
+        "The dev database doesn't match the form:",
+        "  policy",
+        "    State (state) is missing",
+        "    Year built (year) holds string, not integer",
+        "  equipment",
+        "    The table is missing",
+        "  haute_activity",
+        "    Actor (actor) is missing",
+        "Whoever owns the dev database can put it right with the SQL the Workbench view's schema pane writes.",
+      ].join("\n"),
+    )
+    expect(appErrorMessage(refused, form, { oneLine: true })).toBe(
+      "The dev database doesn't match the form: policy: State (state) is missing, Year built (year) holds string, not integer; equipment: The table is missing; haute_activity: Actor (actor) is missing.",
+    )
+    // No environment named, the database is the store's.
+    expect(appErrorMessage(storeRefusal({ ...MISFIT, environment: null }), null)).toMatch(/^The quote store's database doesn't match the form:\n {2}policy\n {4}State \(state\) is missing\n/)
+  })
+
+  it("say any other refusal of the store as its message, and know the store's from a busy pricing's", () => {
+    const away = storeRefusal(UNREACHED)
+    expect(appErrorMessage(away, sheetForm())).toBe(UNREACHED.message)
+    expect(storeRefused(away)).toBe(true)
+    expect(storeRefused(storeRefusal(MISFIT))).toBe(true)
+    const busy = new ApiError("HTTP 503", 503, "The app is busy pricing other quotes: try again in a few seconds.", undefined, { error_code: "pricing_busy", message: "The app is busy pricing other quotes: try again in a few seconds." })
+    expect(storeRefused(busy)).toBe(false)
+    expect(appErrorMessage(busy, sheetForm())).toBe("The app is busy pricing other quotes: try again in a few seconds.")
   })
 
   it("know a repeated write superseded since it landed", () => {

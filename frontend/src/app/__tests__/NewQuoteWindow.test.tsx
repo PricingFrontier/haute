@@ -26,7 +26,7 @@ import { keptCreationKey, readKeptCreation } from "../quoteValues"
 import { navigate, setLeaveGuard } from "../route"
 import useAppStore from "../useAppStore"
 import useNewQuoteStore, { windowFields, windowProblems } from "../useNewQuoteStore"
-import { answer, release } from "./fixtures"
+import { answer, MISFIT, release, storeRefusal } from "./fixtures"
 
 const store = () => useNewQuoteStore.getState()
 const KEPT = keptCreationKey("motor", "ana@example.com")
@@ -264,6 +264,22 @@ describe("NewQuoteWindow", () => {
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/quotes/ABC-1/1"))
     expect(screen.queryByTestId("new-quote-window")).toBeNull()
+  })
+
+  it("refuses a creation the store's tables do not fit, naming each, and lets it go", async () => {
+    vi.mocked(createAppQuote).mockRejectedValue(storeRefusal(MISFIT))
+    shown()
+    act(() => store().openNew())
+    key("Quote reference", "ABC-1")
+    fireEvent.click(create())
+
+    const said = await screen.findByTestId("new-quote-refused")
+    expect(said).toHaveTextContent("The dev database doesn't match the form:")
+    expect(said).toHaveTextContent("State (state) is missing")
+    // Refused before anything was written: nothing may have been made, so nothing is kept.
+    expect(screen.queryByTestId("new-quote-unknown")).toBeNull()
+    expect(readKeptCreation(KEPT)).toBeNull()
+    expect(field("Quote reference")).toBeEnabled()
   })
 
   it("says a page drawn for an earlier release must be reloaded", async () => {

@@ -7,6 +7,7 @@
  */
 
 import { ApiError } from "./client"
+import { apiErrorCode } from "./errors"
 
 /**
  * Where one kind of keyed write is held while its fate is unknown: in memory, or in
@@ -53,12 +54,19 @@ export function ticketIsLive(ticket: KeyedTicket): boolean {
 }
 
 /**
- * Whether a keyed write's failure settles it: an answer the server gave, below 500. No
- * answer, a timeout, an answer of 500 or more, or one that could not be read leaves its
- * fate unknown, so it stays held.
+ * The codes of a 503 that refused a write before anything was written: the underwriter
+ * app's quote store whose tables do not fit, or none named (specs/workbench).
+ */
+const REFUSED_UNWRITTEN: ReadonlySet<string> = new Set(["quote_store_mismatch", "quote_store_environment"])
+
+/**
+ * Whether a keyed write's failure settles it: an answer the server gave, below 500, or a 503
+ * that refused it before anything was written. No answer, a timeout, any other answer of 500
+ * or more, or one that could not be read leaves its fate unknown, so it stays held.
  */
 export function keyedWriteSettled(error: unknown): boolean {
-  return error instanceof ApiError && error.status > 0 && error.status < 500
+  if (!(error instanceof ApiError) || error.status <= 0) return false
+  return error.status < 500 || (error.status === 503 && REFUSED_UNWRITTEN.has(apiErrorCode(error) ?? ""))
 }
 
 /**

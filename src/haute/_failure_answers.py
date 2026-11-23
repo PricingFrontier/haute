@@ -881,7 +881,10 @@ def _database_answer(exc: BaseException) -> FailureAnswer | None:
     if unreached(refused):
         # The driver's own text names the server, its port and who signs in: none of it said.
         message = "The app cannot reach its quote store just now."
-        detail = _structured("quote_store_unreachable", message, differences=[])
+        # The shape of the gate's own refusal (QuoteStoreClosedError.detail).
+        detail = _structured(
+            "quote_store_unreachable", message, differences=[], misfits=[], environment=None
+        )
         return FailureAnswer(503, "quote_store_unreachable", message, "error", detail)
     return None
 

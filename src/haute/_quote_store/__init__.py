@@ -20,6 +20,7 @@ from haute._quote_store._book import (
     QuotePage,
     RelatedQuote,
     Source,
+    StoreUse,
     as_written,
     check_reference,
     details_of,
@@ -45,6 +46,7 @@ from haute._quote_store._store import (
     QuoteValuesError,
     ReferenceTakenError,
     StaleQuoteError,
+    StoreMisfit,
     WriteSupersededError,
     open_engine,
     store_url,
@@ -64,10 +66,10 @@ def open_book(
     named_by: str = HOST_VARIABLES,
 ) -> QuoteBook:
     """The book of quotes on *environment*'s database at *url*, signed in as *sign_in* says,
-    whose catalogue must hold *form*'s tables in the SQL schema *sql_schema*
-    (:func:`open_engine`, a database not reached naming *named_by*), written by an app
-    running Haute *haute_version*."""
-    engine, schema = open_engine(
+    holding *form*'s tables in the SQL schema *sql_schema* as far as its catalogue does, each
+    way it does not kept to refuse the uses that need them (:func:`open_engine`, a database
+    not reached naming *named_by*), written by an app running Haute *haute_version*."""
+    engine, schema, misfits = open_engine(
         url,
         form,
         environment=environment,
@@ -75,7 +77,15 @@ def open_book(
         sign_in=sign_in,
         named_by=named_by,
     )
-    return QuoteBook(engine, schema, form, haute_version=haute_version, clock=clock)
+    return QuoteBook(
+        engine,
+        schema,
+        form,
+        haute_version=haute_version,
+        clock=clock,
+        misfits=misfits,
+        environment=environment,
+    )
 
 
 __all__ = [
@@ -104,6 +114,8 @@ __all__ = [
     "Source",
     "Step",
     "StoreLocation",
+    "StoreMisfit",
+    "StoreUse",
     "StaleQuoteError",
     "WriteSupersededError",
     "as_written",

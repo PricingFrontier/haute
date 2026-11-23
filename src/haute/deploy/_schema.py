@@ -21,9 +21,16 @@ from haute._file_ops import atomic_write_text
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._node_specs import REQUEST_INPUT_NODE_TYPES
+from haute._node_type import NodeType
 from haute._temporal_text import exact_rows
 from haute._workbench_input import null_quote, workbench_input_tables
-from haute._workbench_tables import WorkbenchTable, WorkbenchTablesError, request_schema
+from haute._workbench_output import workbench_output_tables
+from haute._workbench_tables import (
+    WorkbenchTable,
+    WorkbenchTablesError,
+    quote_schema,
+    request_schema,
+)
 from haute._worker_failures import WorkerError
 from haute._worker_isolation import run_isolated_worker
 from haute.deploy._node_roles import DEPLOY_ARTIFACTS, is_workbench_input
@@ -349,6 +356,18 @@ def infer_deploy_execution_policy(
     log = logger.warning if policy["status"] == "warned" else logger.info
     log("deploy_execution_policy", **policy)
     return policy
+
+
+def workbench_output_schema(graph: PipelineGraph, output_node_id: str) -> dict[str, str] | None:
+    """A Workbench Output's response schema, read from its tables with nothing priced: each
+    table under its name as a quote holds it, ``quote_schema`` of the tables the node fills,
+    which frame its response (:func:`haute._workbench_output.workbench_response`); None for
+    any other output, whose schema only a dry run gives."""
+    node = _find_node(graph, output_node_id)
+    if node.data.nodeType != NodeType.WORKBENCH_OUTPUT:
+        return None
+    tables = workbench_output_tables(node.data.config)
+    return {name: str(dtype) for name, dtype in quote_schema(tables).items()}
 
 
 def _dry_run_output_schema(

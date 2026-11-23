@@ -112,7 +112,7 @@ function WindowBody({ shown, form }: { shown: Shown; form: FormSpec }) {
             Reading the quote…
           </div>
         ) : shown.status === "failed" ? (
-          <div role="alert" className="px-4 py-4 text-[12px]" style={{ color: "var(--danger-text)" }}>
+          <div role="alert" className="whitespace-pre-wrap px-4 py-4 text-[12px]" style={{ color: "var(--danger-text)" }}>
             The quote could not be read: {shown.error}
           </div>
         ) : (
@@ -188,7 +188,7 @@ function WindowMessage({ shown, onOpenTaken }: { shown: Shown; onOpenTaken: () =
   if (shown.status !== "editing" || shown.error === null) return null
   return (
     <div role="alert" className="flex items-center gap-2 px-4 pt-3 text-[12px]" style={{ color: "var(--danger-text)" }} data-testid="new-quote-refused">
-      <span className="min-w-0 flex-1">{shown.error}</span>
+      <span className="min-w-0 flex-1 whitespace-pre-wrap">{shown.error}</span>
       {shown.taken !== null && (
         <button type="button" className={BUTTON} style={OTHER_STYLE} onClick={onOpenTaken}>
           Open it

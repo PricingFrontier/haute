@@ -171,9 +171,11 @@
   held one's, or other content under its key, so the held write is sent first, exactly; holds `write`; calls `send(write,
   ticket)`, whose endpoint function sends the body through `sendKeyed(url, body,
   ticket, options)`, which refuses a ticket that is not that call's own; and lets the
-  write go once `keyedWriteSettled` says its answer settles it: an answer, or an
-  `ApiError` below 500. No answer, a timeout, an answer of 500 or more, or one that
-  does not parse keeps it held. A caller whose content changes asks for a new key
+  write go once `keyedWriteSettled` says its answer settles it: an answer, an
+  `ApiError` below 500, or a 503 whose code says it was refused before anything was
+  written (`REFUSED_UNWRITTEN`: quote_store_mismatch, quote_store_environment). No
+  answer, a timeout, any other answer of 500 or more, or one that does not parse keeps
+  it held. A caller whose content changes asks for a new key
   (`operationKey`); the same content is sent again under the held key.
 - **`HauteNodeData`** (`types/node.ts`): the typed view of a pipeline
   node's `Record<string, unknown>` data — `label`, `nodeType`, `config`,

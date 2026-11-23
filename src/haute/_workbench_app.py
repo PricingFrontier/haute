@@ -345,11 +345,13 @@ class ResolvedRelease:
         self.resolved.close()
 
 
-def resolve_release(project_dir: Path) -> ResolvedRelease:
+def resolve_release(project_dir: Path, *, dry_run: bool = True) -> ResolvedRelease:
     """The project at *project_dir* as saved, resolved as :func:`build_release` and the test
-    quotes price it. Raises :class:`WorkbenchAppError` for a project without a workbench, a
-    form naming a column its schema does not hold, or allowed values a params file can no
-    longer give; a pipeline that does not resolve raises as a deploy's does."""
+    quotes price it, its pipeline dry-run as deploy's check unless *dry_run* is false
+    (:func:`haute.deploy._config.resolve_config`). Raises :class:`WorkbenchAppError` for a
+    project without a workbench, a form naming a column its schema does not hold, or allowed
+    values a params file can no longer give; a pipeline that does not resolve raises as a
+    deploy's does."""
     from haute._project import resolve_pipeline_file
     from haute._workbench_config import read_workbench_config
     from haute._workbench_folder import read_form_document, unresolved_references
@@ -377,7 +379,7 @@ def resolve_release(project_dir: Path) -> ResolvedRelease:
         deploy_config = DeployConfig.from_project(project_dir)
         deploy_config.pipeline_file = resolve_pipeline_file(project_dir)
         # The workbench nodes take their tables from the form the release ships, read once.
-        resolved = resolve_config(deploy_config, form=document)
+        resolved = resolve_config(deploy_config, form=document, dry_run=dry_run)
         return ResolvedRelease(config, document, form, deploy_config, resolved)
 
 
@@ -401,10 +403,17 @@ class TestQuotesFailedError(WorkbenchAppError):
 
 
 def build_release(
-    project_dir: Path, release_dir: Path, *, haute_requirement: str | None = None
+    project_dir: Path,
+    release_dir: Path,
+    *,
+    haute_requirement: str | None = None,
+    checks: bool = True,
 ) -> BuiltRelease:
     """Build the project's release into *release_dir*: its pipeline resolved, validated and
     bundled as ``haute deploy`` does it, test quotes included, then the release beside it.
+    With *checks* false, as ``haute app serve`` builds, nothing is priced: the pipeline is
+    not dry-run and no test quote is priced, which a deploy's build runs, and the release is
+    the one a checked build makes.
     With ``[deploy.container] base_image`` set, pinned as a container deploy pins it, the
     directory is the image's build context: the container's Dockerfile, copying the release
     too, with the release's entry point in the scoring app's place; *haute_requirement* is the
@@ -428,7 +437,7 @@ def build_release(
 
     project_dir = project_dir.resolve()
     _check_output(project_dir, release_dir)
-    resolution = resolve_release(project_dir)
+    resolution = resolve_release(project_dir, dry_run=checks)
     config, form, resolved = resolution.config, resolution.form, resolution.resolved
     base_image = resolution.deploy_config.container.base_image
     if base_image:
@@ -452,7 +461,7 @@ def build_release(
                 ) from exc
             # A test quote whose prices moved is the change the pull request makes, reported;
             # one that does not price is a broken pipeline, and refuses the build.
-            checked = check_folder(resolution, resolved.config.test_quotes_dir)
+            checked = check_folder(resolution, resolved.config.test_quotes_dir) if checks else ()
             failed = [result for result in checked if result.outcome == "failed"]
             if failed:
                 raise TestQuotesFailedError(

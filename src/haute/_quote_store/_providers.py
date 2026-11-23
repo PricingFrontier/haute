@@ -353,9 +353,10 @@ def _quoted(name: str, open_: str, close: str) -> str:
     return open_ + name.replace(close, close + close) + close
 
 
-def missing_privileges(connection: Connection, schema: StoreSchema) -> list[str]:
+def missing_privileges(connection: Connection, schema: StoreSchema) -> list[tuple[str, str]]:
     """Each privilege the sign-in on *connection* lacks that a started app needs on *schema*'s
-    tables, as ``SELECT on policy``; none on SQLite, a file whose reader may do anything. The
+    tables, as the table and the privilege, ``("policy", "SELECT")``; none on SQLite, a file
+    whose reader may do anything. The
     privileges are asked together, a statement for as many as one may bind
     (``_ASKED_AT_ONCE``), each statement a round trip to the server."""
     dialect = connection.dialect.name
@@ -374,7 +375,7 @@ def missing_privileges(connection: Connection, schema: StoreSchema) -> list[str]
         if owner:
             name = _quoted(owner, open_, close) + "." + name
         asked.append((table, kind, name))
-    lacking: list[str] = []
+    lacking: list[tuple[str, str]] = []
     for start in range(0, len(asked), _ASKED_AT_ONCE):
         batch = asked[start : start + _ASKED_AT_ONCE]
         statement = text("SELECT " + ", ".join(probe.format(at=at) for at in range(len(batch))))
@@ -385,8 +386,6 @@ def missing_privileges(connection: Connection, schema: StoreSchema) -> list[str]
         }
         held = connection.execute(statement, params).one()
         lacking.extend(
-            f"{kind} on {table}"
-            for (table, kind, _), has in zip(batch, held, strict=True)
-            if not has
+            (table, kind) for (table, kind, _), has in zip(batch, held, strict=True) if not has
         )
     return lacking

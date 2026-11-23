@@ -1,49 +1,33 @@
 import { useEffect, useState } from "react"
-import { fetchAppForm, fetchAppRelease, watchQuotesClosed } from "../api/app"
+import { fetchAppForm, fetchAppRelease } from "../api/app"
 import { apiErrorMessage } from "../api/errors"
 import QuestionDialog from "../components/QuestionDialog"
 import ToastContainer from "../components/Toast"
-import { waitForJob } from "../hooks/jobPollingController"
 import { useRequestKind } from "../hooks/useRequestKind"
 import useWorkbenchPricingStore from "../stores/useWorkbenchPricingStore"
 import AppHeader from "./AppHeader"
 import NewQuoteWindow from "./NewQuoteWindow"
 import { openRelease } from "./openRelease"
-import { quotesClosedBy } from "./quoteValues"
 import QuotesPage from "./QuotesPage"
 import QuoteView from "./QuoteView"
-import type { WorkbenchAppQuoteStore } from "../api/types"
 import { ask, newest } from "../utils/answers"
 import { followLink, quotesQueryOf, useAppRoute, type AppRoute } from "./route"
-import { BUTTON, Notice } from "./ui"
+import { BUTTON } from "./ui"
 import useAppStore from "./useAppStore"
 import useNewQuoteStore from "./useNewQuoteStore"
 
 type Loaded = { ready: true } | { error: string }
 
-/** While the quotes are closed, the release is asked for again this often. */
-export const QUOTES_RECHECK_MS = 10_000
-
 /**
  * The underwriter app (specs/workbench): the release's sheets drawn as Preview draws them,
- * with nothing of the builder. While its quotes are open it opens on the Quotes page and
- * opens each quote at its own address; while they are closed it opens no quote, new or
- * saved, saying they are unavailable, until the release says they are open again.
+ * with nothing of the builder. It opens on the Quotes page and opens each quote at its own
+ * address whatever its quote store holds: a use of the store it cannot have says why where
+ * it was met, naming each table and column that does not fit.
  */
 export default function UnderwriterApp() {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
-  const open = useAppStore((s) => s.quotes?.open === true)
   const opening = useRequestKind()
   useEffect(() => {
-    // Whichever of the app's calls meets a closed store, the quotes close.
-    watchQuotesClosed((error) => {
-      if (quotesClosedBy(error) === null) return
-      // Text typed into a field and not yet left is committed as leaving it commits it, so
-      // the draft the open quote keeps as it closes holds it.
-      const typed = document.activeElement
-      if (typed instanceof HTMLElement) typed.blur()
-      useAppStore.getState().noteQuotesClosed(error)
-    })
     const asked = ask([newest(opening)])
     void asked.answer(Promise.all([fetchAppRelease(), fetchAppForm()]), {
       ok: ([release, { form, revision }]) => {
@@ -55,7 +39,6 @@ export default function UnderwriterApp() {
     })
     return () => {
       asked.release()
-      watchQuotesClosed(null)
       useWorkbenchPricingStore.getState().setQuotePricer(null)
     }
   }, [opening])
@@ -70,10 +53,8 @@ export default function UnderwriterApp() {
         <div role="alert" className="flex flex-1 items-center justify-center p-8 text-[13px]" style={{ color: "var(--danger)" }}>
           Could not open the sheets: {loaded.error}
         </div>
-      ) : open ? (
-        <Routed />
       ) : (
-        <QuotesClosed />
+        <Routed />
       )}
       <QuestionDialog />
       <ToastContainer />
@@ -148,48 +129,4 @@ function RoutedPage({ route }: { route: AppRoute }) {
     )
   }
   return <QuoteView route={route} />
-}
-
-/**
- * The quotes closed: no quote opens, new or saved, while the store's tables do not fit, it
- * cannot be reached or no environment is named, the release asked for again every
- * `QUOTES_RECHECK_MS` until it says they are open, when the page it is on shows.
- */
-function QuotesClosed() {
-  const message = useAppStore((s) => s.quotes?.message ?? null)
-  const rechecks = useRequestKind()
-  useEffect(() => {
-    const asked = ask([newest(rechecks)])
-    const note = (quotes: WorkbenchAppQuoteStore | null) => {
-      if (quotes !== null) useAppStore.getState().setQuotes(quotes)
-    }
-    void asked.answer(
-      (signal) =>
-        waitForJob({
-          // A release that cannot be read now is asked for again on the next tick.
-          poll: () => fetchAppRelease().then((release) => release.quotes, () => null),
-          isTerminal: (quotes) => quotes?.open === true,
-          intervalMs: QUOTES_RECHECK_MS,
-          signal,
-          onStatus: (quotes) => asked.apply(() => note(quotes)),
-        }),
-      {
-        ok: note,
-        // Ended past the polling's lifetime: the page stays as it is.
-        failed: () => undefined,
-      },
-    )
-    // Ended as the view goes.
-    return () => asked.release()
-  }, [rechecks])
-  return (
-    <>
-      <AppHeader label="Quotes toolbar" />
-      <main className="flex flex-1 items-start justify-center p-8" aria-label="Quotes">
-        <Notice tone="warning" testId="notice-quotes-closed">
-          Quotes are unavailable{message === null ? "." : `: ${message}`}
-        </Notice>
-      </main>
-    </>
-  )
 }

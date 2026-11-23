@@ -266,14 +266,18 @@ Out of scope, owned elsewhere:
   exits 1, the report written, when staging fails on a quote production prices or an app
   cannot be reached or used ([workbench](../workbench/high-level.md)).
 - `haute app serve [--port PORT] [--static-dir DIR] [--reader]` builds the release
-  under `.haute/app/release` and serves the underwriter app on `127.0.0.1` alone (port
+  under `.haute/app/release` as `haute app build` does but without the checks a deploy
+  runs: it prices no test quote and does not dry-run the pipeline, so the app opens
+  whatever those would find, and `haute app build` and deploy still run them. It serves
+  the underwriter app on `127.0.0.1` alone (port
   8001 by default), every request signed in as the analyst's git identity, able to
   change quotes unless `--reader` signs it in as one who reads them; without an identity
   it refuses to start. It keeps the quotes saved in it in the `dev` environment, at the
   database `connections.toml`'s `[dev]` connection names, signed in as it says, refusing to
   start while `haute.toml` declares no `dev` or the file holds no `[dev]`; the app checks
-  that database's tables as a hosted app checks its own, its quotes closed, naming each
-  difference, until they fit the release's form. No command changes any environment's
+  that database's tables as a hosted app checks its own, the page opening whatever they
+  hold and each use of them refused, naming each table and column that does not fit, until
+  they fit the release's form. No command changes any environment's
   tables: the people who own its database change them in SQL, starting from the SQL the
   Workbench view's schema pane writes ([workbench](../workbench/high-level.md)).
 - `haute status [model_name] [--version-only]` looks up a model's latest version/stage in the MLflow
