@@ -128,6 +128,12 @@ interface OpenQuoteState {
   openQuote: (reference: string, option: number, mode?: QuoteMode) => Promise<void>
   /** Renew the lease of the quote open to edit; one someone else took holds it read only, what was typed kept. */
   keepEditing: () => Promise<void>
+  /**
+   * Take the quote again as the page is shown again as it was (the browser's back/forward
+   * cache), under a new session: the release sent as it was hidden, and any renewal of the
+   * session before, say nothing of this one whenever they are answered.
+   */
+  resumeEditing: () => Promise<void>
   /** Let the quote open to edit go, as the page leaves it; `keepalive` as the page closes. */
   stopEditing: (options?: { keepalive?: boolean }) => void
   /** Save the values on the sheets, once their pricing settles, over the version they are edited over. */
@@ -220,6 +226,9 @@ export async function editQuote(quote: Pick<WorkbenchAppQuote, "reference" | "op
     },
   })
 }
+
+/** The session whose renewal is waiting for its answer. */
+let renewing: string | null = null
 
 /** A lease `editQuote` took for the quote's page to hold, until that page opens. */
 let handedOver: { reference: string; option: number; session: string } | null = null
@@ -636,9 +645,22 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       }
     },
 
+    resumeEditing: async () => {
+      const { lease } = get()
+      if (lease === null) return
+      set({ lease: { ...lease, session: operationKey() } })
+      await get().keepEditing()
+    },
+
     keepEditing: async () => {
       const { lease, editedBy, status } = get()
       if (lease === null || editedBy !== null || status !== "ready" || !canEdit()) return
+      // One renewal of a session at a time: its answer arms the next.
+      if (renewing === lease.session) return
+      renewing = lease.session
+      const done = (): void => {
+        if (renewing === lease.session) renewing = null
+      }
       // Renewed for a page that has since let the session go, it is let go again: the server
       // may have taken the renewal after the release. A reopening of the quote under the
       // same session still holds it.
@@ -649,17 +671,20 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       // the quote open now, and arms no renewal of it.
       await answer([under(loads)], editAppQuote(lease.reference, lease.option, lease.session), {
         ok: () => {
+          done()
           settled()
           set((state) => ({ renewals: state.renewals + 1 }))
         },
         failed: (error) => {
           // Taken by someone else once its lease lapsed: read only now, what was typed kept.
           // No answer, or a server failure, says nothing of who holds it: the next renewal asks.
+          done()
           const editor = beingEditedBy(error)
           if (editor !== null && get().lease?.session === lease.session) heldBy(editor)
           set((state) => ({ renewals: state.renewals + 1 }))
         },
         stale: (answered) => {
+          done()
           if ("value" in answered) settled()
         },
       })
@@ -669,7 +694,7 @@ const useOpenQuoteStore = create<OpenQuoteState>()((set, get, api) => {
       const { lease, editedBy } = get()
       if (lease === null || editedBy !== null) return
       // A page hidden may be shown again as it was (the browser's back/forward cache): it
-      // keeps its session, to take the quote again with (`keepEditing`). One left is done.
+      // keeps its lease, to take the quote again by (`resumeEditing`). One left is done.
       if (!options.keepalive) set({ lease: null })
       // Let go as the page leaves; one never let go lapses with its lease.
       releaseAppQuote(lease.reference, lease.option, lease.session, options).catch(() => undefined)

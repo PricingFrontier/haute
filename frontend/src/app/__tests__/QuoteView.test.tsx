@@ -529,18 +529,37 @@ describe("QuoteView", () => {
       const sessions = vi.mocked(editAppQuote).mock.calls.map((call) => call[2])
       expect(new Set(sessions).size).toBe(1)
 
-      // Hidden, the page lets the quote go; shown again as it was, it takes it again under
-      // the same session, and goes on renewing it.
+      // Hidden with a renewal of its session still unanswered, the page lets the quote go;
+      // shown again as it was, it takes it again under a new session, which the release and
+      // the renewal before say nothing of, whenever they are answered.
+      let late!: (error: unknown) => void
+      vi.mocked(editAppQuote).mockReturnValueOnce(new Promise((_resolve, reject) => { late = reject }))
+      const before = useOpenQuoteStore.getState().keepEditing()
+      // One renewal of a session at a time.
+      await act(async () => useOpenQuoteStore.getState().keepEditing())
+      expect(editAppQuote).toHaveBeenCalledTimes(3)
       act(() => void window.dispatchEvent(new Event("pagehide")))
       expect(releaseAppQuote).toHaveBeenLastCalledWith("Q-000001", 1, sessions[0], { keepalive: true })
       await act(async () => {
         window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }))
       })
-      expect(vi.mocked(editAppQuote).mock.calls.map((call) => call[2])).toEqual([sessions[0], sessions[0], sessions[0]])
+      const resumed = vi.mocked(editAppQuote).mock.calls.at(-1)?.[2]
+      expect(editAppQuote).toHaveBeenCalledTimes(4)
+      expect(resumed).not.toBe(sessions[0])
+      // The old session's renewal refused late, naming someone else: the page, holding the
+      // quote under its new session, stays editable.
+      const detail = { message: "jo@example.com is editing Q-000001/1.", error_code: "quote_being_edited", editor: "jo@example.com" }
+      await act(async () => {
+        late(new ApiError("HTTP 409", 409, detail.message, { detail }, detail))
+        await before
+      })
+      expect(screen.queryByTestId("notice-editing")).toBeNull()
+      expect(useWorkbenchPreviewStore.getState().readOnly).toBe(false)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(EDIT_RENEW_MS)
       })
-      expect(editAppQuote).toHaveBeenCalledTimes(4)
+      expect(vi.mocked(editAppQuote).mock.calls.at(-1)?.[2]).toBe(resumed)
+      sessions[0] = resumed as string
 
       // A renewal answered once the page has left lets the session go again, and arms nothing.
       let renewed!: (value: { editor: string; lease_seconds: number }) => void

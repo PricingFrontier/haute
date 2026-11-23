@@ -86,10 +86,10 @@ export default function QuoteView({ route }: { route: QuoteRoute }) {
     if (route.mode !== "edit") return
     const closing = () => useOpenQuoteStore.getState().stopEditing({ keepalive: true })
     // Shown again as it was, from the browser's back/forward cache, the page takes the quote
-    // again under its session, what was typed still on its sheets: read only, saying who,
+    // again under a new session, what was typed still on its sheets: read only, saying who,
     // when someone else took it meanwhile.
     const shownAgain = (event: PageTransitionEvent) => {
-      if (event.persisted) void useOpenQuoteStore.getState().keepEditing()
+      if (event.persisted) void useOpenQuoteStore.getState().resumeEditing()
     }
     window.addEventListener("pagehide", closing)
     window.addEventListener("pageshow", shownAgain)
