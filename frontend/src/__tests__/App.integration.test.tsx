@@ -306,6 +306,7 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import * as api from "../api/client"
+import { ServerUnreachableError } from "../api/transportErrors"
 import * as workbenchApi from "../api/workbench"
 import type { WorkbenchTablesResponse } from "../api/types"
 import useWorkbenchFormStore from "../stores/useWorkbenchFormStore"
@@ -3000,6 +3001,24 @@ describe("App integration - a running assistant turn", () => {
         useGraphStore.getState().nodes.filter((item) => item.selected).map((item) => item.id),
       ).toEqual(["polars_0"])
     })
+  })
+
+  it("offers no assistant under a preview that got no answer, and says the server could not be reached", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("polars_0", "Premium Calc")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockRejectedValue(new ServerUnreachableError("/api/pipeline/preview", new TypeError("Failed to fetch")))
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByTestId("node-Premium Calc", {}, { timeout: 10000 }))
+
+    expect((await screen.findAllByText("Haute's server could not be reached.", {}, { timeout: 10000 })).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId("ask-assistant-to-fix")).not.toBeInTheDocument()
   })
 })
 

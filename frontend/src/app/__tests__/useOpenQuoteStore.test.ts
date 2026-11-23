@@ -32,6 +32,7 @@ import { draftKey, readDraft, valuesKey, writeDraft, type PendingWrite } from ".
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore, { openDraftKey, readOnlyReason } from "../useOpenQuoteStore"
 import { answer, appQuote, changed, release, TABLES, VALUES } from "./fixtures"
+import { ServerUnreachableError } from "../../api/transportErrors"
 
 const store = () => useOpenQuoteStore.getState()
 const preview = () => useWorkbenchPreviewStore.getState()
@@ -278,7 +279,7 @@ describe("useOpenQuoteStore", () => {
   it("keeps a save's operation key after a lost answer or a server failure, and lets it go on a refusal", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockRejectedValueOnce(new ApiError("HTTP 504", 504, "Gateway timeout"))
       .mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No"))
       .mockResolvedValue(answer({ version: 2 }))
@@ -286,7 +287,7 @@ describe("useOpenQuoteStore", () => {
     preview().setCell("policy", 0, "state", "CA")
 
     await store().save()
-    expect(store().error).toContain("Failed to fetch")
+    expect(store().error).toContain("Haute's server could not be reached.")
     await store().save()
     await store().save()
     await store().save()
@@ -300,7 +301,7 @@ describe("useOpenQuoteStore", () => {
   it("repeats a save whose answer was lost before saving what was typed since, each written once", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockResolvedValueOnce(answer({ version: 2 }, { values: typed("CA") }))
       .mockResolvedValueOnce(answer({ version: 3 }, { values: typed("TX") }))
     await store().openQuote("Q-000001", 1)
@@ -322,7 +323,7 @@ describe("useOpenQuoteStore", () => {
   it("lets a lost save go when sent again and refused, and saves what is on the sheets", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockRejectedValueOnce(new ApiError("HTTP 422", 422, "No"))
       .mockResolvedValueOnce(answer({ version: 2 }))
     await store().openQuote("Q-000001", 1)
@@ -342,7 +343,7 @@ describe("useOpenQuoteStore", () => {
 
   it("lets a lost save go as done when sent again it had landed and the quote moved on since, offering the newest", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockRejectedValueOnce(superseded()).mockResolvedValue(answer({ version: 4 }))
+    vi.mocked(saveAppQuote).mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch"))).mockRejectedValueOnce(superseded()).mockResolvedValue(answer({ version: 4 }))
     await store().openQuote("Q-000001", 1)
     preview().setCell("policy", 0, "state", "CA")
     await store().save()
@@ -364,7 +365,7 @@ describe("useOpenQuoteStore", () => {
 
   it("saves nothing typed since over the version a superseded save moved the quote on from, keeping it on the sheets", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockRejectedValueOnce(superseded())
+    vi.mocked(saveAppQuote).mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch"))).mockRejectedValueOnce(superseded())
     await store().openQuote("Q-000001", 1)
     preview().setCell("policy", 0, "state", "CA")
     await store().save()
@@ -412,7 +413,7 @@ describe("useOpenQuoteStore", () => {
 
   it("keeps a save held after a lost answer through a note, and lets it go once a change moves the version on", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(saveAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    vi.mocked(saveAppQuote).mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
     vi.mocked(changeAppQuote).mockResolvedValueOnce(changed({ note: "Call the broker" })).mockResolvedValueOnce(changed({ version: 2, archived: true }))
     await store().openQuote("Q-000001", 1)
     preview().setCell("policy", 0, "state", "CA")
@@ -429,10 +430,10 @@ describe("useOpenQuoteStore", () => {
 
   it("asks again with the same key after a reload before the answer, and with a new key once the alternative is made", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(madeAlternative())
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch"))).mockResolvedValue(madeAlternative())
 
     expect(await store().openNew(ALTERNATIVE)).toBeNull()
-    expect(store()).toMatchObject({ status: "error", loadError: "Failed to fetch" })
+    expect(store()).toMatchObject({ status: "error", loadError: "Haute's server could not be reached." })
     // The page is reloaded before an answer came: asked with the key held, so it is made once.
     store().close()
     expect((await store().openNew(ALTERNATIVE))?.label).toBe("Q-000001/2")
@@ -459,7 +460,7 @@ describe("useOpenQuoteStore", () => {
 
   it("holds an alternative's key apart from one of another quote", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
-    vi.mocked(createAppQuote).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(madeAlternative())
+    vi.mocked(createAppQuote).mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch"))).mockResolvedValue(madeAlternative())
 
     await store().openNew({ ...ALTERNATIVE, option: 2 })
     await store().openNew(ALTERNATIVE)

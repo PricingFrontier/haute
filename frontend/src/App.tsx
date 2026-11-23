@@ -307,11 +307,13 @@ function ActiveNodePreviewBody({
     && nodeData(activeNode)._loadAvailability !== "blocked",
   )
   const refreshAction = canRefresh ? onRefresh : undefined
-  // The assistant reproduces the error of a top-level executable node only.
+  // The assistant reproduces an error a top-level executable node raised, never a failed
+  // request's: a preview that got no answer raised nothing.
   const canAskAssistant = Boolean(
     onAskAssistantToFix
     && activeNodeId !== null
     && previewData?.status === "error"
+    && previewData.errorRaisedByNode === true
     && activeNodeType !== NODE_TYPES.SUBMODEL
     && activeNodeType !== NODE_TYPES.SUBMODEL_PORT,
   )

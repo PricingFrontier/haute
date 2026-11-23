@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { isChunkLoadError, recordChunkLoadFailures } from "../chunkLoadError"
+import { chunkLoadUrl, isChunkLoadError, recordChunkLoadFailures } from "../chunkLoadError"
 
 function vitePreloadError(payload: Error): Event {
   const event = new Event("vite:preloadError", { cancelable: true })
@@ -38,5 +38,16 @@ describe("isChunkLoadError", () => {
     // The import still rejects, so the error boundary that catches it says so.
     expect(event.defaultPrevented).toBe(false)
     expect(isChunkLoadError(new Error("Unable to preload CSS for /assets/other.css"))).toBe(false)
+  })
+})
+
+describe("chunkLoadUrl", () => {
+  it("reads the chunk's address from each browser's failure, and from Vite's", () => {
+    expect(chunkLoadUrl(new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1:8200/assets/A-1.js")))
+      .toBe("http://127.0.0.1:8200/assets/A-1.js")
+    expect(chunkLoadUrl(new TypeError("error loading dynamically imported module: http://localhost/assets/B-2.js")))
+      .toBe("http://localhost/assets/B-2.js")
+    expect(chunkLoadUrl(new Error("Unable to preload CSS for /assets/C-3.css"))).toBe("/assets/C-3.css")
+    expect(chunkLoadUrl(new TypeError("Importing a module script failed."))).toBeNull()
   })
 })

@@ -242,6 +242,7 @@ function resultToPreview(
     preview_row_limit: r.preview_row_limit,
     preview_truncated: r.preview_truncated,
     error: r.error ?? null,
+    errorRaisedByNode: r.status === "error",
     error_line: r.error_line ?? null,
     timing_ms: r.timing_ms ?? 0,
     memory_bytes: r.memory_bytes ?? 0,

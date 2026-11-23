@@ -5,7 +5,7 @@
  * the Files panel. It sends once, as every write is sent.
  */
 
-import { ApiError } from "./client"
+import { ServerUnreachableError } from "./transportErrors"
 
 /** A raw body sent through XMLHttpRequest, for its upload progress, and how to stop it. */
 export interface UploadSend {
@@ -42,7 +42,7 @@ export function sendUpload(
       statusText: xhr.statusText,
       headers: { "Content-Type": xhr.getResponseHeader("Content-Type") ?? "application/json" },
     }))
-    xhr.onerror = () => reject(new ApiError("The upload could not reach the server.", 0, "The upload could not reach the server."))
+    xhr.onerror = () => reject(new ServerUnreachableError(url, "XMLHttpRequest error"))
     xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"))
     if (aborted) {
       reject(new DOMException("Aborted", "AbortError"))

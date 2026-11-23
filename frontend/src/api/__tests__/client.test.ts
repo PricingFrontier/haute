@@ -8,9 +8,13 @@ import {
   preparedGraph,
 } from "../../test-utils/factories"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
+import { apiErrorMessage } from "../errors"
 import {
   ApiError,
   ApiTimeoutError,
+  ForeignAnswerError,
+  ServerUnreachableError,
+  post,
   SESSION_BOOTSTRAP_TIMEOUT_MS,
   getPreviewProgress,
   HAUTE_SESSION_EXPIRED_EVENT,
@@ -706,20 +710,20 @@ describe("request() core via loadPipeline", () => {
     expect(url).not.toContain("destination")
   })
 
-  it("uses statusText as detail when response body is not JSON", async () => {
-    mockFetch.mockReturnValue(errorResponse(503))
-    try {
-      // Use getMlflowDestinations as it doesn't catch errors like loadPipeline
-      await getMlflowDestinations(false)
-    } catch (err) {
-      expect(err).toBeInstanceOf(ApiError)
-      expect((err as ApiError).detail).toBe("Error")
-    }
+  it("uses statusText as detail when an error's body is not JSON", async () => {
+    mockFetch.mockReturnValue(errorResponse(500))
+    const err = await getMlflowDestinations(false).catch((error: unknown) => error)
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).detail).toBe("Error")
   })
 
-  it("handles network error (fetch throws)", async () => {
+  it("says a request that got no answer could not reach the server, not the browser's words", async () => {
     mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
-    await expect(getMlflowDestinations(false)).rejects.toThrow("Failed to fetch")
+    const error = await getMlflowDestinations(false).catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(ServerUnreachableError)
+    expect(apiErrorMessage(error)).toBe("Haute's server could not be reached.")
+    // The browser's own words stay for the console.
+    expect((error as Error).cause).toEqual(new TypeError("Failed to fetch"))
   })
 
   it("passes AbortController signal to fetch", async () => {
@@ -1629,30 +1633,54 @@ describe("request() edge cases", () => {
     }
   })
 
-  it("falls back to statusText when response body is not JSON", async () => {
+  it("raises a gateway status whose body is not JSON as an answer not Haute's, with that status", async () => {
     mockFetch.mockReturnValue(errorResponse(502))
-    try {
-      await getWorkingBranch()
-    } catch (err) {
-      expect(err).toBeInstanceOf(ApiError)
-      expect((err as ApiError).status).toBe(502)
-      expect((err as ApiError).detail).toBe("Error")
-    }
+    const err = await getWorkingBranch().catch((error: unknown) => error)
+    expect(err).toBeInstanceOf(ForeignAnswerError)
+    expect((err as ForeignAnswerError).status).toBe(502)
   })
 
-  it("propagates network errors when fetch throws", async () => {
+  it("raises a request that got no answer as no HTTP answer, whatever the browser called it", async () => {
     mockFetch.mockRejectedValue(new TypeError("Network request failed"))
-    await expect(getWorkingBranch()).rejects.toThrow("Network request failed")
+    const error = await getWorkingBranch().catch((err: unknown) => err)
+    expect(error).not.toBeInstanceOf(ApiError)
+    expect(error).toBeInstanceOf(ServerUnreachableError)
+    expect(apiErrorMessage(error, "unknown error")).toBe("Haute's server could not be reached.")
   })
 
-  it("propagates network errors as non-ApiError", async () => {
-    mockFetch.mockRejectedValue(new TypeError("Failed to fetch"))
-    try {
-      await getWorkingBranch()
-    } catch (err) {
-      expect(err).not.toBeInstanceOf(ApiError)
-      expect(err).toBeInstanceOf(TypeError)
-    }
+  it("says an answer that is not JSON where JSON was due did not come from Haute", async () => {
+    // A proxy's sign-in page, sent with 200 once a session has run out.
+    mockFetch.mockImplementation(() => Promise.resolve(new Response("<!DOCTYPE html><html>Sign in</html>", {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    })))
+    const error = await getWorkingBranch().catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(ForeignAnswerError)
+    expect(apiErrorMessage(error)).toBe("Something between this page and Haute's server answered in its place.")
+    expect(apiErrorMessage(error)).not.toContain("JSON")
+  })
+
+  it.each([502, 503, 504])("says a gateway's %i page did not come from Haute, with its status", async (status) => {
+    mockFetch.mockImplementation(() => Promise.resolve(new Response("<html>Bad Gateway</html>", {
+      status,
+      statusText: "Bad Gateway",
+      headers: { "Content-Type": "text/html" },
+    })))
+    const error = await post("/api/pipeline/rename", { name: "main" }).catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(ForeignAnswerError)
+    expect(apiErrorMessage(error, "unknown error")).toBe(
+      `Something between this page and Haute's server answered in its place (HTTP ${status}).`,
+    )
+  })
+
+  it("shows a detail Haute sends with a 503 as it is", async () => {
+    mockFetch.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ detail: "The pipeline is busy." }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    })))
+    const error = await getWorkingBranch().catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(apiErrorMessage(error)).toBe("The pipeline is busy.")
   })
 
   it("says how long a timeout waited, in seconds when the wait is whole seconds", () => {
@@ -1661,11 +1689,13 @@ describe("request() edge cases", () => {
     const message = (timeoutMs: number) =>
       new ApiTimeoutError("/api/pipeline/preview", timeoutMs).message
 
-    expect(message(120_000)).toBe("Request timed out after 120 seconds.")
-    expect(message(1000)).toBe("Request timed out after 1 second.")
+    expect(message(120_000)).toBe("Haute's server did not answer within 120 seconds.")
+    expect(message(1000)).toBe("Haute's server did not answer within 1 second.")
     // Not a whole number of seconds, and under a second: reported as given.
-    expect(message(1500)).toBe("Request timed out after 1500 ms.")
-    expect(message(500)).toBe("Request timed out after 500 ms.")
+    expect(message(1500)).toBe("Haute's server did not answer within 1500 ms.")
+    expect(message(500)).toBe("Haute's server did not answer within 500 ms.")
+    expect(apiErrorMessage(new ApiTimeoutError("/api/pipeline/save", 1000), "unknown error"))
+      .toBe("Haute's server did not answer within 1 second.")
   })
 
   it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {

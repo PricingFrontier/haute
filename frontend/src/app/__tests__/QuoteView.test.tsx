@@ -36,6 +36,7 @@ import useQuestionStore from "../../stores/useQuestionStore"
 import useAppStore from "../useAppStore"
 import useOpenQuoteStore from "../useOpenQuoteStore"
 import { answer, appQuote, changed, release, VALUES } from "./fixtures"
+import { ServerUnreachableError } from "../../api/transportErrors"
 
 type QuoteRoute = Extract<AppRoute, { page: "new" } | { page: "quote" }>
 
@@ -135,10 +136,10 @@ describe("QuoteView", () => {
     await navigate("/quotes/new?from=Q-000001&option=1&as=alternative", { force: true })
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(createAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockResolvedValue(answer({ option: 2, relation: "alternative", priced_release: null }))
     const view = show({ page: "new", from: ALTERNATIVE })
-    expect(await screen.findByText(/Failed to fetch/)).toBeInTheDocument()
+    expect(await screen.findByText(/Haute's server could not be reached\./)).toBeInTheDocument()
     view.unmount()
 
     show({ page: "new", from: ALTERNATIVE })
@@ -356,7 +357,7 @@ describe("QuoteView", () => {
   it("offers the newest when a save sent again had landed and the quote was changed since", async () => {
     vi.mocked(openAppQuote).mockResolvedValue(answer())
     vi.mocked(saveAppQuote)
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new ServerUnreachableError("/api/app/quotes", new TypeError("Failed to fetch")))
       .mockRejectedValueOnce(
         new ApiError("HTTP 409", 409, "superseded", {}, {
           message: "Your save of Q-000001/1 landed at 10:00 UTC; jo changed it at 10:05 UTC since. Open the newest to go on.",
@@ -369,7 +370,7 @@ describe("QuoteView", () => {
     await opened()
     type("CA")
     fireEvent.click(screen.getByTestId("save-quote"))
-    expect(await screen.findByTestId("notice-error")).toHaveTextContent("Failed to fetch")
+    expect(await screen.findByTestId("notice-error")).toHaveTextContent("Haute's server could not be reached.")
 
     fireEvent.click(screen.getByTestId("save-quote"))
 

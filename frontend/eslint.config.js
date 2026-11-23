@@ -87,6 +87,17 @@ const HELPER_SELECTORS = [
     message: "Numbers and dates follow the browser's locale: pass undefined.",
   },
 ]
+// Requests leave through the transport (api/client.ts), which says when one got no answer
+// of Haute's: none at all, or a page in Haute's place. A fetch, an XMLHttpRequest or a read
+// of a response's JSON anywhere else would show the browser's or the parser's own words.
+const TRANSPORT_MESSAGE = 'Send requests through the transport in api/client.ts; read JSON answers with readJsonAnswer (api/transportErrors.ts).'
+const TRANSPORT_SELECTORS = [
+  {
+    selector: 'CallExpression[callee.name="fetch"], CallExpression[callee.object.name=/^(window|globalThis|self)$/][callee.property.name="fetch"], NewExpression[callee.name="XMLHttpRequest"]',
+    message: TRANSPORT_MESSAGE,
+  },
+  { selector: 'CallExpression[callee.property.name="json"][arguments.length=0]', message: TRANSPORT_MESSAGE },
+]
 const SOURCE_FILES = ['src/**/*.{ts,tsx}']
 const TEST_FILES = ['src/**/__tests__/**', 'src/**/*.test.{ts,tsx}']
 function restrictedSyntax(...groups) {
@@ -129,24 +140,30 @@ export default defineConfig([
   {
     files: SOURCE_FILES,
     ignores: TEST_FILES,
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, TRANSPORT_SELECTORS),
   },
   {
     // The helpers' own homes.
     files: ['src/utils/isoDate.ts', 'src/api/types.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, TRANSPORT_SELECTORS),
   },
   {
     files: ['src/api/errors.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, TRANSPORT_SELECTORS),
   },
   {
     files: ['src/utils/formatBytes.ts', 'src/utils/formatValue.ts', 'src/utils/relativeTime.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS, TRANSPORT_SELECTORS),
   },
   {
     files: ['src/types/guards.ts', 'src/utils/objectLiteral.ts'],
-    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS),
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_BASE_SELECTORS, FORMAT_SELECTORS, HELPER_SELECTORS, TRANSPORT_SELECTORS),
+  },
+  {
+    // The transport's own homes, and the one question of a static file (a chunk that
+    // could not be loaded), which is no API call.
+    files: ['src/api/client.ts', 'src/api/clientUpload.ts', 'src/api/transportErrors.ts', 'src/utils/chunkLoadError.ts'],
+    rules: restrictedSyntax(POLLING_SELECTORS, ERROR_TEXT_SELECTORS, FORMAT_SELECTORS, GUARD_SELECTORS, HELPER_SELECTORS),
   },
   {
     files: ['e2e/persistence/api-input-v2-native.spec.ts'],

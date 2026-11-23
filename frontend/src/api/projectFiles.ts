@@ -16,6 +16,7 @@ import {
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 import { bootstrapHauteSession, request, throwApiError } from "./client"
 import { sendUpload, type UploadSend } from "./clientUpload"
+import { readJsonAnswer } from "./transportErrors"
 import type {
   ProjectFileDeleteResponse,
   ProjectFilePlace,
@@ -71,13 +72,14 @@ export function uploadProjectFile(
   const promise = (async () => {
     await bootstrapHauteSession()
     if (aborted) throw new DOMException("Aborted", "AbortError")
-    sending = sendUpload("PUT", `/api/project-files/content?${projectFileParams(place, path, extra)}`, file, {
+    const url = `/api/project-files/content?${projectFileParams(place, path, extra)}`
+    sending = sendUpload("PUT", url, file, {
       contentType: "application/octet-stream",
       onProgress: options.onProgress,
     })
     const response = await sending.response
-    if (!response.ok) await throwApiError(response)
-    const data: unknown = await response.json()
+    if (!response.ok) await throwApiError(response, url)
+    const data = await readJsonAnswer(url, response)
     return expectGeneratedContract("ProjectFileWriteResponse", validateProjectFileWriteResponse, data)
   })()
   return {
