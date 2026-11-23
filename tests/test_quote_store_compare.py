@@ -446,6 +446,21 @@ def test_the_export_converts_a_column_of_another_type_keeping_its_values(target:
     assert target.read("SELECT drivers FROM policy") == [(2,)]
 
 
+def test_the_export_converts_a_number_column_to_text_the_app_opens(server: Target) -> None:
+    """To Text, the column takes the text type and comparison Haute keeps (SQL Server's
+    collation among them), so the app's check finds nothing after it."""
+    made_from_sql(server, RELEASED)
+    quote(server, RELEASED, "A-1", value="12.5")
+    retyped = form(table("policy", column("region"), column("drivers"), column("value")))
+
+    written = exported(server, retyped)
+
+    assert "ALTER COLUMN value" in written
+    server.script(written)
+    opens(server, retyped)
+    assert server.read("SELECT value FROM policy") == [("12.5",)]
+
+
 def test_a_value_the_export_cannot_convert_stops_it_changing_nothing(server: Target) -> None:
     made_from_sql(server, RELEASED)
     quote(server, RELEASED, "A-1", drivers="n/a")
